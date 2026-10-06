@@ -1,0 +1,34 @@
+base_url = "https://DreamWeave-MP.github.io/jess"
+title = "jess"
+description = "A high-performance Luau application runtime for dehardcoding the whole stack."
+default_language = "en"
+compile_sass = true
+build_search_index = true
+generate_feeds = false
+taxonomies = []
+
+[search]
+index_format = "fuse_json"
+include_title = true
+include_description = true
+include_content = true
+truncate_content_length = 500
+
+[markdown]
+insert_anchor_links = "right"
+
+[slugify]
+paths = "safe"
+
+[extra]
+github_username = "DreamWeave-MP"
+github_project = "jess"
+logo_text = "jess"
+footer_text = "only baby scars"
+menu_items = [
+  { name = "Overview", url = "@/_index.md" },
+  { name = "Docs", url = "@/docs/_index.md" },
+  { name = "Packages", url = "@/docs/scripting/packages.md" },
+  { name = "Benchmarks", url = "@/docs/contributing/benchmarks.md" },
+  { name = "Source", url = "https://github.com/DreamWeave-MP/jess" },
+]

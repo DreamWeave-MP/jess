@@ -1,0 +1,10 @@
+{% extends "index.html" %}
+
+{#- A section rendered as one page: its own markdown, no post listing. Used by the site root. -#}
+{% block content %}
+<div class="post">
+    <div class="post-content">
+        {{ section.content | safe }}
+    </div>
+</div>
+{% endblock content %}

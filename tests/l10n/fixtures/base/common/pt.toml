@@ -1,0 +1,2 @@
+# Portuguese has a language file and no regional one: pt-BR and pt-PT both land here.
+hello = "Olá, {name}!"

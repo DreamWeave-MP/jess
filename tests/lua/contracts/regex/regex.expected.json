@@ -1,0 +1,136 @@
+{
+  "errors": [
+    "parse: regex parse error",
+    "argument: a replacement is a string or a function, not boolean",
+    "argument: a replacement function returns a string, nil, or false, not number"
+  ],
+  "result": {
+    "bytes": [
+      2,
+      2,
+      "\u00ff"
+    ],
+    "captures": {
+      "first": {
+        "[0]": "abc1",
+        "[1]": "abc",
+        "[2]": "1",
+        "word": "abc"
+      },
+      "none": true,
+      "unmatchedGroup": {
+        "[0]": "def",
+        "[1]": "def",
+        "word": "def"
+      }
+    },
+    "emptyMatches": [
+      [
+        "",
+        1,
+        0
+      ],
+      [
+        "",
+        2,
+        1
+      ],
+      [
+        "",
+        3,
+        2
+      ]
+    ],
+    "errors": {
+      "functionResult": "argument",
+      "pattern": "parse",
+      "replacement": "argument"
+    },
+    "escape": "a\\.b\\*c\\(d\\)",
+    "find": {
+      "first": [
+        1,
+        4,
+        "abc1"
+      ],
+      "fromInit": [
+        6,
+        8,
+        "def"
+      ],
+      "negativeInit": [
+        10,
+        13,
+        "xyz9"
+      ],
+      "none": {},
+      "pastEnd": {}
+    },
+    "isMatch": [
+      true,
+      false
+    ],
+    "match": [
+      "abc1",
+      "def"
+    ],
+    "matches": [
+      [
+        "abc1",
+        1,
+        4
+      ],
+      [
+        "def",
+        6,
+        8
+      ],
+      [
+        "xyz9",
+        10,
+        13
+      ]
+    ],
+    "options": [
+      true,
+      false
+    ],
+    "pattern": "(?P<word>[a-z]+)(\\d)?",
+    "replace": {
+      "all": [
+        "[abc1]$ [def]$ [xyz9]$",
+        3
+      ],
+      "byFunction": [
+        "ABC1 def XYZ9",
+        2
+      ],
+      "first": [
+        "<abc> def xyz9",
+        1
+      ],
+      "limited": [
+        "_ _ xyz9",
+        2
+      ],
+      "none": [
+        "!!!",
+        0
+      ]
+    },
+    "split": {
+      "all": [
+        "a",
+        "b",
+        "c",
+        "",
+        "d"
+      ],
+      "limited": [
+        "a",
+        "b,c,d"
+      ]
+    },
+    "tostring": "(?P<word>[a-z]+)(\\d)?"
+  }
+}

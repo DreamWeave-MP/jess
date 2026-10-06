@@ -1,0 +1,27 @@
+name: Corprus Crucible Manufacturing
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: main
+    tags: ["*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    uses: DreamWeave-MP/StroggForge/.github/workflows/rustGlobalBuild.yml@v55
+    secrets: inherit
+    with:
+      binary_names: '["jess"]'
+      binary_package: jess
+      include_files: "README.md,LICENSE-MIT,LICENSE-APACHE,docs"
+      publish_docs: false
+      cargo_publish_workspace: true
+      msrv: auto

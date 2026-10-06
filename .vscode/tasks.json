@@ -1,0 +1,85 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "cargo build",
+            "type": "shell",
+            "command": "cargo build --all-features",
+            "presentation": {
+                "clear": true
+            }
+        },
+        {
+            "label": "cargo check",
+            "type": "shell",
+            "command": "cargo check --workspace --all-features",
+            "presentation": {
+                "clear": true
+            }
+        },
+        {
+            "label": "cargo check --feature-powerset",
+            "type": "shell",
+            "command": "cargo hack check --feature-powerset --no-dev-deps",
+            "presentation": {
+                "clear": true
+            }
+        },
+        {
+            "label": "cargo clippy",
+            "type": "shell",
+            "command": "cargo clippy --workspace --no-deps --all-features --all-targets",
+            "presentation": {
+                "clear": true
+            }
+        },
+        {
+            "label": "cargo fmt",
+            "type": "shell",
+            "command": "cargo fmt",
+            "presentation": {
+                "clear": true
+            }
+        },
+        {
+            "label": "cargo test",
+            "type": "shell",
+            "command": "cargo nextest run --workspace --all-features",
+            "presentation": {
+                "clear": true
+            }
+        },
+        {
+            "label": "cargo doc",
+            "type": "shell",
+            "command": "cargo doc --workspace --all-features --no-deps --open",
+            "presentation": {
+                "clear": true
+            }
+        },
+        {
+            "label": "cargo upgrade",
+            "type": "shell",
+            "command": "cargo upgrade",
+            "presentation": {
+                "clear": true
+            }
+        },
+        {
+            "label": "cargo udeps",
+            "type": "shell",
+            "command": "cargo udeps --workspace --all-features  --all-targets",
+            "presentation": {
+                "clear": true
+            }
+        },
+        {
+            "label": "cargo build --release",
+            "type": "shell",
+            "command": "cargo build --release",
+            "presentation": {
+                "clear": true
+            }
+        }
+    ]
+}

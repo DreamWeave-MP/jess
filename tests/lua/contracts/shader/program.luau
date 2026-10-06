@@ -1,0 +1,108 @@
+--!strict
+-- @jess/shader: the acceptance programs built from Luau, what a finished program says it
+-- declares, and what values know about themselves while a program is under construction.
+local oracle, env = ...
+local shader = require '@jess/shader'
+
+local observed: { [string]: any } = {}
+
+local lit = shader.program {
+  parameters = {
+    normalMatrix = shader.mat3,
+    lightDirection = shader.vec3,
+    ambient = shader.float,
+    tint = shader.vec4,
+    pointSampler = shader.sampler,
+  },
+
+  textures = {
+    diffuse = shader.texture2d,
+  },
+
+  vertex = function(input)
+    local clip = input.projection * input.view * input.model * shader.vec4(input.position, 1.0)
+    observed.vertex = {
+      input = tostring(input),
+      position = tostring(input.position),
+      clip = tostring(clip),
+      matrix = tostring(input.projection * input.view),
+      sameRead = input.position == input.position,
+      differentValues = input.position == input.normal,
+      texture = tostring(input.diffuse),
+    }
+
+    return {
+      position = clip,
+      normal = input.normalMatrix * input.normal,
+      uv = input.uv,
+    }
+  end,
+
+  fragment = function(input)
+    local diffuse = shader.sample(input.diffuse, input.uv)
+    local facing = shader.dot(shader.normalize(input.normal), input.lightDirection)
+    local light = shader.max(facing, 0.0) + input.ambient
+    local lit = shader.clamp(diffuse.xyz * light, 0.0, 1.0)
+    observed.fragment = {
+      input = tostring(input),
+      diffuse = tostring(diffuse),
+      facing = tostring(facing),
+      light = tostring(light),
+      swizzles = {
+        tostring(diffuse.x),
+        tostring(diffuse.xy),
+        tostring(diffuse.zyx),
+        tostring(diffuse.wzyx),
+      },
+      mixed = tostring(shader.mix(diffuse.xyz, input.tint.xyz, 0.5)),
+      length = tostring(shader.length(input.lightDirection)),
+      floor = tostring(shader.floor(diffuse.xyz * 3.5)),
+      cross = tostring(shader.cross(input.normal, input.lightDirection)),
+      min = tostring(shader.min(diffuse, input.tint)),
+      splat = tostring(shader.vec3(0.5)),
+      fromParts = tostring(shader.vec4(diffuse.xy, 1.0, input.ambient)),
+      numberFirst = tostring(2.0 * diffuse),
+      divided = tostring(diffuse / 2.0),
+      subtracted = tostring(1.0 - diffuse.x),
+      constant = tostring(shader.float(0.25)),
+      explicitSampler = tostring(shader.sample(input.diffuse, input.pointSampler, input.uv)),
+      time = tostring(input.time),
+      camera = tostring(input.cameraPosition),
+      viewport = tostring(input.viewportSize),
+    }
+
+    return shader.vec4(lit, diffuse.w)
+  end,
+}
+
+local constant = shader.program {
+  vertex = function(input) return { position = shader.vec4(input.position, 1.0) } end,
+  fragment = function() return shader.vec4(1.0, 0.5, 0.0, 1.0) end,
+}
+
+local function describe(program: ShaderProgram): { [string]: any }
+  return {
+    tostring = tostring(program),
+    parameters = program.parameters,
+    textures = program.textures,
+    varyings = program.varyings,
+  }
+end
+
+return {
+  types = {
+    float = tostring(shader.float),
+    vec2 = tostring(shader.vec2),
+    vec3 = tostring(shader.vec3),
+    vec4 = tostring(shader.vec4),
+    mat3 = tostring(shader.mat3),
+    mat4 = tostring(shader.mat4),
+    texture2d = tostring(shader.texture2d),
+    sampler = tostring(shader.sampler),
+  },
+  lit = describe(lit),
+  constant = describe(constant),
+  vertex = observed.vertex,
+  fragment = observed.fragment,
+  sameModule = require '@jess/shader' == jess.shader,
+}

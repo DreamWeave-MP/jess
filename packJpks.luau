@@ -1,0 +1,44 @@
+--!strict
+--!native
+
+-- Run from the repository root: jess run --capability process.spawn packJpks.luau
+local fs = require '@jess/fs'
+local process = require '@dream/process'
+
+local Excluded: { [string]: boolean } = {
+  builtin = true,
+  r3versal = true,
+  ['r3versal-psx'] = true,
+  ['r3versal-vagrant-story'] = true,
+}
+
+local folders = fs.list 'jpk'
+table.sort(folders)
+
+local packed, failed = 0, 0
+for _, name in folders do
+  if Excluded[name] then continue end
+
+  local source = fs.join('jpk', name)
+  if not fs.isDir(source) or not fs.isFile(fs.join(source, 'jess.toml')) then continue end
+
+  local output = fs.join(fs.cwd(), `{name}.jpk`)
+  print(`Packing {source} -> {output}`)
+  local result, failure = process.run('jess', { 'pack', source, '--output', output })
+  if not result then
+    process.write('stderr', `Failed to pack {name}: {failure}\n`)
+    failed += 1
+    continue
+  end
+
+  if not result.success then
+    process.write('stderr', `Failed to pack {name}: exit code {result.code}\n`)
+    failed += 1
+    continue
+  end
+
+  packed += 1
+end
+
+print(`Packed {packed} package(s); {failed} failed.`)
+return if failed > 0 then 1 else 0

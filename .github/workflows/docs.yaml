@@ -1,0 +1,62 @@
+name: Docs Site
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "site/**"
+      - ".github/workflows/docs.yaml"
+  push:
+    branches: main
+    paths:
+      - "site/**"
+      - ".github/workflows/docs.yaml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check links
+        run: |
+          docker run --rm \
+            -u "$(id -u):$(id -g)" \
+            -v "${{ github.workspace }}/site:/site" \
+            -w /site \
+            ghcr.io/getzola/zola:v0.22.1 check --skip-external-links
+
+      - name: Build site
+        run: |
+          docker run --rm \
+            -u "$(id -u):$(id -g)" \
+            -v "${{ github.workspace }}/site:/site" \
+            -w /site \
+            ghcr.io/getzola/zola:v0.22.1 build
+
+      - uses: actions/upload-pages-artifact@v5.0.0
+        if: github.event_name != 'pull_request'
+        with:
+          path: site/public
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5.0.0

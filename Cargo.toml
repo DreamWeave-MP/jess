@@ -1,0 +1,261 @@
+[package]
+name = "jess"
+description = "Native application kernel for Luau applications"
+keywords = ["luau", "runtime", "scripting"]
+categories = ["game-development"]
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+readme.workspace = true
+include = ["/src", "/jpk/builtin", "/README.md", "/LICENSE-MIT", "/LICENSE-APACHE"]
+autotests = false
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+authors = ["Greatness7 <Greatness7@gmail.com>", "Dave Corley <corleycomputerrepair@protonmail.ch>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/DreamWeave-MP/jess"
+homepage = "https://github.com/DreamWeave-MP/jess"
+readme = "README.md"
+# Test fixtures and generator scripts stay out of published crates.
+exclude = ["/tests", "/tools"]
+
+[workspace]
+
+[features]
+default = []
+# Real device backends are opt-in; the native kernel stays headless by default.
+linux-evdev = ["dep:evdev"]
+gilrs = ["dep:gilrs"]
+
+[dependencies]
+clap = { version = "^4.5", features = ["derive", "env", "wrap_help"] }
+clap_complete = "^4.5"
+clap_mangen = "^0.2"
+fixed_decimal = { version = "0.7.2", features = ["ryu"] }
+icu_decimal = "2.3.0"
+icu_locale_core = "2.3.0"
+icu_plurals = "2.3.0"
+icu_provider = { version = "2.3.1", features = ["sync"] }
+l3i = { version = "1.3.1", features = ["jit", "bytes-text", "bytes-codecs", "bytes-digests", "bytes-regex", "fs", "intern", "process", "syntax"] }
+regex = "^1.10"
+serde = { version = "^1.0", features = ["derive"] }
+serde-value = "^0.7"
+serde_json = { version = "^1.0", features = ["preserve_order"] }
+serde_yaml = "^0.9"
+tempfile = "^3.23"
+toml = { version = "^1.1", features = ["preserve_order"] }
+writeable = "0.6.3"
+
+[target.'cfg(unix)'.dependencies]
+# Only for restoring SIGPIPE, which Windows lacks.
+libc = "^0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+evdev = { version = "^0.13", optional = true }
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+gilrs = { version = "^0.11", optional = true }
+
+
+[dev-dependencies]
+l3i = { version = "1.3.1", features = ["analysis"] }
+naga = { version = "30.0.1", features = ["wgsl-in"] }
+pollster = "0.4.0"
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "vulkan", "gles", "metal", "dx12"] }
+
+[[bin]]
+name = "jess"
+path = "src/main.rs"
+doc = false
+
+[[bench]]
+name = "l10n"
+path = "benches/l10n.rs"
+harness = false
+
+[[test]]
+name = "l10n"
+path = "tests/l10n/acceptance.rs"
+
+[[test]]
+name = "runtime"
+path = "tests/runtime/main.rs"
+
+[[test]]
+name = "input"
+path = "tests/input/main.rs"
+
+[[test]]
+name = "shader"
+path = "tests/shader/main.rs"
+
+[[test]]
+name = "render"
+path = "tests/render/graph.rs"
+
+[[test]]
+name = "host"
+path = "tests/host/kernel.rs"
+
+[[test]]
+name = "cli"
+path = "tests/cli/main.rs"
+
+[[test]]
+name = "lua_contracts"
+path = "tests/lua/contracts.rs"
+
+[[test]]
+name = "lua_kernel"
+path = "tests/lua/kernel.rs"
+
+[[test]]
+name = "lua_lua_api"
+path = "tests/lua/lua_api.rs"
+
+[[test]]
+name = "lua_luau_style"
+path = "tests/lua/luau_style.rs"
+
+[[test]]
+name = "lua_network_capability"
+path = "tests/lua/network_capability.rs"
+
+[[test]]
+name = "lua_package"
+path = "tests/lua/package.rs"
+
+[[test]]
+name = "lua_script_support"
+path = "tests/lua/script_support.rs"
+
+[[test]]
+name = "lua_shader"
+path = "tests/lua/shader.rs"
+
+[[test]]
+name = "lua_stdlib"
+path = "tests/lua/stdlib.rs"
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lints]
+workspace = true
+
+# Lint Configuration
+
+[workspace.lints.rust]
+#
+# Lint Groups
+# https://doc.rust-lang.org/rustc/lints/groups.html
+#
+future_incompatible = { level = "warn", priority = -1 }
+let_underscore = { level = "warn", priority = -1 }
+nonstandard_style = { level = "warn", priority = -1 }
+rust_2018_compatibility = { level = "warn", priority = -1 }
+rust_2018_idioms = { level = "warn", priority = -1 }
+rust_2021_compatibility = { level = "warn", priority = -1 }
+unused = { level = "warn", priority = -1 }
+stable_features = "allow" # extract_if
+#
+# Allowed-by-default Lints
+# https://doc.rust-lang.org/rustc/lints/listing/allowed-by-default.html
+#
+absolute_paths_not_starting_with_crate = "warn"
+elided_lifetimes_in_paths = "warn"
+explicit_outlives_requirements = "warn"
+ffi_unwind_calls = "warn"
+let_underscore_drop = "warn"
+macro_use_extern_crate = "warn"
+meta_variable_misuse = "warn"
+missing_abi = "warn"
+missing_debug_implementations = "warn"
+# missing_docs = "warn" # Enabled per crate where every public item is documented.
+non_ascii_idents = "warn"
+rust_2021_incompatible_closure_captures = "warn"
+rust_2021_incompatible_or_patterns = "warn"
+rust_2021_prefixes_incompatible_syntax = "warn"
+rust_2021_prelude_collisions = "warn"
+single_use_lifetimes = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+unit_bindings = "warn"
+# unreachable_pub = "warn"
+# unsafe_code = "warn"
+# unsafe_op_in_unsafe_fn = "warn"
+# unstable_features = "warn"
+# unused_crate_dependencies = "warn"
+unused_extern_crates = "warn"
+unused_import_braces = "warn"
+unused_lifetimes = "warn"
+unused_macro_rules = "warn"
+unused_qualifications = "warn"
+# unused_results = "warn"
+dead_code = "warn"
+variant_size_differences = "warn"
+
+[workspace.lints.clippy]
+#
+# Clippy Group: Cargo
+# https://rust-lang.github.io/rust-clippy/master/index.html#?groups=cargo
+#
+cargo = { level = "warn", priority = -1 }
+cargo_common_metadata = "allow"
+#
+# Clippy Group: Pedantic
+# https://rust-lang.github.io/rust-clippy/master/index.html#?groups=pedantic
+#
+pedantic = { level = "warn", priority = -1 }
+inline_always = "allow"
+unreadable_literal = "allow"
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+must_use_candidate = "allow"
+ignored_unit_patterns = "allow"
+match_wildcard_for_single_variants = "allow"
+unsafe_derive_deserialize = "allow"
+multiple_crate_versions = "allow"
+wildcard_imports = "allow"
+needless_continue = "allow"
+cast_lossless = "allow"
+cast_possible_wrap = "allow"
+#
+# Clippy Group: Nursery
+# https://rust-lang.github.io/rust-clippy/master/index.html#?groups=nursery
+#
+nursery = { level = "warn", priority = -1 }
+use_self = "allow"
+missing_const_for_fn = "allow"
+#
+# Clippy Group: Restriction
+# https://rust-lang.github.io/rust-clippy/master/index.html#?groups=restriction
+#
+# restriction = { level = "warn", priority = -1 }
+separated_literal_suffix = "warn"
+# panic = "warn"
+# expect_used = "warn"
+# unwrap_used = "warn"
+# as_conversions = "warn"
+
+# Full debug info made target/ balloon past 40 GB. Line tables keep backtraces readable; dependencies
+# get none.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+# Whole-program optimization: about 7% faster and 8% less CPU on the representative CLI workload, for a slower build.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
+# Temporary local integration with the l3i 1.3.1 checkout until its release is published.

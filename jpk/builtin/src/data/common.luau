@@ -1,0 +1,63 @@
+--!strict
+--!native
+-- Shared cold-path machinery for jess's text data parsers. The parsers keep their hot scanners in
+-- their own modules; this file owns the one null sentinel and error/Unicode helpers they share.
+
+local Null = newproxy(false)
+
+local function location(text: string, at: number): (number, number)
+  local line, lineStart, search = 1, 0, 1
+
+  while true do
+    local found = string.find(text, '\n', search, true)
+    if not found or found >= at then break end
+
+    line += 1
+    lineStart = found
+    search = found + 1
+  end
+
+  return line, at - lineStart
+end
+
+local function fail(format: string, text: string, at: number, message: string): never
+  local line, column = location(text, at)
+  error(`{format}: {message} at line {line}, column {column}`, 0)
+end
+
+local function validateUtf8(format: string, text: string)
+  local count, invalid = utf8.len(text)
+  if count then return end
+
+  fail(format, text, invalid or 1, 'input is not valid UTF-8')
+end
+
+local function hexDigit(byte: number?): number?
+  if not byte then return nil end
+  if byte >= 48 and byte <= 57 then return byte - 48 end
+  if byte >= 65 and byte <= 70 then return byte - 55 end
+  if byte >= 97 and byte <= 102 then return byte - 87 end
+
+  return nil
+end
+
+local function hex(text: string, at: number, digits: number): number?
+  local value = 0
+
+  for offset = 0, digits - 1 do
+    local digit = hexDigit(string.byte(text, at + offset))
+    if not digit then return nil end
+
+    value = value * 16 + digit
+  end
+
+  return value
+end
+
+return table.freeze {
+  null = Null,
+  fail = fail,
+  validateUtf8 = validateUtf8,
+  hexDigit = hexDigit,
+  hex = hex,
+}

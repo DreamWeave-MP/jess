@@ -1,0 +1,3 @@
+# Tests compare text fixtures and generated files byte for byte, so check text out with LF
+# everywhere, whatever core.autocrlf says (Windows runners set it to true).
+* text=auto eol=lf

@@ -1,0 +1,282 @@
+--!strict
+--!native
+-- @jess/test: suites of cases with hooks, expectations, and a report; the host only runs suites.
+
+type LogRecord = {
+  read level: string,
+  read target: string,
+  read message: string,
+  read fields: { [string]: string | number | boolean },
+}
+type Result = { name: string, passed: boolean, error: string?, logs: { LogRecord } }
+type Report = { passed: number, failed: number, tests: { Result } }
+type Scope = { name: string, before: { () -> () }, after: { () -> () } }
+type Case = { name: string, body: () -> (), scopes: { Scope } }
+type Named = { text: string, key: unknown }
+export type Expectation = {
+  read toBe: (expected: unknown) -> (),
+  read toEqual: (expected: unknown) -> (),
+  read toBeTruthy: () -> (),
+  read toBeFalsy: () -> (),
+  read toBeNil: () -> (),
+  read toContain: (item: unknown) -> (),
+  read toThrow: (contains: string?) -> (),
+}
+
+export type Suite = {
+  read describe: (name: string, body: () -> ()) -> (),
+  read it: (name: string, body: () -> ()) -> (),
+  read beforeEach: (body: () -> ()) -> (),
+  read afterEach: (body: () -> ()) -> (),
+  read run: () -> Report,
+}
+
+local MaxEntries = 24
+
+local function equal(
+  actual: unknown,
+  expected: unknown,
+  seen: { [unknown]: { [unknown]: boolean } }
+): boolean
+  if rawequal(actual, expected) then return true end
+  if type(actual) ~= 'table' or type(expected) ~= 'table' then return false end
+
+  local left, right = actual :: { [unknown]: unknown }, expected :: { [unknown]: unknown }
+  local partners = seen[left]
+
+  if partners and partners[right] then return true end
+
+  if not partners then
+    partners = {}
+    seen[left] = partners
+  end
+
+  partners[right] = true
+
+  for key, value in left do
+    if not equal(value, right[key], seen) then return false end
+  end
+
+  for key in right do
+    if left[key] == nil then return false end
+  end
+
+  return true
+end
+
+local function inspect(value: unknown, depth: number): string
+  if type(value) == 'string' then return string.format('%q', value) end
+  if type(value) ~= 'table' then return tostring(value) end
+  if depth == 0 then return '{ ... }' end
+
+  local entries: { string } = {}
+  local items = value :: { [unknown]: unknown }
+  local length = #items
+
+  for index = 1, length do
+    table.insert(entries, inspect(items[index], depth - 1))
+  end
+
+  local named: { Named } = {}
+
+  for key in items do
+    if type(key) == 'number' and key >= 1 and key <= length and key % 1 == 0 then continue end
+
+    table.insert(named, { text = tostring(key), key = key })
+  end
+
+  table.sort(named, function(left: Named, right: Named): boolean return left.text < right.text end)
+
+  for _, entry in named do
+    local text = if type(entry.key) == 'string' and string.match(entry.text, '^[%a_][%w_]*$')
+      then entry.text
+      else `[{inspect(entry.key, 1)}]`
+    table.insert(entries, `{text} = {inspect(items[entry.key], depth - 1)}`)
+  end
+
+  if #entries == 0 then return '{}' end
+
+  if #entries > MaxEntries then
+    local shown = table.move(entries, 1, MaxEntries, 1, {})
+    table.insert(shown, `... {#entries - MaxEntries} more`)
+    entries = shown
+  end
+
+  return `\{ {table.concat(entries, ', ')} }`
+end
+
+-- A failure's traceback without this module's and the logger's own frames, so the first line
+-- under the message is the case's.
+local function failure(problem: unknown): string
+  local lines = { tostring(problem) }
+
+  for line in string.gmatch(debug.traceback('', 2), '[^\n]+') do
+    if string.match(line, '^jess/test:') or string.match(line, '^jess/log:') then continue end
+
+    table.insert(lines, line)
+  end
+
+  return table.concat(lines, '\n')
+end
+
+-- A case's setup, body, or cleanup throws to fail it, from an `expect` or anything it calls; the
+-- error is caught here with its traceback so the suite reports it and runs the next case.
+local function attempt(body: () -> ()): (boolean, string)
+  return xpcall(function(): string
+    body()
+    return ''
+  end, failure)
+end
+
+local function expect(actual: unknown): Expectation
+  local function check(condition: boolean, relation: string, expected: unknown)
+    if condition then return end
+
+    error(`expected {inspect(actual, 3)} {relation} {inspect(expected, 3)}`, 0)
+  end
+
+  return table.freeze {
+    toBe = function(expected: unknown) check(rawequal(actual, expected), 'to be', expected) end,
+    toEqual = function(expected: unknown) check(equal(actual, expected, {}), 'to equal', expected) end,
+    toBeTruthy = function() check(actual and true or false, 'to be truthy', true) end,
+    toBeFalsy = function() check(not actual, 'to be falsy', false) end,
+    toBeNil = function() check(actual == nil, 'to be', nil) end,
+    toContain = function(item: unknown)
+      if type(actual) == 'string' then
+        check(
+          type(item) == 'string' and string.find(actual, item, 1, true) ~= nil,
+          'to contain',
+          item
+        )
+        return
+      end
+
+      assert(type(actual) == 'table', `expected {inspect(actual, 3)} to be a string or a table`)
+
+      for _, value in actual :: { unknown } do
+        if equal(value, item, {}) then return end
+      end
+
+      check(false, 'to contain', item)
+    end,
+
+    toThrow = function(contains: string?)
+      assert(type(actual) == 'function', `expected {inspect(actual, 3)} to be a function`)
+      -- The function under test is expected to fail; its error is what's being checked.
+      local success, problem = attempt(actual :: () -> ())
+      assert(not success, 'expected the function to throw')
+
+      if contains and not string.find(problem, contains, 1, true) then
+        error(`expected an error containing {inspect(contains, 1)}, got {inspect(problem, 1)}`, 0)
+      end
+    end,
+  }
+end
+
+return function(log: { capture: (body: () -> ()) -> { LogRecord } })
+  local function new(): Suite
+    local root: Scope = { name = '', before = {}, after = {} }
+    local scopes: { Scope } = { root }
+    local cases: { Case } = {}
+    local running = false
+
+    local function registering(what: string)
+      assert(not running, `{what} can't be added while the suite is running`)
+    end
+
+    local function describe(name: string, body: () -> ())
+      registering 'describe'
+      local scope: Scope = { name = name, before = {}, after = {} }
+      table.insert(scopes, scope)
+      body()
+      table.remove(scopes)
+    end
+
+    local function it(name: string, body: () -> ())
+      registering 'it'
+      local names: { string } = {}
+
+      for _, scope in scopes do
+        if scope.name ~= '' then table.insert(names, scope.name) end
+      end
+
+      table.insert(names, name)
+      table.insert(
+        cases,
+        { name = table.concat(names, ' / '), body = body, scopes = table.clone(scopes) }
+      )
+    end
+
+    local function runCase(case: Case): Result
+      local errors: { string } = {}
+      local records = log.capture(function()
+        -- Each case is an error boundary: the after hooks run even when setup or the body fails,
+        -- and every failure is reported.
+        local success, problem = attempt(function()
+          for _, scope in case.scopes do
+            for _, hook in scope.before do
+              hook()
+            end
+          end
+
+          case.body()
+        end)
+
+        if not success then table.insert(errors, problem) end
+
+        for index = #case.scopes, 1, -1 do
+          for _, hook in case.scopes[index].after do
+            local cleaned, cleanupProblem = attempt(hook)
+
+            if not cleaned then table.insert(errors, cleanupProblem) end
+          end
+        end
+      end)
+
+      return {
+        name = case.name,
+        passed = #errors == 0,
+        error = if #errors == 0 then nil else table.concat(errors, '\n'),
+        logs = records,
+      }
+    end
+
+    local function run(): Report
+      assert(not running, 'the suite is already running')
+      assert(#scopes == 1, 'run can\'t be called inside describe')
+      running = true
+      local report: Report = { passed = 0, failed = 0, tests = {} }
+
+      for _, case in cases do
+        local result = runCase(case)
+        table.insert(report.tests, result)
+
+        if result.passed then
+          report.passed += 1
+        else
+          report.failed += 1
+        end
+      end
+
+      running = false
+      return report
+    end
+
+    return table.freeze {
+      describe = describe,
+      it = it,
+      beforeEach = function(body: () -> ())
+        registering 'beforeEach'
+        table.insert(scopes[#scopes].before, body)
+      end,
+
+      afterEach = function(body: () -> ())
+        registering 'afterEach'
+        table.insert(scopes[#scopes].after, body)
+      end,
+      run = run,
+    }
+  end
+
+  return table.freeze { new = new, expect = expect }
+end

@@ -1,0 +1,125 @@
+--!strict
+--!native
+local analysis = require '@jess/analysis'
+local test = require '@jess/test'
+local expect = test.expect
+local suite = test.new()
+
+suite.describe('@jess/analysis', function()
+  suite.it('returns one string from source-line helpers', function()
+    local source = analysis.analyze('local value = 1\r\n')
+    expect(analysis.line(source, 1)).toBe 'local value = 1'
+    expect(select('#', analysis.line(source, 1))).toBe(1)
+    expect(select('#', analysis.line(source, 2))).toBe(1)
+  end)
+
+  suite.it('resolves module aliases through locals', function()
+    local source = analysis.analyze [[
+local ui = require 'openmw.ui'
+local create = ui.create
+local function draw(items)
+  for _, item in items do
+    create { name = item }
+  end
+end
+return draw
+]]
+    expect(#source.requires).toBe(1)
+    expect(source.requires[1].module).toBe 'openmw.ui'
+
+    local calls = analysis.callsTo(source, 'openmw.ui.create')
+    expect(#calls).toBe(1)
+    expect(calls[1].module).toBe 'openmw.ui'
+    expect(calls[1].member).toBe 'create'
+    expect(calls[1].functionDepth).toBe(1)
+    expect(calls[1].loopDepth).toBe(1)
+  end)
+
+  suite.it('records protected requires without assigning domain meaning', function()
+    local source = analysis.analyze [[
+local loaded, module = pcall(require, 'some.optional.module')
+print(loaded, module)
+]]
+    expect(#source.requires).toBe(1)
+    expect(source.requires[1].module).toBe 'some.optional.module'
+    expect(source.requires[1].protected).toBe(true)
+    expect(source.requires[1].via).toBe 'pcall'
+  end)
+
+  suite.it('records conditional execution depth as a generic source fact', function()
+    local source = analysis.analyze [[
+local always = require 'always.module'
+if condition then
+  local guarded = require 'guarded.module'
+  guarded.run()
+end
+]]
+    expect(#source.requires).toBe(2)
+    expect(source.requires[1].module).toBe 'always.module'
+    expect(source.requires[1].conditionalDepth).toBe(0)
+    expect(source.requires[2].module).toBe 'guarded.module'
+    expect(source.requires[2].conditionalDepth).toBe(1)
+
+    local calls = analysis.callsTo(source, 'guarded.module.run')
+    expect(#calls).toBe(1)
+    expect(calls[1].conditionalDepth).toBe(1)
+  end)
+
+  suite.it('propagates unconditional local reassignments without trusting guarded ones', function()
+    local source = analysis.analyze [[
+local ui = require 'openmw.ui'
+local create
+create = ui.create
+create({})
+if maybe then
+  create = ui.updateAll
+end
+create({})
+]]
+    local creates = analysis.callsTo(source, 'openmw.ui.create')
+    expect(#creates).toBe(2)
+    expect(#analysis.callsTo(source, 'openmw.ui.updateAll')).toBe(0)
+  end)
+
+  suite.it('tracks later assignments and their control-flow depth', function()
+    local source = analysis.analyze [[
+local Provider = { engineHandlers = {} }
+if isPlayer then
+  Provider.engineHandlers.onFrame = function(dt) print(dt) end
+end
+return Provider
+]]
+    expect(#source.assignments).toBe(1)
+    expect(source.assignments[1].target).toBe 'Provider.engineHandlers.onFrame'
+    expect(source.assignments[1].conditionalDepth).toBe(1)
+    local value = source.assignments[1].value
+    expect(value ~= nil and value.kind == 'ExprFunction').toBe(true)
+  end)
+
+  suite.it('keeps parser diagnostics when malformed input has no AST root', function()
+    local source = analysis.analyze(string.rep('local =\n', 50))
+    expect(#source.errors > 0).toBe(true)
+    expect(#source.root.body).toBe(0)
+  end)
+
+  suite.it('resolves returned tables through local initializers', function()
+    local source = analysis.analyze [[
+local handlers = {
+  onUpdate = function() end,
+}
+return { engineHandlers = handlers }
+]]
+    local returned = source.moduleReturn
+    expect(returned ~= nil).toBe(true)
+    if not returned then return end
+
+    local handlers = analysis.resolvedTableField(source, returned, 'engineHandlers')
+    expect(handlers ~= nil).toBe(true)
+    if not handlers then return end
+
+    local update = analysis.resolvedTableField(source, handlers, 'onUpdate')
+    expect(update ~= nil and update.kind == 'ExprFunction').toBe(true)
+  end)
+end)
+
+return suite

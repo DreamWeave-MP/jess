@@ -1,0 +1,26 @@
+manifest_version = 1
+
+# jess's built-in package: the Luau tools jess itself is checked with, as Luau. It is the one
+# package that may export under @jess/, jess's own namespace.
+
+[package]
+id = "org.dreamweave.jess"
+version = "0.1.0"
+jess_api = "1"
+include = ["src"]
+tests = ["tests/style/run.luau", "tests/data/run.luau", "tests/analysis/run.luau"]
+
+[modules]
+"@jess/style" = "src/style/init.luau"
+"@jess/analysis" = "src/analysis/init.luau"
+"@jess/json" = "src/data/json.luau"
+"@jess/data/toml" = "src/data/toml.luau"
+"@jess/yaml" = "src/data/yaml.luau"
+
+[[layer]]
+id = "jess.style"
+exports = ["@jess/style", "@jess/analysis"]
+
+[[layer]]
+id = "jess.data"
+exports = ["@jess/json", "@jess/data/toml", "@jess/yaml"]

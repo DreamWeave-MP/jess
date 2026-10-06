@@ -1,0 +1,21 @@
+culling
+
+scene
+    writes: scene
+
+present
+    reads:  scene
+    writes: output
+
+culled
+    normals
+    visualizeNormals
+
+resources
+    output       Bgra8UnormSrgb  viewport  imported   present
+    scene        Rgba16Float     viewport  transient  scene .. present
+    normals      Rgba16Float     viewport  transient  culled
+    normalsView  Rgba8Unorm      viewport  transient  culled
+
+aliasing
+    scene

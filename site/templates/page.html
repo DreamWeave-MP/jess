@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="dw-shell jess-prose-page">
+  <header class="jess-page-header">
+    <p class="jess-kicker">jess</p>
+    <h1>{{ page.title }}</h1>
+    {% if page.description %}<p>{{ page.description }}</p>{% endif %}
+  </header>
+  <article class="docs-article">{{ page.content | safe }}</article>
+</section>
+{% endblock content %}

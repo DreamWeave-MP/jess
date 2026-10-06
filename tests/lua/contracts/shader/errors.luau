@@ -1,0 +1,267 @@
+--!strict
+-- @jess/shader fails where the mistake is: a shader mistake at the call that made it, with the
+-- line it was written on; a program mistake when the program is finished, listing every problem
+-- with its line; a mistake in the spec's shape in jess's own words.
+local oracle, env = ...
+local shader = require '@jess/shader'
+
+local function vertex(input: ShaderInput): { [string]: ShaderExpr }
+  return { position = shader.vec4(input.position, 1.0) }
+end
+
+local function white(): ShaderExpr return shader.vec4(1.0) end
+
+local captured: ShaderExpr?
+
+local finished = shader.program {
+  parameters = { tint = shader.vec4 },
+  vertex = vertex,
+  fragment = function(input)
+    captured = input.tint
+    return input.tint
+  end,
+}
+
+assert(captured)
+
+local function build(spec: ShaderProgramSpec): string
+  return oracle.message(function() return shader.program(spec) end)
+end
+
+local function inFragment(body: (ShaderInput) -> ShaderExpr): string
+  return build {
+    parameters = { tint = shader.vec4, light = shader.vec3, pointSampler = shader.sampler },
+    textures = { diffuse = shader.texture2d },
+    vertex = vertex,
+    fragment = body,
+  }
+end
+
+return {
+  finished = tostring(finished),
+  operations = {
+    dot = inFragment(function(input) return shader.vec4(shader.dot(input.light, input.tint)) end),
+    add = inFragment(function(input) return input.tint + input.model end),
+    construct = inFragment(function(input) return shader.vec4(input.tint, 1.0) end),
+    matrix = inFragment(function() return shader.mat4(1.0) end),
+    floatOfVector = inFragment(function(input) return shader.float(input.tint) end),
+    swizzle = inFragment(function(input) return input.light.xyzw end),
+    foreign = inFragment(function(input) return shader.min(input.tint, captured :: ShaderExpr) end),
+    sampler = inFragment(function(input) return shader.sample(input.tint, input.light.xy) end),
+
+    name = build {
+      parameters = { ['light-dir'] = shader.vec3 },
+      vertex = vertex,
+      fragment = white,
+    },
+  },
+
+  program = {
+    fragmentType = inFragment(function(input) return input.light.xyz end),
+
+    position = build {
+      vertex = function(input) return { position = input.position } end,
+      fragment = white,
+    },
+
+    sampleInVertex = build {
+      textures = { diffuse = shader.texture2d },
+      vertex = function(input)
+        return {
+          position = shader.vec4(shader.sample(input.diffuse, input.uv).xyz, 1.0),
+        }
+      end,
+      fragment = white,
+    },
+
+    unsupportedSemantic = inFragment(
+      function(input) return shader.sample(input.sceneColor, input.pointSampler, input.light.xy) end
+    ),
+
+    several = build {
+      textures = { diffuse = shader.texture2d },
+      vertex = function(input)
+        return {
+          position = input.position,
+          shade = shader.sample(input.diffuse, input.uv),
+        }
+      end,
+      fragment = function(input) return input.shade.xyz end,
+    },
+  },
+
+  spec = {
+    notTable = oracle.raises(
+      'argument',
+      'shader.program takes a table, not number',
+      shader.program,
+      42
+    ),
+    noVertex = oracle.raises(
+      'argument',
+      'shader.program needs a vertex function, not nil',
+      shader.program,
+      { fragment = white }
+    ),
+    parametersKind = oracle.raises(
+      'argument',
+      'parameters must be a table of shader types, not number',
+      shader.program,
+      { parameters = 5, vertex = vertex, fragment = white }
+    ),
+    parameterKind = oracle.raises(
+      'argument',
+      'parameters.tint must be a shader type such as shader.vec4, not number',
+      shader.program,
+      { parameters = { tint = 5 }, vertex = vertex, fragment = white }
+    ),
+    parameterName = oracle.raises(
+      'argument',
+      'parameters are named by strings, not number',
+      shader.program,
+      { parameters = { shader.vec4 }, vertex = vertex, fragment = white }
+    ),
+    textureInParameters = oracle.raises(
+      'argument',
+      'parameter "diffuse" is a Texture2D: textures are declared in textures',
+      shader.program,
+      { parameters = { diffuse = shader.texture2d }, vertex = vertex, fragment = white }
+    ),
+    valueInTextures = oracle.raises(
+      'argument',
+      'texture "diffuse" is Vec4f: textures are shader.texture2d; values go in parameters',
+      shader.program,
+      { textures = { diffuse = shader.vec4 }, vertex = vertex, fragment = white }
+    ),
+    semanticName = oracle.raises(
+      'argument',
+      'parameter "model" has the name of a semantic input, which the input would hide',
+      shader.program,
+      { parameters = { model = shader.mat4 }, vertex = vertex, fragment = white }
+    ),
+    attributeName = oracle.raises(
+      'argument',
+      'texture "color" has the name of a vertex attribute, which the input would hide',
+      shader.program,
+      { textures = { color = shader.texture2d }, vertex = vertex, fragment = white }
+    ),
+    varyingName = oracle.raises(
+      'argument',
+      'vertex output "tint" has the name of a parameter, which the input would hide',
+      shader.program,
+      {
+        parameters = { tint = shader.vec4 },
+        vertex = function(input)
+          return { position = shader.vec4(input.position, 1.0), tint = input.color }
+        end,
+        fragment = white,
+      }
+    ),
+    vertexReturn = oracle.raises(
+      'argument',
+      'the vertex function returned number: expected a table with position and the values to pass to the fragment function',
+      shader.program,
+      { vertex = function() return 1 end, fragment = white }
+    ),
+    noPosition = oracle.raises(
+      'argument',
+      'the vertex function\'s table has no position',
+      shader.program,
+      { vertex = function(input) return { uv = input.uv } end, fragment = white }
+    ),
+    vertexOutput = oracle.raises(
+      'argument',
+      'vertex output "uv" is number: expected a shader value',
+      shader.program,
+      {
+        vertex = function(input) return { position = shader.vec4(input.position, 1.0), uv = 3 } end,
+        fragment = white,
+      }
+    ),
+    fragmentReturn = oracle.raises(
+      'argument',
+      'the fragment function returned table: expected a shader value, the Vec4f color',
+      shader.program,
+      { vertex = vertex, fragment = function() return {} end }
+    ),
+  },
+
+  input = {
+    unknown = oracle.raises(
+      'unknownName',
+      'the vertex input has no "foo": it has cameraPosition, color, model, normal, position, previousPass, projection, sceneColor, sceneDepth, time, tint, uv, view, viewportSize',
+      shader.program,
+      {
+        parameters = { tint = shader.vec4 },
+        vertex = function(input) return { position = input.foo } end,
+        fragment = white,
+      }
+    ),
+    attributeInFragment = oracle.raises(
+      'unknownName',
+      'vertex input "normal" is only readable in the vertex function; return it from there to pass it to the fragment function as a varying',
+      shader.program,
+      { vertex = vertex, fragment = function(input) return input.normal end }
+    ),
+    indexKind = oracle.raises(
+      'argument',
+      'the fragment input is indexed by name, not number',
+      shader.program,
+      { vertex = vertex, fragment = function(input) return (input :: any)[1] end }
+    ),
+  },
+
+  values = {
+    field = oracle.raises(
+      'unknownName',
+      'a shader value has no field \'rgb\': its components are read by a swizzle of one to four of x, y, z, and w, such as .xyz',
+      shader.program,
+      {
+        vertex = vertex,
+        fragment = function(input) return input.tint.rgb end,
+        parameters = { tint = shader.vec4 },
+      }
+    ),
+    indexKind = oracle.raises(
+      'argument',
+      'a shader value is indexed by a swizzle such as .xyz, not number',
+      shader.program,
+      {
+        vertex = vertex,
+        fragment = function(input) return (input.tint :: any)[1] end,
+        parameters = { tint = shader.vec4 },
+      }
+    ),
+    operandKind = oracle.raises(
+      'argument',
+      '+: expected a shader value or a number, not string',
+      shader.program,
+      {
+        vertex = vertex,
+        fragment = function(input) return (input.tint :: any) + 'one' end,
+        parameters = { tint = shader.vec4 },
+      }
+    ),
+    finished = oracle.raises(
+      'finished',
+      'this shader program is finished: its values belong to a shader.program call that has returned',
+      function() return (captured :: ShaderExpr) * 2.0 end
+    ),
+    outside = oracle.raises(
+      'argument',
+      'shader.vec4 is only usable inside shader.program\'s vertex or fragment function',
+      shader.vec4,
+      1.0,
+      2.0,
+      3.0,
+      4.0
+    ),
+    outsideDot = oracle.raises(
+      'argument',
+      'shader.dot is only usable inside shader.program\'s vertex or fragment function',
+      shader.dot,
+      1.0,
+      2.0
+    ),
+  },
+}

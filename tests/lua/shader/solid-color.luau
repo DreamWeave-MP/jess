@@ -1,0 +1,19 @@
+--!strict
+-- A vertex position and one flat color from a parameter.
+local shader = require '@jess/shader'
+
+return shader.program {
+  parameters = {
+    tint = shader.vec4,
+  },
+
+  vertex = function(input)
+    local localPosition = shader.vec4(input.position, 1.0)
+
+    return {
+      position = input.projection * input.view * input.model * localPosition,
+    }
+  end,
+
+  fragment = function(input) return input.tint end,
+}

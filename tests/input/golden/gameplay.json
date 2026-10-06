@@ -1,0 +1,152 @@
+{
+  "version": 1,
+  "actions": [
+    {
+      "name": "move",
+      "value_type": "vector2",
+      "origin": null
+    },
+    {
+      "name": "quickSave",
+      "value_type": "digital",
+      "origin": null
+    },
+    {
+      "name": "interact",
+      "value_type": "digital",
+      "origin": null
+    },
+    {
+      "name": "contextMenu",
+      "value_type": "digital",
+      "origin": null
+    },
+    {
+      "name": "sprint",
+      "value_type": "digital",
+      "origin": null
+    }
+  ],
+  "sets": [
+    {
+      "name": "gameplay",
+      "owner": "@jess/acceptance",
+      "bindings": [
+        {
+          "action": "move",
+          "input": {
+            "type": "vector2",
+            "x": {
+              "type": "axisFromButtons",
+              "negative": {
+                "type": "sourceButton",
+                "control": "key:KeyA",
+                "device": null
+              },
+              "positive": {
+                "type": "sourceButton",
+                "control": "key:KeyD",
+                "device": null
+              }
+            },
+            "y": {
+              "type": "axisFromButtons",
+              "negative": {
+                "type": "sourceButton",
+                "control": "key:KeyS",
+                "device": null
+              },
+              "positive": {
+                "type": "sourceButton",
+                "control": "key:KeyW",
+                "device": null
+              }
+            }
+          }
+        },
+        {
+          "action": "quickSave",
+          "input": {
+            "type": "chord",
+            "members": [
+              {
+                "type": "sourceButton",
+                "control": "key:ControlLeft",
+                "device": null
+              },
+              {
+                "type": "sourceButton",
+                "control": "key:KeyS",
+                "device": null
+              }
+            ]
+          }
+        },
+        {
+          "action": "interact",
+          "input": {
+            "type": "tap",
+            "input": {
+              "type": "sourceButton",
+              "control": "gamepadButton:South",
+              "device": null
+            },
+            "within_ms": 200
+          }
+        },
+        {
+          "action": "contextMenu",
+          "input": {
+            "type": "hold",
+            "input": {
+              "type": "sourceButton",
+              "control": "gamepadButton:South",
+              "device": null
+            },
+            "duration_ms": 350
+          }
+        },
+        {
+          "action": "sprint",
+          "input": {
+            "type": "gate",
+            "input": {
+              "type": "sourceButton",
+              "control": "key:ShiftLeft",
+              "device": null
+            },
+            "condition": {
+              "type": "actionActive",
+              "action": "move"
+            }
+          }
+        }
+      ],
+      "origin": {
+        "file": "acceptance.luau",
+        "line": 12,
+        "column": 1
+      }
+    }
+  ],
+  "layers": [
+    {
+      "name": "inventory",
+      "owner": "@jess/acceptance",
+      "bindings": [
+        {
+          "action": "interact",
+          "input": {
+            "type": "sourceButton",
+            "control": "key:KeyE",
+            "device": null
+          }
+        }
+      ],
+      "masks": [
+        "sprint"
+      ],
+      "origin": null
+    }
+  ]
+}

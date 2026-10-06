@@ -1,0 +1,77 @@
+{
+  "errors": [
+    "argument: shader.program takes a table, not number",
+    "argument: shader.program needs a vertex function, not nil",
+    "argument: parameters must be a table of shader types, not number",
+    "argument: parameters.tint must be a shader type such as shader.vec4, not number",
+    "argument: parameters are named by strings, not number",
+    "argument: parameter \"diffuse\" is a Texture2D: textures are declared in textures",
+    "argument: texture \"diffuse\" is Vec4f: textures are shader.texture2d; values go in parameters",
+    "argument: parameter \"model\" has the name of a semantic input, which the input would hide",
+    "argument: texture \"color\" has the name of a vertex attribute, which the input would hide",
+    "argument: vertex output \"tint\" has the name of a parameter, which the input would hide",
+    "argument: the vertex function returned number: expected a table with position and the values to pass to the fragment function",
+    "argument: the vertex function's table has no position",
+    "argument: vertex output \"uv\" is number: expected a shader value",
+    "argument: the fragment function returned table: expected a shader value, the Vec4f color",
+    "unknownName: the vertex input has no \"foo\": it has cameraPosition, color, model, normal, position, previousPass, projection, sceneColor, sceneDepth, time, tint, uv, view, viewportSize",
+    "unknownName: vertex input \"normal\" is only readable in the vertex function; return it from there to pass it to the fragment function as a varying",
+    "argument: the fragment input is indexed by name, not number",
+    "unknownName: a shader value has no field 'rgb': its components are read by a swizzle of one to four of x, y, z, and w, such as .xyz",
+    "argument: a shader value is indexed by a swizzle such as .xyz, not number",
+    "argument: +: expected a shader value or a number, not string",
+    "finished: this shader program is finished: its values belong to a shader.program call that has returned",
+    "argument: shader.vec4 is only usable inside shader.program's vertex or fragment function",
+    "argument: shader.dot is only usable inside shader.program's vertex or fragment function"
+  ],
+  "result": {
+    "finished": "ShaderProgram(1 parameter, 0 textures, 0 varyings)",
+    "input": {
+      "attributeInFragment": "unknownName",
+      "indexKind": "argument",
+      "unknown": "unknownName"
+    },
+    "operations": {
+      "add": "$REPO/tests/lua/contracts/shader/errors.luau:44 ($REPO/tests/lua/contracts/shader/errors.luau): Vec4f + Mat4f is invalid: expected two values of the same numeric type, a float vector and a Float, or two matrices of the same size",
+      "construct": "$REPO/tests/lua/contracts/shader/errors.luau:45 ($REPO/tests/lua/contracts/shader/errors.luau): Vec4f(Vec4f, Float) is invalid: expected floats and float vectors adding up to 4 components, or one Float",
+      "dot": "$REPO/tests/lua/contracts/shader/errors.luau:43 ($REPO/tests/lua/contracts/shader/errors.luau): dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size",
+      "floatOfVector": "$REPO/tests/lua/contracts/shader/errors.luau:47 ($REPO/tests/lua/contracts/shader/errors.luau): Float(Vec4f) is invalid: expected a Vec2f, Vec3f, or Vec4f target",
+      "foreign": "$REPO/tests/lua/contracts/shader/errors.luau:49 ($REPO/tests/lua/contracts/shader/errors.luau): expression 0 belongs to another shader program",
+      "matrix": "$REPO/tests/lua/contracts/shader/errors.luau:46 ($REPO/tests/lua/contracts/shader/errors.luau): Mat4f(Float) is invalid: expected a Vec2f, Vec3f, or Vec4f target",
+      "name": "$REPO/tests/lua/contracts/shader/errors.luau:28 ($REPO/tests/lua/contracts/shader/errors.luau): parameter name \"light-dir\" is invalid: expected ASCII letters, digits, and underscores, not starting with a digit",
+      "sampler": "sample(texture, uv) takes a texture from this program's textures, whose sampler comes with it; anything else needs its sampler: sample(texture, sampler, uv)",
+      "swizzle": "$REPO/tests/lua/contracts/shader/errors.luau:48 ($REPO/tests/lua/contracts/shader/errors.luau): Vec3f.xyzw is invalid: expected components a Vec3f has"
+    },
+    "program": {
+      "fragmentType": "$REPO/tests/lua/contracts/shader/errors.luau: the shader program is invalid\n$REPO/tests/lua/contracts/shader/errors.luau:60 ($REPO/tests/lua/contracts/shader/errors.luau): fragment output 0 is Vec3f: expected Vec4f",
+      "position": "$REPO/tests/lua/contracts/shader/errors.luau: the shader program is invalid\n$REPO/tests/lua/contracts/shader/errors.luau:63 ($REPO/tests/lua/contracts/shader/errors.luau): the vertex position is Vec3f: expected Vec4f",
+      "sampleInVertex": "$REPO/tests/lua/contracts/shader/errors.luau: the shader program is invalid\n$REPO/tests/lua/contracts/shader/errors.luau:71 ($REPO/tests/lua/contracts/shader/errors.luau): sample is used in the vertex stage: textures are sampled in the fragment stage",
+      "several": "$REPO/tests/lua/contracts/shader/errors.luau: the shader program is invalid\n$REPO/tests/lua/contracts/shader/errors.luau:86 ($REPO/tests/lua/contracts/shader/errors.luau): sample is used in the vertex stage: textures are sampled in the fragment stage\n$REPO/tests/lua/contracts/shader/errors.luau:85 ($REPO/tests/lua/contracts/shader/errors.luau): the vertex position is Vec3f: expected Vec4f\n$REPO/tests/lua/contracts/shader/errors.luau:89 ($REPO/tests/lua/contracts/shader/errors.luau): fragment output 0 is Vec3f: expected Vec4f",
+      "unsupportedSemantic": "$REPO/tests/lua/contracts/shader/errors.luau: the shader program is invalid\n$REPO/tests/lua/contracts/shader/errors.luau:78 ($REPO/tests/lua/contracts/shader/errors.luau): semantic sceneColor is not supported by the WGSL lowering yet"
+    },
+    "spec": {
+      "attributeName": "argument",
+      "fragmentReturn": "argument",
+      "noPosition": "argument",
+      "noVertex": "argument",
+      "notTable": "argument",
+      "parameterKind": "argument",
+      "parameterName": "argument",
+      "parametersKind": "argument",
+      "semanticName": "argument",
+      "textureInParameters": "argument",
+      "valueInTextures": "argument",
+      "varyingName": "argument",
+      "vertexOutput": "argument",
+      "vertexReturn": "argument"
+    },
+    "values": {
+      "field": "unknownName",
+      "finished": "finished",
+      "indexKind": "argument",
+      "operandKind": "argument",
+      "outside": "argument",
+      "outsideDot": "argument"
+    }
+  }
+}

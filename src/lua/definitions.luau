@@ -1,0 +1,511 @@
+-- Generic Jess runtime service definitions.
+
+declare extern type JessNull with end
+
+--- A TOML value as `jess.toml.decode` returns it.
+export type TomlValue = boolean | number | string | TomlTable | { TomlValue }
+export type TomlTable = { [string]: TomlValue }
+
+--- What decoding forgets: key order, integer vs float representation, and which strings were
+--- TOML datetimes, keyed by each decoded table or array.
+export type TomlLayout = { [TomlTable | { TomlValue }]: { keys: { string }?, floats: { [string | number]: boolean }, datetimes: { [string | number]: boolean } } }
+
+--- A compiled regular expression, with Rust `regex` syntax. Text is matched as bytes; positions
+--- are 1-based with inclusive ends, like `string.find`'s, and `init` (negative counts from the end)
+--- is where to start looking.
+export type Regex = {
+  pattern: string,
+  isMatch: (self: Regex, text: string) -> boolean,
+  --- The first match's start and end positions and text, or nil.
+  find: (self: Regex, text: string, init: number?) -> (number?, number?, string?),
+  --- The first match's text, or nil.
+  match: (self: Regex, text: string, init: number?) -> string?,
+  --- The first match's groups, or nil: `[0]` is the whole match, `[n]` group n, and named groups
+  --- are under their names. Groups that didn't take part are missing.
+  captures: (self: Regex, text: string, init: number?) -> RegexCaptures?,
+  --- An iterator over every match: `for text, start, finish in regex:matches(s) do`.
+  matches: (self: Regex, text: string) -> () -> (string?, number?, number?),
+  --- The text with the first match replaced, and how many were (0 or 1). A string replacement
+  --- expands `$1`, `${name}`, and `$$`; a function gets the captures and returns the replacement
+  --- (nil or false keeps the match, which isn't counted).
+  replace: (self: Regex, text: string, replacement: string | (RegexCaptures) -> (string | false)?) -> (string, number),
+  --- Like `replace` for every match, or until `limit` are replaced.
+  replaceAll: (self: Regex, text: string, replacement: string | (RegexCaptures) -> (string | false)?, limit: number?) -> (string, number),
+  --- The text split around matches, into at most `limit` parts when given.
+  split: (self: Regex, text: string, limit: number?) -> { string },
+}
+
+export type RegexCaptures = { [number | string]: string }
+
+export type RegexOptions = { caseInsensitive: boolean?, multiLine: boolean?, dotAll: boolean? }
+
+--- The handlers `jess.context.bind` takes, by phase name. Each gets the phase's payload: seconds
+--- for `update`, `fixedUpdate`, and `lateUpdate`, the event for `event`, nothing for `startup` and
+--- `shutdown`.
+export type ContextHandlers = { [string]: (payload: any) -> () }
+
+--- What `jess.worker.spawn` takes: the worker module's source (a chunk returning the message
+--- handler), a name for diagnostics, and the capabilities the worker holds, a subset of the
+--- spawner's.
+export type WorkerOptions = { source: string, name: string?, capabilities: { string }?, shareServices: boolean? }
+
+--- A worker the domain spawned: `send` queues a message for its handler, `receive` reads its next
+--- reply (waiting up to the seconds given), `close` stops it after the queued messages, `join`
+--- waits for it to end.
+export type Worker = jess_runtime_Worker
+
+--- The variables a message takes, by the names its pattern uses: strings for text and `select`
+--- keys, numbers for `plural` and `number`, booleans for either.
+export type L10nVariables = { [string]: string | number | boolean }
+
+--- A bundle of localized messages (`jess.l10n.bundle`). Call it with a message id and its
+--- variables: `common("file_count", { count = 3 })`. The text comes from the first preferred
+--- locale that defines the message, then its parents, then the bundle's fallback locale; an id
+--- no locale defines, a missing variable, or one of the wrong type is an error naming the bundle,
+--- the message, and the locale.
+declare extern type L10nBundle with
+  --- The bundle's name.
+  name: string
+  --- The same as calling the bundle.
+  format: (self: L10nBundle, id: string, variables: L10nVariables?) -> string
+  --- Whether some locale in the chain defines the message.
+  has: (self: L10nBundle, id: string) -> boolean
+  __call: (self: L10nBundle, id: string, variables: L10nVariables?) -> string
+end
+
+--- What a reload found wrong: where (`provider`, `path`, `line`, `column`), what (`bundle`,
+--- `locale`, `message`), and why (`detail`). `kind` is a code like `pattern-parse-failure`.
+export type L10nDiagnostic = {
+  severity: "info" | "warning" | "error",
+  kind: string,
+  detail: string,
+  generation: number,
+  provider: string?,
+  path: string?,
+  line: number?,
+  column: number?,
+  bundle: string?,
+  locale: string?,
+  message: string?,
+}
+
+--- One node of a binding, as `jess.input`'s authoring functions return it: a table tagged by
+--- `type` (`sourceButton`, `chord`, `tap`, ...), with its inputs nested. Durations inside are
+--- milliseconds (`withinMs`, `durationMs`); the functions take seconds.
+export type InputNode = { type: string, [string]: any }
+
+--- What an action's value is shaped like: `digital` (boolean), `scalar` (number), or `vector2`
+--- (a `vector` with `z` 0).
+export type InputValueType = 'digital' | 'scalar' | 'vector2'
+
+--- An action's declaration.
+export type InputAction = { name: string, valueType: InputValueType, origin: InputOrigin? }
+
+--- Where something was declared, for diagnostics.
+export type InputOrigin = { file: string, line: number, column: number }
+
+--- One binding: the action, by name, and the node tree that produces its value.
+export type InputBinding = { action: string, input: InputNode }
+
+--- An action set: the bindings of one mode. Any number of sets can be active at once.
+export type InputSet = { name: string, owner: string, bindings: { InputBinding }, origin: InputOrigin? }
+
+--- An action layer over the active sets: its bindings replace lower ones for the actions it
+--- names, and `masks` silences actions. The layer pushed last decides first.
+export type InputLayer = { name: string, owner: string, bindings: { InputBinding }, masks: { string }?, origin: InputOrigin? }
+
+--- A binding document. `version` is filled in when left out.
+export type InputDocument = { version: number?, actions: { InputAction }, sets: { InputSet }?, layers: { InputLayer }? }
+
+--- Where a binding is in a document: its set or layer, and its 0-based position there.
+export type InputBindingLocation = { set: string?, layer: string?, index: number }
+
+--- A binding's shape, for a GUI to draw: `control` (with `control`, `family`, `label`), `chord`
+--- and `anyOf` (with `parts`), `tap` and `hold` (with `input` and a threshold in seconds),
+--- `axis` (with `negative` and `positive`), `vector2` (with `x` and `y`), `while` (with `input`
+--- and `condition`), `action` (with `action`), or `constant`.
+export type InputPresentation = { kind: string, [string]: any }
+
+--- A glyph family for labels: `keyboardMouse`, `xbox`, `playstation`, `nintendo`,
+--- `genericGamepad`, or `touch`.
+export type InputFamily = 'keyboardMouse' | 'xbox' | 'playstation' | 'nintendo' | 'genericGamepad' | 'touch'
+
+--- One binding of an action as presentation data.
+export type InputBindingPresentation = {
+  action: string,
+  location: InputBindingLocation,
+  family: InputFamily,
+  shape: InputPresentation,
+}
+
+--- Two bindings in one set or layer that fire different actions from the same input.
+export type InputConflict = {
+  owner: { set: string?, layer: string? },
+  kind: 'press' | 'tap' | 'hold' | 'axis',
+  controls: { string },
+  actions: { string },
+  bindings: { InputBindingLocation },
+}
+
+--- An action's value: a boolean for digital, a number for scalar, a `vector` (z 0) for vector2.
+export type InputValue = boolean | number | vector
+
+--- An action's state after a tick. `pressed` and `released` are this tick's edges; `since` is when
+--- it last became active or inactive, in seconds; `device` is the device behind the value.
+export type InputActionState = {
+  value: InputValue,
+  active: boolean,
+  pressed: boolean,
+  released: boolean,
+  changed: boolean,
+  since: number,
+  device: number?,
+}
+
+--- One action edge from a tick.
+export type InputActionEvent = {
+  action: string,
+  kind: 'pressed' | 'released' | 'changed',
+  value: InputValue,
+  time: number,
+  device: number?,
+}
+
+--- An intent a routed action edge dispatched.
+export type InputIntent = {
+  intent: string,
+  action: string,
+  kind: 'pressed' | 'released' | 'changed',
+  value: InputValue,
+  time: number,
+  device: number?,
+}
+
+--- A device the runtime connected.
+export type InputDevice = { id: number, kind: 'keyboard' | 'pointer' | 'gamepad' | 'touch' | 'unknown', name: string, family: InputFamily, connected: boolean }
+
+--- What the last tick did.
+export type InputStats = {
+  deviceEvents: number,
+  ticks: number,
+  nodesEvaluated: number,
+  bindingsEvaluated: number,
+  actionsChanged: number,
+  actionEvents: number,
+  activeSets: number,
+  activeLayers: number,
+}
+
+--- A compiled, validated action graph.
+export type InputGraph = {
+  --- The document as JSON, the same text for the same document.
+  toJson: (self: InputGraph) -> string,
+  --- The document as a table, which `jess.input.graph` accepts back.
+  spec: (self: InputGraph) -> InputDocument,
+  --- The actions, in declaration order.
+  actions: (self: InputGraph) -> { { name: string, valueType: InputValueType } },
+  --- Where an action's bindings are, sets first.
+  bindings: (self: InputGraph, action: string) -> { InputBindingLocation },
+  --- An action's bindings a person using `family` can press, as presentation data.
+  presentations: (self: InputGraph, action: string, family: InputFamily) -> { InputBindingPresentation },
+  --- The plain conflicts: two bindings in one set or layer firing different actions from one input.
+  conflicts: (self: InputGraph) -> { InputConflict },
+}
+
+--- An input runtime. Under a host it is the application's live input: the host ticks it in the
+--- input phase, and `tick` and `advance` are refused. Anywhere else it is headless: a graph,
+--- synthetic devices, and a clock that moves when told to. Reading state needs `input.actions`,
+--- `devices` needs `input.observe`, and everything that changes it needs `input.configure`.
+export type InputRuntime = {
+  --- Installs a graph (or a document table), replacing the last one. Returns the new generation.
+  install: (self: InputRuntime, graph: InputGraph | InputDocument) -> number,
+  uninstall: (self: InputRuntime) -> (),
+  --- Puts the installed package's bindings back, dropping remaps.
+  restoreDefaults: (self: InputRuntime) -> (),
+  --- Activates (the default) or deactivates a set, from the next tick.
+  setActive: (self: InputRuntime, set: string, active: boolean?) -> (),
+  pushLayer: (self: InputRuntime, layer: string) -> (),
+  --- Removes a layer; whether it was pushed.
+  popLayer: (self: InputRuntime, layer: string) -> boolean,
+  --- Connects a synthetic device and returns its id.
+  connect: (self: InputRuntime, kind: 'keyboard' | 'pointer' | 'gamepad' | 'touch') -> number,
+  disconnect: (self: InputRuntime, device: number) -> (),
+  --- Presses a button, named `class:Name` (`key:KeyA`, `gamepadButton:South`).
+  press: (self: InputRuntime, device: number, control: string) -> (),
+  release: (self: InputRuntime, device: number, control: string) -> (),
+  --- Moves an axis (`gamepadAxis:LeftStickX`) to `value`, or a relative one by it.
+  axis: (self: InputRuntime, device: number, control: string, value: number) -> (),
+  focus: (self: InputRuntime, focused: boolean) -> (),
+  --- Moves the clock forward by `seconds`.
+  advance: (self: InputRuntime, seconds: number) -> (),
+  now: (self: InputRuntime) -> number,
+  --- Applies every event so far, evaluates the graph once, and returns the action edges.
+  tick: (self: InputRuntime) -> { InputActionEvent },
+  --- An action's state after the last tick, or nil for a name the graph doesn't declare.
+  action: (self: InputRuntime, name: string) -> InputActionState?,
+  --- Dispatches `intent` on `kind` edges of `action`, from the next tick.
+  route: (self: InputRuntime, action: string, kind: 'pressed' | 'released' | 'changed', intent: string) -> (),
+  --- The last tick's intents, in order.
+  intents: (self: InputRuntime) -> { InputIntent },
+  devices: (self: InputRuntime) -> { InputDevice },
+  stats: (self: InputRuntime) -> InputStats,
+}
+
+--- A shader type, from `jess.shader` (`float`, `vec2`, `vec3`, `vec4`, `mat3`, `mat4`,
+--- `texture2d`, `sampler`): what a program's `parameters` and `textures` declare
+--- (`tint = shader.vec4`). Called, the vector types build a vector from values and numbers whose
+--- sizes add up to theirs, or from one number repeated (`shader.vec4(position, 1)`), and
+--- `shader.float(0.5)` is a `Float` constant; the other types can't be constructed. `tostring`
+--- gives the type's name (`Vec4f`).
+declare extern type ShaderType with
+  __call: (self: ShaderType, ...ShaderExpr | number) -> ShaderExpr
+  __tostring: (self: ShaderType) -> string
+end
+
+--- A symbolic, typed value in the shader program under construction: not a number, and not a GPU
+--- value. Operators append expressions to the program and return new values; a bare number
+--- beside one is a `Float`. `.x`, `.xyz`, `.zyx`: a swizzle of one to four of `x`, `y`, `z`, and
+--- `w`, the only names a value has. A mistake fails at the line that made it, with the types
+--- involved. `tostring` gives `ShaderExpr(Vec4f)`, and `==` whether two handles name one
+--- expression. A value is only usable while its `shader.program` call runs.
+declare extern type ShaderExpr with
+  [string]: ShaderExpr
+  __add: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr
+  __sub: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr
+  __mul: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr
+  __div: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr
+  __eq: (self: ShaderExpr, other: ShaderExpr) -> boolean
+  __tostring: (self: ShaderExpr) -> string
+end
+
+--- A stage function's input. Every name is a declared parameter or texture, a semantic input
+--- (`model`, `view`, `projection`: `Mat4f`; `cameraPosition`: `Vec3f`; `viewportSize`: `Vec2f`;
+--- `time`: `Float`), or, in the vertex function, a vertex attribute (`position` and `normal`:
+--- `Vec3f`; `uv`: `Vec2f`; `color`: `Vec4f`) and, in the fragment function, a value the vertex
+--- function returned. A name it doesn't have is an error listing the ones it does.
+declare extern type ShaderInput with
+  [string]: ShaderExpr
+  __tostring: (self: ShaderInput) -> string
+end
+
+--- A finished, validated shader program: what a shader module returns, for jess to lower to the
+--- backend. `tostring` gives `ShaderProgram(2 parameters, 1 texture, 2 varyings)`.
+declare extern type ShaderProgram with
+  --- The value parameters (not the textures and samplers), sorted by name, each with its type's
+  --- name (`Vec4f`).
+  parameters: { { name: string, type: string } }
+  --- The texture names, each declared with a sampler of the same name.
+  textures: { string }
+  --- What the vertex function returned besides `position`, sorted by name, as the fragment
+  --- function reads it.
+  varyings: { { name: string, type: string } }
+  __tostring: (self: ShaderProgram) -> string
+end
+
+--- What `shader.program` takes. `parameters` are values (`float`, the vectors, the matrices, and
+--- `sampler`), `textures` are `texture2d`, each declared with a sampler of the same name; both
+--- are declared sorted by name. Neither may be named like a semantic input or a vertex attribute.
+--- `vertex` returns `position` (a `Vec4f`) and the values to pass to the fragment stage, each
+--- named; `fragment` returns the `Vec4f` color. Both run once, while `shader.program` runs.
+export type ShaderProgramSpec = {
+  parameters: { [string]: ShaderType }?,
+  textures: { [string]: ShaderType }?,
+  vertex: (input: ShaderInput) -> { [string]: ShaderExpr },
+  fragment: (input: ShaderInput) -> ShaderExpr,
+}
+
+--- The arguments after the script's name, as strings, for a script `jess run` runs from a file;
+--- `arg[0]` is the script's path. They're the script's `...` too.
+declare arg: { [number]: string }
+
+--- `jess.shader`, and what `require("@jess/shader")` returns. A shader module runs once and
+--- returns `shader.program { ... }`. Every function takes shader values or numbers (a number is
+--- a `Float`) and fails at its line, in shader terms, when the types don't fit:
+--- `dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size`.
+export type ShaderModule = {
+  float: ShaderType,
+  vec2: ShaderType,
+  vec3: ShaderType,
+  vec4: ShaderType,
+  mat3: ShaderType,
+  mat4: ShaderType,
+  texture2d: ShaderType,
+  sampler: ShaderType,
+  --- Builds a program: declares the parameters and textures, runs `vertex` and passes what it
+  --- returned to the fragment stage, runs `fragment`, then validates the whole program, listing
+  --- every problem with its line.
+  program: (spec: ShaderProgramSpec) -> ShaderProgram,
+  --- The smaller and larger of two values, per component.
+  min: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr,
+  max: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr,
+  --- `value` clamped to `low..high`, per component.
+  clamp: (value: ShaderExpr | number, low: ShaderExpr | number, high: ShaderExpr | number) -> ShaderExpr,
+  --- The dot product of two vectors of one size, and the cross product of two `Vec3f`.
+  dot: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr,
+  cross: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr,
+  --- A vector scaled to length 1, and a vector's length (a `Float`'s absolute value).
+  normalize: (value: ShaderExpr | number) -> ShaderExpr,
+  length: (value: ShaderExpr | number) -> ShaderExpr,
+  --- The greatest integer no larger than a float or each component of a float vector.
+  floor: (value: ShaderExpr | number) -> ShaderExpr,
+  --- `start + (finish - start) * amount`, per component.
+  mix: (start: ShaderExpr | number, finish: ShaderExpr | number, amount: ShaderExpr | number) -> ShaderExpr,
+  --- A texture read, a `Vec4f`: a texture from `textures` with the sampler declared with it and
+  --- `Vec2f` coordinates, or any texture, a sampler, and coordinates. Fragment stage only.
+  sample: ((texture: ShaderExpr, coordinates: ShaderExpr) -> ShaderExpr) & ((texture: ShaderExpr, sampler: ShaderExpr, coordinates: ShaderExpr) -> ShaderExpr),
+}
+
+declare jess: {
+  version: string,
+  --- A missing value inside an array (such as an empty link in a node's children), where `nil`
+  --- would shift everything after it.
+  null: JessNull,
+  --- Plain file access. Paths are host paths.
+  fs: {
+    --- The file's contents, or nil when it doesn't exist.
+    read: (path: string) -> string?,
+    --- The file's contents as a buffer, or nil when it doesn't exist: for binary files, which need
+    --- no string.
+    readBuffer: (path: string) -> buffer?,
+    --- Writes the file, creating the folders it goes in. With `backup = true`, a file already
+    --- there is copied to a `.bak` (`.bak1`, ...) first, as jess's commands do.
+    write: (path: string, data: string | buffer, options: { backup: boolean? }?) -> { path: string, backup: string? },
+    --- Writes the file through a temporary file beside it and a rename, so it holds either the
+    --- old contents or the new, never part of each; the old file's permission bits are kept. The
+    --- folder must exist.
+    replace: (path: string, data: string | buffer) -> (),
+    copy: (from: string, to: string) -> (),
+    --- Whether there was a file to remove.
+    remove: (path: string) -> boolean,
+    --- Creates the folder and any missing parents.
+    createDir: (path: string) -> (),
+    exists: (path: string) -> boolean,
+    isDir: (path: string) -> boolean,
+    isFile: (path: string) -> boolean,
+    --- The file's size in bytes, or nil when it doesn't exist.
+    size: (path: string) -> number?,
+    --- One normal filename component under the host OS's path rules.
+    isFileName: (path: string) -> boolean,
+    --- One metadata lookup. Nil on lookup failure; exact timestamp components are absent before 1970.
+    stat: (path: string) -> {
+      size: number,
+      isFile: boolean,
+      isDir: boolean,
+      modified: number?,
+      modifiedSeconds: number?,
+      modifiedNanoseconds: number?,
+    }?,
+    --- When the file was last modified, in seconds since 1970, or nil when it doesn't exist.
+    modified: (path: string) -> number?,
+    --- A folder's entry names, in the order the filesystem lists them.
+    list: (path: string) -> { string },
+    cwd: () -> string,
+    join: (...string) -> string,
+    fileName: (path: string) -> string?,
+    parent: (path: string) -> string?,
+  },
+
+  toml: {
+    --- A TOML document as tables, and its layout.
+    decode: (text: string) -> (TomlTable, TomlLayout),
+  },
+
+  --- Rust regular expressions (Luau patterns aren't regexes).
+  regex: {
+    --- Compiles a pattern; `multiLine` makes `^`/`$` match at lines, `dotAll` lets `.` match `\n`.
+    new: (pattern: string, options: RegexOptions?) -> Regex,
+    --- `text` with every regex metacharacter escaped, to match it literally.
+    escape: (text: string) -> string,
+  },
+
+  --- Typed shader construction; `require("@jess/shader")` is the same table.
+  shader: ShaderModule,
+
+  --- Script contexts (`@jess/context`): binds handlers to the phases the host scheduled for a
+  --- context it declared. Only a runtime a ScriptDomain owns has contexts; elsewhere `bind` errors.
+  context: {
+    --- Binds one handler per phase name (`startup`, `update`, `fixedUpdate`, `event`,
+    --- `shutdown`, ...) to the context `name`; a phase the context doesn't schedule is an error.
+    bind: (name: string, handlers: ContextHandlers) -> (),
+  },
+
+  --- Workers (`@jess/worker`): isolated Luau states beside the domain, talking in messages.
+  worker: {
+    --- Spawns a worker from its module source, a chunk returning the message handler; needs the
+    --- `worker.spawn` capability, and the worker holds `capabilities` (the spawner's, by default).
+    --- With `shareServices`, it sees the domain's services too (its live input, its localization).
+    spawn: (options: WorkerOptions) -> Worker,
+    --- From inside a worker: sends a message to the domain, besides what the handler returns.
+    send: (message: unknown) -> (),
+  },
+
+  --- Localization: bundles of ICU MessageFormat messages in `<bundle>/<locale>.toml` files,
+  --- resolved through the preferred locales and their parents, then the bundle's fallback.
+  --- Also `require("@jess/l10n")`. Under a host every call reaches the application's registry;
+  --- anywhere else the runtime has one of its own. Reading needs `l10n.read`; `setLocales`,
+  --- `addDirectory`, and `reload` need `l10n.configure`.
+  l10n: {
+    --- The bundle named `name`, with `fallbackLocale` (default `en`) as the locale tried after
+    --- every preferred one. Ask once, call many times.
+    bundle: (name: string, fallbackLocale: string?) -> L10nBundle,
+    --- Every bundle the providers offered at the last reload or a script asked for.
+    bundles: () -> { string },
+    --- The preferred locales, as set.
+    locales: () -> { string },
+    --- Sets the preferred locales, most wanted first, and returns the new generation. Every
+    --- bundle resolves again; nothing recompiles.
+    setLocales: (locales: string | { string }) -> number,
+    --- Adds a folder of `<bundle>/<locale>.toml` files as a provider; later providers override
+    --- earlier ones message by message. Takes effect at the next `reload`.
+    addDirectory: (path: string, name: string?) -> (),
+    --- Reads every provider again and returns what was wrong. A bundle with an error keeps its
+    --- last good text.
+    reload: () -> { L10nDiagnostic },
+    --- The generation: it rises whenever a reload or a locale change may have changed some text.
+    generation: () -> number,
+  },
+
+  --- Action graphs and a headless input runtime. Authoring functions return node tables; `graph`
+  --- compiles a document of them and validates it. See `jess::input`.
+  input: {
+    --- A key by its W3C position name (`KeyA`, `ControlLeft`, `Numpad7`).
+    key: (name: string) -> InputNode,
+    pointerButton: (name: string) -> InputNode,
+    --- A gamepad button by position (`South`, `LeftBumper`, `DPadUp`).
+    gamepadButton: (name: string) -> InputNode,
+    --- Any button, as `class:Name`.
+    button: (control: string) -> InputNode,
+    --- Any axis, as `class:Name` (`gamepadAxis:LeftStickX`, `pointerAxis:DeltaY`).
+    axis: (control: string) -> InputNode,
+    gamepadAxis: (name: string) -> InputNode,
+    pointerAxis: (name: string) -> InputNode,
+    constant: (value: number) -> InputNode,
+    invert: (input: InputNode) -> InputNode,
+    scale: (input: InputNode, factor: number) -> InputNode,
+    --- Zero at or below `inner`, one at or above `outer`, rescaled between; radial on a vector.
+    deadzone: (input: InputNode, inner: number, outer: number) -> InputNode,
+    --- A scalar as a button, on at or above `level`.
+    threshold: (input: InputNode, level: number) -> InputNode,
+    --- Every member held; on when the last lands, off when any lifts.
+    chord: (members: { InputNode }) -> InputNode,
+    any: (members: { InputNode }) -> InputNode,
+    --- `input` while `condition` is on, the type's zero otherwise.
+    gate: (input: InputNode, condition: InputNode) -> InputNode,
+    --- On for one tick when `input` is released within `within` seconds of its press.
+    tap: (input: InputNode, within: number) -> InputNode,
+    --- On once `input` has been held for `duration` seconds, until it is released.
+    hold: (input: InputNode, duration: number) -> InputNode,
+    --- `-1`, `0`, or `1` from two buttons.
+    axisFromButtons: (negative: InputNode, positive: InputNode) -> InputNode,
+    vector2: (x: InputNode, y: InputNode) -> InputNode,
+    --- Whether another action is active this tick.
+    actionActive: (action: string) -> InputNode,
+    --- Another action's value this tick.
+    actionValue: (action: string) -> InputNode,
+    --- Compiles and validates a document; every problem is reported at once, by place.
+    graph: (document: InputDocument) -> InputGraph,
+    fromJson: (text: string) -> InputGraph,
+    --- The domain's live input runtime under a host; a headless one of the script's own otherwise.
+    runtime: () -> InputRuntime,
+  },
+}

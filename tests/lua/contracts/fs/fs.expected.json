@@ -1,0 +1,67 @@
+{
+  "errors": [
+    "missing: failed to copy",
+    "missing: failed to list",
+    "argument: failed to read",
+    "missing: failed to write",
+    "argument: expected a buffer or string, not table"
+  ],
+  "result": {
+    "backedUp": {
+      "backup": "$TEMP/a/b/Notes.TXT.bak",
+      "path": "$TEMP/a/b/Notes.TXT"
+    },
+    "binary": {
+      "path": "$TEMP/a/b/Notes.TXT"
+    },
+    "contents": {
+      "backup": "bytes\u0000!",
+      "copy": "replaced",
+      "file": "again"
+    },
+    "cwd": "string",
+    "deeper": {
+      "path": "$TEMP/new/folder/made.txt"
+    },
+    "errors": {
+      "copyMissing": "missing",
+      "listMissing": "missing",
+      "readFolder": "argument",
+      "replaceMissingFolder": "missing",
+      "writeType": "argument"
+    },
+    "first": {
+      "path": "$TEMP/a/b/Notes.TXT"
+    },
+    "kinds": {
+      "dirIsDir": true,
+      "dirIsFile": false,
+      "fileExists": true,
+      "fileIsFile": true
+    },
+    "list": [
+      "Notes.TXT",
+      "Notes.TXT.bak",
+      "copy.txt"
+    ],
+    "missing": {
+      "exists": false,
+      "removed": false
+    },
+    "modified": "number",
+    "paths": {
+      "fileName": "Notes.TXT",
+      "join": "a/b/c.txt",
+      "parent": "$TEMP/a/b"
+    },
+    "removed": [
+      true,
+      false
+    ],
+    "replaced": {
+      "contents": "replaced",
+      "entries": 3
+    },
+    "size": 5
+  }
+}

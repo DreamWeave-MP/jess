@@ -1,0 +1,140 @@
+--!strict
+--!native
+--[[
+@jess/style: jess's Luau style checker, over Luau's own parser (@dream/luau).
+
+  check(source, options?)       every finding in a source, sorted by position
+  checkFile(path, options?)     the same for a file; `.md` files are checked block by block
+  files(paths)                  the .luau and .lua files under each path, sorted; folders named
+                                target and dot-folders are skipped
+  markdownBlocks(text)          a Markdown page's ```luau blocks, with the line each starts on
+  format(finding, path?)        one finding as `path:line:column: severity[rule]: message`
+  run(paths, options?)          checks every file under paths, prints each finding, and returns
+                                the number of errors and of warnings
+  rules                         every rule by id: { severity, summary }
+
+Options are { profile, directives, noAny, declarations, only, fragment }; see rules.luau.
+]]
+local check = require '@self/check'
+local rules = require '@self/rules'
+local analysis = require '@jess/analysis'
+
+export type Finding = rules.Finding
+export type Options = rules.Options
+export type Block = { line: number, source: string }
+
+local function markdownBlocks(text: string): { Block }
+  local blocks: { Block } = {}
+  local current: { string }? = nil
+  local start, number = 0, 0
+
+  for line in string.gmatch(text, '([^\n]*)\n?') do
+    number += 1
+    local trimmed = string.match(line, '^%s*(.-)%s*$') or ''
+
+    if not current then
+      if trimmed == '```luau' then
+        current, start = {}, number
+      end
+
+      continue
+    end
+
+    if trimmed == '```' then
+      table.insert(blocks, { line = start, source = table.concat(current, '\n') .. '\n' })
+      current = nil
+      continue
+    end
+
+    table.insert(current, line)
+  end
+
+  return blocks
+end
+
+local function checkFile(path: string, options: Options?): { Finding }
+  local text = jess.fs.read(path)
+  if not text then error(`{path}: no such file`) end
+
+  if string.sub(path, -3) ~= '.md' then return check(text, options) end
+
+  local findings: { Finding } = {}
+  local excerpt: Options = if options then table.clone(options) else {}
+  excerpt.fragment = true
+
+  for _, block in markdownBlocks(text) do
+    for _, finding in check(block.source, excerpt) do
+      finding.line += block.line
+      finding.endLine += block.line
+      table.insert(findings, finding)
+    end
+  end
+
+  return findings
+end
+
+local function files(paths: { string }): { string }
+  local found: { string } = {}
+
+  local function visit(path: string)
+    if not jess.fs.isDir(path) then
+      table.insert(found, path)
+      return
+    end
+
+    for _, name in jess.fs.list(path) do
+      local child = `{path}/{name}`
+
+      if jess.fs.isDir(child) then
+        if name ~= 'target' and string.sub(name, 1, 1) ~= '.' then visit(child) end
+      elseif string.find(name, '%.luau?$') then
+        table.insert(found, child)
+      end
+    end
+  end
+
+  for _, path in paths do
+    visit((string.gsub(path, '/+$', '')))
+  end
+
+  table.sort(found)
+  return found
+end
+
+local function format(finding: Finding, path: string?): string
+  local where = `{finding.line}:{finding.column}`
+  local prefix = if path then `{path}:{where}` else where
+
+  return `{prefix}: {finding.severity}[{finding.rule}]: {finding.message}`
+end
+
+local function run(paths: { string }, options: Options?): (number, number)
+  local errors, warnings = 0, 0
+
+  for _, path in files(paths) do
+    for _, finding in checkFile(path, options) do
+      print(format(finding, path))
+
+      if finding.severity == 'error' then
+        errors += 1
+      else
+        warnings += 1
+      end
+    end
+  end
+
+  return errors, warnings
+end
+
+return table.freeze {
+  analysis = analysis,
+  analyze = analysis.analyze,
+  workspace = analysis.workspace,
+  check = check,
+  checkFile = checkFile,
+  files = files,
+  format = format,
+  markdownBlocks = markdownBlocks,
+  rules = rules.Rules,
+  run = run,
+}

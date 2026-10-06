@@ -1,0 +1,209 @@
+--!strict
+--[[
+The contract fixtures' helpers, run in the same Luau state as the fixture. The harness loads this
+chunk first and calls each fixture with `(oracle, env)`; whatever the fixture returns goes through
+`oracle.finish`, which writes it as canonical JSON: keys sorted, numbers spelled exactly, buffers
+as hex or a hash, and the error contracts the fixture asserted.
+
+Only standard Luau and `jess.null` are used here, so any runtime that hosts jess runs it the same.
+]]
+
+local oracle = {}
+
+-- The error contracts a fixture asserted, in order: `category: needle`.
+local asserted: { string } = {}
+
+local function describe(value: unknown): string
+  if type(value) == 'string' then return string.format('%q', value) end
+  return tostring(value)
+end
+
+--- Calls `call(...)`, which must fail with a message containing `needle` (plain text). Returns
+--- `category`, the kind of failure the contract promises, for the fixture's result; the needle
+--- is recorded with it as an error contract.
+function oracle.raises(category: string, needle: string, call: (...any) -> ...any, ...: any): string
+  -- The call is meant to throw: the error is the contract being checked.
+  local ok, problem = pcall(call, ...)
+  if ok then
+    error(`expected a {category} error containing {describe(needle)}, but the call succeeded`, 2)
+  end
+  local message = tostring(problem)
+  if not string.find(message, needle, 1, true) then
+    error(`expected a {category} error containing {describe(needle)}, got {describe(message)}`, 2)
+  end
+  table.insert(asserted, `{category}: {needle}`)
+  return category
+end
+
+--- The whole message `call(...)` fails with, for errors whose exact text is the contract.
+function oracle.message(call: (...any) -> ...any, ...: any): string
+  -- The call is meant to throw, with this exact message.
+  local ok, problem = pcall(call, ...)
+  if ok then error('expected the call to fail', 2) end
+  return tostring(problem)
+end
+
+--- FNV-1a (32 bits) of a string or buffer's bytes, as 8 hex digits.
+function oracle.fnv(data: string | buffer): string
+  local bytes = if type(data) == 'string' then buffer.fromstring(data) else data
+  local hash = 2166136261
+  for index = 0, buffer.len(bytes) - 1 do
+    hash = bit32.bxor(hash, buffer.readu8(bytes, index))
+    -- hash * 16777619, kept exact: 16777619 is 2^24 + 403.
+    hash = (bit32.lshift(hash, 24) + hash * 403) % 4294967296
+  end
+  return string.format('%08x', hash)
+end
+
+--- A file's length and hash, or nil when it doesn't exist.
+function oracle.file(path: string): { length: number, fnv: string }?
+  local contents = jess.fs.read(path)
+  if contents == nil then return nil end
+  return { length = #contents, fnv = oracle.fnv(contents) }
+end
+
+--- A table's keys, sorted as strings.
+function oracle.keys(value: { [any]: any }): { string }
+  local keys = {}
+  for key in value do
+    table.insert(keys, tostring(key))
+  end
+  table.sort(keys)
+  return keys
+end
+
+--- A copy of a list of strings, sorted.
+function oracle.sorted(list: { string }): { string }
+  local copy = table.clone(list)
+  table.sort(copy)
+  return copy
+end
+
+--- The values an iterator gives, collected (the first value of each step).
+function oracle.collect(iterator: () -> any): { any }
+  local values = {}
+  for value in iterator do
+    table.insert(values, value)
+  end
+  return values
+end
+
+local function number(value: number): string
+  if value ~= value then return '"NaN"' end
+  if value == math.huge then return '"Infinity"' end
+  if value == -math.huge then return '"-Infinity"' end
+  if value == 0 and 1 / value < 0 then return '"-0"' end
+
+  if value == math.floor(value) and math.abs(value) < 2 ^ 63 then
+    return string.format('%d', value)
+  end
+  return string.format('%.17g', value)
+end
+
+local function text(value: string): string
+  local valid = utf8.len(value) ~= nil
+  local escaped = string.gsub(value, '[%c"\\\128-\255]', function(character: string): string
+    local byte = string.byte(character)
+    if character == '"' then return '\\"' end
+    if character == '\\' then return '\\\\' end
+    if character == '\n' then return '\\n' end
+    if character == '\t' then return '\\t' end
+    if byte >= 128 and valid then return character end
+    return string.format('\\u%04x', byte)
+  end)
+  return `"{escaped}"`
+end
+
+local function hex(bytes: buffer): string
+  local digits = table.create(buffer.len(bytes))
+  for index = 0, buffer.len(bytes) - 1 do
+    digits[index + 1] = string.format('%02x', buffer.readu8(bytes, index))
+  end
+  return table.concat(digits)
+end
+
+local encode: (value: unknown, path: string, depth: number, seen: { [any]: boolean }) -> string
+
+local function key(value: unknown, path: string): string
+  if type(value) == 'string' then return value end
+  if type(value) == 'number' or type(value) == 'boolean' then return `[{number(value :: any)}]` end
+  error(`{path}: a {type(value)} key can't be written; convert it in the fixture`)
+end
+
+local function encodeTable(
+  value: { [any]: any },
+  path: string,
+  depth: number,
+  seen: { [any]: boolean }
+): string
+  if seen[value] then error(`{path}: the table contains itself`) end
+  seen[value] = true
+
+  local indent, closing = string.rep('  ', depth + 1), string.rep('  ', depth)
+  local lines, count = {}, 0
+  for _ in value do
+    count += 1
+  end
+
+  if count > 0 and count == #value then
+    for index, item in ipairs(value) do
+      table.insert(lines, indent .. encode(item, `{path}[{index}]`, depth + 1, seen))
+    end
+
+    seen[value] = nil
+    return `[\n{table.concat(lines, ',\n')}\n{closing}]`
+  end
+
+  local names: { [string]: any }, order = {}, {}
+  for entry, item in value do
+    local name = key(entry, path)
+    if names[name] ~= nil then error(`{path}: two keys are written '{name}'`) end
+
+    names[name] = item
+    table.insert(order, name)
+  end
+
+  table.sort(order)
+  for _, name in order do
+    local encoded = encode(names[name], `{path}.{name}`, depth + 1, seen)
+    table.insert(lines, `{indent}{text(name)}: {encoded}`)
+  end
+
+  seen[value] = nil
+  if #lines == 0 then return '{}' end
+  return `\{\n{table.concat(lines, ',\n')}\n{closing}}`
+end
+
+function encode(value: unknown, path: string, depth: number, seen: { [any]: boolean }): string
+  if value == nil or value == jess.null then return 'null' end
+  local kind = type(value)
+  if kind == 'boolean' then return tostring(value) end
+  if kind == 'number' then return number(value :: number) end
+  if kind == 'integer' then return `\{"$integer": "{tostring(value)}"}` end
+  if kind == 'string' then return text(value :: string) end
+
+  if kind == 'vector' then
+    local vector = value :: vector
+    return `\{"$vector": [{number(vector.x)}, {number(vector.y)}, {number(vector.z)}]}`
+  end
+
+  if kind == 'buffer' then
+    local bytes = value :: buffer
+    if buffer.len(bytes) <= 32 then return `\{"$buffer": "{hex(bytes)}"}` end
+    return `\{"$buffer": \{"length": {buffer.len(bytes)}, "fnv": "{oracle.fnv(bytes)}"}}`
+  end
+
+  if kind == 'table' then return encodeTable(value :: { [any]: any }, path, depth, seen) end
+  error(`{path}: a {kind} can't be written; convert it in the fixture`)
+end
+
+--- The fixture's result and the error contracts it asserted, as canonical JSON.
+function oracle.finish(...: any): string
+  local count = select('#', ...)
+  local result: any = if count > 1 then { ... } else ...
+
+  local document = { result = result, errors = if #asserted > 0 then asserted else nil }
+  return encode(document, 'result', 0, {}) .. '\n'
+end
+
+return oracle

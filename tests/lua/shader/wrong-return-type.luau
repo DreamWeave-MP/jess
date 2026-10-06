@@ -1,0 +1,11 @@
+--!strict
+-- A module that builds a program and returns something else.
+local shader = require '@jess/shader'
+
+local program = shader.program {
+  vertex = function(input) return { position = shader.vec4(input.position, 1.0) } end,
+  fragment = function() return shader.vec4(1.0, 0.5, 0.0, 1.0) end,
+}
+print(program)
+
+return 42

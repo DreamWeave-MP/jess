@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}404 · jess{% endblock title %}
+{% block content %}
+<section class="dw-shell jess-error-page">
+  <p class="jess-kicker">404</p>
+  <h1>Nothing here gets special treatment.</h1>
+  <p>The path does not exist. The runtime remains unimpressed.</p>
+  <a class="dw-button dw-button--primary" href="{{ config.base_url | safe }}/">Return to jess</a>
+</section>
+{% endblock content %}

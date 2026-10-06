@@ -1,0 +1,234 @@
+--!strict
+-- Port of S3ctor's bayerDither.omwfx to the staged @jess/shader surface.
+-- The .omwfx controls are static, so they are ordinary Luau constants here and disappear while
+-- the shader graph is built. A source texture stands in for omw_GetLastShader until pass-specific
+-- sceneColor/previousPass semantics are bindable by the renderer.
+local shader = require '@jess/shader'
+
+type Expr = ShaderExpr
+
+local LUMA_STANDARD = 0
+local DITHER_SIZE = 1
+local DITHER_MODE = 0
+local QUANTIZATION_LEVELS = 2.0
+local TWO_DARK_R = 0.0
+local TWO_DARK_G = 0.0
+local TWO_DARK_B = 0.0
+local TWO_LIGHT_R = 1.0
+local TWO_LIGHT_G = 1.0
+local TWO_LIGHT_B = 1.0
+local PSX_COLOR_COUNT = 32.0
+local BRIGHTNESS_MULT = 1.0
+
+local function fract(value: Expr): Expr
+  return value - shader.floor(value)
+end
+
+local function ceil(value: Expr): Expr
+  return 0.0 - shader.floor(0.0 - value)
+end
+
+local function luma(color: Expr): Expr
+  if LUMA_STANDARD == 0 then
+    return shader.dot(color.xyz, shader.vec3(0.2126, 0.7152, 0.0722))
+  elseif LUMA_STANDARD == 1 then
+    return shader.dot(color.xyz, shader.vec3(0.299, 0.587, 0.114))
+  else
+    return shader.dot(color.xyz, shader.vec3(0.212, 0.701, 0.114))
+  end
+end
+
+-- The original stores 2x2, 4x4, and 8x8 Bayer matrices. The same values can be generated from
+-- the coordinate bits, which avoids dynamic array indexing in the IR. The 4x4 source table is the
+-- standard matrix plus 1/16; preserve that quirk exactly.
+local function ditherBayer(position: Expr, brightness: Expr, ditherSize: number): Expr
+  local matrixSize = 2 ^ (ditherSize + 1)
+  local matrixArea = matrixSize * matrixSize
+  local levels = ditherSize + 1
+
+  local x = shader.floor(position.x - shader.floor(position.x / matrixSize) * matrixSize)
+  local y = shader.floor(position.y - shader.floor(position.y / matrixSize) * matrixSize)
+  local value = shader.float(0.0)
+  local weight = matrixArea / 4
+
+  for _ = 1, levels do
+    local xBit = x - shader.floor(x / 2.0) * 2.0
+    local yBit = y - shader.floor(y / 2.0) * 2.0
+    local code = 2.0 * xBit + 3.0 * yBit - 4.0 * xBit * yBit
+    value = value + code * weight
+    x = shader.floor(x / 2.0)
+    y = shader.floor(y / 2.0)
+    weight /= 4
+  end
+
+  if ditherSize == 1 then
+    value += 1.0
+  end
+
+  local limit = value / matrixArea
+
+  -- brightness and limit are in [0, 1]. This is exactly (brightness < limit) ? 0 : 1,
+  -- expressed without a runtime comparison/select node.
+  return shader.clamp(shader.floor(brightness - limit + 1.0), 0.0, 1.0)
+end
+
+local function ditherBW(position: Expr, color: Expr, ditherSize: number): Expr
+  return shader.vec4(shader.vec3(ditherBayer(position, luma(color), ditherSize)), color.w)
+end
+
+local function ditherBW2(position: Expr, color: Expr, ditherSize: number): Expr
+  local ditheredValue = ditherBayer(position, luma(color), ditherSize)
+  return shader.mix(color, shader.vec4(ditheredValue), 0.5)
+end
+
+local function ditherBW3(position: Expr, brightness: Expr, ditherSize: number): Expr
+  local rescaled = brightness * 8.0
+  local fractional = fract(rescaled)
+  local dithered = shader.floor(rescaled) + ditherBayer(position, fractional, ditherSize)
+  return shader.vec4(dithered / 8.0)
+end
+
+local function ditherTwoTone(position: Expr, brightness: Expr, ditherSize: number): Expr
+  local rescaled = brightness * QUANTIZATION_LEVELS
+  local fractionalPart = fract(rescaled)
+  local ditherResult = ditherBayer(position, fractionalPart, ditherSize)
+  local scalar = (shader.floor(rescaled) + ditherResult) / QUANTIZATION_LEVELS
+  local finalColor = shader.mix(
+    shader.vec3(TWO_DARK_R, TWO_DARK_G, TWO_DARK_B),
+    shader.vec3(TWO_LIGHT_R, TWO_LIGHT_G, TWO_LIGHT_B),
+    scalar
+  )
+  return shader.vec4(finalColor, 1.0)
+end
+
+local function quantizeWithDither(position: Expr, value: Expr, ditherSize: number): Expr
+  local rescaled = value * QUANTIZATION_LEVELS
+  local fractionalPart = fract(rescaled)
+  local ditherResult = ditherBayer(position, fractionalPart, ditherSize)
+  return (shader.floor(rescaled) + ditherResult) / QUANTIZATION_LEVELS
+end
+
+local function ditherColor(position: Expr, color: Expr, ditherSize: number): Expr
+  return shader.vec4(
+    quantizeWithDither(position, color.x, ditherSize),
+    quantizeWithDither(position, color.y, ditherSize),
+    quantizeWithDither(position, color.z, ditherSize),
+    color.w
+  )
+end
+
+local function channelError(col: Expr, colMin: Expr, colMax: Expr): Expr
+  local range = shader.length(colMin - colMax)
+  local aRange = shader.length(col - colMin)
+
+  -- The original branches to zero when range < 1e-5. Here colMin/colMax are adjacent PSX
+  -- quantization levels, so the only sub-epsilon range is exactly zero; max preserves its result
+  -- without adding runtime control flow.
+  return aRange / shader.max(range, 1e-5)
+end
+
+local function RGBtoYUV(rgb: Expr): Expr
+  local y = shader.dot(rgb, shader.vec3(0.2126, 0.7152, 0.0722))
+  local u = (rgb.z - y) * (1.0 / 1.8556) + 0.5
+  local v = (rgb.x - y) * (1.0 / 1.5748) + 0.5
+  return shader.vec3(y, u, v)
+end
+
+local function YUVtoRGB(yuv: Expr): Expr
+  local u = yuv.y - 0.5
+  local v = yuv.z - 0.5
+  return shader.vec3(
+    yuv.x + v * 1.5748,
+    yuv.x - 0.187324 * u - 0.468124 * v,
+    yuv.x + u * 1.8556
+  )
+end
+
+local function ditherColorPSX(col: Expr, uv: Expr, resolution: Expr, ditherSize: number): Expr
+  local yuv = RGBtoYUV(col)
+  local col1 = shader.floor(yuv * PSX_COLOR_COUNT) / PSX_COLOR_COUNT
+  local col2 = ceil(yuv * PSX_COLOR_COUNT) / PSX_COLOR_COUNT
+  local ditherBlockUV = uv * (resolution / ditherSize)
+
+  local x = shader.mix(col1.x, col2.x, ditherBayer(ditherBlockUV, channelError(yuv.x, col1.x, col2.x), ditherSize))
+  local y = shader.mix(col1.y, col2.y, ditherBayer(ditherBlockUV, channelError(yuv.y, col1.y, col2.y), ditherSize))
+  local z = shader.mix(col1.z, col2.z, ditherBayer(ditherBlockUV, channelError(yuv.z, col1.z, col2.z), ditherSize))
+
+  return shader.vec4(YUVtoRGB(shader.vec3(x, y, z)), 1.0)
+end
+
+local function findVGAColor(rgb: Expr, screenPos: Expr, ditherSize: number): Expr
+  local r = shader.clamp(shader.floor(rgb.x * 5.0 + 0.5), 0.0, 5.0)
+  local g = shader.clamp(shader.floor(rgb.y * 5.0 + 0.5), 0.0, 5.0)
+  local b = shader.clamp(shader.floor(rgb.z * 5.0 + 0.5), 0.0, 5.0)
+
+  -- vgaLevels[index] is exactly index / 5, so no runtime table lookup is needed.
+  return shader.vec4(
+    quantizeWithDither(screenPos, r / 5.0, ditherSize),
+    quantizeWithDither(screenPos, g / 5.0, ditherSize),
+    quantizeWithDither(screenPos, b / 5.0, ditherSize),
+    1.0
+  )
+end
+
+local function findEGAColor(rgb: Expr): Expr
+  local function egaLevel(channel: Expr): Expr
+    -- egaLevels[egaQuantize(channel)] is exactly the quantized index / 3.
+    return shader.clamp(shader.floor(channel * 3.0 + 0.5), 0.0, 3.0) / 3.0
+  end
+
+  return shader.vec4(egaLevel(rgb.x), egaLevel(rgb.y), egaLevel(rgb.z), 1.0)
+end
+
+local function build(mode: number, ditherSize: number): ShaderProgram
+  return shader.program {
+    textures = {
+      source = shader.texture2d,
+    },
+
+    vertex = function(input)
+      return {
+        position = shader.vec4(input.position, 1.0),
+        uv = input.uv,
+      }
+    end,
+
+    fragment = function(input)
+      local color = shader.sample(input.source, input.uv)
+      local screenPos = input.uv * input.viewportSize
+
+      local function brighten(result: Expr): Expr
+        return shader.vec4(result.xyz * BRIGHTNESS_MULT, result.w)
+      end
+
+      if mode == 0 then
+        return brighten(ditherBW(screenPos, color, ditherSize))
+      elseif mode == 1 then
+        return brighten(ditherBW2(screenPos, color, ditherSize))
+      elseif mode == 2 then
+        return brighten(ditherBW3(screenPos, luma(color), ditherSize))
+      elseif mode == 3 then
+        return brighten(ditherTwoTone(screenPos, luma(color), ditherSize))
+      elseif mode == 4 then
+        return brighten(ditherColor(screenPos, color, ditherSize))
+      elseif mode == 5 then
+        -- Preserve the original call exactly: its `resolution` argument receives screenPos.
+        return brighten(ditherColorPSX(color.xyz, input.uv, screenPos, ditherSize))
+      elseif mode == 6 then
+        return brighten(findVGAColor(color.xyz, screenPos, ditherSize))
+      else
+        -- Mode 7 in the source selects EGA; the Valve dither path is commented out there.
+        return brighten(findEGAColor(color.xyz))
+      end
+    end,
+  }
+end
+
+-- Build every static mode once so this corpus module validates the complete port, then return the
+-- source shader's default configuration. Only the selected program is consumed by the test.
+local programs: { ShaderProgram } = {}
+for mode = 0, 7 do
+  programs[mode + 1] = build(mode, DITHER_SIZE)
+end
+
+return programs[DITHER_MODE + 1]

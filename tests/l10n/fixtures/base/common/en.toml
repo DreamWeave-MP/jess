@@ -1,0 +1,20 @@
+# The fixture bundle of jess::l10n's acceptance tests: one of each thing a message can do.
+
+# Simple replacement.
+hello = "Hello, {name}!"
+
+# Plural, with an exact match and CLDR categories.
+file_count = '''
+{count, plural,
+  =0 {No files}
+  one {# file}
+  other {# files}}'''
+
+# Select.
+mode_label = "{mode, select, edit {Editing} view {Viewing} other {Idle}}"
+
+# Number formatting.
+percent_complete = "{progress, number, percent} complete"
+
+# Only this locale has it: every other locale reaches it through the bundle's fallback.
+fallback_only = "Only English says this"

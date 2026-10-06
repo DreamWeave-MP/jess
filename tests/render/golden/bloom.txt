@@ -1,0 +1,40 @@
+bloom
+
+opaque
+    writes: scene, depth
+
+extractBright
+    reads:  scene
+    writes: bright
+
+blurHorizontal
+    reads:  bright
+    writes: blurHorizontal
+
+blurVertical
+    reads:  blurHorizontal
+    writes: blurVertical
+
+combine
+    reads:  scene, blurVertical
+    writes: combined
+
+tonemap
+    reads:  combined
+    writes: output
+
+resources
+    depth           Depth24Plus     viewport      transient  opaque
+    scene           Rgba16Float     viewport      transient  opaque .. combine
+    bright          Rgba16Float     viewport*0.5  transient  extractBright .. blurHorizontal
+    blurHorizontal  Rgba16Float     viewport*0.5  transient  blurHorizontal .. blurVertical
+    blurVertical    Rgba16Float     viewport*0.5  transient  blurVertical .. combine
+    combined        Rgba16Float     viewport      transient  combine .. tonemap
+    output          Bgra8UnormSrgb  viewport      imported   tonemap
+
+aliasing
+    depth
+    scene
+    bright, blurVertical
+    blurHorizontal
+    combined

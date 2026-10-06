@@ -1,0 +1,444 @@
+--!strict
+--!native
+-- @jess/jpk: the JPK container, a narrow ZIP subset, read and written over @dream/bytes.
+--
+-- The container knows entries, never packages: manifests, digests, and layers are @jess/package's.
+-- The canonical writer makes one byte sequence from one set of entries on every platform: entries
+-- sorted bytewise by path, each Zstandard (method 93) when that is smaller and stored (method 0)
+-- otherwise, with every header field that could vary (times, versions, flags, attributes, extras,
+-- comments) fixed. The reader also takes Deflate (method 8), and refuses encryption, ZIP64,
+-- multi-disk archives, and any path that isn't a canonical relative path, before allocating more
+-- than its budgets allow.
+
+export type Bytes = {
+  read crc32: (data: buffer | string, seed: number?) -> number,
+  read inflate: (
+    source: buffer | string,
+    options: { format: string?, maxSize: number? }?
+  ) -> buffer,
+  read zstdCompress: (source: buffer | string, options: { level: number? }?) -> buffer,
+  read zstdDecompress: (source: buffer | string, options: { maxSize: number? }?) -> buffer,
+}
+
+export type Method = 'stored' | 'deflate' | 'zstd'
+
+export type Entry = {
+  read path: string,
+  read method: Method,
+  read compressedSize: number,
+  read size: number,
+  read crc32: number,
+  read offset: number,
+}
+
+--- Where an archive's bytes come from: its size, and a read of `length` bytes at `offset`.
+export type Source = {
+  read size: number,
+  read read: (offset: number, length: number) -> buffer,
+}
+
+export type Budgets = {
+  maxEntries: number?,
+  maxPathLength: number?,
+  maxCentralDirectory: number?,
+  maxEntrySize: number?,
+  maxTotalSize: number?,
+}
+
+export type Archive = {
+  read entries: { Entry },
+  read find: (path: string) -> Entry?,
+  read read: (entry: Entry | string) -> buffer,
+}
+
+export type File = { path: string, data: buffer }
+
+local LocalSignature, CentralSignature, EndSignature = 0x04034b50, 0x02014b50, 0x06054b50
+local LocalHeaderSize, CentralHeaderSize, EndSize = 30, 46, 22
+local MaxComment = 0xffff
+
+--- General-purpose flag bits: 0 encrypted, 6 strong encryption, 13 masked headers.
+local RefusedFlags = bit32.bor(0x0001, 0x0040, 0x2000)
+local Utf8Flag = 0x0800
+
+--- The fixed fields of a canonical entry: made by MS-DOS 6.3 so no host permissions apply,
+--- 1980-01-01 00:00 in DOS time, the UTF-8 flag, no extras, no comment, no attributes.
+local MadeBy, DosTime, DosDate = 63, 0, 0x0021
+local StoredVersion, ZstdVersion = 10, 63
+
+--- @dream/bytes, looked up on first use: l3i registers modules for `require` only once every
+--- extension has installed, after this module's factory ran.
+local cached: Bytes?
+
+local function codecs(): Bytes
+  if not cached then cached = (require :: (string) -> Bytes) '@dream/bytes' end
+
+  return cached :: Bytes
+end
+
+local MethodCodes: { [number]: Method } = { [0] = 'stored', [8] = 'deflate', [93] = 'zstd' }
+
+local DefaultBudgets = table.freeze {
+  -- 65535 is the end record's ZIP64 sentinel, which a JPK refuses, so 65534 is the most it holds.
+  maxEntries = 65534,
+  maxPathLength = 1024,
+  maxCentralDirectory = 16 * 1024 * 1024,
+  maxEntrySize = 1024 * 1024 * 1024,
+  maxTotalSize = 4 * 1024 * 1024 * 1024,
+}
+
+local function fail(message: string): never error(`jpk: {message}`, 0) end
+
+--- Whether `path` is canonical: forward slashes, relative, no empty, `.`, or `..` component, no
+--- backslash, colon, or control byte, valid UTF-8, and no trailing slash.
+local function checkPath(path: string): string?
+  if path == '' then return 'the path is empty' end
+
+  if not utf8.len(path) then return 'the path is not UTF-8' end
+
+  if string.find(path, '[%c\\:]') then
+    return 'the path has a backslash, colon, or control character'
+  end
+
+  for component in string.gmatch(`{path}/`, '([^/]*)/') do
+    if component == '' or component == '.' or component == '..' then
+      return 'the path is not a canonical relative path (empty, ".", or ".." component)'
+    end
+  end
+
+  return nil
+end
+
+local function budget(budgets: Budgets?, name: string): number
+  local given = budgets and (budgets :: { [string]: number? })[name]
+  return given or (DefaultBudgets :: { [string]: number })[name]
+end
+
+local function readSource(source: Source, offset: number, length: number): buffer
+  if offset < 0 or length < 0 or offset + length > source.size then
+    fail(`a read of {length} bytes at {offset} runs past the archive's {source.size} bytes`)
+  end
+
+  local data = source.read(offset, length)
+
+  if buffer.len(data) ~= length then
+    fail(`a read of {length} bytes at {offset} returned {buffer.len(data)}`)
+  end
+
+  return data
+end
+
+local function bufferSource(data: buffer): Source
+  return {
+    size = buffer.len(data),
+    read = function(offset: number, length: number): buffer
+      local slice = buffer.create(length)
+      buffer.copy(slice, 0, data, offset, length)
+      return slice
+    end,
+  }
+end
+
+--- The end-of-central-directory record: the last signature whose comment runs exactly to the end.
+local function findEnd(source: Source): (number, buffer)
+  if source.size < EndSize then fail 'not a JPK: too short for a ZIP end record' end
+
+  local window = math.min(source.size, EndSize + MaxComment)
+  local start = source.size - window
+  local tail = readSource(source, start, window)
+
+  for at = window - EndSize, 0, -1 do
+    if buffer.readu32(tail, at) ~= EndSignature then continue end
+    if at + EndSize + buffer.readu16(tail, at + 20) ~= window then continue end
+
+    local record = buffer.create(EndSize)
+    buffer.copy(record, 0, tail, at, EndSize)
+    return start + at, record
+  end
+
+  fail 'not a JPK: no ZIP end record'
+  return 0, tail
+end
+
+local function open(input: Source | buffer, budgets: Budgets?): Archive
+  local source: Source = if type(input) == 'buffer' then bufferSource(input) else input
+  local endAt, record = findEnd(source)
+  local disk, cdDisk = buffer.readu16(record, 4), buffer.readu16(record, 6)
+  local diskEntries, count = buffer.readu16(record, 8), buffer.readu16(record, 10)
+  local cdSize, cdOffset = buffer.readu32(record, 12), buffer.readu32(record, 16)
+
+  if disk ~= 0 or cdDisk ~= 0 or diskEntries ~= count then
+    fail 'multi-disk archives are not JPKs'
+  end
+
+  if count == 0xffff or cdSize == 0xffffffff or cdOffset == 0xffffffff then
+    fail 'ZIP64 archives are not JPKs'
+  end
+
+  if count > budget(budgets, 'maxEntries') then
+    fail(`{count} entries exceed the budget of {budget(budgets, 'maxEntries')}`)
+  end
+
+  if cdSize > budget(budgets, 'maxCentralDirectory') then
+    fail(
+      `a {cdSize}-byte central directory exceeds the budget of {budget(
+        budgets,
+        'maxCentralDirectory'
+      )}`
+    )
+  end
+
+  if cdOffset + cdSize ~= endAt then
+    fail 'the central directory does not end where the end record begins'
+  end
+
+  local directory = readSource(source, cdOffset, cdSize)
+  local entries, byPath = {} :: { Entry }, {} :: { [string]: Entry }
+  local maxPath, maxEntry, maxTotal =
+    budget(budgets, 'maxPathLength'),
+    budget(budgets, 'maxEntrySize'),
+    budget(budgets, 'maxTotalSize')
+  local total, at = 0, 0
+
+  for index = 1, count do
+    if at + CentralHeaderSize > cdSize or buffer.readu32(directory, at) ~= CentralSignature then
+      fail(`central directory entry {index} is truncated or corrupt`)
+    end
+
+    local flags, code = buffer.readu16(directory, at + 8), buffer.readu16(directory, at + 10)
+    local crc, compressedSize, size =
+      buffer.readu32(directory, at + 16),
+      buffer.readu32(directory, at + 20),
+      buffer.readu32(directory, at + 24)
+    local nameLength, extraLength, commentLength =
+      buffer.readu16(directory, at + 28),
+      buffer.readu16(directory, at + 30),
+      buffer.readu16(directory, at + 32)
+    local entryDisk, offset = buffer.readu16(directory, at + 34), buffer.readu32(directory, at + 42)
+    local next = at + CentralHeaderSize + nameLength + extraLength + commentLength
+
+    if next > cdSize then fail(`central directory entry {index} runs past the directory`) end
+
+    if nameLength > maxPath then
+      fail(`entry {index}'s {nameLength}-byte path exceeds the budget of {maxPath}`)
+    end
+
+    local path = buffer.readstring(directory, at + CentralHeaderSize, nameLength)
+
+    if bit32.band(flags, RefusedFlags) ~= 0 then fail(`'{path}' is encrypted`) end
+
+    if entryDisk ~= 0 then fail(`'{path}' is on another disk`) end
+
+    if compressedSize == 0xffffffff or size == 0xffffffff or offset == 0xffffffff then
+      fail(`'{path}' is ZIP64`)
+    end
+
+    local method = MethodCodes[code]
+
+    if not method then
+      fail(`'{path}' uses compression method {code}; a JPK has stored, deflate, or zstd entries`)
+    end
+
+    at = next
+
+    -- A folder entry carries no bytes and names nothing a package can read: other writers add
+    -- them, the canonical writer never does.
+    if string.sub(path, -1) == '/' and size == 0 and compressedSize == 0 then continue end
+
+    local problem = checkPath(path)
+
+    if problem then fail(`'{path}': {problem}`) end
+
+    if byPath[path] then fail(`'{path}' is in the archive twice`) end
+
+    if size > maxEntry then
+      fail(`'{path}' is {size} bytes, past the entry budget of {maxEntry}`)
+    end
+
+    total += size
+
+    if total > maxTotal then
+      fail(`the entries declare {total} bytes, past the archive budget of {maxTotal}`)
+    end
+
+    if offset + LocalHeaderSize + compressedSize > cdOffset then
+      fail(`'{path}' runs into the central directory`)
+    end
+
+    local entry: Entry = table.freeze {
+      path = path,
+      method = method,
+      compressedSize = compressedSize,
+      size = size,
+      crc32 = crc,
+      offset = offset,
+    }
+    table.insert(entries, entry)
+    byPath[path] = entry
+  end
+
+  if at ~= cdSize then fail 'the central directory has bytes after its last entry' end
+
+  local function readEntry(wanted: Entry | string): buffer
+    local entry = if type(wanted) == 'string' then byPath[wanted] else wanted
+
+    if not entry then return fail(`'{tostring(wanted)}' is not in the archive`) end
+
+    local header = readSource(source, entry.offset, LocalHeaderSize)
+
+    if buffer.readu32(header, 0) ~= LocalSignature then
+      fail(`'{entry.path}' has no local header`)
+    end
+
+    local nameLength, extraLength = buffer.readu16(header, 26), buffer.readu16(header, 28)
+    local dataAt = entry.offset + LocalHeaderSize + nameLength + extraLength
+
+    if dataAt + entry.compressedSize > cdOffset then
+      fail(`'{entry.path}' runs into the central directory`)
+    end
+
+    if
+      buffer.readstring(
+        readSource(source, entry.offset + LocalHeaderSize, nameLength),
+        0,
+        nameLength
+      ) ~= entry.path
+    then
+      fail(`'{entry.path}' has a different name in its local header`)
+    end
+
+    local packed = readSource(source, dataAt, entry.compressedSize)
+    local data = packed
+
+    if entry.method == 'deflate' then
+      data = codecs().inflate(packed, { format = 'raw', maxSize = entry.size })
+    elseif entry.method == 'zstd' then
+      data = codecs().zstdDecompress(packed, { maxSize = entry.size })
+    end
+
+    if buffer.len(data) ~= entry.size then
+      fail(`'{entry.path}' unpacked to {buffer.len(data)} bytes, not {entry.size}`)
+    end
+
+    if codecs().crc32(data) ~= entry.crc32 then fail(`'{entry.path}' fails its CRC-32`) end
+
+    return data
+  end
+
+  return table.freeze {
+    entries = table.freeze(entries),
+    find = function(path: string): Entry? return byPath[path] end,
+    read = readEntry,
+  }
+end
+
+--- The canonical archive of `files`: sorted bytewise by path, zstd when smaller, else stored.
+local function write(files: { File }): buffer
+  local sorted = table.clone(files)
+  table.sort(sorted, function(left: File, right: File): boolean return left.path < right.path end)
+
+  if #sorted > DefaultBudgets.maxEntries then
+    fail(`{#sorted} entries exceed the ZIP limit of {DefaultBudgets.maxEntries}`)
+  end
+
+  local records, central = {}, {}
+  local offset = 0
+
+  for index, file in sorted do
+    local problem = checkPath(file.path)
+
+    if problem then fail(`'{file.path}': {problem}`) end
+
+    if index > 1 and sorted[index - 1].path == file.path then
+      fail(`'{file.path}' is given twice`)
+    end
+
+    if #file.path > DefaultBudgets.maxPathLength then
+      fail(`'{file.path}' is longer than {DefaultBudgets.maxPathLength} bytes`)
+    end
+
+    local size = buffer.len(file.data)
+    local packed, code, version = file.data, 0, StoredVersion
+
+    if size > 0 then
+      local zstd = codecs().zstdCompress(file.data)
+
+      if buffer.len(zstd) < size then
+        packed, code, version = zstd, 93, ZstdVersion
+      end
+    end
+
+    local crc, compressedSize = codecs().crc32(file.data), buffer.len(packed)
+
+    if offset + LocalHeaderSize + #file.path + compressedSize > 0xfffffffe then
+      fail 'the archive would pass 4 GiB, which needs ZIP64'
+    end
+
+    local header = buffer.create(LocalHeaderSize + #file.path)
+    buffer.writeu32(header, 0, LocalSignature)
+    buffer.writeu16(header, 4, version)
+    buffer.writeu16(header, 6, Utf8Flag)
+    buffer.writeu16(header, 8, code)
+    buffer.writeu16(header, 10, DosTime)
+    buffer.writeu16(header, 12, DosDate)
+    buffer.writeu32(header, 14, crc)
+    buffer.writeu32(header, 18, compressedSize)
+    buffer.writeu32(header, 22, size)
+    buffer.writeu16(header, 26, #file.path)
+    buffer.writeu16(header, 28, 0)
+    buffer.writestring(header, LocalHeaderSize, file.path)
+    table.insert(records, header)
+    table.insert(records, packed)
+
+    local entry = buffer.create(CentralHeaderSize + #file.path)
+    buffer.writeu32(entry, 0, CentralSignature)
+    buffer.writeu16(entry, 4, MadeBy)
+    buffer.writeu16(entry, 6, version)
+    buffer.writeu16(entry, 8, Utf8Flag)
+    buffer.writeu16(entry, 10, code)
+    buffer.writeu16(entry, 12, DosTime)
+    buffer.writeu16(entry, 14, DosDate)
+    buffer.writeu32(entry, 16, crc)
+    buffer.writeu32(entry, 20, compressedSize)
+    buffer.writeu32(entry, 24, size)
+    buffer.writeu16(entry, 28, #file.path)
+    buffer.writeu32(entry, 42, offset)
+    buffer.writestring(entry, CentralHeaderSize, file.path)
+    table.insert(central, entry)
+    offset += buffer.len(header) + compressedSize
+  end
+
+  local cdOffset, cdSize = offset, 0
+
+  for _, entry in central do
+    cdSize += buffer.len(entry)
+  end
+
+  local finish = buffer.create(EndSize)
+  buffer.writeu32(finish, 0, EndSignature)
+  buffer.writeu16(finish, 8, #sorted)
+  buffer.writeu16(finish, 10, #sorted)
+  buffer.writeu32(finish, 12, cdSize)
+  buffer.writeu32(finish, 16, cdOffset)
+
+  local out = buffer.create(cdOffset + cdSize + EndSize)
+  local at = 0
+
+  for _, part in { records, central, { finish } } do
+    for _, piece in part do
+      buffer.copy(out, at, piece)
+      at += buffer.len(piece)
+    end
+  end
+
+  return out
+end
+
+return function()
+  return {
+    open = open,
+    write = write,
+    checkPath = checkPath,
+    budgets = DefaultBudgets,
+  }
+end

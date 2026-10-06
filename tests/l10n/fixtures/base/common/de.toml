@@ -1,0 +1,9 @@
+hello = "Hallo, {name}!"
+
+file_count = '''
+{count, plural,
+  =0 {Keine Dateien}
+  one {# Datei}
+  other {# Dateien}}'''
+
+percent_complete = "{progress, number, :: percent scale/100 .0} abgeschlossen"

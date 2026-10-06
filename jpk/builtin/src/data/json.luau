@@ -1,0 +1,287 @@
+--!strict
+--!native
+-- RFC 8259 JSON. The scanner is deliberately small: bytes are classified in the hot loop and
+-- strings jump between escapes/control bytes with string.find, following the strategy that makes
+-- dkjson fast without accepting dkjson's JavaScript comments or loose escapes.
+local Common = require './common'
+
+export type Options = {
+  maxDepth: number?,
+}
+
+export type Value = any
+
+local Null = Common.null
+local source = ''
+local length = 0
+local at = 1
+local maxDepth = 512
+
+local Escape: { [number]: string } = {
+  [34] = '"',
+  [47] = '/',
+  [92] = '\\',
+  [98] = '\b',
+  [102] = '\f',
+  [110] = '\n',
+  [114] = '\r',
+  [116] = '\t',
+}
+
+local function fail(message: string): never
+  Common.fail('json', source, at, message)
+  error('unreachable', 0)
+end
+
+local function skipWhitespace()
+  while at <= length do
+    local byte = string.byte(source, at)
+    if byte ~= 32 and byte ~= 9 and byte ~= 10 and byte ~= 13 then return end
+
+    at += 1
+  end
+end
+
+local function parseUnicode(): string
+  local high = Common.hex(source, at + 2, 4)
+  if not high then fail('invalid Unicode escape') end
+  local highValue = high :: number
+
+  at += 6
+  if highValue >= 0xD800 and highValue <= 0xDBFF then
+    if string.byte(source, at) ~= 92 or string.byte(source, at + 1) ~= 117 then
+      fail('high surrogate is not followed by a low surrogate')
+    end
+
+    local low = Common.hex(source, at + 2, 4)
+    if not low or low < 0xDC00 or low > 0xDFFF then fail('invalid low surrogate') end
+    local lowValue = low :: number
+
+    at += 6
+    return utf8.char(0x10000 + (highValue - 0xD800) * 0x400 + lowValue - 0xDC00)
+  end
+
+  if highValue >= 0xDC00 and highValue <= 0xDFFF then fail('unexpected low surrogate') end
+
+  return utf8.char(highValue)
+end
+
+local function parseString(): string
+  local start = at + 1
+  local scan = start
+  local parts: { string }? = nil
+
+  while true do
+    local found = string.find(source, '[%z\1-\31"\\]', scan)
+    if not found then
+      at = length + 1
+      fail('unterminated string')
+    end
+
+    local foundAt = found :: number
+    local byte = string.byte(source, foundAt)
+    if byte == 34 then
+      at = foundAt + 1
+      if not parts then return string.sub(source, start, foundAt - 1) end
+      local output = parts :: { string }
+
+      if foundAt > scan then table.insert(output, string.sub(source, scan, foundAt - 1)) end
+
+      return table.concat(output)
+    end
+
+    if byte ~= 92 then
+      at = foundAt
+      fail('unescaped control character in string')
+    end
+
+    if not parts then parts = {} end
+    local output = parts :: { string }
+    if foundAt > scan then table.insert(output, string.sub(source, scan, foundAt - 1)) end
+
+    at = foundAt
+    local escaped = string.byte(source, at + 1)
+    if escaped == 117 then
+      table.insert(output, parseUnicode())
+    else
+      local replacement = escaped and Escape[escaped]
+      if not replacement then fail('invalid escape sequence') end
+
+      table.insert(output, replacement :: string)
+      at += 2
+    end
+    scan = at
+  end
+end
+
+local function parseNumber(): number
+  local start = at
+  local byte = string.byte(source, at)
+
+  if byte == 45 then
+    at += 1
+    byte = string.byte(source, at)
+  end
+
+  if byte == 48 then
+    at += 1
+    local nextByte = string.byte(source, at)
+    if nextByte and nextByte >= 48 and nextByte <= 57 then fail('leading zero in number') end
+  elseif byte and byte >= 49 and byte <= 57 then
+    repeat
+      at += 1
+      byte = string.byte(source, at)
+    until not byte or byte < 48 or byte > 57
+  else
+    fail('expected a digit')
+  end
+
+  if string.byte(source, at) == 46 then
+    at += 1
+    byte = string.byte(source, at)
+    if not byte or byte < 48 or byte > 57 then fail('fraction has no digits') end
+
+    repeat
+      at += 1
+      byte = string.byte(source, at)
+    until not byte or byte < 48 or byte > 57
+  end
+
+  byte = string.byte(source, at)
+  if byte == 69 or byte == 101 then
+    at += 1
+    byte = string.byte(source, at)
+    if byte == 43 or byte == 45 then
+      at += 1
+      byte = string.byte(source, at)
+    end
+
+    if not byte or byte < 48 or byte > 57 then fail('exponent has no digits') end
+
+    repeat
+      at += 1
+      byte = string.byte(source, at)
+    until not byte or byte < 48 or byte > 57
+  end
+
+  local number = tonumber(string.sub(source, start, at - 1))
+  if not number then fail('number cannot be represented') end
+
+  return number :: number
+end
+
+local parseValue: (number) -> Value
+
+local function parseArray(depth: number): { Value }
+  at += 1
+  skipWhitespace()
+  local values: { Value } = {}
+  if string.byte(source, at) == 93 then
+    at += 1
+    return values
+  end
+
+  local count = 0
+  while true do
+    count += 1
+    values[count] = parseValue(depth + 1)
+    skipWhitespace()
+
+    local byte = string.byte(source, at)
+    if byte == 93 then
+      at += 1
+      return values
+    end
+
+    if byte ~= 44 then fail("expected ',' or ']' after array value") end
+
+    at += 1
+    skipWhitespace()
+    if string.byte(source, at) == 93 then fail('trailing comma in array') end
+  end
+end
+
+local function parseObject(depth: number): { [string]: Value }
+  at += 1
+  skipWhitespace()
+  local values: { [string]: Value } = {}
+  if string.byte(source, at) == 125 then
+    at += 1
+    return values
+  end
+
+  while true do
+    if string.byte(source, at) ~= 34 then fail('object key is not a string') end
+
+    local key = parseString()
+    skipWhitespace()
+    if string.byte(source, at) ~= 58 then fail("expected ':' after object key") end
+
+    at += 1
+    skipWhitespace()
+    values[key] = parseValue(depth + 1)
+    skipWhitespace()
+
+    local byte = string.byte(source, at)
+    if byte == 125 then
+      at += 1
+      return values
+    end
+
+    if byte ~= 44 then fail("expected ',' or '}' after object value") end
+
+    at += 1
+    skipWhitespace()
+    if string.byte(source, at) == 125 then fail('trailing comma in object') end
+  end
+end
+
+parseValue = function(depth: number): Value
+  if depth > maxDepth then fail(`nesting exceeds maxDepth ({maxDepth})`) end
+
+  skipWhitespace()
+  local byte = string.byte(source, at)
+  if byte == 34 then return parseString() end
+  if byte == 91 then return parseArray(depth) end
+  if byte == 123 then return parseObject(depth) end
+  if byte == 45 or (byte and byte >= 48 and byte <= 57) then return parseNumber() end
+
+  if string.sub(source, at, at + 3) == 'true' then
+    at += 4
+    return true
+  end
+
+  if string.sub(source, at, at + 4) == 'false' then
+    at += 5
+    return false
+  end
+
+  if string.sub(source, at, at + 3) == 'null' then
+    at += 4
+    return Null
+  end
+
+  fail('expected a JSON value')
+  error('unreachable', 0)
+end
+
+local function decode(text: string, options: Options?): Value
+  Common.validateUtf8('json', text)
+  source, length, at = text, #text, 1
+  maxDepth = if options and options.maxDepth then options.maxDepth else 512
+  if maxDepth < 1 or maxDepth % 1 ~= 0 then error('json: maxDepth must be a positive integer', 2) end
+
+  -- RFC 8259 says emitters MUST NOT add a BOM but parsers MAY ignore one for interoperability.
+  if string.sub(source, 1, 3) == '\239\187\191' then at = 4 end
+
+  local value = parseValue(0)
+  skipWhitespace()
+  if at <= length then fail('trailing data after JSON value') end
+
+  return value
+end
+
+return table.freeze {
+  null = Null,
+  decode = decode,
+}

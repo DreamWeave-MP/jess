@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+
+{% block body_class %}jess-home{% endblock body_class %}
+
+{% block content %}
+{% set showcase = load_data(path="data/showcase.toml") %}
+<section class="jess-hero" data-jess-hero>
+  <div class="jess-hero__fallback" aria-hidden="true"></div>
+  <canvas class="jess-hero__canvas" data-jess-hero-canvas aria-hidden="true"></canvas>
+  <div class="jess-hero__scan" aria-hidden="true"></div>
+  <div class="dw-shell jess-hero__content">
+    <p class="jess-kicker">JESS // LUAU APPLICATION RUNTIME</p>
+    <h1><span>Nothing</span> is special.</h1>
+    <p class="jess-hero__lede">Not the game. Not the renderer. Not the filesystem. Not the tooling. Not even the engine.</p>
+    <div class="jess-hero__commands" aria-label="Jess principles">
+      <span>PACKAGE THE POLICY.</span>
+      <span>EXPOSE THE PRIMITIVE.</span>
+      <span>MOVE THE BOUNDARY.</span>
+    </div>
+    <div class="dw-actions jess-hero__actions">
+      <a class="dw-button dw-button--primary" href="{{ get_url(path='@/docs/_index.md') | safe }}">Read the docs</a>
+      <a class="dw-button" href="https://github.com/DreamWeave-MP/jess">Source</a>
+    </div>
+  </div>
+  <div class="jess-hero__telemetry" aria-hidden="true">
+    <span>JPK</span><span>LUAU</span><span>L3I</span><span>CAPABILITIES</span><span>DOMAINS</span><span>IR</span>
+  </div>
+</section>
+
+<section class="jess-manifesto dw-shell jess-reveal">
+  <p class="jess-kicker">THE ARGUMENT</p>
+  <h2>The engine is not the product.<br><span>The boundary is.</span></h2>
+  <div class="jess-manifesto__grid">
+    <div class="jess-manifesto__copy">
+      <p>Game engines accumulate sacred objects. Parsers become native subsystems. Tools become executables. Rendering policy becomes permanent. Scripting gets a sandbox above the <em>real</em> engine.</p>
+      <p>Jess refuses the hierarchy. If something can be a package, a Luau program, an IR, a capability, or data, it does not get a privileged path merely because engines traditionally gave it one.</p>
+      <p class="jess-doctrine"><strong>Native code is a privilege.</strong> Make it earn the boundary.</p>
+    </div>
+    <div class="jess-dehardcode" aria-label="Jess architecture: engine policy moves into packages and Luau over a narrow native boundary">
+      <div class="jess-dehardcode__before">
+        <span class="jess-dehardcode__label">MONOLITH</span>
+        <div class="jess-dehardcode__core">ENGINE</div>
+        <div class="jess-dehardcode__bits"><span>VFS</span><span>FORMATS</span><span>TOOLS</span><span>SCENE</span><span>NAV</span><span>HTTP</span><span>PHYSICS</span><span>BUILD</span></div>
+      </div>
+      <div class="jess-dehardcode__cut" aria-hidden="true">→</div>
+      <div class="jess-dehardcode__after">
+        <span class="jess-dehardcode__label">JESS</span>
+        <div class="jess-layer jess-layer--policy"><b>JPK / Luau</b><span>policy · systems · tools · games · sites</span></div>
+        <div class="jess-layer"><b>script domains</b><span>identity · workers · capabilities</span></div>
+        <div class="jess-layer jess-layer--boundary"><b>L3i</b><span>lowered primitives · native capability</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="jess-eulogy jess-reveal">
+  <div class="dw-shell">
+    <blockquote>A corpse at a funeral I will never attend</blockquote>
+    <p>The monolithic engine is not coming back.</p>
+  </div>
+</section>
+
+<section class="jess-ecosystem dw-shell jess-reveal">
+  <p class="jess-kicker">NO PRIVILEGED PATHS</p>
+  <h2>Dehardcode the whole fucking stack.</h2>
+  <p class="jess-section-lede">These are packages, not promises. They run through the same package/runtime boundary available to application code.</p>
+  <div class="jess-cards">
+    <article><span class="jess-card__tag">DREAMWIND</span><h3>Bethesda formats and tooling</h3><p>BSA/BA2 archives, TES3 records, NIFs, saves, OpenMW import semantics, load-order tools and the machinery around them — exported as Luau modules.</p></article>
+    <article><span class="jess-card__tag">@RECAST</span><h3>Navigation without the C++ ABI</h3><p>Recast build stages, Detour navmeshes and queries, Crowd, PathQueue and TileCache in Luau over buffers, vectors and compiled hot paths.</p></article>
+    <article><span class="jess-card__tag">@DREAM/SCENE</span><h3>A scenegraph that owns no renderer</h3><p>Packed identity, transforms, bounds, masks and traversal. Presentation structure as a package, not an engine singleton.</p></article>
+    <article><span class="jess-card__tag">@DREAM/PHYSICS2D</span><h3>The solver is Luau</h3><p>Buffer-backed circles, broadphase, contacts, spatial queries, DDA raycasts and snapshots. Rust is not involved in the simulation.</p></article>
+    <article><span class="jess-card__tag">@DREAM/HTTP</span><h3>Application protocol, not engine feature</h3><p>A headless HTTP/1.1 router plus DreamNet request/response transport, with reusable views and lazy parsing on the hot path.</p></article>
+    <article><span class="jess-card__tag">@MAGICK</span><h3>Raster work without spawning ImageMagick</h3><p>Pure-Luau PNG/BMP/TGA I/O and image operations, plus the graphics build scripts that used to live as shell machinery.</p></article>
+    <article><span class="jess-card__tag">BUILTIN.JPK</span><h3>Jess consumes itself too</h3><p>JSON, TOML, YAML and Luau style tooling live in the built-in package instead of accumulating another permanent Rust subsystem.</p></article>
+    <article class="jess-card--site"><span class="jess-card__tag">@DREAMWEAVE/SITE</span><h3>Yes, the website generator too.</h3><p>Markdown, Tera-shaped templates, Sass, search, feeds and static output. Keep scrolling.</p></article>
+  </div>
+</section>
+
+<section class="jess-proof-intro jess-reveal">
+  <div class="dw-shell">
+    <blockquote>Now I see you've got something to prove, and nothing to lose</blockquote>
+    <p>Good. Measure it.</p>
+  </div>
+</section>
+
+<section class="jess-benchmarks dw-shell jess-reveal">
+  <p class="jess-kicker">TALK IS CHEAP</p>
+  <h2>Receipts.</h2>
+  <div class="jess-benchmark-grid">
+    <article class="jess-benchmark jess-benchmark--hero"><strong>{{ showcase.tes3merge.value }}</strong><span>{{ showcase.tes3merge.label }}</span><h3>{{ showcase.tes3merge.headline }}</h3><p>{{ showcase.tes3merge.detail }}</p></article>
+    <article class="jess-benchmark"><strong>{{ showcase.mergedlands.value }}</strong><span>{{ showcase.mergedlands.label }}</span><h3>{{ showcase.mergedlands.headline }}</h3><p>{{ showcase.mergedlands.detail }}</p></article>
+    <article class="jess-benchmark"><strong>{{ showcase.physics_raycast.value }}</strong><span>{{ showcase.physics_raycast.label }}</span><h3>{{ showcase.physics_raycast.headline }}</h3><p>{{ showcase.physics_raycast.detail }}</p></article>
+    <article class="jess-benchmark"><strong>{{ showcase.scene_idle.value }}</strong><span>{{ showcase.scene_idle.label }}</span><h3>{{ showcase.scene_idle.headline }}</h3><p>{{ showcase.scene_idle.detail }}</p></article>
+    <article class="jess-benchmark"><strong>{{ showcase.http_router.value }}</strong><span>{{ showcase.http_router.label }}</span><h3>{{ showcase.http_router.headline }}</h3><p>{{ showcase.http_router.detail }}</p></article>
+    <article class="jess-benchmark"><strong>{{ showcase.physics_snapshot.value }}</strong><span>{{ showcase.physics_snapshot.label }}</span><h3>{{ showcase.physics_snapshot.headline }}</h3><p>{{ showcase.physics_snapshot.detail }}</p></article>
+    <article class="jess-benchmark"><strong>{{ showcase.recast_lookup.value }}</strong><span>{{ showcase.recast_lookup.label }}</span><h3>{{ showcase.recast_lookup.headline }}</h3><p>{{ showcase.recast_lookup.detail }}</p></article>
+  </div>
+  <p class="jess-benchmark-note">Workload-specific local measurements from the shipped benchmark notes and Jess showcase harness. They are engineering evidence and regression targets, not portable hardware promises.</p>
+</section>
+
+<section class="jess-selfhost jess-reveal">
+  <div class="dw-shell jess-selfhost__grid">
+    <div>
+      <p class="jess-kicker">THAT'S NOT AN ENGINE FEATURE. THAT'S A PROGRAM.</p>
+      <h2>This site was built with Jess.</h2>
+      <p>The documentation generator is a JPK. The local build activates it in Jess, renders the content, compiles the Sass, writes the search index, and emits the site you are looking at.</p>
+      <p class="jess-selfhost__aside">You thought you were looking at a game engine. That's your mistake.</p>
+    </div>
+    <div class="jess-terminal" aria-label="How this site builds">
+      <div class="jess-terminal__bar"><span></span><span></span><span></span><b>bootstrap</b></div>
+      <pre><code>$ ./buildSite
+[jess] activating org.dreamweave.site
+[jess] rendering site/
+[jess] pages + docs + sass + search
+[jess] wrote site/public/
+
+# you're looking at it.</code></pre>
+    </div>
+  </div>
+</section>
+
+<section class="jess-final dw-shell jess-reveal">
+  <p class="jess-kicker">FINE. GIVE ME THE PRIMITIVES.</p>
+  <h2>Build something.</h2>
+  <div class="jess-final__commands"><code>jess init</code><code>jess run</code><code>jess pack</code></div>
+  <div class="dw-actions">
+    <a class="dw-button dw-button--primary" href="{{ get_url(path='@/docs/scripting/_index.md') | safe }}">Learn the runtime</a>
+    <a class="dw-button" href="{{ get_url(path='@/docs/scripting/packages.md') | safe }}">Build a JPK</a>
+    <a class="dw-button" href="{{ get_url(path='@/docs/api/_index.md') | safe }}">Read the API</a>
+  </div>
+</section>
+{% endblock content %}
+
+{% block extra_body %}
+{{ super() }}
+<script type="module" src="{{ get_url(path='js/jess-hero.js', trailing_slash=false) | safe }}"></script>
+{% endblock extra_body %}

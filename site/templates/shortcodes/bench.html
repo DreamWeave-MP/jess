@@ -1,0 +1,4 @@
+{#- A number from the benchmark baseline in data/benchmarks.toml, which tools/bench/bench.py docs
+    writes: {{ bench(value="plugins") }}, or a workload's, {{ bench(workload="tes3merge", value="faster") }}. -#}
+{%- set benchmarks = load_data(path="data/benchmarks.toml") -%}
+{%- if workload -%}{{ benchmarks[workload][value] }}{%- else -%}{{ benchmarks[value] }}{%- endif -%}

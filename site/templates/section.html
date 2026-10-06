@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="dw-shell jess-prose-page">
+  <header class="jess-page-header">
+    <p class="jess-kicker">jess</p>
+    <h1>{{ section.title }}</h1>
+    {% if section.description %}<p>{{ section.description }}</p>{% endif %}
+  </header>
+  <article class="docs-article">{{ section.content | safe }}</article>
+  {% if section.pages or section.subsections %}
+  <div class="jess-section-grid">
+    {% for child in section.pages %}
+    <a class="jess-section-card" href="{{ child.permalink | safe }}"><strong>{{ child.title }}</strong>{% if child.description %}<span>{{ child.description }}</span>{% endif %}</a>
+    {% endfor %}
+    {% for path in section.subsections %}
+      {% set child = get_section(path=path) %}
+      <a class="jess-section-card" href="{{ child.permalink | safe }}"><strong>{{ child.title }}</strong>{% if child.description %}<span>{{ child.description }}</span>{% endif %}</a>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+{% endblock content %}

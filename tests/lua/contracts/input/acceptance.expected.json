@@ -1,0 +1,164 @@
+{
+  "errors": [
+    "argument: the action is vector2, and this binding produces digital",
+    "argument: actions read each other in a cycle: a -> b -> a",
+    "argument: no key of that name",
+    "parse: unknown variant `doubleTap`",
+    "missing: has no set \"menu\"",
+    "argument: takes a duration in seconds"
+  ],
+  "result": {
+    "actions": [
+      {
+        "name": "move",
+        "valueType": "vector2"
+      },
+      {
+        "name": "quickSave",
+        "valueType": "digital"
+      },
+      {
+        "name": "interact",
+        "valueType": "digital"
+      },
+      {
+        "name": "contextMenu",
+        "valueType": "digital"
+      },
+      {
+        "name": "sprint",
+        "valueType": "digital"
+      },
+      {
+        "name": "ui.accept",
+        "valueType": "digital"
+      }
+    ],
+    "bindings": [
+      {
+        "index": 2,
+        "set": "gameplay"
+      },
+      {
+        "index": 0,
+        "layer": "inventory"
+      }
+    ],
+    "chord": [
+      "pressed"
+    ],
+    "chordBroken": [
+      "released"
+    ],
+    "chordDevice": true,
+    "chordHeld": {},
+    "conflicts": [
+      {
+        "actions": [
+          "a",
+          "b"
+        ],
+        "bindings": [
+          {
+            "index": 0,
+            "set": "s"
+          },
+          {
+            "index": 1,
+            "set": "s"
+          }
+        ],
+        "controls": [
+          "key:KeyS",
+          "key:ControlLeft"
+        ],
+        "kind": "press",
+        "owner": {
+          "set": "s"
+        }
+      }
+    ],
+    "devices": 2,
+    "errors": {
+      "badDuration": "argument",
+      "badType": "argument",
+      "cycle": "argument",
+      "unknownKey": "argument",
+      "unknownNode": "parse",
+      "unknownSet": "missing"
+    },
+    "halfChord": {},
+    "held": [
+      "pressed"
+    ],
+    "heldNotTapped": {},
+    "heldReleased": [
+      "released"
+    ],
+    "heldStill": {},
+    "intentDevice": true,
+    "intents": [
+      {
+        "action": "ui.accept",
+        "device": 1,
+        "intent": "ui.activate",
+        "kind": "pressed",
+        "time": 1.3200000000000001,
+        "value": true
+      }
+    ],
+    "keyboardSees": 0,
+    "layered": [
+      "pressed"
+    ],
+    "layeredMove": true,
+    "maskedSprint": false,
+    "moveStop": [
+      "released",
+      "changed"
+    ],
+    "moveUp": {"$vector": [0, 1, 0]},
+    "moveUpCancelled": {"$vector": [0, 1, 0]},
+    "noConflicts": 0,
+    "noIntentOnRelease": 0,
+    "notYetHeld": false,
+    "now": 1.3360000000000001,
+    "playstationLabel": "Cross",
+    "respec": true,
+    "roundTrip": true,
+    "silenced": {},
+    "sprint": {
+      "moving": true,
+      "still": false,
+      "stopped": false
+    },
+    "stats": 28,
+    "tap": [
+      "pressed"
+    ],
+    "tapOver": [
+      "released"
+    ],
+    "unlayered": false,
+    "xbox": [
+      {
+        "action": "contextMenu",
+        "family": "xbox",
+        "location": {
+          "index": 3,
+          "set": "gameplay"
+        },
+        "shape": {
+          "duration": 0.34999999999999998,
+          "input": {
+            "control": "gamepadButton:South",
+            "family": "xbox",
+            "kind": "control",
+            "label": "A"
+          },
+          "kind": "hold"
+        }
+      }
+    ]
+  }
+}

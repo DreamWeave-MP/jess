@@ -1,0 +1,210 @@
+--!strict
+-- @jess/jpk on its own: the canonical writer, the reader, and everything the reader refuses.
+local bytes = require '@dream/bytes'
+local jpk = require '@jess/jpk'
+local test = require '@jess/test'
+
+local suite = test.new()
+local expect = test.expect
+
+local function files(): { { path: string, data: buffer } }
+  return {
+    {
+      path = 'src/init.luau',
+      data = buffer.fromstring(string.rep('return { answer = 42 }\n', 200)),
+    },
+    { path = 'jess.toml', data = buffer.fromstring 'manifest_version = 1\n' },
+    { path = 'assets/noise.bin', data = bytes.fromHex '8f13a2' },
+    { path = 'assets/empty.txt', data = buffer.create(0) },
+  }
+end
+
+--- A copy of `data` with the byte at `at` (0-based) set to `value`.
+local function patched(data: buffer, at: number, value: number): buffer
+  local copy = buffer.create(buffer.len(data))
+  buffer.copy(copy, 0, data)
+  buffer.writeu8(copy, at, value)
+  return copy
+end
+
+--- The offset of the central directory entry for the first entry.
+local function centralOffset(archive: buffer): number
+  return buffer.readu32(archive, buffer.len(archive) - 6)
+end
+
+suite.describe('the canonical writer', function()
+  suite.it('writes the same bytes for the same files in any order', function()
+    local shuffled = files()
+    table.insert(shuffled, table.remove(shuffled, 1) :: { path: string, data: buffer })
+
+    expect(buffer.tostring(jpk.write(files()))).toBe(buffer.tostring(jpk.write(shuffled)))
+  end)
+
+  suite.it('sorts entries bytewise and compresses only what shrinks', function()
+    local archive = jpk.open(jpk.write(files()))
+    local paths, methods = {}, {}
+
+    for _, entry in archive.entries do
+      table.insert(paths, entry.path)
+      methods[entry.path] = entry.method
+    end
+
+    expect(paths).toEqual { 'assets/empty.txt', 'assets/noise.bin', 'jess.toml', 'src/init.luau' }
+    expect(methods['src/init.luau']).toBe 'zstd'
+    expect(methods['assets/noise.bin']).toBe 'stored'
+    expect(methods['assets/empty.txt']).toBe 'stored'
+  end)
+
+  suite.it('round-trips every entry', function()
+    local archive = jpk.open(jpk.write(files()))
+
+    for _, file in files() do
+      expect(buffer.tostring(archive.read(file.path))).toBe(buffer.tostring(file.data))
+    end
+  end)
+
+  suite.it(
+    'fixes the platform fields: DOS 1980-01-01, made by MS-DOS 6.3, no attributes',
+    function()
+      local archive = jpk.write(files())
+      local at = centralOffset(archive)
+
+      expect(buffer.readu16(archive, at + 4)).toBe(63)
+      expect(buffer.readu16(archive, at + 8)).toBe(0x0800)
+      expect(buffer.readu16(archive, at + 12)).toBe(0)
+      expect(buffer.readu16(archive, at + 14)).toBe(0x0021)
+      expect(buffer.readu32(archive, at + 38)).toBe(0)
+      expect(buffer.readu16(archive, at + 30)).toBe(0)
+    end
+  )
+
+  suite.it('holds 65534 entries and refuses 65535, the end record\'s ZIP64 sentinel', function()
+    local many = {}
+
+    for index = 1, 65534 do
+      many[index] = { path = `f{index}`, data = buffer.create(0) }
+    end
+
+    expect(#jpk.open(jpk.write(many)).entries).toBe(65534)
+    table.insert(many, { path = 'one-too-many', data = buffer.create(0) })
+    expect(function() jpk.write(many) end).toThrow '65535 entries exceed'
+  end)
+
+  suite.it('refuses paths that are not canonical and paths given twice', function()
+    local refused =
+      { '../escape', '/absolute', 'a//b', 'a/./b', 'C:/drive', 'back\\slash', 'trailing/', '' }
+
+    for _, path in refused do
+      expect(function() jpk.write { { path = path, data = buffer.create(1) } } end).toThrow 'jpk:'
+    end
+
+    expect(
+      function()
+        jpk.write {
+          { path = 'twice', data = buffer.create(1) },
+          { path = 'twice', data = buffer.create(2) },
+        }
+      end
+    ).toThrow 'given twice'
+  end)
+end)
+
+suite.describe('the reader', function()
+  suite.it('reads deflate entries other writers make', function()
+    local text = string.rep('deflate me ', 100)
+    local raw = bytes.deflate(text, { format = 'raw' })
+    local archive = jpk.write { { path = 'a.txt', data = buffer.fromstring(text) } }
+    local opened = jpk.open(archive)
+    local entry = opened.entries[1]
+    local headerEnd = 30 + #'a.txt'
+    local rebuilt = buffer.create(headerEnd + buffer.len(raw))
+    buffer.copy(rebuilt, 0, archive, 0, headerEnd)
+    buffer.copy(rebuilt, headerEnd, raw)
+    buffer.writeu16(rebuilt, 8, 8)
+    buffer.writeu32(rebuilt, 18, buffer.len(raw))
+
+    local central =
+      buffer.create(buffer.len(archive) - entry.offset - headerEnd - entry.compressedSize)
+    buffer.copy(central, 0, archive, headerEnd + entry.compressedSize)
+    buffer.writeu16(central, 10, 8)
+    buffer.writeu32(central, 20, buffer.len(raw))
+    buffer.writeu32(central, buffer.len(central) - 6, buffer.len(rebuilt))
+
+    local whole = buffer.create(buffer.len(rebuilt) + buffer.len(central))
+    buffer.copy(whole, 0, rebuilt)
+    buffer.copy(whole, buffer.len(rebuilt), central)
+
+    local deflated = jpk.open(whole)
+    expect(deflated.entries[1].method).toBe 'deflate'
+    expect(buffer.tostring(deflated.read 'a.txt')).toBe(text)
+  end)
+
+  suite.it('refuses an archive that is not a ZIP', function()
+    expect(function() jpk.open(buffer.fromstring 'not a zip at all, but long enough to look') end).toThrow 'no ZIP end record'
+  end)
+
+  suite.it('refuses a corrupt entry by its CRC-32', function()
+    local archive = jpk.write { { path = 'a.bin', data = bytes.fromHex '000102030405' } }
+    local corrupt = patched(archive, 30 + #'a.bin', 0xff)
+
+    expect(function() jpk.open(corrupt).read 'a.bin' end).toThrow 'fails its CRC-32'
+  end)
+
+  suite.it('refuses encryption, unknown methods, and ZIP64 markers', function()
+    local archive = jpk.write { { path = 'a.bin', data = bytes.fromHex '000102' } }
+    local at = centralOffset(archive)
+
+    expect(function() jpk.open(patched(archive, at + 8, 0x01)) end).toThrow 'encrypted'
+
+    expect(function() jpk.open(patched(archive, at + 10, 12)) end).toThrow 'compression method 12'
+
+    local zip64 = buffer.create(buffer.len(archive))
+    buffer.copy(zip64, 0, archive)
+    buffer.writeu32(zip64, at + 24, 0xffffffff)
+
+    expect(function() jpk.open(zip64) end).toThrow 'ZIP64'
+  end)
+
+  suite.it('refuses entry paths that are not canonical', function()
+    local archive = jpk.write { { path = 'ab', data = bytes.fromHex '00' } }
+    local at = centralOffset(archive)
+    local dotted = patched(patched(archive, at + 46, string.byte '.'), at + 47, string.byte '.')
+
+    expect(function() jpk.open(dotted) end).toThrow 'canonical relative path'
+  end)
+
+  suite.it('holds to its budgets before reading past them', function()
+    local archive = jpk.write(files())
+
+    expect(function() jpk.open(archive, { maxEntries = 3 }) end).toThrow 'exceed the budget of 3'
+
+    expect(function() jpk.open(archive, { maxPathLength = 5 }) end).toThrow 'exceeds the budget of 5'
+
+    expect(function() jpk.open(archive, { maxCentralDirectory = 10 }) end).toThrow 'central directory exceeds'
+
+    expect(function() jpk.open(archive, { maxEntrySize = 100 }) end).toThrow 'past the entry budget'
+
+    expect(function() jpk.open(archive, { maxTotalSize = 1000 }) end).toThrow 'past the archive budget'
+  end)
+
+  suite.it('reads through a source without holding the archive', function()
+    local archive = jpk.write(files())
+    local reads = 0
+    local opened = jpk.open {
+      size = buffer.len(archive),
+      read = function(offset: number, length: number): buffer
+        reads += 1
+
+        local slice = buffer.create(length)
+        buffer.copy(slice, 0, archive, offset, length)
+        return slice
+      end,
+    }
+    local afterOpen = reads
+
+    expect(buffer.tostring(opened.read 'jess.toml')).toBe 'manifest_version = 1\n'
+    expect(reads > afterOpen).toBe(true)
+  end)
+end)
+
+return suite

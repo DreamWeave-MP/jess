@@ -1,0 +1,91 @@
+{
+  "result": {
+    "constant": {
+      "parameters": {},
+      "textures": {},
+      "tostring": "ShaderProgram(0 parameters, 0 textures, 0 varyings)",
+      "varyings": {}
+    },
+    "fragment": {
+      "camera": "ShaderExpr(Vec3f)",
+      "constant": "ShaderExpr(Float)",
+      "cross": "ShaderExpr(Vec3f)",
+      "diffuse": "ShaderExpr(Vec4f)",
+      "divided": "ShaderExpr(Vec4f)",
+      "explicitSampler": "ShaderExpr(Vec4f)",
+      "facing": "ShaderExpr(Float)",
+      "floor": "ShaderExpr(Vec3f)",
+      "fromParts": "ShaderExpr(Vec4f)",
+      "input": "ShaderInput(fragment)",
+      "length": "ShaderExpr(Float)",
+      "light": "ShaderExpr(Float)",
+      "min": "ShaderExpr(Vec4f)",
+      "mixed": "ShaderExpr(Vec3f)",
+      "numberFirst": "ShaderExpr(Vec4f)",
+      "splat": "ShaderExpr(Vec3f)",
+      "subtracted": "ShaderExpr(Float)",
+      "swizzles": [
+        "ShaderExpr(Float)",
+        "ShaderExpr(Vec2f)",
+        "ShaderExpr(Vec3f)",
+        "ShaderExpr(Vec4f)"
+      ],
+      "time": "ShaderExpr(Float)",
+      "viewport": "ShaderExpr(Vec2f)"
+    },
+    "lit": {
+      "parameters": [
+        {
+          "name": "ambient",
+          "type": "Float"
+        },
+        {
+          "name": "lightDirection",
+          "type": "Vec3f"
+        },
+        {
+          "name": "normalMatrix",
+          "type": "Mat3f"
+        },
+        {
+          "name": "tint",
+          "type": "Vec4f"
+        }
+      ],
+      "textures": [
+        "diffuse"
+      ],
+      "tostring": "ShaderProgram(4 parameters, 1 texture, 2 varyings)",
+      "varyings": [
+        {
+          "name": "normal",
+          "type": "Vec3f"
+        },
+        {
+          "name": "uv",
+          "type": "Vec2f"
+        }
+      ]
+    },
+    "sameModule": true,
+    "types": {
+      "float": "Float",
+      "mat3": "Mat3f",
+      "mat4": "Mat4f",
+      "sampler": "Sampler",
+      "texture2d": "Texture2D",
+      "vec2": "Vec2f",
+      "vec3": "Vec3f",
+      "vec4": "Vec4f"
+    },
+    "vertex": {
+      "clip": "ShaderExpr(Vec4f)",
+      "differentValues": false,
+      "input": "ShaderInput(vertex)",
+      "matrix": "ShaderExpr(Mat4f)",
+      "position": "ShaderExpr(Vec3f)",
+      "sameRead": true,
+      "texture": "ShaderExpr(Texture2D)"
+    }
+  }
+}

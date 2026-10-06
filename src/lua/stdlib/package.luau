@@ -1,0 +1,1182 @@
+--!strict
+--!native
+-- @jess/package: packages, from a Package Source folder or a JPK, their manifests and content
+-- digests, and the code-free resolution of requested layers into an activation plan.
+--
+-- Nothing here runs package code. Opening reads `jess.toml` and the payload's bytes; resolving
+-- reads manifests. What a plan's modules do is the host's to decide, after it accepts the plan.
+
+export type Host = {
+  read listTree: (root: string) -> { { path: string, kind: string } },
+  read readFile: (path: string) -> buffer?,
+  read readAt: (path: string, offset: number, length: number) -> buffer,
+  read fileSize: (path: string) -> number?,
+  read isDir: (path: string) -> boolean,
+  read replace: (path: string, data: buffer) -> (),
+  read decodeToml: (text: string) -> { [string]: unknown },
+  --- The built-in package jess carries: its manifest and payload, by package path.
+  read builtin: () -> { [string]: string },
+}
+
+export type Hasher = {
+  update: (self: Hasher, data: buffer | string) -> (),
+  finish: (self: Hasher) -> string,
+}
+
+export type Bytes = {
+  read hasher: (algorithm: string) -> Hasher,
+  read digest: (data: buffer | string, algorithm: string) -> buffer,
+}
+
+export type Entry = { read path: string }
+
+export type Archive = {
+  read entries: { Entry },
+  read find: (path: string) -> Entry?,
+  read read: (entry: Entry | string) -> buffer,
+}
+
+export type Jpk = {
+  read open: (
+    source: { read size: number, read read: (offset: number, length: number) -> buffer }
+  ) -> Archive,
+  read write: (files: { { path: string, data: buffer } }) -> buffer,
+  read checkPath: (path: string) -> string?,
+}
+
+export type Version = { major: number, minor: number, patch: number }
+
+--- Code jess runs because its layer was activated, and the capabilities that code needs.
+export type Entrypoint = { read module: string, read capabilities: { string } }
+
+--- A semantic system: the layers it requires, the modules it offers as inert public API, and the
+--- entrypoints that run when it is activated.
+export type Layer = {
+  read id: string,
+  read requires: { string },
+  read exports: { string },
+  read entrypoints: { Entrypoint },
+}
+
+--- A managed Luau implementation that a target supervisor may load into application topology.
+--- `interface` is declarative identity; the module supplies the implementation at runtime.
+export type Managed = {
+  read id: string,
+  read module: string,
+  read interface: string?,
+}
+
+--- One runnable role inside a package. Its entry is private package source, not an exported module.
+export type Target = {
+  read id: string,
+  read kind: 'application' | 'command',
+  read entry: string,
+  read capabilities: { string },
+  read command: string?,
+}
+
+export type Manifest = {
+  read manifestVersion: number,
+  read id: string,
+  read version: string,
+  read jessApi: string,
+  read defaultTarget: string?,
+  read include: { string },
+  read tests: { string },
+  read dependencies: { [string]: string },
+  read modules: { [string]: string },
+  read layers: { Layer },
+  read managed: { [string]: Managed },
+  read targets: { [string]: Target },
+}
+
+export type Package = {
+  read manifest: Manifest,
+  read id: string,
+  read version: string,
+  read digest: string,
+  read kind: 'source' | 'jpk',
+  read location: string,
+  read files: { string },
+  read read: (path: string) -> buffer?,
+}
+
+export type Request = {
+  layers: { string },
+  hostModules: { string }?,
+  grant: { string }?,
+}
+
+export type PlanLayer = {
+  read id: string,
+  read package: string,
+  read version: string,
+  read requires: { string },
+  read exports: { string },
+  read entrypoints: { Entrypoint },
+}
+
+export type PlanEntrypoint = {
+  read module: string,
+  read package: string,
+  read path: string,
+  read layer: string,
+}
+
+export type PlanPackage = {
+  read id: string,
+  read version: string,
+  read digest: string,
+  read kind: 'source' | 'jpk',
+  read location: string,
+}
+
+export type PlanModule = { read name: string, read package: string, read path: string }
+
+export type PlanCapability = {
+  read capability: string,
+  read package: string,
+  read version: string,
+  read layer: string,
+  read entrypoint: string,
+}
+
+export type Plan = {
+  read requested: { string },
+  read layers: { PlanLayer },
+  read packages: { PlanPackage },
+  read modules: { PlanModule },
+  read entrypoints: { PlanEntrypoint },
+  read capabilities: { PlanCapability },
+}
+
+local Manifest = 'jess.toml'
+-- The id of jess's built-in package (jpk/builtin), the one package that exports @jess/ names. A
+-- package with this id is accepted only when it is the copy jess carries.
+local BuiltinPackage = 'org.dreamweave.jess'
+local DigestDomain = 'jess-package-digest-v1\0'
+local WordPattern, SegmentPattern = '^[a-z0-9][a-z0-9-]*$', '^[a-z0-9][a-z0-9._-]*$'
+
+local host: Host, container: Jpk
+
+--- @dream/bytes, looked up on first use, as @jess/jpk does.
+local cached: Bytes?
+
+local function codecs(): Bytes
+  if not cached then cached = (require :: (string) -> Bytes) '@dream/bytes' end
+
+  return cached :: Bytes
+end
+
+local function fail(message: string): never error(`package: {message}`, 0) end
+
+--- Whether `text` is at least two lowercase ASCII words joined by dots: package, layer, and
+--- capability ids alike.
+local function isDotted(text: string): boolean
+  local words = string.split(text, '.')
+
+  if #words < 2 then return false end
+
+  for _, word in words do
+    if not string.find(word, WordPattern) then return false end
+  end
+
+  return true
+end
+
+local function checkId(id: unknown, what: string): string
+  if type(id) ~= 'string' or not isDotted(id) then
+    fail(`{what} '{tostring(id)}' is not lowercase ASCII words joined by dots (org.example.name)`)
+  end
+
+  return id :: string
+end
+
+local function checkLocalId(id: unknown, what: string): string
+  if type(id) ~= 'string' or not string.find(id :: string, SegmentPattern) then
+    fail(`{what} '{tostring(id)}' is not a lowercase ASCII identifier`)
+  end
+
+  return id :: string
+end
+
+local function checkCommand(command: unknown, what: string): string
+  if type(command) ~= 'string' or not string.find(command :: string, WordPattern) then
+    fail(`{what} '{tostring(command)}' is not a lowercase ASCII command name`)
+  end
+
+  return command :: string
+end
+
+local function parseVersion(text: string, what: string): Version
+  local major, minor, patch = string.match(text, '^(%d+)%.(%d+)%.(%d+)$')
+
+  if not major then fail(`{what} '{text}' is not a major.minor.patch version`) end
+
+  return {
+    major = tonumber(major) :: number,
+    minor = tonumber(minor) :: number,
+    patch = tonumber(patch) :: number,
+  }
+end
+
+local function compareVersions(left: Version, right: Version): number
+  if left.major ~= right.major then return left.major - right.major end
+
+  if left.minor ~= right.minor then return left.minor - right.minor end
+
+  return left.patch - right.patch
+end
+
+--- Whether `version` meets `requirement`: `=x.y.z` exactly, or `^x`, `^x.y`, `^x.y.z` (and the
+--- same without the caret) as Cargo reads a caret: at least that, below the next breaking release.
+local function satisfies(version: Version, requirement: string): boolean
+  local exact, rest = string.match(requirement, '^(=?)(.*)$')
+  rest = string.gsub(rest :: string, '^%^', '')
+
+  if exact == '=' then
+    return compareVersions(version, parseVersion(rest :: string, 'requirement')) == 0
+  end
+
+  local parts = string.split(rest :: string, '.')
+  local floor = {
+    major = tonumber(parts[1]) or 0,
+    minor = tonumber(parts[2]) or 0,
+    patch = tonumber(parts[3]) or 0,
+  }
+
+  if compareVersions(version, floor) < 0 then return false end
+
+  if floor.major > 0 or #parts == 1 then return version.major == floor.major end
+
+  if floor.minor > 0 or #parts == 2 then
+    return version.major == 0 and version.minor == floor.minor
+  end
+
+  return version.major == 0 and version.minor == 0 and version.patch == floor.patch
+end
+
+local function checkRequirement(requirement: unknown, what: string): string
+  if
+    type(requirement) ~= 'string'
+    or not string.find(requirement, '^[=^]?%d+$')
+      and not string.find(requirement, '^[=^]?%d+%.%d+$')
+      and not string.find(requirement, '^[=^]?%d+%.%d+%.%d+$')
+  then
+    fail(`{what} '{tostring(requirement)}' is not a version requirement (^1.2, =1.2.3)`)
+  end
+
+  local text = requirement :: string
+
+  if string.sub(text, 1, 1) == '=' then parseVersion(string.sub(text, 2), what) end
+
+  return text
+end
+
+local function checkKeys(value: { [string]: unknown }, allowed: { string }, where: string)
+  local known = {}
+
+  for _, key in allowed do
+    known[key] = true
+  end
+
+  for key in value do
+    if type(key) ~= 'string' or not known[key] then
+      fail(`{where} has an unknown key '{tostring(key)}'`)
+    end
+  end
+end
+
+local function stringList(value: unknown, where: string): { string }
+  if value == nil then return {} end
+
+  if type(value) ~= 'table' then fail(`{where} must be a list of strings`) end
+
+  local list: { string } = {}
+
+  for index, item in value :: { [unknown]: unknown } do
+    if type(index) ~= 'number' or type(item) ~= 'string' then
+      fail(`{where} must be a list of strings`)
+    end
+
+    list[index :: number] = item :: string
+  end
+
+  if #list ~= #(value :: { unknown }) then fail(`{where} must be a list of strings`) end
+
+  return list
+end
+
+local function checkPayloadPath(path: string, where: string): string
+  local problem = container.checkPath(path)
+
+  if problem then fail(`{where} '{path}': {problem}`) end
+
+  return path
+end
+
+local function checkSourcePath(path: unknown, where: string): string
+  if type(path) ~= 'string' then fail(`{where} must name a .luau file`) end
+
+  local checked = checkPayloadPath(path :: string, where)
+
+  if string.sub(checked, -5) ~= '.luau' then fail(`{where} must name a .luau file`) end
+
+  return checked
+end
+
+local function checkModuleName(name: string, where: string, package: string)
+  local valid = string.sub(name, 1, 1) == '@'
+
+  for _, segment in string.split(string.sub(name, 2), '/') do
+    if not string.find(segment, SegmentPattern) then valid = false end
+  end
+
+  if not valid then fail(`{where} '{name}' is not a module name (@scope/name, lowercase ASCII)`) end
+
+  -- jess's built-in package is jess's own, so its modules are @jess/ names; the names jess
+  -- provides natively stay reserved, as every host module's name is.
+  local builtin = package == BuiltinPackage and string.sub(name, 1, 6) == '@jess/'
+
+  if (name == '@jess' or string.sub(name, 1, 6) == '@jess/') and not builtin then
+    fail(
+      `{where} '{name}': @jess/ is jess's own namespace, open only to its built-in package ({BuiltinPackage})`
+    )
+  end
+
+  if name == '@self' or string.sub(name, 1, 6) == '@self/' then
+    fail(`{where} '{name}': @self is Luau's, not an export`)
+  end
+end
+
+local function parseManifest(text: string): Manifest
+  local document = host.decodeToml(text)
+  checkKeys(
+    document,
+    { 'manifest_version', 'package', 'dependencies', 'modules', 'layer', 'managed', 'targets' },
+    Manifest
+  )
+
+  if document.manifest_version ~= 1 then fail(`{Manifest}: manifest_version must be 1`) end
+
+  local package = document.package
+
+  if type(package) ~= 'table' then fail(`{Manifest} has no [package] table`) end
+
+  local fields = package :: { [string]: unknown }
+  checkKeys(
+    fields,
+    { 'id', 'version', 'jess_api', 'default_target', 'include', 'tests' },
+    `{Manifest} [package]`
+  )
+
+  local id = checkId(fields.id, 'package id')
+
+  if type(fields.version) ~= 'string' then fail(`{Manifest}: [package] needs a version`) end
+
+  local version = fields.version :: string
+  parseVersion(version, 'package version')
+
+  if fields.jess_api ~= '1' then
+    fail(`{Manifest}: jess_api must be "1", the package API this jess provides`)
+  end
+
+  local defaultTarget: string?
+
+  if fields.default_target ~= nil then
+    defaultTarget = checkLocalId(fields.default_target, `{Manifest} [package] default_target`)
+  end
+
+  local include = stringList(fields.include, `{Manifest} [package] include`)
+
+  if #include == 0 then
+    fail(`{Manifest}: [package] include must name the payload's folders or files`)
+  end
+
+  for _, root in include do
+    checkPayloadPath(root, `{Manifest} [package] include`)
+
+    if root == Manifest then
+      fail(`{Manifest}: [package] include names the manifest, which is always included`)
+    end
+  end
+
+  local tests = stringList(fields.tests, `{Manifest} [package] tests`)
+
+  for _, path in tests do
+    checkPayloadPath(path, `{Manifest} [package] tests`)
+  end
+
+  local dependencies = {}
+
+  if document.dependencies ~= nil then
+    if type(document.dependencies) ~= 'table' then
+      fail(`{Manifest}: [dependencies] must be a table`)
+    end
+
+    for dependency, requirement in document.dependencies :: { [unknown]: unknown } do
+      local name = checkId(dependency, `{Manifest} dependency`)
+
+      if name == id then fail(`{Manifest}: the package depends on itself`) end
+
+      dependencies[name] = checkRequirement(requirement, `{Manifest} dependency '{name}'`)
+    end
+  end
+
+  local modules: { [string]: string } = {}
+
+  if document.modules ~= nil then
+    if type(document.modules) ~= 'table' then fail(`{Manifest}: [modules] must be a table`) end
+
+    for key, value in document.modules :: { [unknown]: unknown } do
+      if type(key) ~= 'string' or type(value) ~= 'string' then
+        fail(`{Manifest}: [modules] maps names to paths`)
+      end
+
+      local name, path = key :: string, value :: string
+
+      checkModuleName(name, `{Manifest} module`, id)
+      checkPayloadPath(path, `{Manifest} module '{name}'`)
+
+      if string.sub(path, -5) ~= '.luau' then
+        fail(`{Manifest}: module '{name}' must be a .luau file`)
+      end
+
+      modules[name] = path
+    end
+  end
+
+  local managed: { [string]: Managed } = {}
+
+  if document.managed ~= nil then
+    if type(document.managed) ~= 'table' then fail(`{Manifest}: [managed] must be a table`) end
+
+    for key, value in document.managed :: { [unknown]: unknown } do
+      local id = checkLocalId(key, `{Manifest} managed id`)
+
+      if type(value) ~= 'table' then fail(`{Manifest}: [managed.{id}] must be a table`) end
+
+      local declared = value :: { [string]: unknown }
+      local where = `{Manifest} [managed.{id}]`
+      checkKeys(declared, { 'module', 'interface' }, where)
+
+      local module = checkSourcePath(declared.module, `{where} module`)
+      local interface: string?
+
+      if declared.interface ~= nil then
+        interface = checkId(declared.interface, `{where} interface`)
+      end
+
+      managed[id] = table.freeze { id = id, module = module, interface = interface }
+    end
+  end
+
+  local targets: { [string]: Target } = {}
+  local commandOwners: { [string]: string } = {}
+
+  if document.targets ~= nil then
+    if type(document.targets) ~= 'table' then fail(`{Manifest}: [targets] must be a table`) end
+
+    for key, value in document.targets :: { [unknown]: unknown } do
+      local id = checkLocalId(key, `{Manifest} target id`)
+
+      if type(value) ~= 'table' then fail(`{Manifest}: [targets.{id}] must be a table`) end
+
+      local declared = value :: { [string]: unknown }
+      local where = `{Manifest} [targets.{id}]`
+      checkKeys(declared, { 'kind', 'entry', 'capabilities', 'command' }, where)
+
+      local kind = declared.kind
+
+      if kind ~= 'application' and kind ~= 'command' then
+        fail(`{where} kind must be "application" or "command"`)
+      end
+
+      local entry = checkSourcePath(declared.entry, `{where} entry`)
+      local capabilities = stringList(declared.capabilities, `{where} capabilities`)
+
+      for _, capability in capabilities do
+        if not isDotted(capability) then
+          fail(`{where} capability '{capability}' is not dotted lowercase words (vfs.read)`)
+        end
+      end
+
+      local command: string?
+
+      if declared.command ~= nil then
+        if kind ~= 'command' then fail(`{where} command is only valid when kind = "command"`) end
+
+        command = checkCommand(declared.command, `{where} command`)
+        local owner = commandOwners[command]
+
+        if owner then
+          local first, second = owner, id
+
+          if second < first then
+            first, second = second, first
+          end
+
+          fail(
+            `{Manifest}: command '{command}' is declared by both targets '{first}' and '{second}'`
+          )
+        end
+
+        commandOwners[command] = id
+      end
+
+      targets[id] = table.freeze {
+        id = id,
+        kind = kind :: 'application' | 'command',
+        entry = entry,
+        capabilities = table.freeze(capabilities),
+        command = command,
+      }
+    end
+  end
+
+  if defaultTarget and not targets[defaultTarget] then
+    fail(`{Manifest}: [package] default_target '{defaultTarget}' does not name a [targets] entry`)
+  end
+
+  local layers: { Layer }, seen: { [string]: boolean } = {}, {}
+  local used: { [string]: boolean } = {}
+
+  if document.layer ~= nil then
+    if type(document.layer) ~= 'table' then
+      fail(`{Manifest}: [[layer]] must be an array of tables`)
+    end
+
+    for index, entry in document.layer :: { [unknown]: unknown } do
+      if type(index) ~= 'number' or type(entry) ~= 'table' then
+        fail(`{Manifest}: [[layer]] must be an array of tables`)
+      end
+
+      local layer = entry :: { [string]: unknown }
+      local where = `{Manifest} layer {index}`
+      checkKeys(layer, { 'id', 'requires', 'exports', 'entrypoint' }, where)
+
+      local layerId = checkId(layer.id, `{where} id`)
+
+      if seen[layerId] then fail(`{Manifest}: layer '{layerId}' is declared twice`) end
+
+      seen[layerId] = true
+
+      local requires = stringList(layer.requires, `layer '{layerId}' requires`)
+
+      for _, required in requires do
+        checkId(required, `layer '{layerId}' requires`)
+
+        if required == layerId then fail(`{Manifest}: layer '{layerId}' requires itself`) end
+      end
+
+      local exported = stringList(layer.exports, `layer '{layerId}' exports`)
+
+      for _, name in exported do
+        if not modules[name] then
+          fail(`{Manifest}: layer '{layerId}' exports '{name}', which [modules] doesn't name`)
+        end
+
+        used[name] = true
+      end
+
+      local entrypoints: { Entrypoint } = {}
+
+      if layer.entrypoint ~= nil then
+        if type(layer.entrypoint) ~= 'table' then
+          fail(`{Manifest}: layer '{layerId}' [[layer.entrypoint]] must be an array of tables`)
+        end
+
+        for _, value in layer.entrypoint :: { [unknown]: unknown } do
+          if type(value) ~= 'table' then
+            fail(`{Manifest}: layer '{layerId}' [[layer.entrypoint]] must be an array of tables`)
+          end
+
+          local declared = value :: { [string]: unknown }
+          checkKeys(declared, { 'module', 'capabilities' }, `layer '{layerId}' entrypoint`)
+
+          local name = declared.module
+
+          if type(name) ~= 'string' or not modules[name] then
+            fail(
+              `{Manifest}: layer '{layerId}' entrypoint module '{tostring(name)}' isn't one [modules] names`
+            )
+          end
+
+          local capabilities =
+            stringList(declared.capabilities, `layer '{layerId}' entrypoint '{name}' capabilities`)
+
+          for _, capability in capabilities do
+            if not isDotted(capability) then
+              fail(
+                `{Manifest}: layer '{layerId}' capability '{capability}' is not dotted lowercase words (vfs.read)`
+              )
+            end
+          end
+
+          used[name :: string] = true
+          table.insert(
+            entrypoints,
+            table.freeze { module = name :: string, capabilities = table.freeze(capabilities) }
+          )
+        end
+      end
+
+      table.insert(
+        layers,
+        table.freeze {
+          id = layerId,
+          requires = table.freeze(requires),
+          exports = table.freeze(exported),
+          entrypoints = table.freeze(entrypoints),
+        }
+      )
+    end
+  end
+
+  for name in modules do
+    if not used[name] then
+      fail(`{Manifest}: module '{name}' is neither exported nor an entrypoint of any layer`)
+    end
+  end
+
+  return table.freeze {
+    manifestVersion = 1,
+    id = id,
+    version = version,
+    jessApi = '1',
+    defaultTarget = defaultTarget,
+    include = table.freeze(include),
+    tests = table.freeze(tests),
+    dependencies = table.freeze(dependencies),
+    modules = table.freeze(modules),
+    layers = table.freeze(layers),
+    managed = table.freeze(managed),
+    targets = table.freeze(targets),
+  }
+end
+
+--- Whether `path` is the manifest or under one of `include`'s roots.
+local function inPayload(path: string, include: { string }): boolean
+  if path == Manifest then return true end
+
+  for _, root in include do
+    if path == root or string.sub(path, 1, #root + 1) == `{root}/` then return true end
+  end
+
+  return false
+end
+
+local function writeU64(target: buffer, at: number, value: number)
+  buffer.writeu32(target, at, value % 0x100000000)
+  buffer.writeu32(target, at + 4, value // 0x100000000)
+end
+
+--- Seals an opened package: its content digest, and a read that only ever returns those bytes.
+---
+--- The digest is BLAKE3 over a domain tag, then each file in canonical order (the manifest, then
+--- the rest bytewise), each as its path's length, its path, its size, and its own BLAKE3. The same
+--- files give the same digest whichever provider holds them and however they're packed. Each
+--- file's BLAKE3 is kept, and every later read is checked against it: a file that changed on disk,
+--- or a JPK replaced, after the package was opened is an error, never new code running under the
+--- old digest. Reads stay lazy; nothing is held but the hashes.
+local function seal(
+  location: string,
+  files: { string },
+  manifest: buffer,
+  rawRead: (path: string) -> buffer?
+): (string, (path: string) -> buffer?)
+  local hasher, hashes = codecs().hasher 'blake3', {} :: { [string]: string }
+  hasher:update(DigestDomain)
+
+  for _, path in files do
+    local read = if path == Manifest then manifest else rawRead(path)
+
+    if not read then fail(`'{location}': '{path}' went away while the package was opened`) end
+
+    local data = read :: buffer
+    local hash = buffer.tostring(codecs().digest(data, 'blake3'))
+    local frame = buffer.create(16 + #path)
+    writeU64(frame, 0, #path)
+    buffer.writestring(frame, 8, path)
+    writeU64(frame, 8 + #path, buffer.len(data))
+    hasher:update(frame)
+    hasher:update(hash)
+    hashes[path] = hash
+  end
+
+  local function read(path: string): buffer?
+    local expected = hashes[path]
+
+    if not expected then return nil end
+
+    -- A JPK replaced under an opened package fails in the container (a moved header, a CRC) before
+    -- it can fail the hash; either way it is the same error.
+    local ok, data = pcall(rawRead, path)
+
+    if not ok or not data or buffer.tostring(codecs().digest(data, 'blake3')) ~= expected then
+      local reason = if ok then '' else ` ({data})`
+      fail(`'{location}': '{path}' changed since the package was opened{reason}; open it again`)
+    end
+
+    return data
+  end
+
+  return hasher:finish(), read
+end
+
+--- The payload in canonical order, checked: canonical paths, no two that differ only in ASCII case,
+--- and every exported module present.
+local function canonicalFiles(manifest: Manifest, paths: { string }, where: string): { string }
+  local rest, folded = {}, {}
+
+  for _, path in paths do
+    checkPayloadPath(path, where)
+
+    local lower = string.lower(path)
+
+    if folded[lower] then fail(`{where}: '{folded[lower]}' and '{path}' differ only in case`) end
+
+    folded[lower] = path
+
+    if path ~= Manifest then table.insert(rest, path) end
+  end
+
+  table.sort(rest)
+  table.insert(rest, 1, Manifest)
+
+  local present = {}
+
+  for _, path in rest do
+    present[path] = true
+  end
+
+  for name, path in manifest.modules do
+    if not present[path] then
+      fail(`{where}: module '{name}' is '{path}', which isn't in the payload`)
+    end
+  end
+
+  for id, managed in manifest.managed do
+    if not present[managed.module] then
+      fail(`{where}: managed '{id}' is '{managed.module}', which isn't in the payload`)
+    end
+  end
+
+  for id, target in manifest.targets do
+    if not present[target.entry] then
+      fail(`{where}: target '{id}' entry is '{target.entry}', which isn't in the payload`)
+    end
+  end
+
+  return rest
+end
+
+local function openSource(location: string): Package
+  local text = host.readFile(`{location}/{Manifest}`)
+
+  if not text then fail(`'{location}' has no {Manifest}`) end
+
+  local manifestBytes = text :: buffer
+  local manifest = parseManifest(buffer.tostring(manifestBytes))
+  local paths = { Manifest }
+
+  for _, root in manifest.include do
+    local full = `{location}/{root}`
+
+    if host.isDir(full) then
+      for _, entry in host.listTree(full) do
+        local path = `{root}/{entry.path}`
+
+        if entry.kind == 'link' then
+          fail(`'{location}': '{path}' is a symlink, which a package can't hold`)
+        end
+
+        if entry.kind == 'other' then fail(`'{location}': '{path}' is not a file or folder`) end
+
+        if entry.kind == 'file' then table.insert(paths, path) end
+      end
+    elseif host.fileSize(full) then
+      table.insert(paths, root)
+    else
+      fail(`'{location}': [package] include names '{root}', which isn't there`)
+    end
+  end
+
+  local files = canonicalFiles(manifest, paths, location)
+  local digest, read = seal(
+    location,
+    files,
+    manifestBytes,
+    function(path: string): buffer? return host.readFile(`{location}/{path}`) end
+  )
+
+  return table.freeze {
+    manifest = manifest,
+    id = manifest.id,
+    version = manifest.version,
+    digest = digest,
+    kind = 'source' :: 'source',
+    location = location,
+    files = table.freeze(files),
+    read = read,
+  }
+end
+
+local function openJpk(location: string): Package
+  local size = host.fileSize(location) or fail(`'{location}' is not there`)
+  local archive = container.open {
+    size = size,
+    read = function(offset: number, length: number): buffer
+      return host.readAt(location, offset, length)
+    end,
+  }
+
+  if not archive.find(Manifest) then fail(`'{location}' has no {Manifest}`) end
+
+  local manifestBytes = archive.read(Manifest)
+  local manifest = parseManifest(buffer.tostring(manifestBytes))
+  local paths = {}
+
+  for _, entry in archive.entries do
+    if not inPayload(entry.path, manifest.include) then
+      fail(`'{location}': '{entry.path}' is outside the payload [package] include names`)
+    end
+
+    table.insert(paths, entry.path)
+  end
+
+  local files = canonicalFiles(manifest, paths, location)
+  local digest, read = seal(
+    location,
+    files,
+    manifestBytes,
+    function(path: string): buffer? return if archive.find(path) then archive.read(path) else nil end
+  )
+
+  return table.freeze {
+    manifest = manifest,
+    id = manifest.id,
+    version = manifest.version,
+    digest = digest,
+    kind = 'jpk' :: 'jpk',
+    location = location,
+    files = table.freeze(files),
+    read = read,
+  }
+end
+
+--- Fails unless `package`, which claims the built-in package's id, is byte for byte the built-in
+--- package jess carries: the id alone grants nothing.
+local function checkBuiltin(package: Package)
+  local carried = host.builtin()
+  local claim = `'{package.location}' says it is jess's built-in package ({BuiltinPackage})`
+  local remedy = 'rebuild jess from this source, or give the package an id of its own'
+
+  for _, path in package.files do
+    local data = package.read(path)
+    local expected = carried[path]
+
+    if not expected then fail(`{claim}, but jess's has no '{path}'; {remedy}`) end
+
+    if not data or buffer.tostring(data) ~= expected then
+      fail(`{claim}, but its '{path}' isn't jess's; {remedy}`)
+    end
+  end
+
+  for path in carried do
+    if not table.find(package.files, path) then
+      fail(`{claim}, but it has no '{path}', which jess's has; {remedy}`)
+    end
+  end
+end
+
+--- A package from a Package Source folder or a `.jpk` file. Reads; runs nothing.
+local function open(location: string): Package
+  local trimmed = string.gsub(location, '[/\\]+$', '')
+
+  if trimmed == '' then trimmed = location end
+
+  local package = if host.isDir(trimmed) then openSource(trimmed) else openJpk(trimmed)
+
+  if package.id == BuiltinPackage then checkBuiltin(package) end
+
+  return package
+end
+
+--- Packs the Package Source at `source` into the canonical JPK at `output`, written atomically.
+--- Every byte packed is read through the sealed package, so the digest returned is the digest of
+--- what was written: a file edited mid-pack fails the pack.
+local function pack(
+  source: string,
+  output: string
+): { path: string, digest: string, files: number, size: number }
+  local package = openSource((string.gsub(source, '[/\\]+$', '')))
+  local files = {}
+
+  for _, path in package.files do
+    table.insert(files, { path = path, data = package.read(path) :: buffer })
+  end
+
+  local archive = container.write(files)
+  host.replace(output, archive)
+
+  return { path = output, digest = package.digest, files = #files, size = buffer.len(archive) }
+end
+
+local function sortedKeys<T>(map: { [string]: T }): { string }
+  local keys = {}
+
+  for key in map do
+    table.insert(keys, key)
+  end
+
+  table.sort(keys)
+
+  return keys
+end
+
+--- Resolves `request.layers` over `packages` into a plan, without running anything: every layer
+--- and package dependency present and satisfied, no cycles, one provider per layer, package, and
+--- module name, nothing colliding with `request.hostModules`, and, when `request.grant` is given,
+--- every capability the resolved layers require inside it.
+local function resolve(packages: { Package }, request: Request): Plan
+  local byId, layerProvider =
+    {} :: { [string]: Package }, {} :: { [string]: { package: Package, layer: Layer } }
+
+  for _, candidate in packages do
+    local other = byId[candidate.id]
+
+    if other then
+      fail(
+        `{candidate.id} is offered twice ({other.kind} {other.location} and {candidate.kind} {candidate.location}); choose one`
+      )
+    end
+
+    byId[candidate.id] = candidate
+
+    for _, layer in candidate.manifest.layers do
+      local provider = layerProvider[layer.id]
+
+      if provider then
+        fail(`layer {layer.id} is provided by both {provider.package.id} and {candidate.id}`)
+      end
+
+      layerProvider[layer.id] = { package = candidate, layer = layer }
+    end
+  end
+
+  local order, state = {} :: { { package: Package, layer: Layer } }, {} :: { [string]: string }
+
+  local function visit(id: string, chain: { string })
+    local mark = state[id]
+
+    if mark == 'done' then return end
+
+    local path = table.clone(chain)
+    table.insert(path, id)
+
+    if mark == 'active' then fail(`layer cycle: {table.concat(path, ' -> ')}`) end
+
+    local provider = layerProvider[id]
+
+    if not provider then fail(`{table.concat(path, ' requires ')}: no provider found for {id}`) end
+
+    state[id] = 'active'
+
+    local requires = table.clone(provider.layer.requires)
+    table.sort(requires)
+
+    for _, required in requires do
+      visit(required, path)
+    end
+
+    state[id] = 'done'
+    table.insert(order, provider)
+  end
+
+  local requested = table.clone(request.layers)
+  table.sort(requested)
+
+  if #requested == 0 then fail 'no layers were requested' end
+
+  for _, id in requested do
+    visit(id, {})
+  end
+
+  local selected, selectedOrder = {} :: { [string]: boolean }, {} :: { string }
+
+  local function select(id: string, chain: { string })
+    if selected[id] then return end
+
+    selected[id] = true
+    table.insert(selectedOrder, id)
+
+    local package = byId[id]
+
+    for _, dependency in sortedKeys(package.manifest.dependencies) do
+      local requirement = package.manifest.dependencies[dependency]
+      local path = table.clone(chain)
+      table.insert(path, `{package.id} {package.version} requires {dependency} {requirement}`)
+
+      local available = byId[dependency]
+
+      if not available then
+        fail(`{table.concat(path, '\n  ')}\nresolution failed: {dependency} is not available`)
+      end
+
+      if not satisfies(parseVersion(available.version, 'version'), requirement) then
+        fail(
+          `{table.concat(path, '\n  ')}\navailable: {dependency} {available.version}\nresolution failed: version requirement not satisfied`
+        )
+      end
+
+      select(dependency, path)
+    end
+  end
+
+  for _, entry in order do
+    select(entry.package.id, {})
+  end
+
+  table.sort(selectedOrder)
+
+  local reserved = {}
+
+  for _, name in request.hostModules or {} do
+    reserved[name] = true
+  end
+
+  -- The namespace is every layer's exports in every selected package: exports are inert API, so
+  -- making them resolvable activates nothing. Only the resolved layers' entrypoints run.
+  local modules, owner = {} :: { PlanModule }, {} :: { [string]: string }
+
+  for _, id in selectedOrder do
+    local package = byId[id]
+    local exported = {}
+
+    for _, layer in package.manifest.layers do
+      for _, name in layer.exports do
+        exported[name] = true
+      end
+    end
+
+    for _, name in sortedKeys(exported) do
+      if reserved[name] then
+        fail(`{package.id} exports '{name}', which the host already provides`)
+      end
+
+      if owner[name] then fail(`'{name}' is exported by both {owner[name]} and {package.id}`) end
+
+      owner[name] = package.id
+      table.insert(
+        modules,
+        table.freeze { name = name, package = package.id, path = package.manifest.modules[name] }
+      )
+    end
+  end
+
+  table.sort(
+    modules,
+    function(left: PlanModule, right: PlanModule): boolean return left.name < right.name end
+  )
+
+  local layers, entrypoints, capabilities =
+    {} :: { PlanLayer }, {} :: { PlanEntrypoint }, {} :: { PlanCapability }
+
+  for _, entry in order do
+    table.insert(
+      layers,
+      table.freeze {
+        id = entry.layer.id,
+        package = entry.package.id,
+        version = entry.package.version,
+        requires = entry.layer.requires,
+        exports = entry.layer.exports,
+        entrypoints = entry.layer.entrypoints,
+      }
+    )
+
+    for _, entrypoint in entry.layer.entrypoints do
+      table.insert(
+        entrypoints,
+        table.freeze {
+          module = entrypoint.module,
+          package = entry.package.id,
+          path = entry.package.manifest.modules[entrypoint.module],
+          layer = entry.layer.id,
+        }
+      )
+
+      for _, capability in entrypoint.capabilities do
+        table.insert(
+          capabilities,
+          table.freeze {
+            capability = capability,
+            package = entry.package.id,
+            version = entry.package.version,
+            layer = entry.layer.id,
+            entrypoint = entrypoint.module,
+          }
+        )
+      end
+    end
+  end
+
+  if request.grant then
+    local granted = {}
+
+    for _, capability in request.grant do
+      granted[capability] = true
+    end
+
+    for _, required in capabilities do
+      if not granted[required.capability] then
+        fail(
+          `cannot activate {required.layer}\n\nrequired capability denied:\n    {required.capability}\n\nrequested by:\n    {required.package} {required.version}\n    layer {required.layer}\n    entrypoint {required.entrypoint}`
+        )
+      end
+    end
+  end
+
+  local planPackages: { PlanPackage } = {}
+
+  for _, id in selectedOrder do
+    local package = byId[id]
+    table.insert(
+      planPackages,
+      table.freeze {
+        id = package.id,
+        version = package.version,
+        digest = package.digest,
+        kind = package.kind,
+        location = package.location,
+      }
+    )
+  end
+
+  return table.freeze {
+    requested = table.freeze(requested),
+    layers = table.freeze(layers),
+    packages = table.freeze(planPackages),
+    modules = table.freeze(modules),
+    entrypoints = table.freeze(entrypoints),
+    capabilities = table.freeze(capabilities),
+  }
+end
+
+return function(dependencies: { host: Host, jpk: Jpk })
+  host, container = dependencies.host, dependencies.jpk
+
+  return {
+    open = open,
+    pack = pack,
+    resolve = resolve,
+    manifest = parseManifest,
+    satisfies = function(version: string, requirement: string): boolean
+      return satisfies(
+        parseVersion(version, 'version'),
+        checkRequirement(requirement, 'requirement')
+      )
+    end,
+  }
+end

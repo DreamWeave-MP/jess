@@ -1,0 +1,3 @@
+# A layer over the base bundle: it replaces one message and adds one.
+hello = "Howdy, {name}!"
+layer_only = "From the layer"
