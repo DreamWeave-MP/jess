@@ -3,18 +3,10 @@
 Fails unless builtins run on Luau's fast path.
 
 Luau resolves `math.floor` and `buffer.readi32` once and calls them directly only in an environment
-marked safe. jess marks its globals safe; when it didn't, Merged Lands took 41 s instead of 3.4 s.
-This runs one loop twice: as a closure in the script's own environment, and as a second closure of
-the same function moved into a copy of that environment, which `setfenv` marks unsafe. It fails when
-the first isn't several times faster. The ratio doesn't depend on the machine, so the test suite
-runs this too.
-
-The floor is 3x. On l3i's Luau build the unsafe copy is itself fast, so a safe environment measures
-4x to 5x faster (mlua's measured over 5x); one that isn't marked safe measures about 1x, which is
-what this exists to catch.
+marked safe. Jess marks its globals safe. This runs the same loop as a closure in the script's own
+environment and in a copy of that environment, which `setfenv` marks unsafe, then requires the safe
+one to remain substantially faster.
 ]]
-local _, scaleText = ...
-local count = 200000 * (tonumber(scaleText) or 1)
 local MinimumRatio = 3
 
 local function makeLoop(): (number) -> number
@@ -30,25 +22,33 @@ local function makeLoop(): (number) -> number
   end
 end
 
-local safe, unsafe = makeLoop(), makeLoop()
-setfenv(unsafe, table.clone(_G))
+local function run(scale: number): number
+  local count = math.max(1, math.floor(200000 * scale))
+  local safe, unsafe = makeLoop(), makeLoop()
+  setfenv(unsafe, table.clone(_G))
 
--- The best of three of each, alternating, so a busy machine slows both alike.
-local safeTime, unsafeTime = math.huge, math.huge
-for _ = 1, 3 do
-  local started = os.clock()
-  local expected = safe(count)
-  safeTime = math.min(safeTime, os.clock() - started)
+  -- Best of three, alternating, so transient host load tends to affect both paths alike.
+  local safeTime, unsafeTime = math.huge, math.huge
+  for _ = 1, 3 do
+    local started = os.clock()
+    local expected = safe(count)
+    safeTime = math.min(safeTime, os.clock() - started)
 
-  started = os.clock()
-  assert(unsafe(count) == expected, 'the unsafe copy computed something else')
-  unsafeTime = math.min(unsafeTime, os.clock() - started)
+    started = os.clock()
+    assert(unsafe(count) == expected, 'the unsafe copy computed something else')
+    unsafeTime = math.min(unsafeTime, os.clock() - started)
+  end
+
+  local ratio = unsafeTime / safeTime
+  assert(
+    ratio >= MinimumRatio,
+    `builtins aren't on the fast path: the safe environment is only {ratio}x faster than an unsafe one (want {MinimumRatio}x); is the global table still marked safe?`
+  )
+  return safeTime
 end
 
-local ratio = unsafeTime / safeTime
-print(`safe {safeTime} s, unsafe {unsafeTime} s, {ratio}x`)
-assert(
-  ratio >= MinimumRatio,
-  `builtins aren't on the fast path: the safe environment is only {ratio}x faster than an unsafe one (want {MinimumRatio}x); is the global table still marked safe?`
-)
-print(`canary {safeTime}`)
+return table.freeze {
+  name = 'safeenv',
+  path = 'tools/bench/canaries/safeenv.luau',
+  run = run,
+}
