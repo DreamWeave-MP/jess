@@ -521,6 +521,18 @@ suite.describe('definitions', function()
   end)
 end)
 
+suite.describe('a source Luau gives up on', function()
+  suite.it('is reported by its syntax errors, with no tree to walk', function()
+    -- The parser stops at its hundredth error and hands back no tree.
+    local findings = found(string.rep(') ', 100) .. '\n')
+    expect(#findings > 0).toBeTruthy()
+
+    for _, finding in findings do
+      expect(string.match(finding, ' (%S+)$')).toBe 'syntax'
+    end
+  end)
+end)
+
 suite.describe('markdown', function()
   suite.it('finds every luau block and the line it starts on', function()
     local page = 'Text.\n\n```luau\nprint(1)\n```\n\n```sh\nls\n```\n\n  ```luau\nprint(2)\n  ```\n'

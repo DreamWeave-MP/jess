@@ -1345,22 +1345,27 @@ local function check(text: string, given: Options?): { Finding }
   checkDirectives(result)
   depth, nestedBlock, protectedSeen = 0, false, false
   local root = result.root
-
-  for _, stat in root.body do
-    if stat.kind == 'StatTypeAlias' then aliases[stat.name] = stat.type end
-  end
-
-  local last = root.body[#root.body]
   moduleBody = nil
 
-  if last and last.kind == 'StatReturn' and #last.list == 1 then
-    local returned = last.list[1]
-    if returned.kind == 'ExprFunction' then moduleBody = returned.body end
+  -- Luau stops at its hundredth syntax error and gives no tree at all. The errors it did report
+  -- are the findings then: there is nothing to walk.
+  if root then
+    for _, stat in root.body do
+      if stat.kind == 'StatTypeAlias' then aliases[stat.name] = stat.type end
+    end
+
+    local last = root.body[#root.body]
+
+    if last and last.kind == 'StatReturn' and #last.list == 1 then
+      local returned = last.list[1]
+      if returned.kind == 'ExprFunction' then moduleBody = returned.body end
+    end
+
+    walkBlock(root)
+    checkConstants()
+    checkGrouping()
   end
 
-  walkBlock(root)
-  checkConstants()
-  checkGrouping()
   table.sort(findings, compare)
 
   local found = findings
