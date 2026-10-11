@@ -783,6 +783,66 @@ fn strings(items: &[&str]) -> Vec<String> {
     items.iter().map(ToString::to_string).collect()
 }
 
+/// A package's modules reach another package's exports only through a dependency their own
+/// manifest declares: not through a dependency's dependency, and not because something else
+/// already loaded the module. The host's own script holds the whole plan.
+#[test]
+fn a_package_requires_only_what_it_declares() {
+    let temp = tempfile::tempdir().unwrap();
+    let at = |name: &str| temp.path().join(name);
+    library(&at("base"), "base", "", "return { name = 'base' }\n");
+    library(
+        &at("middle"),
+        "middle",
+        "[dependencies]\n\"org.example.base\" = \"1\"\n",
+        "return { base = require('@base').name }\n",
+    );
+    library(
+        &at("top"),
+        "top",
+        "[dependencies]\n\"org.example.middle\" = \"1\"\n",
+        "return {\n  middle = require('@middle').base,\n  direct = function() return require '@base' end,\n  \
+         guarded = function() return pcall(require, '@base') end,\n}\n",
+    );
+    let runtime = common::runtime();
+    let plan = package::activate(
+        &runtime,
+        &[text(&at("top")), text(&at("middle")), text(&at("base"))],
+        &strings(&["example.top"]),
+        None,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let allowed = |id: &str| -> Vec<String> {
+        plan.packages
+            .iter()
+            .find(|package| package.id == id)
+            .unwrap()
+            .dependencies
+            .clone()
+    };
+    assert_eq!(allowed("org.example.top"), ["org.example.middle"]);
+    assert_eq!(allowed("org.example.base"), [""; 0]);
+    common::run(
+        &runtime,
+        "local top = require '@top'\n\
+         assert(top.middle == 'base')\n\
+         local function denied(problem)\n  \
+           assert(string.find(problem, \"module not found: @base (required by @org.example.top@1.0.0/src/init.luau): \
+         org.example.base exports it, and org.example.top doesn't declare org.example.base as a dependency\", 1, true), problem)\n\
+         end\n\
+         local ok, problem = pcall(top.direct)\n\
+         assert(not ok)\n\
+         denied(problem)\n\
+         assert(require('@base').name == 'base', 'the host script holds the whole plan')\n\
+         local again, still = pcall(top.direct)\n\
+         assert(not again, 'a module the host loaded is still not the package\\'s')\n\
+         denied(still)\n\
+         local guarded, through = top.guarded()\n\
+         assert(not guarded)\n\
+         denied(through)",
+    );
+}
+
 /// A package path's packages are candidates: opened when a layer or a dependency needs one, never
 /// in place of a package handed over outright, and never chosen between.
 #[test]

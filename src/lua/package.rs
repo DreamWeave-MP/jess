@@ -38,6 +38,8 @@ pub(crate) struct Mounted {
 
 struct MountedPackage {
     id: String,
+    /// The mounted packages whose exports its modules may require: its declared dependencies.
+    dependencies: Vec<usize>,
     digest: String,
     /// `@<id>@<version>/`, the start of every chunk name this package's modules load with.
     prefix: String,
@@ -84,6 +86,19 @@ impl Mounted {
     /// The id of package `index`, for messages.
     pub(crate) fn id(&self, index: usize) -> &str {
         &self.packages[index].id
+    }
+
+    /// Where the package with `id` is mounted.
+    pub(crate) fn index_of(&self, id: &str) -> Option<usize> {
+        self.packages.iter().position(|package| package.id == id)
+    }
+
+    /// Whether a module of package `caller` may require an export of package `owner`: its own,
+    /// one of a dependency it declares, or one of the built-in package, which every runtime has.
+    pub(crate) fn may_require(&self, caller: usize, owner: usize) -> bool {
+        caller == owner
+            || self.packages[caller].dependencies.contains(&owner)
+            || self.packages[owner].id == crate::lua::builtin::ID
     }
 }
 
@@ -627,6 +642,7 @@ pub fn activate_with(
                 return Err(error("this runtime already has packages activated; one plan per runtime"));
             }
             let mut mounted = Mounted::default();
+            let mut dependencies = Vec::new();
             call.with_frame(|frame| {
                 packages.push_to(frame)?.for_each_array(frame, |frame, _, row| {
                     let row = row.as_table()?;
@@ -634,14 +650,27 @@ pub fn activate_with(
                     let version = row.raw_get(frame, "version")?.read::<String>()?;
                     let digest = row.raw_get(frame, "digest")?.read::<String>()?;
                     let read = Function::from_value(Value::store(row.raw_get(frame, "read")?)?)?;
+                    let mut declared = Vec::new();
+                    row.raw_get(frame, "dependencies")?
+                        .as_table()?
+                        .for_each_array(frame, |_, _, dependency| {
+                            declared.push(dependency.read::<String>()?);
+                            Ok(())
+                        })?;
+                    dependencies.push(declared);
                     mounted.packages.push(MountedPackage {
                         prefix: format!("@{id}@{version}/"),
                         id,
+                        dependencies: Vec::new(),
                         digest,
                         read,
                     });
                     Ok(())
                 })?;
+                for (index, declared) in dependencies.iter().enumerate() {
+                    // A dependency the plan didn't mount can't be required either way.
+                    mounted.packages[index].dependencies = declared.iter().filter_map(|id| mounted.index_of(id)).collect();
+                }
                 for (list, key, exports) in [(&modules, "name", true), (&entrypoints, "module", false)] {
                     list.push_to(frame)?.for_each_array(frame, |frame, _, row| {
                         let row = row.as_table()?;

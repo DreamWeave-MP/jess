@@ -52,6 +52,11 @@ pub fn seed_require(runtime: &Runtime, jess: &Jess) -> l3i::Result<()> {
 
 /// Resolves installed modules, package exports, and caller-relative files.
 pub fn require(call: &Call<'_>, jess: &Jess, name: &str) -> l3i::Result<StackResults> {
+    let relative = name.starts_with("./") || name.starts_with("../") || name.starts_with("@self/");
+    // Before the cache: a module one package loaded is no more another's to require for that.
+    if !relative {
+        check_declared(call, jess, name)?;
+    }
     let cached = call.with_frame(|frame| {
         let loaded = jess.loaded.push_to(frame)?;
         let cached = loaded.raw_get(frame, name)?;
@@ -64,7 +69,6 @@ pub fn require(call: &Call<'_>, jess: &Jess, name: &str) -> l3i::Result<StackRes
         cached.push_to_scope(call)?;
         return Ok(StackResults);
     }
-    let relative = name.starts_with("./") || name.starts_with("../") || name.starts_with("@self/");
     // A package export comes before Luau's own `@` modules; resolution already refused any
     // export a host module has.
     let mut export = if relative { None } else { package_export(call, jess, name)? };
@@ -127,6 +131,39 @@ pub fn require(call: &Call<'_>, jess: &Jess, name: &str) -> l3i::Result<StackRes
     })?;
     value.push_to_scope(call)?;
     Ok(StackResults)
+}
+
+/// Fails when a mounted package's module requires another mounted package's export without
+/// declaring that package as a dependency. A script that belongs to no package holds the whole
+/// plan's namespace: it is the host's, and the host chose the plan.
+fn check_declared(call: &Call<'_>, jess: &Jess, name: &str) -> l3i::Result<()> {
+    let mounted = jess.packages.borrow();
+    let Some(mounted) = mounted.as_ref() else {
+        return Ok(());
+    };
+    let Some((owner, _)) = mounted.export(name) else {
+        return Ok(());
+    };
+    // The nearest Luau function is the one requiring, whatever it called `require` through.
+    let caller = (1..)
+        .map_while(|level| call.call_site(level))
+        .find(|site| site.source != "[C]")
+        .map(|site| format!("@{}", site.source));
+    let Some(caller) = caller else {
+        return Ok(());
+    };
+    let Some((index, _)) = mounted.owner(&caller) else {
+        return Ok(());
+    };
+    if mounted.may_require(index, owner) {
+        return Ok(());
+    }
+    Err(error(format!(
+        "module not found: {name} (required by {caller}): {} exports it, and {} doesn't declare {} as a dependency",
+        mounted.id(owner),
+        mounted.id(index),
+        mounted.id(owner)
+    )))
 }
 
 /// The chunk name of the function that called `require`, with its `@`: level 1 above the
