@@ -205,6 +205,15 @@ local nonBoolean: { [Local]: boolean } = {}
 local pascalLocals: { Local } = {}
 local moduleLocals: { [Local]: boolean } = {}
 
+-- Table locals something assigns into directly, in a form Luau sizes the table for when the local
+-- is declared alone (a field, a constant slot, or a slot indexed by a counted loop's variable),
+-- and the variables of loops that count from 1 to a small constant.
+local sized: { [Local]: boolean }, counters: { [Local]: boolean } = {}, {}
+-- Empty-table declarations the grouping rule settles once the walk has seen what fills them:
+-- pairs of adjacent ones, and the ones that share a statement.
+local adjacentTables: { { stat: Stat, first: Local, second: Local } } = {}
+local groupedTables: { Local } = {}
+
 -- The statements the walk is inside, innermost last: where each starts.
 local enclosingLines: { number }, enclosingColumns: { number } = {}, {}
 -- Where the run of adjacent statements holding a protected call before each enclosing statement
@@ -963,35 +972,83 @@ local function checkDeclarations(stat: dream_luau_StatLocal, previous: Stat?, se
     )
   end
 
+  if #vars > 1 then
+    for index, target in vars do
+      local value = values[index]
+
+      if value and value.kind == 'ExprTable' and #value.items == 0 then
+        table.insert(groupedTables, target)
+      end
+    end
+  end
+
   if not previous or separated or previous.kind ~= 'StatLocal' then return end
   if stat.line ~= stat.endLine or previous.line ~= previous.endLine then return end
 
   local before = previous :: dream_luau_StatLocal
-  if #before.vars ~= 1 or #vars ~= 1 or #before.values ~= #values or #values > 1 then return end
+  if #before.vars ~= 1 or #vars ~= 1 or #before.values ~= 1 or #values ~= 1 then return end
   if annotation(before.vars[1]) ~= annotation(vars[1]) then return end
 
-  local shape: string? = nil
+  local left, right = before.values[1], values[1]
+  if left.kind ~= 'ExprTable' or right.kind ~= 'ExprTable' then return end
+  if #left.items > 0 or #right.items > 0 then return end
 
-  if #values == 1 then
-    local left, right = before.values[1], values[1]
+  table.insert(adjacentTables, { stat = stat, first = before.vars[1], second = vars[1] })
+end
 
-    if
-      left.kind == 'ExprTable'
-      and right.kind == 'ExprTable'
-      and #left.items == 0
-      and #right.items == 0
-    then
-      shape = 'empty tables'
-    end
+-- Luau sizes an empty table for the fields and slots assigned into it afterwards, but only when
+-- its local is declared alone: `local first, second = {}, {}` gives both no size at all. So two
+-- adjacent empty tables share a line only when neither is filled that way, and one that is filled
+-- that way never shares a line.
+local function checkGrouping()
+  for _, pair in adjacentTables do
+    if sized[pair.first] or sized[pair.second] then continue end
+
+    report(
+      'locals.group',
+      pair.stat,
+      `'{pair.first.name}' and '{pair.second.name}' are both empty tables: declare them on one line`
+    )
   end
 
-  if not shape then return end
+  for _, target in groupedTables do
+    if not sized[target] then continue end
 
-  report(
-    'locals.group',
-    stat,
-    `'{before.vars[1].name}' and '{vars[1].name}' are both {shape}: declare them on one line`
-  )
+    report(
+      'locals.group',
+      target,
+      `'{target.name}' is filled by assignment: declare it on a line of its own, where Luau sizes it for what goes in`
+    )
+  end
+end
+
+--- The number a number literal is, or nil for any other expression.
+local function constantNumber(expr: Expr): number?
+  if expr.kind ~= 'ExprConstantNumber' then return nil end
+
+  return expr.value
+end
+
+--- Notes `target` as an assignment Luau sizes a table for, when it is one: a field or a slot of a
+--- local, the slot a constant or a counted loop's variable.
+local function noteSized(target: Expr)
+  if target.kind == 'ExprIndexName' then
+    local holder = target.expr
+    if holder.kind == 'ExprLocal' then sized[holder['local']] = true end
+
+    return
+  end
+
+  if target.kind ~= 'ExprIndexExpr' then return end
+
+  local holder, index = target.expr, target.index
+  if holder.kind ~= 'ExprLocal' then return end
+
+  local counted = index.kind == 'ExprLocal' and counters[index['local']]
+  local constant = index.kind == 'ExprConstantNumber' or index.kind == 'ExprConstantInteger'
+  if not constant and not counted then return end
+
+  sized[holder['local']] = true
 end
 
 local function walkStat(stat: Stat, isModule: boolean)
@@ -1013,6 +1070,8 @@ local function walkStat(stat: Stat, isModule: boolean)
     end
   elseif stat.kind == 'StatAssign' then
     for _, target in stat.vars do
+      noteSized(target)
+
       if target.kind == 'ExprLocal' then
         reassigned[target['local']] = true
       else
@@ -1053,6 +1112,7 @@ local function walkStat(stat: Stat, isModule: boolean)
     checkWrapped(stat.func.body, false)
   elseif stat.kind == 'StatFunction' then
     local root = rootLocal(stat.name)
+    noteSized(stat.name)
 
     if root and stat.name.kind ~= 'ExprLocal' then
       mutated[root] = true
@@ -1080,6 +1140,13 @@ local function walkStat(stat: Stat, isModule: boolean)
     if stat.step then walkExpr(stat.step) end
 
     declare(stat.var, false)
+
+    -- The loops Luau reads an array size from: 1 to a constant of at most 16, in steps of one.
+    local first, last = constantNumber(stat.from), constantNumber(stat.to)
+    if first == 1 and last and last >= 1 and last <= 16 and not stat.step then
+      counters[stat.var] = true
+    end
+
     walkBlock(stat.body)
     checkWrapped(stat.body, true)
   elseif stat.kind == 'StatWhile' then
@@ -1293,6 +1360,7 @@ local function check(text: string, given: Options?): { Finding }
 
   walkBlock(root)
   checkConstants()
+  checkGrouping()
   table.sort(findings, compare)
 
   local found = findings
@@ -1300,6 +1368,7 @@ local function check(text: string, given: Options?): { Finding }
     '', {}, buffer.create(0), buffer.create(0), buffer.create(0)
   reassigned, mutated, constants, nonBoolean, moduleLocals, pascalLocals, aliases =
     {}, {}, {}, {}, {}, {}, {}
+  sized, counters, adjacentTables, groupedTables = {}, {}, {}, {}
   return found
 end
 

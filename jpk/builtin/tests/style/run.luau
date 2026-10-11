@@ -261,6 +261,75 @@ print(describe)
     options = { only = { 'locals.group' } },
   },
 
+  -- Luau sizes an empty table for what is assigned into it only when its local is declared
+  -- alone, so a table filled that way keeps a line to itself: by field, by method, by constant
+  -- slot, or by the variable of a loop counting from 1 to a small constant.
+  {
+    rule = 'locals.group',
+    good = [=[
+local point = {}
+local names = {}
+local squares = {}
+local handlers = {}
+local seen, queue = {}, {}
+point.x, point.y = 1, 2
+names[1], names[2] = 'first', 'second'
+
+for index = 1, 4 do
+  squares[index] = index * index
+end
+
+function handlers.open() return point end
+
+seen[names[1]] = true
+table.insert(queue, squares)
+print(handlers)
+]=],
+    bad = [=[
+local point, names, squares, handlers, seen = {}, {}, {}, {}, {}
+point.x = 1
+names[1] = 'first'
+
+for index = 1, 4 do
+  squares[index] = index * index
+end
+
+function handlers.open() return point end
+
+seen[names[1]] = true
+]=],
+    findings = {
+      '1:7 locals.group',
+      '1:14 locals.group',
+      '1:21 locals.group',
+      '1:30 locals.group',
+    },
+    options = { only = { 'locals.group' } },
+  },
+
+  -- Loops Luau reads no size from leave their table free to share a line.
+  {
+    rule = 'locals.group',
+    good = [[
+local stepped, long, offset = {}, {}, {}
+
+for index = 1, 9, 2 do
+  stepped[index] = index
+end
+
+for index = 1, 100 do
+  long[index] = index
+end
+
+for index = 0, 4 do
+  offset[index] = index
+end
+]],
+    bad = 'local stepped = {}\nlocal long = {}\n\nfor index = 1, 100 do\n  long[index] = index\n  stepped[index * 2] = index\nend\n',
+    findings = { '2:1 locals.group' },
+    options = { only = { 'locals.group' } },
+  },
+
   {
     rule = 'locals.mixed',
     good = 'local ok, problem = pcall(print)\nlocal report\nlocal count = 1\nprint(ok, problem, report, count)\n',

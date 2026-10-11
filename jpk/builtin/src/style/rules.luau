@@ -85,7 +85,7 @@ local Rules: { [string]: Rule } = {
   },
   ['locals.group'] = {
     severity = 'warning',
-    summary = 'Adjacent same-kind locals are declared on one line.',
+    summary = 'Adjacent empty tables are declared on one line, except one filled by assignment, which is declared alone so Luau can size it.',
   },
   ['locals.mixed'] = {
     severity = 'warning',
