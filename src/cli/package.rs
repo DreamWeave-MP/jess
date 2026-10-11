@@ -48,11 +48,19 @@ enum PackageCommand {
         package_paths: Vec<PathBuf>,
     },
     /// Run the tests a Package Source's manifest names, against the source and then against it
-    /// packed into a temporary JPK, and check both providers give the same digest. A .jpk carries
-    /// no tests and reports none.
+    /// packed into a temporary JPK, and check both providers give the same digest. The package's
+    /// [dependencies] and [dev-dependencies] are selected with it. A .jpk carries no tests and
+    /// reports none.
     Test {
         /// A Package Source folder (or a .jpk, which has no tests to run).
         package: PathBuf,
+        /// A package its dependencies resolve over (repeatable): a Package Source folder or a .jpk.
+        #[arg(long = "package", value_name = "PACKAGE")]
+        packages: Vec<PathBuf>,
+        /// A folder of packages its dependencies resolve over (repeatable), read as
+        /// package graph reads one.
+        #[arg(long = "package-path", value_name = "FOLDER")]
+        package_paths: Vec<PathBuf>,
     },
 }
 
@@ -157,9 +165,19 @@ pub fn run(args: &PackageArgs, format: Format) -> Result<(), String> {
                 jess::lua::package::graph_with(&lua, &locations, &layers, &search).map_err(|error| error.to_string())?;
             output::print(&plan, format)
         }
-        PackageCommand::Test { package } => {
+        PackageCommand::Test {
+            package,
+            packages,
+            package_paths,
+        } => {
             let scratch = std::env::temp_dir().join(format!("jess-package-test-{}", std::process::id()));
-            let report = jess::lua::package::test(&jess::lua::Options::default(), package, &scratch);
+            let report = jess::lua::package::test_with(
+                &jess::lua::Options::default(),
+                package,
+                &scratch,
+                &texts(packages),
+                &texts(package_paths),
+            );
             drop(std::fs::remove_dir_all(&scratch));
             let report = report.map_err(|error| error.to_string())?;
             output::print(&report, format)?;

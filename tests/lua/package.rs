@@ -958,3 +958,91 @@ fn a_package_path_offers_what_a_plan_needs() {
     );
     assert!(missing.unwrap_err().to_string().contains("is not a folder"));
 }
+
+/// `[dev-dependencies]` are a package's tests' needs: `package test` selects them, with the
+/// package's dependencies, over the packages and package paths it is given, from the source and
+/// from the JPK alike. Nothing else selects them.
+#[test]
+fn package_tests_resolve_dependencies_and_dev_dependencies() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("packages");
+    let subject = temp.path().join("subject");
+    library(&path.join("base"), "base", "", "return { name = 'base' }\n");
+    library(&path.join("fixtures"), "fixtures", "", "return { expected = 'base' }\n");
+    library(
+        &subject,
+        "subject",
+        "tests = [\"tests/run.luau\"]\n[dependencies]\n\"org.example.base\" = \"1\"\n\
+         [dev-dependencies]\n\"org.example.fixtures\" = \"1\"\n",
+        "return { base = require('@base').name, fixtures = function() return require '@fixtures' end }\n",
+    );
+    write(
+        &subject,
+        &[(
+            "tests/run.luau",
+            "local test = require '@jess/test'\nlocal suite, expect = test.new(), test.expect\n\
+             suite.it('the subject sees its dependency', function()\n  \
+               expect(require('@subject').base).toBe(require('@fixtures').expected)\n\
+             end)\n\
+             suite.it('a dev-dependency is the tests\\', not the package\\'s', function()\n  \
+               expect(require('@subject').fixtures).toThrow \"doesn't declare org.example.fixtures\"\n\
+             end)\n\
+             return suite\n",
+        )],
+    );
+    let options = jess::lua::Options::default();
+    let runtime = common::runtime();
+    let inspection = package::inspect(&runtime, &text(&subject)).unwrap();
+    assert_eq!(inspection.dependencies[0].id, "org.example.base");
+    assert_eq!(inspection.dev_dependencies.len(), 1);
+    assert_eq!(inspection.dev_dependencies[0].id, "org.example.fixtures");
+    assert_eq!(inspection.dev_dependencies[0].requirement, "1");
+
+    for (packages, paths) in [
+        (vec![], vec![text(&path)]),
+        (vec![text(&path.join("base")), text(&path.join("fixtures"))], vec![]),
+    ] {
+        let report = package::test_with(&options, &subject, &temp.path().join("scratch"), &packages, &paths).unwrap();
+        assert_eq!(report.providers.len(), 2, "{report:#?}");
+        assert_eq!((report.passed, report.failed), (4, 0), "{report:#?}");
+        assert_eq!(report.providers[0].kind, "source");
+        assert_eq!(report.providers[1].kind, "jpk");
+    }
+
+    // Without its providers a tested package doesn't resolve, and the chain says who asked.
+    let alone = package::test(&options, &subject, &temp.path().join("scratch"))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        alone.contains("org.example.subject 1.0.0 requires org.example.base 1"),
+        "{alone}"
+    );
+    let half = package::test_with(
+        &options,
+        &subject,
+        &temp.path().join("scratch"),
+        &[text(&path.join("base"))],
+        &[],
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        half.contains("org.example.subject 1.0.0 requires org.example.fixtures 1 for its tests"),
+        "{half}"
+    );
+    assert!(
+        half.contains("resolution failed: org.example.fixtures is not available"),
+        "{half}"
+    );
+
+    // Outside its tests a package's dev-dependencies are nobody's.
+    let search = package::Search {
+        paths: vec![text(&path)],
+        ..Default::default()
+    };
+    let plan = package::graph_with(&runtime, &[text(&subject)], &strings(&["example.subject"]), &search).unwrap();
+    assert_eq!(
+        plan.packages.iter().map(|package| package.id.as_str()).collect::<Vec<_>>(),
+        ["org.example.base", "org.example.subject"]
+    );
+}

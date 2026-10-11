@@ -809,16 +809,34 @@ pub struct PackageTest {
 }
 
 /// Runs the tests the manifest of the Package Source at `location` names, against the source and
+/// then against it packed, with no dependencies offered.
+///
+/// # Errors
+///
+/// As [`test_with`].
+pub fn test(options: &crate::lua::Options, location: &Path, scratch: &Path) -> l3i::Result<PackageTest> {
+    test_with(options, location, scratch, &[], &[])
+}
+
+/// Runs the tests the manifest of the Package Source at `location` names, against the source and
 /// then against it packed.
 ///
 /// The JPK is written to `scratch` and removed afterwards. Each run activates every layer the
-/// package declares, under the trusted policy, in a fresh runtime made with `options`. A JPK
-/// carries no tests, so for one this reports none.
+/// package declares, under the trusted policy, in a fresh runtime made with `options`, and selects
+/// the package with its `[dependencies]` and `[dev-dependencies]`, which resolve over `packages`
+/// (handed over outright) and the package paths `paths`. The tests are the host's scripts, so
+/// they hold the whole plan's namespace. A JPK carries no tests, so for one this reports none.
 ///
 /// # Errors
 ///
 /// Returns an error if the package can't be read, packed, or activated.
-pub fn test(options: &crate::lua::Options, location: &Path, scratch: &Path) -> l3i::Result<PackageTest> {
+pub fn test_with(
+    options: &crate::lua::Options,
+    location: &Path,
+    scratch: &Path,
+    packages: &[String],
+    paths: &[String],
+) -> l3i::Result<PackageTest> {
     // Package tests are an explicit host action over a caller-chosen package, so their test code
     // gets scratch filesystem access and terminal/environment reporting. Process spawning remains
     // denied unless a host separately approves it.
@@ -846,6 +864,12 @@ pub fn test(options: &crate::lua::Options, location: &Path, scratch: &Path) -> l
         .iter()
         .map(|test| location.join(test))
         .collect::<Vec<PathBuf>>();
+    let layers = inspection.layers.iter().map(|layer| layer.id.clone()).collect::<Vec<_>>();
+    let search = Search {
+        paths: paths.to_vec(),
+        roots: vec![inspection.id.clone()],
+        dev: vec![inspection.id.clone()],
+    };
     std::fs::create_dir_all(scratch)
         .map_err(|source| error(format!("failed to create '{}': {source}", scratch.display())))?;
     let packed = scratch.join(format!("{}-{}.jpk", inspection.id, inspection.version));
@@ -854,7 +878,9 @@ pub fn test(options: &crate::lua::Options, location: &Path, scratch: &Path) -> l
         pack(&runtime, &display, &packed_display)?;
         for (index, provider) in [&display, &packed_display].into_iter().enumerate() {
             let runtime = crate::lua::runtime_with_capabilities(options.clone(), &test_capabilities)?;
-            let plan = activate_all(&runtime, std::slice::from_ref(provider), None)?;
+            let mut locations = vec![provider.clone()];
+            locations.extend_from_slice(packages);
+            let plan = activate_with(&runtime, &locations, &layers, None, &search)?;
             let package = plan
                 .packages
                 .into_iter()
