@@ -13,9 +13,28 @@ fn only_generic_members_are_installed() {
             assert(not pcall(require, '@jess/' .. name), name)
         end
         assert(vfstool == nil and openmwConfig == nil and dreamPath == nil)
-        for _, name in { 'fs', 'toml', 'regex', 'shader', 'context', 'worker', 'l10n', 'input' } do
+        for _, name in { 'fs', 'toml', 'regex', 'shader', 'context', 'worker', 'l10n', 'input', 'bench' } do
             assert(require('@jess/' .. name) == jess[name], name)
         end
+    ",
+    );
+}
+
+/// `jess.bench` says which build this is, and collects on request: a weak table's unreachable
+/// entry survives until then and not after.
+#[test]
+fn bench_names_the_build_and_collects() {
+    let runtime = common::runtime();
+    common::set_global(&runtime, "verified", &jess::lua::bench::VERIFIED);
+    common::run(
+        &runtime,
+        r"
+        assert(jess.bench.verified == verified and table.isfrozen(jess.bench))
+        local held = setmetatable({}, { __mode = 'v' })
+        held[1] = { 'unreachable once this statement ends' }
+        jess.bench.collect()
+        assert(held[1] == nil, 'a full collection drops what only a weak table holds')
+        assert(select('#', jess.bench.collect()) == 0)
     ",
     );
 }

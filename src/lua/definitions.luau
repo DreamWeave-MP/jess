@@ -357,6 +357,15 @@ export type ShaderModule = {
 
 declare jess: {
   version: string,
+  --- What a measurement needs from the host.
+  bench: {
+    --- Whether this jess was built with the verified toolchain, as releases are. A number from
+    --- any other build measures a slower Luau, so a harness refuses to produce one.
+    verified: boolean,
+    --- Runs a full garbage collection, so one batch's garbage isn't collected inside the next
+    --- one's timing.
+    collect: () -> (),
+  },
   --- A missing value inside an array (such as an empty link in a node's children), where `nil`
   --- would shift everything after it.
   null: JessNull,

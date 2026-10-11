@@ -18,6 +18,7 @@ use l3i::value::{Function, Table, Value};
 
 pub use l3i;
 
+pub mod bench;
 pub mod builtin;
 mod convert;
 mod files;
