@@ -34,9 +34,9 @@ build_site() {
 
   rm -rf -- "$out"
   if [[ -n "$base_url" ]]; then
-    jess run --package "$package" "$ROOT/tools/site/build.luau" "$ROOT/site" "$out" "$base_url"
+    jess run --capability filesystem.read --capability filesystem.write --package "$package" "$ROOT/tools/site/build.luau" "$ROOT/site" "$out" "$base_url"
   else
-    jess run --package "$package" "$ROOT/tools/site/build.luau" "$ROOT/site" "$out"
+    jess run --capability filesystem.read --capability filesystem.write --package "$package" "$ROOT/tools/site/build.luau" "$ROOT/site" "$out"
   fi
 }
 

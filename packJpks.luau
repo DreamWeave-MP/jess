@@ -1,7 +1,7 @@
 --!strict
 --!native
 
--- Run from the repository root: jess run --capability process.spawn packJpks.luau
+-- Run from the repository root: jess run --capability filesystem.read --capability process.spawn packJpks.luau
 local fs = require '@jess/fs'
 local process = require '@dream/process'
 

@@ -1,7 +1,8 @@
 --!strict
 --!native
 -- Jess's native-kernel benchmark harness. Everything measured here belongs to Jess itself; package-
--- specific workloads live with their packages. Run with `jess run tools/bench/bench.luau canaries`.
+-- specific workloads live with their packages. Run with
+-- `jess run --capability filesystem.read --capability filesystem.write tools/bench/bench.luau canaries`.
 local json = require '@jess/json'
 local bytes = require '@dream/bytes'
 
@@ -67,7 +68,9 @@ local function scriptRoot(): string
   local root = tools and jess.fs.parent(tools)
   if root and root ~= '' then return root end
 
-  return jess.fs.cwd()
+  -- Run from the repository root, the script's path has no root to give: paths are relative to
+  -- the working directory as they stand, and naming it would need a capability `list` doesn't.
+  return '.'
 end
 
 local Root = scriptRoot()
@@ -346,10 +349,13 @@ end
 
 local function usage(): number
   print [[usage:
-  jess run tools/bench/bench.luau canaries [--runs N] [--warmup N] [--scale N]
+  jess run GRANTS tools/bench/bench.luau canaries [--runs N] [--warmup N] [--scale N]
       [--only NAME]... [--output FILE] [--check BASELINE] [--tolerance RATIO]
-  jess run tools/bench/bench.luau compare BASELINE CANDIDATE
-  jess run tools/bench/bench.luau list]]
+  jess run GRANTS tools/bench/bench.luau compare BASELINE CANDIDATE
+  jess run tools/bench/bench.luau list
+
+GRANTS is --capability filesystem.read --capability filesystem.write: the canaries' sources and
+the baselines are read, and the results are written.]]
   return 0
 end
 

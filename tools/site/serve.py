@@ -69,6 +69,10 @@ def build(repo: Path, output: Path) -> bool:
     command = [
         "jess",
         "run",
+        "--capability",
+        "filesystem.read",
+        "--capability",
+        "filesystem.write",
         "--package",
         str(package),
         str(script),
