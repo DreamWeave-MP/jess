@@ -140,7 +140,7 @@ local function encodeTable(value: { [unknown]: unknown }): string
   if length then
     local parts = table.create(length)
     for index = 1, length do parts[index] = encode(value[index]) end
-    return `[${table.concat(parts, ',')}]`
+    return `[{table.concat(parts, ',')}]`
   end
 
   local keys: { string } = {}
@@ -152,12 +152,13 @@ local function encodeTable(value: { [unknown]: unknown }): string
 
   local parts = table.create(#keys)
   for index, key in keys do parts[index] = `{jsonString(key)}:{encode(value[key])}` end
-  return `{${table.concat(parts, ',')}}`
+  return `\{{table.concat(parts, ',')}}`
 end
 
 encode = function(value: unknown): string
   local kind = type(value)
   if kind == 'string' then return jsonString(value :: string) end
+
   if kind == 'number' then
     local number = value :: number
     if number ~= number or number == math.huge or number == -math.huge then
@@ -166,6 +167,7 @@ encode = function(value: unknown): string
 
     return tostring(number)
   end
+
   if kind == 'boolean' then return tostring(value) end
   if kind == 'table' then return encodeTable(value :: { [unknown]: unknown }) end
   if value == nil then return 'null' end
@@ -192,6 +194,7 @@ end
 
 local function workloadMedian(workload: any): number?
   if type(workload) ~= 'table' then return nil end
+
   if type(workload.summary) == 'table' and type(workload.summary.median) == 'number' then
     return workload.summary.median
   end
@@ -239,6 +242,7 @@ local function check(baselinePath: string, candidate: Results, tolerance: number
   if type(baseline.scale) == 'number' and baseline.scale ~= candidate.scale then
     print(`bench: warning: baseline scale {baseline.scale}, candidate scale {candidate.scale}`)
   end
+
   if type(baseline.machine) == 'table' and type(baseline.machine.cpu) == 'string'
     and baseline.machine.cpu ~= candidate.machine.cpu then
     print(`bench: warning: baseline CPU '{baseline.machine.cpu}', candidate CPU '{candidate.machine.cpu}'`)
@@ -352,15 +356,18 @@ end
 local command = arg[1] or 'canaries'
 if string.sub(command, 1, 2) == '--' then return runCanaries(1) end
 if command == 'canaries' or command == 'run' then return runCanaries(2) end
+
 if command == 'compare' then
   local baseline = arg[2] or fail('compare needs a baseline results file')
   local candidate = arg[3] or fail('compare needs a candidate results file')
   return compare(baseline, candidate)
 end
+
 if command == 'list' then
   for _, canary in Canaries do print(canary.name) end
   return 0
 end
+
 if command == 'help' or command == '--help' or command == '-h' then return usage() end
 
 fail(`unknown command '{command}'`)
