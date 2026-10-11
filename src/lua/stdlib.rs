@@ -5,7 +5,7 @@
 //! with `jess luau-types`. "Built-in" is about ownership and resolution, not language: these
 //! are written in Luau over the smallest native primitive each needs. For `@jess/log` that is
 //! one structured-log sink the host selects and scripts can't reach: the domain's log stream
-//! ([`jess::runtime::DomainSpec::logs`]) under a domain that has one, else the runtime's own
+//! ([`DomainSpec::logs`](crate::runtime::DomainSpec::logs)) under a domain that has one, else the runtime's own
 //! ([`set_log_sink`]);
 //! `@jess/test` and `@jess/jpk` need nothing native at all (the codecs are `@dream/bytes`'s), and
 //! `@jess/package` reads and writes files through host functions only it is handed
@@ -54,7 +54,7 @@ struct Logging(RefCell<Sink>);
 /// Replaces where `@jess/log` records go in `runtime`. The default writes every record but
 /// `debug` ones to stderr as one JSON object per line.
 ///
-/// Code running under a domain with a log stream ([`jess::runtime::DomainSpec::logs`]) logs there
+/// Code running under a domain with a log stream ([`DomainSpec::logs`](crate::runtime::DomainSpec::logs)) logs there
 /// instead, attributed.
 ///
 /// The sink runs synchronously inside the logging call; it must not call back into the VM.
@@ -218,6 +218,68 @@ pub fn contains(name: &str) -> bool {
     MODULES.contains(&name)
 }
 
+/// The types `@jess/jpk`'s and `@jess/package`'s signatures name. Nothing in them is formatted in.
+const PACKAGE_TYPES: &str = "\
+         --- One entry of a JPK: its path, how it is stored, its sizes, CRC-32, and local header offset.\n\
+         export type JessJpkEntry = { path: string, method: \"stored\" | \"deflate\" | \"zstd\", compressedSize: number, size: number, crc32: number, offset: number }\n\n\
+         --- Where a JPK's bytes come from: its size, and a read of `length` bytes at `offset`.\n\
+         export type JessJpkSource = { size: number, read: (offset: number, length: number) -> buffer }\n\n\
+         --- The reader's limits, each optional against `budgets`' defaults.\n\
+         export type JessJpkBudgets = { maxEntries: number?, maxPathLength: number?, maxCentralDirectory: number?, maxEntrySize: number?, maxTotalSize: number? }\n\n\
+         --- An opened JPK: its entries, a lookup by path, and a read that unpacks and CRC-checks one entry.\n\
+         export type JessJpkArchive = { entries: { JessJpkEntry }, find: (path: string) -> JessJpkEntry?, read: (entry: JessJpkEntry | string) -> buffer }\n\n\
+         --- A file to write into a JPK.\n\
+         export type JessJpkFile = { path: string, data: buffer }\n\n\
+         --- Code a layer runs when it is activated, and the capabilities it needs.\n\
+         export type JessPackageEntrypoint = { module: string, capabilities: { string } }\n\n\
+         --- A layer as a manifest declares it: what it requires, the modules it exports as inert API, and\n\
+         --- the entrypoints that run when it is activated, which alone hold capabilities.\n\
+         export type JessPackageLayer = { id: string, requires: { string }, exports: { string }, entrypoints: { JessPackageEntrypoint } }\n\n\
+         --- A managed implementation a target supervisor may load into its application topology.\n\
+         export type JessPackageManaged = { id: string, module: string, interface: string? }\n\n\
+         --- One runnable role in a package.\n\
+         export type JessPackageTarget = { id: string, kind: \"application\" | \"command\", entry: string, capabilities: { string }, command: string? }\n\n\
+         --- A checked `jess.toml`.\n\
+         export type JessPackageManifest = {\n  \
+           manifestVersion: number,\n  \
+           id: string,\n  \
+           version: string,\n  \
+           jessApi: string,\n  \
+           defaultTarget: string?,\n  \
+           include: { string },\n  \
+           tests: { string },\n  \
+           dependencies: { [string]: string },\n  \
+           modules: { [string]: string },\n  \
+           layers: { JessPackageLayer },\n  \
+           managed: { [string]: JessPackageManaged },\n  \
+           targets: { [string]: JessPackageTarget },\n\
+         }\n\n\
+         --- A package opened from a Package Source (`source`) or a JPK (`jpk`): its manifest, identity,\n\
+         --- content digest, payload in canonical order, and a read of one payload file.\n\
+         export type JessPackage = {\n  \
+           manifest: JessPackageManifest,\n  \
+           id: string,\n  \
+           version: string,\n  \
+           digest: string,\n  \
+           kind: \"source\" | \"jpk\",\n  \
+           location: string,\n  \
+           files: { string },\n  \
+           read: (path: string) -> buffer?,\n\
+         }\n\n\
+         --- What `pack` wrote.\n\
+         export type JessPackResult = { path: string, digest: string, files: number, size: number }\n\n\
+         --- What to resolve: the layers, the module names the host already provides, and the capabilities it grants.\n\
+         export type JessPackageRequest = { layers: { string }, hostModules: { string }?, grant: { string }? }\n\n\
+         --- An activation plan: requested layers resolved over packages, with nothing run.\n\
+         export type JessActivationPlan = {\n  \
+           requested: { string },\n  \
+           layers: { { id: string, package: string, version: string, requires: { string }, exports: { string }, entrypoints: { JessPackageEntrypoint } } },\n  \
+           packages: { { id: string, version: string, digest: string, kind: \"source\" | \"jpk\", location: string } },\n  \
+           modules: { { name: string, package: string, path: string } },\n  \
+           entrypoints: { { module: string, package: string, path: string, layer: string } },\n  \
+           capabilities: { { capability: string, package: string, version: string, layer: string, entrypoint: string } },\n\
+         }\n";
+
 /// The types the members' signatures name, for the definitions.
 pub(crate) fn definitions() -> String {
     format!(
@@ -260,67 +322,8 @@ pub(crate) fn definitions() -> String {
            beforeEach: (body: () -> ()) -> (),\n  \
            afterEach: (body: () -> ()) -> (),\n  \
            run: () -> JessTestReport,\n\
-         }}\n\n\
-         --- One entry of a JPK: its path, how it is stored, its sizes, CRC-32, and local header offset.\n\
-         export type JessJpkEntry = {{ path: string, method: \"stored\" | \"deflate\" | \"zstd\", compressedSize: number, size: number, crc32: number, offset: number }}\n\n\
-         --- Where a JPK's bytes come from: its size, and a read of `length` bytes at `offset`.\n\
-         export type JessJpkSource = {{ size: number, read: (offset: number, length: number) -> buffer }}\n\n\
-         --- The reader's limits, each optional against `budgets`' defaults.\n\
-         export type JessJpkBudgets = {{ maxEntries: number?, maxPathLength: number?, maxCentralDirectory: number?, maxEntrySize: number?, maxTotalSize: number? }}\n\n\
-         --- An opened JPK: its entries, a lookup by path, and a read that unpacks and CRC-checks one entry.\n\
-         export type JessJpkArchive = {{ entries: {{ JessJpkEntry }}, find: (path: string) -> JessJpkEntry?, read: (entry: JessJpkEntry | string) -> buffer }}\n\n\
-         --- A file to write into a JPK.\n\
-         export type JessJpkFile = {{ path: string, data: buffer }}\n\n\
-         --- Code a layer runs when it is activated, and the capabilities it needs.\n\
-         export type JessPackageEntrypoint = {{ module: string, capabilities: {{ string }} }}\n\n\
-         --- A layer as a manifest declares it: what it requires, the modules it exports as inert API, and\n\
-         --- the entrypoints that run when it is activated, which alone hold capabilities.\n\
-         export type JessPackageLayer = {{ id: string, requires: {{ string }}, exports: {{ string }}, entrypoints: {{ JessPackageEntrypoint }} }}\n\n\
-         --- A managed implementation a target supervisor may load into its application topology.\n\
-         export type JessPackageManaged = {{ id: string, module: string, interface: string? }}\n\n\
-         --- One runnable role in a package.\n\
-         export type JessPackageTarget = {{ id: string, kind: \"application\" | \"command\", entry: string, capabilities: {{ string }}, command: string? }}\n\n\
-         --- A checked `jess.toml`.\n\
-         export type JessPackageManifest = {{\n  \
-           manifestVersion: number,\n  \
-           id: string,\n  \
-           version: string,\n  \
-           jessApi: string,\n  \
-           defaultTarget: string?,\n  \
-           include: {{ string }},\n  \
-           tests: {{ string }},\n  \
-           dependencies: {{ [string]: string }},\n  \
-           modules: {{ [string]: string }},\n  \
-           layers: {{ JessPackageLayer }},\n  \
-           managed: {{ [string]: JessPackageManaged }},\n  \
-           targets: {{ [string]: JessPackageTarget }},\n\
-         }}\n\n\
-         --- A package opened from a Package Source (`source`) or a JPK (`jpk`): its manifest, identity,\n\
-         --- content digest, payload in canonical order, and a read of one payload file.\n\
-         export type JessPackage = {{\n  \
-           manifest: JessPackageManifest,\n  \
-           id: string,\n  \
-           version: string,\n  \
-           digest: string,\n  \
-           kind: \"source\" | \"jpk\",\n  \
-           location: string,\n  \
-           files: {{ string }},\n  \
-           read: (path: string) -> buffer?,\n\
-         }}\n\n\
-         --- What `pack` wrote.\n\
-         export type JessPackResult = {{ path: string, digest: string, files: number, size: number }}\n\n\
-         --- What to resolve: the layers, the module names the host already provides, and the capabilities it grants.\n\
-         export type JessPackageRequest = {{ layers: {{ string }}, hostModules: {{ string }}?, grant: {{ string }}? }}\n\n\
-         --- An activation plan: requested layers resolved over packages, with nothing run.\n\
-         export type JessActivationPlan = {{\n  \
-           requested: {{ string }},\n  \
-           layers: {{ {{ id: string, package: string, version: string, requires: {{ string }}, exports: {{ string }}, entrypoints: {{ JessPackageEntrypoint }} }} }},\n  \
-           packages: {{ {{ id: string, version: string, digest: string, kind: \"source\" | \"jpk\", location: string }} }},\n  \
-           modules: {{ {{ name: string, package: string, path: string }} }},\n  \
-           entrypoints: {{ {{ module: string, package: string, path: string, layer: string }} }},\n  \
-           capabilities: {{ {{ capability: string, package: string, version: string, layer: string, entrypoint: string }} }},\n\
-         }}\n"
-    )
+         }}\n\n"
+    ) + PACKAGE_TYPES
 }
 
 thread_local! {

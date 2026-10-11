@@ -75,7 +75,7 @@ pub use registry::{
 
 /// The capabilities localization calls are gated on, named here so callers and grants agree.
 ///
-/// jess::l10n enforces none of them: a native caller holding a [`Registry`] already has
+/// `jess::l10n` enforces none of them: a native caller holding a [`Registry`] already has
 /// everything. The script boundary does: `jess.l10n` checks `READ` on every call that resolves
 /// text and `CONFIGURE` on every call that changes what everyone sees, through
 /// `crate::runtime::require_capability`, whenever the script runs under a `ScriptDomain`. Outside

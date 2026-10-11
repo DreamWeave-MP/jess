@@ -1,4 +1,4 @@
-//! The opaque identities jess::input owns.
+//! The opaque identities `jess::input` owns.
 //!
 //! Every id is a plain integer allocated by its owning registry, never a pointer: a device id by
 //! the device registry behind a queue, action, set, layer, binding, and node ids by the compiled

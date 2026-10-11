@@ -12,7 +12,9 @@ use jess::l10n::{
 };
 
 fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/l10n/fixtures").join(name)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/l10n/fixtures")
+        .join(name)
 }
 
 fn locale(tag: &str) -> Locale {

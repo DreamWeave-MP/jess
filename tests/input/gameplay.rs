@@ -4,7 +4,9 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use jess::input::{ActionEventKind, Control, GamepadButton, GraphSpec, InputRuntime, Key, SyntheticSource, Value, ValueType};
+use jess::input::{
+    ActionEventKind, Control, GamepadButton, GraphSpec, InputRuntime, Key, SyntheticSource, Value, ValueType,
+};
 
 use crate::common;
 

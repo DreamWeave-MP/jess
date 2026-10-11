@@ -44,7 +44,8 @@ pub fn lua(capabilities: &[String]) -> Result<Runtime, String> {
 }
 
 fn lua_with_profile(capabilities: &[String], profiling: bool) -> Result<Runtime, String> {
-    jess::lua::runtime_with_profile(jess::lua::Options::default(), capabilities, profiling).map_err(|error| error.to_string())
+    jess::lua::runtime_with_profile(jess::lua::Options::default(), capabilities, profiling)
+        .map_err(|error| error.to_string())
 }
 
 /// A default-deny runtime for CLI commands that have no capability flags.

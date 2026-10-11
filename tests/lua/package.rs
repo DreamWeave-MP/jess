@@ -130,10 +130,7 @@ fn a_package_source_and_its_jpk_are_one_package() {
     assert_eq!(from_source.default_target.as_deref(), Some("greet"));
     assert_eq!(from_source.managed.len(), 1);
     assert_eq!(from_source.managed[0].id, "core");
-    assert_eq!(
-        from_source.managed[0].interface.as_deref(),
-        Some("example.core")
-    );
+    assert_eq!(from_source.managed[0].interface.as_deref(), Some("example.core"));
     assert_eq!(from_source.targets.len(), 1);
     assert_eq!(from_source.targets[0].id, "greet");
     assert_eq!(from_source.targets[0].kind, "command");
@@ -304,6 +301,7 @@ fn a_runtime_activates_one_plan() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // one case per rule a manifest or payload can break
 fn manifests_and_payloads_are_checked_before_anything_runs() {
     let temp = tempfile::tempdir().unwrap();
     let runtime = common::runtime();
@@ -401,9 +399,7 @@ fn manifests_and_payloads_are_checked_before_anything_runs() {
     let interface_name = open(&[
         (
             "jess.toml",
-            &manifest(
-                "[managed.worker]\nmodule = \"src/a.luau\"\ninterfaceName = \"example.worker\"\n",
-            ),
+            &manifest("[managed.worker]\nmodule = \"src/a.luau\"\ninterfaceName = \"example.worker\"\n"),
         ),
         ("src/a.luau", ""),
     ]);
@@ -454,9 +450,7 @@ fn manifests_and_payloads_are_checked_before_anything_runs() {
     let target_capability = open(&[
         (
             "jess.toml",
-            &manifest(
-                "[targets.tool]\nkind = \"command\"\nentry = \"src/a.luau\"\ncapabilities = [\"filesystem\"]\n",
-            ),
+            &manifest("[targets.tool]\nkind = \"command\"\nentry = \"src/a.luau\"\ncapabilities = [\"filesystem\"]\n"),
         ),
         ("src/a.luau", ""),
     ]);
@@ -483,9 +477,7 @@ fn manifests_and_payloads_are_checked_before_anything_runs() {
     let target_source = open(&[
         (
             "jess.toml",
-            &manifest(
-                "[targets.tool]\nkind = \"command\"\nentry = \"src/missing.luau\"\n",
-            ),
+            &manifest("[targets.tool]\nkind = \"command\"\nentry = \"src/missing.luau\"\n"),
         ),
         ("src/a.luau", ""),
     ]);

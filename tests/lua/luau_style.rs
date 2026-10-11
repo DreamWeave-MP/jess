@@ -3,9 +3,9 @@
 //! in the site's pages, and `jess luau-types`' definitions, and any finding fails the test. It is
 //! activated like any package, from the Package Source.
 
-use std::path::{Path, PathBuf};
 use jess::lua::l3i::Runtime;
 use jess::lua::l3i::value::Table;
+use std::path::{Path, PathBuf};
 
 mod common;
 

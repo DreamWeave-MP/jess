@@ -27,12 +27,10 @@ pub fn seed_require(runtime: &Runtime, jess: &Jess) -> l3i::Result<()> {
                 loaded.raw_set(frame, name)?;
             }
         }
-        for name in ["jess"] {
-            let module = Value::get_global(frame, name)?;
+        let module = Value::get_global(frame, "jess")?;
+        for name in ["jess", "@jess"] {
             module.push_to(frame)?;
             loaded.raw_set(frame, name)?;
-            module.push_to(frame)?;
-            loaded.raw_set(frame, &format!("@{name}"))?;
         }
         // Each of jess's own modules is `@jess/<name>` too: `require("@jess/shader")`.
         let jess_module = jess.module.push_to(frame)?;

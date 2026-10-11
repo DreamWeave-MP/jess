@@ -59,7 +59,7 @@ pub struct IntentRoute {
 
 /// Where a dispatch is headed, as far as the router was told.
 ///
-/// Every field is an opaque token the consumer chose and the consumer reads back; jess::input
+/// Every field is an opaque token the consumer chose and the consumer reads back; `jess::input`
 /// compares nothing and resolves nothing. The script runtime will put its domain here, a
 /// workspace its scope, a GUI its focused target. A field left `None` means nobody said.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]

@@ -46,7 +46,7 @@ pub fn write_file_with(path: &Path, bytes: &[u8], backup: Backup) -> io::Result<
     let backup = if matches!(backup, Backup::Keep) {
         match fs::File::open(path) {
             Ok(mut original) => {
-                let mut index = 0_u64;
+                let mut index = 0u64;
                 loop {
                     let suffix = if index == 0 {
                         ".bak".to_owned()

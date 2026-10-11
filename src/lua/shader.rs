@@ -1,5 +1,5 @@
 //! `@jess/shader` (`jess.shader`): typed shader construction, a thin Luau handle on
-//! [`jess::shader`]'s [`ProgramBuilder`].
+//! [`jess::shader`](crate::shader)'s [`ProgramBuilder`].
 //!
 //! A shader module is an ordinary Luau module that runs once and returns a [`LuaShaderProgram`]
 //! from `shader.program { parameters, textures, vertex, fragment }`. Its vertex and fragment

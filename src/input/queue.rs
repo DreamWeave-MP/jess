@@ -12,7 +12,9 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use crate::input::{Control, DeviceDescriptor, DeviceId, DeviceIdentity, InputEvent, InputEventKind, SyntheticSource, Timestamp};
+use crate::input::{
+    Control, DeviceDescriptor, DeviceId, DeviceIdentity, InputEvent, InputEventKind, SyntheticSource, Timestamp,
+};
 
 #[derive(Debug, Default)]
 struct Shared {

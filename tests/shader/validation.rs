@@ -54,9 +54,7 @@ fn dot_of_different_sizes_is_invalid() {
 
     assert_eq!(
         messages(&program),
-        [
-            "shaders/lit.luau:12:5 (@test/viewer): dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size"
-        ]
+        ["shaders/lit.luau:12:5 (@test/viewer): dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size"]
     );
 }
 

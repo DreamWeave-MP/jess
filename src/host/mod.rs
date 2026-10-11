@@ -12,7 +12,7 @@
 //!    context through the domain's mailbox.
 //! 2. **Input.** The host polls the platform backend into the domain's [`InputService`], ticks
 //!    it once at the host's clock, and, if the tick produced action events, runs the domain's
-//!    [`Phase::Input`](jess::runtime::Phase::Input) with them and the intents routed from them as the payload
+//!    [`Phase::Input`](crate::runtime::Phase::Input) with them and the intents routed from them as the payload
 //!    ([`input::payload`]). A quiet tick enters no Luau.
 //! 3. **Advance.** [`ScriptDomain::advance`]: fixed steps, update, late update, and the event
 //!    drain that delivers step 1.
@@ -288,10 +288,7 @@ impl Host {
     /// # Errors
     ///
     /// As [`ScriptDomain::restart`].
-    pub fn restart(
-        &mut self,
-        load: impl FnOnce(&Runtime) -> l3i::Result<()>,
-    ) -> Result<Generation, RuntimeError> {
+    pub fn restart(&mut self, load: impl FnOnce(&Runtime) -> l3i::Result<()>) -> Result<Generation, RuntimeError> {
         if let Some(driver) = &self.input {
             driver.reset();
         }

@@ -47,9 +47,15 @@ fn assert_layout<Source>(module: &naga::Module, name: &str, block: &UniformBlock
 
 /// Compares `source` with `tests/golden/{name}.wgsl`; with `JESS_BLESS` set, rewrites it instead.
 pub fn assert_golden(name: &str, source: &str) {
-    let path: PathBuf = [env!("CARGO_MANIFEST_DIR"), "tests", "shader", "golden", &format!("{name}.wgsl")]
-        .iter()
-        .collect();
+    let path: PathBuf = [
+        env!("CARGO_MANIFEST_DIR"),
+        "tests",
+        "shader",
+        "golden",
+        &format!("{name}.wgsl"),
+    ]
+    .iter()
+    .collect();
     if std::env::var_os("JESS_BLESS").is_some() {
         std::fs::write(&path, source).unwrap();
         return;

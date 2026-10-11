@@ -16,7 +16,9 @@ use std::collections::HashMap;
 use ::gilrs::{Axis, Button, EventType, GamepadId, Gilrs};
 
 use super::{Backend, BackendError};
-use crate::input::{Control, DeviceDescriptor, DeviceId, DeviceIdentity, EventSender, GamepadAxis, GamepadButton, Timestamp};
+use crate::input::{
+    Control, DeviceDescriptor, DeviceId, DeviceIdentity, EventSender, GamepadAxis, GamepadButton, Timestamp,
+};
 
 const fn button(button: Button) -> Option<GamepadButton> {
     Some(match button {

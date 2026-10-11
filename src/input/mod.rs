@@ -123,7 +123,7 @@ pub use time::{MonotonicClock, Timestamp};
 /// The capabilities a script host grants, by the dotted names the script runtime's broker knows
 /// them by.
 ///
-/// jess::input enforces none of them: a native caller holding an [`InputRuntime`] already has
+/// `jess::input` enforces none of them: a native caller holding an [`InputRuntime`] already has
 /// everything. They are named here so the binding layer that stands between a script and the
 /// runtime checks the same three things everywhere, and so a package that only consumes actions
 /// never needs to be trusted with raw keystrokes. `jess.input` checks them through

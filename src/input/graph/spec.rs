@@ -73,7 +73,7 @@ impl fmt::Display for Origin {
 
 /// A semantic action's declaration: its name and the shape of its value.
 ///
-/// Names are the stable identity. jess::input reserves none and reads no meaning into them;
+/// Names are the stable identity. `jess::input` reserves none and reads no meaning into them;
 /// `ui.accept` and `game.move` are conventions of the packages that declare them.
 #[derive(Clone, PartialEq, Eq, Debug)]
 #[derive(serde::Serialize, serde::Deserialize)]

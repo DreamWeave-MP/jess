@@ -7,7 +7,7 @@ fn only_generic_members_are_installed() {
     let runtime = common::runtime();
     common::run(
         &runtime,
-        r#"
+        r"
         for _, name in { 'plugin', 'nif', 'land', 'save', 'openmw', 'luadata', 'compare', 'select', 'meta' } do
             assert(jess[name] == nil, name)
             assert(not pcall(require, '@jess/' .. name), name)
@@ -16,7 +16,7 @@ fn only_generic_members_are_installed() {
         for _, name in { 'fs', 'toml', 'regex', 'shader', 'context', 'worker', 'l10n', 'input' } do
             assert(require('@jess/' .. name) == jess[name], name)
         end
-    "#,
+    ",
     );
 }
 
