@@ -267,6 +267,12 @@ local function check(baselinePath: string, candidate: Results, tolerance: number
 end
 
 local function runCanaries(startAt: number): number
+  -- A build without the verified toolchain (tools/dev/no-lto.sh, the MSRV check) runs Luau
+  -- slower than a release does, so a number from one says nothing about what ships.
+  if not jess.bench.verified then
+    fail('this jess was built without the verified toolchain: measure on a release build')
+  end
+
   local runs = 5
   local warmup = 1
   local scale = 10
