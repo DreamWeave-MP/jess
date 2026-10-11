@@ -94,8 +94,23 @@ pub fn require(call: &Call<'_>, jess: &Jess, name: &str) -> l3i::Result<StackRes
             .borrow()
             .clone()
             .ok_or_else(|| error("this runtime wasn't made by jess::lua::runtime"))?;
-        call.forward_to(&luau_require, 1)?;
-        return Ok(StackResults);
+        // Luau's own require says "could not reset to requiring context" for a name nothing
+        // registered, which says nothing of what is wrong: no package in this run exports it.
+        return match call.forward_to(&luau_require, 1) {
+            Ok(_) => Ok(StackResults),
+            // The failed call left its error on top of the stack.
+            Err(l3i::Error::LuaErrorOnStack)
+                if call
+                    .at(-1)
+                    .read::<&str>()
+                    .is_ok_and(|message| message.contains("could not reset to requiring context")) =>
+            {
+                Err(error(format!(
+                    "module not found: {name}: no package activated in this run exports it, and it isn't one of jess's own modules"
+                )))
+            }
+            Err(problem) => Err(problem),
+        };
     }
     let module = if let Some(module) = export {
         module

@@ -1201,3 +1201,25 @@ fn a_command_target_runs_with_what_it_declares() {
         "{none}"
     );
 }
+
+/// A name nothing registered and no activated package exports is reported as that, whether or not
+/// a plan is mounted, and a module jess does provide still loads.
+#[test]
+fn a_name_nothing_provides_is_reported_as_not_found() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("alpha");
+    alpha(&source);
+    let bare = common::runtime();
+    let planned = common::runtime();
+    plan_of(&planned, &source, &["example.core"]);
+    for runtime in [&bare, &planned] {
+        common::run(
+            runtime,
+            "local ok, problem = pcall(require, '@nowhere/module')\n\
+             local expected = \"module not found: @nowhere/module: no package activated in this run exports it, \
+             and it isn't one of jess's own modules\"\n\
+             assert(not ok and string.find(tostring(problem), expected, 1, true), tostring(problem))\n\
+             assert(type(require('@dream/bytes')) == 'table')",
+        );
+    }
+}
