@@ -5,6 +5,7 @@
 -- The second result is the same layout side-channel jess.toml.decode exposes: document key order
 -- and which numeric values were written as floats.
 local Common = require './common'
+local Values = require './value'
 
 local SafeIntegerMax = integer.fromstring('9007199254740991')
 local SafeIntegerMin = integer.fromstring('-9007199254740991')
@@ -836,7 +837,13 @@ local function decode(text: string): (Table, Layout)
   return root, layout
 end
 
+--- A value built with `@jess/data/value` as a TOML document, as the toml crate's pretty writer
+--- lays it out. The value is a map; an absent field is left out, and raises inside a list, where
+--- TOML has nothing to write for it.
+local function encode(value: Values.Value): string return Values.encode(value, 'toml') end
+
 return table.freeze {
   version = '1.1.0',
   decode = decode,
+  encode = encode,
 }

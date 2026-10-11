@@ -1,9 +1,10 @@
 --!strict
 --!native
--- The built-in text decoders' contract cases. The larger differential/fuzz corpus lives outside
+-- The built-in text decoders' and encoders' contract cases. The larger differential/fuzz corpus lives outside
 -- this package test: these are the small cases a Jess build should never regress.
 local json = require '@jess/json'
 local toml = require '@jess/data/toml'
+local values = require '@jess/data/value'
 local yaml = require '@jess/yaml'
 local test = require '@jess/test'
 local expect = test.expect
@@ -149,6 +150,93 @@ custom: !<tag:example.com,2026:thing> hello
     expect(function() yaml.decode '[1,,2]' end).toThrow 'YAML:'
     expect(function() yaml.decode 'value: *missing' end).toThrow 'YAML:'
     expect(function() yaml.decode 'a: 1\na: 2' end).toThrow 'YAML:'
+  end)
+end)
+
+suite.describe('encode', function()
+  --- One document with a field of each kind, in an order no sort would give. TOML has no null.
+  local function document(null: boolean): values.Map
+    local fields: { { unknown } } = {
+      { 'name', 'Jess' },
+      { 'count', 3 },
+      { 'ratio', values.float(2) },
+      { 'tags', values.array { 'a', 'b' } },
+      { 'absent', nil },
+      { 'nested', values.struct { { 'on', true }, { 'note', 'yes' } } },
+    }
+
+    if null then table.insert(fields, 2, { 'nothing', values.Null }) end
+
+    return values.struct(fields)
+  end
+
+  suite.it('writes JSON on one line, fields in the order they were built', function()
+    expect(json.encode(document(true))).toBe(
+      '{"name":"Jess","nothing":null,"count":3,"ratio":2.0,"tags":["a","b"],"absent":null,'
+        .. '"nested":{"on":true,"note":"yes"}}'
+    )
+  end)
+
+  suite.it('writes YAML in block style, quoting only what a reader would take for something else', function()
+    expect(yaml.encode(document(true))).toBe(table.concat({
+      'name: Jess',
+      'nothing: null',
+      'count: 3',
+      'ratio: 2.0',
+      'tags:',
+      '- a',
+      '- b',
+      'absent: null',
+      'nested:',
+      '  on: true',
+      '  note: yes',
+      '',
+    }, '\n'))
+  end)
+
+  suite.it('writes TOML with tables after values, and leaves an absent field out', function()
+    expect(toml.encode(document(false))).toBe(table.concat({
+      'name = "Jess"',
+      'count = 3',
+      'ratio = 2.0',
+      'tags = [',
+      '    "a",',
+      '    "b",',
+      ']',
+      '',
+      '[nested]',
+      'on = true',
+      'note = "yes"',
+      '',
+    }, '\n'))
+
+    expect(function() toml.encode(document(true)) end).toThrow 'toml:'
+  end)
+
+  suite.it('writes what each decoder reads back as the same values', function()
+    local fromJson = json.decode(json.encode(document(true)))
+    local fromYaml = yaml.decode(yaml.encode(document(true)))
+    local fromToml = toml.decode(toml.encode(document(false)))
+
+    for _, read in { fromJson, fromYaml, fromToml } do
+      expect({ read.name, read.count, read.ratio }).toEqual { 'Jess', 3, 2 }
+      expect(read.tags).toEqual { 'a', 'b' }
+      expect(read.nested).toEqual { on = true, note = 'yes' }
+    end
+
+    expect(fromJson.nothing).toBe(json.null)
+    expect(fromYaml.nothing).toBe(yaml.null)
+  end)
+
+  suite.it('writes a null a decoder read as a null', function()
+    expect(json.encode(values.array { json.decode 'null', yaml.decode 'null' })).toBe '[null,null]'
+  end)
+
+  suite.it('refuses a table it would have to guess about, and a format it doesn\'t write', function()
+    expect(function() json.encode { 1, 2 } end).toThrow 'a bare table is neither a list nor a map'
+    expect(function() yaml.encode { name = 'Jess' } end).toThrow 'a bare table is neither a list nor a map'
+    expect(function() json.encode(print) end).toThrow 'a function can\'t be written'
+    expect(function() values.encode(values.array {}, 'xml') end).toThrow 'unknown format \'xml\''
   end)
 end)
 

@@ -15,6 +15,7 @@ tests = ["tests/style/run.luau", "tests/data/run.luau", "tests/analysis/run.luau
 "@jess/analysis" = "src/analysis/init.luau"
 "@jess/json" = "src/data/json.luau"
 "@jess/data/toml" = "src/data/toml.luau"
+"@jess/data/value" = "src/data/value.luau"
 "@jess/yaml" = "src/data/yaml.luau"
 
 [[layer]]
@@ -23,4 +24,4 @@ exports = ["@jess/style", "@jess/analysis"]
 
 [[layer]]
 id = "jess.data"
-exports = ["@jess/json", "@jess/data/toml", "@jess/yaml"]
+exports = ["@jess/json", "@jess/data/toml", "@jess/data/value", "@jess/yaml"]

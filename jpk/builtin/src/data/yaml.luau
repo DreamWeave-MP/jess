@@ -5,6 +5,7 @@
 -- anchors/aliases preserve graph identity and custom tags are represented explicitly.
 
 local Common = require './common'
+local Values = require './value'
 
 export type Options = {
   maxDepth: number?,
@@ -1333,9 +1334,14 @@ local function decode(text: string, options: Options?): any
   return documents[1]
 end
 
+--- A value built with `@jess/data/value` as one YAML document in block style, as serde_yaml
+--- writes it: plain scalars where a reader takes them back as what they were, quoted otherwise.
+local function encode(value: Values.Value): string return Values.encode(value, 'yaml') end
+
 return table.freeze {
   version = '1.2.2',
   null = Null,
   decode = decode,
   decodeAll = decodeAll,
+  encode = encode,
 }

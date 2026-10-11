@@ -4,6 +4,7 @@
 -- strings jump between escapes/control bytes with string.find, following the strategy that makes
 -- dkjson fast without accepting dkjson's JavaScript comments or loose escapes.
 local Common = require './common'
+local Values = require './value'
 
 export type Options = {
   maxDepth: number?,
@@ -281,7 +282,11 @@ local function decode(text: string, options: Options?): Value
   return value
 end
 
+--- A value built with `@jess/data/value` as JSON: compact, on one line, as serde_json writes it.
+local function encode(value: Values.Value): string return Values.encode(value, 'json') end
+
 return table.freeze {
   null = Null,
   decode = decode,
+  encode = encode,
 }

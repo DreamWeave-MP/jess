@@ -146,6 +146,7 @@ fn the_checker_type_checks_against_the_definitions() {
             ("@jess/json", "builtin/src/data/json"),
             ("@jess/yaml", "builtin/src/data/yaml"),
             ("@jess/data/toml", "builtin/src/data/toml"),
+            ("@jess/data/value", "builtin/src/data/value"),
         ],
     );
     assert!(report.is_empty(), "{report}");

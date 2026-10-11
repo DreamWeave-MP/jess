@@ -27,6 +27,7 @@ pub const FILES: &[(&str, &str)] = &[
     ("src/data/common.luau", include_str!("../../jpk/builtin/src/data/common.luau")),
     ("src/data/json.luau", include_str!("../../jpk/builtin/src/data/json.luau")),
     ("src/data/toml.luau", include_str!("../../jpk/builtin/src/data/toml.luau")),
+    ("src/data/value.luau", include_str!("../../jpk/builtin/src/data/value.luau")),
     ("src/data/yaml.luau", include_str!("../../jpk/builtin/src/data/yaml.luau")),
     ("src/style/check.luau", include_str!("../../jpk/builtin/src/style/check.luau")),
     ("src/style/init.luau", include_str!("../../jpk/builtin/src/style/init.luau")),
