@@ -13,6 +13,8 @@ export type Host = {
   read fileSize: (path: string) -> number?,
   read isDir: (path: string) -> boolean,
   read replace: (path: string, data: buffer) -> (),
+  --- What is directly inside `root`, sorted by name; a link is what it points to.
+  read listDir: (root: string) -> { { name: string, kind: string } },
   read decodeToml: (text: string) -> { [string]: unknown },
   --- The built-in package jess carries: its manifest and payload, by package path.
   read builtin: () -> { [string]: string },
@@ -84,10 +86,21 @@ export type Manifest = {
   read include: { string },
   read tests: { string },
   read dependencies: { [string]: string },
+  --- Packages only the package's own tests need: selected when its tests run, never otherwise.
+  read devDependencies: { [string]: string },
   read modules: { [string]: string },
   read layers: { Layer },
   read managed: { [string]: Managed },
   read targets: { [string]: Target },
+}
+
+--- A package a resolution may select: its manifest and where it is, with nothing else read.
+export type Offer = {
+  read manifest: Manifest,
+  read id: string,
+  read version: string,
+  read kind: 'source' | 'jpk',
+  read location: string,
 }
 
 export type Package = {
@@ -105,6 +118,13 @@ export type Request = {
   layers: { string },
   hostModules: { string }?,
   grant: { string }?,
+  --- Packages opened only when a layer or a dependency needs one. A package handed to `resolve`
+  --- outright is the one chosen over a candidate with its id.
+  candidates: { Offer }?,
+  --- Package ids selected whether or not a requested layer is theirs.
+  roots: { string }?,
+  --- Package ids whose `[dev-dependencies]` are selected with them.
+  dev: { string }?,
 }
 
 export type PlanLayer = {
@@ -129,6 +149,8 @@ export type PlanPackage = {
   read digest: string,
   read kind: 'source' | 'jpk',
   read location: string,
+  --- The packages whose exports its modules may require: the dependencies it declares.
+  read dependencies: { string },
 }
 
 export type PlanModule = { read name: string, read package: string, read path: string }
@@ -351,11 +373,16 @@ end
 
 local function parseManifest(text: string): Manifest
   local document = host.decodeToml(text)
-  checkKeys(
-    document,
-    { 'manifest_version', 'package', 'dependencies', 'modules', 'layer', 'managed', 'targets' },
-    Manifest
-  )
+  checkKeys(document, {
+    'manifest_version',
+    'package',
+    'dependencies',
+    'dev-dependencies',
+    'modules',
+    'layer',
+    'managed',
+    'targets',
+  }, Manifest)
 
   if document.manifest_version ~= 1 then fail(`{Manifest}: manifest_version must be 1`) end
 
@@ -407,21 +434,26 @@ local function parseManifest(text: string): Manifest
     checkPayloadPath(path, `{Manifest} [package] tests`)
   end
 
-  local dependencies = {}
+  local function requirements(value: unknown, section: string): { [string]: string }
+    local declared: { [string]: string } = {}
 
-  if document.dependencies ~= nil then
-    if type(document.dependencies) ~= 'table' then
-      fail(`{Manifest}: [dependencies] must be a table`)
-    end
+    if value == nil then return declared end
 
-    for dependency, requirement in document.dependencies :: { [unknown]: unknown } do
+    if type(value) ~= 'table' then fail(`{Manifest}: [{section}] must be a table`) end
+
+    for dependency, requirement in value :: { [unknown]: unknown } do
       local name = checkId(dependency, `{Manifest} dependency`)
 
       if name == id then fail(`{Manifest}: the package depends on itself`) end
 
-      dependencies[name] = checkRequirement(requirement, `{Manifest} dependency '{name}'`)
+      declared[name] = checkRequirement(requirement, `{Manifest} dependency '{name}'`)
     end
+
+    return declared
   end
+
+  local dependencies = requirements(document.dependencies, 'dependencies')
+  local devDependencies = requirements(document['dev-dependencies'], 'dev-dependencies')
 
   local modules: { [string]: string } = {}
 
@@ -648,6 +680,7 @@ local function parseManifest(text: string): Manifest
     include = table.freeze(include),
     tests = table.freeze(tests),
     dependencies = table.freeze(dependencies),
+    devDependencies = table.freeze(devDependencies),
     modules = table.freeze(modules),
     layers = table.freeze(layers),
     managed = table.freeze(managed),
@@ -890,17 +923,87 @@ local function checkBuiltin(package: Package)
   end
 end
 
+--- `location` without the separators it ends in.
+local function trimmed(location: string): string
+  local stripped = string.gsub(location, '[/\\]+$', '')
+
+  return if stripped == '' then location else stripped
+end
+
 --- A package from a Package Source folder or a `.jpk` file. Reads; runs nothing.
 local function open(location: string): Package
-  local trimmed = string.gsub(location, '[/\\]+$', '')
-
-  if trimmed == '' then trimmed = location end
-
-  local package = if host.isDir(trimmed) then openSource(trimmed) else openJpk(trimmed)
+  local place = trimmed(location)
+  local package = if host.isDir(place) then openSource(place) else openJpk(place)
 
   if package.id == BuiltinPackage then checkBuiltin(package) end
 
   return package
+end
+
+--- The manifest of the package at `location`, with nothing else read: what a resolution needs to
+--- know whether to open it.
+local function peek(location: string): Offer
+  local place = trimmed(location)
+  local source = host.isDir(place)
+  local text: buffer?
+
+  if source then
+    text = host.readFile(`{place}/{Manifest}`)
+  else
+    local size = host.fileSize(place) or fail(`'{place}' is not there`)
+    local archive = container.open {
+      size = size,
+      read = function(offset: number, length: number): buffer
+        return host.readAt(place, offset, length)
+      end,
+    }
+
+    if archive.find(Manifest) then text = archive.read(Manifest) end
+  end
+
+  if not text then fail(`'{place}' has no {Manifest}`) end
+
+  local manifest = parseManifest(buffer.tostring(text :: buffer))
+
+  return table.freeze {
+    manifest = manifest,
+    id = manifest.id,
+    version = manifest.version,
+    kind = if source then 'source' :: 'source' else 'jpk' :: 'jpk',
+    location = place,
+  }
+end
+
+--- Every package directly inside `folder`, a package path: each folder holding a manifest and each
+--- `.jpk` file, in name order. One that can't be read fails the whole path, since a package a
+--- resolution can't see is one it would silently resolve without.
+local function candidates(folder: string): { Offer }
+  local place = trimmed(folder)
+
+  if not host.isDir(place) then fail(`package path '{folder}' is not a folder`) end
+
+  local offers: { Offer } = {}
+
+  for _, entry in host.listDir(place) do
+    local location = `{place}/{entry.name}`
+    local holds = if entry.kind == 'dir'
+      then host.fileSize(`{location}/{Manifest}`) ~= nil
+      else entry.kind == 'file' and string.sub(entry.name, -4) == '.jpk'
+
+    if not holds then continue end
+
+    -- A manifest that doesn't parse raises, and its message doesn't say which package it was.
+    local ok, offer = pcall(peek, location)
+
+    if not ok then
+      local reason = string.gsub(tostring(offer), '^package: ', '')
+      fail(`package path '{folder}': '{location}': {reason}`)
+    end
+
+    table.insert(offers, offer)
+  end
+
+  return offers
 end
 
 --- Packs the Package Source at `source` into the canonical JPK at `output`, written atomically.
@@ -939,11 +1042,17 @@ end
 --- and package dependency present and satisfied, no cycles, one provider per layer, package, and
 --- module name, nothing colliding with `request.hostModules`, and, when `request.grant` is given,
 --- every capability the resolved layers require inside it.
-local function resolve(packages: { Package }, request: Request): Plan
+---
+--- `request.candidates` are opened only when a layer or a dependency needs one, and never in
+--- place of a package handed over outright; two candidates that could each fill the same need
+--- are an error, not a choice. `request.roots` are selected with their dependencies whatever the
+--- layers, and `request.dev` adds their `[dev-dependencies]`. The second result is the selected
+--- packages, opened, in the plan's order.
+local function resolve(packages: { Package }, request: Request): (Plan, { Package })
   local byId, layerProvider =
     {} :: { [string]: Package }, {} :: { [string]: { package: Package, layer: Layer } }
 
-  for _, candidate in packages do
+  local function offer(candidate: Package)
     local other = byId[candidate.id]
 
     if other then
@@ -965,6 +1074,65 @@ local function resolve(packages: { Package }, request: Request): Plan
     end
   end
 
+  for _, candidate in packages do
+    offer(candidate)
+  end
+
+  local candidateById, candidateByLayer =
+    {} :: { [string]: { Offer } }, {} :: { [string]: { Offer } }
+
+  for _, candidate in request.candidates or {} do
+    if byId[candidate.id] then continue end
+
+    local same = candidateById[candidate.id] or {}
+    table.insert(same, candidate)
+    candidateById[candidate.id] = same
+
+    for _, layer in candidate.manifest.layers do
+      local providers = candidateByLayer[layer.id] or {}
+      table.insert(providers, candidate)
+      candidateByLayer[layer.id] = providers
+    end
+  end
+
+  local function places(offers: { Offer }): string
+    local listed = {}
+
+    for _, candidate in offers do
+      table.insert(
+        listed,
+        `{candidate.id} {candidate.version} ({candidate.kind} {candidate.location})`
+      )
+    end
+
+    return table.concat(listed, ', ')
+  end
+
+  --- Opens the one candidate `offers` holds for `need` and offers it like any other package.
+  local function adopt(offers: { Offer }, need: string): Package
+    if #offers > 1 then
+      fail(`{need} has more than one candidate: {places(offers)}; offer one of them outright`)
+    end
+
+    local chosen = offers[1]
+    local same = candidateById[chosen.id]
+
+    if same and #same > 1 then
+      fail(`{need} has more than one candidate: {places(same)}; offer one of them outright`)
+    end
+
+    local opened = open(chosen.location)
+
+    if opened.id ~= chosen.id or opened.version ~= chosen.version then
+      fail(`'{chosen.location}' changed while it was being resolved; resolve again`)
+    end
+
+    candidateById[chosen.id] = nil
+    offer(opened)
+
+    return opened
+  end
+
   local order, state = {} :: { { package: Package, layer: Layer } }, {} :: { [string]: string }
 
   local function visit(id: string, chain: { string })
@@ -976,6 +1144,10 @@ local function resolve(packages: { Package }, request: Request): Plan
     table.insert(path, id)
 
     if mark == 'active' then fail(`layer cycle: {table.concat(path, ' -> ')}`) end
+
+    if not layerProvider[id] and candidateByLayer[id] then
+      adopt(candidateByLayer[id], `layer {id}`)
+    end
 
     local provider = layerProvider[id]
 
@@ -994,16 +1166,24 @@ local function resolve(packages: { Package }, request: Request): Plan
     table.insert(order, provider)
   end
 
-  local requested = table.clone(request.layers)
+  local requested, roots = table.clone(request.layers), table.clone(request.roots or {})
   table.sort(requested)
+  table.sort(roots)
 
-  if #requested == 0 then fail 'no layers were requested' end
+  if #requested == 0 and #roots == 0 then fail 'no layers were requested' end
 
   for _, id in requested do
     visit(id, {})
   end
 
+  local withDev: { [string]: boolean } = {}
+
+  for _, id in request.dev or {} do
+    withDev[id] = true
+  end
+
   local selected, selectedOrder = {} :: { [string]: boolean }, {} :: { string }
+  local allowed: { [string]: { string } } = {}
 
   local function select(id: string, chain: { string })
     if selected[id] then return end
@@ -1012,13 +1192,34 @@ local function resolve(packages: { Package }, request: Request): Plan
     table.insert(selectedOrder, id)
 
     local package = byId[id]
+    local needs: { [string]: string } = table.clone(package.manifest.dependencies)
+    local forTests: { [string]: boolean } = {}
 
-    for _, dependency in sortedKeys(package.manifest.dependencies) do
-      local requirement = package.manifest.dependencies[dependency]
+    if withDev[id] then
+      for dependency, requirement in package.manifest.devDependencies do
+        if needs[dependency] then continue end
+
+        needs[dependency], forTests[dependency] = requirement, true
+      end
+    end
+
+    -- What its tests need is the tests', which are the host's scripts: never its own modules'.
+    allowed[id] = sortedKeys(package.manifest.dependencies)
+
+    for _, dependency in sortedKeys(needs) do
+      local requirement = needs[dependency]
+      local purpose = if forTests[dependency] then ' for its tests' else ''
       local path = table.clone(chain)
-      table.insert(path, `{package.id} {package.version} requires {dependency} {requirement}`)
+      table.insert(
+        path,
+        `{package.id} {package.version} requires {dependency} {requirement}{purpose}`
+      )
 
       local available = byId[dependency]
+
+      if not available and candidateById[dependency] then
+        available = adopt(candidateById[dependency], `package {dependency}`)
+      end
 
       if not available then
         fail(`{table.concat(path, '\n  ')}\nresolution failed: {dependency} is not available`)
@@ -1036,6 +1237,14 @@ local function resolve(packages: { Package }, request: Request): Plan
 
   for _, entry in order do
     select(entry.package.id, {})
+  end
+
+  for _, id in roots do
+    if not byId[id] and candidateById[id] then adopt(candidateById[id], `package {id}`) end
+
+    if not byId[id] then fail(`{id} was asked for, and is not available`) end
+
+    select(id, {})
   end
 
   table.sort(selectedOrder)
@@ -1138,7 +1347,7 @@ local function resolve(packages: { Package }, request: Request): Plan
     end
   end
 
-  local planPackages: { PlanPackage } = {}
+  local planPackages: { PlanPackage }, selectedPackages = {}, {} :: { Package }
 
   for _, id in selectedOrder do
     local package = byId[id]
@@ -1150,8 +1359,10 @@ local function resolve(packages: { Package }, request: Request): Plan
         digest = package.digest,
         kind = package.kind,
         location = package.location,
+        dependencies = table.freeze(allowed[id]),
       }
     )
+    table.insert(selectedPackages, package)
   end
 
   return table.freeze {
@@ -1161,7 +1372,8 @@ local function resolve(packages: { Package }, request: Request): Plan
     modules = table.freeze(modules),
     entrypoints = table.freeze(entrypoints),
     capabilities = table.freeze(capabilities),
-  }
+  },
+    selectedPackages
 end
 
 return function(dependencies: { host: Host, jpk: Jpk })
@@ -1169,6 +1381,8 @@ return function(dependencies: { host: Host, jpk: Jpk })
 
   return {
     open = open,
+    peek = peek,
+    candidates = candidates,
     pack = pack,
     resolve = resolve,
     manifest = parseManifest,

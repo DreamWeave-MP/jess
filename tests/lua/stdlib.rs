@@ -103,7 +103,7 @@ fn the_definitions_type_the_modules() {
         ("@jess/log", "-> JessLogger"),
         ("@jess/test", "-> JessTestSuite"),
         ("@jess/jpk", "-> JessJpkArchive"),
-        ("@jess/package", "-> JessActivationPlan"),
+        ("@jess/package", "-> JessPackageOffer"),
         ("@jess/shader", "return jess.shader"),
         ("@jess", "return jess"),
     ] {

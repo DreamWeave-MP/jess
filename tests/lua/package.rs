@@ -755,3 +755,146 @@ fn entrypoints_run_only_for_the_layers_activated() {
         );
     }
 }
+
+/// A package `org.example.<name>` at `root`: one layer, `example.<name>`, exporting `@<name>` from
+/// `source`. `extra` is the rest of the manifest: more `[package]` fields, then other tables.
+fn library(root: &Path, name: &str, extra: &str, source: &str) {
+    write(
+        root,
+        &[
+            (
+                "jess.toml",
+                &format!(
+                    "manifest_version = 1\n[package]\nid = \"org.example.{name}\"\nversion = \"1.0.0\"\njess_api = \"1\"\n\
+                     include = [\"src\"]\n{extra}\n[modules]\n\"@{name}\" = \"src/init.luau\"\n\
+                     [[layer]]\nid = \"example.{name}\"\nexports = [\"@{name}\"]\n"
+                ),
+            ),
+            ("src/init.luau", source),
+        ],
+    );
+}
+
+fn text(path: &Path) -> String {
+    path.display().to_string()
+}
+
+fn strings(items: &[&str]) -> Vec<String> {
+    items.iter().map(ToString::to_string).collect()
+}
+
+/// A package path's packages are candidates: opened when a layer or a dependency needs one, never
+/// in place of a package handed over outright, and never chosen between.
+#[test]
+fn a_package_path_offers_what_a_plan_needs() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("packages");
+    let top = temp.path().join("top");
+    library(&path.join("base"), "base", "", "return { name = 'base' }\n");
+    library(&path.join("unrelated"), "unrelated", "", "error('nothing asked for this')\n");
+    write(
+        &path,
+        &[("notes/readme.txt", "not a package\n"), ("stray.luau", "return 1\n")],
+    );
+    library(
+        &top,
+        "top",
+        "[dependencies]\n\"org.example.base\" = \"1\"\n",
+        "return { base = require('@base').name }\n",
+    );
+    let search = |roots: &[&str]| package::Search {
+        paths: vec![text(&path)],
+        roots: strings(roots),
+        dev: Vec::new(),
+    };
+    let graph = |locations: &[&Path], layers: &[&str], roots: &[&str]| {
+        let locations = locations.iter().map(|location| text(location)).collect::<Vec<_>>();
+        package::graph_with(&common::runtime(), &locations, &strings(layers), &search(roots))
+    };
+    let ids = |plan: &Plan| plan.packages.iter().map(|package| package.id.clone()).collect::<Vec<_>>();
+    let failure = |locations: &[&Path], layers: &[&str], roots: &[&str]| -> String {
+        match graph(locations, layers, roots) {
+            Ok(plan) => panic!("expected a failure, got {plan:#?}"),
+            Err(error) => error.to_string(),
+        }
+    };
+
+    // A dependency, a layer, and a root each bring a candidate in; nothing brings the rest.
+    let plan = graph(&[&top], &["example.top"], &[]).unwrap();
+    assert_eq!(ids(&plan), ["org.example.base", "org.example.top"]);
+    assert_eq!(plan.packages[0].location, text(&path.join("base")));
+    assert_eq!(ids(&graph(&[], &["example.base"], &[]).unwrap()), ["org.example.base"]);
+    let rooted = graph(&[&top], &[], &["org.example.top"]).unwrap();
+    assert_eq!(ids(&rooted), ["org.example.base", "org.example.top"]);
+    assert!(rooted.layers.is_empty() && rooted.modules.len() == 2, "{rooted:#?}");
+    assert_eq!(ids(&graph(&[], &[], &["org.example.base"]).unwrap()), ["org.example.base"]);
+    let absent = failure(&[&top], &[], &["org.example.nowhere"]);
+    assert!(
+        absent.contains("org.example.nowhere was asked for, and is not available"),
+        "{absent}"
+    );
+    let nothing = failure(&[&top], &[], &[]);
+    assert!(nothing.contains("no layers were requested"), "{nothing}");
+
+    // The plan mounts, and its packages hold what they declared.
+    let runtime = common::runtime();
+    package::activate_with(&runtime, &[text(&top)], &strings(&["example.top"]), None, &search(&[]))
+        .unwrap_or_else(|error| panic!("{error}"));
+    common::run(&runtime, "assert(require('@top').base == 'base')");
+
+    // Two candidates for one package are an error; one handed over outright is the answer.
+    let packed = path.join("base.jpk");
+    package::pack(&common::runtime(), &text(&path.join("base")), &text(&packed)).unwrap();
+    let twice = failure(&[&top], &["example.top"], &[]);
+    assert!(
+        twice.contains("package org.example.base has more than one candidate"),
+        "{twice}"
+    );
+    assert!(twice.contains(&format!("(jpk {})", text(&packed))), "{twice}");
+    assert!(twice.contains(&format!("(source {})", text(&path.join("base")))), "{twice}");
+    assert!(twice.contains("offer one of them outright"), "{twice}");
+    let chosen = graph(&[&top, &packed], &["example.top"], &[]).unwrap();
+    assert_eq!(chosen.packages[0].kind, "jpk");
+    std::fs::remove_file(&packed).unwrap();
+
+    // Two packages offering one layer are no choice either, until something else picks one.
+    write(
+        &path.join("twin"),
+        &[
+            (
+                "jess.toml",
+                "manifest_version = 1\n[package]\nid = \"org.example.twin\"\nversion = \"1.0.0\"\njess_api = \"1\"\n\
+                 include = [\"src\"]\n[[layer]]\nid = \"example.base\"\n",
+            ),
+            ("src/x.luau", "return 1\n"),
+        ],
+    );
+    let twins = failure(&[], &["example.base"], &[]);
+    assert!(twins.contains("layer example.base has more than one candidate"), "{twins}");
+    assert_eq!(
+        ids(&graph(&[&top], &["example.top"], &[]).unwrap()),
+        ["org.example.base", "org.example.top"]
+    );
+
+    // A candidate that can't be read fails the path, by name.
+    write(&path.join("broken"), &[("jess.toml", "manifest_version = 2\n")]);
+    let broken = failure(&[&top], &["example.top"], &[]);
+    assert!(
+        broken.contains(&format!(
+            "package path '{}': '{}': jess.toml: manifest_version must be 1",
+            text(&path),
+            text(&path.join("broken"))
+        )),
+        "{broken}"
+    );
+    let missing = package::graph_with(
+        &common::runtime(),
+        &[text(&top)],
+        &strings(&["example.top"]),
+        &package::Search {
+            paths: vec![text(&temp.path().join("nowhere"))],
+            ..Default::default()
+        },
+    );
+    assert!(missing.unwrap_err().to_string().contains("is not a folder"));
+}

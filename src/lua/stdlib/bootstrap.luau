@@ -17,6 +17,7 @@ type Target = {
   command: string?,
 }
 type PlanEntrypoint = { module: string, package: string, path: string, layer: string }
+type Requirement = { id: string, requirement: string }
 
 type Package = {
   read manifest: {
@@ -24,6 +25,7 @@ type Package = {
     read defaultTarget: string?,
     read modules: { [string]: string },
     read dependencies: { [string]: string },
+    read devDependencies: { [string]: string },
     read layers: { Layer },
     read managed: { [string]: Managed },
     read targets: { [string]: Target },
@@ -41,21 +43,37 @@ type Package = {
 type Plan = {
   read modules: { { name: string, package: string, path: string } },
   read entrypoints: { PlanEntrypoint },
-  read packages: { { read id: string } },
+  read packages: { { read id: string, read dependencies: { string } } },
 }
+
+type Offer = { read id: string }
 
 type PackageModule = {
   read open: (location: string) -> Package,
+  read candidates: (folder: string) -> { Offer },
   read pack: (source: string, output: string) -> { [string]: unknown },
-  read resolve: (packages: { Package }, request: { [string]: unknown }) -> Plan,
+  read resolve: (packages: { Package }, request: { [string]: unknown }) -> (Plan, { Package }),
 }
 
+--- Where a resolution looks beyond the packages it is handed, and what it selects besides the
+--- layers' providers: package path folders, root package ids, and the ids whose
+--- `[dev-dependencies]` come along.
+type Search = { paths: { string }?, roots: { string }?, dev: { string }? }
+
 local package = (require :: (string) -> PackageModule) '@jess/package'
+
+type Mounted = {
+  id: string,
+  version: string,
+  digest: string,
+  dependencies: { string },
+  read: (path: string) -> buffer?,
+}
 
 export type Mount = (
   modules: { { name: string, package: string, path: string } },
   entrypoints: { PlanEntrypoint },
-  packages: { { id: string, version: string, digest: string, read: (path: string) -> buffer? } }
+  packages: { Mounted }
 ) -> ()
 
 local function openAll(locations: { string }): { Package }
@@ -72,7 +90,7 @@ local function inspect(location: string)
   local opened = package.open(location)
   local manifest = opened.manifest
   local modules: { { name: string, path: string } } = {}
-  local dependencies: { { id: string, requirement: string } } = {}
+  local dependencies: { Requirement }, devDependencies: { Requirement } = {}, {}
   local capabilities: { { capability: string, layer: string, entrypoint: string } } = {}
   local managed: { Managed } = {}
   local targets: { Target } = {}
@@ -97,6 +115,20 @@ local function inspect(location: string)
 
   table.sort(
     dependencies,
+    function(
+      left: { id: string, requirement: string },
+      right: { id: string, requirement: string }
+    ): boolean
+      return left.id < right.id
+    end
+  )
+
+  for id, requirement in manifest.devDependencies do
+    table.insert(devDependencies, { id = id, requirement = requirement })
+  end
+
+  table.sort(
+    devDependencies,
     function(
       left: { id: string, requirement: string },
       right: { id: string, requirement: string }
@@ -145,13 +177,45 @@ local function inspect(location: string)
     managed = managed,
     targets = targets,
     dependencies = dependencies,
+    devDependencies = devDependencies,
     capabilities = capabilities,
     tests = manifest.tests,
   }
 end
 
-local function graph(locations: { string }, layers: { string }, hostModules: { string }): Plan
-  return package.resolve(openAll(locations), { layers = layers, hostModules = hostModules })
+--- The request `resolve` takes for `layers` under `search`: every package path's candidates, in
+--- the order the paths were given.
+local function request(
+  layers: { string },
+  hostModules: { string },
+  search: Search?,
+  grant: { string }?
+): { [string]: unknown }
+  local offers: { Offer } = {}
+
+  for _, folder in (search and search.paths) or {} do
+    for _, offer in package.candidates(folder) do
+      table.insert(offers, offer)
+    end
+  end
+
+  return {
+    layers = layers,
+    hostModules = hostModules,
+    grant = grant,
+    candidates = offers,
+    roots = search and search.roots,
+    dev = search and search.dev,
+  }
+end
+
+local function graph(
+  locations: { string },
+  layers: { string },
+  hostModules: { string },
+  search: Search?
+): Plan
+  return (package.resolve(openAll(locations), request(layers, hostModules, search)))
 end
 
 local function activate(
@@ -159,26 +223,19 @@ local function activate(
   locations: { string },
   layers: { string },
   hostModules: { string },
-  grant: { string }?
+  grant: { string }?,
+  search: Search?
 ): Plan
-  local packages = openAll(locations)
-  local plan =
-    package.resolve(packages, { layers = layers, hostModules = hostModules, grant = grant })
-  local byId: { [string]: Package } = {}
-  local mounted: { { id: string, version: string, digest: string, read: (path: string) -> buffer? } } =
-    {}
+  local plan, selected =
+    package.resolve(openAll(locations), request(layers, hostModules, search, grant))
+  local mounted: { Mounted } = {}
 
-  for _, opened in packages do
-    byId[opened.id] = opened
-  end
-
-  for _, selected in plan.packages do
-    local opened = byId[selected.id]
-
+  for index, opened in selected do
     table.insert(mounted, {
       id = opened.id,
       version = opened.version,
       digest = opened.digest,
+      dependencies = plan.packages[index].dependencies,
       read = opened.read,
     })
   end

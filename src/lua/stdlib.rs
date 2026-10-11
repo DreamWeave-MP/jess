@@ -183,14 +183,24 @@ const PACKAGE: BuiltIn = BuiltIn {
             "Opens a Package Source folder or a `.jpk` file; reads it, runs nothing.",
         ),
         (
+            "peek",
+            "(location: string) -> JessPackageOffer",
+            "Reads the manifest of the package at `location` and nothing else: what a resolution needs to know whether to open it.",
+        ),
+        (
+            "candidates",
+            "(folder: string) -> { JessPackageOffer }",
+            "Every package directly inside `folder`, a package path: each Package Source folder and `.jpk` file, in name order.",
+        ),
+        (
             "pack",
             "(source: string, output: string) -> JessPackResult",
             "Packs the Package Source at `source` into the canonical JPK at `output`, written atomically.",
         ),
         (
             "resolve",
-            "(packages: { JessPackage }, request: JessPackageRequest) -> JessActivationPlan",
-            "Resolves requested layers over `packages` into an activation plan, without running anything.",
+            "(packages: { JessPackage }, request: JessPackageRequest) -> (JessActivationPlan, { JessPackage })",
+            "Resolves requested layers over `packages` into an activation plan, without running anything; the second result is the packages it selected.",
         ),
         (
             "manifest",
@@ -249,6 +259,7 @@ const PACKAGE_TYPES: &str = "\
            include: { string },\n  \
            tests: { string },\n  \
            dependencies: { [string]: string },\n  \
+           devDependencies: { [string]: string },\n  \
            modules: { [string]: string },\n  \
            layers: { JessPackageLayer },\n  \
            managed: { [string]: JessPackageManaged },\n  \
@@ -266,15 +277,19 @@ const PACKAGE_TYPES: &str = "\
            files: { string },\n  \
            read: (path: string) -> buffer?,\n\
          }\n\n\
+         --- A package a resolution may select: its manifest and where it is, with nothing else read.\n\
+         export type JessPackageOffer = { manifest: JessPackageManifest, id: string, version: string, kind: \"source\" | \"jpk\", location: string }\n\n\
          --- What `pack` wrote.\n\
          export type JessPackResult = { path: string, digest: string, files: number, size: number }\n\n\
-         --- What to resolve: the layers, the module names the host already provides, and the capabilities it grants.\n\
-         export type JessPackageRequest = { layers: { string }, hostModules: { string }?, grant: { string }? }\n\n\
+         --- What to resolve: the layers, the module names the host already provides, the capabilities it\n\
+         --- grants, candidates opened only when a layer or a dependency needs one, package ids selected\n\
+         --- whatever the layers (`roots`), and the ids whose `[dev-dependencies]` come with them (`dev`).\n\
+         export type JessPackageRequest = { layers: { string }, hostModules: { string }?, grant: { string }?, candidates: { JessPackageOffer }?, roots: { string }?, dev: { string }? }\n\n\
          --- An activation plan: requested layers resolved over packages, with nothing run.\n\
          export type JessActivationPlan = {\n  \
            requested: { string },\n  \
            layers: { { id: string, package: string, version: string, requires: { string }, exports: { string }, entrypoints: { JessPackageEntrypoint } } },\n  \
-           packages: { { id: string, version: string, digest: string, kind: \"source\" | \"jpk\", location: string } },\n  \
+           packages: { { id: string, version: string, digest: string, kind: \"source\" | \"jpk\", location: string, dependencies: { string } } },\n  \
            modules: { { name: string, package: string, path: string } },\n  \
            entrypoints: { { module: string, package: string, path: string, layer: string } },\n  \
            capabilities: { { capability: string, package: string, version: string, layer: string, entrypoint: string } },\n\

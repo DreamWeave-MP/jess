@@ -129,6 +129,17 @@ pub(crate) fn host_table(runtime: &Runtime) -> l3i::Result<Table> {
             .map(|metadata| metadata.len())
     })?;
     let is_dir = runtime.bind_function("jess.package.isDir", |path: Text| Path::new(&path.0).is_dir())?;
+    let list_dir = runtime.bind_function("jess.package.listDir", |call: &Call<'_>, root: Text| {
+        let mut entries = children(Path::new(&root.0))?;
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        crate::lua::lua::push_list(call, entries.into_iter(), |frame, (name, kind)| {
+            crate::lua::push_table(frame, 0, 2, |frame, row| {
+                row.raw_set_value(frame, "name", &name)?;
+                row.raw_set_value(frame, "kind", &kind)
+            })
+        })?;
+        Ok::<_, l3i::Error>(l3i::bind::StackResults)
+    })?;
     let replace = runtime.bind_function("jess.package.replace", |path: Text, data: Bytes| {
         crate::lua::files::replace_file(Path::new(&path.0), &data.0).map_err(error)
     })?;
@@ -146,9 +157,10 @@ pub(crate) fn host_table(runtime: &Runtime) -> l3i::Result<Table> {
     })?;
     let table = {
         let stack = runtime.stack();
-        let table = Table::new(&stack, 0, 8)?;
+        let table = Table::new(&stack, 0, 9)?;
         for (name, function) in [
             ("listTree", list_tree),
+            ("listDir", list_dir),
             ("readFile", read_file),
             ("readAt", read_at),
             ("fileSize", file_size),
@@ -193,6 +205,28 @@ fn walk(folder: &Path, prefix: &str, entries: &mut Vec<(String, &'static str)>) 
         }
     }
     Ok(())
+}
+
+/// What is directly inside `folder`, by name, and what each is once any link is followed: `file`,
+/// `dir`, or `other`.
+fn children(folder: &Path) -> l3i::Result<Vec<(String, &'static str)>> {
+    let failed = |source: std::io::Error| error(format!("failed to list '{}': {source}", folder.display()));
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(folder).map_err(failed)? {
+        let entry = entry.map_err(failed)?;
+        let name = entry.file_name();
+        let name = name
+            .to_str()
+            .ok_or_else(|| error(format!("'{}' has a name that isn't UTF-8", entry.path().display())))?;
+        // A link that points nowhere is neither a package folder nor a JPK.
+        let kind = match std::fs::metadata(entry.path()) {
+            Ok(metadata) if metadata.is_dir() => "dir",
+            Ok(metadata) if metadata.is_file() => "file",
+            _ => "other",
+        };
+        entries.push((name.to_owned(), kind));
+    }
+    Ok(entries)
 }
 
 /// Code jess runs because its layer was activated, and the capabilities it needs.
@@ -301,6 +335,8 @@ pub struct Inspection {
     pub targets: Vec<Target>,
     /// Its package dependencies.
     pub dependencies: Vec<Dependency>,
+    /// The packages only its own tests need.
+    pub dev_dependencies: Vec<Dependency>,
     /// Every capability its layers' entrypoints require.
     pub capabilities: Vec<LayerCapability>,
     /// Its source-only test modules.
@@ -363,6 +399,8 @@ pub struct PlanPackage {
     pub kind: String,
     /// Where it was opened from.
     pub location: String,
+    /// The packages whose exports its modules may require: the dependencies it declares.
+    pub dependencies: Vec<String>,
 }
 
 /// A module name in a plan's namespace.
@@ -391,6 +429,31 @@ pub struct PlanCapability {
     pub entrypoint: String,
 }
 
+/// Where a resolution looks beyond the packages it is handed, and what it selects besides the
+/// requested layers' providers.
+#[derive(Clone, Debug, Default)]
+pub struct Search {
+    /// Package path folders. Every Package Source folder and `.jpk` directly inside one is a
+    /// candidate, opened only when a layer or a dependency needs it, and never in place of a
+    /// package handed over outright. Two candidates for one need are an error, not a choice.
+    pub paths: Vec<String>,
+    /// Package ids selected, with their dependencies, whether or not a requested layer is theirs.
+    pub roots: Vec<String>,
+    /// Package ids whose `[dev-dependencies]` are selected with them: packages whose tests run.
+    pub dev: Vec<String>,
+}
+
+impl Search {
+    /// This search as the table the bootstrap reads.
+    fn table(&self, scope: &impl Scope) -> l3i::Result<Table> {
+        let table = Table::new(scope, 0, 3)?;
+        for (key, items) in [("paths", &self.paths), ("roots", &self.roots), ("dev", &self.dev)] {
+            table.set(scope, key, &string_list(scope, items)?)?;
+        }
+        Ok(table)
+    }
+}
+
 /// An activation plan: requested layers resolved over the packages offered, with nothing run.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Plan {
@@ -415,7 +478,7 @@ fn plan_shape() -> serde_json::Value {
             "id": "", "package": "", "version": "", "requires": [""], "exports": [""],
             "entrypoints": [{ "module": "", "capabilities": [""] }],
         }],
-        "packages": [{ "id": "", "version": "", "digest": "", "kind": "", "location": "" }],
+        "packages": [{ "id": "", "version": "", "digest": "", "kind": "", "location": "", "dependencies": [""] }],
         "modules": [{ "name": "", "package": "", "path": "" }],
         "entrypoints": [{ "module": "", "package": "", "path": "", "layer": "" }],
         "capabilities": [{ "capability": "", "package": "", "version": "", "layer": "", "entrypoint": "" }],
@@ -482,6 +545,7 @@ pub fn inspect(runtime: &Runtime, location: &str) -> l3i::Result<Inspection> {
         "managed": [{ "id": "", "module": "", "interface": null }],
         "targets": [{ "id": "", "kind": "", "entry": "", "capabilities": [""], "command": null }],
         "dependencies": [{ "id": "", "requirement": "" }],
+        "devDependencies": [{ "id": "", "requirement": "" }],
         "capabilities": [{ "capability": "", "layer": "", "entrypoint": "" }],
         "tests": [""],
     });
@@ -504,12 +568,22 @@ pub fn pack(runtime: &Runtime, source: &str, output: &str) -> l3i::Result<Packed
 ///
 /// Returns an error naming what failed to resolve.
 pub fn graph(runtime: &Runtime, locations: &[String], layers: &[String]) -> l3i::Result<Plan> {
+    graph_with(runtime, locations, layers, &Search::default())
+}
+
+/// [`graph`], resolving under `search`.
+///
+/// # Errors
+///
+/// As [`graph`], and if a package path can't be read.
+pub fn graph_with(runtime: &Runtime, locations: &[String], layers: &[String], search: &Search) -> l3i::Result<Plan> {
     let reserved = host_modules(runtime)?;
     let stack = runtime.stack();
     let args = (
         string_list(&stack, locations)?,
         string_list(&stack, layers)?,
         string_list(&stack, &reserved)?,
+        search.table(&stack)?,
     );
     drop(stack);
     bootstrap(runtime, "graph", &plan_shape(), args)
@@ -527,6 +601,21 @@ pub fn graph(runtime: &Runtime, locations: &[String], layers: &[String]) -> l3i:
 /// Returns an error if the plan doesn't resolve, a capability is denied, or `runtime` already has
 /// packages mounted.
 pub fn activate(runtime: &Runtime, locations: &[String], layers: &[String], grant: Option<&[String]>) -> l3i::Result<Plan> {
+    activate_with(runtime, locations, layers, grant, &Search::default())
+}
+
+/// [`activate`], resolving under `search`.
+///
+/// # Errors
+///
+/// As [`activate`], and if a package path can't be read.
+pub fn activate_with(
+    runtime: &Runtime,
+    locations: &[String],
+    layers: &[String],
+    grant: Option<&[String]>,
+    search: &Search,
+) -> l3i::Result<Plan> {
     let state = crate::lua::state(runtime)?;
     if state.packages.borrow().is_some() {
         return Err(error("this runtime already has packages activated; one plan per runtime"));
@@ -587,6 +676,7 @@ pub fn activate(runtime: &Runtime, locations: &[String], layers: &[String], gran
         string_list(&stack, layers)?,
         string_list(&stack, &reserved)?,
         grant,
+        search.table(&stack)?,
     );
     drop(stack);
     let plan = bootstrap(runtime, "activate", &plan_shape(), args)?;

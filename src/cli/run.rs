@@ -18,8 +18,13 @@ pub struct RunArgs {
     #[arg(long = "package", value_name = "PACKAGE")]
     packages: Vec<PathBuf>,
     /// A layer to activate (repeatable). Without any, every layer the packages declare.
-    #[arg(long = "layer", value_name = "ID", requires = "packages")]
+    #[arg(long = "layer", value_name = "ID")]
     layers: Vec<String>,
+    /// A folder of packages to find layers and dependencies in (repeatable): each Package Source
+    /// folder and .jpk directly inside it, opened only when one is needed. A package named with
+    /// --package is chosen over one found here; two found for one need are an error.
+    #[arg(long = "package-path", value_name = "FOLDER")]
+    package_paths: Vec<PathBuf>,
     /// Explicitly grant an optional runtime/package capability (repeatable).
     #[arg(long = "capability", value_name = "NAME")]
     capabilities: Vec<String>,
@@ -55,20 +60,37 @@ pub fn lua_default() -> Result<Runtime, String> {
 
 /// Activates the packages `args` names in `lua`, if any.
 fn activate(lua: &Runtime, args: &RunArgs) -> Result<(), String> {
-    if args.packages.is_empty() {
-        return Ok(());
+    if args.packages.is_empty() && args.package_paths.is_empty() {
+        return if args.layers.is_empty() {
+            Ok(())
+        } else {
+            Err("--layer needs packages to resolve over: name them with --package or --package-path".to_owned())
+        };
     }
-    let locations = args
-        .packages
-        .iter()
-        .map(|path| path.display().to_string())
-        .collect::<Vec<_>>();
-    let plan = if args.layers.is_empty() {
-        jess::lua::package::activate_all(lua, &locations, Some(&args.capabilities))
-    } else {
-        jess::lua::package::activate(lua, &locations, &args.layers, Some(&args.capabilities))
+    let text = |paths: &[PathBuf]| paths.iter().map(|path| path.display().to_string()).collect::<Vec<_>>();
+    let locations = text(&args.packages);
+    let mut layers = args.layers.clone();
+    let mut roots = Vec::new();
+    // Without --layer, every layer the named packages declare, and the packages themselves, so
+    // one with no layers still brings its dependencies' exports.
+    if layers.is_empty() {
+        for location in &locations {
+            let inspection = jess::lua::package::inspect(lua, location).map_err(|error| error.to_string())?;
+            layers.extend(inspection.layers.into_iter().map(|layer| layer.id));
+            roots.push(inspection.id);
+        }
+    }
+    if layers.is_empty() && roots.is_empty() {
+        return Err("a package path offers packages without choosing any: name a layer with --layer".to_owned());
+    }
+    let search = jess::lua::package::Search {
+        paths: text(&args.package_paths),
+        roots,
+        dev: Vec::new(),
     };
-    plan.map(|_| ()).map_err(|error| error.to_string())
+    jess::lua::package::activate_with(lua, &locations, &layers, Some(&args.capabilities), &search)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 pub fn run(args: &RunArgs) -> Result<u8, String> {

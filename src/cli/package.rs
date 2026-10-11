@@ -41,6 +41,11 @@ enum PackageCommand {
         /// A layer to resolve (repeatable). Without any, every layer the packages declare.
         #[arg(long = "layer", value_name = "ID")]
         layers: Vec<String>,
+        /// A folder of packages to find layers and dependencies in (repeatable): each Package
+        /// Source folder and .jpk directly inside it, opened only when one is needed. A package
+        /// named outright is chosen over one found here; two found for one need are an error.
+        #[arg(long = "package-path", value_name = "FOLDER")]
+        package_paths: Vec<PathBuf>,
     },
     /// Run the tests a Package Source's manifest names, against the source and then against it
     /// packed into a temporary JPK, and check both providers give the same digest. A .jpk carries
@@ -75,6 +80,10 @@ fn runtime() -> Result<l3i::Runtime, String> {
 
 fn text(path: &std::path::Path) -> String {
     path.display().to_string()
+}
+
+fn texts(paths: &[PathBuf]) -> Vec<String> {
+    paths.iter().map(|path| text(path)).collect()
 }
 
 pub fn pack(args: &PackArgs, format: Format) -> Result<(), String> {
@@ -126,9 +135,13 @@ pub fn run(args: &PackageArgs, format: Format) -> Result<(), String> {
                 format,
             )
         }
-        PackageCommand::Graph { packages, layers } => {
+        PackageCommand::Graph {
+            packages,
+            layers,
+            package_paths,
+        } => {
             let lua = runtime()?;
-            let locations = packages.iter().map(|path| text(path)).collect::<Vec<_>>();
+            let locations = texts(packages);
             let mut layers = layers.clone();
             if layers.is_empty() {
                 for location in &locations {
@@ -136,7 +149,12 @@ pub fn run(args: &PackageArgs, format: Format) -> Result<(), String> {
                     layers.extend(inspection.layers.into_iter().map(|layer| layer.id));
                 }
             }
-            let plan = jess::lua::package::graph(&lua, &locations, &layers).map_err(|error| error.to_string())?;
+            let search = jess::lua::package::Search {
+                paths: texts(package_paths),
+                ..Default::default()
+            };
+            let plan =
+                jess::lua::package::graph_with(&lua, &locations, &layers, &search).map_err(|error| error.to_string())?;
             output::print(&plan, format)
         }
         PackageCommand::Test { package } => {
