@@ -85,6 +85,20 @@ pub struct TestRun {
 ///
 /// Returns an error if a VM can't be made.
 pub fn run(options: &crate::lua::Options, paths: &[PathBuf], isolated: bool) -> l3i::Result<TestRun> {
+    run_with(options, &[], paths, isolated)
+}
+
+/// [`run`], in runtimes granted `capabilities`: what a suite that reads or writes files needs.
+///
+/// # Errors
+///
+/// Returns an error if a VM can't be made.
+pub fn run_with(
+    options: &crate::lua::Options,
+    capabilities: &[String],
+    paths: &[PathBuf],
+    isolated: bool,
+) -> l3i::Result<TestRun> {
     let mut shared = None;
     let mut run = TestRun {
         passed: 0,
@@ -93,7 +107,7 @@ pub fn run(options: &crate::lua::Options, paths: &[PathBuf], isolated: bool) -> 
     };
     for path in paths {
         if shared.is_none() || isolated {
-            shared = Some(crate::lua::runtime(options.clone())?);
+            shared = Some(crate::lua::runtime_with_capabilities(options.clone(), capabilities)?);
         }
         let runtime = shared.as_ref().ok_or_else(|| crate::lua::error("no runtime"))?;
         run_module(runtime, path, &mut run)?;

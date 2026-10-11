@@ -16,11 +16,20 @@ pub struct TestArgs {
     /// Run every module in one VM, sharing the module cache, instead of a fresh VM each.
     #[arg(long)]
     shared: bool,
+    /// Explicitly grant an optional runtime capability to the modules (repeatable): what a suite
+    /// that reads or writes files needs.
+    #[arg(long = "capability", value_name = "NAME")]
+    capabilities: Vec<String>,
 }
 
 pub fn run(args: &TestArgs, format: Format) -> Result<(), String> {
-    let report = jess::lua::testing::run(&jess::lua::Options::default(), &args.modules, !args.shared)
-        .map_err(|error| error.to_string())?;
+    let report = jess::lua::testing::run_with(
+        &jess::lua::Options::default(),
+        &args.capabilities,
+        &args.modules,
+        !args.shared,
+    )
+    .map_err(|error| error.to_string())?;
     output::print(&report, format)?;
     if report.failed > 0 {
         return Err(format!("{} failed", report.failed));
