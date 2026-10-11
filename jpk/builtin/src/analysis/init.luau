@@ -663,7 +663,14 @@ local function collectFiles(paths: { string }, options: WorkspaceOptions?): { st
     table.insert(found, path)
   end
 
-  for _, path in paths do visit(path) end
+  for _, path in paths do
+    -- A root that isn't there is a mistake in the paths given, not a workspace with nothing in
+    -- it: finding no files would read as finding nothing wrong.
+    if not jess.fs.exists(path) then error(`{path}: no such file or folder`) end
+
+    visit(path)
+  end
+
   table.sort(found)
   return found
 end

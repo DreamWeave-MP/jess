@@ -120,6 +120,21 @@ return { engineHandlers = handlers }
     local update = analysis.resolvedTableField(source, handlers, 'onUpdate')
     expect(update ~= nil and update.kind == 'ExprFunction').toBe(true)
   end)
+
+  suite.it('raises for a root that is not there, instead of finding nothing in it', function()
+    local scratch = assert(rawget(_G, 'scratchRoot') :: string?, 'the case needs a scratchRoot')
+    local root = jess.fs.join(scratch, 'analysis-roots')
+    local absent = jess.fs.join(root, 'absent')
+    jess.fs.write(jess.fs.join(root, 'present.luau'), 'return 1\n')
+
+    local function findAbsent() return analysis.files({ absent }, {}) end
+    local function openAbsent() return analysis.workspace({ root, absent }, {}) end
+
+    expect(#analysis.files({ root }, {})).toBe(1)
+    expect(#analysis.workspace({ root }, {}).files).toBe(1)
+    expect(findAbsent).toThrow 'absent: no such file or folder'
+    expect(openAbsent).toThrow 'absent: no such file or folder'
+  end)
 end)
 
 return suite
