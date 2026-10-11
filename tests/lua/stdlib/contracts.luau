@@ -71,7 +71,8 @@ end)
 
 suite.describe('test', function()
   suite.it('compares deeply, cycles included', function()
-    local left: { [string]: unknown }, right: { [string]: unknown } = {}, {}
+    local left: { [string]: unknown } = {}
+    local right: { [string]: unknown } = {}
     left.self, right.self = left, right
     expect(left).toEqual(right)
     right.extra = true
