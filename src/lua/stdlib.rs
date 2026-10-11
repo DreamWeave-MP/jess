@@ -363,10 +363,16 @@ impl Extension for StdlibExtension {
                 module.installed(name).signature(*signature).doc(*doc);
             }
         }
+        // `@jess/package` opens and packs only what the runtime's policy lets a script read and
+        // write.
+        d.optional_capability(l3i::fs::READ_CAPABILITY);
+        d.optional_capability(l3i::fs::WRITE_CAPABILITY);
         Ok(())
     }
 
     fn install(&self, cx: &mut InstallContext<'_>) -> l3i::Result<()> {
+        let read = cx.has_capability(l3i::fs::READ_CAPABILITY)?;
+        let write = cx.has_capability(l3i::fs::WRITE_CAPABILITY)?;
         let runtime = cx.runtime();
         let logging = cx.insert_state(Logging(RefCell::new(Rc::new(default_sink))));
         let emit = runtime.bind_function(
@@ -396,17 +402,47 @@ impl Extension for StdlibExtension {
         let log = install(cx, &LOG, (&emit,))?;
         install(cx, &TEST, (&log,))?;
         let jpk = install(cx, &JPK, ())?;
-        let host = crate::lua::package::host_table(runtime)?;
-        let dependencies = {
-            let stack = runtime.stack();
-            let dependencies = Table::new(&stack, 0, 2)?;
-            dependencies.set(&stack, "host", &host)?;
-            dependencies.set(&stack, "jpk", &jpk)?;
-            dependencies
-        };
+        let dependencies = package_dependencies(runtime, &jpk, read, write)?;
         install(cx, &PACKAGE, (&dependencies,))?;
+        cx.insert_state(HostPackages {
+            jpk,
+            module: RefCell::new(None),
+        });
         Ok(())
     }
+}
+
+/// What `@jess/package`'s factory is built on: the container, and host file access that reads
+/// and writes or doesn't.
+fn package_dependencies(runtime: &Runtime, jpk: &Table, read: bool, write: bool) -> l3i::Result<Table> {
+    let host = crate::lua::package::host_table(runtime, read, write)?;
+    let stack = runtime.stack();
+    let dependencies = Table::new(&stack, 0, 2)?;
+    dependencies.set(&stack, "host", &host)?;
+    dependencies.set(&stack, "jpk", jpk)?;
+    Ok(dependencies)
+}
+
+/// The host's own `@jess/package`, made when it is first needed.
+struct HostPackages {
+    jpk: Table,
+    module: RefCell<Option<Table>>,
+}
+
+/// `@jess/package` as the host uses it for its own package operations: the same module over file
+/// access the runtime's policy doesn't narrow. Nothing a script can require hands it out.
+pub(crate) fn host_packages(runtime: &Runtime) -> l3i::Result<Table> {
+    let state = runtime
+        .state_of::<HostPackages>(EXTENSION_ID)
+        .ok_or_else(|| l3i::Error::logic("jess.stdlib isn't installed in this Luau runtime"))?;
+    if let Some(module) = state.module.borrow().clone() {
+        return Ok(module);
+    }
+    let dependencies = package_dependencies(runtime, &state.jpk, true, true)?;
+    let module = exports(runtime, &PACKAGE, (&dependencies,))?;
+    l3i::readonly::make_read_only(runtime, &module)?;
+    *state.module.borrow_mut() = Some(module.clone());
+    Ok(module)
 }
 
 /// A record for the domain's log stream, attributed to the code that logged it.
@@ -460,20 +496,10 @@ fn read_fields(frame: &l3i::stack::Frame<'_>, fields: &Table) -> l3i::Result<BTr
 /// it exports as the plan's module: frozen there, and frozen in the table it returned.
 fn install(cx: &mut InstallContext<'_>, built_in: &BuiltIn, dependencies: impl l3i::call::PushArgs) -> l3i::Result<Table> {
     let runtime = cx.runtime();
-    let bytecode = BYTECODE.with_borrow_mut(|cache| -> l3i::Result<Rc<Vec<u8>>> {
-        if let Some(bytecode) = cache.get(built_in.path) {
-            return Ok(bytecode.clone());
-        }
-        let bytecode = Rc::new(l3i::source::compile(built_in.source, &runtime.compile_options())?);
-        cache.insert(built_in.path, bytecode.clone());
-        Ok(bytecode)
-    })?;
     // One root stack at a time: the exports are read before the module installer opens its own.
     let (exports, values) = {
+        let exports = exports(runtime, built_in, dependencies)?;
         let stack = runtime.stack();
-        let chunk = stack.load_bytecode(built_in.path, &bytecode)?;
-        let factory: Function = chunk.invoke(&stack, ())?;
-        let exports: Table = factory.invoke(&stack, dependencies)?;
         let values = built_in
             .members
             .iter()
@@ -487,4 +513,20 @@ fn install(cx: &mut InstallContext<'_>, built_in: &BuiltIn, dependencies: impl l
         module.set(name, &value)?;
     }
     Ok(module.table().clone())
+}
+
+/// What a built-in module's factory returns when it is handed `dependencies`.
+fn exports(runtime: &Runtime, built_in: &BuiltIn, dependencies: impl l3i::call::PushArgs) -> l3i::Result<Table> {
+    let bytecode = BYTECODE.with_borrow_mut(|cache| -> l3i::Result<Rc<Vec<u8>>> {
+        if let Some(bytecode) = cache.get(built_in.path) {
+            return Ok(bytecode.clone());
+        }
+        let bytecode = Rc::new(l3i::source::compile(built_in.source, &runtime.compile_options())?);
+        cache.insert(built_in.path, bytecode.clone());
+        Ok(bytecode)
+    })?;
+    let stack = runtime.stack();
+    let chunk = stack.load_bytecode(built_in.path, &bytecode)?;
+    let factory: Function = chunk.invoke(&stack, ())?;
+    factory.invoke(&stack, dependencies)
 }

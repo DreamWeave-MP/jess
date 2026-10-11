@@ -512,10 +512,71 @@ fn a_package_source_holds_no_links_and_no_case_twins() {
     assert!(problem.contains("differ only in case"), "{problem}");
 }
 
+/// A script's `@jess/package` opens and packs only what the runtime's policy lets it read and
+/// write. The host's own package operations are the host acting, and need no grant.
+#[test]
+fn a_script_opens_and_packs_only_what_it_may_read_and_write() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("alpha");
+    alpha(&source);
+    let output = temp.path().join("alpha.jpk");
+    let denied =
+        |capability: &str| format!("@jess/package: needs the '{capability}' capability, which this runtime does not grant");
+    for (capabilities, may_read, may_write) in [
+        (&[][..], false, false),
+        (&["filesystem.read"][..], true, false),
+        (&["filesystem.read", "filesystem.write"][..], true, true),
+    ] {
+        let capabilities = capabilities.iter().map(ToString::to_string).collect::<Vec<_>>();
+        let runtime = jess::lua::runtime_with_capabilities(jess::lua::Options::default(), &capabilities)
+            .unwrap_or_else(|error| panic!("{error}"));
+        common::set_global(&runtime, "source", source.display().to_string().as_str());
+        common::set_global(&runtime, "folder", temp.path().display().to_string().as_str());
+        common::set_global(&runtime, "output", output.display().to_string().as_str());
+        common::set_global(&runtime, "mayRead", &may_read);
+        common::set_global(&runtime, "mayWrite", &may_write);
+        common::set_global(&runtime, "noRead", denied("filesystem.read").as_str());
+        common::set_global(&runtime, "noWrite", denied("filesystem.write").as_str());
+        common::run(
+            &runtime,
+            "local package = require '@jess/package'\n\
+             local function refused(expected, call, ...)\n  \
+               local ok, problem = pcall(call, ...)\n  \
+               assert(not ok and string.find(tostring(problem), expected, 1, true), tostring(problem))\n\
+             end\n\
+             if mayRead then\n  \
+               assert(package.open(source).id == 'org.example.alpha')\n  \
+               assert(package.peek(source).version == '1.2.3')\n  \
+               assert(#package.candidates(folder) == 1)\n\
+             else\n  \
+               refused(noRead, package.open, source)\n  \
+               refused(noRead, package.peek, source)\n  \
+               refused(noRead, package.candidates, folder)\n\
+             end\n\
+             if mayWrite then\n  \
+               assert(package.pack(source, output).files == 8)\n\
+             else\n  \
+               refused(if mayRead then noWrite else noRead, package.pack, source, output)\n\
+             end",
+        );
+        assert_eq!(output.exists(), may_write, "{capabilities:?}");
+        drop(std::fs::remove_file(&output));
+        // The host inspects, packs, and activates whatever the script's policy is.
+        assert_eq!(
+            package::inspect(&runtime, &source.display().to_string()).unwrap().id,
+            "org.example.alpha"
+        );
+        package::pack(&runtime, &source.display().to_string(), &output.display().to_string()).unwrap();
+        std::fs::remove_file(&output).unwrap();
+        plan_of(&runtime, &source, &["example.core"]);
+        common::run(&runtime, "assert(require('@alpha/core').greeting == 'hello')");
+    }
+}
+
 #[test]
 fn a_jpk_holds_only_its_payload() {
     let temp = tempfile::tempdir().unwrap();
-    let runtime = common::runtime();
+    let runtime = common::filesystem_runtime();
     let jpk = temp.path().join("extra.jpk");
     common::set_global(&runtime, "output", jpk.display().to_string().as_str());
     common::run(

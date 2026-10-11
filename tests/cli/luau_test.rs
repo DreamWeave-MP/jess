@@ -67,3 +67,107 @@ fn test_reports_every_case_and_fails_when_one_does() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("2 failed"));
     drop(fs::remove_dir_all(&root));
 }
+
+/// A script reads and writes the host's files only with the capability for it, whether it runs
+/// under `jess run`, as a `jess test` module, or as a package's command target.
+#[test]
+fn scripts_touch_files_only_with_the_capability_for_it() {
+    let root = temp_dir_path("file-capabilities");
+    drop(fs::remove_dir_all(&root));
+    fs::create_dir_all(root.join("tool/src")).unwrap();
+    let note = root.join("note.txt");
+    let script = module(
+        &root,
+        "script.luau",
+        "local path = ...\nprint(jess.fs.read(path) or 'nothing')\njess.fs.write(path, 'written')\n",
+    );
+    let stderr = |output: &std::process::Output| String::from_utf8_lossy(&output.stderr).into_owned();
+
+    let ungranted = jess().arg("run").arg(&script).arg(&note).output().unwrap();
+    assert!(!ungranted.status.success());
+    assert!(
+        stderr(&ungranted).contains("jess.fs.read: needs the 'filesystem.read' capability"),
+        "{}",
+        stderr(&ungranted)
+    );
+    let reading = jess()
+        .args(["run", "--capability", "filesystem.read"])
+        .arg(&script)
+        .arg(&note)
+        .output()
+        .unwrap();
+    assert!(!reading.status.success());
+    assert_eq!(String::from_utf8_lossy(&reading.stdout), "nothing\n");
+    assert!(
+        stderr(&reading).contains("jess.fs.write: needs the 'filesystem.write' capability"),
+        "{}",
+        stderr(&reading)
+    );
+    assert!(!note.exists(), "a script without filesystem.write wrote a file");
+    let both = jess()
+        .args(["run", "--capability", "filesystem.read", "--capability", "filesystem.write"])
+        .arg(&script)
+        .arg(&note)
+        .output()
+        .unwrap();
+    assert!(both.status.success(), "{}", stderr(&both));
+    assert_eq!(fs::read_to_string(&note).unwrap(), "written");
+
+    let suite = module(
+        &root,
+        "suite.luau",
+        &format!(
+            "local test = require('@jess/test')\nlocal suite = test.new()\n\
+             suite.it('reads', function() test.expect(jess.fs.read({:?})).toBe 'written' end)\nreturn suite\n",
+            note.display().to_string()
+        ),
+    );
+    let denied = jess().args(["--format", "json", "test"]).arg(&suite).output().unwrap();
+    assert!(!denied.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&denied.stdout).unwrap();
+    let case = &report["modules"][0]["report"]["tests"][0];
+    assert!(
+        case["error"]
+            .as_str()
+            .unwrap()
+            .contains("needs the 'filesystem.read' capability"),
+        "{case}"
+    );
+    let granted = jess()
+        .args(["--format", "json", "test", "--capability", "filesystem.read"])
+        .arg(&suite)
+        .output()
+        .unwrap();
+    assert!(granted.status.success(), "{}", stderr(&granted));
+
+    // A target that declares nothing is granted nothing, however it is trusted.
+    fs::write(
+        root.join("tool/jess.toml"),
+        "manifest_version = 1\n[package]\nid = \"org.example.files\"\nversion = \"1.0.0\"\njess_api = \"1\"\n\
+         default_target = \"quiet\"\ninclude = [\"src\"]\n\
+         [targets.quiet]\nkind = \"command\"\nentry = \"src/main.luau\"\n\
+         [targets.reader]\nkind = \"command\"\nentry = \"src/main.luau\"\ncapabilities = [\"filesystem.read\"]\n",
+    )
+    .unwrap();
+    fs::write(root.join("tool/src/main.luau"), "print(jess.fs.read((...)))\n").unwrap();
+    let target = |name: &str| {
+        jess()
+            .args(["package", "run"])
+            .arg(root.join("tool"))
+            .args(["--target", name, "--trusted"])
+            .arg(&note)
+            .output()
+            .unwrap()
+    };
+    let quiet = target("quiet");
+    assert!(!quiet.status.success());
+    assert!(
+        stderr(&quiet).contains("jess.fs.read: needs the 'filesystem.read' capability"),
+        "{}",
+        stderr(&quiet)
+    );
+    let reader = target("reader");
+    assert!(reader.status.success(), "{}", stderr(&reader));
+    assert_eq!(String::from_utf8_lossy(&reader.stdout), "written\n");
+    drop(fs::remove_dir_all(&root));
+}

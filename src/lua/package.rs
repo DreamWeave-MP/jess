@@ -15,7 +15,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use l3i::Runtime;
-use l3i::bind::Call;
+use l3i::bind::{ArgView, Call};
 use l3i::convert::{Exact, NewBuffer};
 use l3i::stack::Scope;
 use l3i::value::{Function, Table, Value};
@@ -103,7 +103,12 @@ impl Mounted {
 }
 
 /// The host functions `@jess/package` reads and writes through: the only file access it has.
-pub(crate) fn host_table(runtime: &Runtime) -> l3i::Result<Table> {
+///
+/// `read` and `write` say whether whoever holds the table may read and write the host's files.
+/// The module scripts require gets what the runtime's policy grants, so a script can't open or
+/// pack a package it couldn't have read or written through `jess.fs`; the host's own package
+/// operations get both, since inspecting and activating packages is the host acting.
+pub(crate) fn host_table(runtime: &Runtime, read: bool, write: bool) -> l3i::Result<Table> {
     let list_tree = runtime.bind_function("jess.package.listTree", |call: &Call<'_>, root: Text| {
         let mut entries = Vec::new();
         walk(Path::new(&root.0), "", &mut entries)?;
@@ -170,21 +175,34 @@ pub(crate) fn host_table(runtime: &Runtime) -> l3i::Result<Table> {
         })?;
         Ok::<_, l3i::Error>(l3i::bind::StackResults)
     })?;
+    let mut functions = Vec::new();
+    for (name, function, needs) in [
+        ("listTree", list_tree, Some((read, l3i::fs::READ_CAPABILITY))),
+        ("listDir", list_dir, Some((read, l3i::fs::READ_CAPABILITY))),
+        ("readFile", read_file, Some((read, l3i::fs::READ_CAPABILITY))),
+        ("readAt", read_at, Some((read, l3i::fs::READ_CAPABILITY))),
+        ("fileSize", file_size, Some((read, l3i::fs::READ_CAPABILITY))),
+        ("isDir", is_dir, Some((read, l3i::fs::READ_CAPABILITY))),
+        ("replace", replace, Some((write, l3i::fs::WRITE_CAPABILITY))),
+        ("decodeToml", decode_toml, None),
+        ("builtin", builtin, None),
+    ] {
+        let function = match needs {
+            Some((false, capability)) => {
+                let message = crate::lua::plan::denied("@jess/package", capability);
+                runtime.bind_function(&format!("jess.package.{name}"), move |_: ArgView<'_>| -> l3i::Result<()> {
+                    Err(l3i::Error::permission(message.clone()))
+                })?
+            }
+            _ => function,
+        };
+        functions.push((name, function));
+    }
     let table = {
         let stack = runtime.stack();
-        let table = Table::new(&stack, 0, 9)?;
-        for (name, function) in [
-            ("listTree", list_tree),
-            ("listDir", list_dir),
-            ("readFile", read_file),
-            ("readAt", read_at),
-            ("fileSize", file_size),
-            ("isDir", is_dir),
-            ("replace", replace),
-            ("decodeToml", decode_toml),
-            ("builtin", builtin),
-        ] {
-            table.set(&stack, name, &function)?;
+        let table = Table::new(&stack, 0, functions.len())?;
+        for (name, function) in &functions {
+            table.set(&stack, name, function)?;
         }
         table
     };
@@ -508,9 +526,11 @@ fn bootstrap<T: serde::de::DeserializeOwned + Serialize>(
     args: impl l3i::call::PushArgs,
 ) -> l3i::Result<T> {
     let jess = crate::lua::state(runtime)?;
+    // The bootstrap is the host's own code, so it works over the host's `@jess/package`.
+    let packages = crate::lua::stdlib::host_packages(runtime)?;
     let stack = runtime.stack();
     let chunk = jess.load(&stack, BOOTSTRAP_CHUNK, BOOTSTRAP.as_bytes())?;
-    let entries: Table = chunk.invoke(&stack, ())?;
+    let entries: Table = chunk.invoke(&stack, (&packages,))?;
     let function: Function = entries.get(&stack, entry)?;
     function
         .invoke_with(&stack, args, |frame, value| {

@@ -60,7 +60,9 @@ type PackageModule = {
 --- `[dev-dependencies]` come along.
 type Search = { paths: { string }?, roots: { string }?, dev: { string }? }
 
-local package = (require :: (string) -> PackageModule) '@jess/package'
+-- The host's own @jess/package, handed in: the one scripts require reads and writes only what the
+-- runtime's policy grants them, and these entries are the host acting.
+local package: PackageModule = ...
 
 type Mounted = {
   id: string,

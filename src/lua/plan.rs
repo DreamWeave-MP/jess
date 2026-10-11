@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
 use l3i::Runtime;
-use l3i::bind::Binding;
+use l3i::bind::{ArgView, Binding};
 use l3i::extension::{
     Extension, ExtensionDescriptor, InstallContext, NativeCodePolicy, RuntimePlan, RuntimePlanBuilder, RuntimePolicy,
     UserdataBuilder,
@@ -133,6 +133,9 @@ impl Extension for JessExtension {
         crate::lua::shader::describe(d);
         crate::lua::l10n::describe(d);
         crate::lua::input::describe(d);
+        // `jess.fs` reaches the host's files only as far as the runtime's policy lets it.
+        d.optional_capability(l3i::fs::READ_CAPABILITY);
+        d.optional_capability(l3i::fs::WRITE_CAPABILITY);
         let module = d.module(MODULE);
         module.doc("Generic native services for Luau applications.");
         for name in MEMBERS {
@@ -142,6 +145,8 @@ impl Extension for JessExtension {
     }
 
     fn install(&self, cx: &mut InstallContext<'_>) -> l3i::Result<()> {
+        let read = cx.has_capability(l3i::fs::READ_CAPABILITY)?;
+        let write = cx.has_capability(l3i::fs::WRITE_CAPABILITY)?;
         let runtime = cx.runtime();
         let module = cx.module(MODULE)?.table().clone();
         let jess = cx.insert_state(Jess::new(runtime, module)?);
@@ -149,7 +154,7 @@ impl Extension for JessExtension {
         let module = cx.module(MODULE)?;
         module.set("version", env!("CARGO_PKG_VERSION"))?;
         module.set("null", &crate::lua::convert::NULL)?;
-        module.set("fs", &crate::lua::fs::module(runtime, &jess)?)?;
+        module.set("fs", &crate::lua::fs::module(runtime, read, write)?)?;
         module.set("toml", &crate::lua::toml::module(runtime, &jess)?)?;
         module.set("regex", &crate::lua::regexp::module(runtime, &jess)?)?;
         module.set("shader", &crate::lua::shader::module(runtime, &jess)?)?;
@@ -186,6 +191,11 @@ impl Jess {
     }
 }
 
+/// What `function` raises in a runtime whose policy doesn't grant `capability`.
+pub(crate) fn denied(function: &str, capability: &str) -> String {
+    format!("{function}: needs the '{capability}' capability, which this runtime does not grant")
+}
+
 /// A generic sub-module bound under `jess.<name>`, frozen once filled.
 pub(crate) struct Functions<'r> {
     runtime: &'r Runtime,
@@ -207,6 +217,24 @@ impl<'r> Functions<'r> {
         let function = self.runtime.bind_function(&format!("jess.{}.{key}", self.name), callable)?;
         self.table.set(&self.runtime.stack(), key, &function)?;
         Ok(self)
+    }
+
+    /// Binds `callable` as `key` when the runtime was `granted` the `capability` it needs, and
+    /// otherwise a function that raises the permission error naming it, as l3i's own modules do.
+    pub(crate) fn gated<F: Binding<M>, M>(
+        &self,
+        key: &str,
+        capability: &str,
+        granted: bool,
+        callable: F,
+    ) -> l3i::Result<&Self> {
+        if granted {
+            return self.function(key, callable);
+        }
+        let message = denied(&format!("jess.{}.{key}", self.name), capability);
+        self.function(key, move |_: ArgView<'_>| -> l3i::Result<()> {
+            Err(l3i::Error::permission(message.clone()))
+        })
     }
 
     pub(crate) fn set<T: l3i::convert::Push + ?Sized>(&self, key: &str, value: &T) -> l3i::Result<&Self> {

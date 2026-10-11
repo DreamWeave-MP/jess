@@ -10,10 +10,100 @@ fn lua() -> Runtime {
     common::runtime()
 }
 
+/// A runtime granted exactly `capabilities`.
+fn granted(capabilities: &[&str]) -> Runtime {
+    let capabilities = capabilities.iter().map(ToString::to_string).collect::<Vec<_>>();
+    jess::lua::runtime_with_capabilities(jess::lua::Options::default(), &capabilities)
+        .unwrap_or_else(|error| panic!("{error}"))
+}
+
+/// `jess.fs` reaches the host's files only as far as the runtime's policy grants: nothing without
+/// a capability, reads with `filesystem.read`, changes with `filesystem.write`. Taking a path
+/// apart or joining one touches nothing and needs neither.
+#[test]
+fn files_need_the_capability_that_covers_them() {
+    let directory = tempfile::tempdir().unwrap();
+    let existing = directory.path().join("existing.txt");
+    std::fs::write(&existing, "kept").unwrap();
+    let reads = [
+        "read",
+        "readBuffer",
+        "exists",
+        "isDir",
+        "isFile",
+        "size",
+        "stat",
+        "modified",
+        "list",
+        "cwd",
+    ];
+    let writes = ["write", "replace", "copy", "remove", "createDir"];
+    for (capabilities, may_read, may_write) in [
+        (&[][..], false, false),
+        (&["filesystem.read"][..], true, false),
+        (&["filesystem.write"][..], false, true),
+        (&["filesystem.read", "filesystem.write"][..], true, true),
+    ] {
+        let lua = granted(capabilities);
+        set_global(&lua, "dir", &directory.path().display().to_string());
+        set_global(&lua, "existing", &existing.display().to_string());
+        for (names, capability, allowed) in [
+            (&reads[..], "filesystem.read", may_read),
+            (&writes[..], "filesystem.write", may_write),
+        ] {
+            for name in names {
+                set_global(&lua, "name", *name);
+                set_global(&lua, "capability", capability);
+                set_global(&lua, "allowed", &allowed);
+                run(
+                    &lua,
+                    r#"
+                    local scratch = jess.fs.join(dir, "made-by-" .. name)
+                    local arguments = {
+                        write = { scratch, "x" }, replace = { scratch, "x" }, copy = { existing, scratch },
+                        remove = { scratch }, createDir = { scratch }, cwd = {}, list = { dir },
+                    }
+                    local ok, problem = pcall(jess.fs[name], table.unpack(arguments[name] or { existing }))
+                    if allowed then
+                        assert(ok, `{name} with {capability}: {problem}`)
+                    else
+                        local expected = `jess.fs.{name}: needs the '{capability}' capability, which this runtime does not grant`
+                        assert(not ok and string.find(tostring(problem), expected, 1, true), `{name}: {problem}`)
+                    end
+                    "#,
+                );
+            }
+        }
+        run(
+            &lua,
+            r#"
+            assert(jess.fs.join("a", "b") ~= nil and jess.fs.fileName("a/b.txt") == "b.txt")
+            assert(jess.fs.parent("a/b.txt") == "a" and jess.fs.isFileName("b.txt"))
+            "#,
+        );
+        if !may_write {
+            let made = std::fs::read_dir(directory.path()).unwrap().count();
+            assert_eq!(made, 1, "a runtime without filesystem.write changed the folder");
+            assert_eq!(std::fs::read_to_string(&existing).unwrap(), "kept");
+        }
+        // What a granted run made, cleared for the next policy.
+        for entry in std::fs::read_dir(directory.path()).unwrap().flatten() {
+            if entry.path() != existing {
+                if entry.path().is_dir() {
+                    std::fs::remove_dir_all(entry.path()).unwrap();
+                } else {
+                    std::fs::remove_file(entry.path()).unwrap();
+                }
+            }
+        }
+        std::fs::write(&existing, "kept").unwrap();
+    }
+}
+
 #[test]
 fn files_read_write_and_list() {
     let directory = tempfile::tempdir().unwrap();
-    let lua = lua();
+    let lua = common::filesystem_runtime();
     set_global(&lua, "dir", &directory.path().display().to_string());
     run(
         &lua,

@@ -45,9 +45,11 @@ fn files(folders: &[&str], extensions: &[&str]) -> Vec<String> {
     files
 }
 
-/// A runtime with the checker activated, as the global `style`.
+/// A runtime with the checker activated, as the global `style`. The checker reads the files it is
+/// pointed at, and changes none.
 fn checker() -> Runtime {
-    let runtime = common::runtime();
+    let runtime = jess::lua::runtime_with_capabilities(jess::lua::Options::default(), &["filesystem.read".to_owned()])
+        .unwrap_or_else(|error| panic!("{error}"));
     jess::lua::package::activate(&runtime, &[builtin().display().to_string()], &["jess.style".to_owned()], None)
         .unwrap_or_else(|error| panic!("{error}"));
     let style: Table = runtime
