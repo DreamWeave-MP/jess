@@ -908,3 +908,132 @@ pub fn test_with(
     }
     Ok(report)
 }
+
+/// A request to run one of a package's command targets.
+#[derive(Clone, Debug, Default)]
+pub struct TargetRequest {
+    /// The Package Source folder or `.jpk` whose target runs.
+    pub package: String,
+    /// The target's id; `None` is the package's `default_target`.
+    pub target: Option<String>,
+    /// Packages its dependencies resolve over, handed over outright.
+    pub packages: Vec<String>,
+    /// Package path folders its dependencies resolve over.
+    pub paths: Vec<String>,
+    /// The capabilities the host grants. `None` is the trusted policy: what the target declares is
+    /// granted. Either way the target runs with what it declares and nothing more.
+    pub grant: Option<Vec<String>>,
+    /// The target's arguments, which its entry gets as `...` and in the global `arg` table.
+    pub args: Vec<String>,
+}
+
+/// A target that ran: its runtime, which owns whatever it returned, and those values.
+pub struct TargetRun {
+    /// The runtime the target ran in.
+    pub runtime: Runtime,
+    /// What the target's entry returned.
+    pub values: Vec<Value>,
+}
+
+impl std::fmt::Debug for TargetRun {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TargetRun")
+            .field("values", &self.values.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// The target of `inspection` that `name` picks, or its default target without one.
+///
+/// # Errors
+///
+/// Returns an error naming the targets the package does have.
+pub fn target<'i>(inspection: &'i Inspection, name: Option<&str>) -> l3i::Result<&'i Target> {
+    let package = &inspection.id;
+    let has = || {
+        let ids = inspection.targets.iter().map(|target| target.id.as_str()).collect::<Vec<_>>();
+        if ids.is_empty() {
+            "it declares no targets".to_owned()
+        } else {
+            format!("it has: {}", ids.join(", "))
+        }
+    };
+    let Some(name) = name.or(inspection.default_target.as_deref()) else {
+        return Err(error(format!("{package} has no default_target to run; {}", has())));
+    };
+    inspection
+        .targets
+        .iter()
+        .find(|target| target.id == name)
+        .ok_or_else(|| error(format!("{package} has no target '{name}'; {}", has())))
+}
+
+/// Runs a command target of the package `request` names.
+///
+/// The package resolves with its dependencies, every layer it declares is activated, and the
+/// target's entry runs as a script, in a fresh runtime holding exactly the capabilities the target
+/// declares. A capability the target declares and `request.grant` withholds fails the run before
+/// anything is activated.
+///
+/// # Errors
+///
+/// Returns an error if the package or target can't be read, a capability is denied, the plan
+/// doesn't resolve, or the entry fails.
+pub fn run_target(options: &crate::lua::Options, request: &TargetRequest) -> l3i::Result<TargetRun> {
+    let inspection = inspect(&crate::lua::runtime(options.clone())?, &request.package)?;
+    let target = target(&inspection, request.target.as_deref())?;
+    let (package, version, id) = (&inspection.id, &inspection.version, &target.id);
+    if target.kind != "command" {
+        return Err(error(format!(
+            "target '{id}' of {package} is {} target, which needs a host of its own; only command targets run here",
+            if target.kind == "application" {
+                "an application"
+            } else {
+                "not a command"
+            }
+        )));
+    }
+    if let Some(grant) = &request.grant {
+        let denied = target
+            .capabilities
+            .iter()
+            .filter(|capability| !grant.contains(capability))
+            .map(|capability| format!("    {capability}"))
+            .collect::<Vec<_>>();
+        if !denied.is_empty() {
+            return Err(error(format!(
+                "cannot run target {id}\n\nrequired capability denied:\n{}\n\nrequested by:\n    {package} {version}\n    target {id}",
+                denied.join("\n")
+            )));
+        }
+    }
+    let runtime = crate::lua::runtime_with_capabilities(options.clone(), &target.capabilities)?;
+    let layers = inspection.layers.iter().map(|layer| layer.id.clone()).collect::<Vec<_>>();
+    let mut locations = vec![request.package.clone()];
+    locations.extend_from_slice(&request.packages);
+    let search = Search {
+        paths: request.paths.clone(),
+        roots: vec![package.clone()],
+        dev: Vec::new(),
+    };
+    activate_with(&runtime, &locations, &layers, request.grant.as_deref(), &search)?;
+    let jess = crate::lua::state(&runtime)?;
+    let (chunk, function) = {
+        let mounted = jess.packages.borrow();
+        let mounted = mounted
+            .as_ref()
+            .ok_or_else(|| error(format!("{package} activated without a plan")))?;
+        let index = mounted
+            .index_of(package)
+            .ok_or_else(|| error(format!("{package} activated without itself")))?;
+        let stack = runtime.stack();
+        let module = mounted
+            .load(&stack, index, &target.entry)?
+            .ok_or_else(|| error(format!("target {id}: {package} doesn't hold '{}'", target.entry)))?;
+        let function = jess.load_as(&stack, &module.key, &module.chunk, &module.source)?;
+        (module.chunk, function)
+    };
+    let values = crate::lua::scripts::run_loaded(&runtime, chunk.trim_start_matches('@'), &function, &request.args)?;
+    Ok(TargetRun { runtime, values })
+}

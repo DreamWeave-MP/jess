@@ -1046,3 +1046,97 @@ fn package_tests_resolve_dependencies_and_dev_dependencies() {
         ["org.example.base", "org.example.subject"]
     );
 }
+
+/// A command target's entry runs as a script, with its package's dependencies resolved and
+/// exactly the capabilities the target declares, once the host grants them.
+#[test]
+fn a_command_target_runs_with_what_it_declares() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("packages");
+    let tool = temp.path().join("tool");
+    library(&path.join("base"), "base", "", "return { name = 'base' }\n");
+    write(
+        &tool,
+        &[
+            (
+                "jess.toml",
+                "manifest_version = 1\n[package]\nid = \"org.example.tool\"\nversion = \"1.0.0\"\njess_api = \"1\"\n\
+                 default_target = \"report\"\ninclude = [\"src\"]\n[dependencies]\n\"org.example.base\" = \"1\"\n\
+                 [targets.report]\nkind = \"command\"\nentry = \"src/report.luau\"\ncapabilities = [\"filesystem.read\"]\n\
+                 [targets.quiet]\nkind = \"command\"\nentry = \"src/quiet.luau\"\n\
+                 [targets.editor]\nkind = \"application\"\nentry = \"src/quiet.luau\"\n",
+            ),
+            (
+                "src/report.luau",
+                "local fs = require '@dream/fs'\nlocal first, second = ...\n\
+                 assert(first == arg[1] and second == arg[2] and #arg == 2)\n\
+                 assert(require('./shared') == 'shared', 'an entry is its package\\'s module')\n\
+                 assert(fs.readFileString(first), 'the target was granted what it declares')\n\
+                 assert(not pcall(fs.writeFile, first, 'x'), 'and nothing it does not declare')\n\
+                 return if require('@base').name == second then 7 else 1\n",
+            ),
+            ("src/shared.luau", "return 'shared'\n"),
+            (
+                "src/quiet.luau",
+                "assert(not pcall(require('@dream/fs').readFileString, (...)), 'no capability, no filesystem')\n",
+            ),
+        ],
+    );
+    let options = jess::lua::Options::default();
+    let request = |target: Option<&str>, grant: Option<&[&str]>| package::TargetRequest {
+        package: text(&tool),
+        target: target.map(ToOwned::to_owned),
+        packages: Vec::new(),
+        paths: vec![text(&path)],
+        grant: grant.map(strings),
+        args: vec![text(&tool.join("jess.toml")), "base".to_owned()],
+    };
+    let failure = |target: Option<&str>, grant: Option<&[&str]>| -> String {
+        match package::run_target(&options, &request(target, grant)) {
+            Ok(run) => panic!("expected a failure, got {run:?}"),
+            Err(error) => error.to_string(),
+        }
+    };
+    let status = |run: &package::TargetRun| -> Option<f64> {
+        let value = run.values.first()?;
+        run.runtime
+            .stack()
+            .with_frame(|frame| value.push_to(frame)?.read::<f64>())
+            .ok()
+    };
+
+    // The default target, trusted and then granted by name.
+    for grant in [None, Some(&["filesystem.read", "filesystem.write"][..])] {
+        let run = package::run_target(&options, &request(None, grant)).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(status(&run), Some(7.0));
+    }
+    let quiet = package::run_target(&options, &request(Some("quiet"), Some(&[]))).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(quiet.values.len(), 0);
+
+    let denied = failure(None, Some(&["filesystem.write"]));
+    assert!(denied.contains("cannot run target report"), "{denied}");
+    assert!(
+        denied.contains("required capability denied:\n    filesystem.read"),
+        "{denied}"
+    );
+    assert!(
+        denied.contains("requested by:\n    org.example.tool 1.0.0\n    target report"),
+        "{denied}"
+    );
+    let unknown = failure(Some("nowhere"), None);
+    assert!(
+        unknown.contains("org.example.tool has no target 'nowhere'; it has: editor, quiet, report"),
+        "{unknown}"
+    );
+    let application = failure(Some("editor"), None);
+    assert!(
+        application.contains("target 'editor' of org.example.tool is an application target"),
+        "{application}"
+    );
+    let inspection = package::inspect(&common::runtime(), &text(&path.join("base"))).unwrap();
+    let none = package::target(&inspection, None).unwrap_err().to_string();
+    assert!(
+        none.contains("org.example.base has no default_target to run; it declares no targets"),
+        "{none}"
+    );
+}

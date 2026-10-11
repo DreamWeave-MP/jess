@@ -118,7 +118,7 @@ pub fn run(args: &RunArgs) -> Result<u8, String> {
 }
 
 /// The first returned number as the process exit status; other return values mean success.
-fn script_status(lua: &Runtime, values: &[l3i::value::Value]) -> Result<u8, String> {
+pub fn script_status(lua: &Runtime, values: &[l3i::value::Value]) -> Result<u8, String> {
     let Some(value) = values.first() else { return Ok(0) };
     let number = lua
         .stack()

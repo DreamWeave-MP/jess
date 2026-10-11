@@ -1,6 +1,7 @@
 //! `jess pack` and `jess package`: packing a Package Source into a JPK, and inspecting, resolving,
-//! and testing packages. Opening, packing, and resolving run no package code; `test` runs the
-//! package's own tests, against its source and then against it packed.
+//! testing, and running packages. Opening, packing, and resolving run no package code; `test` runs
+//! the package's own tests, against its source and then against it packed, and `run` runs one of
+//! its command targets.
 
 use std::path::PathBuf;
 
@@ -62,6 +63,35 @@ enum PackageCommand {
         #[arg(long = "package-path", value_name = "FOLDER")]
         package_paths: Vec<PathBuf>,
     },
+    /// Run one of a package's command targets: its entry, as a script, with the package's layers
+    /// activated and exactly the capabilities the target declares.
+    Run(RunTargetArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct RunTargetArgs {
+    /// A Package Source folder or a .jpk file: the package whose target runs.
+    package: PathBuf,
+    /// The target to run. Without one, the package's default target.
+    #[arg(long, value_name = "ID")]
+    target: Option<String>,
+    /// A package its dependencies resolve over (repeatable): a Package Source folder or a .jpk.
+    #[arg(long = "package", value_name = "PACKAGE")]
+    packages: Vec<PathBuf>,
+    /// A folder of packages its dependencies resolve over (repeatable), read as package graph
+    /// reads one.
+    #[arg(long = "package-path", value_name = "FOLDER")]
+    package_paths: Vec<PathBuf>,
+    /// Grant a capability the target declares (repeatable). One it declares and isn't granted
+    /// stops the run before anything is activated.
+    #[arg(long = "capability", value_name = "NAME", conflicts_with = "trusted")]
+    capabilities: Vec<String>,
+    /// Grant everything the target declares; package inspect shows what that is.
+    #[arg(long)]
+    trusted: bool,
+    /// Arguments for the target, which gets them as ... and in the global arg table.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    args: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -130,8 +160,26 @@ pub fn pack(args: &PackArgs, format: Format) -> Result<(), String> {
     )
 }
 
-pub fn run(args: &PackageArgs, format: Format) -> Result<(), String> {
-    match &args.command {
+/// Runs a command target; its first returned number is the process's exit status.
+fn run_target(args: &RunTargetArgs) -> Result<u8, String> {
+    let request = jess::lua::package::TargetRequest {
+        package: text(&args.package),
+        target: args.target.clone(),
+        packages: texts(&args.packages),
+        paths: texts(&args.package_paths),
+        grant: (!args.trusted).then(|| args.capabilities.clone()),
+        args: args.args.clone(),
+    };
+    let ran = jess::lua::package::run_target(&jess::lua::Options::default(), &request).map_err(|error| error.to_string())?;
+    let status = crate::run::script_status(&ran.runtime, &ran.values);
+    // Nothing in the state needs dropping to finish its work: targets write files as they go.
+    crate::leave(ran);
+    status
+}
+
+pub fn run(args: &PackageArgs, format: Format) -> Result<u8, String> {
+    let done = match &args.command {
+        PackageCommand::Run(args) => return run_target(args),
         PackageCommand::Inspect { package } => {
             let lua = runtime()?;
             let inspection = jess::lua::package::inspect(&lua, &text(package)).map_err(|error| error.to_string())?;
@@ -192,5 +240,6 @@ pub fn run(args: &PackageArgs, format: Format) -> Result<(), String> {
             }
             Ok(())
         }
-    }
+    };
+    done.map(|()| 0)
 }

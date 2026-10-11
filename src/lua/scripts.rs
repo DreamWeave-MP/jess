@@ -39,15 +39,22 @@ pub fn load(runtime: &Runtime, name: &str, source: &[u8]) -> l3i::Result<Functio
 /// # Errors
 /// Returns a file-read, compilation, or script error.
 pub fn run_file(runtime: &Runtime, path: &Path, args: &[String]) -> l3i::Result<Vec<Value>> {
-    let jess = state(runtime)?;
     let source = std::fs::read(path).map_err(|source| error(format!("failed to read '{}': {source}", path.display())))?;
     let name = path.display().to_string();
+    let function = load(runtime, &name, &source)?;
+    run_loaded(runtime, &name, &function, args)
+}
+
+/// Runs a loaded chunk as a script: `args` through `...` and the global `arg` table, whose index
+/// 0 is `name`.
+pub(crate) fn run_loaded(runtime: &Runtime, name: &str, function: &Function, args: &[String]) -> l3i::Result<Vec<Value>> {
+    let jess = state(runtime)?;
     let (arg, call_args) = {
         let stack = runtime.stack();
         let arg = Table::new(&stack, args.len(), 1)?;
         stack.with_frame(|frame| {
             let table = arg.push_to(frame)?;
-            frame.push_string(&name);
+            frame.push_string(name);
             table.raw_set_index(frame, 0)?;
             for (index, value) in args.iter().enumerate() {
                 frame.push_string(value);
@@ -68,9 +75,8 @@ pub fn run_file(runtime: &Runtime, path: &Path, args: &[String]) -> l3i::Result<
     };
     let globals = Table::from_value(runtime.global("_G")?)?;
     l3i::readonly::set_read_only_field(runtime, &globals, "arg", &arg)?;
-    let function = load(runtime, &name, &source)?;
     let _scope = script_call(runtime);
-    call_variadic(runtime, &jess, &function, &call_args).map_err(crate::lua::callback_error)
+    call_variadic(runtime, &jess, function, &call_args).map_err(crate::lua::callback_error)
 }
 
 /// Runs a file or requires a module and checks its first returned userdata value.

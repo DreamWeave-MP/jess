@@ -177,7 +177,7 @@ fn run(cli: Cli) -> Result<u8, String> {
         Command::Run(args) => run::run(&args),
         Command::Test(args) => test::run(&args, cli.format.unwrap_or(output::Format::Yaml)).map(|()| 0),
         Command::Pack(args) => package::pack(&args, cli.format.unwrap_or(output::Format::Yaml)).map(|()| 0),
-        Command::Package(args) => package::run(&args, cli.format.unwrap_or(output::Format::Yaml)).map(|()| 0),
+        Command::Package(args) => package::run(&args, cli.format.unwrap_or(output::Format::Yaml)),
         Command::Init(args) => init::run(&args, cli.format.unwrap_or(output::Format::Yaml)).map(|()| 0),
     }
 }

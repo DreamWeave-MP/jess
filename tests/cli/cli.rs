@@ -328,3 +328,155 @@ exports = ["@cli/example"]
     }
     fs::remove_dir_all(root).unwrap();
 }
+
+/// A package path holding `base`, a tool package depending on it with a test and a command
+/// target, and a script, all under `root`.
+fn tool_over_a_package_path(root: &Path) {
+    let write = |path: &str, contents: &str| {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, contents).unwrap();
+    };
+    write(
+        "packages/base/jess.toml",
+        r#"manifest_version = 1
+[package]
+id = "org.example.base"
+version = "1.0.0"
+jess_api = "1"
+include = ["src"]
+[modules]
+"@base" = "src/init.luau"
+[[layer]]
+id = "example.base"
+exports = ["@base"]
+"#,
+    );
+    write("packages/base/src/init.luau", "return { name = 'base' }\n");
+    write(
+        "tool/jess.toml",
+        r#"manifest_version = 1
+[package]
+id = "org.example.tool"
+version = "1.0.0"
+jess_api = "1"
+default_target = "greet"
+include = ["src"]
+tests = ["tests/run.luau"]
+[dependencies]
+"org.example.base" = "1"
+[modules]
+"@tool" = "src/init.luau"
+[[layer]]
+id = "example.tool"
+exports = ["@tool"]
+[targets.greet]
+kind = "command"
+entry = "src/greet.luau"
+capabilities = ["process.environment"]
+"#,
+    );
+    write(
+        "tool/src/init.luau",
+        "return { greeting = `hello from {require('@base').name}` }\n",
+    );
+    write(
+        "tool/src/greet.luau",
+        "print(require('@tool').greeting, ...)\nreturn if select('#', ...) == 2 then 3 else 0\n",
+    );
+    write(
+        "tool/tests/run.luau",
+        "local test = require '@jess/test'\nlocal suite = test.new()\n\
+         suite.it('greets', function() test.expect(require('@tool').greeting).toBe 'hello from base' end)\n\
+         return suite\n",
+    );
+    write("script.luau", "print(require('@base').name)\n");
+}
+
+#[test]
+fn packages_resolve_over_a_package_path_and_run_their_targets() {
+    let root = temp_dir_path("package-path");
+    drop(fs::remove_dir_all(&root));
+    tool_over_a_package_path(&root);
+    let (tool, packages) = (root.join("tool"), root.join("packages"));
+
+    let graph = jess()
+        .args(["--format", "json", "package", "graph"])
+        .arg(&tool)
+        .arg("--package-path")
+        .arg(&packages)
+        .output()
+        .unwrap();
+    assert!(graph.status.success(), "{}", String::from_utf8_lossy(&graph.stderr));
+    let plan: serde_json::Value = serde_json::from_slice(&graph.stdout).unwrap();
+    assert_eq!(plan["packages"][0]["id"], "org.example.base");
+    assert_eq!(plan["packages"][1]["dependencies"][0], "org.example.base");
+
+    let alone = jess().args(["package", "test"]).arg(&tool).output().unwrap();
+    assert!(!alone.status.success());
+    assert!(
+        String::from_utf8_lossy(&alone.stderr).contains("org.example.base is not available"),
+        "{}",
+        String::from_utf8_lossy(&alone.stderr)
+    );
+    for flag in ["--package-path", "--package"] {
+        let provider = if flag == "--package" {
+            packages.join("base")
+        } else {
+            packages.clone()
+        };
+        let tested = jess()
+            .args(["--format", "json", "package", "test"])
+            .arg(&tool)
+            .arg(flag)
+            .arg(provider)
+            .output()
+            .unwrap();
+        assert!(tested.status.success(), "{}", String::from_utf8_lossy(&tested.stderr));
+        let report: serde_json::Value = serde_json::from_slice(&tested.stdout).unwrap();
+        assert_eq!((report["passed"].as_u64(), report["failed"].as_u64()), (Some(2), Some(0)));
+    }
+
+    let layered = jess()
+        .args(["run", "--package-path"])
+        .arg(&packages)
+        .args(["--layer", "example.base"])
+        .arg(root.join("script.luau"))
+        .output()
+        .unwrap();
+    assert!(layered.status.success(), "{}", String::from_utf8_lossy(&layered.stderr));
+    assert_eq!(String::from_utf8(layered.stdout).unwrap(), "base\n");
+    let unchosen = jess()
+        .args(["run", "--package-path"])
+        .arg(&packages)
+        .arg(root.join("script.luau"))
+        .output()
+        .unwrap();
+    assert!(!unchosen.status.success());
+    assert!(String::from_utf8_lossy(&unchosen.stderr).contains("name a layer with --layer"));
+
+    let run = |extra: &[&str]| {
+        jess()
+            .args(["package", "run"])
+            .arg(&tool)
+            .arg("--package-path")
+            .arg(&packages)
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    let denied = run(&[]);
+    assert!(!denied.status.success());
+    assert!(
+        String::from_utf8_lossy(&denied.stderr).contains("required capability denied:\n    process.environment"),
+        "{}",
+        String::from_utf8_lossy(&denied.stderr)
+    );
+    let trusted = run(&["--trusted", "one", "--two"]);
+    assert_eq!(trusted.status.code(), Some(3), "{}", String::from_utf8_lossy(&trusted.stderr));
+    assert_eq!(String::from_utf8(trusted.stdout).unwrap(), "hello from base\tone\t--two\n");
+    let granted = run(&["--capability", "process.environment", "--target", "greet"]);
+    assert_eq!(granted.status.code(), Some(0), "{}", String::from_utf8_lossy(&granted.stderr));
+    assert_eq!(String::from_utf8(granted.stdout).unwrap(), "hello from base\n");
+    fs::remove_dir_all(root).unwrap();
+}
