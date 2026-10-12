@@ -218,7 +218,9 @@ suite.describe('encode', function()
     local fromYaml = yaml.decode(yaml.encode(document(true)))
     local fromToml = toml.decode(toml.encode(document(false)))
 
-    for _, read in { fromJson, fromYaml, fromToml } do
+    local documents: { toml.Table } = { fromJson, fromYaml, fromToml }
+
+    for _, read in documents do
       expect({ read.name, read.count, read.ratio }).toEqual { 'Jess', 3, 2 }
       expect(read.tags).toEqual { 'a', 'b' }
       expect(read.nested).toEqual { on = true, note = 'yes' }
