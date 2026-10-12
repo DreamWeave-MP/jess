@@ -121,6 +121,8 @@ type Expr = dream_luau_Expr
 type Stat = dream_luau_Stat
 type Block = dream_luau_StatBlock
 type Local = dream_luau_Local
+-- The l3i dialect's `local {x} = value`, which l3i's definitions don't declare.
+type LocalPattern = { kind: 'StatLocalPattern', value: Expr? }
 
 local function withSpan<Value>(value: Value, node: Span): Value & Span
   local into = (value :: unknown) :: Value & Span
@@ -253,7 +255,7 @@ local function analyze(source: string, options: ParseOptions?): Source
   local functionDepth, loopDepth, conditionalDepth = 0, 0, 0
 
   local walkExpr: (Expr) -> ()
-  local walkStat: (Stat) -> ()
+  local walkStat: (Stat | LocalPattern) -> ()
   local walkBlock: (Block) -> ()
 
   local function rememberCall(expr: dream_luau_ExprCall)
@@ -315,6 +317,29 @@ local function analyze(source: string, options: ParseOptions?): Source
     functionDepth += 1
     walkBlock(expr.body)
     functionDepth -= 1
+  end
+
+  -- Each generator loops over what follows it and each filter guards it; a generator's source is
+  -- read once, outside its own loop.
+  local function walkComprehension(expr: dream_luau_ExprComprehension)
+    local loops, conditions = 0, 0
+
+    for _, clause in expr.clauses do
+      if clause.kind == 'ComprehensionFilter' then
+        walkExpr(clause.condition)
+        conditionalDepth += 1
+        conditions += 1
+        continue
+      end
+
+      walkExpr(clause.source)
+      loopDepth += 1
+      loops += 1
+    end
+
+    walkExpr(expr.projection)
+    loopDepth -= loops
+    conditionalDepth -= conditions
   end
 
   walkExpr = function(expr: Expr)
@@ -403,6 +428,41 @@ local function analyze(source: string, options: ParseOptions?): Source
       return
     end
 
+    if expr.kind == 'ExprComprehension' then
+      walkComprehension(expr)
+      return
+    end
+
+    if expr.kind == 'ExprReduction' then
+      walkComprehension(expr.expr)
+      return
+    end
+
+    if expr.kind == 'ExprSink' then
+      walkExpr(expr.destination)
+      if expr.offset then walkExpr(expr.offset) end
+
+      walkComprehension(expr.expr)
+      return
+    end
+
+    if expr.kind == 'ExprSlice' then
+      walkExpr(expr.source)
+      walkExpr(expr.first)
+      walkExpr(expr.last)
+      return
+    end
+
+    if expr.kind == 'ExprRange' or expr.kind == 'ExprZip' then
+      for _, argument in expr.args do walkExpr(argument) end
+      return
+    end
+
+    if expr.kind == 'ExprEnumerate' then
+      walkExpr(expr.expr)
+      return
+    end
+
     if expr.kind == 'ExprError' then
       for _, value in expr.expressions do walkExpr(value) end
     end
@@ -421,7 +481,13 @@ local function analyze(source: string, options: ParseOptions?): Source
     table.insert(assignments, fact)
   end
 
-  walkStat = function(stat: Stat)
+  walkStat = function(stat: Stat | LocalPattern)
+    if stat.kind == 'StatLocalPattern' then
+      if stat.value then walkExpr(stat.value) end
+
+      return
+    end
+
     if stat.kind == 'StatBlock' then
       walkBlock(stat)
       return

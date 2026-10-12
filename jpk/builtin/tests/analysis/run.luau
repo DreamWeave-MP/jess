@@ -96,6 +96,27 @@ return Provider
     expect(value ~= nil and value.kind == 'ExprFunction').toBe(true)
   end)
 
+  suite.it('reads the l3i dialect: a generator is a loop, a filter a condition', function()
+    local source = analysis.analyze [=[
+local ui = require 'openmw.ui'
+local {layout} = ui.content(root)
+local made = [for item in ui.create(layout) if item.visible for child in item.children => ui.update(child)]
+into(made)[for index in range(1, ui.count()) => ui.create(index)]
+]=]
+    expect(#source.errors).toBe(0)
+    expect(#analysis.callsTo(source, 'openmw.ui.content')).toBe(1)
+
+    local creates = analysis.callsTo(source, 'openmw.ui.create')
+    expect(#creates).toBe(2)
+    expect({ creates[1].loopDepth, creates[1].conditionalDepth }).toEqual { 0, 0 }
+    expect({ creates[2].loopDepth, creates[2].conditionalDepth }).toEqual { 1, 0 }
+
+    local updates = analysis.callsTo(source, 'openmw.ui.update')
+    expect(#updates).toBe(1)
+    expect({ updates[1].loopDepth, updates[1].conditionalDepth }).toEqual { 2, 1 }
+    expect(analysis.callsTo(source, 'openmw.ui.count')[1].loopDepth).toBe(0)
+  end)
+
   suite.it('keeps parser diagnostics when Luau gives up on malformed input', function()
     local source = analysis.analyze(string.rep('local =\n', 50))
     expect(#source.errors > 0).toBe(true)
