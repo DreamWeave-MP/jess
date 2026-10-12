@@ -85,8 +85,27 @@ A `pcall` without that comment is a bug report waiting to happen, and the checke
 
 Bundled scripts start with `--!strict` and `--!native`, and the templates with `--!strict`. Everything is typed, and nothing is `any`. `unknown` is fine where the API really hands you an unknown (a `jess run` script's `state` table), and nowhere else. `LUAU_ANALYZE` makes the test suite type-check the bundled scripts, the `jess init` template, and the Luau test corpus against the generated definitions.
 
-## The checker
+## The l3i dialect
 
+Jess's Luau is [l3i's dialect](https://DreamWeave-MP.github.io/l3i/docs/dialect/): comprehensions, reducers, sinks, slices, and record patterns, each of which lowers to the loop you would have written. The style holds them to the rules it holds that loop to.
+
+```luau
+local ids = [for entity in entities if entity.active => entity.id]
+local heaviest = max[for body in bodies => body.mass]
+local {health, position: {x: column, y: row}} = entity
+```
+
+**A binding is a local.** A generator's binding, a pattern's field, and a pattern standing where a parameter would are named like any other local: full words, camelCase. A shorthand field binds a local of the field's own name, so a record with an `x` is renamed where it's bound, `{x: column}`.
+
+**A comprehension over several lines is a compound statement**, like a table over several lines, and gets the same blank line from its neighbours.
+
+**A filter is a condition.** `if value ~= nil` in a comprehension is held to the truthiness rule exactly as it is in an `if`, and so is what `any` and `all` reduce.
+
+**An element kind is a string.** `terrain[1:count, 'f32']` and `into(samples, 'f32@16')`, single-quoted like the rest.
+
+**Use it where it says the thing.** One list built from another, a count, a sum, a test, a few fields pulled out of a record. A loop with real work in its body, a walk over a map, or anything that leaves early is still a loop, and a comprehension that needed a helper invented to fit its projection was a loop too. It isn't free everywhere either: a comprehension checks every projection for `nil`, and next to a loop that already sizes its table and stores by index that costs about a fifth on a trivial projection (30.8 µs against 25.6 µs over 4,096 elements, on a verified release build). The hot loop that was already written well stays.
+
+## The checker
 `@jess/style` is the style above, as code. It's the first module of jess's built-in package, [`jpk/builtin`](@/docs/scripting/packages.md#the-built-in-package), and it's Luau end to end: one parse with [`@dream/luau`](@/docs/api/downstream-globals.md), Luau's own parser, the tree and its token stream as tables; one pass over the tokens for the layout of every line; one walk over the tree for everything else. No regexes over source text, no guessing where a long string ends.
 
 ```sh
@@ -109,16 +128,16 @@ print(`{errors} errors, {warnings} warnings`)
 | `syntax` | error | Luau that parses. |
 | `pcall.comment` | error | A comment right above every `pcall` and `xpcall`, naming what throws. |
 | `layout.indentation` | error | Spaces, two per level. Text inside a long string or comment keeps its own layout. |
-| `layout.compound` | error | A blank line between adjacent compound statements when either spans several lines. A statement holding a multi-line table or function counts as compound. |
-| `quotes.double` | error | Single quotes, unless the string holds one. |
+| `layout.compound` | error | A blank line between adjacent compound statements when either spans several lines. A statement holding a multi-line table, function, or comprehension counts as compound. |
+| `quotes.double` | error | Single quotes, unless the string holds one. The element kind of a typed slice or a buffer sink is a string too. |
 | `quotes.backtick` | error | Backticks only around interpolation. |
 | `hoisting` | error | No local that only renames a Luau global or library function. `math.huge` and friends are values, not functions, so naming one is fine. |
 | `naming.case` | error | camelCase locals; PascalCase only for module constants. `IDENTITY` and `light_count` are neither. |
 | `naming.constant` | warning | A module-level local holding a literal that nothing reassigns (or, for a table, nothing changes or hands to a function) is a constant, and PascalCase. |
-| `naming.words` | warning | Full words. No single-letter name in any position: locals, parameters, loop variables, and the keys you write in a table constructor; `_` is the only one-character name. No abbreviations either: `record`, not `rec`. |
+| `naming.words` | warning | Full words. No single-letter name in any position: locals, parameters, loop variables, the bindings of a comprehension or a record pattern, and the keys you write in a table constructor; `_` is the only one-character name. No abbreviations either: `record`, not `rec`. |
 | `truthiness` | warning | `if not name` for a value that can't be false. Only when the checker can prove it: a local annotated with a type that has no `boolean` in it (aliases in the file followed), a literal, or a library call like `string.find`. |
 | `locals.group` | warning | Adjacent same-kind locals (empty tables of the same type) on one line. |
-| `locals.mixed` | warning | No local starting `nil` in a statement that initializes others. |
+| `locals.mixed` | warning | No local starting `nil` in a statement that initializes others. A call, `...`, or a buffer sink (the buffer and the count it wrote) may fill more than one. |
 | `guard.else` | warning | No `else` after a branch that returns, breaks, continues, or errors. |
 | `guard.nested` | warning | A function or loop body that's one condition wrapped around three or more statements becomes a guard clause and the work. |
 | `directives.strict`, `directives.native` | error | `--!strict` and `--!native` at the top, where the caller requires them. |
