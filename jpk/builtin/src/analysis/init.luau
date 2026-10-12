@@ -578,15 +578,8 @@ local function analyze(source: string, options: ParseOptions?): Source
     for _, stat in block.body do walkStat(stat) end
   end
 
-  -- Luau can return a nil root for sufficiently malformed/unsupported source. Keep parse
-  -- diagnostics as first-class facts and analyze an empty synthetic block instead of crashing the
-  -- entire workspace. This is especially important when a workspace is used as a corpus/indexer.
+  -- A source Luau gives up on still has a root: one StatError, with the errors beside it.
   local root = result.root
-  if not root then
-    local empty = luau.parse('')
-    root = empty.root
-  end
-
   walkBlock(root)
 
   local moduleReturn: Expr? = nil

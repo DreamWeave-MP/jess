@@ -96,10 +96,11 @@ return Provider
     expect(value ~= nil and value.kind == 'ExprFunction').toBe(true)
   end)
 
-  suite.it('keeps parser diagnostics when malformed input has no AST root', function()
+  suite.it('keeps parser diagnostics when Luau gives up on malformed input', function()
     local source = analysis.analyze(string.rep('local =\n', 50))
     expect(#source.errors > 0).toBe(true)
-    expect(#source.root.body).toBe(0)
+    expect(#source.root.body).toBe(1)
+    expect(source.root.body[1].kind).toBe 'StatError'
   end)
 
   suite.it('resolves returned tables through local initializers', function()

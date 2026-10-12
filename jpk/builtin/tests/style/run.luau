@@ -522,8 +522,8 @@ suite.describe('definitions', function()
 end)
 
 suite.describe('a source Luau gives up on', function()
-  suite.it('is reported by its syntax errors, with no tree to walk', function()
-    -- The parser stops at its hundredth error and hands back no tree.
+  suite.it('is reported by its syntax errors, with nothing in its tree to walk', function()
+    -- The parser stops at its hundredth error and hands back a root that is one StatError.
     local findings = found(string.rep(') ', 100) .. '\n')
     expect(#findings > 0).toBeTruthy()
 

@@ -1347,25 +1347,22 @@ local function check(text: string, given: Options?): { Finding }
   local root = result.root
   moduleBody = nil
 
-  -- Luau stops at its hundredth syntax error and gives no tree at all. The errors it did report
-  -- are the findings then: there is nothing to walk.
-  if root then
-    for _, stat in root.body do
-      if stat.kind == 'StatTypeAlias' then aliases[stat.name] = stat.type end
-    end
-
-    local last = root.body[#root.body]
-
-    if last and last.kind == 'StatReturn' and #last.list == 1 then
-      local returned = last.list[1]
-      if returned.kind == 'ExprFunction' then moduleBody = returned.body end
-    end
-
-    walkBlock(root)
-    checkConstants()
-    checkGrouping()
+  -- Luau stops at its hundredth syntax error; the root is then one StatError, with nothing in it
+  -- to walk, and the errors it did report are the findings.
+  for _, stat in root.body do
+    if stat.kind == 'StatTypeAlias' then aliases[stat.name] = stat.type end
   end
 
+  local last = root.body[#root.body]
+
+  if last and last.kind == 'StatReturn' and #last.list == 1 then
+    local returned = last.list[1]
+    if returned.kind == 'ExprFunction' then moduleBody = returned.body end
+  end
+
+  walkBlock(root)
+  checkConstants()
+  checkGrouping()
   table.sort(findings, compare)
 
   local found = findings
