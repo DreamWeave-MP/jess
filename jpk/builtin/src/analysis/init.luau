@@ -121,8 +121,6 @@ type Expr = dream_luau_Expr
 type Stat = dream_luau_Stat
 type Block = dream_luau_StatBlock
 type Local = dream_luau_Local
--- The l3i dialect's `local {x} = value`, which l3i's definitions don't declare.
-type LocalPattern = { kind: 'StatLocalPattern', value: Expr? }
 
 local function withSpan<Value>(value: Value, node: Span): Value & Span
   local into = (value :: unknown) :: Value & Span
@@ -255,7 +253,7 @@ local function analyze(source: string, options: ParseOptions?): Source
   local functionDepth, loopDepth, conditionalDepth = 0, 0, 0
 
   local walkExpr: (Expr) -> ()
-  local walkStat: (Stat | LocalPattern) -> ()
+  local walkStat: (Stat) -> ()
   local walkBlock: (Block) -> ()
 
   local function rememberCall(expr: dream_luau_ExprCall)
@@ -481,7 +479,7 @@ local function analyze(source: string, options: ParseOptions?): Source
     table.insert(assignments, fact)
   end
 
-  walkStat = function(stat: Stat | LocalPattern)
+  walkStat = function(stat: Stat)
     if stat.kind == 'StatLocalPattern' then
       if stat.value then walkExpr(stat.value) end
 

@@ -17,51 +17,8 @@ type TypePack = dream_luau_TypePack
 type Function = dream_luau_ExprFunction
 type Comprehension = dream_luau_ExprComprehension
 
--- The l3i dialect's record patterns, which l3i's definitions don't declare: a `local {x} = value`
--- statement, and the pattern that stands where a parameter or a generator's binding would.
-type PatternIdentifier = {
-  kind: 'PatternIdentifier',
-  line: number,
-  column: number,
-  endLine: number,
-  endColumn: number,
-  name: string,
-  ['local']: Local,
-}
-
-type PatternField = {
-  kind: 'PatternField',
-  line: number,
-  column: number,
-  endLine: number,
-  endColumn: number,
-  key: string,
-  shorthand: boolean,
-  target: (PatternIdentifier | PatternRecord)?,
-}
-
-type PatternRecord = {
-  kind: 'PatternRecord',
-  line: number,
-  column: number,
-  endLine: number,
-  endColumn: number,
-  fields: { PatternField },
-  annotation: Type?,
-}
-
-type LocalPattern = {
-  kind: 'StatLocalPattern',
-  line: number,
-  column: number,
-  endLine: number,
-  endColumn: number,
-  pattern: PatternRecord,
-  annotation: Type?,
-  value: Expr?,
-}
-
-type Binding = Local | PatternRecord
+type PatternRecord = dream_luau_PatternRecord
+type Binding = dream_luau_Binding
 
 export type Finding = rules.Finding
 export type Options = rules.Options
@@ -509,9 +466,12 @@ local function declarePattern(pattern: PatternRecord, isModule: boolean)
 
     if target.kind == 'PatternRecord' then
       declarePattern(target, isModule)
-    else
-      declare(target['local'], isModule)
+      continue
     end
+
+    -- A field still being typed has a name and no local yet.
+    local bound = target['local']
+    if bound then declare(bound, isModule) end
   end
 end
 
@@ -779,17 +739,15 @@ local function walkFunction(func: Function)
   local documented = if jessProfile then nil else documentedParameters(func.line)
 
   for _, argument in func.args do
-    local binding: Binding = argument
-
-    if binding.kind == 'PatternRecord' then
-      declarePattern(binding, false)
+    if argument.kind == 'PatternRecord' then
+      declarePattern(argument, false)
       continue
     end
 
-    declare(binding, false)
-    local documentedType = documented and documented[binding.name]
+    declare(argument, false)
+    local documentedType = documented and documented[argument.name]
 
-    if documentedType and luaLsNeverFalse(documentedType) then nonBoolean[binding] = true end
+    if documentedType and luaLsNeverFalse(documentedType) then nonBoolean[argument] = true end
   end
 
   if noAny then
@@ -1212,7 +1170,7 @@ local function noteSized(target: Expr)
   sized[holder['local']] = true
 end
 
-local function walkStat(stat: Stat | LocalPattern, isModule: boolean)
+local function walkStat(stat: Stat, isModule: boolean)
   if stat.kind == 'StatLocalPattern' then
     if stat.value then walkExpr(stat.value) end
 
