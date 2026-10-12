@@ -1125,7 +1125,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 [[package]]
 name = "l3i"
 version = "2.0.1"
-source = "git+https://github.com/DreamWeave-MP/l3i?branch=main#384c0f8654433ab9b0dff0f1d3c58f35f97c9752"
+source = "git+https://github.com/DreamWeave-MP/l3i?branch=main#0d1b245d21f6dab9541e337e9fd6d72e4df1409f"
 dependencies = [
  "adler2",
  "blake3",
