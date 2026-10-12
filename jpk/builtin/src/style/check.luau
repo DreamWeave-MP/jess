@@ -15,6 +15,53 @@ type Local = dream_luau_Local
 type Type = dream_luau_Type
 type TypePack = dream_luau_TypePack
 type Function = dream_luau_ExprFunction
+type Comprehension = dream_luau_ExprComprehension
+
+-- The l3i dialect's record patterns, which l3i's definitions don't declare: a `local {x} = value`
+-- statement, and the pattern that stands where a parameter or a generator's binding would.
+type PatternIdentifier = {
+  kind: 'PatternIdentifier',
+  line: number,
+  column: number,
+  endLine: number,
+  endColumn: number,
+  name: string,
+  ['local']: Local,
+}
+
+type PatternField = {
+  kind: 'PatternField',
+  line: number,
+  column: number,
+  endLine: number,
+  endColumn: number,
+  key: string,
+  shorthand: boolean,
+  target: (PatternIdentifier | PatternRecord)?,
+}
+
+type PatternRecord = {
+  kind: 'PatternRecord',
+  line: number,
+  column: number,
+  endLine: number,
+  endColumn: number,
+  fields: { PatternField },
+  annotation: Type?,
+}
+
+type LocalPattern = {
+  kind: 'StatLocalPattern',
+  line: number,
+  column: number,
+  endLine: number,
+  endColumn: number,
+  pattern: PatternRecord,
+  annotation: Type?,
+  value: Expr?,
+}
+
+type Binding = Local | PatternRecord
 
 export type Finding = rules.Finding
 export type Options = rules.Options
@@ -451,6 +498,32 @@ local function declare(target: Local, isModule: boolean, isAlias: boolean?)
   if noAny and target.annotation then walkType(target.annotation) end
 end
 
+-- Every local a record pattern binds is declared like any other: `{x}` binds a local named `x`,
+-- so a field with a name the style refuses is renamed where it's bound, `{x: column}`.
+local function declarePattern(pattern: PatternRecord, isModule: boolean)
+  if noAny and pattern.annotation then walkType(pattern.annotation) end
+
+  for _, field in pattern.fields do
+    local target = field.target
+    if not target then continue end
+
+    if target.kind == 'PatternRecord' then
+      declarePattern(target, isModule)
+    else
+      declare(target['local'], isModule)
+    end
+  end
+end
+
+-- A parameter or a generator's binding: a local, or the pattern that stands in its place.
+local function declareBinding(binding: Binding, isModule: boolean)
+  if binding.kind == 'PatternRecord' then
+    declarePattern(binding, isModule)
+  else
+    declare(binding, isModule)
+  end
+end
+
 -- `string.format` for an index of a global library, `pcall` for a global; nil for anything else.
 local function globalPath(expr: Expr): string?
   if expr.kind == 'ExprGlobal' then return expr.name end
@@ -706,10 +779,17 @@ local function walkFunction(func: Function)
   local documented = if jessProfile then nil else documentedParameters(func.line)
 
   for _, argument in func.args do
-    declare(argument, false)
-    local documentedType = documented and documented[argument.name]
+    local binding: Binding = argument
 
-    if documentedType and luaLsNeverFalse(documentedType) then nonBoolean[argument] = true end
+    if binding.kind == 'PatternRecord' then
+      declarePattern(binding, false)
+      continue
+    end
+
+    declare(binding, false)
+    local documentedType = documented and documented[binding.name]
+
+    if documentedType and luaLsNeverFalse(documentedType) then nonBoolean[binding] = true end
   end
 
   if noAny then
@@ -729,6 +809,46 @@ local function rootLocal(expr: Expr): Local?
   if expr.kind == 'ExprLocal' then return expr['local'] end
 
   return nil
+end
+
+-- A typed slice's or a buffer sink's element kind is a string literal the tree keeps only the
+-- content of: the token at `index` is the literal, and it is quoted like any other string.
+local function checkKindQuotes(index: number)
+  local first, last = buffer.readu32(tokens, index * 12 + 4), buffer.readu32(tokens, index * 12 + 8)
+  if string.byte(source, first) ~= 34 then return end
+
+  local line = lineOf(first)
+  local column = first - lineStarts[line] + 1
+  reportAt(
+    'quotes.double',
+    line,
+    column,
+    column + last - first,
+    'double-quoted: use single quotes for a string with no single quote in it'
+  )
+end
+
+-- A comprehension's clauses in order, each generator's bindings declared after its source is read,
+-- and its projection; `tested` when a reducer reads the projection for truth, as `any` and `all` do.
+local function walkComprehension(expr: Comprehension, tested: boolean)
+  if expr.endLine > expr.line then nestedBlock = true end
+
+  for _, clause in expr.clauses do
+    if clause.kind == 'ComprehensionFilter' then
+      testing = true
+      walkExpr(clause.condition)
+      continue
+    end
+
+    walkExpr(clause.source)
+
+    for _, binding in clause.bindings do
+      declareBinding(binding, false)
+    end
+  end
+
+  testing = tested
+  walkExpr(expr.projection)
 end
 
 walkExpr = function(expr: Expr)
@@ -818,6 +938,40 @@ walkExpr = function(expr: Expr)
     for _, part in expr.expressions do
       walkExpr(part)
     end
+  elseif expr.kind == 'ExprComprehension' then
+    walkComprehension(expr, false)
+  elseif expr.kind == 'ExprReduction' then
+    walkComprehension(expr.expr, expr.op == 'any' or expr.op == 'all')
+  elseif expr.kind == 'ExprSink' then
+    local destination = expr.destination
+    walkExpr(destination)
+    local target = rootLocal(destination)
+    if target then mutated[target] = true end
+
+    if expr.elementKind then
+      -- `into(destination, 'kind'`: the literal is the second token after the destination.
+      local after = tokenAt(offset(destination.endLine, destination.endColumn) + 1)
+      checkKindQuotes(after + 1)
+    end
+
+    if expr.offset then walkExpr(expr.offset) end
+
+    walkComprehension(expr.expr, false)
+  elseif expr.kind == 'ExprSlice' then
+    walkExpr(expr.source)
+    walkExpr(expr.first)
+    walkExpr(expr.last)
+
+    -- `source[first:last, 'kind']`: the literal is the token before the closing bracket.
+    if expr.elementKind then
+      checkKindQuotes(tokenAt(offset(expr.endLine, expr.endColumn)) - 1)
+    end
+  elseif expr.kind == 'ExprRange' or expr.kind == 'ExprZip' then
+    for _, argument in expr.args do
+      walkExpr(argument)
+    end
+  elseif expr.kind == 'ExprEnumerate' then
+    walkExpr(expr.expr)
   end
 end
 
@@ -962,7 +1116,14 @@ local function checkDeclarations(stat: dream_luau_StatLocal, previous: Stat?, se
   end
 
   local lastValue = values[#values]
-  local open = lastValue and (lastValue.kind == 'ExprCall' or lastValue.kind == 'ExprVarargs')
+  -- What may give more than one value: a call, `...`, and a buffer sink, which gives the buffer
+  -- and the count it wrote.
+  local open = lastValue
+    and (
+      lastValue.kind == 'ExprCall'
+      or lastValue.kind == 'ExprVarargs'
+      or (lastValue.kind == 'ExprSink' and lastValue.elementKind ~= nil)
+    )
 
   if #values > 0 and #values < #vars and not open then
     report(
@@ -1051,8 +1212,14 @@ local function noteSized(target: Expr)
   sized[holder['local']] = true
 end
 
-local function walkStat(stat: Stat, isModule: boolean)
-  if stat.kind == 'StatExpr' then
+local function walkStat(stat: Stat | LocalPattern, isModule: boolean)
+  if stat.kind == 'StatLocalPattern' then
+    if stat.value then walkExpr(stat.value) end
+
+    if noAny and stat.annotation then walkType(stat.annotation) end
+
+    declarePattern(stat.pattern, isModule)
+  elseif stat.kind == 'StatExpr' then
     walkExpr(stat.expr)
   elseif stat.kind == 'StatLocal' then
     for _, value in stat.values do

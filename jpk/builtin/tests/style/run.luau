@@ -513,6 +513,109 @@ suite.describe('profiles', function()
   end)
 end)
 
+suite.describe('the l3i dialect', function()
+  suite.it('is read as what was written, with nothing to report in code that follows the style', function()
+    local source = table.concat({
+      'local ids = [for entity in entities if entity.active => entity.id]',
+      'local total = sum[for {id, position: {x: column}} in entities => id + column]',
+      'local samples = buffer.create(64)',
+      'local filled, written = into(samples, \'f32\')[for value in range(1, 16) => value * 0.5]',
+      'local heavy = #[for value in samples[1:16, \'f32@4\'] if value > 4 => value]',
+      'local {health, position: {x: across}}: Entity = entities[1]',
+      'local function area({width, height}: Size): number return width * height end',
+      'local pairs = [for index, name in enumerate(names) => `{index}:{name}`]',
+      'local sums = [for left, right in zipStrict(lefts, rights) => left + right]',
+      'print(ids, total, filled, written, heavy, health, across, area, pairs, sums, names[2:3])',
+      '',
+    }, '\n')
+
+    expect(found(source)).toEqual {}
+  end)
+
+  suite.it('holds every binding to the naming rules', function()
+    local source = table.concat({
+      'local ids = [for e in entities => e.id]',
+      'local {x, health: hp_left} = entity',
+      'local function area({w, height: Tall}: Size): number return w * Tall end',
+      'local firsts = [for {k}, i in zipShortest(records, indices) => k + i]',
+      'print(ids, x, hp_left, area, firsts)',
+      '',
+    }, '\n')
+
+    expect(found(source)).toEqual {
+      '1:18 naming.words',
+      '2:8 naming.words',
+      '2:19 naming.case',
+      '3:22 naming.words',
+      '3:33 naming.case',
+      '4:22 naming.words',
+      '4:26 naming.words',
+    }
+  end)
+
+  suite.it('reads the strings inside a comprehension, and an element kind, as strings', function()
+    local source = table.concat({
+      'local names = [for entity in entities => entity.name or "nobody"]',
+      'local heights = terrain[1:count, "f32"]',
+      'into(samples, "f32@16", 8)[for height in heights[1:count, \'f32\'] => height]',
+      'print(names)',
+      '',
+    }, '\n')
+
+    expect(found(source)).toEqual { '1:57 quotes.double', '2:34 quotes.double', '3:15 quotes.double' }
+  end)
+
+  suite.it('tests a filter, and what any and all reduce, for truth', function()
+    local source = table.concat({
+      'local function live(names: { string }, owner: string?): ({ string }, boolean)',
+      '  return [for name in names if owner ~= nil => name], any[for name in names => owner ~= nil and name]',
+      'end',
+      '',
+      'print(live)',
+      '',
+    }, '\n')
+
+    expect(found(source)).toEqual { '2:32 truthiness', '2:80 truthiness' }
+  end)
+
+  suite.it('takes a table a sink fills for one that changes, and a buffer sink for two values', function()
+    local source = table.concat({
+      'local scratch = {}',
+      '',
+      'local samples = buffer.create(64)',
+      '',
+      'local function fill(values: { number }): number',
+      '  local filled, written = into(samples, \'f32\')[for value in values => value]',
+      '  into(scratch)[for value in values => value * 2]',
+      '  return written + buffer.len(filled)',
+      'end',
+      '',
+      'print(fill)',
+      '',
+    }, '\n')
+
+    expect(found(source)).toEqual {}
+  end)
+
+  suite.it('gives a comprehension over several lines the room a table over several lines gets', function()
+    local source = table.concat({
+      'local ids = [',
+      '  for entity in entities',
+      '  if entity.active',
+      '  => entity.id',
+      ']',
+      'if ids[1] then print(ids[1]) end',
+      '',
+    }, '\n')
+
+    expect(found(source)).toEqual { '6:1 layout.compound' }
+  end)
+
+  suite.it('reports a comprehension with no projection as a syntax error', function()
+    expect(found('local ids = [for entity in entities]\n')[1]).toBe '1:36 syntax'
+  end)
+end)
+
 suite.describe('definitions', function()
   suite.it('parse as definitions when nothing else parses', function()
     local source = 'declare extern type Handle with\n  name: string\nend\n'
