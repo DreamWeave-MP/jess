@@ -107,13 +107,13 @@ fn run_requires_an_explicit_network_capability_grant() {
     fs::write(
         &script,
         r#"
-        local net = require("@dream/net")
-        local schema = net.schema {
+        local udp = require("@dream/udp")
+        local schema = udp.schema {
             version = 1,
             channels = {{ name = "reliable", delivery = "reliableOrdered" }},
             events = {{ name = "ping", channel = "reliable", maxPayload = 8 }},
         }
-        net.client { schema = schema }
+        udp.client { schema = schema }
         print("transport granted")
         "#,
     )

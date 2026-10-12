@@ -6,13 +6,13 @@ fn runtime(capabilities: &[String]) -> Runtime {
 }
 
 const CLIENT: &str = r#"
-    local net = require("@dream/net")
-    local schema = net.schema {
+    local udp = require("@dream/udp")
+    local schema = udp.schema {
         version = 1,
         channels = {{ name = "reliable", delivery = "reliableOrdered" }},
         events = {{ name = "ping", channel = "reliable", maxPayload = 8 }},
     }
-    return net.client { schema = schema }
+    return udp.client { schema = schema }
 "#;
 
 #[test]

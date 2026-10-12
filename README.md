@@ -10,8 +10,8 @@ It's three layers, and you only need the one you use:
 - **A Luau runtime.** Everything the command line does is a [Luau](https://luau.org) API, and `jess run script.luau` runs a script with all of it loaded.
 
 `jess run` grants optional capabilities only when the host operator asks for them. For example,
-`jess run --capability network.transport script.luau` enables `@dream/net` client creation; without
-that flag, `net.client` and `net.server` are denied. With the capability, Luau can construct and
+`jess run --capability network.transport script.luau` enables `@dream/udp` client creation; without
+that flag, `udp.client` and `udp.server` are denied. With the capability, Luau can construct and
 drive both sides; the native transport keeps the signing key private inside server userdata. Jess
 also exposes `jess run --profile`, `--disassemble FILE`, and `--emit-asm FILE` for script profiling,
 textual bytecode disassembly, and generated native assembly without separate Luau tools.
