@@ -44,7 +44,7 @@ icu_locale_core = "2.3.0"
 icu_plurals = "2.3.0"
 icu_provider = { version = "2.3.1", features = ["sync"] }
 # The main branch until 2.0.0 is on crates.io.
-l3i = { git = "https://github.com/DreamWeave-MP/l3i", branch = "main", features = ["jit", "bytes-text", "bytes-codecs", "bytes-digests", "bytes-regex", "fs", "intern", "process", "syntax"] }
+l3i = { git = "https://github.com/DreamWeave-MP/l3i", branch = "main", features = ["jit", "bytes-text", "bytes-codecs", "bytes-digests", "bytes-regex", "data", "fs", "intern", "process", "syntax"] }
 regex = "^1.10"
 serde = { version = "^1.0", features = ["derive"] }
 serde-value = "^0.7"
