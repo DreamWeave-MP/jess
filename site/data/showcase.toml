@@ -1,44 +1,106 @@
-# Landing-page receipts. These are deliberately workload-specific engineering measurements, not
-# hardware-independent promises. Keep the wording beside each number when updating it.
+# The landing page's numbers. Every figure was measured on the verified release build named in
+# [context], on the machine named there, and names the file it came from. The page prints these
+# as they are, so keep the wording beside a number when you update it, and update the source
+# with it. Package benches live with their packages (jpk/<package>/BENCHMARKS.md); the native
+# comparisons come from tools/bench/showcase.luau and the site comparison from tools/bench/site.luau.
 
-[tes3merge]
-value = "21.2×"
+[context]
+runtime = "Luau 0.742 on L3i 2.0.2"
+native = "Rust 2024, MSRV 1.92"
+binary = "Jess 0.1.0 on l3i 2.0.2 (Luau 0.742)"
+machine = "an Intel Core i7-10870H with 16 threads and 15 GB"
+measured = "between 2026-10-12 and 2026-10-14"
+note = "Times are medians: of seven batches of about a tenth of a second for a package bench, of five alternating runs for a whole program. A bench compares its result with a pinned answer before and after timing, so a path that stops doing the work fails instead of posting a time. Base-against-head tables, which say how a change moved a package, are in each package's BENCHMARKS.md; the figures here are the current head."
+
+# Whole programs over the user's real load order, against the native tool each package ports.
+# tools/bench/showcase.luau measures both sides the same way (fresh run folder, isolated home,
+# GNU time for wall, CPU, and peak memory) and compares every file they wrote. Baseline:
+# tools/bench/results/l3i-2.0.2-i7-10870h-showcase.json, 2026-10-14.
+[[native]]
+value = "11.9×"
 label = "faster"
-headline = "TES3Merge workload"
-detail = "0.49 s in Jess/Dreamwind vs 10.5 s in the native original; median of five showcase runs."
+headline = "TES3Merge, 52 plugins"
+detail = "0.94 s in Jess against 11.2 s for native TES3Merge over the same 69-file load order, with 34× less CPU and half the peak memory. The plugins are byte-identical apart from three documented differences in what native writes."
+source = "tools/bench/showcase.luau, median of five"
 
-[mergedlands]
-value = "7.2×"
-label = "less peak memory"
-headline = "Merged Lands workload"
-detail = "774 MiB in Jess/Dreamwind vs 5.44 GiB in the native original on the same load order."
+[[native]]
+value = "3.4×"
+label = "faster, 4.7× less memory"
+headline = "Merged Lands, 15,571 LAND records"
+detail = "3.37 s against 11.4 s, and 1.17 GiB against 5.55 GiB, merging 51 plugins' terrain. Every record the port writes is byte-identical to native's; native at its April 2026 head also writes 7,920 LAND records the port leaves out, which the harness reports as a mismatch rather than excusing."
+source = "tools/bench/showcase.luau, median of five"
 
-[physics_raycast]
-value = "~880×"
-label = "faster"
-headline = "100k-body scalar raycast"
-detail = "Grid DDA replaced the O(N) scan: ~2.1–2.3 ms vs ~1.92 s while preserving the hit result."
+[[native]]
+value = "0.82 s"
+label = "against 0.69 s native"
+headline = "S3LightFixes, 2,743 lights"
+detail = "The one the native still wins on wall time. The port spends 0.80 s of CPU against 2.55 s and 557 MiB against 1.44 GiB, and every output is identical. About 0.35 s of its time is activating the packages before the first record is read, the same packed or from source."
+source = "tools/bench/showcase.luau, median of five"
 
-[scene_idle]
-value = "~42,834×"
-label = "lower"
-headline = "100k-node idle scene update"
-detail = "0.000406 ms after incremental bounds, down from 17.391 ms rebuilding the whole scene."
+# What the packages do in-process, each row from its package's bench on the same build.
+[[runtime]]
+package = "@dream/physics2d"
+workload = "step a world of 100,000 bodies"
+value = "13.6 ms"
+source = "jpk/dream-physics/BENCHMARKS.md"
 
-[http_router]
-value = "2.38M"
-label = "requests / second"
-headline = "Luau HTTP router"
-detail = "Two million mixed exact-route requests through the reusable request-view hot path."
+[[runtime]]
+package = "@dream/scene"
+workload = "build a scene of 100,000 nodes in a batch"
+value = "53.5 ms"
+source = "jpk/dream-scene/BENCHMARKS.md"
 
-[physics_snapshot]
-value = "~100M"
-label = "body records / second"
-headline = "Bulk simulation snapshots"
-detail = "Ten million 40-byte records emitted in ~100 ms from Luau-owned packed state."
+[[runtime]]
+package = "@dream/scene"
+workload = "move one leaf of 100,000 and update the bounds"
+value = "3.2 µs"
+source = "jpk/dream-scene/BENCHMARKS.md"
 
-[recast_lookup]
+[[runtime]]
+package = "@dream/http"
+workload = "dispatch GET /health through the router"
+value = "243 ns"
+source = "jpk/dream-http/BENCHMARKS.md"
+
+[[runtime]]
+package = "@recast"
+workload = "serialize a Detour tile of 16,129 polygons with its BV tree"
 value = "12.6 ms"
-label = "for 100k lookups"
-headline = "4096-tile Detour lookup"
-detail = "Hashed tiled lookup; the linear comparison was ~2639 ms on the same representative run."
+source = "jpk/recast-luau/BENCHMARKS.md"
+
+[[runtime]]
+package = "@jessql"
+workload = "order 100,000 rows by a number"
+value = "68.0 ms"
+source = "jpk/jessql/BENCHMARKS.md"
+
+[[runtime]]
+package = "@tes3"
+workload = "frame a 3.7 MB plugin of 16,161 records"
+value = "0.87 ms"
+source = "jpk/tes3/BENCHMARKS.md"
+
+[[runtime]]
+package = "@vfs"
+workload = "conflicts report over nine sources and 20,400 files"
+value = "14.4 ms"
+source = "jpk/vfs/BENCHMARKS.md"
+
+[[runtime]]
+package = "@tes3merge"
+workload = "merge five plugins of 12,300 records, every record type"
+value = "42.6 ms"
+source = "jpk/tes3merge/BENCHMARKS.md"
+
+[[runtime]]
+package = "@merged-lands"
+workload = "merge three plugins over a 100-cell master, by load order"
+value = "48.5 ms"
+source = "jpk/merged-lands/BENCHMARKS.md"
+
+# This site, built by the Luau generator and by Zola 0.22.1 from the same sources.
+[site]
+pages = 108
+sections = 12
+summary = "The whole site, 108 pages, builds in 0.47 s on one thread at 34 MB. Zola 0.22.1 builds the same sources in 0.82 s of wall time and 9.7 s of CPU across 16 threads, at 248 MB."
+source = "tools/bench/site.luau, median of five alternating builds, 2026-10-14"

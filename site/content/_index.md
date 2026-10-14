@@ -1,9 +1,7 @@
 ---
 title: jess
-description: A high-performance Luau application runtime built around one idea: nothing in the software stack should be hardcoded merely because engines traditionally hardcoded it.
+description: 'A native application kernel for Luau applications. Rust exposes reality; Luau decides what it means.'
 sort_by: weight
 ---
 
-Jess is a Luau application runtime with packages, isolated script domains, workers, capability-scoped authority, native lowering through L3i, and enough deliberately boring primitives to move entire subsystems out of privileged engine code.
-
-Package the policy. Expose the primitive. Move the boundary.
+Jess is the native kernel under a Luau application: script domains with capability-scoped authority, workers, packages that are the same thing packed or from source, and native lowering through L3i. The game, the tool, the editor, and this site are packages.
