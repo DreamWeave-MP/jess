@@ -320,7 +320,7 @@ On a {{ bench(value="plugins") }}-plugin load order, median of {{ bench(value="r
 | `@dreamwind/tools/s3lightfixes` | {{ bench(workload="s3lightfixes", value="jess_time") }} | {{ bench(workload="s3lightfixes", value="jess_memory") }} |
 | S3LightFixes (native) | {{ bench(workload="s3lightfixes", value="native_time") }} | {{ bench(workload="s3lightfixes", value="native_memory") }} |
 
-{{ bench(workload="s3lightfixes", value="faster") }} times faster, with {{ bench(workload="s3lightfixes", value="less_memory") }} times less memory. With `disable_interior_sun = true`, which reads every interior cell as well, it's {{ bench(workload="s3lightfixes-sun", value="jess_time") }} against {{ bench(workload="s3lightfixes-sun", value="native_time") }}, and {{ bench(workload="s3lightfixes-sun", value="jess_memory") }} against {{ bench(workload="s3lightfixes-sun", value="native_memory") }} of memory.
+The native finishes first, in {{ bench(workload="s3lightfixes", value="native_time") }} to the port's {{ bench(workload="s3lightfixes", value="jess_time") }}, since the port pays a third of a second to activate its packages before the first record is read, while the port spends {{ bench(workload="s3lightfixes", value="jess_cpu") }} of CPU against {{ bench(workload="s3lightfixes", value="native_cpu") }} and {{ bench(workload="s3lightfixes", value="less_memory") }} times less memory. With `disable_interior_sun = true`, which reads every interior cell as well, it's {{ bench(workload="s3lightfixes-sun", value="jess_time") }} against {{ bench(workload="s3lightfixes-sun", value="native_time") }}, and {{ bench(workload="s3lightfixes-sun", value="jess_memory") }} against {{ bench(workload="s3lightfixes-sun", value="native_memory") }} of memory.
 
 ## Source
 

@@ -8,7 +8,7 @@ extra:
 
 `@dreamwind/tools/merged-lands` is a Luau port of [Merged Lands](https://github.com/Sophialovesmorrowind/OpenMWMergedLands) 0.2.0, David Von Derau's terrain merger, in its OpenMW mode. It walks every LAND record in your load order, merges each cell's heights, normals, vertex colors, textures, and world map, closes the seams between cells, and writes whatever differs from what OpenMW would load anyway into one plugin, `Merged Lands.omwaddon`, with the LTEX records those cells use.
 
-The plugin is the original's byte for byte, apart from the time of the run in its header. On a {{ bench(workload="mergedlands", value="plugins") }}-plugin load order with {{ bench(workload="mergedlands", value="lands") }} LAND records it's {{ bench(workload="mergedlands", value="faster") }} times faster and uses {{ bench(workload="mergedlands", value="less_memory") }} times less memory.
+Every record the plugin holds is the original's byte for byte, apart from the time of the run in its header; since the native's April 2026 changes it also writes LAND records the port leaves out, which [Performance](#performance) covers. On a {{ bench(workload="mergedlands", value="plugins") }}-plugin load order with {{ bench(workload="mergedlands", value="lands") }} LAND records it's {{ bench(workload="mergedlands", value="faster") }} times faster and uses {{ bench(workload="mergedlands", value="less_memory") }} times less memory.
 
 ## Run it
 
@@ -155,6 +155,8 @@ On a {{ bench(value="content_files") }}-entry content list: {{ bench(workload="m
 | Merged Lands (native) | {{ bench(workload="mergedlands", value="native_time") }} | {{ bench(workload="mergedlands", value="native_memory") }} |
 
 {{ bench(workload="mergedlands", value="faster") }} times faster, with {{ bench(workload="mergedlands", value="less_memory") }} times less memory. Most of the port's memory is the plugins themselves: opened with `types = { 'LAND', 'LTEX' }`, nothing else is read, and each LAND's parts are copied out into buffers with [`jess.land.read`](@/docs/api/land.md) only while its cell is being merged. Cells are merged one at a time and forgotten, keeping only their edges for seam repair, and the ones that get written are merged again at the end.
+
+The outputs no longer match whole. Against Merged Lands 0.2.0 at its April 2026 head (`63f6a01`), every record the port writes is byte-identical to the native's, and the native writes 7,920 LAND records more on the measured load order (10,064 to the port's 2,144), from its own changes to which cells it emits ("Use rolling LAND references for all modes", "Skip all-excluded new LAND output"). Whether those cells belong in the plugin is an open question for the port; the harness reports the run as a mismatch rather than adding a rule to excuse it. The 0.2.0 release the port was written against produced the same plugin as the port, byte for byte.
 
 ## Source
 

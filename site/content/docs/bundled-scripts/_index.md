@@ -12,11 +12,11 @@ extra:
 
 jess has Luau ports of tools most OpenMW load orders already run. They ship in [Dreamwind](@/docs/scripting/packages.md#dreamwind), the package at `jpk/dreamwind` in the jess repository, as modules that each return a function taking `(state, openmw)`: an options table, and a loaded OpenMW config. A script loads your config and calls them; `jess run --package` makes them `require`-able. These pages cover every option and every way the ports differ from the native tools.
 
-| Module | Ports | Writes | vs. native, 73-plugin load order |
+| Module | Ports | Writes | native / jess, {{ bench(value="plugins") }}-plugin load order |
 | --- | --- | --- | --- |
-| [`@dreamwind/tools/tes3merge`](@/docs/bundled-scripts/tes3merge.md) | [TES3Merge](https://github.com/NullCascade/TES3Merge) | `Merged Objects.esp` | {{ bench(workload="tes3merge", value="faster") }}x faster, {{ bench(workload="tes3merge", value="less_memory") }}x less memory |
-| [`@dreamwind/tools/s3lightfixes`](@/docs/bundled-scripts/s3lightfixes.md) | [S3LightFixes](https://github.com/DreamWeave-MP/S3LightFixes) 0.4.59 | `S3LightFixes.omwaddon` | {{ bench(workload="s3lightfixes", value="faster") }}x faster, {{ bench(workload="s3lightfixes", value="less_memory") }}x less memory |
-| [`@dreamwind/tools/merged-lands`](@/docs/bundled-scripts/mergedlands.md) | [Merged Lands](https://github.com/Sophialovesmorrowind/OpenMWMergedLands) 0.2.0 | `Merged Lands.omwaddon` | {{ bench(workload="mergedlands", value="faster") }}x faster, {{ bench(workload="mergedlands", value="less_memory") }}x less memory |
+| [`@dreamwind/tools/tes3merge`](@/docs/bundled-scripts/tes3merge.md) | [TES3Merge](https://github.com/NullCascade/TES3Merge) | `Merged Objects.esp` | {{ bench(workload="tes3merge", value="faster") }}x wall, {{ bench(workload="tes3merge", value="less_memory") }}x memory |
+| [`@dreamwind/tools/s3lightfixes`](@/docs/bundled-scripts/s3lightfixes.md) | [S3LightFixes](https://github.com/DreamWeave-MP/S3LightFixes) 0.4.59 | `S3LightFixes.omwaddon` | {{ bench(workload="s3lightfixes", value="faster") }}x wall, {{ bench(workload="s3lightfixes", value="less_memory") }}x memory |
+| [`@dreamwind/tools/merged-lands`](@/docs/bundled-scripts/mergedlands.md) | [Merged Lands](https://github.com/Sophialovesmorrowind/OpenMWMergedLands) 0.2.0 | `Merged Lands.omwaddon` | {{ bench(workload="mergedlands", value="faster") }}x wall, {{ bench(workload="mergedlands", value="less_memory") }}x memory |
 
 [`@dreamwind/tools/doctor`](@/docs/bundled-scripts/doctor.md) ports nothing and changes nothing. It checks a load order for what breaks games and writes `jess-doctor.yaml` beside your `openmw.cfg`, with a fix for each finding. Call it the same way, last, with the same `state`, and it knows what the tools before it wrote.
 
