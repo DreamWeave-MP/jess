@@ -921,7 +921,7 @@ fn a_package_path_offers_what_a_plan_needs() {
     let search = |roots: &[&str]| package::Search {
         paths: vec![text(&path)],
         roots: strings(roots),
-        dev: Vec::new(),
+        ..Default::default()
     };
     let graph = |locations: &[&Path], layers: &[&str], roots: &[&str]| {
         let locations = locations.iter().map(|location| text(location)).collect::<Vec<_>>();
@@ -1054,11 +1054,26 @@ fn package_tests_resolve_dependencies_and_dev_dependencies() {
     assert_eq!(inspection.dev_dependencies[0].id, "org.example.fixtures");
     assert_eq!(inspection.dev_dependencies[0].requirement, "1");
 
-    for (packages, paths) in [
-        (vec![], vec![text(&path)]),
-        (vec![text(&path.join("base")), text(&path.join("fixtures"))], vec![]),
+    // Over a package path, handed over outright, and offered as candidates by location.
+    let (base, fixtures) = (text(&path.join("base")), text(&path.join("fixtures")));
+    for (packages, search) in [
+        (
+            vec![],
+            package::Search {
+                paths: vec![text(&path)],
+                ..Default::default()
+            },
+        ),
+        (vec![base.clone(), fixtures.clone()], package::Search::default()),
+        (
+            vec![],
+            package::Search {
+                candidates: vec![base, fixtures],
+                ..Default::default()
+            },
+        ),
     ] {
-        let report = package::test_with(&options, &subject, &temp.path().join("scratch"), &packages, &paths).unwrap();
+        let report = package::test_with(&options, &subject, &temp.path().join("scratch"), &packages, &search).unwrap();
         assert_eq!(report.providers.len(), 2, "{report:#?}");
         assert_eq!((report.passed, report.failed), (4, 0), "{report:#?}");
         assert_eq!(report.providers[0].kind, "source");
@@ -1078,7 +1093,7 @@ fn package_tests_resolve_dependencies_and_dev_dependencies() {
         &subject,
         &temp.path().join("scratch"),
         &[text(&path.join("base"))],
-        &[],
+        &package::Search::default(),
     )
     .unwrap_err()
     .to_string();
@@ -1144,6 +1159,7 @@ fn a_command_target_runs_with_what_it_declares() {
         target: target.map(ToOwned::to_owned),
         packages: Vec::new(),
         paths: vec![text(&path)],
+        candidates: Vec::new(),
         grant: grant.map(strings),
         args: vec![text(&tool.join("jess.toml")), "base".to_owned()],
     };

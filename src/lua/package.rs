@@ -541,6 +541,10 @@ pub struct Search {
     /// candidate, opened only when a layer or a dependency needs it, and never in place of a
     /// package handed over outright. Two candidates for one need are an error, not a choice.
     pub paths: Vec<String>,
+    /// Packages offered as candidates by location, Package Source folders or `.jpk` files, as a
+    /// package path's are: opened only when needed, never in place of a package handed over
+    /// outright, and never chosen between.
+    pub candidates: Vec<String>,
     /// Package ids selected, with their dependencies, whether or not a requested layer is theirs.
     pub roots: Vec<String>,
     /// Package ids whose `[dev-dependencies]` are selected with them: packages whose tests run.
@@ -550,8 +554,13 @@ pub struct Search {
 impl Search {
     /// This search as the table the bootstrap reads.
     fn table(&self, scope: &impl Scope) -> l3i::Result<Table> {
-        let table = Table::new(scope, 0, 3)?;
-        for (key, items) in [("paths", &self.paths), ("roots", &self.roots), ("dev", &self.dev)] {
+        let table = Table::new(scope, 0, 4)?;
+        for (key, items) in [
+            ("paths", &self.paths),
+            ("candidates", &self.candidates),
+            ("roots", &self.roots),
+            ("dev", &self.dev),
+        ] {
             table.set(scope, key, &string_list(scope, items)?)?;
         }
         Ok(table)
@@ -844,7 +853,7 @@ fn run_entrypoints(runtime: &Runtime) -> l3i::Result<()> {
 }
 
 /// `items` as a Luau list of strings.
-fn string_list(scope: &impl Scope, items: &[String]) -> l3i::Result<Table> {
+pub(crate) fn string_list(scope: &impl Scope, items: &[String]) -> l3i::Result<Table> {
     crate::lua::lua::stored_table(scope, |frame| {
         let table = frame.push_table(items.len(), 0)?;
         for (index, item) in items.iter().enumerate() {
@@ -908,7 +917,7 @@ pub struct PackageTest {
 ///
 /// As [`test_with`].
 pub fn test(options: &crate::lua::Options, location: &Path, scratch: &Path) -> l3i::Result<PackageTest> {
-    test_with(options, location, scratch, &[], &[])
+    test_with(options, location, scratch, &[], &Search::default())
 }
 
 /// Runs the tests the manifest of the Package Source at `location` names, against the source and
@@ -917,8 +926,10 @@ pub fn test(options: &crate::lua::Options, location: &Path, scratch: &Path) -> l
 /// The JPK is written to `scratch` and removed afterwards. Each run activates every layer the
 /// package declares, under the trusted policy, in a fresh runtime made with `options`, and selects
 /// the package with its `[dependencies]` and `[dev-dependencies]`, which resolve over `packages`
-/// (handed over outright) and the package paths `paths`. The tests are the host's scripts, so
-/// they hold the whole plan's namespace. A JPK carries no tests, so for one this reports none.
+/// (handed over outright) and the package paths and candidates of `search`; whatever its roots
+/// and dev say, the package is the root, its dev-dependencies selected with it. The tests are the
+/// host's scripts, so they hold the whole plan's namespace. A JPK carries no tests, so for one
+/// this reports none.
 ///
 /// # Errors
 ///
@@ -928,7 +939,7 @@ pub fn test_with(
     location: &Path,
     scratch: &Path,
     packages: &[String],
-    paths: &[String],
+    search: &Search,
 ) -> l3i::Result<PackageTest> {
     // Package tests are an explicit host action over a caller-chosen package, so their test code
     // gets scratch filesystem access and terminal/environment reporting. Process spawning remains
@@ -959,9 +970,9 @@ pub fn test_with(
         .collect::<Vec<PathBuf>>();
     let layers = inspection.layers.iter().map(|layer| layer.id.clone()).collect::<Vec<_>>();
     let search = Search {
-        paths: paths.to_vec(),
         roots: vec![inspection.id.clone()],
         dev: vec![inspection.id.clone()],
+        ..search.clone()
     };
     std::fs::create_dir_all(scratch)
         .map_err(|source| error(format!("failed to create '{}': {source}", scratch.display())))?;
@@ -1013,6 +1024,8 @@ pub struct TargetRequest {
     pub packages: Vec<String>,
     /// Package path folders its dependencies resolve over.
     pub paths: Vec<String>,
+    /// Packages its dependencies resolve over, offered as candidates: opened only when needed.
+    pub candidates: Vec<String>,
     /// The capabilities the host grants. `None` is the trusted policy: what the target declares is
     /// granted. Either way the target runs with what it declares and nothing more.
     pub grant: Option<Vec<String>>,
@@ -1107,6 +1120,7 @@ pub fn run_target(options: &crate::lua::Options, request: &TargetRequest) -> l3i
     locations.extend_from_slice(&request.packages);
     let search = Search {
         paths: request.paths.clone(),
+        candidates: request.candidates.clone(),
         roots: vec![package.clone()],
         dev: Vec::new(),
     };

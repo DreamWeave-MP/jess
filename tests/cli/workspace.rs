@@ -88,3 +88,92 @@ fn a_workspace_shows_its_members_and_their_targets() {
     assert!(!nowhere.status.success());
     assert!(String::from_utf8_lossy(&nowhere.stderr).contains("is not there"));
 }
+
+/// A workspace of a tool and the library it uses, both loose sources, under `root`.
+fn tool_and_library(root: &Path) {
+    let write = |path: &str, contents: &str| {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, contents).unwrap();
+    };
+    write(
+        "jess-workspace.toml",
+        "manifest_version = 1\n[workspace]\nmembers = [\"tool\", \"lib\"]\n",
+    );
+    write(
+        "lib/jess.toml",
+        "manifest_version = 1\n[package]\nid = \"org.example.lib\"\nversion = \"1.0.0\"\njess_api = \"1\"\n\
+         include = [\"src\"]\n[modules]\n\"@lib\" = \"src/init.jsl\"\n[[layer]]\nid = \"example.lib\"\nexports = [\"@lib\"]\n",
+    );
+    write("lib/src/init.jsl", "return { name = 'lib' }\n");
+    write(
+        "tool/jess.toml",
+        "manifest_version = 1\n[package]\nid = \"org.example.tool\"\nversion = \"1.0.0\"\njess_api = \"1\"\n\
+         default_target = \"greet\"\ninclude = [\"src\"]\ntests = [\"tests/run.jsl\"]\n\
+         [dependencies]\n\"org.example.lib\" = \"1\"\n\
+         [targets.greet]\nkind = \"command\"\nentry = \"src/greet.jsl\"\ncapabilities = [\"process.environment\"]\n",
+    );
+    write(
+        "tool/src/greet.jsl",
+        "print(require('@lib').name, ...)\nreturn select('#', ...)\n",
+    );
+    write(
+        "tool/tests/run.jsl",
+        "local test = require '@jess/test'\nlocal suite = test.new()\n\
+         suite.it('sees lib', function() test.expect(require('@lib').name).toBe 'lib' end)\nreturn suite\n",
+    );
+}
+
+/// From inside a member, `run` with no target runs that member's default target over the
+/// workspace, with the arguments after `--`, exiting with what it returns, and with only what the
+/// command line grants. `graph` resolves it without running it, and `test` runs the members' tests.
+#[test]
+fn a_workspace_target_runs_from_inside_its_member() {
+    let root = temp_dir_path("workspace-run");
+    drop(fs::remove_dir_all(&root));
+    tool_and_library(&root);
+    let inside = root.join("tool/src");
+    let run = |extra: &[&str]| {
+        jess()
+            .current_dir(&inside)
+            .args(["workspace", "run"])
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    let denied = run(&["--", "one"]);
+    assert!(!denied.status.success());
+    assert!(
+        String::from_utf8_lossy(&denied.stderr).contains("required capability denied:\n    process.environment"),
+        "{}",
+        String::from_utf8_lossy(&denied.stderr)
+    );
+    let trusted = run(&["--trusted", "--", "one", "--two"]);
+    assert_eq!(trusted.status.code(), Some(2), "{}", String::from_utf8_lossy(&trusted.stderr));
+    assert_eq!(String::from_utf8(trusted.stdout).unwrap(), "lib\tone\t--two\n");
+    let granted = run(&["org.example.tool:greet", "--capability", "process.environment"]);
+    assert_eq!(granted.status.code(), Some(0), "{}", String::from_utf8_lossy(&granted.stderr));
+
+    let graph = json(
+        &jess()
+            .current_dir(&inside)
+            .args(["--format", "json", "workspace", "graph"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(graph["target"]["id"], "greet");
+    assert_eq!(graph["plan"]["packages"][0]["id"], "org.example.lib");
+
+    let tested = json(
+        &jess()
+            .current_dir(&root)
+            .args(["--format", "json", "workspace", "test"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(
+        (tested[0]["passed"].as_u64(), tested[0]["failed"].as_u64()),
+        (Some(2), Some(0))
+    );
+    fs::remove_dir_all(root).unwrap();
+}

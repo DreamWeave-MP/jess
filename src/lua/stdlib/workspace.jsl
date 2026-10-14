@@ -328,6 +328,166 @@ local function discover(start: string): Workspace
   return implicit(found, note)
 end
 
+--- Every member's targets, `<package id>:<target id>`, for messages.
+local function qualified(workspace: Workspace): string
+  local names = {}
+
+  for _, found in workspace.members do
+    for id in found.manifest.targets do
+      table.insert(names, `{found.manifest.id}:{id}`)
+    end
+  end
+
+  table.sort(names)
+
+  return if #names == 0 then 'none' else table.concat(names, ', ')
+end
+
+--- The member that holds `folder`, a canonical folder: the innermost one, since the root's package
+--- holds every other member's folder too.
+local function holding(workspace: Workspace, folder: string): Member?
+  local found: Member?
+
+  for _, candidate in workspace.members do
+    if not host.relative(candidate.location, folder) then continue end
+
+    if not found or #candidate.location > #found.location then found = candidate end
+  end
+
+  return found
+end
+
+--- The member and target id `name` names: `<package id>:<target id>`; a target id or a command
+--- name no other target in the workspace has; or a member's package id, for its default target.
+--- Without a name, the default target of the member holding `cwd`.
+local function choose(workspace: Workspace, name: string?, cwd: string): (Member, string)
+  local available = `the workspace has: {qualified(workspace)}`
+
+  if not name then
+    local found = holding(workspace, host.canonical(cwd) or cwd)
+
+    if not found then fail(`name a target to run; {available}`) end
+
+    local manifest = (found :: Member).manifest
+
+    if not manifest.defaultTarget then
+      fail(`{manifest.id} has no default_target; name a target to run; {available}`)
+    end
+
+    return found :: Member, manifest.defaultTarget :: string
+  end
+
+  local text = name :: string
+  local owner, wanted = string.match(text, '^([^:]+):(.+)$')
+
+  if owner and wanted then
+    for _, found in workspace.members do
+      if found.manifest.id ~= owner then continue end
+
+      if not found.manifest.targets[wanted] then
+        fail(`{owner} has no target '{wanted}'; {available}`)
+      end
+
+      return found, wanted
+    end
+
+    fail(`no member of the workspace is {owner}; {available}`)
+  end
+
+  local matches: { { member: Member, target: string } } = {}
+  local undefaulted: string?
+
+  for _, found in workspace.members do
+    local manifest = found.manifest
+
+    if manifest.id == text then
+      if manifest.defaultTarget then
+        table.insert(matches, { member = found, target = manifest.defaultTarget :: string })
+      else
+        undefaulted = manifest.id
+      end
+    end
+
+    for id, declared in manifest.targets do
+      if id == text or declared.command == text then
+        table.insert(matches, { member = found, target = id })
+      end
+    end
+  end
+
+  local names = {}
+
+  for _, match in matches do
+    local full = `{match.member.manifest.id}:{match.target}`
+
+    if not table.find(names, full) then table.insert(names, full) end
+  end
+
+  table.sort(names)
+
+  if #names > 1 then
+    fail(`'{text}' could be any of {table.concat(names, ', ')}; name one of them`)
+  end
+
+  if #names == 0 and undefaulted then
+    fail(`{undefaulted} has no default_target; {available}`)
+  end
+
+  if #names == 0 then fail(`nothing in the workspace is named '{text}'; {available}`) end
+
+  return matches[1].member, matches[1].target
+end
+
+--- The members other than `chosen`: what its dependencies resolve over, opened only when needed.
+local function others(workspace: Workspace, chosen: Member): { string }
+  return [for found in workspace.members if found ~= chosen => found.location]
+end
+
+--- The member `chosen` as the host resolves it: where it is, and what else it may resolve over.
+local function universe(workspace: Workspace, chosen: Member): { [string]: unknown }
+  return {
+    package = chosen.manifest.id,
+    location = chosen.location,
+    candidates = others(workspace, chosen),
+  }
+end
+
+--- The target `name` picks, as `choose` reads it, and the universe its package resolves in.
+local function target(workspace: Workspace, name: string?, cwd: string): { [string]: unknown }
+  local chosen, id = choose(workspace, name, cwd)
+  local resolved = universe(workspace, chosen)
+  resolved.version, resolved.target = chosen.manifest.version, id
+
+  return resolved
+end
+
+--- The members whose tests `names` picks, each by package id or path, or every member that has
+--- tests, each with the universe its tests resolve in.
+local function tests(workspace: Workspace, names: { string }): { { [string]: unknown } }
+  local picked = {}
+
+  for _, name in names do
+    local found: Member?
+
+    for _, candidate in workspace.members do
+      if candidate.manifest.id == name or candidate.path == name then found = candidate end
+    end
+
+    if not found then
+      local members = [for candidate in workspace.members => candidate.manifest.id]
+      fail(`no member of the workspace is '{name}'; its members are {table.concat(members, ', ')}`)
+    end
+
+    table.insert(picked, universe(workspace, found :: Member))
+  end
+
+  if #names > 0 then return picked end
+
+  return [
+    for found in workspace.members if #found.manifest.tests > 0 => universe(workspace, found)
+  ]
+end
+
 local function sortedRequirements(map: { [string]: string }): { Requirement }
   local list: { Requirement } = {}
 
@@ -387,5 +547,7 @@ return function(dependencies: { host: Host, package: PackageModule })
     open = open,
     discover = discover,
     describe = describe,
+    target = target,
+    tests = tests,
   }
 end

@@ -278,3 +278,183 @@ fn a_member_through_a_link_is_where_the_link_points() {
     assert_eq!(opened.members[0].path, "alias");
     assert_eq!(opened.members[0].location, canonical(&root.join("tool")));
 }
+
+/// A workspace of four members: `app` and `tool`, each with targets; `lib`, which `app` depends
+/// on; and `fixtures`, which only `app`'s tests need. `tool` declares `lib` too, to show a member's
+/// dependency is still its own declaration.
+fn targets(root: &Path) {
+    workspace_file(root, &["app", "tool", "lib", "fixtures"]);
+    member(&root.join("lib"), "lib", "1.2.0", "");
+    member(&root.join("fixtures"), "fixtures", "1.0.0", "");
+    member(
+        &root.join("app"),
+        "app",
+        "0.1.0",
+        "default_target = \"main\"\ntests = [\"tests/run.jsl\"]\n\
+         [dependencies]\n\"org.example.lib\" = \"1\"\n[dev-dependencies]\n\"org.example.fixtures\" = \"1\"\n\
+         [targets.main]\nkind = \"command\"\nentry = \"src/main.jsl\"\ncommand = \"app\"\n\
+         capabilities = [\"process.environment\"]\n\
+         [targets.check]\nkind = \"command\"\nentry = \"src/check.jsl\"\n\
+         [targets.peek]\nkind = \"command\"\nentry = \"src/peek.jsl\"\n",
+    );
+    write(
+        &root.join("app"),
+        &[
+            (
+                "src/main.jsl",
+                "local first, second = ...\nassert(first == arg[1] and #arg == 2)\n\
+                 print(require('@lib').name, first, second)\nreturn 5\n",
+            ),
+            ("src/check.jsl", "return 0\n"),
+            // A member's exports are its dependents' only: app doesn't declare tool.
+            ("src/peek.jsl", "return require '@tool'\n"),
+            (
+                "tests/run.jsl",
+                "local test = require '@jess/test'\nlocal suite = test.new()\n\
+                 suite.it('sees its fixtures', function() test.expect(require('@fixtures').name).toBe 'fixtures' end)\n\
+                 return suite\n",
+            ),
+        ],
+    );
+    member(
+        &root.join("tool"),
+        "tool",
+        "0.1.0",
+        "[dependencies]\n\"org.example.lib\" = \"^1.2\"\n\
+         [targets.check]\nkind = \"command\"\nentry = \"src/check.jsl\"\ncommand = \"lint\"\n",
+    );
+    write(&root.join("tool"), &[("src/check.jsl", "return 0\n")]);
+}
+
+/// A target is named by package and target, by a target id or command name no other target has, or
+/// by its member's package id; without a name, it is the default target of the member the command
+/// runs in.
+#[test]
+fn a_workspace_target_is_named_or_found_from_where_it_runs() {
+    let (_temp, root) = scratch();
+    targets(&root);
+    let runtime = common::runtime();
+    let at = Locate::Root(root.clone());
+    let chosen = |name: Option<&str>, cwd: &Path| -> (String, String) {
+        let chosen = workspace::choose(&runtime, &at, name, cwd).unwrap_or_else(|error| panic!("{error}"));
+        (chosen.package, chosen.target)
+    };
+    let picked = |package: &str, target: &str| (format!("org.example.{package}"), target.to_owned());
+    for (name, expected) in [
+        ("org.example.tool:check", picked("tool", "check")),
+        ("org.example.app:check", picked("app", "check")),
+        ("main", picked("app", "main")),
+        ("app", picked("app", "main")),
+        ("lint", picked("tool", "check")),
+        ("org.example.app", picked("app", "main")),
+    ] {
+        assert_eq!(chosen(Some(name), &root), expected, "{name}");
+    }
+    assert_eq!(chosen(None, &root.join("app/src")), picked("app", "main"));
+
+    let chosen = workspace::choose(&runtime, &at, Some("main"), &root).unwrap();
+    assert_eq!(chosen.location, canonical(&root.join("app")));
+    // The other members are its candidates, opened only if it needs them.
+    assert_eq!(chosen.candidates.len(), 3);
+    assert!(!chosen.candidates.contains(&chosen.location));
+
+    for (name, cwd, expected) in [
+        (
+            Some("check"),
+            &root,
+            "'check' could be any of org.example.app:check, org.example.tool:check",
+        ),
+        (Some("nothing"), &root, "nothing in the workspace is named 'nothing'"),
+        (Some("org.example.tool"), &root, "org.example.tool has no default_target"),
+        (Some("org.example.tool:main"), &root, "org.example.tool has no target 'main'"),
+        (
+            Some("org.example.other:main"),
+            &root,
+            "no member of the workspace is org.example.other",
+        ),
+        (None, &root, "name a target to run"),
+        (None, &root.join("tool/src"), "org.example.tool has no default_target"),
+    ] {
+        let problem = workspace::choose(&runtime, &at, name, cwd).unwrap_err().to_string();
+        assert!(problem.contains(expected), "{name:?}: {problem}");
+        // Every failure but an ambiguity, which lists its own choices, lists the targets there are.
+        assert!(
+            problem.contains("could be any of")
+                || problem.contains("the workspace has: org.example.app:check, org.example.app:main"),
+            "{problem}"
+        );
+    }
+}
+
+/// A workspace target runs as its package's target does, resolving over the other members: with
+/// its arguments, its exit value, exactly the capabilities it declares once granted, and only the
+/// dependencies it declares.
+#[test]
+fn a_workspace_target_runs_over_its_members() {
+    let (_temp, root) = scratch();
+    targets(&root);
+    let options = jess::lua::Options::default();
+    let request = |target: &str, grant: Option<&[&str]>| workspace::RunRequest {
+        at: Locate::From(root.join("tool")),
+        target: Some(target.to_owned()),
+        cwd: root.clone(),
+        grant: grant.map(|grant| grant.iter().map(ToString::to_string).collect()),
+        args: vec!["one".to_owned(), "two".to_owned()],
+    };
+    let ran = workspace::run_target(&options, &request("app", None)).unwrap_or_else(|error| panic!("{error}"));
+    let status = ran
+        .runtime
+        .stack()
+        .with_frame(|frame| ran.values[0].push_to(frame)?.read::<f64>())
+        .unwrap();
+    assert_eq!(status, 5.0);
+
+    let denied = workspace::run_target(&options, &request("app", Some(&[])))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        denied.contains("required capability denied:\n    process.environment"),
+        "{denied}"
+    );
+    workspace::run_target(&options, &request("app", Some(&["process.environment"])))
+        .unwrap_or_else(|error| panic!("{error}"));
+
+    let undeclared = workspace::run_target(&options, &request("peek", Some(&[])))
+        .unwrap_err()
+        .to_string();
+    assert!(undeclared.contains("module not found: @tool"), "{undeclared}");
+
+    // What app's tests need is no part of what its target runs with.
+    let resolved = workspace::resolve_target(&common::runtime(), &request("app", None).at, Some("main"), &root)
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        resolved
+            .plan
+            .packages
+            .iter()
+            .map(|package| package.id.as_str())
+            .collect::<Vec<_>>(),
+        ["org.example.app", "org.example.lib"]
+    );
+    assert_eq!(resolved.target.capabilities, ["process.environment"]);
+}
+
+/// Members' tests run over the workspace, with their dev-dependencies: every member that has
+/// tests, or the ones named.
+#[test]
+fn workspace_tests_resolve_over_the_members() {
+    let (temp, root) = scratch();
+    targets(&root);
+    let options = jess::lua::Options::default();
+    let at = Locate::Root(root);
+    for names in [vec![], vec!["org.example.app".to_owned()], vec!["app".to_owned()]] {
+        let reports =
+            workspace::test(&options, &at, &names, &temp.path().join("scratch")).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(reports.len(), 1, "{names:?}");
+        assert_eq!((reports[0].passed, reports[0].failed), (2, 0), "{reports:#?}");
+    }
+    let unknown = workspace::test(&options, &at, &["nothing".to_owned()], &temp.path().join("scratch"))
+        .unwrap_err()
+        .to_string();
+    assert!(unknown.contains("no member of the workspace is 'nothing'"), "{unknown}");
+}
