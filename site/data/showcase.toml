@@ -34,7 +34,7 @@ source = "tools/bench/showcase.luau, median of five"
 value = "0.82 s"
 label = "against 0.69 s native"
 headline = "S3LightFixes, 2,743 lights"
-detail = "The one the native still wins on wall time. The port spends 0.80 s of CPU against 2.55 s and 557 MiB against 1.44 GiB, and every output is identical. About 0.35 s of its time is activating the packages before the first record is read, the same packed or from source."
+detail = "The one the native still wins on wall time. The port spends 0.80 s of CPU against 2.55 s and 557 MiB against 1.44 GiB, and every output is identical. About 0.3 s of its time goes before the first record is read: loading the tool's 1.3 MB of Luau, nearly all of it native code generation, since every module is compiled natively at load. Packing changes nothing."
 source = "tools/bench/showcase.luau, median of five"
 
 # What the packages do in-process, each row from its package's bench on the same build.
