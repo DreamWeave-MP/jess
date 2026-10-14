@@ -140,16 +140,19 @@ Don't run the ignored tests in `libs/nif/src/types/nistream.rs` for fun: they're
 
 ## The docs site
 
-The docs are a Jess workload. The site generator is a separate package: `buildSite` resolves `JESS_SITE_PACKAGE`, then a `jpk/dreamweave-site` checkout, then an ignored local `tools/site/dreamweave-site.jpk` artifact. The bootstrap activates it with the same runtime and package machinery application code uses. From the repository root:
+The docs are a Jess workload, end to end. The generator is a separate package, `org.dreamweave.site` (the `jpk/dreamweave-site` checkout), and `tools/site` is a small package of two command targets that drive it over `site/`. Each target declares the capabilities it needs and nothing more, so `--trusted` grants exactly those. From the repository root:
 
 ```sh
-./buildSite                 # production build into site/public
-./buildSite /tmp/jess-site  # alternate production output directory
-./buildSite serve           # dev build, localhost:1111, rebuild on edits
+jess package run --trusted --package-path jpk tools/site                      # production build into site/public
+jess package run --trusted --package-path jpk tools/site -- target/site        # another output folder
+jess package run --trusted --target serve --package-path jpk tools/site        # dev build, http://127.0.0.1:63333/, rebuild on edits
+jess package run --trusted --target serve --package-path jpk tools/site -- 0.0.0.0 8080
 ```
 
-The generator renders Markdown through its Tera-shaped template layer, compiles Sass, copies static assets, and writes the search index and sitemap. `buildSite` assumes `jess` is already in `$PATH`; no separate Zola install is part of the build.
+The generator renders Markdown through its Tera-shaped template layer, compiles Sass, copies static assets, and writes the search index and sitemap. No Zola, Node, or Python is in the path.
 
-`./buildSite serve [HOST] [PORT]` defaults to `127.0.0.1:1111`. Dev builds override `base_url` to `/`, so CSS, scripts, search, and documentation links stay on the local server instead of jumping to GitHub Pages. The watcher rebuilds through Jess and preserves the last successful output if an edit fails. Serving itself is a small Python 3 standard-library shim for now: L3i exposes DreamNet transport to Luau, not a browser-facing raw TCP listener.
+The `serve` target builds into `target/site-dev` with `base_url` as `/`, so CSS, scripts, search, and documentation links stay on the local server instead of jumping to GitHub Pages, and serves it over HTTP/1.1 from one nonblocking loop on `@dream/tcp`: GET and HEAD, a folder's `index.html`, `404.html` for what isn't there. It polls `config.toml` and everything under `content/`, `templates/`, `sass/`, `static/`, and `data/` about three times a second and rebuilds in-process when a name, size, or modification time changes; a build that fails prints why and leaves the last good one served. It is a dev server and is not meant to face the internet.
+
+`tools/bench/site.luau` times a whole build against Zola's over the same sources; the landing page quotes it.
 
 Link between pages with source paths such as `@/docs/scripting/packages.md`; the generator resolves those against the configured site URL. `site/Readme.md` has the site layout and writing conventions.

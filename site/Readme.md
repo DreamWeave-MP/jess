@@ -1,30 +1,29 @@
 # jess documentation site
 
-The source of <https://DreamWeave-MP.github.io/jess>. The site is built by Jess itself using the separate `dreamweave-site` package.
+The source of <https://DreamWeave-MP.github.io/jess>. The site is built by Jess itself using the separate `dreamweave-site` package, driven by the two command targets in `tools/site`.
 
 From the repository root:
 
 ```sh
-./buildSite                 # production build into site/public
-./buildSite /tmp/jess-site  # production build into another directory
-./buildSite serve           # dev build + http://127.0.0.1:1111 + watch
-./buildSite serve 0.0.0.0 8080
+jess package run --trusted --package-path jpk tools/site                      # production build into site/public
+jess package run --trusted --package-path jpk tools/site -- /tmp/jess-site    # production build into another directory
+jess package run --trusted --target serve --package-path jpk tools/site        # dev build + http://127.0.0.1:63333/ + watch
+jess package run --trusted --target serve --package-path jpk tools/site -- 0.0.0.0 8080
 ```
 
-`buildSite` assumes `jess` is in `$PATH`. It activates the site-generator JPK with `jess run`, renders Markdown through the Tera-shaped template layer, compiles Sass, copies static assets, and emits the search index/sitemap. There is deliberately no Zola dependency in the build path.
+`tools/site` is a Package Source whose only contents are the `build` and `serve` targets; it depends on `org.dreamweave.site`, which `--package-path jpk` finds in the `jpk/dreamweave-site` checkout. The generator renders Markdown through the Tera-shaped template layer, compiles Sass, copies static assets, and emits the search index and sitemap. There is deliberately no Zola, Node, or Python in the build path.
 
-`./buildSite serve` is the local edit loop. It asks the same Jess generator for a dev build with a root-relative base URL, serves `site/public`, and watches content/templates/Sass/static/data/config for changes. A failed rebuild leaves the last successful site in place. The browser-facing HTTP shim uses Python 3's standard library because Jess currently exposes DreamNet transport rather than a raw TCP listener; Python does not render or transform any site content.
+`serve` is the local edit loop. It asks the same generator for a dev build into `target/site-dev` with a root-relative base URL, serves it over HTTP from one nonblocking loop on `@dream/tcp`, and watches content, templates, Sass, static files, data, and the config for changes. A failed rebuild prints why and leaves the last successful site in place.
 
 ## Layout
 
 - `content/_index.md` supplies searchable homepage metadata; `templates/index.html` owns the full landing-page composition.
 - `content/docs/` is the documentation root (`docs_root: true`); each directory under it is a section with an `_index.md`.
 - `templates/base.html` is the readable shared shell; `templates/docs/` adds the recursive docs navigation and page TOC.
-- `sass/site.sass` is the shared DreamWeave shell. `sass/brand.sass` is Jess's ultraviolet brand/landing layer.
-- `static/js/jess-hero.js` owns the raw WebGL2 landing hero and scroll reveals. The page remains complete without WebGL or motion.
-- `data/showcase.toml` contains the homepage benchmark receipts. Keep each number tied to a named workload and its source benchmark notes.
-- `dreamweave-site` is a separate package repository. `buildSite` resolves it from `JESS_SITE_PACKAGE`, then `jpk/dreamweave-site`, then an ignored local `tools/site/dreamweave-site.jpk` artifact.
-
+- `sass/site.sass` is the shared DreamWeave shell. `sass/brand.sass` is Jess's ultraviolet brand/landing layer, including the hero's still.
+- `static/js/jess-hero.js` owns the landing hero, a three.js scene (`static/js/vendor/`, MIT) with the dashboard reactor, and the scroll reveals. The page remains complete without WebGL or motion.
+- `data/showcase.toml` contains the homepage numbers. Keep each number tied to a named workload and the bench it came from.
+- `dreamweave-site` is a separate package repository, checked out at `jpk/dreamweave-site`.
 ## Writing docs
 
 A docs section's `_index.md` sets `template: docs/section.html`, `page_template: docs/page.html`, and `sort_by: weight`. Page frontmatter is YAML and normally includes `title`, `description`, `weight`, and `extra.kind` (`guide`, `reference`, or `api`). Leave gaps between weights so pages can be inserted later.

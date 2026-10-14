@@ -1,15 +1,19 @@
 --!strict
-
+--!native
+-- A production build of the repository's site through org.dreamweave.site, into site/public or the
+-- folder given, with `base_url` from config.toml unless a second argument replaces it:
+--
+--   jess package run --package-path jpk tools/site -- [output] [base url]
 local site = require '@dreamweave/site'
+local paths = require './paths'
 
-local root = arg[1] or 'site'
-local public = arg[2] or jess.fs.join(root, 'public')
-local baseUrl = arg[3]
+local output = arg[1] or paths.public
+local baseUrl = arg[2]
 
-local options = {}
-if baseUrl ~= nil and baseUrl ~= '' then options.baseUrl = baseUrl end
+local options: { baseUrl: string? } = {}
+if baseUrl and baseUrl ~= '' then options.baseUrl = baseUrl end
 
-local report = site.build(root, public, options)
+local report = site.build(paths.site, output, options)
 
 print(
   string.format(
@@ -17,6 +21,6 @@ print(
     report.pages or 0,
     report.sections or 0,
     report.search or 0,
-    public
+    output
   )
 )

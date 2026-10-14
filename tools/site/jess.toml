@@ -1,0 +1,34 @@
+manifest_version = 1
+
+[package]
+id = "org.dreamweave.jess-site"
+version = "0.1.0"
+jess_api = "1"
+default_target = "build"
+include = ["build.luau", "paths.luau", "serve.luau"]
+
+[dependencies]
+"org.dreamweave.site" = "0.1"
+
+# The repository's own site, as a package: the generator is org.dreamweave.site, and this package
+# is the two commands that drive it over site/. It exports nothing.
+[[layer]]
+id = "jess-site.tools"
+requires = ["dreamweave.site"]
+exports = []
+
+# `jess package run tools/site --package-path jpk -- [output] [base url]`: a production build of
+# site/ into site/public, or the folder given.
+[targets.build]
+kind = "command"
+command = "jess-site-build"
+entry = "build.luau"
+capabilities = ["filesystem.read", "filesystem.write"]
+
+# `jess package run --target serve tools/site --package-path jpk -- [host] [port]`: a dev build
+# served over HTTP, rebuilt when a source changes.
+[targets.serve]
+kind = "command"
+command = "jess-site-serve"
+entry = "serve.luau"
+capabilities = ["filesystem.read", "filesystem.write", "network.tcp.listen", "network.tcp.public"]

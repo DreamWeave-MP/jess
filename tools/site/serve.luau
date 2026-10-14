@@ -1,0 +1,334 @@
+--!strict
+--!native
+--[[
+A development server for the repository's site, entirely in Jess: builds site/ into a folder,
+serves it over HTTP/1.1, and rebuilds it when a source changes.
+
+  jess package run --target serve --package-path jpk tools/site -- [host] [port] [output]
+
+The host defaults to 127.0.0.1, the port to 63333, and the output to target/site-dev. The build is
+org.dreamweave.site's, in this process, with `base_url` as `/` so every link works from whatever
+port this is. The sources are site/config.toml and everything under content/, templates/, sass/,
+static/, and data/, polled about three times a second by name, size, and modification time; a
+build that fails prints why and leaves the last good one served. The server is one nonblocking
+loop over @dream/tcp: no threads, GET and HEAD, one response per connection, a folder's
+index.html, and 404.html for what isn't there. Nothing here is meant to face the internet.
+]]
+
+local fs = require '@dream/fs'
+local paths = require './paths'
+local site = require '@dreamweave/site'
+local tcp = require '@dream/tcp'
+
+local Host = arg[1] or '127.0.0.1'
+local Port = tonumber(arg[2] or '63333')
+local Output = arg[3] or jess.fs.join(paths.root, 'target', 'site-dev')
+if not Port then error(`serve: the port must be a number, not "{arg[2]}"`, 0) end
+
+local WatchedFolders = { 'content', 'templates', 'sass', 'static', 'data' }
+local WatchedFiles = { 'config.toml' }
+local PollSeconds = 0.35
+local HeaderLimit = 64 * 1024
+local ReadChunk = 16 * 1024
+local ListenerToken = 1
+
+local MimeTypes: { [string]: string } = {
+  avif = 'image/avif',
+  css = 'text/css; charset=utf-8',
+  gif = 'image/gif',
+  html = 'text/html; charset=utf-8',
+  ico = 'image/x-icon',
+  jpeg = 'image/jpeg',
+  jpg = 'image/jpeg',
+  js = 'text/javascript; charset=utf-8',
+  json = 'application/json',
+  map = 'application/json',
+  md = 'text/markdown; charset=utf-8',
+  mjs = 'text/javascript; charset=utf-8',
+  otf = 'font/otf',
+  pdf = 'application/pdf',
+  png = 'image/png',
+  svg = 'image/svg+xml',
+  ttf = 'font/ttf',
+  txt = 'text/plain; charset=utf-8',
+  wasm = 'application/wasm',
+  webmanifest = 'application/manifest+json',
+  webp = 'image/webp',
+  woff = 'font/woff',
+  woff2 = 'font/woff2',
+  xml = 'application/xml',
+}
+
+type Connection = {
+  stream: dream_tcp_Stream,
+  request: string,
+  response: buffer?,
+  sent: number,
+}
+
+-- Building ----------------------------------------------------------------------------------
+
+-- Every watched source by name, size, and modification time, as one string to compare.
+local function snapshot(): string
+  local rows: { string } = {}
+  for _, name in WatchedFiles do
+    local stat = jess.fs.stat(jess.fs.join(paths.site, name))
+    if not stat then continue end
+
+    table.insert(rows, `{name}\t{stat.size}\t{stat.modifiedSeconds or 0}.{stat.modifiedNanoseconds or 0}`)
+  end
+
+  for _, folder in WatchedFolders do
+    local walk = fs.walk(
+      jess.fs.join(paths.site, folder),
+      { include = 'files', metadata = true, sort = true, skipErrors = true }
+    )
+    if not walk then continue end
+
+    local sizes, seconds, nanoseconds = walk.sizes, walk.modifiedSeconds, walk.modifiedNanoseconds
+    for index, path in walk.paths do
+      local size = if sizes then sizes[index] else 0
+      local second = if seconds then seconds[index] else 0
+      local nanosecond = if nanoseconds then nanoseconds[index] else 0
+      table.insert(rows, `{folder}/{path}\t{size}\t{second}.{nanosecond}`)
+    end
+  end
+
+  return table.concat(rows, '\n')
+end
+
+local function removeTree(path: string)
+  if not fs.exists(path) then return end
+
+  local removed, message = fs.remove(path, { recursive = true })
+  if not removed then error(`serve: cannot remove {path}: {message}`, 0) end
+end
+
+-- A build into a folder beside the output, swapped in only when it is whole, so a request that
+-- lands during a build sees the last good site or the new one, never half of either.
+local function build(): boolean
+  local staging = `{Output}.next`
+  removeTree(staging)
+
+  -- The generator raises on a broken template, page, or stylesheet. The server outlives that
+  -- and keeps serving the last build while the mistake is fixed.
+  local built, result = pcall(site.build, paths.site, staging, { baseUrl = '/' })
+  if not built then
+    print(`[jess] build failed: {result}`)
+    removeTree(staging)
+    return false
+  end
+
+  removeTree(Output)
+  local renamed, message = fs.rename(staging, Output)
+  if not renamed then error(`serve: cannot move {staging} to {Output}: {message}`, 0) end
+
+  local report = result :: { pages: number?, sections: number? }
+  print(`[jess] built {report.pages or 0} pages and {report.sections or 0} sections into {Output}`)
+  return true
+end
+
+-- Answering -----------------------------------------------------------------------------------
+
+local function percentDecoded(path: string): string
+  return (string.gsub(path, '%%(%x%x)', function(hex) return string.char(tonumber(hex, 16) :: number) end))
+end
+
+-- The file a request target names under the output, or the status that says why there is none.
+local function fileFor(target: string): (string?, number)
+  local path = percentDecoded(string.match(target, '^[^?#]*') or '/')
+  if string.sub(path, 1, 1) ~= '/' then return nil, 400 end
+
+  for segment in string.gmatch(path, '[^/]+') do
+    if segment == '..' then return nil, 400 end
+  end
+
+  local candidate = Output .. path
+  if string.sub(candidate, -1) == '/' then candidate ..= 'index.html' end
+
+  if jess.fs.isFile(candidate) then return candidate, 200 end
+
+  local index = jess.fs.join(candidate, 'index.html')
+  if jess.fs.isDir(candidate) and jess.fs.isFile(index) then return index, 200 end
+
+  return nil, 404
+end
+
+local function response(status: number, reason: string, mime: string, body: buffer, head: boolean): buffer
+  local header = `HTTP/1.1 {status} {reason}\r\nContent-Type: {mime}\r\nContent-Length: {buffer.len(body)}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n`
+  local out = buffer.create(#header + (if head then 0 else buffer.len(body)))
+  buffer.writestring(out, 0, header)
+  if not head then buffer.copy(out, #header, body) end
+
+  return out
+end
+
+local function text(status: number, reason: string, head: boolean): buffer
+  return response(status, reason, MimeTypes.txt, buffer.fromstring(`{reason}\n`), head)
+end
+
+local function answer(connection: Connection)
+  local line = string.match(connection.request, '^([^\r\n]*)') or ''
+  local method, target = string.match(line, '^(%u+)%s+(%S+)%s+HTTP/1%.[01]$')
+  if not method or not target then
+    connection.response = text(400, 'Bad Request', false)
+    print(`[serve] 400 {line}`)
+    return
+  end
+
+  local head = method == 'HEAD'
+  if method ~= 'GET' and not head then
+    connection.response = text(405, 'Method Not Allowed', false)
+    print(`[serve] 405 {method} {target}`)
+    return
+  end
+
+  local file, status = fileFor(target)
+  if file then
+    local extension = string.lower(string.match(file, '%.(%w+)$') or '')
+    local body = fs.readFile(file) or buffer.create(0)
+    connection.response = response(200, 'OK', MimeTypes[extension] or 'application/octet-stream', body, head)
+  elseif status == 404 then
+    local body = fs.readFile(jess.fs.join(Output, '404.html'))
+    connection.response = if body
+      then response(404, 'Not Found', MimeTypes.html, body, head)
+      else text(404, 'Not Found', head)
+  else
+    connection.response = text(status, 'Bad Request', head)
+  end
+
+  print(`[serve] {status} {method} {target}`)
+end
+
+-- Serving --------------------------------------------------------------------------------------
+
+local listener, listenMessage, listenKind = tcp.listen(`{Host}:{Port}`)
+if not listener then error(`serve: cannot listen on {Host}:{Port}: {listenMessage} ({listenKind})`, 0) end
+
+local poller = tcp.poller()
+poller:watch(listener, ListenerToken, 'read')
+
+local connections: { [number]: Connection } = {}
+local nextToken = ListenerToken + 1
+local scratch = buffer.create(ReadChunk)
+
+local function close(token: number)
+  local connection = connections[token]
+  if not connection then return end
+
+  poller:unwatch(token)
+  connection.stream:close()
+  connections[token] = nil
+end
+
+local function acceptAll()
+  while true do
+    local stream = listener:accept()
+    if not stream then return end
+
+    local token = nextToken
+    nextToken += 1
+    connections[token] = { stream = stream, request = '', response = nil, sent = 0 }
+    poller:watch(stream, token, 'read')
+  end
+end
+
+local function readFrom(token: number, connection: Connection)
+  while true do
+    local count, _, kind = connection.stream:readInto(scratch)
+    if count == nil then
+      if kind ~= 'wouldBlock' then close(token) end
+
+      return
+    end
+
+    -- End of stream before the request was whole: the peer gave up.
+    if count == 0 then
+      close(token)
+      return
+    end
+
+    connection.request ..= buffer.readstring(scratch, 0, count)
+    if string.find(connection.request, '\r\n\r\n', 1, true) then
+      answer(connection)
+      poller:modify(token, 'write')
+      return
+    end
+
+    if #connection.request > HeaderLimit then
+      connection.response = text(431, 'Request Header Fields Too Large', false)
+      poller:modify(token, 'write')
+      return
+    end
+  end
+end
+
+local function writeTo(token: number, connection: Connection)
+  local out = connection.response
+  if not out then return end
+
+  local total = buffer.len(out)
+  while connection.sent < total do
+    local wrote, _, kind = connection.stream:write(out, connection.sent, total - connection.sent)
+    if wrote == nil then
+      if kind ~= 'wouldBlock' then close(token) end
+
+      return
+    end
+
+    connection.sent += wrote
+  end
+
+  connection.stream:shutdown('write')
+  close(token)
+end
+
+local function dispatch()
+  while true do
+    local token, readable, writable, closed = poller:next()
+    if not token then return end
+
+    if token == ListenerToken then
+      acceptAll()
+      continue
+    end
+
+    local connection = connections[token]
+    if not connection then continue end
+
+    if connection.response then
+      if writable or closed then writeTo(token, connection) end
+    elseif readable then
+      readFrom(token, connection)
+    elseif closed then
+      close(token)
+    end
+  end
+end
+
+local parent = jess.fs.parent(Output)
+if parent and parent ~= '' then jess.fs.createDir(parent) end
+
+if not build() then error('serve: the first build failed; nothing to serve', 0) end
+
+local visibleHost = if Host == '0.0.0.0' or Host == '::' then '127.0.0.1' else Host
+local boundPort = string.match(listener.localAddress, ':(%d+)$') or tostring(Port)
+print(`[serve] http://{visibleHost}:{boundPort}/`)
+print(`[serve] watching {paths.site}: config.toml, {table.concat(WatchedFolders, ', ')}`)
+
+local previous = snapshot()
+local lastPoll = os.clock()
+while true do
+  local ready = poller:wait(math.floor(PollSeconds * 1000))
+  if ready and ready > 0 then dispatch() end
+
+  if os.clock() - lastPoll < PollSeconds then continue end
+
+  lastPoll = os.clock()
+  local current = snapshot()
+  if current == previous then continue end
+
+  previous = current
+  print('[jess] a source changed; rebuilding')
+  build()
+end
