@@ -1,0 +1,1398 @@
+--!strict
+--!native
+--[[
+The showcase: the Luau ports of the load-order tools, run on jess from their packages, next to
+the native tools they port, over the real load order; and whether both wrote the same files.
+
+  jess run --capability filesystem.read --capability filesystem.write \
+    --capability process.spawn --capability process.environment \
+    tools/bench/showcase.luau run [--jess BIN] [--runs N] [--warmup N] [--only NAME]...
+      [--openmw-cfg FILE] [--packages FOLDER] [--packed] [--no-native] [--tes3merge BIN]
+      [--s3lightfixes BIN] [--merged-lands BIN] [--against RESULTS] [--max-load N]
+      [--patience MINUTES] [--runtime TEXT]
+  jess run GRANTS tools/bench/showcase.luau docs RESULTS [--output site/data/benchmarks.toml]
+  jess run tools/bench/showcase.luau list
+
+`run` (the default when the first argument is an option) measures `--jess` (default: `jess` on
+PATH), which has to be a verified build: a binary built without the verified toolchain says so in
+`jess --version`, and is refused. Each workload's jess side is `jess package run --trusted
+--package-path <packages> <packages>/<package> -- <the tool's arguments>`, the packages found
+under `--packages` (default: the repository's `jpk`), so the timings include activating the
+package from its source folder. With `--packed`, each tool's package and every package its
+activation plan selects (`jess package graph`) are packed once with `jess pack` into
+target/bench/jpk, and the jess side is `jess package run --trusted --package-path target/bench/jpk
+target/bench/jpk/<package>.jpk -- ...`: the package path holds only what the tools need, as an
+install does. The results then say `packed` (each JPK's digest) and the file is named
+`-showcase-packed.json`. `--against RESULTS` compares every output this run kept with the same
+output in an earlier results file, by SHA-256 (`identical`, `identical-except-timestamp` for a
+plugin, `differs`, `absent`), under `against`. The native side is the tool's binary: `tes3merge` and
+`s3lightfixes` on PATH unless named, and Merged Lands, which has no release binary for Linux,
+built with `cargo build --release` from https://github.com/Sophialovesmorrowind/OpenMWMergedLands
+and named with `--merged-lands` (or `merged_lands` on PATH).
+
+The load order is `--openmw-cfg` (default: `$XDG_CONFIG_HOME/openmw/openmw.cfg`, else
+`~/.config/openmw/openmw.cfg`), only ever read. `flatten.luau` writes it as one standalone config
+without the three tools' own outputs, so neither side merges last run's result, and with each
+content file spelled as it is on disk (recorded under `load_order.respelled`). Every run starts
+from an empty folder under target/bench/showcase/<workload>/run holding that config, a
+`data-local=` inside it, the workload's seed files (TES3Merge.ini, a lightconfig.toml), and both
+sides run in it with a home folder of their own under target/bench/home and every JESS_* and
+OPENMW_* variable removed, so no tool finds or touches yours. Each side runs once to warm the page
+cache and `--runs` (5) times more, alternating, each process timed by GNU time (`/usr/bin/time`:
+wall seconds, user and system CPU, peak resident set). `--max-load` (1.5) waits up to `--patience`
+minutes (10) for the one-minute load average to drop below it before measuring; the load at the
+start and the end is recorded either way. After the measured runs, one more jess run calls the
+tool through its module with `facts.luau` and records what it reports about the load order.
+
+Then `equivalence.luau` compares every file both sides wrote and gives each a verdict (identical,
+identical-except-timestamp, known-differences, mismatch); a mismatch is printed and `run` exits
+with 1 after writing its results to target/bench/results/<time>-showcase.json.
+
+`docs` turns a results file into site/data/benchmarks.toml, the numbers the pages print with the
+`bench` shortcode. GRANTS is the four capabilities above.
+
+The run folders are deleted; what each side wrote last is kept under
+target/bench/showcase/<workload>/<side>, and the flattened config under target/bench/config.
+]]
+
+local bytes = require '@dream/bytes'
+local fs = require '@dream/fs'
+local process = require '@dream/process'
+local reading = require '@jess/json'
+
+local equivalence = require './equivalence'
+local json = require './json'
+
+type Sample = { wall: number, cpu: number, user: number, system: number, rss: number }
+type Summary = { median: number, min: number, max: number }
+type Summaries = { wall: Summary, cpu: Summary, rss: Summary }
+
+type Implementation = {
+  title: string,
+  version: string?,
+  command: { string },
+  samples: { Sample },
+  summary: Summaries,
+  outputs: { [string]: equivalence.Description },
+}
+
+type WorkloadResult = {
+  name: string,
+  title: string,
+  load_start: { number },
+  implementations: { [string]: Implementation },
+  equivalence: { [string]: equivalence.Verdict },
+  facts: { [string]: number },
+}
+
+type Native = { key: string, title: string, args: { string } }
+type Seed = { name: string, text: string }
+
+type Workload = {
+  name: string,
+  title: string,
+  --- The package under `--packages` whose default target runs, the module `facts.luau` calls,
+  --- and the key of `state` the module reads its options from.
+  package: string,
+  module: string,
+  stateKey: string,
+  --- The tool's arguments; `{dir}` is the run folder.
+  args: { string },
+  --- The workload's options, as the facts run sets them in `state`.
+  options: { [string]: unknown }?,
+  --- Files compared and hashed, relative to the run folder.
+  outputs: { string },
+  native: Native?,
+  --- Files written into the run folder before every run, both implementations.
+  seeds: { Seed }?,
+  known: { [string]: { equivalence.Known } }?,
+}
+
+type JessContext = {
+  version: string,
+  commit: string,
+  dirty: boolean,
+  binary: string,
+  binary_sha256: string,
+  profile: string,
+  verified: boolean,
+  runtime: string,
+  luau: string,
+}
+
+type Machine = {
+  os: string,
+  kernel: string,
+  cpu: string,
+  threads: number,
+  memory_bytes: number,
+  governor: string?,
+}
+
+type LoadOrder = {
+  config: string,
+  config_sha256: string,
+  content_files: number,
+  plugins: number,
+  plugin_bytes: number,
+  data_dirs: number,
+  --- Content names the config spells differently from the files, listed as the files are.
+  respelled: { string },
+}
+
+type NativeTool = { binary: string, path: string, sha256: string }
+
+--- The JPKs a `--packed` run measured, by package folder name.
+type Packed = {
+  folder: string,
+  packages: { [string]: { id: string, version: string, source: string, digest: string, files: number, size: number } },
+}
+
+--- How this run's outputs compare with an earlier results file's: workload, side, output.
+type Against = { results: string, outputs: { [string]: { [string]: { [string]: string } } } }
+
+type Results = {
+  schema: number,
+  kind: string,
+  started: string,
+  jess: JessContext,
+  machine: Machine,
+  load_start: { number },
+  load_end: { number }?,
+  busiest_at_start: { string },
+  runs: number,
+  warmup: number,
+  load_order: LoadOrder,
+  natives: { [string]: { binary: string, sha256: string } },
+  packed: Packed?,
+  against: Against?,
+  workloads: { WorkloadResult },
+}
+
+type Arguments = {
+  jess: string?,
+  runs: number,
+  warmup: number,
+  only: { [string]: boolean },
+  openmwCfg: string?,
+  packages: string?,
+  noNative: boolean,
+  packed: boolean,
+  against: string?,
+  tes3merge: string?,
+  s3lightfixes: string?,
+  mergedLands: string?,
+  maxLoad: number,
+  patience: number,
+  runtime: string?,
+}
+
+-- The tools' own outputs never go into the benchmark's load order.
+local OutputPlugins = { 'Merged Objects.esp', 'S3LightFixes.omwaddon', 'Merged Lands.omwaddon' }
+
+local Tes3MergeRecordTypes = 'ACTI ALCH APPA ARMO BODY BOOK BSGN CELL CLAS CLOT CONT CREA DOOR ENCH '
+  .. 'GMST INGR LEVC LEVI LIGH LOCK MGEF MISC NPC_ PROB RACE REPA SKIL SNDG SOUN SPEL STAT WEAP'
+
+local function tes3MergeIni(): string
+  local lines = {
+    '[General]',
+    'PauseOnCompletion = false',
+    'DumpMergedRecordsToLog = false',
+    'TextEncodingCode = 1252',
+    'InstallPath = {dir}',
+    '',
+    '[RecordTypes]',
+  }
+
+  for tag in string.gmatch(Tes3MergeRecordTypes, '%S+') do
+    table.insert(lines, `{tag} = true`)
+  end
+
+  return table.concat(lines, '\n') .. '\n'
+end
+
+local Tes3MergeKnown: { equivalence.Known } = {
+  {
+    reason = 'native TES3Merge merges the garbage in AIDT padding: it writes four creature '
+      .. 'records that change nothing, and copies the padding into the ones both write',
+    normalize = { 'aidt-padding' },
+    nativeOnly = {
+      { tag = 'CREA', identity = 'dagoth endus' },
+      { tag = 'CREA', identity = 'centurion_fire_dead' },
+      { tag = 'CREA', identity = 'golden saint_staada' },
+      { tag = 'CREA', identity = 'atronach_frost_summon' },
+    },
+  },
+  {
+    reason = "native TES3Merge writes MGEF subrecords in TES3Lib's property order, sounds after "
+      .. 'the description, not the order of the Construction Set, OpenMW, and every source plugin; '
+      .. 'the reordered bytes differ from the original, so it writes three magic effects that '
+      .. 'change nothing',
+    normalize = { 'mgef-subrecord-order' },
+    nativeOnly = {
+      { tag = 'MGEF', identity = '64' },
+      { tag = 'MGEF', identity = '123' },
+      { tag = 'MGEF', identity = '127' },
+    },
+  },
+  {
+    reason = "native TES3Merge keeps a cell's NAM0, the count of the temporary references "
+      .. 'after it, when it comes before the first reference, and then leaves every reference '
+      .. "out; the port writes no count for references it doesn't write, and OpenMW's engine "
+      .. 'never reads it',
+    normalize = { 'cell-nam0' },
+  },
+}
+
+local Workloads: { Workload } = {
+  {
+    name = 'tes3merge',
+    title = 'TES3Merge',
+    package = 'tes3merge',
+    module = '@tes3merge',
+    stateKey = 'tes3merge',
+    args = { '--config', '{dir}/openmw.cfg' },
+    outputs = { 'data-local/Merged Objects.esp' },
+    native = { key = 'tes3merge', title = 'TES3Merge', args = {} },
+    seeds = { { name = 'TES3Merge.ini', text = tes3MergeIni() } },
+    known = { ['data-local/Merged Objects.esp'] = Tes3MergeKnown },
+  },
+  {
+    name = 's3lightfixes',
+    title = 'S3LightFixes',
+    package = 's3lightfixes',
+    module = '@s3lightfixes',
+    stateKey = 's3lightfixes',
+    args = { '--openmw-cfg', '{dir}', '--no-notifications' },
+    options = { noNotifications = true },
+    outputs = { 'data-local/S3LightFixes.omwaddon', 'lightconfig.toml', 'lightconfig.log' },
+    native = {
+      key = 's3lightfixes',
+      title = 'S3LightFixes',
+      args = { '--openmw-cfg', '{dir}', '--no-notifications' },
+    },
+  },
+  {
+    name = 's3lightfixes-sun',
+    title = 'S3LightFixes\ninterior sun off',
+    package = 's3lightfixes',
+    module = '@s3lightfixes',
+    stateKey = 's3lightfixes',
+    args = { '--openmw-cfg', '{dir}', '--no-notifications' },
+    outputs = { 'data-local/S3LightFixes.omwaddon', 'lightconfig.log' },
+    native = {
+      key = 's3lightfixes',
+      title = 'S3LightFixes',
+      args = { '--openmw-cfg', '{dir}', '--no-notifications' },
+    },
+    seeds = {
+      { name = 'lightconfig.toml', text = 'disable_interior_sun = true\nno_notifications = true\n' },
+    },
+  },
+  {
+    name = 'mergedlands',
+    title = 'Merged Lands',
+    package = 'merged-lands',
+    module = '@merged-lands',
+    stateKey = 'mergedlands',
+    args = { '--openmw-cfg', '{dir}' },
+    outputs = { 'data-local/Merged Lands.omwaddon' },
+    native = {
+      key = 'mergedlands',
+      title = 'Merged Lands',
+      args = { '--openmw-cfg', '{dir}', '--merged-lands-dir', '{dir}' },
+    },
+  },
+  {
+    name = 'doctor',
+    title = 'Doctor',
+    package = 'doctor',
+    module = '@doctor',
+    stateKey = 'doctor',
+    args = { '--config', '{dir}/openmw.cfg' },
+    outputs = { 'jess-doctor.yaml' },
+  },
+  {
+    name = 'doctor-assets',
+    title = 'Doctor, assets and meshes',
+    package = 'doctor',
+    module = '@doctor',
+    stateKey = 'doctor',
+    args = { '--config', '{dir}/openmw.cfg', '--checks', 'assets,meshes' },
+    options = { checks = { 'assets', 'meshes' } },
+    outputs = { 'jess-doctor.yaml' },
+  },
+  {
+    name = 'doctor-rest',
+    title = 'Doctor, without assets and meshes',
+    package = 'doctor',
+    module = '@doctor',
+    stateKey = 'doctor',
+    args = { '--config', '{dir}/openmw.cfg', '--checks', 'masters,content,dirt,conflicts' },
+    options = { checks = { 'masters', 'content', 'dirt', 'conflicts' } },
+    outputs = { 'jess-doctor.yaml' },
+  },
+}
+
+local TimeBinary = '/usr/bin/time'
+local Grants = {
+  '--capability',
+  'filesystem.read',
+  '--capability',
+  'filesystem.write',
+  '--capability',
+  'process.environment',
+}
+
+local function fail(message: string): never error(`bench: {message}`, 0) end
+
+-- Where this script is, and from it the repository root; relative when run from the root.
+local function scriptRoot(): string
+  local bench = jess.fs.parent(arg[0])
+  local tools = bench and jess.fs.parent(bench)
+  local root = tools and jess.fs.parent(tools)
+  if root and root ~= '' then return root end
+
+  return '.'
+end
+
+local function absolute(path: string): string
+  local resolved, message = fs.canonicalize(path)
+  if not resolved then fail(`can't resolve '{path}': {message}`) end
+
+  return resolved :: string
+end
+
+local Root = absolute(scriptRoot())
+local Tools = jess.fs.join(Root, 'tools', 'bench')
+local Work = jess.fs.join(Root, 'target', 'bench')
+local SiteData = jess.fs.join(Root, 'site', 'data', 'benchmarks.toml')
+
+local function trim(text: string): string return (string.gsub(text, '^%s*(.-)%s*$', '%1')) end
+
+local function relativeToRoot(path: string): string
+  local prefix = Root .. '/'
+  if string.sub(path, 1, #prefix) == prefix then return string.sub(path, #prefix + 1) end
+
+  return path
+end
+
+--- Runs a program to completion, failing when it can't be started.
+local function run(
+  program: string,
+  args: { string },
+  options: dream_process_RunOptions?
+): dream_process_Result
+  local result, message = process.run(program, args, options)
+  if not result then fail(`can't run {program}: {message}`) end
+
+  return result :: dream_process_Result
+end
+
+--- A program's standard output, failing when it doesn't exit cleanly.
+local function capture(program: string, args: { string }, cwd: string?): string
+  local result = run(program, args, { cwd = cwd, stdout = 'capture', stderr = 'capture' })
+  if not result.success then
+    fail(`{program} {table.concat(args, ' ')} exited with {result.code}: {trim(result.stderr or '')}`)
+  end
+
+  return result.stdout or ''
+end
+
+local function readText(path: string): string
+  local text = jess.fs.read(path)
+  if not text then fail(`can't read {path}`) end
+
+  return text :: string
+end
+
+local function readBuffer(path: string): buffer
+  local data = jess.fs.readBuffer(path)
+  if not data then fail(`can't read {path}`) end
+
+  return data :: buffer
+end
+
+local function removeTree(path: string)
+  if not jess.fs.exists(path) then return end
+
+  local removed, message = fs.remove(path, { recursive = true })
+  if not removed then fail(`can't remove {path}: {message}`) end
+end
+
+local function sha256File(path: string): string return bytes.sha256(readBuffer(path)) end
+
+local function median(values: { number }): number
+  local sorted = table.clone(values)
+  table.sort(sorted)
+  local middle = (#sorted + 1) // 2
+  if #sorted % 2 == 1 then return sorted[middle] end
+
+  return (sorted[middle] + sorted[middle + 1]) / 2
+end
+
+local function summarize(samples: { Sample }, field: 'wall' | 'cpu' | 'rss'): Summary
+  assert(#samples > 0, 'bench: no samples to summarize')
+  local values = [for sample in samples => sample[field]]
+  return { median = median(values), min = math.min(table.unpack(values)), max = math.max(table.unpack(values)) }
+end
+
+local function summary(samples: { Sample }): Summaries
+  return { wall = summarize(samples, 'wall'), cpu = summarize(samples, 'cpu'), rss = summarize(samples, 'rss') }
+end
+
+-- Context: what ran, where, and on what.
+
+local function git(args: { string }): string return trim(capture('git', args, Root)) end
+
+local function keyValues(path: string, separator: string): { [string]: string }
+  local values: { [string]: string } = {}
+  local text = jess.fs.read(path)
+  if not text then return values end
+
+  for line in string.gmatch(text, '[^\n]+') do
+    local key, value = string.match(line, `^([^{separator}]+){separator}(.*)$`)
+    if not key then continue end
+
+    local trimmed = trim(value :: string)
+    values[trim(key :: string)] = string.match(trimmed, '^"(.*)"$') or trimmed
+  end
+
+  return values
+end
+
+local function machineContext(): Machine
+  local cpuInfo = readText '/proc/cpuinfo'
+  local threads = 0
+  for _ in string.gmatch(cpuInfo, '\nprocessor%s*:') do
+    threads += 1
+  end
+
+  if string.match(cpuInfo, '^processor%s*:') then threads += 1 end
+
+  local memory = keyValues('/proc/meminfo', ':').MemTotal or '0 kB'
+  local governorPath = '/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor'
+  local governor = jess.fs.read(governorPath)
+  return {
+    os = keyValues('/etc/os-release', '=').PRETTY_NAME or 'Linux',
+    kernel = trim(jess.fs.read '/proc/sys/kernel/osrelease' or 'unknown'),
+    cpu = string.match(cpuInfo, 'model name%s*:%s*([^\n]+)') or 'unknown',
+    threads = threads,
+    memory_bytes = (tonumber(string.match(memory, '%d+')) or 0) * 1024,
+    governor = if governor then trim(governor) else nil,
+  }
+end
+
+local function loadAverage(): { number }
+  local text = readText '/proc/loadavg'
+  local one, five, fifteen = string.match(text, '^(%S+)%s+(%S+)%s+(%S+)')
+  return { tonumber(one) or 0, tonumber(five) or 0, tonumber(fifteen) or 0 }
+end
+
+--- The five processes with the most CPU, as ps counts it (averaged over each one's life).
+local function busiestProcesses(): { string }
+  local output = capture('ps', { '-eo', 'pid,pcpu,comm', '--sort=-pcpu', '--no-headers' })
+  local busiest: { string } = {}
+  for line in string.gmatch(output, '[^\n]+') do
+    local cpu, name = string.match(line, '^%s*%d+%s+(%S+)%s+(.*)$')
+    -- ps counts itself at full tilt over its own few milliseconds.
+    if not cpu or name == 'ps' then continue end
+
+    table.insert(busiest, `{cpu}% {name}`)
+    if #busiest == 5 then break end
+  end
+
+  return busiest
+end
+
+local function l3iVersion(): string
+  local lock = readText(jess.fs.join(Root, 'Cargo.lock'))
+  local version = string.match(lock, 'name = "l3i"\nversion = "([^"]+)"')
+  if not version then fail("Cargo.lock doesn't name l3i") end
+
+  return version :: string
+end
+
+local function luauVersion(binary: string): string
+  local folder = jess.fs.join(Work, 'types')
+  capture(binary, { 'luau-types', folder })
+  -- The definitions' first line names the Luau the binary runs; `_VERSION` is just "Luau".
+  local header = readText(jess.fs.join(folder, 'jess.d.luau'))
+  local firstLine = string.match(header, '^[^\n]*') or ''
+  return string.match(firstLine, 'for (Luau %S+)') or 'Luau'
+end
+
+local function jessContext(binary: string, runtime: string?): JessContext
+  local version = trim(capture(binary, { '--version' }))
+  if string.find(version, 'unverified', 1, true) then
+    fail(
+      `{binary} was built without the verified toolchain ({version}); build a release without `
+        .. 'tools/dev/no-lto.sh sourced to measure it'
+    )
+  end
+
+  return {
+    version = version,
+    commit = git { 'rev-parse', 'HEAD' },
+    dirty = git { 'status', '--porcelain', '--untracked-files=no' } ~= '',
+    binary = relativeToRoot(binary),
+    binary_sha256 = sha256File(binary),
+    profile = jess.fs.fileName(jess.fs.parent(binary) or '') or '',
+    verified = true,
+    runtime = runtime or `l3i {l3iVersion()}`,
+    luau = luauVersion(binary),
+  }
+end
+
+local function waitUntilQuiet(maxLoad: number, patienceMinutes: number)
+  local waited = 0
+  while true do
+    local load = loadAverage()[1]
+    if load <= maxLoad then return end
+
+    if waited >= patienceMinutes * 60 then
+      print(`bench: load is still {load} after {patienceMinutes} minutes; measuring anyway`)
+      return
+    end
+
+    local busiest = table.concat(busiestProcesses(), ', ')
+    print(`bench: load {load} > {maxLoad}; busiest: {busiest}; waiting`)
+    run('sleep', { '30' })
+    waited += 30
+  end
+end
+
+-- Measuring.
+
+--- The environment every measured process gets: the user's, minus anything that points jess or
+--- OpenMW at a config, with a home folder of its own so no tool finds or writes the real one.
+local function isolatedEnvironment(): { [string]: string }
+  local home = jess.fs.join(Work, 'home')
+  jess.fs.createDir(jess.fs.join(home, '.config'))
+  local environment: { [string]: string } = {}
+  for entry in string.gmatch(capture('env', { '-0' }), '[^%z]+') do
+    local name, value = string.match(entry, '^([^=]+)=(.*)$')
+    if not name then continue end
+
+    if string.sub(name, 1, 5) == 'JESS_' or string.sub(name, 1, 7) == 'OPENMW_' then continue end
+
+    environment[name :: string] = value :: string
+  end
+
+  environment.HOME = home
+  environment.XDG_CONFIG_HOME = jess.fs.join(home, '.config')
+  return environment
+end
+
+local function tail(text: string, lines: number): string
+  local all = string.split(text, '\n')
+  local from = math.max(1, #all - lines + 1)
+  return table.concat(all, '\n', from)
+end
+
+--- One process under GNU time: how long it took, the CPU it used, and its peak memory.
+local function measure(
+  command: { string },
+  cwd: string,
+  environment: { [string]: string },
+  log: string
+): Sample
+  local timings = log .. '.time'
+  jess.fs.remove(timings)
+  local args = { '-f', '%e %U %S %M', '-o', timings }
+  table.move(command, 1, #command, #args + 1, args)
+  local result = run(TimeBinary, args, {
+    cwd = cwd,
+    env = environment,
+    clearEnv = true,
+    stdout = 'capture',
+    stderr = 'capture',
+  })
+  jess.fs.write(log, (result.stdout or '') .. (result.stderr or ''))
+  if not result.success then
+    fail(`{table.concat(command, ' ')} exited with {result.code}; {log}:\n{tail(readText(log), 5)}`)
+  end
+
+  local measured = trim(readText(timings))
+  local wall, user, system, maxRss = string.match(measured, '([%d.]+) ([%d.]+) ([%d.]+) (%d+)%s*$')
+  if not wall then fail(`can't read GNU time's output '{measured}'`) end
+
+  local userSeconds, systemSeconds = tonumber(user) :: number, tonumber(system) :: number
+  return {
+    wall = tonumber(wall) :: number,
+    cpu = userSeconds + systemSeconds,
+    user = userSeconds,
+    system = systemSeconds,
+    -- GNU time reports the peak resident set in KiB.
+    rss = (tonumber(maxRss) :: number) * 1024,
+  }
+end
+
+-- Reading decoded JSON: a results file, an activation plan, what `jess pack` reports.
+
+type Json = { [string]: unknown }
+
+local function field(value: unknown, key: string): unknown
+  if type(value) ~= 'table' then return nil end
+
+  return (value :: Json)[key]
+end
+
+local function text(value: unknown, ...: string): string
+  local found = value
+  for _, key in { ... } do
+    found = field(found, key)
+  end
+
+  if type(found) == 'number' then return tostring(found) end
+
+  return if type(found) == 'string' then found else ''
+end
+
+local function number(value: unknown, ...: string): number
+  local found = value
+  for _, key in { ... } do
+    found = field(found, key)
+  end
+
+  return if type(found) == 'number' then found else 0
+end
+
+-- Where the jess side's packages come from.
+
+--- The folder on the package path, how a tool's package is named in it (its source folder, or
+--- `<name>.jpk`), and the placeholder the recorded commands show for the folder.
+type Provider = { folder: string, extension: string, placeholder: string }
+
+local function packageIn(provider: Provider, name: string): string
+  return jess.fs.join(provider.folder, name .. provider.extension)
+end
+
+local function packagePattern(provider: Provider, name: string): string
+  return `{provider.placeholder}/{name}{provider.extension}`
+end
+
+--- Packs each selected tool's package and every package its activation plan selects into
+--- `folder`, each once, so the folder holds exactly what the tools need, as an install would.
+local function packClosure(binary: string, packages: string, selected: { Workload }, folder: string): Packed
+  removeTree(folder)
+  jess.fs.createDir(folder)
+  local packed: Packed = { folder = relativeToRoot(folder), packages = {} }
+  for _, workload in selected do
+    local planText = capture(binary, {
+      'package',
+      'graph',
+      '--format',
+      'json',
+      '--package-path',
+      packages,
+      jess.fs.join(packages, workload.package),
+    })
+    local members = field(reading.decode(planText) :: unknown, 'packages')
+    if type(members) ~= 'table' then fail(`the activation plan of {workload.package} names no packages`) end
+
+    for _, member in members :: { unknown } do
+      local location = text(member, 'location')
+      local name = jess.fs.fileName(location) or fail(`can't name the package at '{location}'`)
+      if packed.packages[name] then continue end
+
+      local output = jess.fs.join(folder, name .. '.jpk')
+      local written = reading.decode(capture(binary, { 'pack', '--format', 'json', '-o', output, location })) :: unknown
+      packed.packages[name] = {
+        id = text(written, 'id'),
+        version = text(written, 'version'),
+        source = relativeToRoot(location),
+        digest = text(written, 'digest'),
+        files = number(written, 'files'),
+        size = number(written, 'size'),
+      }
+      print(`bench: packed {name} {text(written, 'version')} ({number(written, 'size')} bytes) from {relativeToRoot(location)}`)
+    end
+  end
+
+  return packed
+end
+
+--- Whether each output this run kept is the file an earlier run's results describe: the same
+--- bytes, the same but for the timestamp in a plugin's header, different, or absent there.
+local function compareAgainst(path: string, results: Results): Against
+  local previous = reading.decode(readText(path)) :: unknown
+  local before: { [string]: unknown } = {}
+  local workloads = field(previous, 'workloads')
+  if type(workloads) == 'table' then
+    for _, workload in workloads :: { unknown } do
+      before[text(workload, 'name')] = workload
+    end
+  end
+
+  local outputs: { [string]: { [string]: { [string]: string } } } = {}
+  for _, workload in results.workloads do
+    local sides: { [string]: { [string]: string } } = {}
+    for side, measured in workload.implementations do
+      local comparisons: { [string]: string } = {}
+      for output, description in measured.outputs do
+        local old = field(field(field(field(before[workload.name], 'implementations'), side), 'outputs'), output)
+        local status = 'absent'
+        if not old then
+          status = 'absent'
+        elseif text(old, 'sha256') == description.sha256 then
+          status = 'identical'
+        elseif description.normalized_sha256 and text(old, 'normalized_sha256') == description.normalized_sha256 then
+          status = 'identical-except-timestamp'
+        else
+          status = 'differs'
+        end
+
+        comparisons[output] = status
+      end
+
+      sides[side] = comparisons
+    end
+
+    outputs[workload.name] = sides
+  end
+
+  return { results = relativeToRoot(path), outputs = outputs }
+end
+
+-- The showcase.
+
+-- openmw.cfg quotes a path in double quotes, escaping `&` and `"` with `&`.
+local function quoted(path: string): string
+  local escaped = string.gsub(path, '[&"]', '&%0')
+  return `"{escaped}"`
+end
+
+--- Writes the load order as one standalone config and returns its facts and the config's text.
+local function flatten(binary: string, config: string, folder: string, packages: string): (LoadOrder, string)
+  jess.fs.createDir(folder)
+  local args = {
+    'run',
+    '--capability',
+    'filesystem.read',
+    '--capability',
+    'filesystem.write',
+    '--package',
+    jess.fs.join(packages, 'openmw'),
+    '--package-path',
+    packages,
+    jess.fs.join(Tools, 'flatten.luau'),
+    folder,
+    config,
+  }
+  table.move(OutputPlugins, 1, #OutputPlugins, #args + 1, args)
+  local respelled: { string } = {}
+  for line in string.gmatch(capture(binary, args), '[^\n]+') do
+    local change = string.match(line, '^respelled (.*)$')
+    if change then table.insert(respelled, change) end
+  end
+
+  local base = readText(jess.fs.join(folder, 'openmw.cfg.in'))
+  local contentFiles, plugins, pluginBytes = 0, 0, 0
+  for line in string.gmatch(readText(jess.fs.join(folder, 'content.tsv')), '[^\n]+') do
+    local name, path = string.match(line, '^([^\t]*)\t(.*)$')
+    if not name then continue end
+
+    contentFiles += 1
+    local size = if path ~= '' then jess.fs.size(path :: string) else nil
+    if size and not string.find(string.lower(name :: string), '%.omwscripts$') then
+      plugins += 1
+      pluginBytes += size
+    end
+  end
+
+  local dataDirs = 0
+  for _ in string.gmatch('\n' .. base, '\ndata=') do
+    dataDirs += 1
+  end
+
+  return {
+    config = config,
+    config_sha256 = bytes.sha256(base),
+    content_files = contentFiles,
+    plugins = plugins,
+    plugin_bytes = pluginBytes,
+    data_dirs = dataDirs,
+    respelled = respelled,
+  },
+    base
+end
+
+--- `text` with every `{dir}` replaced by the run folder, whatever characters the folder holds.
+local function withFolder(text: string, folder: string): string
+  return (string.gsub(text, '{dir}', function(): string return folder end))
+end
+
+--- A fresh run folder: the config with its own data-local, and the seeds.
+local function prepare(folder: string, workload: Workload, base: string)
+  removeTree(folder)
+  jess.fs.createDir(jess.fs.join(folder, 'data-local'))
+  local config = `{base}data-local={quoted(jess.fs.join(folder, 'data-local'))}\n`
+  jess.fs.write(jess.fs.join(folder, 'openmw.cfg'), config)
+  for _, seed in workload.seeds or {} do
+    jess.fs.write(jess.fs.join(folder, seed.name), withFolder(seed.text, folder))
+  end
+end
+
+local function withFolders(parts: { string }, folder: string): { string }
+  return [for part in parts => withFolder(part, folder)]
+end
+
+--- The version the native tool printed in its log, or else says with --version.
+local function nativeVersion(tool: string, log: string): string?
+  local function versionIn(text: string): string?
+    return string.match(text, '%d+%.%d+%.%d+%.%d+') or string.match(text, '%d+%.%d+%.%d+')
+  end
+
+  local printed = versionIn(string.sub(jess.fs.read(log) or '', 1, 4096))
+  if printed then return printed end
+
+  local result = run(tool, { '--version' }, { stdout = 'capture', stderr = 'capture' })
+  return versionIn(result.stdout or '')
+end
+
+--- What the tool's module reports about the load order, through facts.luau: counts only, since
+--- the rest (paths, flags) says nothing about the load order.
+local function facts(
+  workload: Workload,
+  binary: string,
+  provider: Provider,
+  folder: string,
+  environment: { [string]: string },
+  log: string
+): { [string]: number }
+  local command = { binary, 'run' }
+  table.move(Grants, 1, #Grants, #command + 1, command)
+  local rest = {
+    '--package',
+    packageIn(provider, workload.package),
+    '--package-path',
+    provider.folder,
+    jess.fs.join(Tools, 'facts.luau'),
+    workload.module,
+    workload.stateKey,
+    jess.fs.join(folder, 'openmw.cfg'),
+    json.encode(workload.options or {}),
+  }
+  table.move(rest, 1, #rest, #command + 1, command)
+  measure(command, folder, environment, log)
+
+  local found: { [string]: number } = {}
+  for line in string.gmatch(readText(log), '[^\n]+') do
+    local name, value = string.match(line, '^fact (%S+) (.*)$')
+    if name and string.match(value :: string, '^%d+$') then found[name :: string] = tonumber(value) :: number end
+  end
+
+  return found
+end
+
+local function runWorkload(
+  workload: Workload,
+  binary: string,
+  tool: string?,
+  provider: Provider,
+  base: string,
+  environment: { [string]: string },
+  arguments: Arguments
+): WorkloadResult
+  local folder = jess.fs.join(Work, 'showcase', workload.name)
+  local runFolder = jess.fs.join(folder, 'run')
+  local jessCommand = { binary, 'package', 'run', '--trusted', '--package-path', provider.folder, packageIn(provider, workload.package), '--' }
+  table.move(workload.args, 1, #workload.args, #jessCommand + 1, jessCommand)
+  local jessPattern = { '{tool}', 'package', 'run', '--trusted', '--package-path', provider.placeholder, packagePattern(provider, workload.package), '--' }
+  table.move(workload.args, 1, #workload.args, #jessPattern + 1, jessPattern)
+
+  local sides: { { name: string, command: { string }, pattern: { string } } } = {
+    { name = 'jess', command = jessCommand, pattern = jessPattern },
+  }
+  local native = workload.native
+  if tool and native then
+    local nativeCommand = { tool }
+    table.move(native.args, 1, #native.args, 2, nativeCommand)
+    local nativePattern = { '{tool}' }
+    table.move(native.args, 1, #native.args, 2, nativePattern)
+    table.insert(sides, { name = 'native', command = nativeCommand, pattern = nativePattern })
+  end
+
+  local load = loadAverage()
+  local samples: { [string]: { Sample } } = {}
+  for _, side in sides do
+    samples[side.name] = {}
+  end
+
+  local rounds = arguments.warmup + arguments.runs
+  for round = 1, rounds do
+    -- Alternating keeps drift on a long run from favoring either one.
+    for _, side in sides do
+      prepare(runFolder, workload, base)
+      local sample = measure(withFolders(side.command, runFolder), runFolder, environment, jess.fs.join(folder, `{side.name}.log`))
+      print(string.format('  %s %s %d/%d: %.2f s', workload.name, side.name, round, rounds, sample.wall))
+      if round <= arguments.warmup then continue end
+
+      table.insert(samples[side.name], sample)
+      if round < rounds then continue end
+
+      local keep = jess.fs.join(folder, side.name)
+      removeTree(keep)
+      jess.fs.createDir(keep)
+      for _, output in workload.outputs do
+        local source = jess.fs.join(runFolder, output)
+        if not jess.fs.isFile(source) then fail(`{workload.name} {side.name} didn't write {output}`) end
+
+        jess.fs.copy(source, jess.fs.join(keep, jess.fs.fileName(output) :: string))
+      end
+    end
+  end
+
+  -- One more, unmeasured, to record what the module reports about the load order.
+  prepare(runFolder, workload, base)
+  local reported = facts(workload, binary, provider, runFolder, environment, jess.fs.join(folder, 'facts.log'))
+
+  local implementations: { [string]: Implementation } = {}
+  for _, side in sides do
+    local outputs: { [string]: equivalence.Description } = {}
+    for _, output in workload.outputs do
+      local kept = jess.fs.join(folder, side.name, jess.fs.fileName(output) :: string)
+      outputs[output] = equivalence.describe(readBuffer(kept))
+    end
+
+    implementations[side.name] = {
+      title = if side.name == 'jess' then 'jess' else (native :: Native).title,
+      version = if side.name == 'jess' then nil else nativeVersion(tool :: string, jess.fs.join(folder, 'native.log')),
+      command = side.pattern,
+      samples = samples[side.name],
+      summary = summary(samples[side.name]),
+      outputs = outputs,
+    }
+  end
+
+  local verdicts: { [string]: equivalence.Verdict } = {}
+  if tool and native then
+    local known = workload.known or {}
+    for _, output in workload.outputs do
+      local name = jess.fs.fileName(output) :: string
+      local jessData = readBuffer(jess.fs.join(folder, 'jess', name))
+      local nativeData = readBuffer(jess.fs.join(folder, 'native', name))
+      verdicts[output] = equivalence.compare(jessData, nativeData, known[output] or {})
+    end
+  end
+
+  removeTree(runFolder)
+  return {
+    name = workload.name,
+    title = workload.title,
+    load_start = load,
+    implementations = implementations,
+    equivalence = verdicts,
+    facts = reported,
+  }
+end
+
+local function onPath(name: string): string?
+  for folder in string.gmatch(process.env 'PATH' or '', '[^:]+') do
+    local candidate = jess.fs.join(folder, name)
+    if jess.fs.isFile(candidate) then return candidate end
+  end
+
+  return nil
+end
+
+--- The native binary each selected workload with an original runs, resolved.
+local function nativeTools(arguments: Arguments, selected: { Workload }): { [string]: string }
+  local tools: { [string]: string } = {}
+  if arguments.noNative then return tools end
+
+  for _, workload in selected do
+    local native = workload.native
+    if not native or tools[native.key] then continue end
+
+    local given: string?
+    local hint = ''
+    if native.key == 'tes3merge' then
+      given = arguments.tes3merge or onPath 'tes3merge'
+      hint = 'pass --tes3merge, put tes3merge on PATH, or --no-native'
+    elseif native.key == 's3lightfixes' then
+      given = arguments.s3lightfixes or onPath 's3lightfixes'
+      hint = 'pass --s3lightfixes, put s3lightfixes on PATH, or --no-native'
+    elseif native.key == 'mergedlands' then
+      given = arguments.mergedLands or onPath 'merged_lands'
+      hint = 'build OpenMWMergedLands with cargo build --release and pass --merged-lands, or --no-native'
+    end
+
+    if not given or not jess.fs.isFile(given) then fail(`no native binary for {workload.name}; {hint}`) end
+
+    tools[native.key] = absolute(given :: string)
+  end
+
+  return tools
+end
+
+local function seconds(value: number): string
+  return if value < 10 then string.format('%.2f s', value) else string.format('%.1f s', value)
+end
+
+local function size(value: number): string
+  local mebibytes = value / 1048576
+  if mebibytes < 1024 then return string.format('%.0f MiB', mebibytes) end
+
+  return string.format('%.2f GiB', mebibytes / 1024)
+end
+
+local function printResults(results: Results)
+  print(string.format('\n%-18s %-7s %12s %17s %10s %12s', 'workload', '', 'wall median', 'min–max', 'cpu', 'peak memory'))
+  for _, workload in results.workloads do
+    for _, side in { 'jess', 'native' } do
+      local measured = workload.implementations[side]
+      if not measured then continue end
+
+      local wall, cpu, rss = measured.summary.wall, measured.summary.cpu, measured.summary.rss
+      local spread = string.format('%.2f–%.2f', wall.min, wall.max)
+      print(
+        string.format(
+          '%-18s %-7s %10.2f s %17s %10s %12s',
+          workload.name,
+          side,
+          wall.median,
+          spread,
+          seconds(cpu.median),
+          size(rss.median)
+        )
+      )
+    end
+
+    for output, verdict in workload.equivalence do
+      local details = if verdict.details then `: {json.encode(verdict.details)}` else ''
+      print(`{string.rep(' ', 19)}{jess.fs.fileName(output)}: {verdict.status}{details}`)
+    end
+  end
+
+  local ended = results.load_end or { 0 }
+  print(string.format('load average %.2f at the start, %.2f at the end', results.load_start[1], ended[1]))
+end
+
+local function showcase(arguments: Arguments): number
+  local binary = absolute(arguments.jess or onPath 'jess' or fail 'no jess on PATH; pass --jess')
+  local packages = absolute(arguments.packages or jess.fs.join(Root, 'jpk'))
+  local home = process.env 'HOME' or fail 'HOME is unset'
+  local configHome = process.env 'XDG_CONFIG_HOME' or jess.fs.join(home, '.config')
+  local config = absolute(arguments.openmwCfg or jess.fs.join(configHome, 'openmw', 'openmw.cfg'))
+  jess.fs.createDir(Work)
+
+  local selected = [for workload in Workloads if not next(arguments.only) or arguments.only[workload.name] => workload]
+  local tools = nativeTools(arguments, selected)
+  local context = jessContext(binary, arguments.runtime)
+  local loadOrder, base = flatten(binary, config, jess.fs.join(Work, 'config'), packages)
+  local environment = isolatedEnvironment()
+
+  -- The jess side runs from the source folders, or from JPKs packed once here, each tool's own
+  -- and the ones it depends on, so the package path holds only what an install would.
+  local provider: Provider = { folder = packages, extension = '', placeholder = '{packages}' }
+  local packed: Packed? = nil
+  if arguments.packed then
+    local packedFolder = jess.fs.join(Work, 'jpk')
+    packed = packClosure(binary, packages, selected, packedFolder)
+    provider = { folder = packedFolder, extension = '.jpk', placeholder = '{packed}' }
+  end
+
+  waitUntilQuiet(arguments.maxLoad, arguments.patience)
+
+  local natives: { [string]: { binary: string, sha256: string } } = {}
+  for key, tool in tools do
+    natives[key] = { binary = jess.fs.fileName(tool) :: string, sha256 = sha256File(tool) }
+  end
+
+  local results: Results = {
+    schema = 1,
+    kind = 'showcase',
+    started = os.date '!%Y-%m-%dT%H:%M:%S+00:00',
+    jess = context,
+    machine = machineContext(),
+    load_start = loadAverage(),
+    busiest_at_start = busiestProcesses(),
+    runs = arguments.runs,
+    warmup = arguments.warmup,
+    load_order = loadOrder,
+    natives = natives,
+    packed = packed,
+    workloads = {},
+  }
+  print(`bench: {context.version} ({context.runtime}, {context.luau}) at {relativeToRoot(binary)}`)
+  print(`bench: {loadOrder.content_files} content files, {loadOrder.plugins} plugins, {loadOrder.data_dirs} data folders from {config}`)
+  for _, change in loadOrder.respelled do
+    print(`bench: content listed as its file is spelled: {change}`)
+  end
+
+  for _, workload in selected do
+    print(`bench: {workload.name}`)
+    local native = workload.native
+    local tool = if native then tools[native.key] else nil
+    table.insert(results.workloads, runWorkload(workload, binary, tool, provider, base, environment, arguments))
+  end
+
+  results.load_end = loadAverage()
+  if arguments.against then results.against = compareAgainst(absolute(arguments.against), results) end
+
+  local folder = jess.fs.join(Work, 'results')
+  jess.fs.createDir(folder)
+  local suffix = if packed then '-showcase-packed.json' else '-showcase.json'
+  local path = jess.fs.join(folder, os.date '!%Y%m%d-%H%M%S' .. suffix)
+  jess.fs.write(path, json.encode(results, 1) .. '\n')
+  printResults(results)
+  local against = results.against
+  if against then
+    print(`outputs against {against.results}:`)
+    for _, workload in results.workloads do
+      for side, comparisons in against.outputs[workload.name] or {} do
+        for output, status in comparisons do
+          print(`  {workload.name} {side} {jess.fs.fileName(output)}: {status}`)
+        end
+      end
+    end
+  end
+
+  print(`results: {path}`)
+
+  local mismatches: { string } = {}
+  for _, workload in results.workloads do
+    for output, verdict in workload.equivalence do
+      if verdict.status == 'mismatch' then table.insert(mismatches, `{workload.name} {output}`) end
+    end
+  end
+
+  if #mismatches == 0 then return 0 end
+
+  process.write('stderr', `bench: outputs differ from the native tool's: {table.concat(mismatches, ', ')}\n`)
+  return 1
+end
+
+-- Docs: the numbers the site prints, from one showcase results file.
+
+local function thousands(value: number): string
+  local digits = string.format('%d', value)
+  local grouped = string.reverse((string.gsub(string.reverse(digits), '(%d%d%d)', '%1,')))
+  return (string.gsub(grouped, '^,', ''))
+end
+
+local function tomlLine(key: string, value: string | number): string
+  if type(value) == 'number' then return `{key} = {value}` end
+
+  return `{key} = {json.string(value)}`
+end
+
+local function sortedKeys(value: unknown): { string }
+  local keys: { string } = {}
+  if type(value) ~= 'table' then return keys end
+
+  for key in value :: Json do
+    if type(key) == 'string' then table.insert(keys, key) end
+  end
+
+  table.sort(keys)
+  return keys
+end
+
+local function docs(resultsPath: string, output: string): number
+  local path = absolute(resultsPath)
+  local results = reading.decode(readText(path)) :: unknown
+  if text(results, 'kind') ~= 'showcase' then fail 'docs takes showcase results' end
+
+  if not field(field(results, 'jess'), 'verified') then fail 'docs takes results from a verified build' end
+
+  if field(field(results, 'jess'), 'dirty') then
+    print 'bench: warning: the results are from a checkout with uncommitted changes'
+  end
+
+  local loadStart = field(results, 'load_start')
+  local loadOne = if type(loadStart) == 'table' then (loadStart :: { unknown })[1] else nil
+  local lines = {
+    '# Generated by `jess run GRANTS tools/bench/showcase.luau docs` from the results file below;',
+    "# don't edit it. Pages print these with the `bench` shortcode.",
+    tomlLine('results', relativeToRoot(path)),
+    tomlLine('date', string.sub(text(results, 'started'), 1, 10)),
+    tomlLine('commit', string.sub(text(results, 'jess', 'commit'), 1, 7)),
+    tomlLine('runtime', text(results, 'jess', 'runtime')),
+    tomlLine('luau', text(results, 'jess', 'luau')),
+    tomlLine('cpu', text(results, 'machine', 'cpu')),
+    tomlLine('threads', number(results, 'machine', 'threads')),
+    tomlLine('os', text(results, 'machine', 'os')),
+    tomlLine('load', string.format('%.2f', if type(loadOne) == 'number' then loadOne else 0)),
+    tomlLine('runs', number(results, 'runs')),
+    tomlLine('content_files', number(results, 'load_order', 'content_files')),
+    tomlLine('plugins', number(results, 'load_order', 'plugins')),
+    tomlLine('data_dirs', number(results, 'load_order', 'data_dirs')),
+    tomlLine('plugin_size', string.format('%.0f MB', number(results, 'load_order', 'plugin_bytes') / 1e6)),
+  }
+
+  local workloads = field(results, 'workloads')
+  if type(workloads) ~= 'table' then fail 'the results have no workloads' end
+
+  for _, workload in workloads :: { unknown } do
+    table.insert(lines, '')
+    table.insert(lines, `[{json.string(text(workload, 'name'))}]`)
+    local implementations = field(workload, 'implementations')
+    for _, side in { 'jess', 'native' } do
+      local measured = field(implementations, side)
+      if not measured then continue end
+
+      table.insert(lines, tomlLine(`{side}_time`, seconds(number(measured, 'summary', 'wall', 'median'))))
+      table.insert(lines, tomlLine(`{side}_cpu`, seconds(number(measured, 'summary', 'cpu', 'median'))))
+      table.insert(lines, tomlLine(`{side}_memory`, size(number(measured, 'summary', 'rss', 'median'))))
+    end
+
+    local native = field(implementations, 'native')
+    if native then
+      local jessSide = field(implementations, 'jess')
+      local faster = number(native, 'summary', 'wall', 'median') / number(jessSide, 'summary', 'wall', 'median')
+      local lessMemory = number(native, 'summary', 'rss', 'median') / number(jessSide, 'summary', 'rss', 'median')
+      table.insert(lines, tomlLine('faster', string.format('%.1f', faster)))
+      table.insert(lines, tomlLine('less_memory', string.format('%.1f', lessMemory)))
+    end
+
+    local reported = field(workload, 'facts')
+    for _, name in sortedKeys(reported) do
+      local key = string.gsub(string.match(name, '^[^.]+%.(.*)$') or name, '%.', '_')
+      table.insert(lines, tomlLine(key, thousands(number(reported, name))))
+    end
+
+    local outputs = field(field(implementations, 'jess'), 'outputs')
+    for _, outputName in sortedKeys(outputs) do
+      local records = field(field(outputs, outputName), 'records')
+      for _, tag in sortedKeys(records) do
+        table.insert(lines, tomlLine(`written_{tag}`, thousands(number(records, tag))))
+      end
+    end
+  end
+
+  jess.fs.write(output, table.concat(lines, '\n') .. '\n')
+  print(`wrote {relativeToRoot(output)}`)
+  return 0
+end
+
+-- The command line.
+
+local function required(given: string?, option: string): string
+  return given or fail(`{option} needs a value`)
+end
+
+local function positiveInteger(given: string?, option: string): number
+  local parsed = given and tonumber(given)
+  if not parsed or parsed < 1 or parsed % 1 ~= 0 then fail(`{option} needs a positive integer`) end
+
+  return parsed :: number
+end
+
+local function nonNegativeInteger(given: string?, option: string): number
+  local parsed = given and tonumber(given)
+  if not parsed or parsed < 0 or parsed % 1 ~= 0 then fail(`{option} needs a non-negative integer`) end
+
+  return parsed :: number
+end
+
+local function nonNegativeNumber(given: string?, option: string): number
+  local parsed = given and tonumber(given)
+  if not parsed or parsed < 0 then fail(`{option} needs a non-negative number`) end
+
+  return parsed :: number
+end
+
+local function runArguments(startAt: number): Arguments
+  local arguments: Arguments = {
+    runs = 5,
+    warmup = 1,
+    only = {},
+    noNative = false,
+    packed = false,
+    maxLoad = 1.5,
+    patience = 10,
+  }
+  local index = startAt
+  while index <= #arg do
+    local option, given = arg[index], arg[index + 1]
+    if option == '--no-native' or option == '--packed' then
+      if option == '--packed' then
+        arguments.packed = true
+      else
+        arguments.noNative = true
+      end
+
+      index += 1
+      continue
+    end
+
+    if option == '--jess' then
+      arguments.jess = required(given, option)
+    elseif option == '--runs' then
+      arguments.runs = positiveInteger(given, option)
+    elseif option == '--warmup' then
+      arguments.warmup = nonNegativeInteger(given, option)
+    elseif option == '--only' then
+      local name = required(given, option)
+      if not any[for workload in Workloads => workload.name == name] then fail(`unknown workload '{name}'`) end
+
+      arguments.only[name] = true
+    elseif option == '--openmw-cfg' then
+      arguments.openmwCfg = required(given, option)
+    elseif option == '--packages' then
+      arguments.packages = required(given, option)
+    elseif option == '--tes3merge' then
+      arguments.tes3merge = required(given, option)
+    elseif option == '--s3lightfixes' then
+      arguments.s3lightfixes = required(given, option)
+    elseif option == '--merged-lands' then
+      arguments.mergedLands = required(given, option)
+    elseif option == '--max-load' then
+      arguments.maxLoad = nonNegativeNumber(given, option)
+    elseif option == '--patience' then
+      arguments.patience = nonNegativeNumber(given, option)
+    elseif option == '--runtime' then
+      arguments.runtime = required(given, option)
+    elseif option == '--against' then
+      arguments.against = required(given, option)
+    else
+      fail(`unknown option '{option}'`)
+    end
+
+    index += 2
+  end
+
+  return arguments
+end
+
+local function usage(): number
+  print [[usage:
+  jess run GRANTS tools/bench/showcase.luau run [--jess BIN] [--runs N] [--warmup N]
+      [--only NAME]... [--openmw-cfg FILE] [--packages FOLDER] [--packed] [--no-native]
+      [--tes3merge BIN] [--s3lightfixes BIN] [--merged-lands BIN] [--against RESULTS]
+      [--max-load N] [--patience MINUTES] [--runtime TEXT]
+  jess run GRANTS tools/bench/showcase.luau docs RESULTS [--output site/data/benchmarks.toml]
+  jess run tools/bench/showcase.luau list
+
+GRANTS is --capability filesystem.read --capability filesystem.write --capability process.spawn
+--capability process.environment: the load order is read, the run folders and results written,
+the tools started, and the environment read to isolate them.]]
+  return 0
+end
+
+local command = arg[1] or 'run'
+if string.sub(command, 1, 2) == '--' then return showcase(runArguments(1)) end
+if command == 'run' then return showcase(runArguments(2)) end
+
+if command == 'docs' then
+  local resultsPath = arg[2] or fail 'docs needs a results file'
+  local output = SiteData
+  if arg[3] == '--output' then output = arg[4] or fail '--output needs a path' end
+
+  return docs(resultsPath, output)
+end
+
+if command == 'list' then
+  for _, workload in Workloads do
+    print(workload.name)
+  end
+
+  return 0
+end
+
+if command == 'help' or command == '--help' or command == '-h' then return usage() end
+
+fail(`unknown command '{command}'`)
