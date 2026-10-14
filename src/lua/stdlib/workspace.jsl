@@ -1,0 +1,391 @@
+--!strict
+--!native
+-- jess's workspaces: Package Sources developed together, named by a `jess-workspace.toml` and
+-- found from any folder inside one.
+--
+-- The host's alone: nothing a script requires reaches it. Opening a workspace reads its file and
+-- its members' manifests, and runs nothing.
+
+type Host = {
+  read readFile: (path: string) -> buffer?,
+  read fileSize: (path: string) -> number?,
+  read isDir: (path: string) -> boolean,
+  read decodeToml: (text: string) -> { [string]: unknown },
+  --- The path with every link and `..` resolved, or nil when nothing is there.
+  read canonical: (path: string) -> string?,
+  --- The folder holding `path`, or nil at the top of the filesystem.
+  read parent: (path: string) -> string?,
+  --- `path` below `base` as `/`-joined names, `''` for `base` itself, or nil when it isn't inside.
+  read relative: (base: string, path: string) -> string?,
+}
+
+type Target = {
+  read id: string,
+  read kind: string,
+  read entry: string,
+  read capabilities: { string },
+  read command: string?,
+}
+
+type Manifest = {
+  read id: string,
+  read version: string,
+  read defaultTarget: string?,
+  read dependencies: { [string]: string },
+  read devDependencies: { [string]: string },
+  read targets: { [string]: Target },
+  read tests: { string },
+}
+
+type Offer = {
+  read manifest: Manifest,
+  read id: string,
+  read version: string,
+  read location: string,
+}
+
+type PackageModule = {
+  read peek: (location: string) -> Offer,
+}
+
+type Requirement = { id: string, requirement: string }
+
+--- A package the workspace develops: where it is, as the workspace file names it and on disk,
+--- and its manifest.
+export type Member = {
+  read path: string,
+  read location: string,
+  read manifest: Manifest,
+}
+
+export type Workspace = {
+  read root: string,
+  --- `package` when the root folder's package is a member, `virtual` when the workspace file
+  --- names members only, `implicit` for a package no workspace lists.
+  read kind: 'package' | 'virtual' | 'implicit',
+  read members: { Member },
+  --- Why a package that has a workspace above it isn't that workspace's member.
+  read note: string?,
+}
+
+local WorkspaceFile, ManifestFile = 'jess-workspace.toml', 'jess.toml'
+
+local host: Host, package: PackageModule
+
+local function fail(message: string): never error(`workspace: {message}`, 0) end
+
+local function checkKeys(value: { [string]: unknown }, allowed: { string }, where: string)
+  for key in value do
+    if type(key) ~= 'string' or not table.find(allowed, key) then
+      fail(`{where} has an unknown key '{tostring(key)}'`)
+    end
+  end
+end
+
+--- A member as the workspace file gives it: `.` for the root, or folder names joined by `/`.
+local function checkMemberPath(path: unknown, where: string): string
+  if type(path) ~= 'string' then fail(`{where}: members are folder paths, as strings`) end
+
+  local text = path :: string
+
+  if text == '.' then return text end
+
+  local plain = text ~= ''
+    and not string.find(text, '\\', 1, true)
+    and not string.find(text, ':', 1, true)
+    and string.sub(text, 1, 1) ~= '/'
+
+  for _, name in string.split(text, '/') do
+    if name == '' or name == '.' or name == '..' then plain = false end
+  end
+
+  if not plain then
+    fail(
+      `{where}: member '{text}' is not a path of folder names below the workspace (tools/editor)`
+    )
+  end
+
+  return text
+end
+
+--- The text of the TOML file at `path`, decoded.
+local function readToml(path: string, text: buffer): { [string]: unknown }
+  -- The host's TOML decoder throws on a malformed document, and its message doesn't say which
+  -- file the document was.
+  local ok, document = pcall(host.decodeToml, buffer.tostring(text))
+
+  if not ok then fail(`'{path}': {document}`) end
+
+  return document
+end
+
+--- The members the workspace file at `root` lists, in its order.
+local function listed(root: string): { string }
+  local where = `'{root}/{WorkspaceFile}'`
+  local text = host.readFile(`{root}/{WorkspaceFile}`)
+
+  if not text then fail(`{where} is not there`) end
+
+  local document = readToml(`{root}/{WorkspaceFile}`, text :: buffer)
+  checkKeys(document, { 'manifest_version', 'workspace' }, where)
+
+  if document.manifest_version ~= 1 then fail(`{where}: manifest_version must be 1`) end
+
+  local section = document.workspace
+
+  if type(section) ~= 'table' then fail(`{where} has no [workspace] table`) end
+
+  local fields = section :: { [string]: unknown }
+  checkKeys(fields, { 'members' }, `{where} [workspace]`)
+
+  local members = fields.members
+
+  if type(members) ~= 'table' then fail(`{where}: [workspace] needs members, a list of folders`) end
+
+  local paths, count = {}, 0
+
+  for _ in members :: { [unknown]: unknown } do
+    count += 1
+  end
+
+  for _, path in members :: { unknown } do
+    table.insert(paths, checkMemberPath(path, where))
+  end
+
+  if #paths ~= count then fail(`{where}: [workspace] members must be a list of folders`) end
+
+  return paths
+end
+
+--- Where member `path` of the workspace at `root` is, or nil when nothing is there.
+local function locate(root: string, path: string): string?
+  if path == '.' then return root end
+
+  return host.canonical(`{root}/{path}`)
+end
+
+local function member(root: string, path: string, location: string, where: string): Member
+  if not host.fileSize(`{location}/{ManifestFile}`) then
+    fail(`{where}: member '{path}' has no {ManifestFile}`)
+  end
+
+  -- A manifest that doesn't parse raises, and its message doesn't say which member it was.
+  local ok, offer = pcall(package.peek, location)
+
+  if not ok then
+    local reason = string.gsub(tostring(offer), '^package: ', '')
+    fail(`{where}: member '{path}': {reason}`)
+  end
+
+  return table.freeze { path = path, location = location, manifest = offer.manifest }
+end
+
+local function byPath(left: Member, right: Member): boolean return left.path < right.path end
+
+--- The workspace whose file is in `root`, a canonical folder, with every member checked: a
+--- folder inside the root holding a package, listed once under one spelling, with an id no other
+--- member has, and no workspace of its own.
+local function declared(root: string): Workspace
+  local where = `'{root}/{WorkspaceFile}'`
+  local members: { Member } = {}
+  local folded, byLocation, byId =
+    {} :: { [string]: string }, {} :: { [string]: string }, {} :: { [string]: string }
+  local kind: 'package' | 'virtual' = 'virtual'
+
+  for _, path in listed(root) do
+    local lower = string.lower(path)
+
+    if folded[lower] == path then fail(`{where} lists '{path}' twice`) end
+
+    if folded[lower] then
+      fail(`{where}: members '{folded[lower]}' and '{path}' differ only in case`)
+    end
+
+    folded[lower] = path
+
+    local location = locate(root, path)
+
+    if not location or not host.isDir(location) then
+      fail(`{where}: member '{path}' is not a folder`)
+    end
+
+    local inside = location :: string
+
+    if not host.relative(root, inside) then
+      fail(`{where}: member '{path}' is '{inside}', outside the workspace`)
+    end
+
+    if byLocation[inside] then
+      fail(`{where}: members '{byLocation[inside]}' and '{path}' are the same folder`)
+    end
+
+    byLocation[inside] = path
+
+    if path ~= '.' and host.fileSize(`{inside}/{WorkspaceFile}`) then
+      fail(`{where}: member '{path}' is a workspace of its own; workspaces don't nest`)
+    end
+
+    local found = member(root, path, inside, where)
+    local id = found.manifest.id
+
+    if byId[id] then fail(`{where}: members '{byId[id]}' and '{path}' are both {id}`) end
+
+    byId[id] = path
+
+    if path == '.' then kind = 'package' end
+
+    table.insert(members, found)
+  end
+
+  table.sort(members, byPath)
+
+  return table.freeze {
+    root = root,
+    kind = kind,
+    members = table.freeze(members),
+    note = nil :: string?,
+  }
+end
+
+--- The package at `folder`, a canonical folder, as a workspace of one.
+local function implicit(folder: string, note: string?): Workspace
+  local where = `'{folder}'`
+
+  return table.freeze {
+    root = folder,
+    kind = 'implicit' :: 'implicit',
+    members = table.freeze { member(folder, '.', folder, where) },
+    note = note,
+  }
+end
+
+--- Whether the workspace file in `root` names `package`, a canonical folder, as a member, or
+--- `package` is the root's own folder.
+local function claims(root: string, package: string): boolean
+  if root == package then return true end
+
+  for _, path in listed(root) do
+    if locate(root, path) == package then return true end
+  end
+
+  return false
+end
+
+--- The workspace whose root is `folder`: the one its `jess-workspace.toml` names, or the package
+--- its `jess.toml` holds as a workspace of one.
+local function open(folder: string): Workspace
+  local place = host.canonical(folder) or fail(`'{folder}' is not there`)
+
+  if not host.isDir(place) then fail(`'{folder}' is not a folder`) end
+
+  if host.fileSize(`{place}/{WorkspaceFile}`) then return declared(place) end
+
+  if host.fileSize(`{place}/{ManifestFile}`) then return implicit(place) end
+
+  return fail(`'{folder}' holds neither a {WorkspaceFile} nor a {ManifestFile}`)
+end
+
+--- The workspace `start` is in. The package `start` is in belongs to the workspace above it that
+--- lists it; one no workspace lists is a workspace of one, whatever is above it. Outside any
+--- package, the nearest workspace above is the one.
+local function discover(start: string): Workspace
+  local from = host.canonical(start) or fail(`'{start}' is not there`)
+  local home: string?
+  local roots: { string } = {}
+  local folder: string? = from
+
+  while folder do
+    if not home and host.fileSize(`{folder}/{ManifestFile}`) then home = folder end
+
+    if host.fileSize(`{folder}/{WorkspaceFile}`) then table.insert(roots, folder) end
+
+    folder = host.parent(folder)
+  end
+
+  if not home then
+    if #roots == 0 then
+      fail(`no {WorkspaceFile} or {ManifestFile} in '{from}' or any folder above it`)
+    end
+
+    return declared(roots[1])
+  end
+
+  local found = home :: string
+  local claiming = [for root in roots if claims(root, found) => root]
+
+  if #claiming > 1 then
+    fail(
+      `'{found}' belongs to both '{claiming[1]}' and '{claiming[2]}'; workspaces don't nest, so list it in one`
+    )
+  end
+
+  if #claiming == 1 then return declared(claiming[1]) end
+
+  local note = if #roots > 0
+    then `'{roots[1]}/{WorkspaceFile}' doesn't list this package, so it is a workspace of its own`
+    else nil
+
+  return implicit(found, note)
+end
+
+local function sortedRequirements(map: { [string]: string }): { Requirement }
+  local list: { Requirement } = {}
+
+  for id, requirement in map do
+    table.insert(list, { id = id, requirement = requirement })
+  end
+
+  table.sort(
+    list,
+    function(left: Requirement, right: Requirement): boolean return left.id < right.id end
+  )
+
+  return list
+end
+
+--- `workspace` as plain data, for the host to read: no manifests, no functions.
+local function describe(workspace: Workspace): { [string]: unknown }
+  local members = {}
+
+  for _, found in workspace.members do
+    local manifest = found.manifest
+    local targets: { Target } = {}
+
+    for _, target in manifest.targets do
+      table.insert(targets, target)
+    end
+
+    table.sort(
+      targets,
+      function(left: Target, right: Target): boolean return left.id < right.id end
+    )
+    table.insert(members, {
+      id = manifest.id,
+      version = manifest.version,
+      path = found.path,
+      location = found.location,
+      defaultTarget = manifest.defaultTarget,
+      targets = targets,
+      dependencies = sortedRequirements(manifest.dependencies),
+      devDependencies = sortedRequirements(manifest.devDependencies),
+      tests = manifest.tests,
+    })
+  end
+
+  return {
+    root = workspace.root,
+    kind = workspace.kind,
+    members = members,
+    note = workspace.note,
+  }
+end
+
+return function(dependencies: { host: Host, package: PackageModule })
+  host, package = dependencies.host, dependencies.package
+
+  return {
+    open = open,
+    discover = discover,
+    describe = describe,
+  }
+end

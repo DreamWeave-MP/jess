@@ -175,8 +175,7 @@ pub(crate) fn host_table(runtime: &Runtime, read: bool, write: bool) -> l3i::Res
         })?;
         Ok::<_, l3i::Error>(l3i::bind::StackResults)
     })?;
-    let mut functions = Vec::new();
-    for (name, function, needs) in [
+    let functions = [
         ("listTree", list_tree, Some((read, l3i::fs::READ_CAPABILITY))),
         ("listDir", list_dir, Some((read, l3i::fs::READ_CAPABILITY))),
         ("readFile", read_file, Some((read, l3i::fs::READ_CAPABILITY))),
@@ -186,7 +185,19 @@ pub(crate) fn host_table(runtime: &Runtime, read: bool, write: bool) -> l3i::Res
         ("replace", replace, Some((write, l3i::fs::WRITE_CAPABILITY))),
         ("decodeToml", decode_toml, None),
         ("builtin", builtin, None),
-    ] {
+    ];
+    gated_table(runtime, functions.into_iter().chain(path_functions(runtime, read)?))
+}
+
+/// A host function by name, and the capability it needs with whether the table's holder has it:
+/// `None` for one that needs nothing.
+type HostFunction = (&'static str, Function, Option<(bool, &'static str)>);
+
+/// `functions` as a read-only table, each one whose holder lacks the capability it needs replaced
+/// by one that raises the permission error for it.
+fn gated_table(runtime: &Runtime, functions: impl Iterator<Item = HostFunction>) -> l3i::Result<Table> {
+    let mut gated = Vec::new();
+    for (name, function, needs) in functions {
         let function = match needs {
             Some((false, capability)) => {
                 let message = crate::lua::plan::denied("@jess/package", capability);
@@ -196,18 +207,78 @@ pub(crate) fn host_table(runtime: &Runtime, read: bool, write: bool) -> l3i::Res
             }
             _ => function,
         };
-        functions.push((name, function));
+        gated.push((name, function));
     }
     let table = {
         let stack = runtime.stack();
-        let table = Table::new(&stack, 0, functions.len())?;
-        for (name, function) in &functions {
+        let table = Table::new(&stack, 0, gated.len())?;
+        for (name, function) in &gated {
             table.set(&stack, name, function)?;
         }
         table
     };
     l3i::readonly::make_read_only(runtime, &table)?;
     Ok(table)
+}
+
+/// The path functions workspaces find folders with: `canonical`, a path with every link and `..`
+/// resolved (nil when nothing is there); `parent`, the folder holding a path (nil at the top); and
+/// `relative`, a path below a base as `/`-joined names (nil when it isn't below it). Only
+/// `canonical` touches the filesystem, so only it needs `read`.
+fn path_functions(runtime: &Runtime, read: bool) -> l3i::Result<[HostFunction; 3]> {
+    let canonical = runtime.bind_function("jess.package.canonical", |path: Text| -> l3i::Result<Option<String>> {
+        match std::fs::canonicalize(&path.0) {
+            Ok(canonical) => plain(&canonical).map(Some),
+            Err(source)
+                if matches!(
+                    source.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                Ok(None)
+            }
+            Err(source) => Err(error(format!("failed to resolve '{}': {source}", path.0))),
+        }
+    })?;
+    let parent = runtime.bind_function("jess.package.parent", |path: Text| {
+        Path::new(&path.0)
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .map(plain)
+            .transpose()
+    })?;
+    let relative = runtime.bind_function("jess.package.relative", |base: Text, path: Text| {
+        let Ok(rest) = Path::new(&path.0).strip_prefix(&base.0) else {
+            return Ok(None);
+        };
+        rest.components()
+            .map(|component| plain(Path::new(component.as_os_str())))
+            .collect::<l3i::Result<Vec<_>>>()
+            .map(|names| Some(names.join("/")))
+    })?;
+    Ok([
+        ("canonical", canonical, Some((read, l3i::fs::READ_CAPABILITY))),
+        ("parent", parent, None),
+        ("relative", relative, None),
+    ])
+}
+
+/// `path` as text, without the `\\?\` Windows puts in front of a canonical path where the plain
+/// form names the same place: Luau joins paths with `/`, which a `\\?\` path doesn't take.
+fn plain(path: &Path) -> l3i::Result<String> {
+    let text = path
+        .to_str()
+        .ok_or_else(|| error(format!("'{}' has a name that isn't UTF-8", path.display())))?;
+    #[cfg(windows)]
+    if let Some(rest) = text.strip_prefix(r"\\?\") {
+        if let Some(share) = rest.strip_prefix(r"UNC\") {
+            return Ok(format!(r"\\{share}"));
+        }
+        if rest.as_bytes().get(1) == Some(&b':') {
+            return Ok(rest.to_owned());
+        }
+    }
+    Ok(text.to_owned())
 }
 
 /// Every entry under `folder`, as `/`-joined paths below the walk's root and what each is: `file`,
@@ -519,18 +590,20 @@ fn plan_shape() -> serde_json::Value {
 }
 
 /// Runs one bootstrap entry with `args` and reads what it returns as `T`.
-fn bootstrap<T: serde::de::DeserializeOwned + Serialize>(
+pub(crate) fn bootstrap<T: serde::de::DeserializeOwned + Serialize>(
     runtime: &Runtime,
     entry: &str,
     shape: &serde_json::Value,
     args: impl l3i::call::PushArgs,
 ) -> l3i::Result<T> {
     let jess = crate::lua::state(runtime)?;
-    // The bootstrap is the host's own code, so it works over the host's `@jess/package`.
+    // The bootstrap is the host's own code, so it works over the host's `@jess/package` and
+    // workspaces.
     let packages = crate::lua::stdlib::host_packages(runtime)?;
+    let workspaces = crate::lua::stdlib::host_workspaces(runtime)?;
     let stack = runtime.stack();
     let chunk = jess.load(&stack, BOOTSTRAP_CHUNK, BOOTSTRAP.as_bytes())?;
-    let entries: Table = chunk.invoke(&stack, (&packages,))?;
+    let entries: Table = chunk.invoke(&stack, (&packages, &workspaces))?;
     let function: Function = entries.get(&stack, entry)?;
     function
         .invoke_with(&stack, args, |frame, value| {

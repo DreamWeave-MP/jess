@@ -1,0 +1,6 @@
+--!strict
+local words = require '@words'
+
+return {
+  greet = function(name: string): string return `{words.hello}, {name}` end,
+}

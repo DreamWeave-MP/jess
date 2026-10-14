@@ -48,6 +48,12 @@ type Plan = {
 
 type Offer = { read id: string }
 
+type WorkspaceModule = {
+  read open: (folder: string) -> unknown,
+  read discover: (start: string) -> unknown,
+  read describe: (workspace: unknown) -> { [string]: unknown },
+}
+
 type PackageModule = {
   read open: (location: string) -> Package,
   read candidates: (folder: string) -> { Offer },
@@ -60,9 +66,10 @@ type PackageModule = {
 --- `[dev-dependencies]` come along.
 type Search = { paths: { string }?, roots: { string }?, dev: { string }? }
 
--- The host's own @jess/package, handed in: the one scripts require reads and writes only what the
--- runtime's policy grants them, and these entries are the host acting.
-local package: PackageModule = ...
+-- The host's own @jess/package and workspaces, handed in: the @jess/package scripts require
+-- reads and writes only what the runtime's policy grants them, and these entries are the host
+-- acting.
+local package: PackageModule, workspaces: WorkspaceModule = ...
 
 type Mounted = {
   id: string,
@@ -247,9 +254,17 @@ local function activate(
   return plan
 end
 
+--- The workspace at `start`: the one whose root it is when `explicit`, or else the one it is in.
+local function workspace(start: string, explicit: boolean): { [string]: unknown }
+  local opened = if explicit then workspaces.open(start) else workspaces.discover(start)
+
+  return workspaces.describe(opened)
+end
+
 return table.freeze {
   inspect = inspect,
   pack = package.pack,
   graph = graph,
   activate = activate,
+  workspace = workspace,
 }

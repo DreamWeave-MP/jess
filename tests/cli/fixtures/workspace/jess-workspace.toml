@@ -1,0 +1,6 @@
+# The showcase workspace: a root package and a tool that uses it, developed together. Their
+# other dependencies are JPKs, pinned in jess.lock and kept under .jess/packages.
+manifest_version = 1
+
+[workspace]
+members = [".", "tools/greeter"]

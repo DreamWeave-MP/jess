@@ -6,3 +6,4 @@ mod common;
 mod fast_path;
 mod init;
 mod luau_test;
+mod workspace;

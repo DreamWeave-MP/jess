@@ -1,0 +1,10 @@
+--!strict
+-- Greets each argument, in the style @style gives it, and exits with how many it greeted.
+local showcase, style = require '@showcase', require '@style'
+local count = select('#', ...)
+
+for index = 1, count do
+  print(style.shout(showcase.greet((select(index, ...)))))
+end
+
+return count

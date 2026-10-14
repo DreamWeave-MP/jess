@@ -1,0 +1,2 @@
+--!strict
+print(require('@showcase').greet 'showcase')

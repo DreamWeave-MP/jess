@@ -8,6 +8,7 @@ use jess::lua::l3i::value::Table;
 use jess::lua::package::{self, Plan};
 
 mod common;
+mod workspace;
 
 /// Writes `files` (path, contents) under `root`.
 fn write(root: &Path, files: &[(&str, &str)]) {
