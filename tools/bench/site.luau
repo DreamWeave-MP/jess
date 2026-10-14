@@ -1,0 +1,144 @@
+--!strict
+--!native
+--[[
+The site, built by the Luau generator and by Zola from the same sources, timed as whole programs:
+
+  jess run --capability filesystem.read --capability filesystem.write \
+    --capability process.spawn --capability process.environment \
+    tools/bench/site.luau [runs] [zola binary]
+
+Each side builds site/ into a folder of its own under target/bench/site, from a cold process, the
+way a person runs it: the Jess side is the package target in tools/site through the jess binary
+that runs this script, the Zola side is `zola build`. One warm-up round, then `runs` (five)
+measured rounds alternating the two, so a drift favours neither. GNU time measures each run from
+outside: wall seconds, CPU seconds (user and system), and peak resident memory. The medians are
+printed, with the ratio, and both outputs' file counts, which must agree.
+
+A build without the verified toolchain runs Luau slower than a release does, so this refuses one.
+]]
+
+local fs = require '@dream/fs'
+local process = require '@dream/process'
+
+if not jess.bench.verified then
+  error('site bench: this jess was built without the verified toolchain: measure on a release', 0)
+end
+
+local runs = tonumber(arg[1] or '5')
+local zola = arg[2] or 'zola'
+if not runs or runs < 1 or runs % 1 ~= 0 then error('site bench: runs must be a whole number', 0) end
+
+local Time = '/usr/bin/time'
+local Root = fs.cwd() or '.'
+local Work = jess.fs.join(Root, 'target', 'bench', 'site')
+local Jess = process.env 'JESS_BINARY' or 'jess'
+
+type Sample = { wall: number, cpu: number, rss: number }
+type Side = { name: string, command: { string }, output: string, samples: { Sample } }
+
+local function removeTree(path: string)
+  if not fs.exists(path) then return end
+
+  local removed, message = fs.remove(path, { recursive = true })
+  if not removed then error(`site bench: cannot remove {path}: {message}`, 0) end
+end
+
+local function median(values: { number }): number
+  local sorted = table.clone(values)
+  table.sort(sorted)
+  local middle = #sorted // 2
+  if #sorted % 2 == 1 then return sorted[middle + 1] end
+
+  return (sorted[middle] + sorted[middle + 1]) / 2
+end
+
+local function measure(side: Side): Sample
+  removeTree(side.output)
+  local timing = jess.fs.join(Work, `{side.name}.time`)
+  local arguments = { '-f', '%e %U %S %M', '-o', timing }
+  for _, part in side.command do table.insert(arguments, part) end
+
+  local result, message = process.run(Time, arguments, { cwd = Root, stdout = 'null', stderr = 'capture' })
+  if not result then error(`site bench: {side.name}: {message}`, 0) end
+  if not result.success then error(`site bench: {side.name} failed:\n{result.stderr or ''}`, 0) end
+
+  local line = jess.fs.read(timing) or ''
+  local wall, user, system, rss = string.match(line, '([%d.]+) ([%d.]+) ([%d.]+) (%d+)')
+  if not wall then error(`site bench: {side.name}: cannot read {timing}: "{line}"`, 0) end
+
+  return {
+    wall = tonumber(wall) :: number,
+    cpu = tonumber(user) :: number + tonumber(system) :: number,
+    rss = tonumber(rss) :: number * 1024,
+  }
+end
+
+local function fileCount(root: string): number
+  local walk = fs.walk(root, { include = 'files' })
+  return if walk then #walk.paths else 0
+end
+
+jess.fs.createDir(Work)
+local sides: { Side } = {
+  {
+    name = 'jess',
+    command = { Jess, 'package', 'run', '--trusted', '--package-path', 'jpk', 'tools/site', '--', jess.fs.join(Work, 'jess') },
+    output = jess.fs.join(Work, 'jess'),
+    samples = {},
+  },
+  {
+    name = 'zola',
+    command = { zola, '--root', 'site', 'build', '--force', '-o', jess.fs.join(Work, 'zola') },
+    output = jess.fs.join(Work, 'zola'),
+    samples = {},
+  },
+}
+
+local versions = {}
+for _, side in sides do
+  local result = process.run(side.command[1], { '--version' }, { cwd = Root, stdout = 'capture', stderr = 'null' })
+  versions[side.name] = if result and result.stdout then string.gsub(result.stdout, '%s+$', '') else '?'
+end
+
+local load = string.match(jess.fs.read '/proc/loadavg' or '', '^[%d.]+') or '?'
+print(`# {versions.jess}; {versions.zola}; load {load}; {runs} runs after one warm-up, alternating`)
+
+for round = 0, runs do
+  for index = 1, #sides do
+    -- The side that goes first swaps every round.
+    local side = sides[if round % 2 == 0 then index else #sides + 1 - index]
+    local sample = measure(side)
+    if round == 0 then continue end
+
+    table.insert(side.samples, sample)
+    print(`# {side.name} {round}/{runs}: {string.format('%.3f', sample.wall)} s`)
+  end
+end
+
+local counts = {}
+for _, side in sides do
+  counts[side.name] = fileCount(side.output)
+end
+
+print('side\twall s\tcpu s\tpeak MiB\tfiles')
+local medians = {}
+for _, side in sides do
+  local walls, cpus, rsses = {}, {}, {}
+  for _, sample in side.samples do
+    table.insert(walls, sample.wall)
+    table.insert(cpus, sample.cpu)
+    table.insert(rsses, sample.rss)
+  end
+
+  medians[side.name] = { wall = median(walls), cpu = median(cpus), rss = median(rsses) }
+  local summary = medians[side.name]
+  print(`{side.name}\t{string.format('%.3f', summary.wall)}\t{string.format('%.2f', summary.cpu)}\t{string.format('%.1f', summary.rss / 1048576)}\t{counts[side.name]}`)
+end
+
+local jessMedian, zolaMedian = medians.jess, medians.zola
+print(
+  `# zola / jess: {string.format('%.2f', zolaMedian.wall / jessMedian.wall)}x wall, {string.format('%.2f', zolaMedian.cpu / jessMedian.cpu)}x cpu, {string.format('%.2f', zolaMedian.rss / jessMedian.rss)}x peak memory`
+)
+if counts.jess ~= counts.zola then
+  print(`# the outputs differ in file count: jess wrote {counts.jess}, zola {counts.zola}`)
+end
