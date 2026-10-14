@@ -10,7 +10,7 @@
 //! identity is its package's id and content digest and its path, so two generations of one package
 //! version never share a cached module.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -549,12 +549,15 @@ pub struct Search {
     pub roots: Vec<String>,
     /// Package ids whose `[dev-dependencies]` are selected with them: packages whose tests run.
     pub dev: Vec<String>,
+    /// Content digests by package id: a package with one of these ids, handed over outright or a
+    /// candidate, is refused unless it has that digest.
+    pub pins: BTreeMap<String, String>,
 }
 
 impl Search {
     /// This search as the table the bootstrap reads.
     fn table(&self, scope: &impl Scope) -> l3i::Result<Table> {
-        let table = Table::new(scope, 0, 4)?;
+        let table = Table::new(scope, 0, 5)?;
         for (key, items) in [
             ("paths", &self.paths),
             ("candidates", &self.candidates),
@@ -563,6 +566,11 @@ impl Search {
         ] {
             table.set(scope, key, &string_list(scope, items)?)?;
         }
+        let pins = Table::new(scope, 0, self.pins.len())?;
+        for (id, digest) in &self.pins {
+            pins.set(scope, id.as_str(), digest.as_str())?;
+        }
+        table.set(scope, "pins", &pins)?;
         Ok(table)
     }
 }
@@ -1026,6 +1034,8 @@ pub struct TargetRequest {
     pub paths: Vec<String>,
     /// Packages its dependencies resolve over, offered as candidates: opened only when needed.
     pub candidates: Vec<String>,
+    /// The content digest each package with an id here must have.
+    pub pins: BTreeMap<String, String>,
     /// The capabilities the host grants. `None` is the trusted policy: what the target declares is
     /// granted. Either way the target runs with what it declares and nothing more.
     pub grant: Option<Vec<String>>,
@@ -1121,6 +1131,7 @@ pub fn run_target(options: &crate::lua::Options, request: &TargetRequest) -> l3i
     let search = Search {
         paths: request.paths.clone(),
         candidates: request.candidates.clone(),
+        pins: request.pins.clone(),
         roots: vec![package.clone()],
         dev: Vec::new(),
     };

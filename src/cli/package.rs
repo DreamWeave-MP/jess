@@ -181,9 +181,9 @@ fn run_target(args: &RunTargetArgs) -> Result<u8, String> {
         target: args.target.clone(),
         packages: texts(&args.packages),
         paths: texts(&args.package_paths),
-        candidates: Vec::new(),
         grant: args.grant.grant(),
         args: args.args.clone(),
+        ..Default::default()
     };
     let ran = jess::lua::package::run_target(&jess::lua::Options::default(), &request).map_err(|error| error.to_string())?;
     let status = crate::run::script_status(&ran.runtime, &ran.values);

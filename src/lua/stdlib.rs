@@ -292,8 +292,9 @@ const PACKAGE_TYPES: &str = "\
          export type JessPackResult = { path: string, digest: string, files: number, size: number }\n\n\
          --- What to resolve: the layers, the module names the host already provides, the capabilities it\n\
          --- grants, candidates opened only when a layer or a dependency needs one, package ids selected\n\
-         --- whatever the layers (`roots`), and the ids whose `[dev-dependencies]` come with them (`dev`).\n\
-         export type JessPackageRequest = { layers: { string }, hostModules: { string }?, grant: { string }?, candidates: { JessPackageOffer }?, roots: { string }?, dev: { string }? }\n\n\
+         --- whatever the layers (`roots`), the ids whose `[dev-dependencies]` come with them (`dev`), and\n\
+         --- the content digest a package with a given id must have (`pins`).\n\
+         export type JessPackageRequest = { layers: { string }, hostModules: { string }?, grant: { string }?, candidates: { JessPackageOffer }?, roots: { string }?, dev: { string }?, pins: { [string]: string }? }\n\n\
          --- An activation plan: requested layers resolved over packages, with nothing run.\n\
          export type JessActivationPlan = {\n  \
            requested: { string },\n  \

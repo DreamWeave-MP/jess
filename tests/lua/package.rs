@@ -1159,9 +1159,9 @@ fn a_command_target_runs_with_what_it_declares() {
         target: target.map(ToOwned::to_owned),
         packages: Vec::new(),
         paths: vec![text(&path)],
-        candidates: Vec::new(),
         grant: grant.map(strings),
         args: vec![text(&tool.join("jess.toml")), "base".to_owned()],
+        ..Default::default()
     };
     let failure = |target: Option<&str>, grant: Option<&[&str]>| -> String {
         match package::run_target(&options, &request(target, grant)) {
@@ -1231,6 +1231,63 @@ fn a_name_nothing_provides_is_reported_as_not_found() {
              and it isn't one of jess's own modules\"\n\
              assert(not ok and string.find(tostring(problem), expected, 1, true), tostring(problem))\n\
              assert(type(require('@dream/bytes')) == 'table')",
+        );
+    }
+}
+
+/// A package pinned to a content digest is refused unless it has that digest, whether it is handed
+/// over outright or found as a candidate, and before anything it holds runs.
+#[test]
+fn a_pinned_package_has_the_digest_it_is_pinned_to() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path().join("base");
+    write(
+        &base,
+        &[
+            (
+                "jess.toml",
+                "manifest_version = 1\n[package]\nid = \"org.example.base\"\nversion = \"1.0.0\"\njess_api = \"1\"\n\
+                 include = [\"src\"]\n[modules]\n\"@base/start\" = \"src/start.jsl\"\n\
+                 [[layer]]\nid = \"example.base\"\n[[layer.entrypoint]]\nmodule = \"@base/start\"\n",
+            ),
+            ("src/start.jsl", "error('the entrypoint ran')\n"),
+        ],
+    );
+    let runtime = common::runtime();
+    let digest = package::inspect(&runtime, &text(&base)).unwrap().digest;
+    let pinned = |digest: &str, outright: bool| -> (Vec<String>, package::Search) {
+        let (locations, candidates) = if outright {
+            (vec![text(&base)], Vec::new())
+        } else {
+            (Vec::new(), vec![text(&base)])
+        };
+        let search = package::Search {
+            candidates,
+            pins: [("org.example.base".to_owned(), digest.to_owned())].into(),
+            ..Default::default()
+        };
+        (locations, search)
+    };
+    for outright in [true, false] {
+        let (locations, search) = pinned(&digest, outright);
+        let plan = package::graph_with(&runtime, &locations, &strings(&["example.base"]), &search).unwrap();
+        assert_eq!(plan.packages[0].digest, digest);
+        // With the pin it has, activating it gets as far as running its entrypoint.
+        let ran = package::activate_with(&common::runtime(), &locations, &strings(&["example.base"]), None, &search)
+            .unwrap_err()
+            .to_string();
+        assert!(ran.contains("the entrypoint ran"), "{ran}");
+
+        let (locations, search) = pinned("0123", outright);
+        let refused = package::activate_with(&common::runtime(), &locations, &strings(&["example.base"]), None, &search)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains(&format!(
+                "org.example.base 1.0.0 (source {}) has digest {digest}, not the 0123 it is pinned to",
+                text(&base)
+            )),
+            "{refused}"
         );
     }
 }

@@ -66,12 +66,14 @@ type PackageModule = {
 
 --- Where a resolution looks beyond the packages it is handed, and what it selects besides the
 --- layers' providers: package path folders, packages offered as candidates by location, root
---- package ids, and the ids whose `[dev-dependencies]` come along.
+--- package ids, the ids whose `[dev-dependencies]` come along, and the digests packages are pinned
+--- to.
 type Search = {
   paths: { string }?,
   candidates: { string }?,
   roots: { string }?,
   dev: { string }?,
+  pins: { [string]: string }?,
 }
 
 -- The host's own @jess/package and workspaces, handed in: the @jess/package scripts require
@@ -227,6 +229,7 @@ local function request(
     candidates = offers,
     roots = search and search.roots,
     dev = search and search.dev,
+    pins = search and search.pins,
   }
 end
 
