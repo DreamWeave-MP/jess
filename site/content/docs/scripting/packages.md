@@ -124,6 +124,25 @@ jess run --package dreamwind.jpk script.jsl # a script with its modules activate
 
 [`jess pack` and `jess package`](@/docs/cli/package.md) has every option and what each prints. `jess pack` writes the same bytes from the same source on every machine. `jess package test` is the parity check: the package's tests against the source, then against it packed. If the two disagree, the package is broken, whichever side passed.
 
+## Workspaces
+
+Packages developed together, a tool and the library it uses, are a **workspace**: a `jess-workspace.toml` naming its members, folders that each hold a Package Source. From anywhere inside one, `jess workspace run <target>` resolves the target's package over the other members, with no `--package-path` to assemble, and `jess workspace test` runs the members' tests the same way. What the members depend on beyond each other is pinned in `jess.lock`, by version and digest, and kept as JPKs in `.jess/packages`, so the workspace runs the same packages on every machine and offline. A workspace changes nothing about a package: its digest, its JPK, and what its modules may require are its manifest's alone.
+
+```toml
+manifest_version = 1
+
+[workspace]
+members = [".", "tools/greeter"]
+```
+
+```sh
+jess workspace sync --package-path ../vendor   # pin and keep what the members need
+jess workspace run greet --trusted -- you      # from anywhere in the workspace
+jess workspace test                            # every member's tests
+```
+
+[`jess workspace`](@/docs/cli/workspace.md) has the rules: which workspace a folder is in, how a target is named, and how `sync` chooses.
+
 ## The built-in package
 
 `jpk/builtin` is jess's own package, `org.dreamweave.jess`: the Luau tools jess itself is checked with, shipped the way any Luau ships. Today it's one layer, `jess.style`, exporting [`@jess/style`](@/docs/api/style.md), the [style checker](@/docs/contributing/luau-style.md#the-checker).
