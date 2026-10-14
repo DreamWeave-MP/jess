@@ -52,8 +52,10 @@ fn failure(at: &Locate) -> String {
     }
 }
 
-fn canonical(path: &Path) -> String {
-    text(&std::fs::canonicalize(path).unwrap())
+/// Whether `reported`, a folder jess reported, is the folder `path`: the same place once links are
+/// resolved, however each platform spells a resolved path.
+fn same(reported: &str, path: &Path) -> bool {
+    std::fs::canonicalize(reported).unwrap() == std::fs::canonicalize(path).unwrap()
 }
 
 fn paths(opened: &Workspace) -> Vec<&str> {
@@ -93,20 +95,20 @@ fn a_workspace_is_found_from_anywhere_inside_it() {
         root.join("tools"),
     ] {
         let opened = from(&start);
-        assert_eq!(opened.root, canonical(&root), "from {}", start.display());
+        assert!(same(&opened.root, &root), "from {}: {}", start.display(), opened.root);
         assert_eq!(opened.kind, "virtual");
         // Listed tools/tool first; members are by path, whatever order the file lists them in.
         assert_eq!(paths(&opened), ["lib", "tools/tool"]);
     }
     let opened = open(&Locate::Root(root.clone()));
     assert_eq!(opened.members[1].id, "org.example.tool");
-    assert_eq!(opened.members[1].location, canonical(&root.join("tools/tool")));
+    assert!(same(&opened.members[1].location, &root.join("tools/tool")));
     assert_eq!(opened.members[1].dependencies[0].id, "org.example.lib");
 
     // A package under a workspace that doesn't list it is a workspace of its own, and says why.
     let loose = from(&root.join("examples/loose/src"));
     assert_eq!(loose.kind, "implicit");
-    assert_eq!(loose.root, canonical(&root.join("examples/loose")));
+    assert!(same(&loose.root, &root.join("examples/loose")), "{}", loose.root);
     assert_eq!(paths(&loose), ["."]);
     assert!(
         loose.note.as_deref().unwrap().contains("doesn't list this package"),
@@ -171,7 +173,6 @@ fn a_workspace_file_names_its_members_plainly() {
     let (_temp, root) = scratch();
     member(&root.join("tools/tool"), "tool", "1.0.0", "");
     member(&root.join("tools/twin"), "tool", "2.0.0", "");
-    member(&root.join("Tools/tool"), "upper", "1.0.0", "");
     member(&root.join("nested"), "nested", "1.0.0", "");
     workspace_file(&root.join("nested"), &["."]);
     write(
@@ -190,6 +191,8 @@ fn a_workspace_file_names_its_members_plainly() {
         (&["tools/tool/"], "member 'tools/tool/' is not a path of folder names"),
         (&[""], "member '' is not a path of folder names"),
         (&["tools/tool", "tools/tool"], "lists 'tools/tool' twice"),
+        // Refused by spelling, before either is looked for: Tools/ needn't exist, and on a
+        // filesystem that ignores case it would be tools/.
         (
             &["tools/tool", "Tools/tool"],
             "members 'tools/tool' and 'Tools/tool' differ only in case",
@@ -276,7 +279,7 @@ fn a_member_through_a_link_is_where_the_link_points() {
     workspace_file(&root, &["alias"]);
     let opened = open(&Locate::Root(root.clone()));
     assert_eq!(opened.members[0].path, "alias");
-    assert_eq!(opened.members[0].location, canonical(&root.join("tool")));
+    assert!(same(&opened.members[0].location, &root.join("tool")));
 }
 
 /// A workspace of four members: `app` and `tool`, each with targets; `lib`, which `app` depends
@@ -353,7 +356,7 @@ fn a_workspace_target_is_named_or_found_from_where_it_runs() {
     assert_eq!(chosen(None, &root.join("app/src")), picked("app", "main"));
 
     let chosen = workspace::choose(&runtime, &at, Some("main"), &root).unwrap();
-    assert_eq!(chosen.location, canonical(&root.join("app")));
+    assert!(same(&chosen.location, &root.join("app")), "{}", chosen.location);
     // The other members are its candidates, opened only if it needs them.
     assert_eq!(chosen.candidates.len(), 3);
     assert!(!chosen.candidates.contains(&chosen.location));
