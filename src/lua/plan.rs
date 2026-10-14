@@ -87,13 +87,15 @@ pub(crate) fn downstream_definitions() -> l3i::Result<String> {
     ))
 }
 
-/// Generic extensions and explicit host grants; native compilation follows the runtime policy.
+/// Generic extensions and explicit host grants. Native code is generated for the modules marked
+/// `--!native` and no others: generating it for every chunk cost a tool run a third of a second
+/// before its first record, most of it in modules the run never called.
 fn builder(capabilities: &[String], profiling: bool) -> RuntimePlanBuilder {
     let mut policy = RuntimePolicy::new()
         .debug_root(EXTENSION_ID)
         .profiler(profiling)
         .native_code(NativeCodePolicy {
-            mode: NativeCodeMode::Eager,
+            mode: NativeCodeMode::Annotated,
             record_counters: profiling,
             ..NativeCodePolicy::default()
         });
