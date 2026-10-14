@@ -118,7 +118,8 @@
     const results = document.getElementById('dw-search-results');
     const status = results.querySelector('.dw-search__status');
     const list = results.querySelector('.dw-search__list');
-    const scope = new URL(searchInput.dataset.scope || '/', window.location.href).pathname;
+    // A root-relative base URL renders the scope as '//', which URL reads as a host; one slash is meant.
+    const scope = new URL((searchInput.dataset.scope || '/').replace(/^\/\/+/, '/'), window.location.href).pathname;
     let index = null;
     let request = 0;
 
