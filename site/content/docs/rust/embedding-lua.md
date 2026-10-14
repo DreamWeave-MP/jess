@@ -44,7 +44,7 @@ fn main() -> jess_lua::l3i::Result<()> {
 }
 ```
 
-Values come back the l3i way: `eval::<T>()` for a scalar, a tuple, or a pinned `Table`, then `Table::get` on the runtime's stack. l3i's [stack and values](https://DreamWeave-MP.github.io/l3i/docs/stack-and-values/) page has the rest. To run a chunk under its own name, so errors and relative `require`s point somewhere useful, load it through `jess_lua::scripts::load(&runtime, "path/to/chunk.luau", source)` and call the function it returns.
+Values come back the l3i way: `eval::<T>()` for a scalar, a tuple, or a pinned `Table`, then `Table::get` on the runtime's stack. l3i's [stack and values](https://DreamWeave-MP.github.io/l3i/docs/stack-and-values/) page has the rest. To run a chunk under its own name, so errors and relative `require`s point somewhere useful, load it through `jess_lua::scripts::load(&runtime, "path/to/chunk.jsl", source)` and call the function it returns.
 
 ## What `runtime` installs
 
@@ -88,8 +88,8 @@ use jess_lua::scripts;
 let list = scripts::load_order_scripts(&runtime)?;   // needs a config
 let state = scripts::run_scripts(&runtime, &list)?;  // the shared state table, after the last script
 
-// `jess run script.luau a b`: `arg` and `...` set up the same way.
-let returned = scripts::run_file(&runtime, std::path::Path::new("script.luau"), &["a".into(), "b".into()])?;
+// `jess run script.jsl a b`: `arg` and `...` set up the same way.
+let returned = scripts::run_file(&runtime, std::path::Path::new("script.jsl"), &["a".into(), "b".into()])?;
 ```
 
 Each load-order script is called with `(state, openmw)`: a table every script in the run shares, and the loaded OpenMW context. `scripts::BUNDLED` holds the bundled scripts (`@jess/tes3merge` and the rest) by name, `run_file` runs one by name when no file has it, and `script_name` names an entry. `load_order_scripts` fails on an entry nothing has; `list_load_order_scripts` reads nothing and returns every entry with its `ScriptStatus` (`Bundled`, `Found`, `Missing`).
@@ -102,12 +102,12 @@ Every chunk these load, and every module a script `require`s, is compiled once p
 
 ## Types for your users
 
-`jess_lua::types::types()` is the folder `jess luau-types` writes: `jess.d.luau` (what `jess_lua::definitions()` returns: the libraries' types as their extensions declare them, jess's own, and the record and NIF types) and a stub module for every name `runtime`'s `require` resolves. Write it out, and a `.luaurc` with its aliases beside your users' scripts, and luau-lsp and `--!strict` scripts know every field and every module:
+`jess_lua::types::types()` is the folder `jess luau-types` writes: `jess.d.jsl` (what `jess_lua::definitions()` returns: the libraries' types as their extensions declare them, jess's own, and the record and NIF types) and a stub module for every name `runtime`'s `require` resolves. Write it out, and a `.jessrc` with its aliases beside your users' scripts, and luau-lsp and `--!strict` scripts know every field and every module:
 
 ```rust
 let types = jess_lua::types::types()?;
 jess_lua::types::write(std::path::Path::new("scripts/types"), &types)?;
-std::fs::write("scripts/.luaurc", types.luaurc("types"))?;
+std::fs::write("scripts/.jessrc", types.jessrc("types"))?;
 ```
 
 The types describe the jess that generated them. A folder from an older build will cheerfully type-check a script against fields that no longer exist, so regenerate it when you upgrade.
@@ -123,7 +123,7 @@ for written in &report.written {
 }
 ```
 
-It writes `types/`, a strict `.luaurc` with the aliases, a `main.luau` that runs, and the editor's luau-lsp settings (`Editor::VsCode`, `Neovim`, `Zed`, `Helix`, or `None`). `types/` is always rewritten. Anything else already there lands in `report.skipped` unless `force`, which backs it up and replaces it. `init::files(editor, &types)` returns the files besides `types/` as `(path, contents)` pairs, if you want to write them yourself.
+It writes `types/`, a strict `.jessrc` with the aliases, a `main.jsl` that runs, and the editor's luau-lsp settings (`Editor::VsCode`, `Neovim`, `Zed`, `Helix`, or `None`). `types/` is always rewritten. Anything else already there lands in `report.skipped` unless `force`, which backs it up and replaces it. `init::files(editor, &types)` returns the files besides `types/` as `(path, contents)` pairs, if you want to write them yourself.
 
 ## Sandboxing
 

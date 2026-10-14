@@ -128,7 +128,7 @@ Other checking commands exit `1` when their check fails too, after printing: `co
 ### isn't a file
 
 ```text
-error: 'nope.luau' isn't a file
+error: 'nope.jsl' isn't a file
 ```
 
 `jess run` takes the script's path, and there's no file there. It runs files only: bundled `@jess/...` names aren't scripts it runs.
@@ -169,7 +169,7 @@ A script wrote a field the record type doesn't have, and nothing changed. jess r
 
 ### luau-lsp doesn't know `jess`
 
-Everything `jess.` is underlined, or has type `any`. luau-lsp isn't loading `types/jess.d.luau`:
+Everything `jess.` is underlined, or has type `any`. luau-lsp isn't loading `types/jess.d.jsl`:
 
 - The folder isn't there: `jess init <folder>` writes it.
 - The editor opened a parent folder. Settings files (`.vscode/`, `.zed/`, `.helix/`) and relative definition paths are read from the folder you opened. Open the script folder itself.
@@ -177,7 +177,7 @@ Everything `jess.` is underlined, or has type `any`. luau-lsp isn't loading `typ
 
 ### `require('@jess/...')` is an unknown require
 
-`require('@jess/log')` or `require('@dream/vfs')` is underlined as unknown, or its value is `any`: the `.luaurc` beside your scripts has no aliases for `jess` and `dream`, which point those names at `types/`. A folder set up before the types became a folder has an old `.luaurc`; add the aliases `jess init` prints, or rerun it with `--force`. `require 'scripts.myMod.util'` and `require 'vfstool'` are OpenMW's names, not Luau paths, and no `.luaurc` makes them resolve: [use `./` paths, or call them untyped](@/docs/getting-started/editor-setup.md#why-a-folder).
+`require('@jess/log')` or `require('@dream/vfs')` is underlined as unknown, or its value is `any`: the `.jessrc` beside your scripts has no aliases for `jess` and `dream`, which point those names at `types/`. A folder set up before the types became a folder has an old `.jessrc`; add the aliases `jess init` prints, or rerun it with `--force`. `require 'scripts.myMod.util'` and `require 'vfstool'` are OpenMW's names, not Luau paths, and no `.jessrc` makes them resolve: [use `./` paths, or call them untyped](@/docs/getting-started/editor-setup.md#why-a-folder).
 
 ### Neovim doesn't start luau-lsp
 

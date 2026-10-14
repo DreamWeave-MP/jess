@@ -18,7 +18,7 @@ Runs Luau test modules. Each is a file that returns a suite made with [`@jess/te
 Plus the [global options](@/docs/cli/global-options.md). Like `jess run`, tests start with no OpenMW config; one that needs a load order loads it with `jess.openmw.load`.
 
 ```luau
--- numbers.luau
+-- numbers.jsl
 local test = require '@jess/test'
 local log = require '@jess/log'
 local expect = test.expect
@@ -37,14 +37,14 @@ return suite
 ```
 
 ```sh
-jess test numbers.luau
+jess test numbers.jsl
 ```
 
 ```yaml
 passed: 1
 failed: 1
 modules:
-- input: numbers.luau
+- input: numbers.jsl
   report:
     passed: 1
     failed: 1
@@ -62,7 +62,7 @@ modules:
       passed: false
       error: |
         expected { 1 } to equal { 2 }
-        numbers.luau:12
+        numbers.jsl:12
       logs: []
   error: null
   logs: []

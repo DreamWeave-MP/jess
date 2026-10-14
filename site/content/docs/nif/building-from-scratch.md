@@ -12,7 +12,7 @@ You don't need a 3D package to make a Morrowind mesh. It helps for anything shap
 
 ```luau
 --!strict
--- jess run crate.luau <output.nif>
+-- jess run crate.jsl <output.nif>
 local output: string = ...
 
 type Point = { number }
@@ -119,7 +119,7 @@ nif:save(output)
 ```
 
 ```sh
-jess run crate.luau "Data Files/meshes/jess/crate.nif"
+jess run crate.jsl "Data Files/meshes/jess/crate.nif"
 ```
 
 ```text
@@ -176,7 +176,7 @@ The bound is computed from the vertices. An unknown field is an error: `textrue 
 
 ```luau
 --!strict
--- jess run sign.luau <output.nif>
+-- jess run sign.jsl <output.nif>
 local output: string = ...
 local nif = jess.nif.new()
 

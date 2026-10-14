@@ -7,10 +7,10 @@ Tools and libraries for Morrowind and OpenMW content: plugins (`.esp`, `.esm`, `
 It's three layers, and you only need the one you use:
 
 - **`jess`, the command line tool.** Inspects, checks, cleans, and edits plugins, saves, and NIFs; checks that every mesh, texture, and sound a plugin names exists; merges a load order.
-- **A Luau runtime.** Everything the command line does is a [Luau](https://luau.org) API, and `jess run script.luau` runs a script with all of it loaded.
+- **A Luau runtime.** Everything the command line does is a [Luau](https://luau.org) API, and `jess run script.jsl` runs a script with all of it loaded.
 
 `jess run` grants optional capabilities only when the host operator asks for them. For example,
-`jess run --capability network.transport script.luau` enables `@dream/udp` client creation; without
+`jess run --capability network.transport script.jsl` enables `@dream/udp` client creation; without
 that flag, `udp.client` and `udp.server` are denied. With the capability, Luau can construct and
 drive both sides; the native transport keeps the signing key private inside server userdata. Jess
 also exposes `jess run --profile`, `--disassemble FILE`, and `--emit-asm FILE` for script profiling,

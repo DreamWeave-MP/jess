@@ -33,10 +33,10 @@ One script, three sources: a loose data folder, a BSA, or an `openmw.cfg` (every
 
 ```luau
 --!strict
--- jess run --package jpk/dreamwind optimize.luau <source> <output folder> [path prefix]
+-- jess run --package jpk/dreamwind optimize.jsl <source> <output folder> [path prefix]
 -- <source> is a data folder, a .bsa, or an openmw.cfg for the whole load order.
 local source: string, output: string, prefix: string? = ...
-assert(source and output, 'usage: optimize.luau <source> <output folder> [path prefix]')
+assert(source and output, 'usage: optimize.jsl <source> <output folder> [path prefix]')
 
 -- Calls `visit(path, bytes)` for every NIF under `prefix` (a lowercase VFS path like "meshes/f/").
 local function eachNif(visit: (path: string, bytes: buffer | string) -> ())
@@ -121,9 +121,9 @@ print(
 ```
 
 ```sh
-jess run --package jpk/dreamwind optimize.luau ~/.config/openmw/openmw.cfg "Data Files Optimized"   # the whole load order
-jess run --package jpk/dreamwind optimize.luau "Mods/Foo/Data Files" "Mods/Foo Optimized"           # one mod
-jess run --package jpk/dreamwind optimize.luau "Data Files/Morrowind.bsa" out meshes/f/
+jess run --package jpk/dreamwind optimize.jsl ~/.config/openmw/openmw.cfg "Data Files Optimized"   # the whole load order
+jess run --package jpk/dreamwind optimize.jsl "Mods/Foo/Data Files" "Mods/Foo Optimized"           # one mod
+jess run --package jpk/dreamwind optimize.jsl "Data Files/Morrowind.bsa" out meshes/f/
 ```
 
 The details that matter:
@@ -832,7 +832,7 @@ end
 Run over `meshes/f/` in vanilla `Morrowind.bsa`:
 
 ```sh
-jess run --package jpk/dreamwind optimize.luau "Data Files/Morrowind.bsa" out meshes/f/
+jess run --package jpk/dreamwind optimize.jsl "Data Files/Morrowind.bsa" out meshes/f/
 ```
 
 ```text
@@ -853,7 +853,7 @@ Second, each output against its original: no finding code the original didn't ha
 
 ```luau
 --!strict
--- jess run --package jpk/dreamwind verify.luau <archive with the originals> <output folder>
+-- jess run --package jpk/dreamwind verify.jsl <archive with the originals> <output folder>
 local archivePath: string, outDir: string = ...
 local archive = require('@dreamwind/archive').openPath(archivePath)
 local checked, bad = 0, 0

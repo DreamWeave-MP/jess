@@ -109,12 +109,12 @@ local {health, position: {x: column, y: row}} = entity
 `@jess/style` is the style above, as code. It's the first module of jess's built-in package, [`jpk/builtin`](@/docs/scripting/packages.md#the-built-in-package), and it's Luau end to end: one parse with [`@dream/luau`](@/docs/api/downstream-globals.md), Luau's own parser, the tree and its token stream as tables; one pass over the tokens for the layout of every line; one walk over the tree for everything else. No regexes over source text, no guessing where a long string ends.
 
 ```sh
-jess run check-style.luau libs jpk tools
+jess run check-style.jsl libs jpk tools
 ```
 
 ```luau
 --!strict
--- check-style.luau: every finding under the folders given, and a count.
+-- check-style.jsl: every finding under the folders given, and a count.
 local style = require '@jess/style'
 local errors, warnings = style.run { ... }
 
@@ -155,6 +155,6 @@ Options choose what a file is held to. `directives = { 'strict', 'native' }` and
 cargo test --test lua_luau_style
 ```
 
-`tests/lua/luau_style.rs` activates the built-in package from its source, which also checks that it's the copy the binary embeds, and runs `@jess/style` over every repository-owned `.luau` file under `src/` and `tools/`, over every ```` ```luau ```` block on this site, and over `jess luau-types`' definitions. Any finding, error or warning, fails it. The bundled scripts and built-in modules are held to `--!strict`, `--!native`, and no `any`; the `jess init` template to `--!strict`.
+`tests/lua/luau_style.rs` activates the built-in package from its source, which also checks that it's the copy the binary embeds, and runs `@jess/style` over every repository-owned `.jsl` file under `src/` and `tools/`, over every ```` ```luau ```` block on this site, and over `jess luau-types`' definitions. Any finding, error or warning, fails it. The bundled scripts and built-in modules are held to `--!strict`, `--!native`, and no `any`; the `jess init` template to `--!strict`.
 
 The same test runs the checker's own suite (`jess package test jpk/builtin`, from the source and packed) and type-checks the package against the types folder. Canonical formatting will join this gate once Jess's built-in Luau formatter owns it.

@@ -31,7 +31,7 @@ print(`{report.summary.files} files, {report.summary.wontLoad} won't load`)
 ```
 
 ```sh
-$ jess run all-meshes.luau ~/.config/openmw/openmw.cfg
+$ jess run all-meshes.jsl ~/.config/openmw/openmw.cfg
 7506 files, 2 won't load
 ```
 

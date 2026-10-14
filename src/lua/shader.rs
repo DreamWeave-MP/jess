@@ -12,7 +12,7 @@
 //!
 //! Every expression records where the Luau source wrote it (`file:line`, plus the module that
 //! called `shader.program`), so a mistake fails at the call that made it, in Jess terms:
-//! `shaders/lit.luau:12 (shaders/lit.luau): dot(Vec3f, Vec4f) is invalid: expected two float
+//! `shaders/lit.jsl:12 (shaders/lit.jsl): dot(Vec3f, Vec4f) is invalid: expected two float
 //! vectors of the same size`. Nothing here takes WGSL or exposes a GPU API.
 
 use std::cell::RefCell;

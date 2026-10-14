@@ -28,7 +28,7 @@ pub fn gameplay() -> GraphSpec {
         .action("sprint", ValueType::Digital)
         .set("gameplay", PACKAGE);
     spec.sets[0].origin = Some(Origin {
-        file: "acceptance.luau".to_owned(),
+        file: "acceptance.jsl".to_owned(),
         line: 12,
         column: 1,
     });

@@ -1,5 +1,5 @@
 //! The repo's Luau style. `@jess/style`, the checker in jess's built-in package (`jpk/builtin`),
-//! runs over every `.luau` file owned by this repo under `src/` and `tools/`, the ```` ```luau ```` blocks
+//! runs over every `.jsl` file owned by this repo under `src/` and `tools/`, the ```` ```luau ```` blocks
 //! in the site's pages, and `jess luau-types`' definitions, and any finding fails the test. It is
 //! activated like any package, from the Package Source.
 
@@ -69,7 +69,7 @@ fn options(path: &str) -> &'static str {
     if path.starts_with("src/lua/templates/") {
         return "{ directives = { 'strict' } }";
     }
-    if path == "src/lua/definitions.luau" {
+    if path == "src/lua/definitions.jsl" {
         return "{ declarations = true }";
     }
     "nil"
@@ -114,7 +114,7 @@ fn the_generated_definitions_follow_the_style() {
     let runtime = checker();
     common::set_global(&runtime, "source", jess::lua::definitions().as_str());
     let found: String = runtime
-        .eval("local lines = {}\nfor _, finding in style.check(source, { declarations = true }) do\n  table.insert(lines, style.format(finding, 'jess.d.luau'))\nend\nreturn table.concat(lines, '\\n')")
+        .eval("local lines = {}\nfor _, finding in style.check(source, { declarations = true }) do\n  table.insert(lines, style.format(finding, 'jess.d.jsl'))\nend\nreturn table.concat(lines, '\\n')")
         .unwrap_or_else(|error| panic!("{error}"));
     assert!(found.is_empty(), "{found}");
 }
@@ -135,7 +135,7 @@ fn the_checker_passes_its_own_suite_from_both_providers() {
 /// folder's stubs.
 #[test]
 fn the_checker_type_checks_against_the_definitions() {
-    let files = common::luau_tree(&builtin(), "builtin");
+    let files = common::jsl_tree(&builtin(), "builtin");
     let mains = files.iter().map(|(path, _)| path.as_str()).collect::<Vec<_>>();
     let report = common::type_check_files(
         &mains,
@@ -156,7 +156,7 @@ fn the_checker_type_checks_against_the_definitions() {
 #[test]
 fn the_analysis_sources_follow_strict_style() {
     let runtime = checker();
-    for path in ["jpk/builtin/src/analysis/init.luau", "jpk/builtin/tests/analysis/run.luau"] {
+    for path in ["jpk/builtin/src/analysis/init.jsl", "jpk/builtin/tests/analysis/run.jsl"] {
         let findings = check_file(&runtime, path);
         assert!(findings.is_empty(), "{}", findings.join("\n"));
     }

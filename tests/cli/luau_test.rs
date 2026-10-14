@@ -17,16 +17,16 @@ fn test_reports_every_case_and_fails_when_one_does() {
     fs::create_dir_all(&root).unwrap();
     let passing = module(
         &root,
-        "passing.luau",
+        "passing.jsl",
         "local test = require('@jess/test')\nlocal log = require('@jess/log')\nlocal suite = test.new()\n\
          suite.describe('numbers', function()\n  suite.it('add', function()\n    log.info('adding', { left = 1 })\n    test.expect(1 + 1).toBe(2)\n  end)\nend)\nreturn suite\n",
     );
     let failing = module(
         &root,
-        "failing.luau",
+        "failing.jsl",
         "local test = require('@jess/test')\nlocal suite = test.new()\nsuite.it('compares', function() test.expect({ 1 }).toEqual({ 2 }) end)\nreturn suite\n",
     );
-    let broken = module(&root, "broken.luau", "return 'not a suite'\n");
+    let broken = module(&root, "broken.jsl", "return 'not a suite'\n");
 
     let output = jess().args(["--format", "json", "test"]).arg(&passing).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
@@ -78,7 +78,7 @@ fn scripts_touch_files_only_with_the_capability_for_it() {
     let note = root.join("note.txt");
     let script = module(
         &root,
-        "script.luau",
+        "script.jsl",
         "local path = ...\nprint(jess.fs.read(path) or 'nothing')\njess.fs.write(path, 'written')\n",
     );
     let stderr = |output: &std::process::Output| String::from_utf8_lossy(&output.stderr).into_owned();
@@ -115,7 +115,7 @@ fn scripts_touch_files_only_with_the_capability_for_it() {
 
     let suite = module(
         &root,
-        "suite.luau",
+        "suite.jsl",
         &format!(
             "local test = require('@jess/test')\nlocal suite = test.new()\n\
              suite.it('reads', function() test.expect(jess.fs.read({:?})).toBe 'written' end)\nreturn suite\n",
@@ -145,11 +145,11 @@ fn scripts_touch_files_only_with_the_capability_for_it() {
         root.join("tool/jess.toml"),
         "manifest_version = 1\n[package]\nid = \"org.example.files\"\nversion = \"1.0.0\"\njess_api = \"1\"\n\
          default_target = \"quiet\"\ninclude = [\"src\"]\n\
-         [targets.quiet]\nkind = \"command\"\nentry = \"src/main.luau\"\n\
-         [targets.reader]\nkind = \"command\"\nentry = \"src/main.luau\"\ncapabilities = [\"filesystem.read\"]\n",
+         [targets.quiet]\nkind = \"command\"\nentry = \"src/main.jsl\"\n\
+         [targets.reader]\nkind = \"command\"\nentry = \"src/main.jsl\"\ncapabilities = [\"filesystem.read\"]\n",
     )
     .unwrap();
-    fs::write(root.join("tool/src/main.luau"), "print(jess.fs.read((...)))\n").unwrap();
+    fs::write(root.join("tool/src/main.jsl"), "print(jess.fs.read((...)))\n").unwrap();
     let target = |name: &str| {
         jess()
             .args(["package", "run"])

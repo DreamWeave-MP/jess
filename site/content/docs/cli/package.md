@@ -19,9 +19,9 @@ The examples use this package, `greeter/`:
 ```text
 greeter/
   jess.toml
-  src/init.luau
-  src/words.luau
-  tests/run.luau
+  src/init.jsl
+  src/words.jsl
+  tests/run.jsl
 ```
 
 ```toml
@@ -32,10 +32,10 @@ id = "com.example.greeter"
 version = "1.0.0"
 jess_api = "1"
 include = ["src"]
-tests = ["tests/run.luau"]
+tests = ["tests/run.jsl"]
 
 [modules]
-"@greeter" = "src/init.luau"
+"@greeter" = "src/init.jsl"
 
 [[layer]]
 id = "example.greetings"
@@ -63,7 +63,7 @@ written:
   path: greeter.jpk
 ```
 
-Three files: `tests/run.luau` isn't in `include`, so it stayed home.
+Three files: `tests/run.jsl` isn't in `include`, so it stayed home.
 
 ## jess package inspect
 
@@ -81,7 +81,7 @@ jess_api: '1'
 files: 3
 modules:
 - name: '@greeter'
-  path: src/init.luau
+  path: src/init.jsl
 layers:
 - id: example.greetings
   requires: []
@@ -91,7 +91,7 @@ layers:
 dependencies: []
 capabilities: []
 tests:
-- tests/run.luau
+- tests/run.jsl
 ```
 
 The digest is the source's: a JPK and the Package Source it was packed from are one package.
@@ -131,7 +131,7 @@ packages:
 modules:
 - name: '@greeter'
   package: com.example.greeter
-  path: src/init.luau
+  path: src/init.jsl
 entrypoints: []
 capabilities: []
 ```
@@ -147,7 +147,7 @@ $ jess package test greeter
 id: com.example.greeter
 version: 1.0.0
 tests:
-- tests/run.luau
+- tests/run.jsl
 providers:
 - kind: source
   location: greeter
@@ -156,7 +156,7 @@ providers:
     passed: 1
     failed: 0
     modules:
-    - input: greeter/tests/run.luau
+    - input: greeter/tests/run.jsl
       report:
         passed: 1
         failed: 0

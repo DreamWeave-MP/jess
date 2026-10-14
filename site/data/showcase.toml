@@ -2,7 +2,7 @@
 # [context], on the machine named there, and names the file it came from. The page prints these
 # as they are, so keep the wording beside a number when you update it, and update the source
 # with it. Package benches live with their packages (jpk/<package>/BENCHMARKS.md); the native
-# comparisons come from tools/bench/showcase.luau and the site comparison from tools/bench/site.luau.
+# comparisons come from tools/bench/showcase.jsl and the site comparison from tools/bench/site.jsl.
 
 [context]
 runtime = "Luau 0.742 on L3i 2.0.2"
@@ -13,7 +13,7 @@ measured = "between 2026-10-12 and 2026-10-14"
 note = "Times are medians: of seven batches of about a tenth of a second for a package bench, of five alternating runs for a whole program. A bench compares its result with a pinned answer before and after timing, so a path that stops doing the work fails instead of posting a time. Base-against-head tables, which say how a change moved a package, are in each package's BENCHMARKS.md; the figures here are the current head."
 
 # Whole programs over the user's real load order, against the native tool each package ports.
-# tools/bench/showcase.luau measures both sides the same way (fresh run folder, isolated home,
+# tools/bench/showcase.jsl measures both sides the same way (fresh run folder, isolated home,
 # GNU time for wall, CPU, and peak memory) and compares every file they wrote. Baseline:
 # tools/bench/results/l3i-2.0.2-i7-10870h-showcase.json, 2026-10-14.
 [[native]]
@@ -21,21 +21,21 @@ value = "11.9×"
 label = "faster"
 headline = "TES3Merge, 52 plugins"
 detail = "0.94 s in Jess against 11.2 s for native TES3Merge over the same 69-file load order, with 34× less CPU and half the peak memory. The plugins are byte-identical apart from three documented differences in what native writes."
-source = "tools/bench/showcase.luau, median of five"
+source = "tools/bench/showcase.jsl, median of five"
 
 [[native]]
 value = "3.4×"
 label = "faster, 4.7× less memory"
 headline = "Merged Lands, 15,571 LAND records"
 detail = "3.37 s against 11.4 s, and 1.17 GiB against 5.55 GiB, merging 51 plugins' terrain. Every record the port writes is byte-identical to native's; native at its April 2026 head also writes 7,920 LAND records the port leaves out, which the harness reports as a mismatch rather than excusing."
-source = "tools/bench/showcase.luau, median of five"
+source = "tools/bench/showcase.jsl, median of five"
 
 [[native]]
 value = "0.82 s"
 label = "against 0.69 s native"
 headline = "S3LightFixes, 2,743 lights"
 detail = "The one the native still wins on wall time. The port spends 0.80 s of CPU against 2.55 s and 557 MiB against 1.44 GiB, and every output is identical. About 0.3 s of its time goes before the first record is read: loading the tool's 1.3 MB of Luau, nearly all of it native code generation, since every module marked --!native is compiled at load and the packages mark all of theirs. Packing changes nothing."
-source = "tools/bench/showcase.luau, median of five"
+source = "tools/bench/showcase.jsl, median of five"
 
 # What the packages do in-process, each row from its package's bench on the same build.
 [[runtime]]
@@ -103,4 +103,4 @@ source = "jpk/merged-lands/BENCHMARKS.md"
 pages = 108
 sections = 12
 summary = "The whole site, 108 pages, builds in 0.47 s on one thread at 34 MB. Zola 0.22.1 builds the same sources in 0.82 s of wall time and 9.7 s of CPU across 16 threads, at 248 MB."
-source = "tools/bench/site.luau, median of five alternating builds, 2026-10-14"
+source = "tools/bench/site.jsl, median of five alternating builds, 2026-10-14"

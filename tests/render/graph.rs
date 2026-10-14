@@ -1176,9 +1176,9 @@ fn attachments_must_fit_together() {
 
 #[test]
 fn metadata_carries_attribution() {
-    let metadata = PassMetadata::new("outline", "@test/viewer").with_source("scripts/viewer.luau", 42, 7);
+    let metadata = PassMetadata::new("outline", "@test/viewer").with_source("scripts/viewer.jsl", 42, 7);
     let source = metadata.source.as_ref().unwrap();
-    assert_eq!(source.to_string(), "scripts/viewer.luau:42:7");
+    assert_eq!(source.to_string(), "scripts/viewer.jsl:42:7");
     assert_eq!(metadata.owner, "@test/viewer");
 
     let mut graph = RenderGraph::new("attributed");

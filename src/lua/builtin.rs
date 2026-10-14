@@ -21,17 +21,17 @@ pub const ID: &str = "org.dreamweave.jess";
 pub const FILES: &[(&str, &str)] = &[
     ("jess.toml", include_str!("../../jpk/builtin/jess.toml")),
     (
-        "src/analysis/init.luau",
-        include_str!("../../jpk/builtin/src/analysis/init.luau"),
+        "src/analysis/init.jsl",
+        include_str!("../../jpk/builtin/src/analysis/init.jsl"),
     ),
-    ("src/data/common.luau", include_str!("../../jpk/builtin/src/data/common.luau")),
-    ("src/data/json.luau", include_str!("../../jpk/builtin/src/data/json.luau")),
-    ("src/data/toml.luau", include_str!("../../jpk/builtin/src/data/toml.luau")),
-    ("src/data/value.luau", include_str!("../../jpk/builtin/src/data/value.luau")),
-    ("src/data/yaml.luau", include_str!("../../jpk/builtin/src/data/yaml.luau")),
-    ("src/style/check.luau", include_str!("../../jpk/builtin/src/style/check.luau")),
-    ("src/style/init.luau", include_str!("../../jpk/builtin/src/style/init.luau")),
-    ("src/style/rules.luau", include_str!("../../jpk/builtin/src/style/rules.luau")),
+    ("src/data/common.jsl", include_str!("../../jpk/builtin/src/data/common.jsl")),
+    ("src/data/json.jsl", include_str!("../../jpk/builtin/src/data/json.jsl")),
+    ("src/data/toml.jsl", include_str!("../../jpk/builtin/src/data/toml.jsl")),
+    ("src/data/value.jsl", include_str!("../../jpk/builtin/src/data/value.jsl")),
+    ("src/data/yaml.jsl", include_str!("../../jpk/builtin/src/data/yaml.jsl")),
+    ("src/style/check.jsl", include_str!("../../jpk/builtin/src/style/check.jsl")),
+    ("src/style/init.jsl", include_str!("../../jpk/builtin/src/style/init.jsl")),
+    ("src/style/rules.jsl", include_str!("../../jpk/builtin/src/style/rules.jsl")),
 ];
 
 struct Manifest {

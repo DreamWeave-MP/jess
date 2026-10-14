@@ -13,7 +13,7 @@ mod common;
 #[test]
 fn modules_are_frozen_and_the_sink_is_private() {
     let runtime = common::runtime();
-    common::run(&runtime, include_str!("stdlib/contracts.luau"));
+    common::run(&runtime, include_str!("stdlib/contracts.jsl"));
 }
 
 #[test]
@@ -23,7 +23,7 @@ fn records_reach_the_selected_sink_with_the_logging_chunk_as_their_source() {
     let captured = records.clone();
     jess::lua::stdlib::set_log_sink(&runtime, move |record| captured.borrow_mut().push(record.clone())).unwrap();
     let script = tempfile::tempdir().unwrap();
-    let path = script.path().join("importer.luau");
+    let path = script.path().join("importer.jsl");
     std::fs::write(
         &path,
         "local log = require('@jess/log').new('importer', { package = 'example' })\nlog.info('resolved', { count = 2 })\nlog.debug('skipped')\nlog.child({ step = 'archives' }).warn('missing')\n",
@@ -51,25 +51,25 @@ fn a_plan_only_runtime_has_the_modules() {
     );
 }
 
-/// A data folder with a `jess/log.lua` module and a package whose `init.luau` requires
-/// `@jess/log`, beside a `jess/log.luau` of its own: neither stands in for the built-in module.
+/// A data folder with a `jess/log.lua` module and a package whose `init.jsl` requires
+/// `@jess/log`, beside a `jess/log.jsl` of its own: neither stands in for the built-in module.
 #[test]
 fn no_file_or_package_module_shadows_the_namespace() {
     let temp = tempfile::tempdir().unwrap();
     let data = temp.path().join("data");
     std::fs::create_dir_all(data.join("jess")).unwrap();
     std::fs::write(data.join("jess/log.lua"), "return { impostor = true }").unwrap();
-    std::fs::write(data.join("jess/test.luau"), "return { impostor = true }").unwrap();
+    std::fs::write(data.join("jess/test.jsl"), "return { impostor = true }").unwrap();
     let package = temp.path().join("package");
     std::fs::create_dir_all(package.join("jess")).unwrap();
-    std::fs::write(package.join("jess/log.luau"), "return { impostor = true }").unwrap();
+    std::fs::write(package.join("jess/log.jsl"), "return { impostor = true }").unwrap();
     std::fs::write(
-        package.join("init.luau"),
+        package.join("init.jsl"),
         "local log = require('@jess/log')\nlocal own = require('@self/jess/log')\nreturn { log = log, own = own }",
     )
     .unwrap();
     let runtime = common::runtime();
-    let returned = jess::lua::scripts::run_file(&runtime, &package.join("init.luau"), &[]).unwrap();
+    let returned = jess::lua::scripts::run_file(&runtime, &package.join("init.jsl"), &[]).unwrap();
     common::set_global(&runtime, "package", &Table::from_value(returned[0].clone()).unwrap());
     common::run(
         &runtime,
@@ -115,13 +115,13 @@ fn the_definitions_type_the_modules() {
 #[test]
 fn a_test_run_reports_every_module() {
     let temp = tempfile::tempdir().unwrap();
-    let passing = temp.path().join("passing.luau");
+    let passing = temp.path().join("passing.jsl");
     std::fs::write(
         &passing,
         "local test = require('@jess/test')\nlocal suite = test.new()\nsuite.it('adds', function() test.expect(1 + 1).toBe(2) end)\nsuite.it('fails', function() test.expect(1).toBe(2) end)\nreturn suite",
     )
     .unwrap();
-    let broken = temp.path().join("broken.luau");
+    let broken = temp.path().join("broken.jsl");
     std::fs::write(&broken, "require('@jess/log').warn('loading')\nreturn 42").unwrap();
     let run = jess::lua::testing::run(&jess::lua::Options::default(), &[passing, broken], true).unwrap();
     assert_eq!((run.passed, run.failed), (1, 2));

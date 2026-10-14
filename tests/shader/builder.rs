@@ -16,7 +16,7 @@ use jess::shader::{
 fn origin(line: u32, column: u32) -> SourceOrigin {
     SourceOrigin {
         owner: Arc::from("@test/viewer"),
-        file: Arc::from("shaders/lit.luau"),
+        file: Arc::from("shaders/lit.jsl"),
         line,
         column,
     }
@@ -198,7 +198,7 @@ fn dot_of_different_sizes_fails_at_its_site() {
     let error = builder.at(origin(12, 5)).dot(normal, light).unwrap_err();
     assert_eq!(
         error.to_string(),
-        "shaders/lit.luau:12:5 (@test/viewer): dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size"
+        "shaders/lit.jsl:12:5 (@test/viewer): dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size"
     );
     assert!(matches!(
         error.kind,
@@ -281,7 +281,7 @@ fn every_operation_is_typed_at_its_site() {
         "Vec2f.xyz is invalid: expected components a Vec2f has",
         "Float.x is invalid: expected components a Float has",
     ];
-    let prefix = "shaders/lit.luau:30:1 (@test/viewer): ";
+    let prefix = "shaders/lit.jsl:30:1 (@test/viewer): ";
     for (message, expected) in messages.iter().zip(expected) {
         assert_eq!(message, &format!("{prefix}{expected}"));
     }
@@ -298,7 +298,7 @@ fn an_origin_without_a_column_prints_the_line_alone() {
     let light = site.literal(Literal::Vec4f([0.0, 1.0, 0.0, 0.0])).unwrap();
     assert_eq!(
         site.dot(normal, light).unwrap_err().to_string(),
-        "shaders/lit.luau:12 (@test/viewer): dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size"
+        "shaders/lit.jsl:12 (@test/viewer): dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size"
     );
 }
 
@@ -308,7 +308,7 @@ fn literals_wgsl_cannot_write_fail_at_their_site() {
     let mut site = builder.at(origin(2, 9));
     assert_eq!(
         site.float(f32::NAN).unwrap_err().to_string(),
-        "shaders/lit.luau:2:9 (@test/viewer): expression 0 is a NaN or infinite literal, which WGSL cannot write"
+        "shaders/lit.jsl:2:9 (@test/viewer): expression 0 is a NaN or infinite literal, which WGSL cannot write"
     );
     let largest = site.int(i32::MAX);
     let one = site.int(1);
@@ -353,17 +353,17 @@ fn declarations_are_checked_at_their_site() {
     assert_eq!(
         messages,
         [
-            "shaders/lit.luau:1:1 (@test/viewer): parameter \"tint\" is declared twice",
-            "shaders/lit.luau:1:1 (@test/viewer): parameter \"visible\" cannot be Bool: expected Int, UInt, Float, \
+            "shaders/lit.jsl:1:1 (@test/viewer): parameter \"tint\" is declared twice",
+            "shaders/lit.jsl:1:1 (@test/viewer): parameter \"visible\" cannot be Bool: expected Int, UInt, Float, \
              a vector, a matrix, Texture2D, or Sampler",
-            "shaders/lit.luau:1:1 (@test/viewer): vertex input name \"1st\" is invalid: expected ASCII letters, \
+            "shaders/lit.jsl:1:1 (@test/viewer): vertex input name \"1st\" is invalid: expected ASCII letters, \
              digits, and underscores, not starting with a digit",
-            "shaders/lit.luau:1:1 (@test/viewer): vertex input \"diffuse\" cannot be Texture2D: expected Int, \
+            "shaders/lit.jsl:1:1 (@test/viewer): vertex input \"diffuse\" cannot be Texture2D: expected Int, \
              UInt, Float, or a vector",
-            "shaders/lit.luau:1:1 (@test/viewer): varying \"transform\" cannot be Mat4f: expected Int, UInt, \
+            "shaders/lit.jsl:1:1 (@test/viewer): varying \"transform\" cannot be Mat4f: expected Int, UInt, \
              Float, or a vector",
-            "shaders/lit.luau:1:1 (@test/viewer): varying \"uv\" is declared twice",
-            "shaders/lit.luau:1:1 (@test/viewer): varying name \"light-direction\" is invalid: expected ASCII \
+            "shaders/lit.jsl:1:1 (@test/viewer): varying \"uv\" is declared twice",
+            "shaders/lit.jsl:1:1 (@test/viewer): varying name \"light-direction\" is invalid: expected ASCII \
              letters, digits, and underscores, not starting with a digit",
         ]
     );
@@ -384,7 +384,7 @@ fn values_from_another_program_are_refused() {
     assert_eq!(own.expression(), foreign.expression(), "ids alias across programs");
     assert_ne!(own, foreign);
 
-    let expected = "shaders/lit.luau:7:3 (@test/viewer): expression 0 belongs to another shader program";
+    let expected = "shaders/lit.jsl:7:3 (@test/viewer): expression 0 belongs to another shader program";
     assert_eq!(site.add(own, foreign).unwrap_err().to_string(), expected);
     assert_eq!(site.add(foreign, own).unwrap_err().to_string(), expected);
     assert_eq!(site.normalize(foreign).unwrap_err().to_string(), expected);
@@ -430,12 +430,12 @@ fn finish_reports_whole_program_mistakes_with_origins() {
     assert_eq!(
         messages,
         [
-            "shaders/lit.luau:9:2 (@test/viewer): vertex input \"color\" is read in the fragment stage: pass it \
+            "shaders/lit.jsl:9:2 (@test/viewer): vertex input \"color\" is read in the fragment stage: pass it \
              through a varying",
-            "shaders/lit.luau:20:3 (@test/viewer): semantic sceneColor is not supported by the WGSL lowering yet",
-            "shaders/lit.luau:25:4 (@test/viewer): sample is used in the vertex stage: textures are sampled in the \
+            "shaders/lit.jsl:20:3 (@test/viewer): semantic sceneColor is not supported by the WGSL lowering yet",
+            "shaders/lit.jsl:25:4 (@test/viewer): sample is used in the vertex stage: textures are sampled in the \
              fragment stage",
-            "shaders/lit.luau:3:1 (@test/viewer): the vertex position is Vec3f: expected Vec4f",
+            "shaders/lit.jsl:3:1 (@test/viewer): the vertex position is Vec3f: expected Vec4f",
         ]
     );
 }

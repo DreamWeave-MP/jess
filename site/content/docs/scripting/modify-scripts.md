@@ -37,11 +37,11 @@ print(`{path}: steadied {steadied} lights`)
 ```
 
 ```sh
-$ jess plugin modify --script steady.luau MyMod.esp
+$ jess plugin modify --script steady.jsl MyMod.esp
 MyMod.esp: steadied 2 lights
 input: MyMod.esp
 path: MyMod.esp
-script: steady.luau
+script: steady.jsl
 changed: true
 written:
   path: MyMod.esp
@@ -51,11 +51,11 @@ written:
 Run it again and nothing's left to change, so nothing's written:
 
 ```sh
-$ jess plugin modify --script steady.luau MyMod.esp
+$ jess plugin modify --script steady.jsl MyMod.esp
 MyMod.esp: steadied 0 lights
 input: MyMod.esp
 path: MyMod.esp
-script: steady.luau
+script: steady.jsl
 changed: false
 written: null
 ```
@@ -93,11 +93,11 @@ print(`{path}: {repointed} textures now .dds`)
 The input can be a file, or a VFS path in your load order. A mesh inside a BSA can't be written back into the archive, so it needs `--output`:
 
 ```sh
-$ jess nif modify --script dds.luau meshes/f/furn_de_ex_bench_01.nif --output bench.nif
+$ jess nif modify --script dds.jsl meshes/f/furn_de_ex_bench_01.nif --output bench.nif
 meshes/f/furn_de_ex_bench_01.nif: 2 textures now .dds
 input: meshes/f/furn_de_ex_bench_01.nif
 path: meshes/f/furn_de_ex_bench_01.nif
-script: dds.luau
+script: dds.jsl
 changed: true
 written:
   path: bench.nif
@@ -111,7 +111,7 @@ A per-file script handles one file per run. For a handful of files, a shell loop
 
 ```sh
 for plugin in Mods/*/*.esp; do
-    jess plugin modify --script steady.luau "$plugin"
+    jess plugin modify --script steady.jsl "$plugin"
 done
 ```
 
@@ -158,7 +158,7 @@ end
 ```
 
 ```sh
-$ jess run steady-all.luau "Mods/Lanterns"
+$ jess run steady-all.jsl "Mods/Lanterns"
 A.esp: steadied 2 lights
 B.esp: steadied 2 lights
 C.esp: steadied 2 lights

@@ -17,6 +17,6 @@ end
 
 return table.freeze {
   name = 'math',
-  path = 'tools/bench/canaries/math.luau',
+  path = 'tools/bench/canaries/math.jsl',
   run = run,
 }

@@ -338,11 +338,11 @@ local function checkPayloadPath(path: string, where: string): string
 end
 
 local function checkSourcePath(path: unknown, where: string): string
-  if type(path) ~= 'string' then fail(`{where} must name a .luau file`) end
+  if type(path) ~= 'string' then fail(`{where} must name a .jsl file`) end
 
   local checked = checkPayloadPath(path :: string, where)
 
-  if string.sub(checked, -5) ~= '.luau' then fail(`{where} must name a .luau file`) end
+  if string.sub(checked, -4) ~= '.jsl' then fail(`{where} must name a .jsl file`) end
 
   return checked
 end
@@ -470,8 +470,8 @@ local function parseManifest(text: string): Manifest
       checkModuleName(name, `{Manifest} module`, id)
       checkPayloadPath(path, `{Manifest} module '{name}'`)
 
-      if string.sub(path, -5) ~= '.luau' then
-        fail(`{Manifest}: module '{name}' must be a .luau file`)
+      if string.sub(path, -4) ~= '.jsl' then
+        fail(`{Manifest}: module '{name}' must be a .jsl file`)
       end
 
       modules[name] = path

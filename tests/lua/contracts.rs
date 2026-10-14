@@ -68,9 +68,9 @@ fn generic_contract_fixtures_keep_their_answers() {
         "shader/errors",
     ] {
         let runtime = common::runtime();
-        let oracle: l3i::value::Table = runtime.eval(include_str!("contracts/oracle.luau")).unwrap();
-        let source = std::fs::read_to_string(root.join(format!("{fixture}.luau"))).unwrap();
-        let name = format!("$REPO/tests/lua/contracts/{fixture}.luau");
+        let oracle: l3i::value::Table = runtime.eval(include_str!("contracts/oracle.jsl")).unwrap();
+        let source = std::fs::read_to_string(root.join(format!("{fixture}.jsl"))).unwrap();
+        let name = format!("$REPO/tests/lua/contracts/{fixture}.jsl");
         let function = jess::lua::scripts::load(&runtime, &name, source.as_bytes()).unwrap();
         let values = function.invoke_multi(&runtime.stack(), (&oracle,)).unwrap();
         let finish: l3i::value::Function = oracle.get(&runtime.stack(), "finish").unwrap();

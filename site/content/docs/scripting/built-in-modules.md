@@ -16,11 +16,11 @@ extra:
 
 ## The rules
 
-**The namespace is closed.** `require` resolves a `@jess/` name to a member of `jess`, a built-in module, or an export of the built-in package, or fails: `module not found: @jess/whatever: @jess/ is jess's own namespace (...), never a file`. No file in a data folder, no module in another package, and no `.luaurc` alias can stand in for one. The built-in package can't take a name jess already provides either: `@jess/test` stays the built-in module. `jess/log.lua` in your data folder is `require('jess.log')`, a different name, and stays that.
+**The namespace is closed.** `require` resolves a `@jess/` name to a member of `jess`, a built-in module, or an export of the built-in package, or fails: `module not found: @jess/whatever: @jess/ is jess's own namespace (...), never a file`. No file in a data folder, no module in another package, and no `.jessrc` alias can stand in for one. The built-in package can't take a name jess already provides either: `@jess/test` stays the built-in module. `jess/log.lua` in your data folder is `require('jess.log')`, a different name, and stays that.
 
 **Exports are frozen.** `require('@jess/test').expect = evil` is an error (`attempt to modify a readonly table`), and so is changing a logger or an expectation. The same table comes back from every `require`.
 
-**They're typed like everything else.** The folder `jess luau-types` writes has a stub for each, `types/jess/log.luau` and the rest, and the `.luaurc` `jess init` writes aliases `@jess/` to them, so `local log = require '@jess/log'` is fully typed under `--!strict` with no annotation, the same way as `@jess/plugin` or `@dream/vfs`.
+**They're typed like everything else.** The folder `jess luau-types` writes has a stub for each, `types/jess/log.jsl` and the rest, and the `.jessrc` `jess init` writes aliases `@jess/` to them, so `local log = require '@jess/log'` is fully typed under `--!strict` with no annotation, the same way as `@jess/plugin` or `@dream/vfs`.
 
 **They stay small.** Four modules: two for scripts, and two that packages needed before a package could exist, since the thing that opens packages can't itself come in one. A package that wants more brings it as a package.
 
@@ -46,6 +46,6 @@ Where records go depends on the host. `jess run` writes them to stderr as JSON l
 
 ## Under the hood
 
-The source is `libs/lua/stdlib/*.luau`, embedded with `include_str!`. `jess_lua::stdlib::StdlibExtension` declares each module and its members to the plan, with their Luau types, then at install compiles the source (once per thread, cached as bytecode), runs it as a factory that receives the values it's built on (`emit` for the logger, the logger module for the test module, the file reads and `@jess/jpk` for the package module), freezes what comes back, and installs the members as the plan's module. The plan freezes the module table and registers it with Luau's `require`; jess's own `require` sends `@jess/` names there and nowhere else.
+The source is `libs/lua/stdlib/*.jsl`, embedded with `include_str!`. `jess_lua::stdlib::StdlibExtension` declares each module and its members to the plan, with their Luau types, then at install compiles the source (once per thread, cached as bytecode), runs it as a factory that receives the values it's built on (`emit` for the logger, the logger module for the test module, the file reads and `@jess/jpk` for the package module), freezes what comes back, and installs the members as the plan's module. The plan freezes the module table and registers it with Luau's `require`; jess's own `require` sends `@jess/` names there and nowhere else.
 
 The contract inventory (`libs/lua/tests/contracts/inventory.toml`) lists both modules' members, the surface probe reaches them through `require`, and `libs/lua/tests/stdlib.rs` pins the rules above: frozen, private sink, closed namespace, no shadowing by a data folder's file or a package's own module.

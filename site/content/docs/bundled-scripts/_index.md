@@ -24,7 +24,7 @@ jess has Luau ports of tools most OpenMW load orders already run. They ship in [
 
 ```luau
 --!strict
--- load-order.luau <openmw.cfg>: merge objects, fix lights, merge terrain.
+-- load-order.jsl <openmw.cfg>: merge objects, fix lights, merge terrain.
 local config: string = ...
 local openmw = jess.openmw.load(config)
 local mergedLands = require '@dreamwind/tools/merged-lands'
@@ -41,7 +41,7 @@ mergedLands(state, openmw)
 ```
 
 ```sh
-jess run --package jess/jpk/dreamwind load-order.luau ~/.config/openmw/openmw.cfg
+jess run --package jess/jpk/dreamwind load-order.jsl ~/.config/openmw/openmw.cfg
 ```
 
 Merge first, then fix lights, so S3LightFixes sees the merged lights. Native TES3Merge's shipped configuration leaves `S3LightFixes.omwaddon` out of the merge; the `fileFilters` line does the same. Merged Lands only reads terrain, so it can run anywhere in the list.

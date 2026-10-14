@@ -101,7 +101,7 @@ const FIELDS: &str = "JessLogFields";
 const LOG: BuiltIn = BuiltIn {
     path: "@jess/log",
     doc: "Structured logging: loggers with context, and capture for tests.",
-    source: include_str!("stdlib/log.luau"),
+    source: include_str!("stdlib/log.jsl"),
     members: &[
         (
             "new",
@@ -138,7 +138,7 @@ const LOG: BuiltIn = BuiltIn {
 const TEST: BuiltIn = BuiltIn {
     path: "@jess/test",
     doc: "Test suites: describe, it, hooks, expectations, and a report.",
-    source: include_str!("stdlib/test.luau"),
+    source: include_str!("stdlib/test.jsl"),
     members: &[
         ("new", "() -> JessTestSuite", "An empty suite to register cases on and run."),
         (
@@ -152,7 +152,7 @@ const TEST: BuiltIn = BuiltIn {
 const JPK: BuiltIn = BuiltIn {
     path: "@jess/jpk",
     doc: "The JPK container: a narrow ZIP subset, read with budgets and written canonically.",
-    source: include_str!("stdlib/jpk.luau"),
+    source: include_str!("stdlib/jpk.jsl"),
     members: &[
         (
             "open",
@@ -175,7 +175,7 @@ const JPK: BuiltIn = BuiltIn {
 const PACKAGE: BuiltIn = BuiltIn {
     path: "@jess/package",
     doc: "Packages from a Package Source or a JPK: manifests, content digests, packing, and resolution.",
-    source: include_str!("stdlib/package.luau"),
+    source: include_str!("stdlib/package.jsl"),
     members: &[
         (
             "open",

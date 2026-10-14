@@ -15,7 +15,7 @@ Every command:
 - **Plugins:** `plugin dump`, `stats`, `diff`, `common`, `compare`, `overdial`, `validate`, `lint`, `delete`, `modify`, `clean`, `header`, `esm`, `esp`, and `assets`.
 - **Saves:** `save info`, `save dump`, and `save screenshot` read Morrowind `.ess` saves (`save --game morrowind` if you want to insist). `save check` and `save strip` are OpenMW-only and say so.
 - **NIFs:** `nif info`, `dump`, `check`, `fix`, and `modify` on files, folders, and archives. Add `--data "C:/Games/Morrowind/Data Files"` to `nif check` (or `plugin assets`) so textures and meshes resolve against your install, and another `--data` naming `Morrowind.bsa` to include what's in it.
-- **Scripts:** `jess run script.luau` with paths in the script.
+- **Scripts:** `jess run script.jsl` with paths in the script.
 
 ```sh
 jess plugin lint "C:/Games/Morrowind/Data Files/Suran_Underworld_2.5.esp"
@@ -61,7 +61,7 @@ and hand its path to the script. The example `jess init` writes lists each plugi
 
 ```sh
 jess init my-scripts
-jess run my-scripts/main.luau C:/Games/Morrowind/jess/openmw.cfg
+jess run my-scripts/main.jsl C:/Games/Morrowind/jess/openmw.cfg
 ```
 
 Nothing here touches `Morrowind.ini`, and Morrowind.exe never reads this file. A script that activates content (`openmw:activate`, a tool's `activate = true`) edits this file, not your INI.
@@ -72,7 +72,7 @@ Writing the `content=` lines by hand is tedious once you have more than a handfu
 
 ```luau
 --!strict
--- import-ini.luau: write an openmw.cfg for jess from a Morrowind.ini. Reads the INI, writes only the output.
+-- import-ini.jsl: write an openmw.cfg for jess from a Morrowind.ini. Reads the INI, writes only the output.
 local ini = require '@dreamwind/openmw-import-morrowind'
 local iniPath: string, outputPath: string = ...
 local result = ini.importPaths { ini = iniPath, gameFiles = true }
@@ -88,7 +88,7 @@ print(`wrote {outputPath}`)
 ```sh
 # jess/ is a checkout of the jess repository.
 mkdir jess-cfg
-jess run --package jess/jpk/dreamwind import-ini.luau "C:/Games/Morrowind/Morrowind.ini" jess-cfg/openmw.cfg
+jess run --package jess/jpk/dreamwind import-ini.jsl "C:/Games/Morrowind/Morrowind.ini" jess-cfg/openmw.cfg
 ```
 
 `gameFiles = true` imports your active plugins as `content=` lines, and `saveCfg` writes the file through a temporary file and a rename, so a failed write leaves nothing half-written. A `GameFile` entry the importer can't find stops the import of that entry and every one after it, with a warning (the package also logs it through `@jess/log`), so read what the script prints:

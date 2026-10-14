@@ -33,7 +33,7 @@ Commands:
 Start here:
   jess init my-scripts        Set up a folder for Luau scripts, with types for your editor
   jess plugin lint MyMod.esp  Check a plugin for problems
-  jess run script.luau        Run a Luau script with the jess API
+  jess run script.jsl        Run a Luau script with the jess API
 
 Docs: https://DreamWeave-MP.github.io/jess
 ```
@@ -51,27 +51,27 @@ dir: my-scripts
 editor: vscode
 types:
   folder: my-scripts/types
-  definitions: my-scripts/types/jess.d.luau
+  definitions: my-scripts/types/jess.d.jsl
   files: 33
   removed: []
   aliases:
     dream: types/dream
     jess: types/jess
 written:
-- path: my-scripts/.luaurc
-- path: my-scripts/main.luau
+- path: my-scripts/.jessrc
+- path: my-scripts/main.jsl
 - path: my-scripts/.vscode/settings.json
 skipped: []
 next_steps:
-- 'run the example over a load order: jess run my-scripts/main.luau path/to/openmw.cfg'
-- 'or on one plugin: jess run my-scripts/main.luau MyMod.esp'
+- 'run the example over a load order: jess run my-scripts/main.jsl path/to/openmw.cfg'
+- 'or on one plugin: jess run my-scripts/main.jsl MyMod.esp'
 # ...
 ```
 
-A folder with the Luau types for this jess, a strict `.luaurc`, editor settings (`--editor neovim`, `zed`, `helix`, or `none` for others), and a `main.luau` that counts the lights in every plugin a load order loads. Hand it your `openmw.cfg`, or the folder holding it:
+A folder with the Luau types for this jess, a strict `.jessrc`, editor settings (`--editor neovim`, `zed`, `helix`, or `none` for others), and a `main.jsl` that counts the lights in every plugin a load order loads. Hand it your `openmw.cfg`, or the folder holding it:
 
 ```sh
-jess run my-scripts/main.luau ~/.config/openmw/openmw.cfg
+jess run my-scripts/main.jsl ~/.config/openmw/openmw.cfg
 ```
 
 ```text
@@ -82,7 +82,7 @@ jess run my-scripts/main.luau ~/.config/openmw/openmw.cfg
 692 lights in the load order
 ```
 
-That's every `content=` line in the config (your [content files](@/docs/reference/glossary.md#content-files)), in load order, each looked up in your [`data=` folders](@/docs/reference/glossary.md#data-folders) the way OpenMW looks it up. One that isn't installed anywhere prints `not installed`, which means OpenMW won't find it either. Read `main.luau`: it's short, and [OpenMW and the VFS](@/docs/scripting/openmw-and-vfs.md) has the rest of what a loaded config gives a script.
+That's every `content=` line in the config (your [content files](@/docs/reference/glossary.md#content-files)), in load order, each looked up in your [`data=` folders](@/docs/reference/glossary.md#data-folders) the way OpenMW looks it up. One that isn't installed anywhere prints `not installed`, which means OpenMW won't find it either. Read `main.jsl`: it's short, and [OpenMW and the VFS](@/docs/scripting/openmw-and-vfs.md) has the rest of what a loaded config gives a script.
 
 Script output is whatever the script prints, as plain text. If you never plan to script, skip this; nothing else on this page needs it. [Editor Setup](@/docs/getting-started/editor-setup.md) covers the editor half.
 

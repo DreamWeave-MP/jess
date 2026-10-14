@@ -75,7 +75,7 @@ NiObject
 └── NiSkinInstance, NiSkinData, NiPixelData, NiKeyframeData, NiUVData, NiMorphData, ...
 ```
 
-`libs/nif/src/types.rs` lists all 112 of them. The generated `types/jess.d.luau` (`jess luau-types`) has a Luau type for each: the plain table (`NiTriShapeData`), the live view (`NiTriShapeDataView`), and the handle (`NiTriShapeDataRecord`).
+`libs/nif/src/types.rs` lists all 112 of them. The generated `types/jess.d.jsl` (`jess luau-types`) has a Luau type for each: the plain table (`NiTriShapeData`), the live view (`NiTriShapeDataView`), and the handle (`NiTriShapeDataRecord`).
 
 ## Scene graph vs data
 

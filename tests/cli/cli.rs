@@ -55,10 +55,10 @@ fn top_level_generators_write_to_stdout() {
         report["aliases"]["jess"],
         format!("{}/jess", folder.file_name().unwrap().to_string_lossy())
     );
-    let definitions = fs::read_to_string(folder.join("jess.d.luau")).unwrap();
+    let definitions = fs::read_to_string(folder.join("jess.d.jsl")).unwrap();
     assert!(definitions.contains("declare jess: {"));
     assert!(
-        fs::read_to_string(folder.join("dream/fs.luau"))
+        fs::read_to_string(folder.join("dream/fs.jsl"))
             .unwrap()
             .contains("local module")
     );
@@ -66,20 +66,20 @@ fn top_level_generators_write_to_stdout() {
 }
 
 #[test]
-fn run_executes_luau_scripts_with_arguments() {
+fn run_executes_jsl_scripts_with_arguments() {
     let root = temp_dir_path("run-script");
     drop(fs::remove_dir_all(&root));
     fs::create_dir_all(root.join("tools")).unwrap();
-    fs::write(root.join("tools/greet.lua"), "return function(name) return 'hi ' .. name end").unwrap();
+    fs::write(root.join("tools/greet.jsl"), "return function(name) return 'hi ' .. name end").unwrap();
     fs::write(
-        root.join("script.luau"),
+        root.join("script.jsl"),
         "local name, value = ...\nlocal greet = require('./tools/greet')\nprint(greet(name), value, arg[0] ~= nil)\n",
     )
     .unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_jess"))
         .arg("run")
-        .arg(root.join("script.luau"))
+        .arg(root.join("script.jsl"))
         .arg("jess")
         .arg("generic argument")
         .output()
@@ -87,10 +87,10 @@ fn run_executes_luau_scripts_with_arguments() {
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     assert_eq!(String::from_utf8(output.stdout).unwrap(), "hi jess\tgeneric argument\ttrue\n");
 
-    fs::write(root.join("failing.luau"), "error('nope')").unwrap();
+    fs::write(root.join("failing.jsl"), "error('nope')").unwrap();
     let failed = Command::new(env!("CARGO_BIN_EXE_jess"))
         .args(["run"])
-        .arg(root.join("failing.luau"))
+        .arg(root.join("failing.jsl"))
         .output()
         .unwrap();
     assert!(!failed.status.success());
@@ -103,7 +103,7 @@ fn run_requires_an_explicit_network_capability_grant() {
     let root = temp_dir_path("run-network-capability");
     drop(fs::remove_dir_all(&root));
     fs::create_dir_all(&root).unwrap();
-    let script = root.join("network.luau");
+    let script = root.join("network.jsl");
     fs::write(
         &script,
         r#"
@@ -142,7 +142,7 @@ fn run_uses_the_first_numeric_script_result_as_its_exit_status() {
     let root = temp_dir_path("run-script-exit-status");
     drop(fs::remove_dir_all(&root));
     fs::create_dir_all(&root).unwrap();
-    let script = root.join("status.luau");
+    let script = root.join("status.jsl");
     fs::write(&script, "return 23").unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_jess"))
@@ -176,7 +176,7 @@ fn run_can_profile_and_disassemble_luau_without_external_tools() {
     let root = temp_dir_path("run-luau-debug-tools");
     drop(fs::remove_dir_all(&root));
     fs::create_dir_all(&root).unwrap();
-    let script = root.join("debug.luau");
+    let script = root.join("debug.jsl");
     let disassembly = root.join("debug.bytecode.txt");
     let assembly = root.join("debug.asm");
     fs::write(
@@ -291,14 +291,14 @@ version = "1.0.0"
 jess_api = "1"
 include = ["src"]
 [modules]
-"@cli/example" = "src/example.luau"
+"@cli/example" = "src/example.jsl"
 [[layer]]
 id = "cli.example"
 exports = ["@cli/example"]
 "#,
     )
     .unwrap();
-    fs::write(source.join("src/example.luau"), "return 'generic package'\n").unwrap();
+    fs::write(source.join("src/example.jsl"), "return 'generic package'\n").unwrap();
     let packed = root.join("example.jpk");
     let output = jess()
         .args(["--format", "json", "pack"])
@@ -310,7 +310,7 @@ exports = ["@cli/example"]
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["id"], "org.example.cli");
-    let script = root.join("script.luau");
+    let script = root.join("script.jsl");
     fs::write(&script, "print(require('@cli/example'))\n").unwrap();
     for provider in [&source, &packed] {
         let inspection = jess()
@@ -346,13 +346,13 @@ version = "1.0.0"
 jess_api = "1"
 include = ["src"]
 [modules]
-"@base" = "src/init.luau"
+"@base" = "src/init.jsl"
 [[layer]]
 id = "example.base"
 exports = ["@base"]
 "#,
     );
-    write("packages/base/src/init.luau", "return { name = 'base' }\n");
+    write("packages/base/src/init.jsl", "return { name = 'base' }\n");
     write(
         "tool/jess.toml",
         r#"manifest_version = 1
@@ -362,35 +362,35 @@ version = "1.0.0"
 jess_api = "1"
 default_target = "greet"
 include = ["src"]
-tests = ["tests/run.luau"]
+tests = ["tests/run.jsl"]
 [dependencies]
 "org.example.base" = "1"
 [modules]
-"@tool" = "src/init.luau"
+"@tool" = "src/init.jsl"
 [[layer]]
 id = "example.tool"
 exports = ["@tool"]
 [targets.greet]
 kind = "command"
-entry = "src/greet.luau"
+entry = "src/greet.jsl"
 capabilities = ["process.environment"]
 "#,
     );
     write(
-        "tool/src/init.luau",
+        "tool/src/init.jsl",
         "return { greeting = `hello from {require('@base').name}` }\n",
     );
     write(
-        "tool/src/greet.luau",
+        "tool/src/greet.jsl",
         "print(require('@tool').greeting, ...)\nreturn if select('#', ...) == 2 then 3 else 0\n",
     );
     write(
-        "tool/tests/run.luau",
+        "tool/tests/run.jsl",
         "local test = require '@jess/test'\nlocal suite = test.new()\n\
          suite.it('greets', function() test.expect(require('@tool').greeting).toBe 'hello from base' end)\n\
          return suite\n",
     );
-    write("script.luau", "print(require('@base').name)\n");
+    write("script.jsl", "print(require('@base').name)\n");
 }
 
 #[test]
@@ -441,7 +441,7 @@ fn packages_resolve_over_a_package_path_and_run_their_targets() {
         .args(["run", "--package-path"])
         .arg(&packages)
         .args(["--layer", "example.base"])
-        .arg(root.join("script.luau"))
+        .arg(root.join("script.jsl"))
         .output()
         .unwrap();
     assert!(layered.status.success(), "{}", String::from_utf8_lossy(&layered.stderr));
@@ -449,7 +449,7 @@ fn packages_resolve_over_a_package_path_and_run_their_targets() {
     let unchosen = jess()
         .args(["run", "--package-path"])
         .arg(&packages)
-        .arg(root.join("script.luau"))
+        .arg(root.join("script.jsl"))
         .output()
         .unwrap();
     assert!(!unchosen.status.success());

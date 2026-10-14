@@ -300,10 +300,7 @@ fn relative_candidates(name: &str, caller: &str, path: &str, package: &str) -> l
     if base.is_empty() {
         return Ok(Vec::new());
     }
-    Ok([".luau", ".lua", "/init.luau", "/init.lua"]
-        .iter()
-        .map(|suffix| format!("{base}{suffix}"))
-        .collect())
+    Ok([".jsl", "/init.jsl"].iter().map(|suffix| format!("{base}{suffix}")).collect())
 }
 
 /// Resolves a file import relative to its calling script.
@@ -314,7 +311,7 @@ fn find_relative(name: &str, caller: Option<&str>) -> l3i::Result<Module> {
             "module not found: {name}: a relative require needs a script file to be relative to"
         )));
     };
-    let suffixes = [".luau", ".lua", "/init.luau", "/init.lua"];
+    let suffixes = [".jsl", "/init.jsl"];
     // An init script is its folder's module: `./` starts beside the folder, and `@self/` in it.
     let init = std::path::Path::new(caller)
         .file_stem()

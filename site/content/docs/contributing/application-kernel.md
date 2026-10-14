@@ -31,7 +31,7 @@ let mut host = Host::create(
 )?;
 host.domain().register_context(ContextSpec::new("main").schedule([Phase::Startup, Phase::Update, Phase::Event, Phase::Shutdown]))?;
 host.domain().register_context(ContextSpec::new("input").schedule([Phase::Input]).capabilities(CapabilitySet::from_names(["input.actions"])?))?;
-host.domain().load_source("@editor/main.luau", &source)?;
+host.domain().load_source("@editor/main.jsl", &source)?;
 host.domain().start()?;
 ```
 

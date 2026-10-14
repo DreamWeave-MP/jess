@@ -1,7 +1,7 @@
 //! Setting up a folder for jess scripts, as `jess init` does.
 //!
-//! It holds jess's Luau types (the folder of [`crate::lua::types`]), a strict `.luaurc` aliasing its
-//! modules, a working `main.luau`, and luau-lsp settings for an editor.
+//! It holds jess's Luau types (the folder of [`crate::lua::types`]), a strict `.jessrc` aliasing its
+//! modules, a working `main.jsl`, and luau-lsp settings for an editor.
 //!
 //! The settings turn on Luau's new type solver, which some of jess's types (read and write
 //! property types) need.
@@ -104,10 +104,10 @@ pub struct InitReport {
 }
 
 /// The files for a script folder besides the types, as (path relative to the folder, contents):
-/// the `.luaurc` aliasing `types`' modules, the example, and the editor's settings.
+/// the `.jessrc` aliasing `types`' modules, the example, and the editor's settings.
 #[must_use]
 pub fn files(editor: Editor, types: &crate::lua::types::Types) -> Vec<(&'static str, String)> {
-    let mut files = vec![(".luaurc", types.luaurc(TYPES_FOLDER)), ("main.luau", MAIN.to_owned())];
+    let mut files = vec![(".jessrc", types.jessrc(TYPES_FOLDER)), ("main.jsl", MAIN.to_owned())];
     let settings = match editor {
         Editor::VsCode => Some(VSCODE),
         Editor::Neovim => Some(NEOVIM),
@@ -155,17 +155,17 @@ pub fn init(dir: &Path, options: &InitOptions) -> io::Result<InitReport> {
     Ok(report)
 }
 
-const MAIN: &str = include_str!("templates/main.luau");
+const MAIN: &str = include_str!("templates/main.jsl");
 
 const VSCODE: &str = r#"{
   "luau-lsp.platform.type": "standard",
   "luau-lsp.sourcemap.enabled": false,
   "luau-lsp.fflags.enableNewSolver": true,
   "luau-lsp.types.definitionFiles": {
-    "@jess": "types/jess.d.luau"
+    "@jess": "types/jess.d.jsl"
   },
   "files.associations": {
-    "*.luau": "luau"
+    "*.jsl": "luau"
   }
 }
 "#;
@@ -180,7 +180,7 @@ const ZED: &str = r#"{
         "fflags": {
           "enable_new_solver": true
         },
-        "definitions": ["types/jess.d.luau"],
+        "definitions": ["types/jess.d.jsl"],
         "luau-lsp": {
           "platform": {
             "type": "standard"
@@ -200,7 +200,7 @@ const HELIX: &str = r#"# luau-lsp with jess's types, for the scripts in this fol
 # new type solver, which some of jess's types (view fields that read one type and take another) need.
 [language-server.luau-lsp]
 command = "luau-lsp"
-args = ["lsp", "--definitions:@jess=types/jess.d.luau", "--flag:LuauSolverV2=true"]
+args = ["lsp", "--definitions:@jess=types/jess.d.jsl", "--flag:LuauSolverV2=true"]
 
 [language-server.luau-lsp.config.luau-lsp]
 platform = { type = "standard" }
@@ -220,13 +220,13 @@ vim.lsp.config('luau_lsp', {
   cmd = {
     'luau-lsp',
     'lsp',
-    '--definitions:@jess=' .. vim.fs.joinpath(root, 'types', 'jess.d.luau'),
+    '--definitions:@jess=' .. vim.fs.joinpath(root, 'types', 'jess.d.jsl'),
     -- The new type solver: some of jess's types (view fields that read one type and take
     -- another) need it.
     '--flag:LuauSolverV2=true',
   },
   filetypes = { 'luau' },
-  root_markers = { '.luaurc', '.git' },
+  root_markers = { '.jessrc', '.git' },
   settings = {
     ['luau-lsp'] = {
       platform = { type = 'standard' },
@@ -253,19 +253,19 @@ mod tests {
         assert_eq!(first.written.len(), 3);
         assert_eq!(first.skipped, Vec::<PathBuf>::new());
         assert!(folder.join(".helix/languages.toml").is_file());
-        assert!(folder.join("types/jess.d.luau").is_file());
-        assert!(folder.join("types/jess/log.luau").is_file());
+        assert!(folder.join("types/jess.d.jsl").is_file());
+        assert!(folder.join("types/jess/log.jsl").is_file());
 
-        std::fs::write(folder.join("main.luau"), "print('mine')").unwrap();
-        std::fs::write(folder.join("types/jess.d.luau"), "stale").unwrap();
-        std::fs::write(folder.join("types/jess/gone.luau"), "return nil").unwrap();
+        std::fs::write(folder.join("main.jsl"), "print('mine')").unwrap();
+        std::fs::write(folder.join("types/jess.d.jsl"), "stale").unwrap();
+        std::fs::write(folder.join("types/jess/gone.jsl"), "return nil").unwrap();
         let second = init(&folder, &options).unwrap();
         assert_eq!(second.written, []);
         assert_eq!(second.skipped.len(), 3);
-        assert_eq!(second.types_written.removed, [folder.join("types/jess/gone.luau")]);
-        assert_eq!(std::fs::read_to_string(folder.join("main.luau")).unwrap(), "print('mine')");
+        assert_eq!(second.types_written.removed, [folder.join("types/jess/gone.jsl")]);
+        assert_eq!(std::fs::read_to_string(folder.join("main.jsl")).unwrap(), "print('mine')");
         assert_eq!(
-            std::fs::read_to_string(folder.join("types/jess.d.luau")).unwrap(),
+            std::fs::read_to_string(folder.join("types/jess.d.jsl")).unwrap(),
             crate::lua::definitions()
         );
 
@@ -274,7 +274,7 @@ mod tests {
         let main = forced
             .written
             .iter()
-            .find(|written| written.path.ends_with("main.luau"))
+            .find(|written| written.path.ends_with("main.jsl"))
             .unwrap();
         assert_eq!(
             std::fs::read_to_string(main.backup.as_ref().unwrap()).unwrap(),

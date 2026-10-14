@@ -32,7 +32,7 @@ use jess::runtime::{
     Message, Phase, RootAuthority, RuntimeFactory, WORKER_SPAWN,
 };
 
-/// The application: what a package's `main.luau` would be.
+/// The application: what a package's `main.jsl` would be.
 const MAIN: &str = r"
 local context = require('@jess/context')
 local worker = require('@jess/worker')
@@ -193,7 +193,7 @@ fn registry() -> Registry {
 fn load(host: &mut Host, source: &str, with_calls: bool) -> Function {
     let functions: RefCell<Option<(Function, Option<Function>)>> = RefCell::new(None);
     let body = |runtime: &Runtime| {
-        let chunk = jess::runtime::chunk::load(runtime, "@test/kernel/main.luau", source)?;
+        let chunk = jess::runtime::chunk::load(runtime, "@test/kernel/main.jsl", source)?;
         let returned = if with_calls {
             let (log, calls) = chunk.invoke::<(Function, Function), ()>(&runtime.stack(), ())?;
             (log, Some(calls))
@@ -492,7 +492,7 @@ context.bind('main', {
     let main = domain
         .register_context(ContextSpec::new("main").schedule([Phase::Startup]))
         .unwrap();
-    domain.load_source("@test/kernel/logs.luau", SOURCE).unwrap();
+    domain.load_source("@test/kernel/logs.jsl", SOURCE).unwrap();
     let started = domain.start().unwrap();
     assert!(started.failures.is_empty(), "{:?}", started.failures);
     let worker = domain.workers()[0].id;

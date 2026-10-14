@@ -11,9 +11,9 @@ A jess script without types is a Lua script: it runs until the misspelled field,
 The pieces are the same in every editor:
 
 - **[luau-lsp](https://github.com/JohnnyMorganz/luau-lsp)**, the Luau language server. jess doesn't ship it.
-- **`types/`**, the types for the whole jess API, every record type and NIF type included: `jess.d.luau`, the definitions, and one stub module per `@jess/...` and `@dream/...` name, so `require('@jess/log')` is typed by finding its file. `jess luau-types` writes it for the jess you have installed.
-- **A `.luaurc`** aliasing `jess` and `dream` to their folders in `types/`.
-- **Settings** telling luau-lsp to load `types/jess.d.luau` as `@jess`, to use the plain `standard` platform (not Roblox), and not to look for a Rojo sourcemap.
+- **`types/`**, the types for the whole jess API, every record type and NIF type included: `jess.d.jsl`, the definitions, and one stub module per `@jess/...` and `@dream/...` name, so `require('@jess/log')` is typed by finding its file. `jess luau-types` writes it for the jess you have installed.
+- **A `.jessrc`** aliasing `jess` and `dream` to their folders in `types/`.
+- **Settings** telling luau-lsp to load `types/jess.d.jsl` as `@jess`, to use the plain `standard` platform (not Roblox), and not to look for a Rojo sourcemap.
 - **Luau's new type solver**, which some of the types need. `jess init` turns it on. [See below](#the-new-type-solver).
 
 ## jess init
@@ -27,20 +27,20 @@ dir: my-scripts
 editor: vscode
 types:
   folder: my-scripts/types
-  definitions: my-scripts/types/jess.d.luau
+  definitions: my-scripts/types/jess.d.jsl
   files: 33
   removed: []
   aliases:
     dream: types/dream
     jess: types/jess
 written:
-- path: my-scripts/.luaurc
-- path: my-scripts/main.luau
+- path: my-scripts/.jessrc
+- path: my-scripts/main.jsl
 - path: my-scripts/.vscode/settings.json
 skipped: []
 next_steps:
-- 'run the example over a load order: jess run my-scripts/main.luau path/to/openmw.cfg'
-- 'or on one plugin: jess run my-scripts/main.luau MyMod.esp'
+- 'run the example over a load order: jess run my-scripts/main.jsl path/to/openmw.cfg'
+- 'or on one plugin: jess run my-scripts/main.jsl MyMod.esp'
 # ...
 ```
 
@@ -48,27 +48,27 @@ The folder is created if it's missing, and defaults to the current one. What goe
 
 | File | Editor | What it is |
 | --- | --- | --- |
-| `types/` | all | The types: `jess.d.luau` and the module stubs. |
-| `.luaurc` | all | `"languageMode": "strict"`, so every script in the folder is type-checked, `--!strict` or not, and the `jess` and `dream` aliases into `types/`. |
-| `main.luau` | all | A working script that counts lights per plugin. `jess run my-scripts/main.luau path/to/openmw.cfg` runs it over a load order, `jess run my-scripts/main.luau MyMod.esp` on one plugin. |
+| `types/` | all | The types: `jess.d.jsl` and the module stubs. |
+| `.jessrc` | all | `"languageMode": "strict"`, so every script in the folder is type-checked, `--!strict` or not, and the `jess` and `dream` aliases into `types/`. |
+| `main.jsl` | all | A working script that counts lights per plugin. `jess run my-scripts/main.jsl path/to/openmw.cfg` runs it over a load order, `jess run my-scripts/main.jsl MyMod.esp` on one plugin. |
 | `.vscode/settings.json` | `vscode` (the default) | luau-lsp settings for VS Code. |
 | `.nvim.lua` | `neovim` | A `vim.lsp.config` call for Neovim 0.11+. |
 | `.zed/settings.json` | `zed` | luau-lsp settings for Zed's Luau extension. |
 | `.helix/languages.toml` | `helix` | A `luau-lsp` language server for Helix. |
 
-Run it again and it rewrites `types/` and skips everything else, since `main.luau`, `.luaurc`, and your settings are yours now and jess won't clobber them. `--force` replaces them too, after backing each one up to `.bak`. `--editor none` writes only the first three.
+Run it again and it rewrites `types/` and skips everything else, since `main.jsl`, `.jessrc`, and your settings are yours now and jess won't clobber them. `--force` replaces them too, after backing each one up to `.bak`. `--editor none` writes only the first three.
 
 Open the folder itself in your editor, not a parent of it. Every editor below finds its settings, and luau-lsp finds `types/`, relative to the folder you opened.
 
 ### Why a folder
 
-jess's types used to be one file with one overloaded `require`, a function type listing every module name. Luau gives up on an overloaded function after eight overloads, and jess has more modules than that. A folder has no such ceiling: each module is a file, `.luaurc` aliases point `@jess/` and `@dream/` at them, and `require('@jess/package')` is typed the way every Luau `require` is, by resolving it.
+jess's types used to be one file with one overloaded `require`, a function type listing every module name. Luau gives up on an overloaded function after eight overloads, and jess has more modules than that. A folder has no such ceiling: each module is a file, `.jessrc` aliases point `@jess/` and `@dream/` at them, and `require('@jess/package')` is typed the way every Luau `require` is, by resolving it.
 
 That resolution follows Luau's rules, which are stricter than OpenMW's. `require 'scripts.myMod.util'` (OpenMW's dotted names) and `require 'vfstool'` (a bare name) work at run time and type-check as unsupported paths. Use `./` paths and the `@jess/` and `@dream/` names in typed scripts; when you need OpenMW's form, call it untyped: `(require :: (name: string) -> any) 'scripts.myMod.util'`.
 
 ### After upgrading jess
 
-`types/` describes exactly one version of jess; the first line of `types/jess.d.luau` says which. After an upgrade, refresh it:
+`types/` describes exactly one version of jess; the first line of `types/jess.d.jsl` says which. After an upgrade, refresh it:
 
 ```sh
 jess init my-scripts                 # rewrites types/, leaves the rest
@@ -77,7 +77,7 @@ jess luau-types my-scripts/types     # same thing, by hand
 
 Skip this and the editor keeps approving calls the new jess doesn't have, and flagging the ones it added. Neither is a jess bug. Both are a stale folder.
 
-A folder set up before the types were a folder has a `jess.d.luau` at its top and a `.luaurc` without aliases. Delete the old file, rerun `jess init`, and add the `aliases` it prints to your `.luaurc` (or rerun with `--force`, which backs up and replaces `.luaurc` and your settings).
+A folder set up before the types were a folder has a `jess.d.jsl` at its top and a `.jessrc` without aliases. Delete the old file, rerun `jess init`, and add the `aliases` it prints to your `.jessrc` (or rerun with `--force`, which backs up and replaces `.jessrc` and your settings).
 
 ## VS Code
 
@@ -89,10 +89,10 @@ Install the **Luau Language Server** extension (`JohnnyMorganz.luau-lsp`), then 
   "luau-lsp.sourcemap.enabled": false,
   "luau-lsp.fflags.enableNewSolver": true,
   "luau-lsp.types.definitionFiles": {
-    "@jess": "types/jess.d.luau"
+    "@jess": "types/jess.d.jsl"
   },
   "files.associations": {
-    "*.luau": "luau"
+    "*.jsl": "luau"
   }
 }
 ```
@@ -110,11 +110,11 @@ vim.lsp.config('luau_lsp', {
   cmd = {
     'luau-lsp',
     'lsp',
-    '--definitions:@jess=' .. vim.fs.joinpath(root, 'types', 'jess.d.luau'),
+    '--definitions:@jess=' .. vim.fs.joinpath(root, 'types', 'jess.d.jsl'),
     '--flag:LuauSolverV2=true',
   },
   filetypes = { 'luau' },
-  root_markers = { '.luaurc', '.git' },
+  root_markers = { '.jessrc', '.git' },
   settings = {
     ['luau-lsp'] = {
       platform = { type = 'standard' },
@@ -146,7 +146,7 @@ Neovim looks for `.nvim.lua` in the folder you start it in, and the first time i
       cmd = {
         'luau-lsp',
         'lsp',
-        '--definitions:@jess=' .. vim.fn.expand '~/my-scripts/types/jess.d.luau',
+        '--definitions:@jess=' .. vim.fn.expand '~/my-scripts/types/jess.d.jsl',
         '--flag:LuauSolverV2=true',
       },
       settings = {
@@ -169,7 +169,7 @@ Install Zed's **Luau** extension and open the folder. `jess init --editor zed` w
       "settings": {
         "roblox": { "enabled": false },
         "fflags": { "enable_new_solver": true },
-        "definitions": ["types/jess.d.luau"],
+        "definitions": ["types/jess.d.jsl"],
         "luau-lsp": {
           "platform": { "type": "standard" },
           "sourcemap": { "enabled": false }
@@ -187,7 +187,7 @@ Put `luau-lsp` on your `PATH`, open the folder with `hx`, and `hx --health luau`
 ```toml
 [language-server.luau-lsp]
 command = "luau-lsp"
-args = ["lsp", "--definitions:@jess=types/jess.d.luau", "--flag:LuauSolverV2=true"]
+args = ["lsp", "--definitions:@jess=types/jess.d.jsl", "--flag:LuauSolverV2=true"]
 
 [language-server.luau-lsp.config.luau-lsp]
 platform = { type = "standard" }

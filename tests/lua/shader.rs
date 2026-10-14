@@ -1,4 +1,4 @@
-//! The Luau shader corpus (`tests/shader/*.luau`), each an ordinary module returning a
+//! The Luau shader corpus (`tests/shader/*.jsl`), each an ordinary module returning a
 //! `ShaderProgram`, loaded under that contract and taken all the way through: `@jess/shader`,
 //! `jess::shader::Program`, constant folding, WGSL, and naga's validation. The invalid modules fail
 //! where they're written, in Jess terms.
@@ -56,7 +56,7 @@ fn declared(declarations: &[jess::shader::Declaration]) -> Vec<(&str, Type)> {
 #[test]
 fn solid_color_lowers_to_valid_wgsl() {
     let runtime = common::runtime();
-    let (program, module) = lowered(&runtime, "solid-color.luau");
+    let (program, module) = lowered(&runtime, "solid-color.jsl");
     assert_eq!(declared(program.parameters()), [("tint", Type::Vec4f)]);
     assert_eq!(declared(program.vertex_inputs()), [("position", Type::Vec3f)]);
     assert_eq!(program.varyings(), []);
@@ -67,7 +67,7 @@ fn solid_color_lowers_to_valid_wgsl() {
 #[test]
 fn vertex_transform_passes_a_varying_and_keeps_luau_evaluation_order() {
     let runtime = common::runtime();
-    let (program, module) = lowered(&runtime, "vertex-transform.luau");
+    let (program, module) = lowered(&runtime, "vertex-transform.jsl");
     assert_eq!(
         declared(program.vertex_inputs()),
         [("position", Type::Vec3f), ("color", Type::Vec4f)]
@@ -90,7 +90,7 @@ fn vertex_transform_passes_a_varying_and_keeps_luau_evaluation_order() {
 #[test]
 fn textured_samples_with_the_sampler_declared_with_the_texture() {
     let runtime = common::runtime();
-    let (program, module) = lowered(&runtime, "textured.luau");
+    let (program, module) = lowered(&runtime, "textured.jsl");
     assert_eq!(
         declared(program.parameters()),
         [("diffuse", Type::Texture2D), ("diffuse", Type::Sampler)]
@@ -107,7 +107,7 @@ fn textured_samples_with_the_sampler_declared_with_the_texture() {
 #[test]
 fn bayer_dither_port_builds_every_static_mode_and_lowers_to_valid_wgsl() {
     let runtime = common::runtime();
-    let (program, module) = lowered(&runtime, "bayer-dither.luau");
+    let (program, module) = lowered(&runtime, "bayer-dither.jsl");
     assert_eq!(
         declared(program.parameters()),
         [("source", Type::Texture2D), ("source", Type::Sampler)]
@@ -125,7 +125,7 @@ fn bayer_dither_port_builds_every_static_mode_and_lowers_to_valid_wgsl() {
 #[test]
 fn directional_lighting_lowers_to_valid_wgsl() {
     let runtime = common::runtime();
-    let (program, module) = lowered(&runtime, "directional-lit.luau");
+    let (program, module) = lowered(&runtime, "directional-lit.jsl");
     // Parameters are declared sorted by name, then the textures with their samplers.
     assert_eq!(
         declared(program.parameters()),
@@ -146,7 +146,7 @@ fn directional_lighting_lowers_to_valid_wgsl() {
 #[test]
 fn an_invalid_dot_fails_at_the_line_that_wrote_it() {
     let runtime = common::runtime();
-    let path = corpus("invalid-dot.luau");
+    let path = corpus("invalid-dot.jsl");
     let error = load_module::<LuaShaderProgram>(&runtime, &path).unwrap_err().to_string();
     let file = path.display().to_string();
     assert_eq!(
@@ -158,7 +158,7 @@ fn an_invalid_dot_fails_at_the_line_that_wrote_it() {
 #[test]
 fn a_module_returning_something_else_fails_the_contract() {
     let runtime = common::runtime();
-    let path = corpus("wrong-return-type.luau");
+    let path = corpus("wrong-return-type.jsl");
     let error = load_module::<LuaShaderProgram>(&runtime, &path).unwrap_err().to_string();
     assert_eq!(
         error,
@@ -185,7 +185,7 @@ fn the_contract_names_whatever_came_back() {
     ];
     for (index, (source, came_back)) in cases.into_iter().enumerate() {
         // Chunks are cached by name per runtime, so each module gets its own.
-        let path = directory.path().join(format!("module{index}.luau"));
+        let path = directory.path().join(format!("module{index}.jsl"));
         std::fs::write(&path, source).unwrap();
         let error = load_module::<LuaShaderProgram>(&runtime, &path).unwrap_err().to_string();
         assert_eq!(
@@ -197,7 +197,7 @@ fn the_contract_names_whatever_came_back() {
             "{source}"
         );
     }
-    let missing = directory.path().join("missing.luau");
+    let missing = directory.path().join("missing.jsl");
     let error = load_module::<LuaShaderProgram>(&runtime, &missing).unwrap_err().to_string();
     assert_eq!(error, format!("module not found: {}", missing.display()));
 }

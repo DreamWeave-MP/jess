@@ -37,7 +37,7 @@ fn messages(program: &Program) -> Vec<String> {
 fn origin(line: u32, column: u32) -> SourceOrigin {
     SourceOrigin {
         owner: Arc::from("@test/viewer"),
-        file: Arc::from("shaders/lit.luau"),
+        file: Arc::from("shaders/lit.jsl"),
         line,
         column,
     }
@@ -54,7 +54,7 @@ fn dot_of_different_sizes_is_invalid() {
 
     assert_eq!(
         messages(&program),
-        ["shaders/lit.luau:12:5 (@test/viewer): dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size"]
+        ["shaders/lit.jsl:12:5 (@test/viewer): dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size"]
     );
 }
 
@@ -209,7 +209,7 @@ fn the_stage_interface_is_checked() {
         [
             "varying \"tint\" is written twice",
             "varying \"normal\" is declared Vec3f but written Vec4f",
-            "shaders/lit.luau:4:7 (@test/viewer): varying \"uv\" is read by the fragment stage but never written by \
+            "shaders/lit.jsl:4:7 (@test/viewer): varying \"uv\" is read by the fragment stage but never written by \
              the vertex stage",
         ]
     );
@@ -285,7 +285,7 @@ fn pass_semantics_are_not_lowered_yet() {
 
     assert_eq!(
         messages(&program),
-        ["shaders/lit.luau:20:3 (@test/viewer): semantic sceneColor is not supported by the WGSL lowering yet"]
+        ["shaders/lit.jsl:20:3 (@test/viewer): semantic sceneColor is not supported by the WGSL lowering yet"]
     );
 }
 

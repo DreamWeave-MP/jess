@@ -8,15 +8,15 @@ id = "org.dreamweave.jess"
 version = "0.1.0"
 jess_api = "1"
 include = ["src"]
-tests = ["tests/style/run.luau", "tests/data/run.luau", "tests/analysis/run.luau"]
+tests = ["tests/style/run.jsl", "tests/data/run.jsl", "tests/analysis/run.jsl"]
 
 [modules]
-"@jess/style" = "src/style/init.luau"
-"@jess/analysis" = "src/analysis/init.luau"
-"@jess/json" = "src/data/json.luau"
-"@jess/data/toml" = "src/data/toml.luau"
-"@jess/data/value" = "src/data/value.luau"
-"@jess/yaml" = "src/data/yaml.luau"
+"@jess/style" = "src/style/init.jsl"
+"@jess/analysis" = "src/analysis/init.jsl"
+"@jess/json" = "src/data/json.jsl"
+"@jess/data/toml" = "src/data/toml.jsl"
+"@jess/data/value" = "src/data/value.jsl"
+"@jess/yaml" = "src/data/yaml.jsl"
 
 [[layer]]
 id = "jess.style"

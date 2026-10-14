@@ -14,7 +14,7 @@ jess is a Luau runtime with plugins, saves, NIFs, and OpenMW configs a call away
 
 A script runs one of three ways:
 
-- **Standalone**: `jess run script.luau args...`. Anything goes.
+- **Standalone**: `jess run script.jsl args...`. Anything goes.
 - **Over your load order**: a module returning a function of `(state, openmw)`, called by a script that loaded your `openmw.cfg` with `jess.openmw.load`. This is how patchers work, including the [load-order tools](@/docs/bundled-scripts/_index.md).
 - **Over one file**: `jess plugin modify --script` or `jess nif modify --script`, which hand your script one plugin or mesh and save it if you changed it.
 

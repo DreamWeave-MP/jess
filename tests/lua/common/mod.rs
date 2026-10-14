@@ -74,18 +74,18 @@ thread_local! {
 /// Type-checks `source` as a script in a folder `jess init` set up, and returns its errors, one
 /// per line; empty when it checks.
 pub fn type_check(source: &str) -> String {
-    type_check_files(&["main.luau"], &[("main.luau".to_owned(), source.to_owned())], &[])
+    type_check_files(&["main.jsl"], &[("main.jsl".to_owned(), source.to_owned())], &[])
 }
 
-/// Every `.luau` file under `root`, as (`prefix/` and its path below `root`, source), sorted.
-pub fn luau_tree(root: &std::path::Path, prefix: &str) -> Vec<(String, String)> {
+/// Every `.jsl` file under `root`, as (`prefix/` and its path below `root`, source), sorted.
+pub fn jsl_tree(root: &std::path::Path, prefix: &str) -> Vec<(String, String)> {
     fn walk(dir: &std::path::Path, name: &str, files: &mut Vec<(String, String)>) {
         for entry in std::fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
             let child = format!("{name}/{}", path.file_name().unwrap().to_string_lossy());
             if path.is_dir() {
                 walk(&path, &child, files);
-            } else if path.extension().is_some_and(|extension| extension == "luau") {
+            } else if path.extension().is_some_and(|extension| extension == "jsl") {
                 files.push((child, std::fs::read_to_string(&path).unwrap()));
             }
         }
@@ -97,10 +97,10 @@ pub fn luau_tree(root: &std::path::Path, prefix: &str) -> Vec<(String, String)> 
 }
 
 /// Type-checks the modules `mains` among `files` (path, source), the way luau-lsp does in a folder
-/// `jess init` set up: `types/jess.d.luau` loaded as definitions, `@scope/...` resolved through
-/// the types folder's stubs as its `.luaurc` aliases resolve them, `aliases` (a module name prefix
+/// `jess init` set up: `types/jess.d.jsl` loaded as definitions, `@scope/...` resolved through
+/// the types folder's stubs as its `.jessrc` aliases resolve them, `aliases` (a module name prefix
 /// and the path it stands for, as a package's exports) next, and `./`, `../`, and `@self/`
-/// relative to the requiring file, an `init.luau` standing for its folder. Returns every error in
+/// relative to the requiring file, an `init.jsl` standing for its folder. Returns every error in
 /// them and what they require, one per line, as `path:line:column: message`.
 pub fn type_check_files(mains: &[&str], files: &[(String, String)], aliases: &[(&str, &str)]) -> String {
     CHECKER.with(|(analysis, checked)| {
@@ -142,17 +142,17 @@ struct Sources {
 }
 
 impl Sources {
-    /// The file `base` names: itself with `.luau`, or its folder's `init.luau`.
+    /// The file `base` names: itself with `.jsl`, or its folder's `init.jsl`.
     fn find(&self, base: &str) -> Option<String> {
         let checked = self.checked.borrow();
-        [format!("{base}.luau"), format!("{base}/init.luau")]
+        [format!("{base}.jsl"), format!("{base}/init.jsl")]
             .into_iter()
             .find(|candidate| checked.files.contains_key(candidate))
     }
 }
 
 impl jess::lua::l3i::analysis::SourceProvider for Sources {
-    /// Strict, as the `.luaurc` `jess init` writes sets every module.
+    /// Strict, as the `.jessrc` `jess init` writes sets every module.
     fn module_config(&self, _: &str) -> jess::lua::l3i::analysis::ModuleConfig {
         jess::lua::l3i::analysis::ModuleConfig {
             mode: jess::lua::l3i::analysis::Mode::Strict,
@@ -180,7 +180,7 @@ impl jess::lua::l3i::analysis::SourceProvider for Sources {
             return self.types.module_file(required).map(|file| format!("types/{}", file.path));
         }
         let mut parts = from.split('/').map(str::to_owned).collect::<Vec<_>>();
-        let init = parts.last().is_some_and(|last| last == "init.luau");
+        let init = parts.last().is_some_and(|last| last == "init.jsl");
         let (relative, levels) = required.strip_prefix("@self/").map_or_else(
             || (required.to_owned(), if init { 2 } else { 1 }),
             |rest| (format!("./{rest}"), 1),

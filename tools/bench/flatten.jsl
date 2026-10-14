@@ -5,7 +5,7 @@ Flattens an OpenMW config chain into one standalone config for the benchmark.
 
   jess run --capability filesystem.read --capability filesystem.write \
     --package jpk/openmw --package-path jpk \
-    tools/bench/flatten.luau <output folder> <openmw.cfg> [content name to leave out]...
+    tools/bench/flatten.jsl <output folder> <openmw.cfg> [content name to leave out]...
 
 Writes `openmw.cfg.in`: `encoding=`, every data folder (data-local included, as OpenMW searches
 it) and fallback archive with absolute paths, and the content list without the names given (the
@@ -24,7 +24,7 @@ local openmw = require '@openmw'
 
 local output: string?, config: string? = ...
 if not output or not config then
-  error('usage: jess run flatten.luau <output folder> <openmw.cfg> [content to leave out]...', 0)
+  error('usage: jess run flatten.jsl <output folder> <openmw.cfg> [content to leave out]...', 0)
 end
 
 local context = openmw.new(config)

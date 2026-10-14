@@ -146,7 +146,7 @@ Both follow the same shape, and it's a good one to copy:
 3. Walk the records through views, doing as little as possible per record.
 4. Build the output from plain tables and `insert` them into one `jess.plugin.new`, saved once.
 
-Read [`tools/tes3merge`](https://github.com/DreamWeave-MP/jess/blob/main/jpk/dreamwind/src/tools/tes3merge/init.luau) and [`tools/s3lightfixes`](https://github.com/DreamWeave-MP/jess/blob/main/jpk/dreamwind/src/tools/s3lightfixes/init.luau) in Dreamwind for the full versions.
+Read [`tools/tes3merge`](https://github.com/DreamWeave-MP/jess/blob/main/jpk/dreamwind/src/tools/tes3merge/init.jsl) and [`tools/s3lightfixes`](https://github.com/DreamWeave-MP/jess/blob/main/jpk/dreamwind/src/tools/s3lightfixes/init.jsl) in Dreamwind for the full versions.
 
 ## Related
 

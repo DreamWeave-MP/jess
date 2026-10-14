@@ -11,23 +11,23 @@ extra:
 The [Luau style](@/docs/contributing/luau-style.md) as a checker. It's an export of jess's [built-in package](@/docs/scripting/packages.md#the-built-in-package), `jpk/builtin`, layer `jess.style`, which the binary carries, so every script can `require` it.
 
 ```sh
-jess run check-style.luau libs jpk
+jess run check-style.jsl libs jpk
 ```
 
 ```luau
 --!strict
--- check-style.luau: the findings in one source, as data.
+-- check-style.jsl: the findings in one source, as data.
 local style = require '@jess/style'
 local findings = style.check 'local Total = 0\nTotal += 1\nprint("total", Total)\n'
 
 for _, finding in findings do
-  print(style.format(finding, 'example.luau'))
+  print(style.format(finding, 'example.jsl'))
 end
 ```
 
 ```text
-example.luau:1:7: error[naming.case]: 'Total' is reassigned, so it isn't a constant: name it in camelCase
-example.luau:3:7: error[quotes.double]: single quotes: double quotes are for a string that holds a single quote
+example.jsl:1:7: error[naming.case]: 'Total' is reassigned, so it isn't a constant: name it in camelCase
+example.jsl:3:7: error[quotes.double]: single quotes: double quotes are for a string that holds a single quote
 ```
 
 It parses with [`@dream/luau`](@/docs/api/downstream-globals.md), so a file that doesn't parse gets `syntax` findings at Luau's own error positions, and the rest of the tree, which the parser recovers, is still checked.
@@ -64,7 +64,7 @@ Every finding in `source`, sorted by position.
 
 {{ api_signature(value="style.files(paths: { string }) -> { string }") }}
 
-The `.luau` and `.lua` files under each path, sorted. A path that's a file is kept whatever its extension; folders named `target` and dot-folders are skipped.
+The `.jsl` and `.lua` files under each path, sorted. A path that's a file is kept whatever its extension; folders named `target` and dot-folders are skipped.
 
 ### style.run
 

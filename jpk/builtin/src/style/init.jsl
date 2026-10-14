@@ -5,7 +5,7 @@
 
   check(source, options?)       every finding in a source, sorted by position
   checkFile(path, options?)     the same for a file; `.md` files are checked block by block
-  files(paths)                  the .luau and .lua files under each path, sorted; folders named
+  files(paths)                  the .jsl and .lua files under each path, sorted; folders named
                                 target and dot-folders are skipped
   markdownBlocks(text)          a Markdown page's ```luau blocks, with the line each starts on
   format(finding, path?)        one finding as `path:line:column: severity[rule]: message`
@@ -13,7 +13,7 @@
                                 the number of errors and of warnings
   rules                         every rule by id: { severity, summary }
 
-Options are { profile, directives, noAny, declarations, only, fragment }; see rules.luau.
+Options are { profile, directives, noAny, declarations, only, fragment }; see rules.jsl.
 ]]
 local check = require '@self/check'
 local rules = require '@self/rules'
@@ -87,7 +87,7 @@ local function files(paths: { string }): { string }
 
       if jess.fs.isDir(child) then
         if name ~= 'target' and string.sub(name, 1, 1) ~= '.' then visit(child) end
-      elseif string.find(name, '%.luau?$') then
+      elseif string.find(name, '%.jsl$') or string.find(name, '%.lua$') then
         table.insert(found, child)
       end
     end

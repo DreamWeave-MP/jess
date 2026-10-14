@@ -14,7 +14,7 @@ Bethesda shipped three archive formats in fifteen years and called two of them B
 
 ```luau
 --!strict
--- list-bsa.luau: what's in an archive, and one file out of it.
+-- list-bsa.jsl: what's in an archive, and one file out of it.
 local archive = require '@dreamwind/archive'
 
 local builder = archive.bsa.tes3.Builder.new()
@@ -34,7 +34,7 @@ print(opened:readInto('textures/tx_rock.dds', into)) -- 128
 ```
 
 ```text
-$ jess run --package jpk/dreamwind list-bsa.luau
+$ jess run --package jpk/dreamwind list-bsa.jsl
 bsaTes3	2
 hello
 1	textures\tx_rock.dds	128	071d635d809c71f8
@@ -101,9 +101,9 @@ cargo test -p jess-lua --test archive_experiment
 JESS_DATA_FILES="$HOME/Games/Morrowind/Data Files" cargo test --release -p jess-lua --test archive_experiment the_port_matches_the_crate
 ```
 
-`tests/archive/run.luau` is the port's own suite: dream_archive's tests and its Luau API contracts, held to the port alone, with the crate's small fixtures beside it. `jess package test` runs it from the source and from the packed JPK. The harness runs it again with a scratch folder for the cases that write files.
+`tests/archive/run.jsl` is the port's own suite: dream_archive's tests and its Luau API contracts, held to the port alone, with the crate's small fixtures beside it. `jess package test` runs it from the source and from the packed JPK. The harness runs it again with a scratch folder for the cases that write files.
 
-`tests/archive/differential.luau` makes one observation per case: every builder call's outcome and the bytes it built, every field of every entry, every read (as a length and an xxh3 digest) or its error, `readInto` at an offset, lookups by path in five spellings and by hash, and the errors. The cases: 160 seeded builder recipes across the four builders, with bad options, bad paths, duplicates, and bad textures mixed in; 88 archives written by hand (hash-only and embedded-name TES4s, LZ4 frames with the checksums, linked blocks, and stored blocks the crate never writes, stringless and multi-chunk BA2s, GNMF, colliding hashes); 1,392 malformed copies of those and of the 144 archives the recipes built, each a flipped byte, a replaced `u32`, a cut, or junk on the end; the crate's fixtures, from bytes and in place; extraction to disk, plain, with two encodings, and by a dictionary; builders over files and folders; and [the tool](@/docs/api/dreamwind-archive-tool.md#testing-it)'s jobs. With `JESS_ARCHIVE_FIXTURES` naming dream_archive's `tests/fixtures`, its large texture fixtures too, and with `JESS_DATA_FILES` or `JESS_ARCHIVES`, real archives, read in place and compared entry by entry.
+`tests/archive/differential.jsl` makes one observation per case: every builder call's outcome and the bytes it built, every field of every entry, every read (as a length and an xxh3 digest) or its error, `readInto` at an offset, lookups by path in five spellings and by hash, and the errors. The cases: 160 seeded builder recipes across the four builders, with bad options, bad paths, duplicates, and bad textures mixed in; 88 archives written by hand (hash-only and embedded-name TES4s, LZ4 frames with the checksums, linked blocks, and stored blocks the crate never writes, stringless and multi-chunk BA2s, GNMF, colliding hashes); 1,392 malformed copies of those and of the 144 archives the recipes built, each a flipped byte, a replaced `u32`, a cut, or junk on the end; the crate's fixtures, from bytes and in place; extraction to disk, plain, with two encodings, and by a dictionary; builders over files and folders; and [the tool](@/docs/api/dreamwind-archive-tool.md#testing-it)'s jobs. With `JESS_ARCHIVE_FIXTURES` naming dream_archive's `tests/fixtures`, its large texture fixtures too, and with `JESS_DATA_FILES` or `JESS_ARCHIVES`, real archives, read in place and compared entry by entry.
 
 Each observation's digest is in `tests/archive/golden/differential.txt`. They were recorded from the native binding while jess still linked it, with the port making the same observation on every case, so they're the crate's answers, and the binding being gone doesn't make them move. A real archive's golden is named by its file name and size. Morrowind.bsa's is there; any other archive fails as a case without a golden, and blessing it would only record what the port says, which checks nothing against the crate. `JESS_BLESS=1` records the port's answer for a case that has no golden yet, which makes it the port's word, not the crate's: check a new case against dream_archive's source before you keep it. An existing golden never changes by blessing. One that has to is deleted from the file by hand, and the commit that does it says why the port answers differently now.
 

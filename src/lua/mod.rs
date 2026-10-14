@@ -57,7 +57,7 @@ pub fn definitions() -> String {
         env!("CARGO_PKG_VERSION"),
         l3i::LUAU_VERSION,
         plan::downstream_definitions().expect("the downstream plan finalizes"),
-        include_str!("definitions.luau"),
+        include_str!("definitions.jsl"),
     )
 }
 

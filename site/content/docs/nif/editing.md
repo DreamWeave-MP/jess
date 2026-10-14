@@ -8,7 +8,7 @@ extra:
 
 `jess.nif` gives you a Morrowind NIF as a set of record handles you can read, change, add to, and cut from, then save back. What you didn't touch saves as it was. This page walks through all of it on real files. It assumes you've read [The NIF Model](@/docs/nif/nif-model.md). For the exact signatures, see the [`jess.nif` reference](@/docs/api/nif.md).
 
-Every complete script here runs with `jess run script.luau` and type-checks in `--!strict` mode against the types `jess luau-types` writes.
+Every complete script here runs with `jess run script.jsl` and type-checks in `--!strict` mode against the types `jess luau-types` writes.
 
 ## Opening a NIF
 
@@ -234,7 +234,7 @@ print(path, changed)
 ```
 
 ```sh
-jess nif modify --script retexture.luau meshes/jess/crate.nif --output "Data Files/meshes/jess/crate.nif"
+jess nif modify --script retexture.jsl meshes/jess/crate.nif --output "Data Files/meshes/jess/crate.nif"
 ```
 
 A NIF inside an archive needs `--output`. For hundreds of files, don't loop `nif modify` in a shell. Use one `jess run` script over the VFS or an archive, as in the [cookbook](@/docs/nif/optimization-cookbook.md#the-batch-harness). [Modify Scripts](@/docs/scripting/modify-scripts.md) covers `modify` for plugins and NIFs together.

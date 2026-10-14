@@ -468,8 +468,8 @@ suite.describe('findings', function()
       1,
       14,
     }
-    expect(style.format(finding, 'a.luau')).toBe(
-      `a.luau:1:7: error[quotes.double]: {finding.message}`
+    expect(style.format(finding, 'a.jsl')).toBe(
+      `a.jsl:1:7: error[quotes.double]: {finding.message}`
     )
   end)
 

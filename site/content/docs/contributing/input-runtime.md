@@ -95,7 +95,7 @@ Every input is checked against what the node takes and nothing is coerced. A bin
 `ActionGraph::compile` checks the whole document and reports every problem at once, each placed in Jess terms:
 
 ```text
-acceptance.luau:12:1, set "gameplay" (from @jess/acceptance), action "quickSave", binding 1, at chord: chord's members[1] must be digital, and it is scalar
+acceptance.jsl:12:1, set "gameplay" (from @jess/acceptance), action "quickSave", binding 1, at chord: chord's members[1] must be digital, and it is scalar
 action "a": actions read each other in a cycle: a -> b -> c -> a
 ```
 
@@ -165,4 +165,4 @@ The runtime enforces none, because a native caller holding an `InputRuntime` alr
 
 ## Tests
 
-The acceptance fixture (`libs/input/tests/gameplay.rs`) is the handoff's: a `gameplay` set with WASD movement, `Ctrl+S`, a tap and a 350 ms hold on one button, a gated sprint, and an `inventory` layer that rebinds one action and masks another, driven entirely by synthetic events on a test clock. It checks the vector, the chord's edges, tap against hold, timing that ignores wall time, the gate, deactivating the set, the layer, the going-live rule, the disconnect release, that nothing allocates per tick, and that the document round-trips to a golden (`tests/golden/gameplay.json`, `JESS_BLESS=1`). `tests/intents.rs` routes `ui.accept` to `ui.activate` with provenance intact and drops a stale generation. `tests/graph.rs` pins every compile error's message. The same fixture runs from Luau in `libs/lua/tests/contracts/input/acceptance.luau`; see [jess.input](@/docs/api/input.md).
+The acceptance fixture (`libs/input/tests/gameplay.rs`) is the handoff's: a `gameplay` set with WASD movement, `Ctrl+S`, a tap and a 350 ms hold on one button, a gated sprint, and an `inventory` layer that rebinds one action and masks another, driven entirely by synthetic events on a test clock. It checks the vector, the chord's edges, tap against hold, timing that ignores wall time, the gate, deactivating the set, the layer, the going-live rule, the disconnect release, that nothing allocates per tick, and that the document round-trips to a golden (`tests/golden/gameplay.json`, `JESS_BLESS=1`). `tests/intents.rs` routes `ui.accept` to `ui.activate` with provenance intact and drops a stale generation. `tests/graph.rs` pins every compile error's message. The same fixture runs from Luau in `libs/lua/tests/contracts/input/acceptance.jsl`; see [jess.input](@/docs/api/input.md).

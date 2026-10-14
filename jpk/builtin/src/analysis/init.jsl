@@ -680,7 +680,7 @@ local function normalizePath(path: string): string
 end
 
 local function defaultExtensions(): { [string]: boolean }
-  return { ['.lua'] = true, ['.luau'] = true }
+  return { ['.lua'] = true, ['.jsl'] = true }
 end
 
 local function extension(path: string): string
@@ -735,7 +735,7 @@ end
 local function moduleKey(path: string): string
   local value = normalizePath(path)
   value = string.gsub(value, '^%./', '')
-  value = string.gsub(value, '%.luau?$', '')
+  value = string.match(value, '^(.*)%.jsl$') or string.match(value, '^(.*)%.lua$') or value
   return (string.gsub(value, '/', '.'))
 end
 
@@ -760,9 +760,9 @@ end
 local function resolveLocalModule(moduleName: string, bySuffix: { [string]: string }): string?
   local candidate = string.gsub(moduleName, '%.', '/')
   return bySuffix[`{candidate}.lua`]
-    or bySuffix[`{candidate}.luau`]
+    or bySuffix[`{candidate}.jsl`]
     or bySuffix[`{candidate}/init.lua`]
-    or bySuffix[`{candidate}/init.luau`]
+    or bySuffix[`{candidate}/init.jsl`]
 end
 
 local function workspace(paths: { string }, options: WorkspaceOptions?): Workspace

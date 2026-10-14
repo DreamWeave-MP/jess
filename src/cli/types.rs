@@ -10,7 +10,7 @@ use crate::output::{self, Format};
 
 #[derive(Debug, Args)]
 pub struct LuauTypesArgs {
-    /// The folder to write: jess.d.luau, and a stub module per name require resolves (jess/log.luau
+    /// The folder to write: jess.d.jsl, and a stub module per name require resolves (jess/log.jsl
     /// for @jess/log). Created if it's missing; jess's files in it are replaced, and stubs a
     /// previous jess wrote that this one doesn't are removed.
     folder: PathBuf,
@@ -27,7 +27,7 @@ pub struct TypesReport {
     files: usize,
     /// Stale stubs removed.
     removed: Vec<String>,
-    /// The `.luaurc` aliases that resolve `@scope/...` to the stubs, relative to the folder's parent.
+    /// The `.jessrc` aliases that resolve `@scope/...` to the stubs, relative to the folder's parent.
     aliases: BTreeMap<String, String>,
 }
 

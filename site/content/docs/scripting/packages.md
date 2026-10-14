@@ -43,15 +43,15 @@ id = "com.example.lightbooks"
 version = "1.0.0"
 jess_api = "1"
 include = ["src"]
-tests = ["tests/run.luau"]
+tests = ["tests/run.jsl"]
 
 [dependencies]
 "com.example.common" = "^1.2"
 
 [modules]
-"@lightbooks" = "src/init.luau"
-"@lightbooks/patch" = "src/patch.luau"
-"@lightbooks/register" = "src/register.luau"
+"@lightbooks" = "src/init.jsl"
+"@lightbooks/patch" = "src/patch.jsl"
+"@lightbooks/register" = "src/register.jsl"
 
 [[layer]]
 id = "lightbooks.core"
@@ -78,7 +78,7 @@ Dreamwind's own is [`jpk/dreamwind/jess.toml`](https://github.com/DreamWeave-MP/
 | `package.include` | The payload: folders and files, relative to the manifest, that ship. `jess.toml` always does. Everything else (tests, goldens, benchmarks, `.git`, `target/`) doesn't, without an ignore list. |
 | `package.tests` | Test modules for [`jess package test`](@/docs/cli/package.md#jess-package-test). Usually outside `include`: tests are source-only. |
 | `dependencies` | Other packages this one's modules use, by id, each with a [version requirement](@/docs/api/package.md#package-satisfies). A dependency makes that package's exports resolvable; it activates none of its layers. |
-| `modules` | The package's named modules, each mapped to a `.luau` file in the payload. Every name is some layer's export or entrypoint; a name nothing uses is an error. Everything else in the payload is private, reachable only by relative `require`. |
+| `modules` | The package's named modules, each mapped to a `.jsl` file in the payload. Every name is some layer's export or entrypoint; a name nothing uses is an error. Everything else in the payload is private, reachable only by relative `require`. |
 | `[[layer]]` | Each layer: its `id`, the layers it `requires`, and the module names it `exports`. |
 | `[[layer.entrypoint]]` | Each of the layer's entrypoints: its `module`, and the `capabilities` it needs. |
 
@@ -90,13 +90,13 @@ A package's modules are reachable two ways, and only two.
 
 **By exported name.** `require('@dreamwind/tools/tes3merge')` loads the file the manifest maps that name to. A plan's namespace is every export of every layer of every package it selected, activated or not: an export is inert, so making it resolvable starts nothing. Export names are `@scope/...`, lowercase. `@jess/` is jess's, and the only package that may export into it is jess's own [built-in package](#the-built-in-package). A name the host already has (`@dream/vfs`, `@dream/bytes`) is a resolution error, and so is a name two packages export: nothing is chosen by load order, because "whichever loaded last" is not a design.
 
-**Relatively, from inside the package.** `./`, `../`, and `@self/` work exactly as they do for files on disk: relative to the requiring module, an `init.luau` standing for its folder. The result has to stay inside the package. A path that climbs out is an error, not a lookup somewhere else:
+**Relatively, from inside the package.** `./`, `../`, and `@self/` work exactly as they do for files on disk: relative to the requiring module, an `init.jsl` standing for its folder. The result has to stay inside the package. A path that climbs out is an error, not a lookup somewhere else:
 
 ```text
-error: module not found: ../../outside (required by @com.example.greeter@1.0.0/src/escape.luau): it leaves the package root of com.example.greeter
+error: module not found: ../../outside (required by @com.example.greeter@1.0.0/src/escape.jsl): it leaves the package root of com.example.greeter
 ```
 
-That chunk name, `@<id>@<version>/<path>`, is what every error and traceback shows for package code, so `init.luau:42` never has to mean "one of eleven `init.luau`s." Underneath, a loaded module is cached by its package's id and digest and its path, so a different build of the same version is never served from a stale cache.
+That chunk name, `@<id>@<version>/<path>`, is what every error and traceback shows for package code, so `init.jsl:42` never has to mean "one of eleven `init.jsl`s." Underneath, a loaded module is cached by its package's id and digest and its path, so a different build of the same version is never served from a stale cache.
 
 A package can't list other packages or open their files by path. If it wants another package's code, it declares the dependency and requires an export.
 
@@ -119,7 +119,7 @@ jess pack jpk/dreamwind -o dreamwind.jpk     # the canonical JPK
 jess package inspect dreamwind.jpk           # what it is, without running it
 jess package graph jpk/dreamwind             # its layers resolved into a plan
 jess package test jpk/dreamwind              # its tests, from the source and packed
-jess run --package dreamwind.jpk script.luau # a script with its modules activated
+jess run --package dreamwind.jpk script.jsl # a script with its modules activated
 ```
 
 [`jess pack` and `jess package`](@/docs/cli/package.md) has every option and what each prints. `jess pack` writes the same bytes from the same source on every machine. `jess package test` is the parity check: the package's tests against the source, then against it packed. If the two disagree, the package is broken, whichever side passed.
@@ -133,7 +133,7 @@ jess carries it. The binary embeds the package's manifest and payload, taken fro
 It's the one package whose modules are `@jess/` names, and the privilege belongs to the copy jess carries, not to the id. A package on disk that calls itself `org.dreamweave.jess` opens only if its manifest and payload are byte for byte the embedded ones; anything else is refused, naming the first file that differs:
 
 ```text
-error: package: 'mine' says it is jess's built-in package (org.dreamweave.jess), but its 'src/style/rules.luau' isn't jess's; rebuild jess from this source, or give the package an id of its own
+error: package: 'mine' says it is jess's built-in package (org.dreamweave.jess), but its 'src/style/rules.jsl' isn't jess's; rebuild jess from this source, or give the package an id of its own
 ```
 
 A manifest from any other package that names a `@jess/` module is refused as before, and names jess provides itself (`@jess/test`, `@jess/plugin`) stay reserved for jess. The alternative was a scope of its own, `@builtin/style`, which every other package could squat on until it too was reserved.
@@ -143,7 +143,7 @@ For working on it, the source is still an ordinary Package Source:
 ```sh
 jess package test jpk/builtin
 jess pack jpk/builtin -o builtin.jpk
-jess run --package builtin.jpk check-style.luau libs jpk
+jess run --package builtin.jpk check-style.jsl libs jpk
 ```
 
 Testing or activating `jpk/builtin` works while it's the copy the binary embeds. Edit a file and the jess you have refuses it until you rebuild: the embedded copy is made from the source at build time (`include_str!`, so cargo rebuilds when a file changes), and `cargo test -p jess-lua --test package` fails if a payload file isn't in the embedded list, `jess_lua::builtin::FILES`.
@@ -179,7 +179,7 @@ tes3merge({}, openmw)
 ```
 
 ```sh
-jess run --package dreamwind.jpk merge.luau ~/.config/openmw/openmw.cfg
+jess run --package dreamwind.jpk merge.jsl ~/.config/openmw/openmw.cfg
 ```
 
 [Merging and Fixing a Load Order](@/docs/guides/load-order-scripts.md) runs all three, and [Load-Order Scripts](@/docs/scripting/load-order-scripts.md) covers writing your own in the same shape.
@@ -192,21 +192,21 @@ jess run --package dreamwind.jpk merge.luau ~/.config/openmw/openmw.cfg
 jpk/dreamwind/
   jess.toml
   src/openmw-import-morrowind/
-    init.luau              the module: version, the parsers, the imports, the writers
-    ini/parser.luau        the INI and cfg parsers and the cfg serializer
-    ini/importer.luau      the merge: fallback keys, no-sound, content, archives, the overrides
-    ini/content_files.luau content and archive resolution and ordering
-    ini/config.luau        multimaps as openmw-config documents, spelled as given or resolved
-    ini/document.luau      a preserved openmw.cfg: its lines, updated and written back
-    ini/writers.luau       the writers
-    ini/options.luau       option tables and multimaps, checked with the binding's messages
-    ini/fallback_keys.luau the 573 fallback keys, in dream-ini's order
-    ini/plugin_header.luau TES3 header and masters
-    ini/storage.luau       the filesystem questions, one host call each
-    ini/types.luau         the types
+    init.jsl              the module: version, the parsers, the imports, the writers
+    ini/parser.jsl        the INI and cfg parsers and the cfg serializer
+    ini/importer.jsl      the merge: fallback keys, no-sound, content, archives, the overrides
+    ini/content_files.jsl content and archive resolution and ordering
+    ini/config.jsl        multimaps as openmw-config documents, spelled as given or resolved
+    ini/document.jsl      a preserved openmw.cfg: its lines, updated and written back
+    ini/writers.jsl       the writers
+    ini/options.jsl       option tables and multimaps, checked with the binding's messages
+    ini/fallback_keys.jsl the 573 fallback keys, in dream-ini's order
+    ini/plugin_header.jsl TES3 header and masters
+    ini/storage.jsl       the filesystem questions, one host call each
+    ini/types.jsl         the types
   tests/openmw-import-morrowind/
-    run.luau               the module's own cases
-    differential.luau      every case, against the goldens
+    run.jsl               the module's own cases
+    differential.jsl      every case, against the goldens
     golden/                what the dream-ini library answered to every case
 ```
 
@@ -220,7 +220,7 @@ INI and plugin-header reads use L3i's `@dream/fs`, not the native VFS host. Gran
 
 ```luau
 --!strict
--- import-ini.luau: write an openmw.cfg for jess from a Morrowind.ini. Reads the INI, writes only the output.
+-- import-ini.jsl: write an openmw.cfg for jess from a Morrowind.ini. Reads the INI, writes only the output.
 local ini = require '@dreamwind/openmw-import-morrowind'
 local iniPath: string, outputPath: string = ...
 local result = ini.importPaths { ini = iniPath, gameFiles = true }
@@ -247,7 +247,7 @@ A preserved document keeps comments, blank lines, and the order of every line th
 
 ```luau
 --!strict
--- update-cfg.luau: import a Morrowind.ini into the openmw.cfg you already have, keeping its lines.
+-- update-cfg.jsl: import a Morrowind.ini into the openmw.cfg you already have, keeping its lines.
 local ini = require '@dreamwind/openmw-import-morrowind'
 local iniPath, cfgPath = 'Morrowind.ini', 'openmw.cfg'
 local result = ini.importPaths { ini = iniPath, cfg = cfgPath, gameFiles = true }
@@ -270,7 +270,7 @@ fallback=Weather_Sunrise_Time,5
 ```
 
 ```
-$ jess run --grant filesystem.read --package jpk/dreamwind update-cfg.luau
+$ jess run --grant filesystem.read --package jpk/dreamwind update-cfg.jsl
 # Keep this comment.
 data="C:/Games/Morrowind/Data Files"
 fallback=Weather_Sunrise_Time,5
@@ -293,11 +293,11 @@ cargo test -p jess-lua --test ini_experiment
 JESS_BLESS=1 cargo test -p jess-lua --test ini_experiment the_port_matches_the_goldens
 ```
 
-`tests/openmw-import-morrowind/run.luau` is the importer's own suite, the edge semantics dream-ini pins, and the manifest names it, so `jess package test` runs it from the source and from the packed JPK. `tests/openmw-import-morrowind/differential.luau` isn't in the manifest: the Rust harness (`libs/lua/tests/ini_experiment.rs`) builds its fixture folders with distinct file times, hands it the goldens, and runs the writers' comparison, so `cargo test` is how it runs. The harness activates Dreamwind the way `jess run --package` does, and runs the differential suite twice, from the Package Source and from it packed.
+`tests/openmw-import-morrowind/run.jsl` is the importer's own suite, the edge semantics dream-ini pins, and the manifest names it, so `jess package test` runs it from the source and from the packed JPK. `tests/openmw-import-morrowind/differential.jsl` isn't in the manifest: the Rust harness (`libs/lua/tests/ini_experiment.rs`) builds its fixture folders with distinct file times, hands it the goldens, and runs the writers' comparison, so `cargo test` is how it runs. The harness activates Dreamwind the way `jess run --package` does, and runs the differential suite twice, from the Package Source and from it packed.
 
 ### The specification is frozen
 
-dream-ini's Rust library was the executable specification, called side by side with the port on every case; it is now the frozen one. `tests/differential.luau` runs every input through the port and expects what the library answered, read from `tests/openmw-import-morrowind/golden/<function>.jsonl`, one JSON line per call in the suite's order, each with a fingerprint of the call's input, and the generators' seeds and counts in the header. The cases: the fixture INIs in every combination of cfg, explicit folders, and verbosity (433 imports); 400 generated byte-soup INIs in three encodings from a seeded generator (1212 parses, with every byte after every byte-order mark); 200 generated cfgs, parsed and serialized back; 120 generated INIs with fallback keys, content, archives, and random options; the file-based `importPaths` with and without a cfg. The binding's own option messages (`ini.importMaps.verbose: expected boolean, got string`), which no library call produces, are pinned in the suite as text.
+dream-ini's Rust library was the executable specification, called side by side with the port on every case; it is now the frozen one. `tests/differential.jsl` runs every input through the port and expects what the library answered, read from `tests/openmw-import-morrowind/golden/<function>.jsonl`, one JSON line per call in the suite's order, each with a fingerprint of the call's input, and the generators' seeds and counts in the header. The cases: the fixture INIs in every combination of cfg, explicit folders, and verbosity (433 imports); 400 generated byte-soup INIs in three encodings from a seeded generator (1212 parses, with every byte after every byte-order mark); 200 generated cfgs, parsed and serialized back; 120 generated INIs with fallback keys, content, archives, and random options; the file-based `importPaths` with and without a cfg. The binding's own option messages (`ini.importMaps.verbose: expected boolean, got string`), which no library call produces, are pinned in the suite as text.
 
 `JESS_BLESS=1` rewrites the goldens from the library, which stays a dev-dependency of `jess-lua` for exactly that: the harness answers every call through the same conversions the binding made, compares the port as it goes, and writes what the library said. A changed generator or seed is reported by the fingerprints and the header rather than compared against the wrong case. The writers are held the same way, without goldens: `the_writers_agree_with_the_library` runs one import through dream-ini's writers from Rust and the package's from Luau over cfgs with comments, blank lines, duplicated keys, spacing, CRLF, a `config=` line, a `replace=` line, and a stale stamp, and compares the written files byte for byte; `a_failed_write_leaves_the_target_whole` points both at a missing folder and a read-only one and checks the target afterwards.
 
@@ -331,7 +331,7 @@ Lint (the 27 checks, presets, and master-dependent checks through a master sourc
 
 ```luau
 --!strict
--- lint.luau: lint a plugin, clean it, and say what changed. Reads its argument, writes nothing.
+-- lint.jsl: lint a plugin, clean it, and say what changed. Reads its argument, writes nothing.
 local tes3 = require '@dreamwind/tes3'
 local tes3cmd = require '@dreamwind/tes3cmd'
 local path: string = ...
@@ -346,7 +346,7 @@ print(`cleaned {report.removedRecords} records, {report.removedSubrecords} subre
 ```
 
 ```
-$ jess run --package jpk/dreamwind lint.luau Lights.omwaddon
+$ jess run --package jpk/dreamwind lint.jsl Lights.omwaddon
 info missingVersion: TES3 description has no Version line
 error missingMaster: TestA.esp
 error missingMaster: TestB.omwaddon
@@ -359,7 +359,7 @@ cleaned 0 records, 0 subrecords
 
 ```luau
 --!strict
--- strip.luau: what removing a content file from a save would take. Reads, writes nothing.
+-- strip.jsl: what removing a content file from a save would take. Reads, writes nothing.
 local saves = require '@dreamwind/saves'
 local path: string, config: string, dependency: string = ...
 local save = saves.open(path)
@@ -376,7 +376,7 @@ end
 ```
 
 ```
-$ jess run --package jpk/dreamwind strip.luau Jetpack.omwsave openmw.cfg Starwind.omwaddon
+$ jess run --package jpk/dreamwind strip.jsl Jetpack.omwsave openmw.cfg Starwind.omwaddon
 brokenState
 Starwind.omwaddon	blockedPlannedEditsPresent
   targetContentFileRefnums x4: deleteOrRewriteReferencingSaveStateBeforeRemovingDependency

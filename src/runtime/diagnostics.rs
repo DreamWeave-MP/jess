@@ -262,10 +262,10 @@ mod tests {
         assert_eq!(attribution.to_string(), format!("{domain} gen#1 {context}"));
         let diagnostic = Diagnostic::new(attribution, Severity::Error, DiagnosticKind::HandlerFailed, "boom")
             .phase(Phase::Update)
-            .source(Some("main.luau:3".to_owned()));
+            .source(Some("main.jsl:3".to_owned()));
         assert_eq!(
             diagnostic.to_string(),
-            format!("[error] {domain} gen#1 {context} (handler failed): boom during update at main.luau:3")
+            format!("[error] {domain} gen#1 {context} (handler failed): boom during update at main.jsl:3")
         );
         let collected = CollectedDiagnostics::new();
         collected.report(diagnostic.clone());

@@ -87,7 +87,7 @@ print(`{report.summary.files} files, {report.summary.missing} missing`)
 ```
 
 ```sh
-$ jess run missing.luau ~/.config/openmw/openmw.cfg
+$ jess run missing.jsl ~/.config/openmw/openmw.cfg
 14237 files, 25 missing
 ```
 

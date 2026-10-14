@@ -14,7 +14,7 @@ Every record the plugin holds is the original's byte for byte, apart from the ti
 
 ```luau
 --!strict
--- lands.luau <openmw.cfg>
+-- lands.jsl <openmw.cfg>
 local config: string = ...
 local openmw = jess.openmw.load(config)
 local mergedLands = require '@dreamwind/tools/merged-lands'
@@ -23,7 +23,7 @@ mergedLands({}, openmw)
 ```
 
 ```sh
-$ jess run --package jess/jpk/dreamwind lands.luau ~/.config/openmw/openmw.cfg
+$ jess run --package jess/jpk/dreamwind lands.jsl ~/.config/openmw/openmw.cfg
 merged-lands: 2144 LAND and 259 LTEX records from 51 plugins in /home/you/.local/share/openmw/data/Merged Lands.omwaddon
 ```
 
@@ -160,6 +160,6 @@ The outputs no longer match whole. Against Merged Lands 0.2.0 at its April 2026 
 
 ## Source
 
-The script is [`jpk/dreamwind/src/tools/merged-lands/init.luau`](https://github.com/DreamWeave-MP/jess/blob/main/jpk/dreamwind/src/tools/merged-lands/init.luau), the [Dreamwind](@/docs/scripting/packages.md#dreamwind) module `@dreamwind/tools/merged-lands`, ported from Merged Lands (MIT, © 2022 David Von Derau). Its normals are computed in the original's single-precision arithmetic, rounded where it rounds, which is why the outputs match exactly.
+The script is [`jpk/dreamwind/src/tools/merged-lands/init.jsl`](https://github.com/DreamWeave-MP/jess/blob/main/jpk/dreamwind/src/tools/merged-lands/init.jsl), the [Dreamwind](@/docs/scripting/packages.md#dreamwind) module `@dreamwind/tools/merged-lands`, ported from Merged Lands (MIT, © 2022 David Von Derau). Its normals are computed in the original's single-precision arithmetic, rounded where it rounds, which is why the outputs match exactly.
 
 To change what it does beyond its options, copy it beside your script and require the copy: [Changing a tool](@/docs/guides/load-order-scripts.md#changing-a-tool).

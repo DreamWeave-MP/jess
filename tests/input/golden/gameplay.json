@@ -123,7 +123,7 @@
         }
       ],
       "origin": {
-        "file": "acceptance.luau",
+        "file": "acceptance.jsl",
         "line": 12,
         "column": 1
       }

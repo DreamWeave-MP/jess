@@ -133,8 +133,8 @@ Loads a module the way OpenMW's `require` does, with the jess modules preloaded.
 - `require("jess")` returns the `jess` table. `vfstool`, `openmwConfig`, and `dreamPath` load the same way, with or without a leading `@` (`require("@vfstool")`).
 - Each of jess's own modules is `@jess/<name>` as well: `require("@jess/shader")` is `jess.shader`, and `require("@jess/plugin")` is `jess.plugin`.
 - `coroutine`, `math`, `string`, `table`, `utf8`, and `os` are preloaded, as they are in OpenMW.
-- A name starting with `./` or `../` is relative to the script calling `require`, as in Luau's require by string: next to it on disk for a script run from a file (`jess run tools/patch.luau` finds `require("./util")` at `tools/util.luau`), or in the VFS for a script loaded from it. jess tries `name.luau`, `name.lua`, `name/init.luau`, then `name/init.lua`. An `init` script stands for its folder: its `./` starts beside the folder, and `@self/` inside it.
-- Any other name is a path in the VFS of the default OpenMW config, when the script has one ([`jess.openmw.configPath`](@/docs/api/openmw.md#jess-openmw-configpath)). Dots become slashes, and jess tries `name.lua`, `name.luau`, `name/init.lua`, then `name/init.luau`: `require("scripts.myMod.util")` loads `scripts/mymod/util.lua`, archives included.
+- A name starting with `./` or `../` is relative to the script calling `require`, as in Luau's require by string: next to it on disk for a script run from a file (`jess run tools/patch.jsl` finds `require("./util")` at `tools/util.jsl`), or in the VFS for a script loaded from it. jess tries `name.jsl`, `name.lua`, `name/init.jsl`, then `name/init.lua`. An `init` script stands for its folder: its `./` starts beside the folder, and `@self/` inside it.
+- Any other name is a path in the VFS of the default OpenMW config, when the script has one ([`jess.openmw.configPath`](@/docs/api/openmw.md#jess-openmw-configpath)). Dots become slashes, and jess tries `name.lua`, `name.jsl`, `name/init.lua`, then `name/init.jsl`: `require("scripts.myMod.util")` loads `scripts/mymod/util.lua`, archives included.
 - Each module runs once, called with the name as `...`, and is cached: a module required by two names, such as `./util` and `scripts.myMod.util`, is the same value.
 - **Errors:** `module not found: <name>` when nothing matches, or when a VFS name has no config to look in, as in a `jess run` script that hasn't set one.
 
@@ -152,12 +152,12 @@ Related: [Scripts over the OpenMW VFS](@/docs/scripting/openmw-and-vfs.md).
 
 ## Globals set by the runner
 
-`jess run script.luau a b` also sets these globals:
+`jess run script.jsl a b` also sets these globals:
 
 | Global | Value |
 | --- | --- |
 | `...` | The script's arguments as strings: `"a", "b"`. |
-| `arg` | The same arguments as a table, with the script path at `arg[0]`: `{ [0] = "script.luau", "a", "b" }`. |
+| `arg` | The same arguments as a table, with the script path at `arg[0]`: `{ [0] = "script.jsl", "a", "b" }`. |
 | `print` | Luau's `print`, writing through jess's own stdout so `\n` stays `\n` on Windows and lines come out in order. |
 
 Scripts run in other ways get different `...`:
@@ -166,14 +166,14 @@ Scripts run in other ways get different `...`:
 - `jess plugin modify --script` passes `(plugin, path)` and `jess nif modify --script` passes `(nif, path)`. See [Modify Scripts](@/docs/scripting/modify-scripts.md).
 
 ```luau
--- jess run args.luau a b
+-- jess run args.jsl a b
 local first, second = ...
 print(first, second) -- a  b
-print(#arg, arg[0]) -- 2  args.luau
+print(#arg, arg[0]) -- 2  args.jsl
 ```
 
 Both are typed: `...` as the script's varargs, and `arg` as `{ [number]: string }`.
 
 ## Type definitions
 
-`jess luau-types types` writes the types for everything on these pages, plus every record and NIF type, and a stub for every module `require` resolves. `jess init` does it for you, along with a strict `.luaurc` aliasing the modules and your editor's luau-lsp settings. Start scripts with `--!strict`: the types were written for the checker, and the checker catches the typo in `data.radiuss` before jess has to. [Record and NIF Types](@/docs/api/record-types.md) explains the generated half.
+`jess luau-types types` writes the types for everything on these pages, plus every record and NIF type, and a stub for every module `require` resolves. `jess init` does it for you, along with a strict `.jessrc` aliasing the modules and your editor's luau-lsp settings. Start scripts with `--!strict`: the types were written for the checker, and the checker catches the typo in `data.radiuss` before jess has to. [Record and NIF Types](@/docs/api/record-types.md) explains the generated half.

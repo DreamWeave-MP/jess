@@ -12,7 +12,7 @@ extra:
 
 ```luau
 --!strict
--- merge.luau <openmw.cfg>
+-- merge.jsl <openmw.cfg>
 local config: string = ...
 local openmw = jess.openmw.load(config)
 local tes3merge = require '@dreamwind/tools/tes3merge'
@@ -21,7 +21,7 @@ tes3merge({}, openmw)
 ```
 
 ```sh
-$ jess run --package jess/jpk/dreamwind merge.luau ~/.config/openmw/openmw.cfg
+$ jess run --package jess/jpk/dreamwind merge.jsl ~/.config/openmw/openmw.cfg
 tes3merge: wrote 22 merged records to /home/you/.local/share/openmw/data/Merged Objects.esp
 ```
 
@@ -180,6 +180,6 @@ On a {{ bench(value="plugins") }}-plugin load order, median of {{ bench(value="r
 
 ## Source
 
-The script is [`jpk/dreamwind/src/tools/tes3merge/init.luau`](https://github.com/DreamWeave-MP/jess/blob/main/jpk/dreamwind/src/tools/tes3merge/init.luau), the [Dreamwind](@/docs/scripting/packages.md#dreamwind) module `@dreamwind/tools/tes3merge`, ported from TES3Merge (MIT, © 2019 NullCascade). It's plain Luau against the public API, so it's also a worked example of a large load-order script.
+The script is [`jpk/dreamwind/src/tools/tes3merge/init.jsl`](https://github.com/DreamWeave-MP/jess/blob/main/jpk/dreamwind/src/tools/tes3merge/init.jsl), the [Dreamwind](@/docs/scripting/packages.md#dreamwind) module `@dreamwind/tools/tes3merge`, ported from TES3Merge (MIT, © 2019 NullCascade). It's plain Luau against the public API, so it's also a worked example of a large load-order script.
 
 To change what it does beyond its options, copy it beside your script and require the copy: [Changing a tool](@/docs/guides/load-order-scripts.md#changing-a-tool).

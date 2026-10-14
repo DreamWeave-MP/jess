@@ -34,28 +34,28 @@ fn init_writes_types_an_example_and_each_editors_settings() {
         let dir = root.join(editor).join("scripts");
         let report = init(&dir, &["--editor", editor]);
         assert_eq!(report["editor"], editor);
-        let definitions = fs::read_to_string(dir.join("types/jess.d.luau")).unwrap();
+        let definitions = fs::read_to_string(dir.join("types/jess.d.jsl")).unwrap();
         assert!(definitions.contains("declare jess: {"));
         assert!(
-            fs::read_to_string(dir.join("types/jess/log.luau"))
+            fs::read_to_string(dir.join("types/jess/log.jsl"))
                 .unwrap()
                 .contains("JessLogger")
         );
         assert_eq!(
             report["types"]["definitions"],
-            dir.join("types/jess.d.luau").display().to_string()
+            dir.join("types/jess.d.jsl").display().to_string()
         );
-        let luaurc: Value = serde_json::from_str(&fs::read_to_string(dir.join(".luaurc")).unwrap()).unwrap();
-        assert_eq!(luaurc["languageMode"], "strict");
-        assert_eq!(luaurc["aliases"]["jess"], "types/jess");
-        assert_eq!(luaurc["aliases"]["dream"], "types/dream");
-        assert!(fs::read_to_string(dir.join("main.luau")).unwrap().starts_with("--!strict"));
+        let jessrc: Value = serde_json::from_str(&fs::read_to_string(dir.join(".jessrc")).unwrap()).unwrap();
+        assert_eq!(jessrc["languageMode"], "strict");
+        assert_eq!(jessrc["aliases"]["jess"], "types/jess");
+        assert_eq!(jessrc["aliases"]["dream"], "types/dream");
+        assert!(fs::read_to_string(dir.join("main.jsl")).unwrap().starts_with("--!strict"));
         assert_ne!(report["next_steps"].as_array().unwrap().as_slice(), Vec::<Value>::new());
         match editor {
             "vscode" => {
                 let settings: Value =
                     serde_json::from_str(&fs::read_to_string(dir.join(".vscode/settings.json")).unwrap()).unwrap();
-                assert_eq!(settings["luau-lsp.types.definitionFiles"]["@jess"], "types/jess.d.luau");
+                assert_eq!(settings["luau-lsp.types.definitionFiles"]["@jess"], "types/jess.d.jsl");
                 assert_eq!(settings["luau-lsp.platform.type"], "standard");
                 assert_eq!(settings["luau-lsp.fflags.enableNewSolver"], true);
             }
@@ -63,7 +63,7 @@ fn init_writes_types_an_example_and_each_editors_settings() {
                 let settings: Value =
                     serde_json::from_str(&fs::read_to_string(dir.join(".zed/settings.json")).unwrap()).unwrap();
                 let luau = &settings["lsp"]["luau-lsp"]["settings"];
-                assert_eq!(luau["definitions"][0], "types/jess.d.luau");
+                assert_eq!(luau["definitions"][0], "types/jess.d.jsl");
                 assert_eq!(luau["luau-lsp"]["platform"]["type"], "standard");
                 assert_eq!(luau["fflags"]["enable_new_solver"], true);
             }
@@ -72,7 +72,7 @@ fn init_writes_types_an_example_and_each_editors_settings() {
                 let languages: toml::Value = toml::from_str(&text).unwrap();
                 let server = &languages["language-server"]["luau-lsp"];
                 assert_eq!(server["command"].as_str(), Some("luau-lsp"));
-                assert_eq!(server["args"][1].as_str(), Some("--definitions:@jess=types/jess.d.luau"));
+                assert_eq!(server["args"][1].as_str(), Some("--definitions:@jess=types/jess.d.jsl"));
                 assert_eq!(server["args"][2].as_str(), Some("--flag:LuauSolverV2=true"));
                 assert_eq!(languages["language"][0]["name"].as_str(), Some("luau"));
             }
@@ -95,21 +95,21 @@ fn rerunning_init_refreshes_the_types_and_keeps_your_files() {
     let dir = temp_dir_path("init-rerun");
     drop(fs::remove_dir_all(&dir));
     init(&dir, &[]);
-    fs::write(dir.join("main.luau"), "print('mine')\n").unwrap();
+    fs::write(dir.join("main.jsl"), "print('mine')\n").unwrap();
     fs::write(dir.join(".vscode/settings.json"), "{}").unwrap();
-    fs::write(dir.join("types/jess.d.luau"), "stale").unwrap();
+    fs::write(dir.join("types/jess.d.jsl"), "stale").unwrap();
 
     let again = init(&dir, &[]);
     assert!(written(&again).is_empty(), "{again}");
     assert_eq!(again["skipped"].as_array().unwrap().len(), 3, "{again}");
-    assert_eq!(fs::read_to_string(dir.join("main.luau")).unwrap(), "print('mine')\n");
+    assert_eq!(fs::read_to_string(dir.join("main.jsl")).unwrap(), "print('mine')\n");
     assert_eq!(fs::read_to_string(dir.join(".vscode/settings.json")).unwrap(), "{}");
-    assert_ne!(fs::read_to_string(dir.join("types/jess.d.luau")).unwrap(), "stale");
+    assert_ne!(fs::read_to_string(dir.join("types/jess.d.jsl")).unwrap(), "stale");
 
     let forced = init(&dir, &["--force"]);
     assert_eq!(written(&forced).len(), 3, "{forced}");
-    assert_eq!(fs::read_to_string(dir.join("main.luau.bak")).unwrap(), "print('mine')\n");
-    assert!(fs::read_to_string(dir.join("main.luau")).unwrap().starts_with("--!strict"));
+    assert_eq!(fs::read_to_string(dir.join("main.jsl.bak")).unwrap(), "print('mine')\n");
+    assert!(fs::read_to_string(dir.join("main.jsl")).unwrap().starts_with("--!strict"));
 
     fs::remove_dir_all(dir).unwrap();
 }

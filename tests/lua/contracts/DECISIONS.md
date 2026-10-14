@@ -133,7 +133,7 @@ A fixture never pins a bug. Where current behavior is a bug, the fixture pins on
 
 ### 20. The libraries hand out views, not tables
 
-- **What:** vfstool's `keys()`, `entries()`, and the other lists, and openmw-config's `contentFiles()` and setting rows, are sequence or stream views on l3i: `#`, `[i]`, `for _, x in view`, and `:toTable()`; `ipairs`, `pairs`, and `table.clone` over them fail. Indices are 1-based (vfstool's used to be 0-based), sizes and hashes are Luau integers, option tables are strict, and errors read `dream.<ext>: <context>: <message>`. Each crate's own docs and the plan's `.d.luau` are the contract.
+- **What:** vfstool's `keys()`, `entries()`, and the other lists, and openmw-config's `contentFiles()` and setting rows, are sequence or stream views on l3i: `#`, `[i]`, `for _, x in view`, and `:toTable()`; `ipairs`, `pairs`, and `table.clone` over them fail. Indices are 1-based (vfstool's used to be 0-based), sizes and hashes are Luau integers, option tables are strict, and errors read `dream.<ext>: <context>: <message>`. Each crate's own docs and the plan's `.d.jsl` are the contract.
 - **Class:** deliberate break, made upstream.
 - **Decision:** pinned as views. `downstream/libraries` and `openmw/context` read them through `oracle.plain`, which copies a view into a table for the JSON only, so the fixtures exercise the view the way a script does. `inventory.toml` lists vfstool's `host` table, which jess's runtime grants (`filesystem.host`), and `[declared]` names the plan's module types (`Module__dream_vfs`).
 
@@ -181,7 +181,7 @@ A fixture never pins a bug. Where current behavior is a bug, the fixture pins on
 
 ### 28. The safe-environment canary's floor is 3x
 
-- **What:** `tools/bench/canaries/safeenv.luau` compares a loop in the script's environment with one moved into an unsafe copy. mlua's Luau build measured the safe one over 5x faster; l3i's build runs the unsafe copy faster, so the same safe environment measures 4x to 5x, and one not marked safe about 1x.
+- **What:** `tools/bench/canaries/safeenv.jsl` compares a loop in the script's environment with one moved into an unsafe copy. mlua's Luau build measured the safe one over 5x faster; l3i's build runs the unsafe copy faster, so the same safe environment measures 4x to 5x, and one not marked safe about 1x.
 - **Class:** measurement, not behavior.
 - **Decision:** the floor is 3x, which still fails the moment the globals aren't marked safe.
 
@@ -225,7 +225,7 @@ A fixture never pins a bug. Where current behavior is a bug, the fixture pins on
 
 ### 35. Shader errors name the line, never a column
 
-- **What:** Luau's debug info records lines. A shader value's origin is the chunk and line of the nearest Luau function on the call stack (so a call through `pcall` still points at Luau source), and the module that called `shader.program` as its owner: `shaders/lit.luau:12 (shaders/lit.luau): dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size`. A mistake only the whole program shows (a `Vec3f` position, a texture sampled in the vertex stage) is reported when the program is finished, every problem on its own line under `<owner>: the shader program is invalid`.
+- **What:** Luau's debug info records lines. A shader value's origin is the chunk and line of the nearest Luau function on the call stack (so a call through `pcall` still points at Luau source), and the module that called `shader.program` as its owner: `shaders/lit.jsl:12 (shaders/lit.jsl): dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size`. A mistake only the whole program shows (a `Vec3f` position, a texture sampled in the vertex stage) is reported when the program is finished, every problem on its own line under `<owner>: the shader program is invalid`.
 - **Class:** design.
 - **Decision:** pinned whole in `shader/errors` (`operations`, `program`), line numbers included: moving a line in that fixture is a re-bless.
 
@@ -245,7 +245,7 @@ A fixture never pins a bug. Where current behavior is a bug, the fixture pins on
 
 - **What:** `require("@jess/log")` and `require("@jess/test")` are modules jess ships, embedded in the binary, installed through the runtime plan like the native `@dream/*` modules (`jess_lua::stdlib`), frozen, and typed as `Module__jess_log`/`Module__jess_test` in the definitions. `@jess/` is jess's namespace: a `@jess/` name that isn't one of jess's members or built-in modules is `module not found`, never a VFS or package lookup, so no file can stand in for one. `@jess/log` writes through one native sink the host selects (`set_log_sink`); scripts can't reach it.
 - **Class:** addition.
-- **Decision:** `[modules."@jess/log"]` and `[modules."@jess/test"]` list the members, probed through `require` (`surface.luau` walks the inventory's `@` paths); `[declared]` names their types. `tests/stdlib.rs` pins freezing, the private sink, the closed namespace, and that a data folder's `jess/log.lua` or a package's own `jess/log.luau` doesn't shadow them.
+- **Decision:** `[modules."@jess/log"]` and `[modules."@jess/test"]` list the members, probed through `require` (`surface.jsl` walks the inventory's `@` paths); `[declared]` names their types. `tests/stdlib.rs` pins freezing, the private sink, the closed namespace, and that a data folder's `jess/log.lua` or a package's own `jess/log.jsl` doesn't shadow them.
 
 ## Domains
 
@@ -273,7 +273,7 @@ A fixture never pins a bug. Where current behavior is a bug, the fixture pins on
 
 ### 42. The `openmw-import-morrowind` port is held to goldens frozen from the dream-ini library
 
-- **What:** the package's differential suite (`tools/jpk/openmw-import-morrowind/tests/differential.luau`) ran every case through the native `dreamIni` binding and the port side by side. It now reads the library's answers from `tests/golden/<function>.jsonl`, one answer per call in the suite's order, each with a fingerprint of the call's input and the generators' seeds and counts in the header, handed over by the Rust harness (`libs/lua/tests/ini_experiment.rs`) as the `oracle` global. `JESS_BLESS=1` makes the harness answer from the dream-ini library itself, through the same conversions the binding made, and write what it said, so a changed suite or generator is re-blessed, never silently compared against the wrong case. The binding's own option messages (`ini.importMaps.verbose: expected boolean, got string`), which no library call produces, are pinned in the suite as text, captured from the binding while it was still in the plan. The library stays a dev-dependency of `jess-lua` for that regeneration, for the writers' byte-for-byte differential, and for the bench's Rust baseline; nothing jess ships links it.
+- **What:** the package's differential suite (`tools/jpk/openmw-import-morrowind/tests/differential.jsl`) ran every case through the native `dreamIni` binding and the port side by side. It now reads the library's answers from `tests/golden/<function>.jsonl`, one answer per call in the suite's order, each with a fingerprint of the call's input and the generators' seeds and counts in the header, handed over by the Rust harness (`libs/lua/tests/ini_experiment.rs`) as the `oracle` global. `JESS_BLESS=1` makes the harness answer from the dream-ini library itself, through the same conversions the binding made, and write what it said, so a changed suite or generator is re-blessed, never silently compared against the wrong case. The binding's own option messages (`ini.importMaps.verbose: expected boolean, got string`), which no library call produces, are pinned in the suite as text, captured from the binding while it was still in the plan. The library stays a dev-dependency of `jess-lua` for that regeneration, for the writers' byte-for-byte differential, and for the bench's Rust baseline; nothing jess ships links it.
 - **Class:** test infrastructure; the goldens are what the native binding answered, since the port matched it on every case the day they were blessed.
 - **Decision:** `tests/golden/{parseIni,parseCfg,serializeCfg,importMaps,importPaths}.jsonl`, rewritten only with `JESS_BLESS=1` and a reason.
 

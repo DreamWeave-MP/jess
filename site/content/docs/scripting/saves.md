@@ -48,7 +48,7 @@ print(jess.save.check(path).verdict)
 With Bloodmoon taken out of the load order:
 
 ```
-$ jess run fix-save.luau Caius_Met.omwsave
+$ jess run fix-save.jsl Caius_Met.omwsave
 Caius_Met.omwsave: brokenState
 stripped Bloodmoon.esm; backup at Caius_Met.omwsave.bak
 loadsCleanly
@@ -78,7 +78,7 @@ print(`{save.plugin:select({ type = 'NPC_' }):count()} NPC records`)
 ```
 
 ```
-$ jess run read-save.luau Caius_Met.omwsave
+$ jess run read-save.jsl Caius_Met.omwsave
 Ashur, level 1, in Balmora, Caius Cosades' House
 openmw save needing: builtin.omwscripts, Morrowind.esm, Tribunal.esm, Bloodmoon.esm
 5 NPC records

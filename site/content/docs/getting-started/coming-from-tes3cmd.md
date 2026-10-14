@@ -16,7 +16,7 @@ Every command in tes3cmd 0.40, including the ones its `help` hides:
 
 | tes3cmd | jess | Notes |
 | --- | --- | --- |
-| `active` | a script: [`openmw:content()`](@/docs/api/openmw.md) | Not a CLI command. A script loads `openmw.cfg` with `jess.openmw.load` and lists the load order, with the file each entry resolves to; `jess init`'s `main.luau` does exactly that. |
+| `active` | a script: [`openmw:content()`](@/docs/api/openmw.md) | Not a CLI command. A script loads `openmw.cfg` with `jess.openmw.load` and lists the load order, with the file each entry resolves to; `jess init`'s `main.jsl` does exactly that. |
 | `active --on X`, `--off X` | a script: `openmw:activate(X)`, `openmw:deactivate(X)`, then `openmw:save()` | `save` writes your user `openmw.cfg`, after backing it up. `activate` refuses names that aren't in your [data folders](@/docs/reference/glossary.md#data-folders) unless `{ force = true }`. |
 | `clean` | [`jess plugin clean`](@/docs/cli/plugin.md#clean) | With no cleanups named, runs all of them, as tes3cmd does. Edits in place with a backup instead of writing `Clean_<name>`; `--output` writes elsewhere. |
 | `clean --gmsts` | `jess plugin clean --evil-gmsts` | `--gmsts` still works. Same list of 72 GMSTs, matched only at the expansion's value. |
@@ -36,12 +36,12 @@ Every command in tes3cmd 0.40, including the ones its `help` hides:
 | `help <command>` | `jess help <group> <command>`, `jess man` | Also `--help` on anything. |
 | `lint` | [`jess plugin lint`](@/docs/cli/plugin.md#lint) | Same check names. Findings have severities, and the command exits `1` on errors; see [Linting](@/docs/guides/linting.md). |
 | `modify --replace`, `--replacefirst` | [`jess plugin modify`](@/docs/cli/plugin.md#modify) `--replace`, `--replace-first` | `--replacefirst` still works. Works on typed string fields. |
-| `modify --run`, `--program-file` | `jess plugin modify --script fix.luau` | Luau instead of Perl. See [Replacing --run](#replacing-run-with-luau). |
+| `modify --run`, `--program-file` | `jess plugin modify --script fix.jsl` | Luau instead of Perl. See [Replacing --run](#replacing-run-with-luau). |
 | `multipatch` | [TES3Merge](@/docs/bundled-scripts/tes3merge.md) | Leveled lists, fog bug, summons, and cell names, as a [load-order tool](@/docs/guides/load-order-scripts.md) in the Dreamwind package. |
 | `overdial` | [`jess plugin overdial`](@/docs/cli/plugin.md#overdial) | `--single` kept. |
 | `recover` | none | See [below](#intentionally-absent). |
 | `resetdates` | none | OpenMW's load order is `content=` order, not file dates. There's nothing to reset. |
-| `run` | `jess run script.luau` | |
+| `run` | `jess run script.jsl` | |
 | `shell` | none | Write a script and `jess run` it. |
 | `stats` | [`jess plugin stats`](@/docs/cli/plugin.md#stats) | |
 | `testcodec` | `jess plugin test-codec` | Debug builds only (`cargo run -p jess-cli -- plugin test-codec`). Byte-for-byte, not "orthogonal". |
@@ -82,7 +82,7 @@ In jess, a modify script gets the whole plugin and picks its own records. The se
 
 ```luau
 --!strict
--- restock.luau: make every container's items restock. A negative count restocks.
+-- restock.jsl: make every container's items restock. A negative count restocks.
 local plugin: Plugin = ...
 for container in plugin:select { type = 'CONT' } do
   container:edit(function(value)
@@ -98,8 +98,8 @@ end
 ```
 
 ```sh
-jess plugin modify --script restock.luau --dry-run ale_patch.esp
-jess plugin modify --script restock.luau ale_patch.esp
+jess plugin modify --script restock.jsl --dry-run ale_patch.esp
+jess plugin modify --script restock.jsl ale_patch.esp
 ```
 
 The script works on decoded records instead of subrecord indices, and the plugin is written only if the script changed something. When a job outgrows one plugin (a patch built from the whole load order, a report across every mod), write a standalone script and `jess run` it. [Modify Scripts](@/docs/scripting/modify-scripts.md) and [Your First Script](@/docs/scripting/intro.md) cover both.

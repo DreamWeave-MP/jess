@@ -45,7 +45,7 @@ Reads the end record and the central directory and checks every entry against th
 local jpk = require '@jess/jpk'
 local archive = jpk.open(jpk.write {
   { path = 'jess.toml', data = buffer.fromstring 'manifest_version = 1\n' },
-  { path = 'src/init.luau', data = buffer.fromstring(string.rep('return 1\n', 100)) },
+  { path = 'src/init.jsl', data = buffer.fromstring(string.rep('return 1\n', 100)) },
 })
 
 for _, entry in archive.entries do
@@ -57,7 +57,7 @@ print(buffer.tostring(archive.read 'jess.toml'))
 
 ```text
 jess.toml	stored	21	21
-src/init.luau	zstd	900	65
+src/init.jsl	zstd	900	65
 manifest_version = 1
 
 ```

@@ -119,7 +119,7 @@ print(dreamPath.normalize 'Meshes\\Jess\\All_Types.NIF')
 ```
 
 ```
-$ jess run --package jpk/dreamwind pack.luau "MyMod/Data Files" MyMod.bsa
+$ jess run --package jpk/dreamwind pack.jsl "MyMod/Data Files" MyMod.bsa
 packed 3 files into MyMod.bsa
 bsaTes3	3
 1	textures\readme.txt
@@ -135,7 +135,7 @@ Extracting works from either side:
 
 ```luau
 --!strict
--- extract.luau: one mesh out of a load order's archives, two ways.
+-- extract.jsl: one mesh out of a load order's archives, two ways.
 local tool = require '@dreamwind/archive/tool'
 local config: string, bsa: string = ...
 local openmw = jess.openmw.load(config)
@@ -155,7 +155,7 @@ print(summary.extracted, summary.skipped)
 ```
 
 ```
-$ jess run --package jpk/dreamwind extract.luau ~/.config/openmw/openmw.cfg "Data Files/Morrowind.bsa"
+$ jess run --package jpk/dreamwind extract.jsl ~/.config/openmw/openmw.cfg "Data Files/Morrowind.bsa"
 extracted/furn_de_ex_bench_01.nif
 1	0
 ```

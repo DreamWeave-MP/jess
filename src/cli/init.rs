@@ -67,7 +67,7 @@ pub fn run(args: &InitArgs, format: Format) -> Result<(), String> {
     };
     let report = jess::lua::init::init(&args.dir, &options)
         .map_err(|error| format!("failed to set up '{}': {error}", args.dir.display()))?;
-    let main = args.dir.join("main.luau");
+    let main = args.dir.join("main.jsl");
     let mut next_steps = vec![format!("run the example: jess run {}", main.display())];
     if let Some(hint) = editor.hint() {
         next_steps.push(format!("{}: {hint}", editor.name()));

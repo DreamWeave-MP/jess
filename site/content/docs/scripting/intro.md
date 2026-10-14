@@ -10,7 +10,7 @@ A jess script is a [Luau](https://luau.org) file with the whole jess API already
 
 ## Count some books
 
-Save this as `hello.luau`:
+Save this as `hello.jsl`:
 
 ```luau
 --!strict
@@ -26,9 +26,9 @@ Run it:
 
 ```sh
 $ cd ~/Games/Morrowind/Data\ Files
-$ jess run ~/my-scripts/hello.luau
+$ jess run ~/my-scripts/hello.jsl
 Morrowind.esm has 574 books
-$ jess run ~/my-scripts/hello.luau Tribunal.esm
+$ jess run ~/my-scripts/hello.jsl Tribunal.esm
 Tribunal.esm has 49 books
 ```
 
@@ -48,17 +48,17 @@ The quickest way to get them is a script folder that's already set up:
 jess init my-scripts                    # VS Code; or --editor neovim, zed, helix, none
 ```
 
-That writes `types/` (the types, from the jess you have installed: `jess.d.luau` and a stub module for each `@jess/` and `@dream/` name), a strict `.luaurc` aliasing those names into `types/`, a `main.luau` to start from, and the settings that point [luau-lsp](https://github.com/JohnnyMorganz/luau-lsp) at the types in your editor. To do it by hand, `jess luau-types types` writes the folder and prints the aliases for your `.luaurc`, and in VS Code:
+That writes `types/` (the types, from the jess you have installed: `jess.d.jsl` and a stub module for each `@jess/` and `@dream/` name), a strict `.jessrc` aliasing those names into `types/`, a `main.jsl` to start from, and the settings that point [luau-lsp](https://github.com/JohnnyMorganz/luau-lsp) at the types in your editor. To do it by hand, `jess luau-types types` writes the folder and prints the aliases for your `.jessrc`, and in VS Code:
 
 ```json
 {
   "luau-lsp.platform.type": "standard",
   "luau-lsp.fflags.enableNewSolver": true,
-  "luau-lsp.types.definitionFiles": { "@jess": "types/jess.d.luau" }
+  "luau-lsp.types.definitionFiles": { "@jess": "types/jess.d.jsl" }
 }
 ```
 
-Other editors running luau-lsp take the file as `luau-lsp lsp --definitions:@jess=types/jess.d.luau --flag:LuauSolverV2=true`. The flag turns on Luau's new type solver, which some of jess's types need. Now you get completion on `jess.`, hover docs, and red squiggles where your script is wrong.
+Other editors running luau-lsp take the file as `luau-lsp lsp --definitions:@jess=types/jess.d.jsl --flag:LuauSolverV2=true`. The flag turns on Luau's new type solver, which some of jess's types need. Now you get completion on `jess.`, hover docs, and red squiggles where your script is wrong.
 
 {% usage_note(title="Regenerate after upgrading") %}
 `types/` describes one jess version. After you upgrade jess, run `jess init` in the folder again (it only refreshes `types/`, leaving your files alone) or `jess luau-types types` again, or the editor will happily approve calls the new version doesn't have.

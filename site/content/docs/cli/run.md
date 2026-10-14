@@ -12,8 +12,8 @@ Runs a Luau script with the whole jess API loaded.
 
 | Argument / option | Does |
 | --- | --- |
-| `<SCRIPT>` | The Luau file to run, by its path. Required: a missing one is `error: 'nope.luau' isn't a file`. |
-| `[ARGS]...` | Everything after the script, passed to it as strings. Flags here belong to the script, not to jess: `jess run fix.luau --verbose` hands `--verbose` to `fix.luau`. |
+| `<SCRIPT>` | The Luau file to run, by its path. Required: a missing one is `error: 'nope.jsl' isn't a file`. |
+| `[ARGS]...` | Everything after the script, passed to it as strings. Flags here belong to the script, not to jess: `jess run fix.jsl --verbose` hands `--verbose` to `fix.jsl`. |
 | `--package PACKAGE` | Activate a [package](@/docs/scripting/packages.md), a Package Source folder or a `.jpk`, before the script runs (repeatable). Its exports are then `require`-able by the script, and the activated layers' entrypoints have run. |
 | `--layer ID` | Activate only this layer of the packages, and the layers it requires (repeatable). Without any, every layer they declare. Needs `--package`. |
 
@@ -22,7 +22,7 @@ Plus the [global options](@/docs/cli/global-options.md).
 ## Running one script
 
 ```sh
-jess run count-books.luau "Data Files/Morrowind.esm" --verbose
+jess run count-books.jsl "Data Files/Morrowind.esm" --verbose
 ```
 
 The script's arguments arrive two ways:
@@ -31,7 +31,7 @@ The script's arguments arrive two ways:
 - in the global `arg` table: `arg[1]`, `arg[2]`, ..., with the script's own path in `arg[0]`
 
 ```luau
--- count-books.luau
+-- count-books.jsl
 local pluginPath, flag = ...
 print('counting books in', pluginPath, 'with', #arg, 'args; I am', arg[0], flag)
 
@@ -40,7 +40,7 @@ print(plugin:select({ type = 'book' }):count())
 ```
 
 ```text
-counting books in	Data Files/Morrowind.esm	with	2	args; I am	count-books.luau	--verbose
+counting books in	Data Files/Morrowind.esm	with	2	args; I am	count-books.jsl	--verbose
 574
 ```
 
@@ -52,7 +52,7 @@ The globals are all there: `jess`, `vfstool`, `openmwConfig`, `dreamPath`, and `
 
 ```luau
 --!strict
--- merge.luau: run TES3Merge over a load order.
+-- merge.jsl: run TES3Merge over a load order.
 local config: string = ...
 local openmw = jess.openmw.load(config)
 local tes3merge = require '@dreamwind/tools/tes3merge'
@@ -61,7 +61,7 @@ tes3merge({}, openmw)
 ```
 
 ```text
-$ jess run --package jess/jpk/dreamwind merge.luau ~/.config/openmw/openmw.cfg
+$ jess run --package jess/jpk/dreamwind merge.jsl ~/.config/openmw/openmw.cfg
 tes3merge: wrote 22 merged records to /home/you/.local/share/openmw/data/Merged Objects.esp
 ```
 
@@ -72,13 +72,13 @@ tes3merge: wrote 22 merged records to /home/you/.local/share/openmw/data/Merged 
 `--package` resolves the packages' layers into a plan and activates it before the first line of the script runs: their exports resolve through `require`, and the activated layers' entrypoints run, in order:
 
 ```luau
--- hello.luau
+-- hello.jsl
 local greeter = require '@greeter'
 print(greeter.greet 'Nerevarine')
 ```
 
 ```text
-$ jess run --package greeter.jpk hello.luau
+$ jess run --package greeter.jpk hello.jsl
 Wake up, Nerevarine
 ```
 
@@ -93,7 +93,7 @@ A plan that doesn't resolve stops the run before anything has started. jess runs
 A script that raises an error stops the run, prints the error on stderr, and exits `1`:
 
 ```text
-error: err.luau:2: boom
+error: err.jsl:2: boom
 ```
 
 Anything the script already wrote stays written.

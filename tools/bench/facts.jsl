@@ -8,7 +8,7 @@ them. The harness keeps the counts.
 
   jess run --capability filesystem.read --capability filesystem.write \
     --capability process.environment --package jpk/<package> --package-path jpk \
-    tools/bench/facts.luau <module> <state key> <openmw.cfg> [options as JSON]
+    tools/bench/facts.jsl <module> <state key> <openmw.cfg> [options as JSON]
 
 The module is one of @tes3merge, @s3lightfixes, @merged-lands, and @doctor, and the state key
 the one it reads its options from (`mergedlands` for Merged Lands). The options are the
@@ -30,7 +30,7 @@ local Tools: { [string]: () -> Tool } = {
 
 local moduleName: string?, stateKey: string?, config: string?, optionsText: string? = ...
 if not moduleName or not stateKey or not config then
-  error('usage: jess run facts.luau <module> <state key> <openmw.cfg> [options as JSON]', 0)
+  error('usage: jess run facts.jsl <module> <state key> <openmw.cfg> [options as JSON]', 0)
 end
 
 local load = Tools[moduleName]

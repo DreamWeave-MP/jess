@@ -19,8 +19,8 @@ logger.child({ step = 'archives' }).warn 'Tribunal.bsa is missing'
 ```
 
 ```text
-{"level":"info","target":"importer","message":"resolved","fields":{"file":"Morrowind.esm","folder":2.0,"package":"openmw-import-morrowind"},"source":"import.luau"}
-{"level":"warn","target":"importer","message":"Tribunal.bsa is missing","fields":{"package":"openmw-import-morrowind","step":"archives"},"source":"import.luau"}
+{"level":"info","target":"importer","message":"resolved","fields":{"file":"Morrowind.esm","folder":2.0,"package":"openmw-import-morrowind"},"source":"import.jsl"}
+{"level":"warn","target":"importer","message":"Tribunal.bsa is missing","fields":{"package":"openmw-import-morrowind","step":"archives"},"source":"import.jsl"}
 ```
 
 `source` is the chunk that logged, as the VM sees it, not something the script said.
@@ -63,7 +63,7 @@ print(#records, records[1].level, records[1].target, records[1].fields.count)
 
 ## Types
 
-`types/jess.d.luau` declares these (see [Built-in Modules](@/docs/scripting/built-in-modules.md) for how the modules get typed):
+`types/jess.d.jsl` declares these (see [Built-in Modules](@/docs/scripting/built-in-modules.md) for how the modules get typed):
 
 ```luau
 type JessLogFields = { [string]: string | number | boolean }

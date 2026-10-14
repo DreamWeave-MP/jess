@@ -22,7 +22,7 @@ mod types;
 /// Where `jess --help` sends people new to jess.
 const START_HERE: &str = "Start here:
   jess init my-scripts        Set up a folder for Luau scripts, with types for your editor
-  jess run script.luau        Run a Luau script with the jess API
+  jess run script.jsl        Run a Luau script with the jess API
 
 Docs: https://DreamWeave-MP.github.io/jess";
 
@@ -67,7 +67,7 @@ enum Command {
     Package(Box<package::PackageArgs>),
     /// Set up a folder for Luau scripts: jess's types, an example, and editor settings.
     Init(Box<init::InitArgs>),
-    /// Write jess's Luau types into a folder: jess.d.luau and one stub module per require name.
+    /// Write jess's Luau types into a folder: jess.d.jsl and one stub module per require name.
     LuauTypes(Box<types::LuauTypesArgs>),
     /// Generate shell completion scripts.
     Completions(Box<CompletionsArgs>),

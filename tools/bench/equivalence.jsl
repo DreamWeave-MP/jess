@@ -1,7 +1,7 @@
 --!strict
 --!native
 --[[
-Output equivalence for tools/bench/showcase.luau: whether the file a port wrote says what the
+Output equivalence for tools/bench/showcase.jsl: whether the file a port wrote says what the
 native tool's does. Every file gets one of four verdicts.
 
   identical                  byte for byte.

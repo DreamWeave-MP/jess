@@ -247,7 +247,7 @@ jess nif dump --data "Oblivion - Meshes.bsa" meshes/clutter/apple01.nif
 Runs the script with `(nif, path)` as `...`: a NIF handle to edit, and the file's path. If the NIF's bytes changed afterwards, jess writes it, in place with a backup, or to `--output`.
 
 ```luau
--- add-ncc.luau: actors walk through it, the camera still collides.
+-- add-ncc.jsl: actors walk through it, the camera still collides.
 -- Lowercase "ncc" would turn the camera's collision off too; nif check flags that.
 local nif = ...
 local root = nif:roots()[1]
@@ -255,13 +255,13 @@ root.extraData = nif:insert { type = 'NiStringExtraData', value = 'NCC' }
 ```
 
 ```sh
-jess nif modify --script add-ncc.luau --output mod/meshes/f/furn_de_firepit_01.nif meshes/f/furn_de_firepit_01.nif
+jess nif modify --script add-ncc.jsl --output mod/meshes/f/furn_de_firepit_01.nif meshes/f/furn_de_firepit_01.nif
 ```
 
 ```yaml
 input: meshes/f/furn_de_firepit_01.nif
 path: meshes/f/furn_de_firepit_01.nif
-script: add-ncc.luau
+script: add-ncc.jsl
 changed: true
 written:
   path: mod/meshes/f/furn_de_firepit_01.nif

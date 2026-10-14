@@ -16,7 +16,7 @@ Like the other [load-order tools](@/docs/bundled-scripts/_index.md), it's a func
 
 ```luau
 --!strict
--- doctor.luau <openmw.cfg>: check a load order, change nothing.
+-- doctor.jsl <openmw.cfg>: check a load order, change nothing.
 local config: string = ...
 local openmw = jess.openmw.load(config)
 local doctor = require '@dreamwind/tools/doctor'
@@ -27,7 +27,7 @@ doctor({}, openmw)
 On the three vanilla masters:
 
 ```text
-$ jess run --package jess/jpk/dreamwind doctor.luau ~/.config/openmw/openmw.cfg
+$ jess run --package jess/jpk/dreamwind doctor.jsl ~/.config/openmw/openmw.cfg
 doctor: 0 errors, 14 warnings, 15 info in 3 content files
   by check: conflict 1, missingAsset 10, mesh 16, masterSize 2
   warning conflict: Bloodmoon.esm replaces 4 records Tribunal.esm changed, dropping its changes (2 of them @dreamwind/tools/tes3merge can merge)
@@ -246,4 +246,4 @@ On a {{ bench(value="plugins") }}-plugin, {{ bench(value="data_dirs") }}-data-fo
 
 ## Source
 
-The tool is [`jpk/dreamwind/src/tools/doctor/init.luau`](https://github.com/DreamWeave-MP/jess/blob/main/jpk/dreamwind/src/tools/doctor/init.luau), the [Dreamwind](@/docs/scripting/packages.md#dreamwind) module `@dreamwind/tools/doctor`: plain Luau against the public API, like the other tools. The comparison it rests on, `jess.compare.overrides`, is in Rust, in `omwaddon::compare`. To change what it does beyond its options, copy it beside your script and require the copy: [Changing a tool](@/docs/guides/load-order-scripts.md#changing-a-tool).
+The tool is [`jpk/dreamwind/src/tools/doctor/init.jsl`](https://github.com/DreamWeave-MP/jess/blob/main/jpk/dreamwind/src/tools/doctor/init.jsl), the [Dreamwind](@/docs/scripting/packages.md#dreamwind) module `@dreamwind/tools/doctor`: plain Luau against the public API, like the other tools. The comparison it rests on, `jess.compare.overrides`, is in Rust, in `omwaddon::compare`. To change what it does beyond its options, copy it beside your script and require the copy: [Changing a tool](@/docs/guides/load-order-scripts.md#changing-a-tool).

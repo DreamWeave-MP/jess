@@ -5,8 +5,8 @@ mod common;
 #[test]
 fn relative_modules_are_cached_by_file() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("value.luau"), "return {}").unwrap();
-    let main = dir.path().join("main.luau");
+    std::fs::write(dir.path().join("value.jsl"), "return {}").unwrap();
+    let main = dir.path().join("main.jsl");
     std::fs::write(&main, "assert(require('./value') == require('./value'))").unwrap();
     jess::lua::scripts::run_file(&common::runtime(), &main, &[]).unwrap();
 }

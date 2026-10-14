@@ -141,7 +141,7 @@ The config's `jess-script=` lines, in config order: VFS paths (lowercase, forwar
 ```luau
 --!strict
 for _, script in jess.openmw.load('cfg/openmw.cfg').jessScripts do
-  print(script) -- scripts/jess/fix.luau, @jess/s3lightfixes
+  print(script) -- scripts/jess/fix.jsl, @jess/s3lightfixes
 end
 ```
 
@@ -157,7 +157,7 @@ The `jess-load-scripts` folder that bundled `@jess/...` scripts run from when a 
 --!strict
 local openmw = jess.openmw.load 'cfg/openmw.cfg'
 if openmw.loadScriptsDir then
-  print(jess.fs.join(openmw.loadScriptsDir, 'tes3merge.luau'))
+  print(jess.fs.join(openmw.loadScriptsDir, 'tes3merge.jsl'))
 end
 ```
 

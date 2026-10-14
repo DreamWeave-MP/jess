@@ -129,7 +129,7 @@ That pushes every record of real Morrowind NIFs through Luau tables (`record:set
 
 ## Luau types and goldens
 
-- **Type checks** need nothing installed. `cargo test -p jess-lua` checks the example scripts in `libs/lua/tests/typecheck.luau`, the bundled scripts, the template, the contract fixtures, the shader corpus, both Luau packages, and every record of `all_types.esp` against the types folder, through l3i's embedded Luau frontend: `types/jess.d.luau` loaded as definitions, `require` resolved through the stubs as the `.luaurc` aliases resolve it, every module strict (`tests/common/mod.rs`, `type_check`). If you change a record type (`#[esp_meta]` types in `jess-omwaddon`) or a NIF record (the `LuauType` derive in `jess-macros`), these run on what you changed; the types are generated from them. `jess luau-types <FOLDER>` writes the result.
+- **Type checks** need nothing installed. `cargo test -p jess-lua` checks the example scripts in `libs/lua/tests/typecheck.jsl`, the bundled scripts, the template, the contract fixtures, the shader corpus, both Luau packages, and every record of `all_types.esp` against the types folder, through l3i's embedded Luau frontend: `types/jess.d.jsl` loaded as definitions, `require` resolved through the stubs as the `.jessrc` aliases resolve it, every module strict (`tests/common/mod.rs`, `type_check`). If you change a record type (`#[esp_meta]` types in `jess-omwaddon`) or a NIF record (the `LuauType` derive in `jess-macros`), these run on what you changed; the types are generated from them. `jess luau-types <FOLDER>` writes the result.
 - **`JESS_BLESS=1`**: rewrites the S3LightFixes and Merged Lands goldens in `libs/cli/tests/s3lightfixes/` and `libs/cli/tests/mergedlands/` from the current run, instead of comparing against them. Those goldens are what the originals wrote, so a diff there means `@dreamwind/tools/s3lightfixes` or `@dreamwind/tools/merged-lands` stopped matching them. Bless only when you meant that, and say why in the commit.
 
 ## Disk space
@@ -153,6 +153,6 @@ The generator renders Markdown through its Tera-shaped template layer, compiles 
 
 The `serve` target builds into `target/site-dev` with `base_url` as `/`, so CSS, scripts, search, and documentation links stay on the local server instead of jumping to GitHub Pages, and serves it over HTTP/1.1 from one nonblocking loop on `@dream/tcp`: GET and HEAD, a folder's `index.html`, `404.html` for what isn't there. It polls `config.toml` and everything under `content/`, `templates/`, `sass/`, `static/`, and `data/` about three times a second and rebuilds in-process when a name, size, or modification time changes; a build that fails prints why and leaves the last good one served. It is a dev server and is not meant to face the internet.
 
-`tools/bench/site.luau` times a whole build against Zola's over the same sources; the landing page quotes it.
+`tools/bench/site.jsl` times a whole build against Zola's over the same sources; the landing page quotes it.
 
 Link between pages with source paths such as `@/docs/scripting/packages.md`; the generator resolves those against the configured site URL. `site/Readme.md` has the site layout and writing conventions.

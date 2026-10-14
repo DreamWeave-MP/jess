@@ -6,12 +6,12 @@ the native tools they port, over the real load order; and whether both wrote the
 
   jess run --capability filesystem.read --capability filesystem.write \
     --capability process.spawn --capability process.environment \
-    tools/bench/showcase.luau run [--jess BIN] [--runs N] [--warmup N] [--only NAME]...
+    tools/bench/showcase.jsl run [--jess BIN] [--runs N] [--warmup N] [--only NAME]...
       [--openmw-cfg FILE] [--packages FOLDER] [--packed] [--no-native] [--tes3merge BIN]
       [--s3lightfixes BIN] [--merged-lands BIN] [--against RESULTS] [--max-load N]
       [--patience MINUTES] [--runtime TEXT]
-  jess run GRANTS tools/bench/showcase.luau docs RESULTS [--output site/data/benchmarks.toml]
-  jess run tools/bench/showcase.luau list
+  jess run GRANTS tools/bench/showcase.jsl docs RESULTS [--output site/data/benchmarks.toml]
+  jess run tools/bench/showcase.jsl list
 
 `run` (the default when the first argument is an option) measures `--jess` (default: `jess` on
 PATH), which has to be a verified build: a binary built without the verified toolchain says so in
@@ -31,7 +31,7 @@ built with `cargo build --release` from https://github.com/Sophialovesmorrowind/
 and named with `--merged-lands` (or `merged_lands` on PATH).
 
 The load order is `--openmw-cfg` (default: `$XDG_CONFIG_HOME/openmw/openmw.cfg`, else
-`~/.config/openmw/openmw.cfg`), only ever read. `flatten.luau` writes it as one standalone config
+`~/.config/openmw/openmw.cfg`), only ever read. `flatten.jsl` writes it as one standalone config
 without the three tools' own outputs, so neither side merges last run's result, and with each
 content file spelled as it is on disk (recorded under `load_order.respelled`). Every run starts
 from an empty folder under target/bench/showcase/<workload>/run holding that config, a
@@ -42,9 +42,9 @@ cache and `--runs` (5) times more, alternating, each process timed by GNU time (
 wall seconds, user and system CPU, peak resident set). `--max-load` (1.5) waits up to `--patience`
 minutes (10) for the one-minute load average to drop below it before measuring; the load at the
 start and the end is recorded either way. After the measured runs, one more jess run calls the
-tool through its module with `facts.luau` and records what it reports about the load order.
+tool through its module with `facts.jsl` and records what it reports about the load order.
 
-Then `equivalence.luau` compares every file both sides wrote and gives each a verdict (identical,
+Then `equivalence.jsl` compares every file both sides wrote and gives each a verdict (identical,
 identical-except-timestamp, known-differences, mismatch); a mismatch is printed and `run` exits
 with 1 after writing its results to target/bench/results/<time>-showcase.json.
 
@@ -91,7 +91,7 @@ type Seed = { name: string, text: string }
 type Workload = {
   name: string,
   title: string,
-  --- The package under `--packages` whose default target runs, the module `facts.luau` calls,
+  --- The package under `--packages` whose default target runs, the module `facts.jsl` calls,
   --- and the key of `state` the module reads its options from.
   package: string,
   module: string,
@@ -517,7 +517,7 @@ local function luauVersion(binary: string): string
   local folder = jess.fs.join(Work, 'types')
   capture(binary, { 'luau-types', folder })
   -- The definitions' first line names the Luau the binary runs; `_VERSION` is just "Luau".
-  local header = readText(jess.fs.join(folder, 'jess.d.luau'))
+  local header = readText(jess.fs.join(folder, 'jess.d.jsl'))
   local firstLine = string.match(header, '^[^\n]*') or ''
   return string.match(firstLine, 'for (Luau %S+)') or 'Luau'
 end
@@ -776,7 +776,7 @@ local function flatten(binary: string, config: string, folder: string, packages:
     jess.fs.join(packages, 'openmw'),
     '--package-path',
     packages,
-    jess.fs.join(Tools, 'flatten.luau'),
+    jess.fs.join(Tools, 'flatten.jsl'),
     folder,
     config,
   }
@@ -851,7 +851,7 @@ local function nativeVersion(tool: string, log: string): string?
   return versionIn(result.stdout or '')
 end
 
---- What the tool's module reports about the load order, through facts.luau: counts only, since
+--- What the tool's module reports about the load order, through facts.jsl: counts only, since
 --- the rest (paths, flags) says nothing about the load order.
 local function facts(
   workload: Workload,
@@ -868,7 +868,7 @@ local function facts(
     packageIn(provider, workload.package),
     '--package-path',
     provider.folder,
-    jess.fs.join(Tools, 'facts.luau'),
+    jess.fs.join(Tools, 'facts.jsl'),
     workload.module,
     workload.stateKey,
     jess.fs.join(folder, 'openmw.cfg'),
@@ -1116,7 +1116,7 @@ local function showcase(arguments: Arguments): number
     packed = packed,
     workloads = {},
   }
-  print(`bench: {context.version} ({context.runtime}, {context.luau}) at {relativeToRoot(binary)}`)
+  print(`bench: {context.version} ({context.runtime}, {context.jsl}) at {relativeToRoot(binary)}`)
   print(`bench: {loadOrder.content_files} content files, {loadOrder.plugins} plugins, {loadOrder.data_dirs} data folders from {config}`)
   for _, change in loadOrder.respelled do
     print(`bench: content listed as its file is spelled: {change}`)
@@ -1205,7 +1205,7 @@ local function docs(resultsPath: string, output: string): number
   local loadStart = field(results, 'load_start')
   local loadOne = if type(loadStart) == 'table' then (loadStart :: { unknown })[1] else nil
   local lines = {
-    '# Generated by `jess run GRANTS tools/bench/showcase.luau docs` from the results file below;',
+    '# Generated by `jess run GRANTS tools/bench/showcase.jsl docs` from the results file below;',
     "# don't edit it. Pages print these with the `bench` shortcode.",
     tomlLine('results', relativeToRoot(path)),
     tomlLine('date', string.sub(text(results, 'started'), 1, 10)),
@@ -1360,12 +1360,12 @@ end
 
 local function usage(): number
   print [[usage:
-  jess run GRANTS tools/bench/showcase.luau run [--jess BIN] [--runs N] [--warmup N]
+  jess run GRANTS tools/bench/showcase.jsl run [--jess BIN] [--runs N] [--warmup N]
       [--only NAME]... [--openmw-cfg FILE] [--packages FOLDER] [--packed] [--no-native]
       [--tes3merge BIN] [--s3lightfixes BIN] [--merged-lands BIN] [--against RESULTS]
       [--max-load N] [--patience MINUTES] [--runtime TEXT]
-  jess run GRANTS tools/bench/showcase.luau docs RESULTS [--output site/data/benchmarks.toml]
-  jess run tools/bench/showcase.luau list
+  jess run GRANTS tools/bench/showcase.jsl docs RESULTS [--output site/data/benchmarks.toml]
+  jess run tools/bench/showcase.jsl list
 
 GRANTS is --capability filesystem.read --capability filesystem.write --capability process.spawn
 --capability process.environment: the load order is read, the run folders and results written,

@@ -47,7 +47,7 @@ Comparing the save with your *current* load order takes a script that loads the 
 
 ```luau
 --!strict
--- check-save.luau <save> <openmw.cfg>: does a save load with this load order?
+-- check-save.jsl <save> <openmw.cfg>: does a save load with this load order?
 local savePath: string, config: string = ...
 local report = jess.save.check(savePath, { config = config })
 
@@ -63,7 +63,7 @@ end
 ```
 
 ```sh
-jess run check-save.luau Caius_Met.omwsave ~/.config/openmw/openmw.cfg
+jess run check-save.jsl Caius_Met.omwsave ~/.config/openmw/openmw.cfg
 ```
 
 It looks up every record the save refers to. Say you've just turned off Tribunal and Bloodmoon. The whole report, as YAML (the script gets the same fields in camelCase):
@@ -118,7 +118,7 @@ Stripping needs to know which of the save's records came from the mod, and that 
 
 ```luau
 --!strict
--- strip-save.luau <save> <openmw.cfg> <output | --dry-run> <content file>...
+-- strip-save.jsl <save> <openmw.cfg> <output | --dry-run> <content file>...
 local savePath: string, config: string, output: string = ...
 local dependencies = { select(4, ...) }
 local dryRun = output == '--dry-run'
@@ -151,7 +151,7 @@ The whole workflow:
 **2. Dry run.**
 
 ```sh
-jess run strip-save.luau Caius_Met.omwsave ~/.config/openmw/openmw.cfg --dry-run Bloodmoon.esm Tribunal.esm
+jess run strip-save.jsl Caius_Met.omwsave ~/.config/openmw/openmw.cfg --dry-run Bloodmoon.esm Tribunal.esm
 ```
 
 ```text
@@ -164,7 +164,7 @@ List as many content files as you're removing, in any order; jess strips depende
 **3. If it's blocked, read why.**
 
 ```sh
-jess run strip-save.luau Caius_Met.omwsave ~/.config/openmw/openmw.cfg --dry-run Morrowind.esm
+jess run strip-save.jsl Caius_Met.omwsave ~/.config/openmw/openmw.cfg --dry-run Morrowind.esm
 ```
 
 ```text
@@ -178,7 +178,7 @@ Each blocker comes with the action that would clear it. Here, Tribunal and Blood
 **4. Strip it for real.** Write to a new file, so the original stays untouched:
 
 ```sh
-jess run strip-save.luau Caius_Met.omwsave ~/.config/openmw/openmw.cfg Caius_Met-vanilla.omwsave Bloodmoon.esm Tribunal.esm
+jess run strip-save.jsl Caius_Met.omwsave ~/.config/openmw/openmw.cfg Caius_Met-vanilla.omwsave Bloodmoon.esm Tribunal.esm
 ```
 
 ```text
@@ -192,7 +192,7 @@ Every removal is applied and verified in memory before anything is written; a bl
 **5. Deactivate the mod, and check.** Turn it off in the OpenMW launcher (or from a script: `openmw:deactivate('Bloodmoon.esm')`, then `openmw:save()`, which backs up `openmw.cfg` first), then:
 
 ```sh
-jess run check-save.luau Caius_Met-vanilla.omwsave ~/.config/openmw/openmw.cfg
+jess run check-save.jsl Caius_Met-vanilla.omwsave ~/.config/openmw/openmw.cfg
 ```
 
 ```text

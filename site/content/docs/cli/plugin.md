@@ -280,7 +280,7 @@ With `--script`, the script gets `(plugin, path)` as `...`, a plugin handle and 
 ```yaml
 input: MyMod.esp
 path: MyMod.esp
-script: fix.luau
+script: fix.jsl
 changed: true
 written: { path: MyMod.esp, backup: MyMod.esp.bak }
 ```

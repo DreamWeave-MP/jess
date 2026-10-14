@@ -72,7 +72,7 @@ end
 ```
 
 ```sh
-jess run list-content.luau ~/.config/openmw/openmw.cfg
+jess run list-content.jsl ~/.config/openmw/openmw.cfg
 ```
 
 `jess.openmw.load(path)` takes an `openmw.cfg` or the folder holding it. A config that can't be read is an error about that config:

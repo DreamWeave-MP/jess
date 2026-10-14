@@ -28,6 +28,6 @@ end
 
 return table.freeze {
   name = 'vector',
-  path = 'tools/bench/canaries/vector.luau',
+  path = 'tools/bench/canaries/vector.jsl',
   run = run,
 }

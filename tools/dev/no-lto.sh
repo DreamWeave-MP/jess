@@ -13,7 +13,7 @@
 # switching back.
 #
 # Luau runs slower in these builds. Never measure one: `jess --version` says "unverified
-# toolchain". Don't feed numbers from that binary into tools/bench/bench.luau, and don't
+# toolchain". Don't feed numbers from that binary into tools/bench/bench.jsl, and don't
 # source this from your shell profile either: it would reach every other cargo project, l3i's
 # own benchmarks included.
 

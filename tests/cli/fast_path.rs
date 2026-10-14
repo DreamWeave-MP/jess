@@ -27,5 +27,5 @@ fn run_canary(script: &Path, data: &Path) {
 
 #[test]
 fn builtins_run_on_the_fast_path() {
-    run_canary(&fixtures().join("safeenv.luau"), Path::new("."));
+    run_canary(&fixtures().join("safeenv.jsl"), Path::new("."));
 }

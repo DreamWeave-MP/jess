@@ -12,7 +12,7 @@ extra:
 
 ```luau
 --!strict
--- tool.luau: pack a folder, check it, plan an extraction, then add to it.
+-- tool.jsl: pack a folder, check it, plan an extraction, then add to it.
 local archive = require '@dreamwind/archive'
 local tool = require '@dreamwind/archive/tool'
 local folder: string = ...
@@ -33,7 +33,7 @@ print(added.files, added.added, added.replaced, added.preserved)
 ```
 
 ```text
-$ jess run --grant filesystem.read --grant filesystem.write --package jpk/dreamwind tool.luau "MyMod/Data Files"
+$ jess run --grant filesystem.read --grant filesystem.write --package jpk/dreamwind tool.jsl "MyMod/Data Files"
 3
 bsaTes3	3	3	0
 extract	textures/readme.txt	out/textures/readme.txt
@@ -84,4 +84,4 @@ jess package test jpk/dreamwind
 cargo test -p jess-lua --test archive_experiment
 ```
 
-`tests/archive/tool.luau` is the module's own suite, dream_archivetool's tests and its Luau API's, run from source and packed. `tests/archive/tool_differential.luau` runs the jobs that only read on every archive the archive suites build and break, and every job on folders, links, and archives on disk, and holds each result to the native module's, frozen in `tests/archive/golden/differential.txt` while jess still linked it. [`@dreamwind/archive`](@/docs/api/dreamwind-archive.md#testing-it) has how those goldens change now.
+`tests/archive/tool.jsl` is the module's own suite, dream_archivetool's tests and its Luau API's, run from source and packed. `tests/archive/tool_differential.jsl` runs the jobs that only read on every archive the archive suites build and break, and every job on folders, links, and archives on disk, and holds each result to the native module's, frozen in `tests/archive/golden/differential.txt` while jess still linked it. [`@dreamwind/archive`](@/docs/api/dreamwind-archive.md#testing-it) has how those goldens change now.

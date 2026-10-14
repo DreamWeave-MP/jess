@@ -5,7 +5,7 @@ The site, built by the Luau generator and by Zola from the same sources, timed a
 
   jess run --capability filesystem.read --capability filesystem.write \
     --capability process.spawn --capability process.environment \
-    tools/bench/site.luau [runs] [zola binary]
+    tools/bench/site.jsl [runs] [zola binary]
 
 Each side builds site/ into a folder of its own under target/bench/site, from a cold process, the
 way a person runs it: the Jess side is the package target in tools/site through the jess binary

@@ -12,11 +12,11 @@ jess has Luau ports of [TES3Merge](https://github.com/NullCascade/TES3Merge), [S
 
 ## Set it up once
 
-Save this as `load-order.luau`, anywhere you like:
+Save this as `load-order.jsl`, anywhere you like:
 
 ```luau
 --!strict
--- load-order.luau <openmw.cfg>: merge objects, fix lights, merge terrain.
+-- load-order.jsl <openmw.cfg>: merge objects, fix lights, merge terrain.
 local config: string = ...
 local openmw = jess.openmw.load(config)
 local mergedLands = require '@dreamwind/tools/merged-lands'
@@ -43,7 +43,7 @@ jess pack jess/jpk/dreamwind -o dreamwind.jpk
 ## Run it
 
 ```sh
-jess run --package dreamwind.jpk load-order.luau ~/.config/openmw/openmw.cfg
+jess run --package dreamwind.jpk load-order.jsl ~/.config/openmw/openmw.cfg
 ```
 
 ```text
@@ -96,7 +96,7 @@ Nothing else is edited. Your mods' plugins are only read.
 
 ## Changing a tool
 
-Options are the better tool when they cover what you want: they survive every Dreamwind update. When they don't reach, change the tool. Each one is a single file, plain Luau against the public API: [`tes3merge/init.luau`](https://github.com/DreamWeave-MP/jess/blob/main/jpk/dreamwind/src/tools/tes3merge/init.luau) and its siblings under `jpk/dreamwind/src/tools`. Copy it beside your script and require the copy by its relative path:
+Options are the better tool when they cover what you want: they survive every Dreamwind update. When they don't reach, change the tool. Each one is a single file, plain Luau against the public API: [`tes3merge/init.jsl`](https://github.com/DreamWeave-MP/jess/blob/main/jpk/dreamwind/src/tools/tes3merge/init.jsl) and its siblings under `jpk/dreamwind/src/tools`. Copy it beside your script and require the copy by its relative path:
 
 ```luau
 local tes3merge = require './tes3merge'
@@ -106,7 +106,7 @@ From then on it's yours. It doesn't get the next Dreamwind's fixes until you mer
 
 ## Scripts that come with mods
 
-A mod can ship its own load-order module, a file that returns a `function(state, openmw)`, in its data folder. `require` finds game files through the VFS once a script has a default config, so after `jess.openmw.configPath(config)`, `require('scripts.coolmod.patch')` loads `scripts/coolmod/patch.luau` from whichever data folder or archive has it, and you call what it returns like the tools above.
+A mod can ship its own load-order module, a file that returns a `function(state, openmw)`, in its data folder. `require` finds game files through the VFS once a script has a default config, so after `jess.openmw.configPath(config)`, `require('scripts.coolmod.patch')` loads `scripts/coolmod/patch.jsl` from whichever data folder or archive has it, and you call what it returns like the tools above.
 
 Scripts aren't sandboxed: a load-order script can read and write anything you can. Only run ones from mods you trust, the same as you would an MWSE mod or a DLL.
 

@@ -14,7 +14,7 @@ The CLI doesn't read `openmw.cfg`. A small driver script does: it loads the conf
 
 ```luau
 --!strict
--- lightbooks.luau
+-- lightbooks.jsl
 return function(state: { [string]: unknown }, openmw: OpenMwContext)
   print(`light books: {#openmw:content()} content files`)
 end
@@ -27,7 +27,7 @@ end
 
 ```luau
 --!strict
--- patch.luau <openmw.cfg>
+-- patch.jsl <openmw.cfg>
 local config: string = ...
 local openmw = jess.openmw.load(config)
 local lightBooks = require './lightbooks'
@@ -39,10 +39,10 @@ tes3merge(state, openmw)
 ```
 
 ```sh
-jess run --package jess/jpk/dreamwind patch.luau ~/.config/openmw/openmw.cfg
+jess run --package jess/jpk/dreamwind patch.jsl ~/.config/openmw/openmw.cfg
 ```
 
-`require('./lightbooks')` loads `lightbooks.luau` from beside the driver; `--package` makes Dreamwind's tools `require`-able by name. If one call raises an error, the run stops there, and anything earlier calls wrote stays written.
+`require('./lightbooks')` loads `lightbooks.jsl` from beside the driver; `--package` makes Dreamwind's tools `require`-able by name. If one call raises an error, the run stops there, and anything earlier calls wrote stays written.
 
 ## A complete patcher
 
@@ -134,7 +134,7 @@ end
 Over the three vanilla masters:
 
 ```text
-$ jess run --package jess/jpk/dreamwind patch.luau ~/.config/openmw/openmw.cfg
+$ jess run --package jess/jpk/dreamwind patch.jsl ~/.config/openmw/openmw.cfg
 light books: 315 books lightened, written to /home/you/.local/share/openmw/data/Light Books.omwaddon
 tes3merge: wrote 22 merged records to /home/you/.local/share/openmw/data/Merged Objects.esp
 ```
@@ -190,7 +190,7 @@ end
 
 ## Shipping a patcher with a mod
 
-Put the module under your mod's data folder, say `scripts/mymod/patch.luau`. A driver that makes the config its default can `require` it by its VFS name, so it can sit in a loose folder or inside a BSA, and a later mod can replace it the same way it would replace a mesh:
+Put the module under your mod's data folder, say `scripts/mymod/patch.jsl`. A driver that makes the config its default can `require` it by its VFS name, so it can sit in a loose folder or inside a BSA, and a later mod can replace it the same way it would replace a mesh:
 
 ```luau
 --!strict

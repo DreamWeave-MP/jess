@@ -5,7 +5,7 @@ id = "org.dreamweave.jess-site"
 version = "0.1.0"
 jess_api = "1"
 default_target = "build"
-include = ["build.luau", "paths.luau", "serve.luau"]
+include = ["build.jsl", "paths.jsl", "serve.jsl"]
 
 [dependencies]
 "org.dreamweave.site" = "0.1"
@@ -22,7 +22,7 @@ exports = []
 [targets.build]
 kind = "command"
 command = "jess-site-build"
-entry = "build.luau"
+entry = "build.jsl"
 capabilities = ["filesystem.read", "filesystem.write"]
 
 # `jess package run --target serve tools/site --package-path jpk -- [host] [port]`: a dev build
@@ -30,5 +30,5 @@ capabilities = ["filesystem.read", "filesystem.write"]
 [targets.serve]
 kind = "command"
 command = "jess-site-serve"
-entry = "serve.luau"
+entry = "serve.jsl"
 capabilities = ["filesystem.read", "filesystem.write", "network.tcp.listen", "network.tcp.public"]

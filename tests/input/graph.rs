@@ -39,7 +39,7 @@ fn a_chord_member_of_the_wrong_type_is_named_by_place_and_path() {
     assert_eq!(messages.len(), 1, "{messages:#?}");
     assert_eq!(
         messages[0],
-        "acceptance.luau:12:1, set \"gameplay\" (from @jess/acceptance), action \"quickSave\", binding 1, \
+        "acceptance.jsl:12:1, set \"gameplay\" (from @jess/acceptance), action \"quickSave\", binding 1, \
          at chord: chord's members[1] must be digital, and it is scalar"
     );
 }
@@ -52,7 +52,7 @@ fn a_binding_of_the_wrong_type_names_both_types() {
     assert_eq!(
         messages,
         [
-            "acceptance.luau:12:1, set \"gameplay\" (from @jess/acceptance), action \"move\", binding 5: \
+            "acceptance.jsl:12:1, set \"gameplay\" (from @jess/acceptance), action \"move\", binding 5: \
              the action is vector2, and this binding produces digital"
         ]
     );

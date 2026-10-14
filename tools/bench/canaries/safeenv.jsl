@@ -49,6 +49,6 @@ end
 
 return table.freeze {
   name = 'safeenv',
-  path = 'tools/bench/canaries/safeenv.luau',
+  path = 'tools/bench/canaries/safeenv.jsl',
   run = run,
 }

@@ -3,15 +3,15 @@
 //! One definitions file declares the globals and every type: `jess`, the libraries' globals,
 //! generic services. Each module `require` resolves natively (`@jess/log`,
 //! `@jess/shader`, ...) gets a stub module of its own, a file that returns a value
-//! of that module's type, and a `.luaurc` aliases each scope (`jess`, `dream`, ...) to its folder.
+//! of that module's type, and a `.jessrc` aliases each scope (`jess`, `dream`, ...) to its folder.
 //! A checker then types `require('@jess/log')` the way Luau types any require: by resolving it to
 //! a file. Nothing is overloaded, so nothing limits how many modules there are.
 //!
 //! ```text
 //! types/
-//!   jess.d.luau          the definitions: globals and types
-//!   jess/init.luau       @jess
-//!   jess/log.luau        @jess/log
+//!   jess.d.jsl          the definitions: globals and types
+//!   jess/init.jsl       @jess
+//!   jess/log.jsl        @jess/log
 //! ```
 
 use std::collections::BTreeSet;
@@ -19,7 +19,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 /// The definitions file, at the folder's top.
-pub const DEFINITIONS: &str = "jess.d.luau";
+pub const DEFINITIONS: &str = "jess.d.jsl";
 
 /// One generated file: its path inside the types folder, `/`-separated, and its contents.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,7 +37,7 @@ pub struct Types {
     pub files: Vec<TypeFile>,
     /// Every module typed, by the name `require` takes, sorted.
     pub modules: Vec<String>,
-    /// The `.luaurc` aliases' names, sorted: the first segment of every module name.
+    /// The `.jessrc` aliases' names, sorted: the first segment of every module name.
     pub scopes: Vec<String>,
 }
 
@@ -55,10 +55,10 @@ impl Types {
         &self.files[0].source
     }
 
-    /// A `.luaurc` for a folder whose types live in `folder` (relative to it): strict, with an
+    /// A `.jessrc` for a folder whose types live in `folder` (relative to it): strict, with an
     /// alias for every scope.
     #[must_use]
-    pub fn luaurc(&self, folder: &str) -> String {
+    pub fn jessrc(&self, folder: &str) -> String {
         let aliases = self
             .scopes
             .iter()
@@ -123,8 +123,8 @@ fn stub(name: &str, expression: &str) -> String {
     format!("--!strict\n-- jess's stub for {name}: the runtime module is `{expression}`.\nreturn {expression}\n")
 }
 
-/// Where module `name` lives in the folder: `@scope/a/b` is `scope/a/b.luau`, or
-/// `scope/a/b/init.luau` when another module lives under it; `@scope` is `scope/init.luau`.
+/// Where module `name` lives in the folder: `@scope/a/b` is `scope/a/b.jsl`, or
+/// `scope/a/b/init.jsl` when another module lives under it; `@scope` is `scope/init.jsl`.
 fn module_path(name: &str, modules: &[String]) -> Option<String> {
     let body = name.strip_prefix('@')?;
     if !modules.iter().any(|module| module == name) {
@@ -133,9 +133,9 @@ fn module_path(name: &str, modules: &[String]) -> Option<String> {
     let parent = format!("{name}/");
     let has_children = modules.iter().any(|module| module.starts_with(&parent));
     Some(if has_children || !body.contains('/') {
-        format!("{body}/init.luau")
+        format!("{body}/init.jsl")
     } else {
-        format!("{body}.luau")
+        format!("{body}.jsl")
     })
 }
 
@@ -144,9 +144,9 @@ fn module_path(name: &str, modules: &[String]) -> Option<String> {
 pub struct Written {
     /// Every file written.
     pub written: Vec<PathBuf>,
-    /// Stale stubs removed: `.luau` files in a scope's folder that jess no longer generates.
+    /// Stale stubs removed: `.jsl` files in a scope's folder that jess no longer generates.
     pub removed: Vec<PathBuf>,
-    /// The scopes written, one folder and one `.luaurc` alias each.
+    /// The scopes written, one folder and one `.jessrc` alias each.
     pub scopes: Vec<String>,
 }
 
@@ -192,7 +192,7 @@ fn remove_stale(dir: &Path, generated: &BTreeSet<PathBuf>, removed: &mut Vec<Pat
             if std::fs::read_dir(&path)?.next().is_none() {
                 std::fs::remove_dir(&path)?;
             }
-        } else if path.extension().is_some_and(|extension| extension == "luau") && !generated.contains(&path) {
+        } else if path.extension().is_some_and(|extension| extension == "jsl") && !generated.contains(&path) {
             std::fs::remove_file(&path)?;
             removed.push(path);
         }

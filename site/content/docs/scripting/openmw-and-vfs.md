@@ -140,8 +140,8 @@ A name that isn't a file and isn't in the load order is an error that says where
 
 `require` works exactly like it does in OpenMW's Lua: modules come from the VFS, so they can ship loose or in an archive, and a later mod can override them.
 
-- `require("scripts.myMod.util")` turns dots into slashes and loads `scripts/mymod/util.lua`, or `scripts/mymod/util/init.lua`, as OpenMW does. jess also takes `.luau` files there.
-- `require("./util")` and `require("../shared/util")` are relative to the requiring script, like Luau's require by string: in the VFS for a module loaded from it, and next to the file for a script you run from disk (`jess run tools/patch.luau`). They try `util.luau`, `util.lua`, `util/init.luau`, and `util/init.lua`. An `init` script stands for its folder, so its `./` is beside the folder and `@self/` inside it.
+- `require("scripts.myMod.util")` turns dots into slashes and loads `scripts/mymod/util.lua`, or `scripts/mymod/util/init.lua`, as OpenMW does. jess also takes `.jsl` files there.
+- `require("./util")` and `require("../shared/util")` are relative to the requiring script, like Luau's require by string: in the VFS for a module loaded from it, and next to the file for a script you run from disk (`jess run tools/patch.jsl`). They try `util.jsl`, `util.lua`, `util/init.jsl`, and `util/init.lua`. An `init` script stands for its folder, so its `./` is beside the folder and `@self/` inside it.
 - Each module runs once and is cached; requiring it again, by any name that reaches the same file, returns the same value.
 - `require("jess")` returns the jess API, and the standard libraries OpenMW preloads (`string`, `table`, `math`, `coroutine`, `utf8`, `os`) are there by name. So are the [downstream libraries](@/docs/scripting/downstream-libraries.md), with or without a leading `@`, and each of jess's modules as `@jess/<name>` (`require("@jess/shader")` is `jess.shader`).
 - Without a default config there's no VFS: only those preloaded names, the exports of `--package` packages, and a disk script's relative requires work. That's where a `jess run` script starts; `jess.openmw.configPath` gives it one.

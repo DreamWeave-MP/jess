@@ -23,14 +23,14 @@ Sets up a folder for Luau scripts:
 | File | What |
 | --- | --- |
 | `types/` | The types of the whole jess API, from the jess you have installed: the folder [`luau-types`](#luau-types) writes. Rewritten on every run. |
-| `.luaurc` | `"languageMode": "strict"`, so every script is type-checked, and the aliases that point `@jess/...` and `@dream/...` at `types/`. |
-| `main.luau` | A working example: lists each plugin in a load order with its light count (`jess run main.luau path/to/openmw.cfg`, the file or the folder holding it), or one plugin's (`jess run main.luau MyMod.esp`). |
-| `.vscode/settings.json` | VS Code with the Luau Language Server extension: `luau-lsp.types.definitionFiles` set to `{ "@jess": "types/jess.d.luau" }`, the `standard` platform, no Rojo sourcemap, and `luau-lsp.fflags.enableNewSolver`. |
-| `.nvim.lua` | Neovim 0.11+: `vim.lsp.config("luau_lsp", ...)` running `luau-lsp lsp --definitions:@jess=<folder>/types/jess.d.luau --flag:LuauSolverV2=true`. Neovim reads it only with `vim.o.exrc = true`, and asks once whether to trust it. |
+| `.jessrc` | `"languageMode": "strict"`, so every script is type-checked, and the aliases that point `@jess/...` and `@dream/...` at `types/`. |
+| `main.jsl` | A working example: lists each plugin in a load order with its light count (`jess run main.jsl path/to/openmw.cfg`, the file or the folder holding it), or one plugin's (`jess run main.jsl MyMod.esp`). |
+| `.vscode/settings.json` | VS Code with the Luau Language Server extension: `luau-lsp.types.definitionFiles` set to `{ "@jess": "types/jess.d.jsl" }`, the `standard` platform, no Rojo sourcemap, and `luau-lsp.fflags.enableNewSolver`. |
+| `.nvim.lua` | Neovim 0.11+: `vim.lsp.config("luau_lsp", ...)` running `luau-lsp lsp --definitions:@jess=<folder>/types/jess.d.jsl --flag:LuauSolverV2=true`. Neovim reads it only with `vim.o.exrc = true`, and asks once whether to trust it. |
 | `.zed/settings.json` | Zed with the Luau extension: `definitions`, the standard platform, and `fflags.enable_new_solver` under `lsp.luau-lsp.settings`. |
-| `.helix/languages.toml` | Helix: a `luau-lsp` language server with `--definitions:@jess=types/jess.d.luau --flag:LuauSolverV2=true` for the `luau` language. |
+| `.helix/languages.toml` | Helix: a `luau-lsp` language server with `--definitions:@jess=types/jess.d.jsl --flag:LuauSolverV2=true` for the `luau` language. |
 
-Every settings file turns on Luau's new type solver, which some of jess's types need ([Editor Setup](@/docs/getting-started/editor-setup.md#the-new-type-solver)). Only the chosen editor's file is written. Running `init` again in the same folder rewrites `types/` (do it after upgrading jess), removing stubs this jess no longer writes, and leaves every other file that's there alone, listing it under `skipped`; `--force` replaces them too, backing each up first. A `.luaurc` from before the types were a folder has no aliases: add them, or rerun with `--force`.
+Every settings file turns on Luau's new type solver, which some of jess's types need ([Editor Setup](@/docs/getting-started/editor-setup.md#the-new-type-solver)). Only the chosen editor's file is written. Running `init` again in the same folder rewrites `types/` (do it after upgrading jess), removing stubs this jess no longer writes, and leaves every other file that's there alone, listing it under `skipped`; `--force` replaces them too, backing each up first. A `.jessrc` from before the types were a folder has no aliases: add them, or rerun with `--force`.
 
 ```sh
 jess init my-scripts --editor helix
@@ -41,20 +41,20 @@ dir: my-scripts
 editor: helix
 types:
   folder: my-scripts/types
-  definitions: my-scripts/types/jess.d.luau
+  definitions: my-scripts/types/jess.d.jsl
   files: 33
   removed: []
   aliases:
     dream: types/dream
     jess: types/jess
 written:
-- path: my-scripts/.luaurc
-- path: my-scripts/main.luau
+- path: my-scripts/.jessrc
+- path: my-scripts/main.jsl
 - path: my-scripts/.helix/languages.toml
 skipped: []
 next_steps:
-- 'run the example over a load order: jess run my-scripts/main.luau path/to/openmw.cfg'
-- 'or on one plugin: jess run my-scripts/main.luau MyMod.esp'
+- 'run the example over a load order: jess run my-scripts/main.jsl path/to/openmw.cfg'
+- 'or on one plugin: jess run my-scripts/main.jsl MyMod.esp'
 # ...
 ```
 
@@ -63,20 +63,20 @@ next_steps:
 
 {{ api_signature(value="jess luau-types <FOLDER>") }}
 
-Writes the Luau types for the whole jess API into `FOLDER`, created if missing. [`init`](#init) does it for you, with the `.luaurc` and editor settings; this is the same folder, by hand.
+Writes the Luau types for the whole jess API into `FOLDER`, created if missing. [`init`](#init) does it for you, with the `.jessrc` and editor settings; this is the same folder, by hand.
 
 ```text
 types/
-  jess.d.luau           the definitions: the jess global, the libraries' globals, every type
-  jess/init.luau        require '@jess'
-  jess/log.luau         require '@jess/log'
-  jess/plugin.luau      require '@jess/plugin', which is jess.plugin
-  jess/package.luau     ...one stub per @jess/ name
-  dream/vfs.luau        require '@dream/vfs'
-  dream/archive/init.luau, dream/archive/ba2.luau, ...
+  jess.d.jsl           the definitions: the jess global, the libraries' globals, every type
+  jess/init.jsl        require '@jess'
+  jess/log.jsl         require '@jess/log'
+  jess/plugin.jsl      require '@jess/plugin', which is jess.plugin
+  jess/package.jsl     ...one stub per @jess/ name
+  dream/vfs.jsl        require '@dream/vfs'
+  dream/archive/init.jsl, dream/archive/ba2.jsl, ...
 ```
 
-`jess.d.luau` declares the globals and every type: the hand-written API, and the generated record and NIF types. Every other file is a stub, one per module `require` resolves natively, returning a value of that module's type. A `.luaurc` aliases `jess` and `dream` to their folders, and from then on `require('@jess/log')` is typed the way Luau types any `require`: by finding a file. There is no list of overloads to outgrow, so a new module costs one file.
+`jess.d.jsl` declares the globals and every type: the hand-written API, and the generated record and NIF types. Every other file is a stub, one per module `require` resolves natively, returning a value of that module's type. A `.jessrc` aliases `jess` and `dream` to their folders, and from then on `require('@jess/log')` is typed the way Luau types any `require`: by finding a file. There is no list of overloads to outgrow, so a new module costs one file.
 
 ```sh
 jess luau-types types
@@ -84,7 +84,7 @@ jess luau-types types
 
 ```yaml
 folder: types
-definitions: types/jess.d.luau
+definitions: types/jess.d.jsl
 files: 33
 removed: []
 aliases:
@@ -92,7 +92,7 @@ aliases:
   jess: types/jess
 ```
 
-Point luau-lsp at the definitions file (`luau-lsp.types.definitionFiles`, `{ "@jess": "types/jess.d.luau" }`, in VS Code; `--definitions:@jess=types/jess.d.luau` elsewhere), turn on the new solver, and put the `aliases` in the `.luaurc` beside your scripts:
+Point luau-lsp at the definitions file (`luau-lsp.types.definitionFiles`, `{ "@jess": "types/jess.d.jsl" }`, in VS Code; `--definitions:@jess=types/jess.d.jsl` elsewhere), turn on the new solver, and put the `aliases` in the `.jessrc` beside your scripts:
 
 ```json
 {

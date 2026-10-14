@@ -14,7 +14,7 @@ It reads the same `lightconfig.toml` and writes the same plugin, `lightconfig.to
 
 ```luau
 --!strict
--- lights.luau <openmw.cfg>
+-- lights.jsl <openmw.cfg>
 local config: string = ...
 local openmw = jess.openmw.load(config)
 local s3lightfixes = require '@dreamwind/tools/s3lightfixes'
@@ -23,7 +23,7 @@ s3lightfixes({}, openmw)
 ```
 
 ```sh
-$ jess run --package jess/jpk/dreamwind lights.luau ~/.config/openmw/openmw.cfg
+$ jess run --package jess/jpk/dreamwind lights.jsl ~/.config/openmw/openmw.cfg
 # S3LightFixes 0.4.59
 # config: /home/you/.config/openmw/openmw.cfg
 # output: /home/you/.local/share/openmw/data/S3LightFixes.omwaddon
@@ -324,6 +324,6 @@ The native finishes first, in {{ bench(workload="s3lightfixes", value="native_ti
 
 ## Source
 
-The script is [`jpk/dreamwind/src/tools/s3lightfixes/init.luau`](https://github.com/DreamWeave-MP/jess/blob/main/jpk/dreamwind/src/tools/s3lightfixes/init.luau), the [Dreamwind](@/docs/scripting/packages.md#dreamwind) module `@dreamwind/tools/s3lightfixes`, ported from S3LightFixes (MIT, © 2024-2026 Dave Corley, with contributions from arrean). Its color math reproduces the original's single-precision arithmetic bit for bit, which is why the outputs match exactly.
+The script is [`jpk/dreamwind/src/tools/s3lightfixes/init.jsl`](https://github.com/DreamWeave-MP/jess/blob/main/jpk/dreamwind/src/tools/s3lightfixes/init.jsl), the [Dreamwind](@/docs/scripting/packages.md#dreamwind) module `@dreamwind/tools/s3lightfixes`, ported from S3LightFixes (MIT, © 2024-2026 Dave Corley, with contributions from arrean). Its color math reproduces the original's single-precision arithmetic bit for bit, which is why the outputs match exactly.
 
 To change what it does beyond its options, copy it beside your script and require the copy: [Changing a tool](@/docs/guides/load-order-scripts.md#changing-a-tool).

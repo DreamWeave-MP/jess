@@ -10,7 +10,7 @@ local expect = test.expect
 local function files(): { { path: string, data: buffer } }
   return {
     {
-      path = 'src/init.luau',
+      path = 'src/init.jsl',
       data = buffer.fromstring(string.rep('return { answer = 42 }\n', 200)),
     },
     { path = 'jess.toml', data = buffer.fromstring 'manifest_version = 1\n' },
@@ -49,8 +49,8 @@ suite.describe('the canonical writer', function()
       methods[entry.path] = entry.method
     end
 
-    expect(paths).toEqual { 'assets/empty.txt', 'assets/noise.bin', 'jess.toml', 'src/init.luau' }
-    expect(methods['src/init.luau']).toBe 'zstd'
+    expect(paths).toEqual { 'assets/empty.txt', 'assets/noise.bin', 'jess.toml', 'src/init.jsl' }
+    expect(methods['src/init.jsl']).toBe 'zstd'
     expect(methods['assets/noise.bin']).toBe 'stored'
     expect(methods['assets/empty.txt']).toBe 'stored'
   end)

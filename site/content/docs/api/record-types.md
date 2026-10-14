@@ -8,7 +8,7 @@ extra:
 
 {{ api_signature(value="jess luau-types <FOLDER>") }}
 
-`jess luau-types` writes the Luau types for the whole API into a folder. Its definitions file, `jess.d.luau`, has two halves: the hand-written half (every module and handle on these pages) and a generated half with a type for every plugin record and every NIF record. This page explains the generated half so you can read it; the file itself is the reference.
+`jess luau-types` writes the Luau types for the whole API into a folder. Its definitions file, `jess.d.jsl`, has two halves: the hand-written half (every module and handle on these pages) and a generated half with a type for every plugin record and every NIF record. This page explains the generated half so you can read it; the file itself is the reference.
 
 ## Getting the types
 
@@ -16,7 +16,7 @@ extra:
 jess luau-types types
 ```
 
-Point your editor at `types/jess.d.luau` (in VS Code with luau-lsp, add it to `luau-lsp.types.definitionFiles`), and alias `jess` and `dream` to `types/jess` and `types/dream` in your `.luaurc`, so `require('@jess/...')` finds its stub. Then start scripts with `--!strict`. `jess init` does all of this for a script folder: it writes `types/`, a strict `.luaurc` with the aliases, and the luau-lsp settings for VS Code, Neovim, Zed, or Helix.
+Point your editor at `types/jess.d.jsl` (in VS Code with luau-lsp, add it to `luau-lsp.types.definitionFiles`), and alias `jess` and `dream` to `types/jess` and `types/dream` in your `.jessrc`, so `require('@jess/...')` finds its stub. Then start scripts with `--!strict`. `jess init` does all of this for a script folder: it writes `types/`, a strict `.jessrc` with the aliases, and the luau-lsp settings for VS Code, Neovim, Zed, or Helix.
 
 Regenerate the folder after upgrading jess (rerunning `jess init` refreshes it), since it describes the jess that wrote it: the definitions' first line names the version. It isn't shipped with jess or kept in the repository, because a copy that can drift from the binary is worse than none.
 

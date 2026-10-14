@@ -147,7 +147,7 @@ return { engineHandlers = handlers }
     local scratch = assert(rawget(_G, 'scratchRoot') :: string?, 'the case needs a scratchRoot')
     local root = jess.fs.join(scratch, 'analysis-roots')
     local absent = jess.fs.join(root, 'absent')
-    jess.fs.write(jess.fs.join(root, 'present.luau'), 'return 1\n')
+    jess.fs.write(jess.fs.join(root, 'present.jsl'), 'return 1\n')
 
     local function findAbsent() return analysis.files({ absent }, {}) end
     local function openAbsent() return analysis.workspace({ root, absent }, {}) end

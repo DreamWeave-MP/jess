@@ -34,14 +34,14 @@ version = "1.2.3"
 jess_api = "1"
 default_target = "greet"
 include = ["src"]
-tests = ["tests/run.luau"]
+tests = ["tests/run.jsl"]
 
 [modules]
-"@alpha/core" = "src/core/init.luau"
-"@alpha/tools/greet" = "src/tools/greet.luau"
-"@alpha/escape" = "src/escape.luau"
-"@alpha/fails" = "src/fails.luau"
-"@alpha/tools/register" = "src/tools/register.luau"
+"@alpha/core" = "src/core/init.jsl"
+"@alpha/tools/greet" = "src/tools/greet.jsl"
+"@alpha/escape" = "src/escape.jsl"
+"@alpha/fails" = "src/fails.jsl"
+"@alpha/tools/register" = "src/tools/register.jsl"
 
 [[layer]]
 id = "example.core"
@@ -57,34 +57,34 @@ module = "@alpha/tools/register"
 capabilities = ["vfs.read"]
 
 [managed.core]
-module = "src/core/init.luau"
+module = "src/core/init.jsl"
 interface = "example.core"
 
 [targets.greet]
 kind = "command"
-entry = "src/tools/register.luau"
+entry = "src/tools/register.jsl"
 command = "alpha-greet"
 capabilities = ["vfs.read"]
 "#,
             ),
             (
-                "src/core/init.luau",
+                "src/core/init.jsl",
                 "local words = require '@self/words'\nreturn { greeting = words.hello, nested = require('./shared').name }\n",
             ),
-            ("src/core/words.luau", "return { hello = 'hello' }\n"),
-            ("src/shared.luau", "return { name = 'shared' }\n"),
+            ("src/core/words.jsl", "return { hello = 'hello' }\n"),
+            ("src/shared.jsl", "return { name = 'shared' }\n"),
             (
-                "src/tools/greet.luau",
+                "src/tools/greet.jsl",
                 "local core = require '@alpha/core'\nreturn function(name: string) return `{core.greeting}, {name}` end\n",
             ),
-            ("src/escape.luau", "return require '../../outside'\n"),
-            ("src/fails.luau", "error('boom')\n"),
+            ("src/escape.jsl", "return require '../../outside'\n"),
+            ("src/fails.jsl", "error('boom')\n"),
             (
-                "src/tools/register.luau",
+                "src/tools/register.jsl",
                 "require('@jess/log').info('registered', { greeting = require('@alpha/tools/greet')('entrypoint') })\n",
             ),
-            ("outside.luau", "return 'escaped'\n"),
-            ("tests/run.luau", "return require('@jess/test').new()\n"),
+            ("outside.jsl", "return 'escaped'\n"),
+            ("tests/run.jsl", "return require('@jess/test').new()\n"),
         ],
     );
 }
@@ -101,7 +101,7 @@ fn plan_of(runtime: &Runtime, location: &Path, layers: &[&str]) -> Plan {
 
 #[test]
 fn the_container_reads_writes_and_refuses() {
-    let suite = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/lua/package/container.luau");
+    let suite = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/lua/package/container.jsl");
     let options = jess::lua::Options::default();
     let run = jess::lua::testing::run(&options, &[suite], false).unwrap();
     assert!(run.failed == 0 && run.passed > 0, "{:#?}", run.modules);
@@ -125,7 +125,7 @@ fn a_package_source_and_its_jpk_are_one_package() {
     assert_eq!(from_jpk.kind, "jpk");
     assert_eq!(from_source.digest, from_jpk.digest);
     assert_eq!(from_source.digest, packed.digest);
-    assert_eq!(from_source.files, 8, "the manifest and src/, not tests/ or outside.luau");
+    assert_eq!(from_source.files, 8, "the manifest and src/, not tests/ or outside.jsl");
     assert_eq!(from_source.files, from_jpk.files);
     assert_eq!(from_source.default_target.as_deref(), Some("greet"));
     assert_eq!(from_source.managed.len(), 1);
@@ -165,9 +165,9 @@ fn a_package_source_and_its_jpk_are_one_package() {
              assert(require('@alpha/core') == require('@alpha/core'))\n\
              local ok, problem = pcall(require, '@alpha/escape')\n\
              assert(not ok and string.find(problem, 'leaves the package root of org.example.alpha', 1, true), problem)\n\
-             assert(string.find(problem, 'required by @org.example.alpha@1.2.3/src/escape.luau', 1, true), problem)\n\
+             assert(string.find(problem, 'required by @org.example.alpha@1.2.3/src/escape.jsl', 1, true), problem)\n\
              local failed, boom = pcall(require, '@alpha/fails')\n\
-             assert(not failed and string.find(boom, 'org.example.alpha@1.2.3/src/fails.luau:1: boom', 1, true), boom)",
+             assert(not failed and string.find(boom, 'org.example.alpha@1.2.3/src/fails.jsl:1: boom', 1, true), boom)",
         );
     }
 }
@@ -179,7 +179,7 @@ fn an_edited_source_is_a_new_digest() {
     alpha(&source);
     let runtime = common::runtime();
     let before = package::inspect(&runtime, &source.display().to_string()).unwrap();
-    write(&source, &[("src/shared.luau", "return { name = 'edited' }\n")]);
+    write(&source, &[("src/shared.jsl", "return { name = 'edited' }\n")]);
     let after = package::inspect(&runtime, &source.display().to_string()).unwrap();
     assert_eq!(before.version, after.version);
     assert_ne!(before.digest, after.digest);
@@ -207,7 +207,7 @@ include = ["src"]
 "org.example.alpha" = "^1.3"
 
 [modules]
-"@beta" = "src/init.luau"
+"@beta" = "src/init.jsl"
 
 [[layer]]
 id = "example.beta"
@@ -215,7 +215,7 @@ requires = ["example.tools"]
 exports = ["@beta"]
 "#,
             ),
-            ("src/init.luau", "error('package code ran during resolution')\n"),
+            ("src/init.jsl", "error('package code ran during resolution')\n"),
         ],
     );
     write(
@@ -226,7 +226,7 @@ exports = ["@beta"]
                 "manifest_version = 1\n[package]\nid = \"org.example.cycle\"\nversion = \"0.1.0\"\njess_api = \"1\"\ninclude = [\"src\"]\n\
                  [[layer]]\nid = \"cycle.a\"\nrequires = [\"cycle.b\"]\n[[layer]]\nid = \"cycle.b\"\nrequires = [\"cycle.a\"]\n",
             ),
-            ("src/x.luau", "return 1\n"),
+            ("src/x.jsl", "return 1\n"),
         ],
     );
     write(
@@ -235,9 +235,9 @@ exports = ["@beta"]
             (
                 "jess.toml",
                 "manifest_version = 1\n[package]\nid = \"org.example.clash\"\nversion = \"0.1.0\"\njess_api = \"1\"\ninclude = [\"src\"]\n\
-                 [modules]\n\"@dream/fs\" = \"src/x.luau\"\n\"@alpha/core\" = \"src/x.luau\"\n[[layer]]\nid = \"clash.layer\"\nexports = [\"@dream/fs\", \"@alpha/core\"]\n",
+                 [modules]\n\"@dream/fs\" = \"src/x.jsl\"\n\"@alpha/core\" = \"src/x.jsl\"\n[[layer]]\nid = \"clash.layer\"\nexports = [\"@dream/fs\", \"@alpha/core\"]\n",
             ),
-            ("src/x.luau", "return 1\n"),
+            ("src/x.jsl", "return 1\n"),
         ],
     );
     let location = |name: &str| temp.path().join(name).display().to_string();
@@ -317,29 +317,29 @@ fn manifests_and_payloads_are_checked_before_anything_runs() {
         )
     };
 
-    let unknown = open(&[("jess.toml", &manifest("license = \"MIT\"\n")), ("src/a.luau", "")]);
+    let unknown = open(&[("jess.toml", &manifest("license = \"MIT\"\n")), ("src/a.jsl", "")]);
     assert!(unknown.contains("unknown key 'license'"), "{unknown}");
     let jess = open(&[
-        ("jess.toml", &manifest("[modules]\n\"@jess/mine\" = \"src/a.luau\"\n")),
-        ("src/a.luau", ""),
+        ("jess.toml", &manifest("[modules]\n\"@jess/mine\" = \"src/a.jsl\"\n")),
+        ("src/a.jsl", ""),
     ]);
     assert!(jess.contains("@jess/ is jess's own namespace"), "{jess}");
     let absent = open(&[
         (
             "jess.toml",
-            &manifest("[modules]\n\"@x/y\" = \"src/missing.luau\"\n[[layer]]\nid = \"x.y\"\nexports = [\"@x/y\"]\n"),
+            &manifest("[modules]\n\"@x/y\" = \"src/missing.jsl\"\n[[layer]]\nid = \"x.y\"\nexports = [\"@x/y\"]\n"),
         ),
-        ("src/a.luau", ""),
+        ("src/a.jsl", ""),
     ]);
     assert!(absent.contains("isn't in the payload"), "{absent}");
     let layer = open(&[
         ("jess.toml", &manifest("[[layer]]\nid = \"x.y\"\nexports = [\"@x/none\"]\n")),
-        ("src/a.luau", ""),
+        ("src/a.jsl", ""),
     ]);
     assert!(layer.contains("exports '@x/none', which [modules] doesn't name"), "{layer}");
     let dead = open(&[
-        ("jess.toml", &manifest("[modules]\n\"@x/y\" = \"src/a.luau\"\n")),
-        ("src/a.luau", ""),
+        ("jess.toml", &manifest("[modules]\n\"@x/y\" = \"src/a.jsl\"\n")),
+        ("src/a.jsl", ""),
     ]);
     assert!(
         dead.contains("module '@x/y' is neither exported nor an entrypoint of any layer"),
@@ -350,7 +350,7 @@ fn manifests_and_payloads_are_checked_before_anything_runs() {
             "jess.toml",
             &manifest("[[layer]]\nid = \"x.y\"\n[[layer.entrypoint]]\nmodule = \"@x/nowhere\"\n"),
         ),
-        ("src/a.luau", ""),
+        ("src/a.jsl", ""),
     ]);
     assert!(
         entrypoint.contains("entrypoint module '@x/nowhere' isn't one [modules] names"),
@@ -358,26 +358,26 @@ fn manifests_and_payloads_are_checked_before_anything_runs() {
     );
     let old = open(&[
         ("jess.toml", &manifest("[[layer]]\nid = \"x.y\"\nmodules = []\n")),
-        ("src/a.luau", ""),
+        ("src/a.jsl", ""),
     ]);
     assert!(old.contains("unknown key 'modules'"), "{old}");
     let api = open(&[
         ("jess.toml", &manifest("").replace("jess_api = \"1\"", "jess_api = \"2\"")),
-        ("src/a.luau", ""),
+        ("src/a.jsl", ""),
     ]);
     assert!(api.contains("jess_api must be \"1\""), "{api}");
     let id = open(&[
         ("jess.toml", &manifest("").replace("org.example.check", "Example")),
-        ("src/a.luau", ""),
+        ("src/a.jsl", ""),
     ]);
     assert!(id.contains("is not lowercase ASCII words joined by dots"), "{id}");
 
     let default_target = open(&[
         (
             "jess.toml",
-            &manifest("default_target = \"missing\"\n[targets.real]\nkind = \"command\"\nentry = \"src/a.luau\"\n"),
+            &manifest("default_target = \"missing\"\n[targets.real]\nkind = \"command\"\nentry = \"src/a.jsl\"\n"),
         ),
-        ("src/a.luau", ""),
+        ("src/a.jsl", ""),
     ]);
     assert!(
         default_target.contains("default_target 'missing' does not name a [targets] entry"),
@@ -387,9 +387,9 @@ fn manifests_and_payloads_are_checked_before_anything_runs() {
     let managed_interface = open(&[
         (
             "jess.toml",
-            &manifest("[managed.worker]\nmodule = \"src/a.luau\"\ninterface = \"Worker\"\n"),
+            &manifest("[managed.worker]\nmodule = \"src/a.jsl\"\ninterface = \"Worker\"\n"),
         ),
-        ("src/a.luau", ""),
+        ("src/a.jsl", ""),
     ]);
     assert!(
         managed_interface.contains("[managed.worker] interface 'Worker'"),
@@ -399,9 +399,9 @@ fn manifests_and_payloads_are_checked_before_anything_runs() {
     let interface_name = open(&[
         (
             "jess.toml",
-            &manifest("[managed.worker]\nmodule = \"src/a.luau\"\ninterfaceName = \"example.worker\"\n"),
+            &manifest("[managed.worker]\nmodule = \"src/a.jsl\"\ninterfaceName = \"example.worker\"\n"),
         ),
-        ("src/a.luau", ""),
+        ("src/a.jsl", ""),
     ]);
     assert!(
         interface_name.contains("[managed.worker] has an unknown key 'interfaceName'"),
@@ -411,9 +411,9 @@ fn manifests_and_payloads_are_checked_before_anything_runs() {
     let target_kind = open(&[
         (
             "jess.toml",
-            &manifest("[targets.tool]\nkind = \"service\"\nentry = \"src/a.luau\"\n"),
+            &manifest("[targets.tool]\nkind = \"service\"\nentry = \"src/a.jsl\"\n"),
         ),
-        ("src/a.luau", ""),
+        ("src/a.jsl", ""),
     ]);
     assert!(
         target_kind.contains("kind must be \"application\" or \"command\""),
@@ -423,9 +423,9 @@ fn manifests_and_payloads_are_checked_before_anything_runs() {
     let app_command = open(&[
         (
             "jess.toml",
-            &manifest("[targets.app]\nkind = \"application\"\nentry = \"src/a.luau\"\ncommand = \"oops\"\n"),
+            &manifest("[targets.app]\nkind = \"application\"\nentry = \"src/a.jsl\"\ncommand = \"oops\"\n"),
         ),
-        ("src/a.luau", ""),
+        ("src/a.jsl", ""),
     ]);
     assert!(
         app_command.contains("command is only valid when kind = \"command\""),
@@ -436,11 +436,11 @@ fn manifests_and_payloads_are_checked_before_anything_runs() {
         (
             "jess.toml",
             &manifest(
-                "[targets.one]\nkind = \"command\"\nentry = \"src/a.luau\"\ncommand = \"same\"\n\
-                 [targets.two]\nkind = \"command\"\nentry = \"src/a.luau\"\ncommand = \"same\"\n",
+                "[targets.one]\nkind = \"command\"\nentry = \"src/a.jsl\"\ncommand = \"same\"\n\
+                 [targets.two]\nkind = \"command\"\nentry = \"src/a.jsl\"\ncommand = \"same\"\n",
             ),
         ),
-        ("src/a.luau", ""),
+        ("src/a.jsl", ""),
     ]);
     assert!(
         duplicate_command.contains("command 'same' is declared by both targets 'one' and 'two'"),
@@ -450,9 +450,9 @@ fn manifests_and_payloads_are_checked_before_anything_runs() {
     let target_capability = open(&[
         (
             "jess.toml",
-            &manifest("[targets.tool]\nkind = \"command\"\nentry = \"src/a.luau\"\ncapabilities = [\"filesystem\"]\n"),
+            &manifest("[targets.tool]\nkind = \"command\"\nentry = \"src/a.jsl\"\ncapabilities = [\"filesystem\"]\n"),
         ),
-        ("src/a.luau", ""),
+        ("src/a.jsl", ""),
     ]);
     assert!(
         target_capability.contains("capability 'filesystem' is not dotted lowercase words"),
@@ -463,26 +463,26 @@ fn manifests_and_payloads_are_checked_before_anything_runs() {
         (
             "jess.toml",
             &manifest(
-                "[managed.worker]\nmodule = \"src/missing.luau\"\n\
-                 [targets.tool]\nkind = \"command\"\nentry = \"src/a.luau\"\n",
+                "[managed.worker]\nmodule = \"src/missing.jsl\"\n\
+                 [targets.tool]\nkind = \"command\"\nentry = \"src/a.jsl\"\n",
             ),
         ),
-        ("src/a.luau", ""),
+        ("src/a.jsl", ""),
     ]);
     assert!(
-        private_source.contains("managed 'worker' is 'src/missing.luau', which isn't in the payload"),
+        private_source.contains("managed 'worker' is 'src/missing.jsl', which isn't in the payload"),
         "{private_source}"
     );
 
     let target_source = open(&[
         (
             "jess.toml",
-            &manifest("[targets.tool]\nkind = \"command\"\nentry = \"src/missing.luau\"\n"),
+            &manifest("[targets.tool]\nkind = \"command\"\nentry = \"src/missing.jsl\"\n"),
         ),
-        ("src/a.luau", ""),
+        ("src/a.jsl", ""),
     ]);
     assert!(
-        target_source.contains("target 'tool' entry is 'src/missing.luau', which isn't in the payload"),
+        target_source.contains("target 'tool' entry is 'src/missing.jsl', which isn't in the payload"),
         "{target_source}"
     );
 }
@@ -494,18 +494,15 @@ fn a_package_source_holds_no_links_and_no_case_twins() {
     let runtime = common::runtime();
     let manifest = "manifest_version = 1\n[package]\nid = \"org.example.links\"\nversion = \"1.0.0\"\njess_api = \"1\"\ninclude = [\"src\"]\n";
     let linked = temp.path().join("linked");
-    write(&linked, &[("jess.toml", manifest), ("src/a.luau", "")]);
-    std::os::unix::fs::symlink("/etc/hostname", linked.join("src/link.luau")).unwrap();
+    write(&linked, &[("jess.toml", manifest), ("src/a.jsl", "")]);
+    std::os::unix::fs::symlink("/etc/hostname", linked.join("src/link.jsl")).unwrap();
     let problem = package::inspect(&runtime, &linked.display().to_string())
         .unwrap_err()
         .to_string();
-    assert!(problem.contains("'src/link.luau' is a symlink"), "{problem}");
+    assert!(problem.contains("'src/link.jsl' is a symlink"), "{problem}");
 
     let twins = temp.path().join("twins");
-    write(
-        &twins,
-        &[("jess.toml", manifest), ("src/Name.luau", ""), ("src/name.luau", "")],
-    );
+    write(&twins, &[("jess.toml", manifest), ("src/Name.jsl", ""), ("src/name.jsl", "")]);
     let problem = package::inspect(&runtime, &twins.display().to_string())
         .unwrap_err()
         .to_string();
@@ -585,14 +582,14 @@ fn a_jpk_holds_only_its_payload() {
          local manifest = 'manifest_version = 1\\n[package]\\nid = \"org.example.extra\"\\nversion = \"1.0.0\"\\njess_api = \"1\"\\ninclude = [\"src\"]\\n'\n\
          jess.fs.replace(output, jpk.write {\n\
            { path = 'jess.toml', data = buffer.fromstring(manifest) },\n\
-           { path = 'src/a.luau', data = buffer.fromstring('return 1') },\n\
-           { path = 'smuggled.luau', data = buffer.fromstring('return 2') },\n\
+           { path = 'src/a.jsl', data = buffer.fromstring('return 1') },\n\
+           { path = 'smuggled.jsl', data = buffer.fromstring('return 2') },\n\
          })",
     );
     let problem = package::inspect(&runtime, &jpk.display().to_string())
         .unwrap_err()
         .to_string();
-    assert!(problem.contains("'smuggled.luau' is outside the payload"), "{problem}");
+    assert!(problem.contains("'smuggled.jsl' is outside the payload"), "{problem}");
 }
 
 /// An opened package is one generation: a file changed on disk, or a JPK replaced, after it was
@@ -606,11 +603,11 @@ fn an_opened_package_reads_only_the_bytes_it_was_opened_with() {
     plan_of(&runtime, &source, &["example.core"]);
     write(
         &source,
-        &[("src/shared.luau", "return { name = 'edited after activation' }\n")],
+        &[("src/shared.jsl", "return { name = 'edited after activation' }\n")],
     );
     let problem = runtime.exec("require '@alpha/core'").unwrap_err().to_string();
     assert!(
-        problem.contains("'src/shared.luau' changed since the package was opened; open it again"),
+        problem.contains("'src/shared.jsl' changed since the package was opened; open it again"),
         "{problem}"
     );
 
@@ -620,7 +617,7 @@ fn an_opened_package_reads_only_the_bytes_it_was_opened_with() {
     package::pack(&common::runtime(), &source.display().to_string(), &jpk_text).unwrap();
     let runtime = common::runtime();
     plan_of(&runtime, &jpk, &["example.core"]);
-    write(&source, &[("src/shared.luau", "return { name = 'repacked' }\n")]);
+    write(&source, &[("src/shared.jsl", "return { name = 'repacked' }\n")]);
     package::pack(&common::runtime(), &source.display().to_string(), &jpk_text).unwrap();
     let problem = runtime.exec("require '@alpha/core'").unwrap_err().to_string();
     assert!(problem.contains("changed since the package was opened"), "{problem}");
@@ -638,9 +635,9 @@ fn a_package_cannot_export_a_module_the_host_registered() {
             (
                 "jess.toml",
                 "manifest_version = 1\n[package]\nid = \"org.example.clash\"\nversion = \"0.1.0\"\njess_api = \"1\"\ninclude = [\"src\"]\n\
-                 [modules]\n\"@host/extra\" = \"src/x.luau\"\n[[layer]]\nid = \"clash.layer\"\nexports = [\"@host/extra\"]\n",
+                 [modules]\n\"@host/extra\" = \"src/x.jsl\"\n[[layer]]\nid = \"clash.layer\"\nexports = [\"@host/extra\"]\n",
             ),
-            ("src/x.luau", "return 1\n"),
+            ("src/x.jsl", "return 1\n"),
         ],
     );
     let runtime = common::runtime();
@@ -742,10 +739,10 @@ fn only_the_built_in_package_exports_under_jess() {
                     "jess.toml",
                     &format!(
                         "manifest_version = 1\n[package]\nid = \"{id}\"\nversion = \"0.1.0\"\njess_api = \"1\"\ninclude = [\"src\"]\n\
-                         [modules]\n\"{module}\" = \"src/x.luau\"\n[[layer]]\nid = \"{name}.layer\"\nexports = [\"{module}\"]\n"
+                         [modules]\n\"{module}\" = \"src/x.jsl\"\n[[layer]]\nid = \"{name}.layer\"\nexports = [\"{module}\"]\n"
                     ),
                 ),
-                ("src/x.luau", "return 'not jess'\n"),
+                ("src/x.jsl", "return 'not jess'\n"),
             ],
         );
         source
@@ -827,11 +824,11 @@ fn library(root: &Path, name: &str, extra: &str, source: &str) {
                 "jess.toml",
                 &format!(
                     "manifest_version = 1\n[package]\nid = \"org.example.{name}\"\nversion = \"1.0.0\"\njess_api = \"1\"\n\
-                     include = [\"src\"]\n{extra}\n[modules]\n\"@{name}\" = \"src/init.luau\"\n\
+                     include = [\"src\"]\n{extra}\n[modules]\n\"@{name}\" = \"src/init.jsl\"\n\
                      [[layer]]\nid = \"example.{name}\"\nexports = [\"@{name}\"]\n"
                 ),
             ),
-            ("src/init.luau", source),
+            ("src/init.jsl", source),
         ],
     );
 }
@@ -888,7 +885,7 @@ fn a_package_requires_only_what_it_declares() {
         "local top = require '@top'\n\
          assert(top.middle == 'base')\n\
          local function denied(problem)\n  \
-           assert(string.find(problem, \"module not found: @base (required by @org.example.top@1.0.0/src/init.luau): \
+           assert(string.find(problem, \"module not found: @base (required by @org.example.top@1.0.0/src/init.jsl): \
          org.example.base exports it, and org.example.top doesn't declare org.example.base as a dependency\", 1, true), problem)\n\
          end\n\
          local ok, problem = pcall(top.direct)\n\
@@ -913,10 +910,7 @@ fn a_package_path_offers_what_a_plan_needs() {
     let top = temp.path().join("top");
     library(&path.join("base"), "base", "", "return { name = 'base' }\n");
     library(&path.join("unrelated"), "unrelated", "", "error('nothing asked for this')\n");
-    write(
-        &path,
-        &[("notes/readme.txt", "not a package\n"), ("stray.luau", "return 1\n")],
-    );
+    write(&path, &[("notes/readme.txt", "not a package\n"), ("stray.jsl", "return 1\n")]);
     library(
         &top,
         "top",
@@ -987,7 +981,7 @@ fn a_package_path_offers_what_a_plan_needs() {
                 "manifest_version = 1\n[package]\nid = \"org.example.twin\"\nversion = \"1.0.0\"\njess_api = \"1\"\n\
                  include = [\"src\"]\n[[layer]]\nid = \"example.base\"\n",
             ),
-            ("src/x.luau", "return 1\n"),
+            ("src/x.jsl", "return 1\n"),
         ],
     );
     let twins = failure(&[], &["example.base"], &[]);
@@ -1033,14 +1027,14 @@ fn package_tests_resolve_dependencies_and_dev_dependencies() {
     library(
         &subject,
         "subject",
-        "tests = [\"tests/run.luau\"]\n[dependencies]\n\"org.example.base\" = \"1\"\n\
+        "tests = [\"tests/run.jsl\"]\n[dependencies]\n\"org.example.base\" = \"1\"\n\
          [dev-dependencies]\n\"org.example.fixtures\" = \"1\"\n",
         "return { base = require('@base').name, fixtures = function() return require '@fixtures' end }\n",
     );
     write(
         &subject,
         &[(
-            "tests/run.luau",
+            "tests/run.jsl",
             "local test = require '@jess/test'\nlocal suite, expect = test.new(), test.expect\n\
              suite.it('the subject sees its dependency', function()\n  \
                expect(require('@subject').base).toBe(require('@fixtures').expected)\n\
@@ -1123,12 +1117,12 @@ fn a_command_target_runs_with_what_it_declares() {
                 "jess.toml",
                 "manifest_version = 1\n[package]\nid = \"org.example.tool\"\nversion = \"1.0.0\"\njess_api = \"1\"\n\
                  default_target = \"report\"\ninclude = [\"src\"]\n[dependencies]\n\"org.example.base\" = \"1\"\n\
-                 [targets.report]\nkind = \"command\"\nentry = \"src/report.luau\"\ncapabilities = [\"filesystem.read\"]\n\
-                 [targets.quiet]\nkind = \"command\"\nentry = \"src/quiet.luau\"\n\
-                 [targets.editor]\nkind = \"application\"\nentry = \"src/quiet.luau\"\n",
+                 [targets.report]\nkind = \"command\"\nentry = \"src/report.jsl\"\ncapabilities = [\"filesystem.read\"]\n\
+                 [targets.quiet]\nkind = \"command\"\nentry = \"src/quiet.jsl\"\n\
+                 [targets.editor]\nkind = \"application\"\nentry = \"src/quiet.jsl\"\n",
             ),
             (
-                "src/report.luau",
+                "src/report.jsl",
                 "local fs = require '@dream/fs'\nlocal first, second = ...\n\
                  assert(first == arg[1] and second == arg[2] and #arg == 2)\n\
                  assert(require('./shared') == 'shared', 'an entry is its package\\'s module')\n\
@@ -1136,9 +1130,9 @@ fn a_command_target_runs_with_what_it_declares() {
                  assert(not pcall(fs.writeFile, first, 'x'), 'and nothing it does not declare')\n\
                  return if require('@base').name == second then 7 else 1\n",
             ),
-            ("src/shared.luau", "return 'shared'\n"),
+            ("src/shared.jsl", "return 'shared'\n"),
             (
-                "src/quiet.luau",
+                "src/quiet.jsl",
                 "assert(not pcall(require('@dream/fs').readFileString, (...)), 'no capability, no filesystem')\n",
             ),
         ],

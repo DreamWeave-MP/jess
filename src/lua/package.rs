@@ -1,8 +1,8 @@
 //! Packages at runtime: the host side of `@jess/package` and the package bootstrap.
 //!
-//! The package format, manifests, digests, and resolution are Luau (`stdlib/jpk.luau`,
-//! `stdlib/package.luau`). Rust supplies the file reads they run over, runs the
-//! bootstrap (`stdlib/bootstrap.luau`) for [`inspect`], [`pack`], [`graph`], and [`activate`], and
+//! The package format, manifests, digests, and resolution are Luau (`stdlib/jpk.jsl`,
+//! `stdlib/package.jsl`). Rust supplies the file reads they run over, runs the
+//! bootstrap (`stdlib/bootstrap.jsl`) for [`inspect`], [`pack`], [`graph`], and [`activate`], and
 //! owns the one seam package code needs: the mount the bootstrap hands an accepted plan to, which
 //! `require` resolves package modules through.
 //!
@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use crate::lua::convert;
 use crate::lua::{Bytes, Text, error};
 
-const BOOTSTRAP: &str = include_str!("stdlib/bootstrap.luau");
+const BOOTSTRAP: &str = include_str!("stdlib/bootstrap.jsl");
 const BOOTSTRAP_CHUNK: &str = "=jess.package.bootstrap";
 
 /// The packages an accepted plan mounted, and the module names they export.

@@ -96,9 +96,9 @@ The Luau API, an [l3i](https://DreamWeave-MP.github.io/l3i/) extension. `plan.rs
 - `nif_edit.rs` is `jess.nif.new/open/openBytes`: Morrowind NIFs as handles.
 - `input.rs` is `jess.input`: node authoring functions, compiled graphs, and a headless runtime over `jess-input`.
 - `scripts.rs` runs `jess-script=` load-order scripts for Rust hosts (`load_order_scripts`, `run_scripts`, `list_load_order_scripts`; the CLI doesn't use them), script files the way `jess run` does (`run_file`, which also takes a bundled script's name when no file has it), and modify scripts; `BUNDLED` holds the `@jess/...` scripts, all embedded from the Dreamwind package's tool sources (`jpk/dreamwind/src/tools`). A load-order script that returns a function is called as a module.
-- `package.rs` is the host side of packages. The format and the model are Luau (`stdlib/jpk.luau`, `stdlib/package.luau`); Rust hands `@jess/package` its file reads, runs `stdlib/bootstrap.luau` for `inspect`, `pack`, `graph`, `test`, and `activate`, and owns the mount: the accepted plan `require` resolves package modules through, under chunk names `@<id>@<version>/<path>` and a cache keyed by id, digest, and path.
-- `init.rs` is `jess init`: the script folder, its `.luaurc`, and the editor settings.
-- `definitions()` builds `jess.d.luau`: hand-written API types plus generated record and NIF types, every alias an `export type` (a definitions file shares only those). `types.rs` is the folder around it (`jess luau-types`, `jess init`): a stub per name `require` resolves natively, from the runtime's own namespace, `.luaurc` aliases per scope, and stale stubs removed.
+- `package.rs` is the host side of packages. The format and the model are Luau (`stdlib/jpk.jsl`, `stdlib/package.jsl`); Rust hands `@jess/package` its file reads, runs `stdlib/bootstrap.jsl` for `inspect`, `pack`, `graph`, `test`, and `activate`, and owns the mount: the accepted plan `require` resolves package modules through, under chunk names `@<id>@<version>/<path>` and a cache keyed by id, digest, and path.
+- `init.rs` is `jess init`: the script folder, its `.jessrc`, and the editor settings.
+- `definitions()` builds `jess.d.jsl`: hand-written API types plus generated record and NIF types, every alias an `export type` (a definitions file shares only those). `types.rs` is the folder around it (`jess luau-types`, `jess init`): a stub per name `require` resolves natively, from the runtime's own namespace, `.jessrc` aliases per scope, and stale stubs removed.
 
 ### `jess-cli` (`libs/cli`)
 

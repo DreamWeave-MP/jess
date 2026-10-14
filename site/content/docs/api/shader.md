@@ -298,7 +298,7 @@ print(#program.textures, program) -- 0  ShaderProgram(1 parameter, 0 textures, 1
 
 A mistake in an operation fails at the call that made it, in shader terms, with the types involved and the line it's written on. A mistake only the whole program shows (a position that isn't a `Vec4f`, a texture sampled in the vertex stage) is reported when `shader.program` finishes, every problem on its own line, each where its value was written.
 
-This is `shaders/errors.luau`:
+This is `shaders/errors.jsl`:
 
 ```luau
 --!strict
@@ -325,13 +325,13 @@ print(pcall(function()
 end))
 ```
 
-And this is `jess run shaders/errors.luau`:
+And this is `jess run shaders/errors.jsl`:
 
 ```text
-false	shaders/errors.luau:12 (shaders/errors.luau): dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size
-false	shaders/errors.luau: the shader program is invalid
-shaders/errors.luau:19 (shaders/errors.luau): the vertex position is Vec3f: expected Vec4f
-shaders/errors.luau:20 (shaders/errors.luau): fragment output 0 is Vec3f: expected Vec4f
+false	shaders/errors.jsl:12 (shaders/errors.jsl): dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size
+false	shaders/errors.jsl: the shader program is invalid
+shaders/errors.jsl:19 (shaders/errors.jsl): the vertex position is Vec3f: expected Vec4f
+shaders/errors.jsl:20 (shaders/errors.jsl): fragment output 0 is Vec3f: expected Vec4f
 ```
 
 Each location is `file:line`, then the module that called `shader.program` in parentheses, which differs when a helper module builds part of the program. There's no column: Luau doesn't record one, and jess doesn't make one up. The line is that of the nearest Luau function on the call stack, so a call through `pcall` still points at your source.
@@ -347,7 +347,7 @@ Nothing here is a WGSL error. If the backend ever rejects what jess generated, t
 A shader module is loaded under a contract: run it, and it must return a `ShaderProgram`. From Rust that's `jess_lua::scripts::load_module::<LuaShaderProgram>(&runtime, path)`, which resolves `path` the way `jess run` and `require` do (a file, else a name in the load order's VFS) and gives back the program to fold and lower. A module that returns anything else fails with the module and what came back:
 
 ```text
-render/materials/water.luau: expected the module to return a jess.shader.Program, but it returned a number
+render/materials/water.jsl: expected the module to return a jess.shader.Program, but it returned a number
 ```
 
 `nil`, a string, a table, and another kind of userdata (`a jess.Plugin`) are all named the same way. The contract isn't shader-specific: it's how jess will load anything a module is supposed to *be*.

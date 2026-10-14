@@ -133,7 +133,7 @@ All the flags combine in one command, and `--output` writes the result elsewhere
 The command line doesn't edit the master list itself. That's a job for a short Luau script:
 
 ```luau
--- masters.luau <plugin>
+-- masters.jsl <plugin>
 local pluginPath: string = ...
 local plugin = jess.plugin.open(pluginPath)
 plugin:setMasters { 'Morrowind.esm', 'Tribunal.esm' }
@@ -141,7 +141,7 @@ plugin:save()
 ```
 
 ```sh
-jess run masters.luau "Data Files/BalmoraTweaks.esp"
+jess run masters.jsl "Data Files/BalmoraTweaks.esp"
 ```
 
 Master sizes come from the files beside the plugin, the way the command line finds them. For masters elsewhere in a load order, pass its config: `plugin:setMasters(names, { openmw = jess.openmw.load(config) })`.

@@ -105,7 +105,7 @@ end
 print(wants(jess.regex.new 'a'))
 ```
 
-jess's definitions declare `Regex` (and `Plugin`, `Record`, and the rest) as global types. Declare a local one with the same name and the error reads `Expected this to be 'Regex' from 'main.luau', but got 'Regex' from '@jess'`. Older Luau printed both as plain `Regex`, which is where "Regex is not Regex" came from. Today's message tells you which is which, but the clash is still there.
+jess's definitions declare `Regex` (and `Plugin`, `Record`, and the rest) as global types. Declare a local one with the same name and the error reads `Expected this to be 'Regex' from 'main.jsl', but got 'Regex' from '@jess'`. Older Luau printed both as plain `Regex`, which is where "Regex is not Regex" came from. Today's message tells you which is which, but the clash is still there.
 
 Fix: don't reuse the global type names for your own types. Call yours `Pattern`, or whatever it actually is.
 

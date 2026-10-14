@@ -91,7 +91,7 @@ Every expression and declaration can carry a `SourceOrigin`: owner, file, line, 
 Errors carry the origin of the expression or declaration at fault:
 
 ```text
-shaders/lit.luau:12:5 (@jess/nif-viewer): dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size
+shaders/lit.jsl:12:5 (@jess/nif-viewer): dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size
 ```
 
 The Luau front end will fill these in. The IR doesn't know what Luau is; it just refuses to be structurally incapable of pointing at it.

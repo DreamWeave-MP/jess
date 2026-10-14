@@ -16,7 +16,7 @@ Dreamwind's `dream.starwind` layer does all of it in Luau, in one process, runni
 
 ```luau
 --!strict
--- build-starwind.luau: the Definitive build, as build_starwind.py --strict --keep-work runs it.
+-- build-starwind.jsl: the Definitive build, as build_starwind.py --strict --keep-work runs it.
 local starwind = require '@dreamwind/starwind'
 local root: string, output: string = ...
 local manifest = starwind.build { root = root, output = output, strict = true, keepWork = true }
@@ -24,7 +24,7 @@ print(starwind.report.encode(manifest.split_counts))
 ```
 
 ```sh
-jess run --package jpk/dreamwind build-starwind.luau ~/s3stash/content/sw_merged /tmp/starwind
+jess run --package jpk/dreamwind build-starwind.jsl ~/s3stash/content/sw_merged /tmp/starwind
 ```
 
 `root` is the `sw_merged` folder, whose `plugins` folder holds the JSON sources. `output` defaults to `<root>/.swbuild/definitive`, where the Python build writes, and gets the same tree:
@@ -84,7 +84,7 @@ The cells are the Python build's own nondeterminism, not the port's. `merge_to_m
 
 Every invariant `index.md` documents holds: 30,548 records, no masters, no unresolved hard references, 591 of 591 topics, no missing or extra INFOs, no order, physical-order, link, or payload mismatches, no Star_Data dependency on Starwind, and an exact split of 13,330 and 17,218 records.
 
-`tests/starwind/equivalence.luau` checks all of that. `cargo test --release -p jess-cli --test cli starwind::` runs it when `JESS_STARWIND` names an `sw_merged` folder, and against a Python run's outputs and reports too when `JESS_STARWIND_PYTHON` names its `.swbuild/definitive`:
+`tests/starwind/equivalence.jsl` checks all of that. `cargo test --release -p jess-cli --test cli starwind::` runs it when `JESS_STARWIND` names an `sw_merged` folder, and against a Python run's outputs and reports too when `JESS_STARWIND_PYTHON` names its `.swbuild/definitive`:
 
 ```sh
 JESS_STARWIND=~/s3stash/content/sw_merged \

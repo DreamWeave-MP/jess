@@ -138,11 +138,11 @@ mod tests {
             target: "indexer".to_owned(),
             message: "slow".to_owned(),
             fields: BTreeMap::new(),
-            source: Some("@app/worker.luau:4".to_owned()),
+            source: Some("@app/worker.jsl:4".to_owned()),
         };
         assert_eq!(
             record.to_string(),
-            format!("[warn] {domain} gen#1 {worker} indexer: slow at @app/worker.luau:4")
+            format!("[warn] {domain} gen#1 {worker} indexer: slow at @app/worker.jsl:4")
         );
         assert_eq!(LogLevel::parse("trace"), None);
         let collected = CollectedLogs::new();

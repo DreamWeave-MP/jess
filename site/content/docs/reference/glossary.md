@@ -32,7 +32,7 @@ The files OpenMW loads as game data: the `content=` lines in `openmw.cfg`. Mostl
 
 ### Load order {#load-order}
 
-The order content files load in, which decides which one wins when two change the same record: the later one. In OpenMW it's the order of the `content=` lines. In Morrowind.exe it's masters first, then plugins, each by file date. The `main.luau` that `jess init` writes prints yours.
+The order content files load in, which decides which one wins when two change the same record: the later one. In OpenMW it's the order of the `content=` lines. In Morrowind.exe it's masters first, then plugins, each by file date. The `main.jsl` that `jess init` writes prints yours.
 
 ## Files
 
@@ -120,7 +120,7 @@ A Luau patcher that reads a whole load order: a module returning a function that
 
 ### jess-script= {#jess-script}
 
-An `openmw.cfg` line naming a [load-order script](#load-order-script): a VFS path (`jess-script=scripts/myMod/patch.luau`) or a [bundled script](#bundled-scripts) (`jess-script=@jess/tes3merge`). OpenMW ignores the lines, so they're safe to keep in your real config. The `jess` CLI doesn't run them; a loaded config lists them as `jessScripts`, and a Rust host built on `jess-lua` can run them in order.
+An `openmw.cfg` line naming a [load-order script](#load-order-script): a VFS path (`jess-script=scripts/myMod/patch.jsl`) or a [bundled script](#bundled-scripts) (`jess-script=@jess/tes3merge`). OpenMW ignores the lines, so they're safe to keep in your real config. The `jess` CLI doesn't run them; a loaded config lists them as `jessScripts`, and a Rust host built on `jess-lua` can run them in order.
 
 ### Bundled scripts (@jess/) {#bundled-scripts}
 

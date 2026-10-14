@@ -79,7 +79,7 @@ An assertion on `actual`. Each check raises with what it saw and what it wanted,
 
 ## Running
 
-[`jess test a.luau b.luau`](@/docs/cli/test.md) loads each module, runs the suite it returns, and prints one report; it exits non-zero when anything failed. From Rust, `jess_lua::testing::run` does the same and hands back the report.
+[`jess test a.jsl b.jsl`](@/docs/cli/test.md) loads each module, runs the suite it returns, and prints one report; it exits non-zero when anything failed. From Rust, `jess_lua::testing::run` does the same and hands back the report.
 
 ## Types
 
