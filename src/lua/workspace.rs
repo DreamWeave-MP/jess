@@ -6,6 +6,7 @@
 //! module hands it the folders to start from and reads back what it found. Opening a workspace
 //! reads manifests and runs nothing.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use l3i::Runtime;
@@ -65,8 +66,54 @@ pub struct Workspace {
     pub kind: String,
     /// Its members, by path.
     pub members: Vec<Member>,
+    /// What its `jess.lock` pins, and whether that is what the members need.
+    pub lock: Lock,
     /// Why a package with a workspace above it is a workspace of its own.
     pub note: Option<String>,
+}
+
+/// A package a workspace's `jess.lock` pins.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Locked {
+    /// Its package id.
+    pub id: String,
+    /// Its exact version.
+    pub version: String,
+    /// Its content digest.
+    pub digest: String,
+    /// Where it came from: `local`, a package offered to `sync`.
+    pub source: String,
+    /// The package ids it depends on.
+    pub dependencies: Vec<String>,
+    /// Where the workspace keeps it: a JPK under `.jess/packages`.
+    pub location: String,
+}
+
+/// What a workspace's `jess.lock` pins, and whether that is what its members need.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Lock {
+    /// Whether there is a `jess.lock`. A workspace that needs nothing beyond its members needs none.
+    pub file: bool,
+    /// `fresh` when it pins what the members need; `stale` when it doesn't; `missing` when it does,
+    /// but `.jess/packages` lacks a package it pins.
+    pub state: String,
+    /// What is stale or missing, one line each.
+    pub problems: Vec<String>,
+    /// The packages it pins, by id.
+    pub packages: Vec<Locked>,
+}
+
+/// A package id and the content digest a resolution holds it to.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Pin {
+    /// The package id.
+    pub id: String,
+    /// The content digest.
+    pub digest: String,
+}
+
+fn pin_map(pins: &[Pin]) -> BTreeMap<String, String> {
+    pins.iter().map(|pin| (pin.id.clone(), pin.digest.clone())).collect()
 }
 
 fn target_shape() -> serde_json::Value {
@@ -83,10 +130,16 @@ fn workspace_shape() -> serde_json::Value {
             "devDependencies": [{ "id": "", "requirement": "" }],
             "tests": [""],
         }],
+        "lock": {
+            "file": false, "state": "", "problems": [""],
+            "packages": [{
+                "id": "", "version": "", "digest": "", "source": "", "dependencies": [""], "location": "",
+            }],
+        },
     })
 }
 
-/// Opens the workspace `at` names, reading its file and its members' manifests.
+/// Opens the workspace `at` names, reading its file, its members' manifests, and its lock.
 ///
 /// # Errors
 ///
@@ -106,8 +159,11 @@ pub struct Chosen {
     pub location: String,
     /// The target's id.
     pub target: String,
-    /// The packages its dependencies resolve over, offered as candidates: the other members.
+    /// The packages its dependencies resolve over, offered as candidates: the other members, and
+    /// the packages the workspace's `jess.lock` pins.
     pub candidates: Vec<String>,
+    /// The digests the pinned packages are held to.
+    pub pins: Vec<Pin>,
 }
 
 /// Picks a target in the workspace `at` names.
@@ -122,6 +178,7 @@ pub struct Chosen {
 pub fn choose(runtime: &Runtime, at: &Locate, name: Option<&str>, cwd: &Path) -> l3i::Result<Chosen> {
     let shape = serde_json::json!({
         "package": "", "version": "", "location": "", "target": "", "candidates": [""],
+        "pins": [{ "id": "", "digest": "" }],
     });
     let (start, explicit) = at.args();
     let args = (start, explicit, name, cwd.display().to_string());
@@ -142,6 +199,8 @@ pub struct ResolvedTarget {
     pub target: Target,
     /// The packages its dependencies resolved over, offered as candidates.
     pub candidates: Vec<String>,
+    /// The digests the pinned packages among them are held to.
+    pub pins: Vec<Pin>,
     /// What running it activates: every layer its package declares, over those candidates.
     pub plan: Plan,
 }
@@ -158,6 +217,7 @@ pub fn resolve_target(runtime: &Runtime, at: &Locate, name: Option<&str>, cwd: &
     let layers = inspection.layers.iter().map(|layer| layer.id.clone()).collect::<Vec<_>>();
     let search = Search {
         candidates: chosen.candidates.clone(),
+        pins: pin_map(&chosen.pins),
         roots: vec![chosen.package.clone()],
         ..Search::default()
     };
@@ -168,6 +228,7 @@ pub fn resolve_target(runtime: &Runtime, at: &Locate, name: Option<&str>, cwd: &
         location: chosen.location,
         target,
         candidates: chosen.candidates,
+        pins: chosen.pins,
         plan,
     })
 }
@@ -209,6 +270,7 @@ pub fn run_target(options: &crate::lua::Options, request: &RunRequest) -> l3i::R
             package: chosen.location,
             target: Some(chosen.target),
             candidates: chosen.candidates,
+            pins: pin_map(&chosen.pins),
             grant: request.grant.clone(),
             args: request.args.clone(),
             ..package::TargetRequest::default()
@@ -222,6 +284,7 @@ struct Tested {
     package: String,
     location: String,
     candidates: Vec<String>,
+    pins: Vec<Pin>,
 }
 
 /// Runs the tests of the members `names` picks, as [`package::test_with`] runs a package's.
@@ -240,7 +303,9 @@ pub fn test(
     names: &[String],
     scratch: &Path,
 ) -> l3i::Result<Vec<package::PackageTest>> {
-    let shape = serde_json::json!([{ "package": "", "location": "", "candidates": [""] }]);
+    let shape = serde_json::json!([{
+        "package": "", "location": "", "candidates": [""], "pins": [{ "id": "", "digest": "" }],
+    }]);
     let (start, explicit) = at.args();
     let runtime = crate::lua::runtime(options.clone())?;
     let names = package::string_list(&runtime.stack(), names)?;
@@ -250,6 +315,7 @@ pub fn test(
         .map(|member| {
             let search = Search {
                 candidates: member.candidates,
+                pins: pin_map(&member.pins),
                 ..Search::default()
             };
             package::test_with(
@@ -261,4 +327,76 @@ pub fn test(
             )
         })
         .collect()
+}
+
+/// A request to bring a workspace's `jess.lock` and `.jess/packages` into line with what its
+/// members need beyond each other.
+#[derive(Clone, Debug)]
+pub struct SyncRequest {
+    /// The workspace.
+    pub at: Locate,
+    /// Packages offered outright, Package Source folders or `.jpk` files: for its id, the one.
+    pub artifacts: Vec<String>,
+    /// Package path folders whose Package Sources and JPKs are offered.
+    pub paths: Vec<String>,
+    /// Fail rather than change `jess.lock`.
+    pub locked: bool,
+}
+
+/// A package a sync pinned.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SyncedPackage {
+    /// Its package id.
+    pub id: String,
+    /// Its exact version.
+    pub version: String,
+    /// Its content digest.
+    pub digest: String,
+    /// Whether this sync put it in `.jess/packages`, rather than finding it there.
+    pub installed: bool,
+}
+
+/// What a sync did.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Synced {
+    /// `written` or `unchanged`.
+    pub lock: String,
+    /// The packages pinned, by id.
+    pub packages: Vec<SyncedPackage>,
+}
+
+/// Brings a workspace's `jess.lock` and `.jess/packages` into line with what its members need
+/// beyond each other.
+///
+/// Each package id needed gets one version, which every requirement on it must accept. A package
+/// offered outright is the one for its id; otherwise what the lock already pins, while it still
+/// meets every requirement and is kept or offered; otherwise the one package offered that does.
+/// Two that would each do are an error, never a choice. Package Sources are packed into
+/// `.jess/packages`, and JPKs copied there, each checked against its digest, and `jess.lock` is
+/// written last. Nothing is fetched: what isn't offered or kept isn't there.
+///
+/// # Errors
+///
+/// Returns an error if the workspace doesn't open, a requirement can't be met by exactly one
+/// package offered, a package changes while it is installed, or `request.locked` and the lock
+/// would change.
+pub fn sync(runtime: &Runtime, request: &SyncRequest) -> l3i::Result<Synced> {
+    let shape = serde_json::json!({
+        "lock": "",
+        "packages": [{ "id": "", "version": "", "digest": "", "installed": false }],
+    });
+    let (start, explicit) = request.at.args();
+    let (artifacts, paths) = {
+        let stack = runtime.stack();
+        (
+            package::string_list(&stack, &request.artifacts)?,
+            package::string_list(&stack, &request.paths)?,
+        )
+    };
+    package::bootstrap(
+        runtime,
+        "workspaceSync",
+        &shape,
+        (start, explicit, artifacts, paths, request.locked),
+    )
 }

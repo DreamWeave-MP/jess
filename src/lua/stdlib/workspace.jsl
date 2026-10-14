@@ -1,15 +1,18 @@
 --!strict
 --!native
 -- jess's workspaces: Package Sources developed together, named by a `jess-workspace.toml` and
--- found from any folder inside one.
+-- found from any folder inside one. What the members depend on beyond each other is pinned in the
+-- workspace's `jess.lock` and kept as JPKs under its `.jess/packages`.
 --
--- The host's alone: nothing a script requires reaches it. Opening a workspace reads its file and
--- its members' manifests, and runs nothing.
+-- The host's alone: nothing a script requires reaches it. Opening a workspace reads its file, its
+-- members' manifests, and its lock, and runs nothing. Only `sync` writes, and only `jess.lock` and
+-- `.jess/packages`.
 
 type Host = {
   read readFile: (path: string) -> buffer?,
   read fileSize: (path: string) -> number?,
   read isDir: (path: string) -> boolean,
+  read replace: (path: string, data: buffer) -> (),
   read decodeToml: (text: string) -> { [string]: unknown },
   --- The path with every link and `..` resolved, or nil when nothing is there.
   read canonical: (path: string) -> string?,
@@ -17,6 +20,10 @@ type Host = {
   read parent: (path: string) -> string?,
   --- `path` below `base` as `/`-joined names, `''` for `base` itself, or nil when it isn't inside.
   read relative: (base: string, path: string) -> string?,
+  --- Makes the folder `path` and the folders it is in.
+  read createDir: (path: string) -> (),
+  --- Removes the file `path`, if it is there.
+  read remove: (path: string) -> (),
 }
 
 type Target = {
@@ -41,11 +48,18 @@ type Offer = {
   read manifest: Manifest,
   read id: string,
   read version: string,
+  read kind: 'source' | 'jpk',
   read location: string,
 }
 
+type Package = Offer & { read digest: string }
+
 type PackageModule = {
+  read open: (location: string) -> Package,
   read peek: (location: string) -> Offer,
+  read candidates: (folder: string) -> { Offer },
+  read pack: (source: string, output: string) -> { read digest: string },
+  read satisfies: (version: string, requirement: string) -> boolean,
 }
 
 type Requirement = { id: string, requirement: string }
@@ -58,17 +72,40 @@ export type Member = {
   read manifest: Manifest,
 }
 
+--- A package `jess.lock` pins: exactly which one, where it came from, and the packages it
+--- depends on.
+type Locked = {
+  read id: string,
+  read version: string,
+  read digest: string,
+  read source: string,
+  read dependencies: { string },
+}
+
+--- What `jess.lock` pins, and whether that is what the members need: `fresh` when it is,
+--- `stale` when the members need something it doesn't pin, or something else, and `missing` when
+--- it is but `.jess/packages` lacks a package it pins. A workspace that needs nothing beyond its
+--- members is fresh without a lock.
+type Lock = {
+  read file: boolean,
+  read state: 'fresh' | 'stale' | 'missing',
+  read problems: { string },
+  read packages: { Locked },
+}
+
 export type Workspace = {
   read root: string,
   --- `package` when the root folder's package is a member, `virtual` when the workspace file
   --- names members only, `implicit` for a package no workspace lists.
   read kind: 'package' | 'virtual' | 'implicit',
   read members: { Member },
+  read lock: Lock,
   --- Why a package that has a workspace above it isn't that workspace's member.
   read note: string?,
 }
 
-local WorkspaceFile, ManifestFile = 'jess-workspace.toml', 'jess.toml'
+local WorkspaceFile, ManifestFile, LockFile = 'jess-workspace.toml', 'jess.toml', 'jess.lock'
+local Store, LockVersion = '.jess/packages', 1
 
 local host: Host, package: PackageModule
 
@@ -182,6 +219,223 @@ end
 
 local function byPath(left: Member, right: Member): boolean return left.path < right.path end
 
+local function sortedKeys<T>(map: { [string]: T }): { string }
+  local keys = {}
+
+  for key in map do
+    table.insert(keys, key)
+  end
+
+  table.sort(keys)
+
+  return keys
+end
+
+--- The file a pinned package is kept in, below the workspace's root: named by its id, its
+--- version, and the start of its digest, so two builds of one version are two files.
+local function storeName(entry: { read id: string, read version: string, read digest: string }): string
+  return `{Store}/{entry.id}-{entry.version}-{string.sub(entry.digest, 1, 16)}.jpk`
+end
+
+--- Whether `text` can name a package in a file name: no separators, nothing that climbs.
+local function plainName(text: string, pattern: string): boolean
+  return string.find(text, pattern) ~= nil and not string.find(text, '..', 1, true)
+end
+
+--- The packages the `jess.lock` in `root` pins, or nil when it has none.
+local function readLock(root: string): { Locked }?
+  local path = `{root}/{LockFile}`
+  local text = host.readFile(path)
+
+  if not text then return nil end
+
+  local where = `'{path}'`
+  local document = readToml(path, text :: buffer)
+  checkKeys(document, { 'lock_version', 'package' }, where)
+
+  if document.lock_version ~= LockVersion then
+    fail(
+      `{where} is lock_version {tostring(document.lock_version)}, and this jess reads lock_version {LockVersion}`
+    )
+  end
+
+  local entries = document.package or {}
+
+  if type(entries) ~= 'table' then fail(`{where}: package must be [[package]] tables`) end
+
+  local locked: { Locked } = {}
+  local seen: { [string]: boolean } = {}
+
+  for index, entry in entries :: { unknown } do
+    local at = `{where} [[package]] {index}`
+
+    if type(entry) ~= 'table' then fail(`{at} is not a table`) end
+
+    local fields = entry :: { [string]: unknown }
+    checkKeys(fields, { 'id', 'version', 'digest', 'source', 'dependencies' }, at)
+
+    local id, version, digest, source = fields.id, fields.version, fields.digest, fields.source
+
+    if type(id) ~= 'string' or not plainName(id, '^[%l%d][%l%d%.%-]*$') then
+      fail(`{at}: id must be a package id`)
+    end
+
+    if type(version) ~= 'string' or not string.find(version, '^%d+%.%d+%.%d+$') then
+      fail(`{at}: version must be an exact version (1.2.3)`)
+    end
+
+    if type(digest) ~= 'string' or not string.find(digest, '^%x+$') or #digest ~= 64 then
+      fail(`{at}: digest must be a content digest, as package inspect shows one`)
+    end
+
+    if source ~= 'local' then
+      fail(`{at}: source '{tostring(source)}' is not one this jess knows (local)`)
+    end
+
+    local dependencies = fields.dependencies or {}
+
+    if type(dependencies) ~= 'table' then fail(`{at}: dependencies must be a list of ids`) end
+
+    local ids: { string } = {}
+
+    for _, dependency in dependencies :: { unknown } do
+      if type(dependency) ~= 'string' then fail(`{at}: dependencies must be a list of ids`) end
+
+      table.insert(ids, dependency :: string)
+    end
+
+    local pinned = id :: string
+
+    if seen[pinned] then fail(`{where} pins {pinned} twice`) end
+
+    seen[pinned] = true
+    table.insert(
+      locked,
+      table.freeze {
+        id = pinned,
+        version = version :: string,
+        digest = digest :: string,
+        source = 'local',
+        dependencies = table.freeze(ids),
+      }
+    )
+  end
+
+  return locked
+end
+
+--- What the members require beyond each other, transitively through what `jess.lock` pins, and
+--- whether the lock pins exactly that: every requirement met by the one version pinned, nothing
+--- pinned that a member is or nothing requires, and every pinned package in `.jess/packages` as
+--- the lock says it is. Reads manifests; opens nothing.
+local function lockState(root: string, members: { Member }): Lock
+  local entries = readLock(root)
+  local packages: { Locked } = entries or {}
+  local stale, missing = {} :: { string }, {} :: { string }
+  local memberById: { [string]: Member } = {}
+  local pinned: { [string]: Locked } = {}
+  local manifests: { [string]: Manifest } = {}
+
+  for _, found in members do
+    memberById[found.manifest.id] = found
+  end
+
+  for _, entry in packages do
+    local found = memberById[entry.id]
+
+    if found then
+      table.insert(stale, `jess.lock pins {entry.id} {entry.version}, which is now a member ({found.path})`)
+      continue
+    end
+
+    pinned[entry.id] = entry
+
+    local name = storeName(entry)
+
+    if not host.fileSize(`{root}/{name}`) then
+      table.insert(missing, `{entry.id} {entry.version} is pinned, and '{name}' isn't there`)
+      continue
+    end
+
+    -- A damaged JPK throws in the container, before its manifest is read.
+    local ok, offer = pcall(package.peek, `{root}/{name}`)
+
+    if not ok or offer.id ~= entry.id or offer.version ~= entry.version then
+      table.insert(missing, `'{name}' is not the {entry.id} {entry.version} it is named for`)
+      continue
+    end
+
+    manifests[entry.id] = offer.manifest
+
+    if table.concat(sortedKeys(offer.manifest.dependencies), ' ') ~= table.concat(entry.dependencies, ' ') then
+      table.insert(stale, `the dependencies jess.lock records for {entry.id} aren't the ones its manifest declares`)
+    end
+  end
+
+  local reached, queue = {} :: { [string]: boolean }, {} :: { string }
+
+  local function need(by: string, dependencies: { [string]: string })
+    for _, id in sortedKeys(dependencies) do
+      local requirement = dependencies[id]
+
+      if memberById[id] then continue end
+
+      local entry = pinned[id]
+
+      if not entry then
+        table.insert(stale, `{by} requires {id} {requirement}, which jess.lock doesn't pin`)
+        continue
+      end
+
+      if not package.satisfies(entry.version, requirement) then
+        table.insert(stale, `{by} requires {id} {requirement}, and jess.lock pins {entry.version}`)
+      end
+
+      if reached[id] then continue end
+
+      reached[id] = true
+      table.insert(queue, id)
+    end
+  end
+
+  for _, found in members do
+    local manifest = found.manifest
+    need(`{manifest.id} {manifest.version}`, manifest.dependencies)
+    need(`{manifest.id} {manifest.version} (for its tests)`, manifest.devDependencies)
+  end
+
+  local index = 1
+
+  while queue[index] do
+    local entry = pinned[queue[index]]
+    local manifest = manifests[entry.id]
+
+    if manifest then need(`{entry.id} {entry.version}`, manifest.dependencies) end
+
+    index += 1
+  end
+
+  for _, entry in packages do
+    if pinned[entry.id] and not reached[entry.id] then
+      table.insert(stale, `jess.lock pins {entry.id} {entry.version}, which nothing in the workspace requires`)
+    end
+  end
+
+  local state: 'fresh' | 'stale' | 'missing' = if #stale > 0
+    then 'stale'
+    elseif #missing > 0 then 'missing'
+    else 'fresh'
+  local problems = table.clone(stale)
+  table.move(missing, 1, #missing, #problems + 1, problems)
+
+  return table.freeze {
+    file = entries ~= nil,
+    state = state,
+    problems = table.freeze(problems),
+    packages = table.freeze(packages),
+  }
+end
+
 --- The workspace whose file is in `root`, a canonical folder, with every member checked: a
 --- folder inside the root holding a package, listed once under one spelling, with an id no other
 --- member has, and no workspace of its own.
@@ -243,18 +497,20 @@ local function declared(root: string): Workspace
     root = root,
     kind = kind,
     members = table.freeze(members),
+    lock = lockState(root, members),
     note = nil :: string?,
   }
 end
 
 --- The package at `folder`, a canonical folder, as a workspace of one.
 local function implicit(folder: string, note: string?): Workspace
-  local where = `'{folder}'`
+  local members = table.freeze { member(folder, '.', folder, `'{folder}'`) }
 
   return table.freeze {
     root = folder,
     kind = 'implicit' :: 'implicit',
-    members = table.freeze { member(folder, '.', folder, where) },
+    members = members,
+    lock = lockState(folder, members),
     note = note,
   }
 end
@@ -438,17 +694,37 @@ local function choose(workspace: Workspace, name: string?, cwd: string): (Member
   return matches[1].member, matches[1].target
 end
 
---- The members other than `chosen`: what its dependencies resolve over, opened only when needed.
-local function others(workspace: Workspace, chosen: Member): { string }
-  return [for found in workspace.members if found ~= chosen => found.location]
-end
-
---- The member `chosen` as the host resolves it: where it is, and what else it may resolve over.
+--- What `chosen`'s dependencies resolve over, each opened only when needed: the other members, and
+--- the packages `jess.lock` pins, from `.jess/packages`, each held to its pinned digest. A lock
+--- that isn't what the members need is an error here, never something resolved around.
 local function universe(workspace: Workspace, chosen: Member): { [string]: unknown }
+  local lock = workspace.lock
+
+  if lock.state ~= 'fresh' then
+    local what = if lock.state == 'stale'
+      then 'is out of date'
+      else "pins packages .jess/packages doesn't hold"
+    local fix = if lock.state == 'stale'
+      then 'jess workspace sync'
+      else 'jess workspace sync, offering them with --package-path or by file'
+    fail(
+      `{workspace.root}/{LockFile} {what}:\n  {table.concat(lock.problems, '\n  ')}\nrun {fix}`
+    )
+  end
+
+  local candidates = [for found in workspace.members if found ~= chosen => found.location]
+  local pins = {}
+
+  for _, entry in lock.packages do
+    table.insert(candidates, `{workspace.root}/{storeName(entry)}`)
+    table.insert(pins, { id = entry.id, digest = entry.digest })
+  end
+
   return {
     package = chosen.manifest.id,
     location = chosen.location,
-    candidates = others(workspace, chosen),
+    candidates = candidates,
+    pins = pins,
   }
 end
 
@@ -486,6 +762,322 @@ local function tests(workspace: Workspace, names: { string }): { { [string]: unk
   return [
     for found in workspace.members if #found.manifest.tests > 0 => universe(workspace, found)
   ]
+end
+
+--- `packages` as `jess.lock`'s text: one canonical form, sorted, with nothing in it that differs
+--- between machines.
+local function encodeLock(packages: { Locked }): string
+  local sorted = table.clone(packages)
+  table.sort(sorted, function(left: Locked, right: Locked): boolean return left.id < right.id end)
+
+  local lines = {
+    '# Written by `jess workspace sync`: what the members depend on beyond each other, pinned.',
+    "# Change a member's dependencies and sync again rather than editing this.",
+    `lock_version = {LockVersion}`,
+  }
+
+  for _, entry in sorted do
+    local dependencies = [for id in entry.dependencies => `"{id}"`]
+    table.insert(lines, '')
+    table.insert(lines, '[[package]]')
+    table.insert(lines, `id = "{entry.id}"`)
+    table.insert(lines, `version = "{entry.version}"`)
+    table.insert(lines, `digest = "{entry.digest}"`)
+    table.insert(lines, `source = "{entry.source}"`)
+    table.insert(lines, `dependencies = [{table.concat(dependencies, ', ')}]`)
+  end
+
+  return `{table.concat(lines, '\n')}\n`
+end
+
+type Wanted = { by: string, requirement: string }
+
+--- A package sync selected, and whether `.jess/packages` already holds it.
+type Choice = { package: Package, stored: boolean }
+
+--- `location` opened, or nil when it can't be.
+local function opened(location: string): Package?
+  -- The container throws on a damaged JPK, and a damaged copy in `.jess/packages` is one to
+  -- replace rather than a reason to stop.
+  local ok, result = pcall(package.open, location)
+
+  return if ok then result else nil
+end
+
+--- Brings `jess.lock` and `.jess/packages` into line with what the members need beyond each
+--- other, from the packages offered: `artifacts`, Package Source folders and `.jpk` files named
+--- outright, and the Package Sources and JPKs directly inside the package path folders `paths`,
+--- with the packages the lock already pins.
+---
+--- Each package id needed gets one version, which every requirement on it must accept; ids are
+--- settled in order, so the outcome never depends on how a folder lists. For each, a package named
+--- outright is the one; otherwise what the lock pins, when it still meets every requirement and is
+--- in `.jess/packages` or offered; otherwise the one offered that meets every requirement. Two
+--- different packages that would each do are an error naming them, never a choice. A Package
+--- Source is packed into `.jess/packages`, and a JPK copied there; each is checked against the
+--- digest it was selected by before `jess.lock` is written, last. With `locked`, a lock that would
+--- change is an error and nothing is written to it.
+local function sync(
+  workspace: Workspace,
+  artifacts: { string },
+  paths: { string },
+  locked: boolean
+): { [string]: unknown }
+  local root = workspace.root
+  local memberById, pins = {} :: { [string]: Member }, {} :: { [string]: Locked }
+
+  for _, found in workspace.members do
+    memberById[found.manifest.id] = found
+  end
+
+  for _, entry in workspace.lock.packages do
+    pins[entry.id] = entry
+  end
+
+  local named, offered = {} :: { [string]: { Offer } }, {} :: { [string]: { Offer } }
+
+  local function offer(into: { [string]: { Offer } }, candidate: Offer)
+    local same = into[candidate.id] or {}
+    table.insert(same, candidate)
+    into[candidate.id] = same
+  end
+
+  for _, artifact in artifacts do
+    -- A manifest that doesn't parse raises, and its message doesn't say which file it was.
+    local ok, candidate = pcall(package.peek, artifact)
+
+    if not ok then fail(`'{artifact}': {string.gsub(tostring(candidate), '^package: ', '')}`) end
+
+    local found = memberById[candidate.id]
+
+    if found then
+      fail(`'{artifact}' is {candidate.id}, which is the workspace's member '{found.path}'`)
+    end
+
+    offer(named, candidate)
+  end
+
+  for _, folder in paths do
+    for _, candidate in package.candidates(folder) do
+      -- A package path may well hold the members themselves, and a member is never a dependency.
+      if not memberById[candidate.id] then offer(offered, candidate) end
+    end
+  end
+
+  local requirements: { [string]: { Wanted } } = {}
+
+  local function need(by: string, dependencies: { [string]: string })
+    for _, id in sortedKeys(dependencies) do
+      local requirement, found = dependencies[id], memberById[id]
+
+      if found and not package.satisfies(found.manifest.version, requirement) then
+        fail(
+          `{by} requires {id} {requirement}, and the workspace's member '{found.path}' is {id} {found.manifest.version}`
+        )
+      end
+
+      if found then continue end
+
+      local wanted = requirements[id] or {}
+      table.insert(wanted, { by = by, requirement = requirement })
+      requirements[id] = wanted
+    end
+  end
+
+  for _, found in workspace.members do
+    local manifest = found.manifest
+    need(`{manifest.id} {manifest.version}`, manifest.dependencies)
+    need(`{manifest.id} {manifest.version} (for its tests)`, manifest.devDependencies)
+  end
+
+  local function wantedBy(id: string): string
+    local list = [for wanted in requirements[id] => `{wanted.by} requires {id} {wanted.requirement}`]
+    table.sort(list)
+
+    return table.concat(list, '\n  ')
+  end
+
+  local function fits(id: string, version: string): boolean
+    return all[for wanted in requirements[id] => package.satisfies(version, wanted.requirement)]
+  end
+
+  local function listed(offers: { Offer }): string
+    local places = [for candidate in offers => `{candidate.version} ({candidate.kind} {candidate.location})`]
+    table.sort(places)
+
+    return table.concat(places, ', ')
+  end
+
+  --- The one package `offers` holds for `id`: offers of one version are one package when their
+  --- contents are.
+  local function single(id: string, offers: { Offer }): Package
+    local versions = {}
+
+    for _, candidate in offers do
+      if not table.find(versions, candidate.version) then table.insert(versions, candidate.version) end
+    end
+
+    if #versions > 1 then
+      fail(
+        `{id} is offered more than once: {listed(offers)}; name the one to pin with jess workspace sync <file>`
+      )
+    end
+
+    local first = package.open(offers[1].location)
+
+    for index = 2, #offers do
+      local other = package.open(offers[index].location)
+
+      if other.digest ~= first.digest then
+        fail(
+          `{id} {first.version} is offered twice with different contents: {listed(offers)}; name the one to pin with jess workspace sync <file>`
+        )
+      end
+    end
+
+    return first
+  end
+
+  local function pick(id: string): Choice
+    local outright = named[id]
+
+    if outright then return { package = single(id, outright), stored = false } end
+
+    local pin, available = pins[id], offered[id] or {} :: { Offer }
+
+    if pin and fits(id, pin.version) then
+      local stored = opened(`{root}/{storeName(pin)}`)
+
+      if stored and stored.id == id and stored.version == pin.version and stored.digest == pin.digest then
+        return { package = stored, stored = true }
+      end
+
+      for _, candidate in available do
+        if candidate.version ~= pin.version then continue end
+
+        local same = package.open(candidate.location)
+
+        if same.digest == pin.digest then return { package = same, stored = false } end
+      end
+    end
+
+    local fitting = [for candidate in available if fits(id, candidate.version) => candidate]
+
+    if #fitting == 0 then
+      local pinned = if pin and fits(id, pin.version)
+        then `; jess.lock pins {pin.version}, which isn't in .jess/packages`
+        else ''
+      local unfit = if #available > 0
+        then `; offered, but not meeting that: {listed(available)}`
+        else ''
+      fail(
+        `nothing offered for {id} is one the workspace can use{pinned}{unfit}\n  {wantedBy(id)}\noffer one with --package-path or by file`
+      )
+    end
+
+    return { package = single(id, fitting), stored = false }
+  end
+
+  local chosen: { [string]: Choice } = {}
+
+  while true do
+    local nextId: string?
+
+    for id in requirements do
+      if not chosen[id] and (not nextId or id < nextId) then nextId = id end
+    end
+
+    if not nextId then break end
+
+    local choice = pick(nextId)
+    chosen[nextId] = choice
+    need(`{choice.package.id} {choice.package.version}`, choice.package.manifest.dependencies)
+  end
+
+  for id, outright in named do
+    if not requirements[id] then
+      fail(`'{outright[1].location}' is {id}, which nothing in the workspace requires`)
+    end
+  end
+
+  local entries, installs, report = {} :: { Locked }, {} :: { Package }, {}
+
+  for _, id in sortedKeys(chosen) do
+    local choice = chosen[id]
+    local selected = choice.package
+
+    if not fits(id, selected.version) then
+      fail(
+        `no one {id} meets every requirement on it; {selected.version} is the one selected\n  {wantedBy(id)}`
+      )
+    end
+
+    local present = choice.stored
+
+    if not present then
+      local existing = opened(`{root}/{storeName(selected)}`)
+      present = existing ~= nil and existing.id == id and existing.digest == selected.digest
+    end
+
+    if not present then table.insert(installs, selected) end
+
+    table.insert(
+      entries,
+      table.freeze {
+        id = id,
+        version = selected.version,
+        digest = selected.digest,
+        source = 'local',
+        dependencies = table.freeze(sortedKeys(selected.manifest.dependencies)),
+      }
+    )
+
+    table.insert(report, {
+      id = id,
+      version = selected.version,
+      digest = selected.digest,
+      installed = not present,
+    })
+  end
+
+  local text = encodeLock(entries)
+  local current = host.readFile(`{root}/{LockFile}`)
+  local unchanged = current ~= nil and buffer.tostring(current) == text
+
+  if locked and not unchanged then
+    local why = if #workspace.lock.problems > 0
+      then `:\n  {table.concat(workspace.lock.problems, '\n  ')}`
+      elseif not current then ': there is none'
+      else ", though what it pins hasn't changed"
+    fail(`{root}/{LockFile} isn't what syncing would write, and --locked leaves it as it is{why}`)
+  end
+
+  if #installs > 0 then host.createDir(`{root}/{Store}`) end
+
+  for _, selected in installs do
+    local path = `{root}/{storeName(selected)}`
+
+    if selected.kind == 'jpk' then
+      local bytes = host.readFile(selected.location)
+
+      if not bytes then fail(`'{selected.location}' went away while it was being installed`) end
+
+      host.replace(path, bytes :: buffer)
+    else
+      package.pack(selected.location, path)
+    end
+
+    local written = opened(path)
+
+    if not written or written.id ~= selected.id or written.digest ~= selected.digest then
+      host.remove(path)
+      fail(`'{selected.location}' changed while it was being installed; sync again`)
+    end
+  end
+
+  if not unchanged then host.replace(`{root}/{LockFile}`, buffer.fromstring(text)) end
+
+  return { lock = if unchanged then 'unchanged' else 'written', packages = report }
 end
 
 local function sortedRequirements(map: { [string]: string }): { Requirement }
@@ -532,10 +1124,30 @@ local function describe(workspace: Workspace): { [string]: unknown }
     })
   end
 
+  local lock = workspace.lock
+  local packages = {}
+
+  for _, entry in lock.packages do
+    table.insert(packages, {
+      id = entry.id,
+      version = entry.version,
+      digest = entry.digest,
+      source = entry.source,
+      dependencies = entry.dependencies,
+      location = `{workspace.root}/{storeName(entry)}`,
+    })
+  end
+
   return {
     root = workspace.root,
     kind = workspace.kind,
     members = members,
+    lock = {
+      file = lock.file,
+      state = lock.state,
+      problems = lock.problems,
+      packages = packages,
+    },
     note = workspace.note,
   }
 end
@@ -549,5 +1161,6 @@ return function(dependencies: { host: Host, package: PackageModule })
     describe = describe,
     target = target,
     tests = tests,
+    sync = sync,
   }
 end

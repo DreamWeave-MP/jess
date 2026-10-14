@@ -458,3 +458,515 @@ fn workspace_tests_resolve_over_the_members() {
         .to_string();
     assert!(unknown.contains("no member of the workspace is 'nothing'"), "{unknown}");
 }
+
+/// Syncs the workspace at `root` from `artifacts` and the package paths `paths`.
+fn sync(root: &Path, artifacts: &[&Path], paths: &[&Path], locked: bool) -> Result<workspace::Synced, String> {
+    let request = workspace::SyncRequest {
+        at: Locate::Root(root.to_path_buf()),
+        artifacts: artifacts.iter().map(|path| text(path)).collect(),
+        paths: paths.iter().map(|path| text(path)).collect(),
+        locked,
+    };
+    workspace::sync(&common::runtime(), &request).map_err(|error| error.to_string())
+}
+
+/// Packs the Package Source at `source` into `output`, returning its digest.
+fn pack(source: &Path, output: &Path) -> String {
+    jess::lua::package::pack(&common::runtime(), &text(source), &text(output))
+        .unwrap_or_else(|error| panic!("{error}"))
+        .digest
+}
+
+/// What running `target` of the workspace at `root` prints, or why it couldn't run.
+fn run(root: &Path, target: &str) -> Result<(), String> {
+    let request = workspace::RunRequest {
+        at: Locate::Root(root.to_path_buf()),
+        target: Some(target.to_owned()),
+        cwd: root.to_path_buf(),
+        grant: None,
+        args: Vec::new(),
+    };
+    workspace::run_target(&jess::lua::Options::default(), &request)
+        .map(drop)
+        .map_err(|error| error.to_string())
+}
+
+/// A workspace like the showcase: `app` uses `words` and, for its tests, `fixtures`; `tool` uses
+/// `style`, which uses `words` itself. `vendor` gets the Package Sources of those three at the
+/// versions given, `words` at each.
+fn dependents(root: &Path, vendor: &Path, words: &[&str]) {
+    workspace_file(root, &["app", "tool"]);
+    member(
+        &root.join("app"),
+        "app",
+        "0.1.0",
+        "tests = [\"tests/run.jsl\"]\n[dependencies]\n\"org.example.words\" = \"1\"\n\
+         [dev-dependencies]\n\"org.example.fixtures\" = \"1\"\n\
+         [targets.main]\nkind = \"command\"\nentry = \"src/main.jsl\"\n",
+    );
+    write(
+        &root.join("app"),
+        &[
+            ("src/main.jsl", "assert(require('@words').name == 'words')\n"),
+            (
+                "tests/run.jsl",
+                "local test = require '@jess/test'\nlocal suite = test.new()\n\
+                 suite.it('has its fixtures', function() test.expect(require('@fixtures').name).toBe 'fixtures' end)\n\
+                 return suite\n",
+            ),
+        ],
+    );
+    member(
+        &root.join("tool"),
+        "tool",
+        "0.1.0",
+        "[dependencies]\n\"org.example.style\" = \"1\"\n\
+         [targets.main]\nkind = \"command\"\nentry = \"src/main.jsl\"\n",
+    );
+    write(
+        &root.join("tool"),
+        &[("src/main.jsl", "assert(require('@style').name == 'style')\n")],
+    );
+    member(
+        &vendor.join("style"),
+        "style",
+        "1.0.0",
+        "[dependencies]\n\"org.example.words\" = \"^1.1\"\n",
+    );
+    member(&vendor.join("fixtures"), "fixtures", "1.0.0", "");
+    for version in words {
+        member(&vendor.join(format!("words-{version}")), "words", version, "");
+    }
+}
+
+/// Packs every Package Source in `vendor` into `jpks`, as `<folder>.jpk`.
+fn pack_all(vendor: &Path, jpks: &Path) {
+    std::fs::create_dir_all(jpks).unwrap();
+    for entry in std::fs::read_dir(vendor).unwrap() {
+        let source = entry.unwrap().path();
+        let name = format!("{}.jpk", source.file_name().unwrap().to_string_lossy());
+        pack(&source, &jpks.join(name));
+    }
+}
+
+/// `sync` pins one package for each id the members need beyond each other, dev-dependencies and
+/// what dependencies depend on included, keeps them as JPKs in `.jess/packages`, and writes the
+/// same `jess.lock` every time. From then on the workspace runs from those alone, wherever it is.
+#[test]
+fn sync_pins_what_the_members_need_and_runs_without_it() {
+    let (temp, root) = scratch();
+    let (vendor, jpks) = (temp.path().join("vendor"), temp.path().join("jpks"));
+    dependents(&root, &vendor, &["1.2.0"]);
+    pack_all(&vendor, &jpks);
+
+    let before = from(&root);
+    assert_eq!((before.lock.file, before.lock.state.as_str()), (false, "stale"));
+    let stale = run(&root, "org.example.app:main").unwrap_err();
+    assert!(stale.contains("jess.lock is out of date:"), "{stale}");
+    assert!(
+        stale.contains("org.example.app 0.1.0 requires org.example.words 1, which jess.lock doesn't pin"),
+        "{stale}"
+    );
+
+    let synced = sync(&root, &[], &[&jpks], false).unwrap();
+    assert_eq!(synced.lock, "written");
+    assert_eq!(
+        synced.packages.iter().map(|package| package.id.as_str()).collect::<Vec<_>>(),
+        ["org.example.fixtures", "org.example.style", "org.example.words"]
+    );
+    assert!(synced.packages.iter().all(|package| package.installed));
+    let lock = std::fs::read_to_string(root.join("jess.lock")).unwrap();
+    assert!(
+        lock.contains("[[package]]\nid = \"org.example.style\"\nversion = \"1.0.0\"\n"),
+        "{lock}"
+    );
+    assert!(
+        lock.contains("source = \"local\"\ndependencies = [\"org.example.words\"]\n"),
+        "{lock}"
+    );
+    // Nothing in it depends on where the workspace or the packages it came from are.
+    assert!(!lock.contains(&text(temp.path())), "{lock}");
+    for package in &synced.packages {
+        let kept =
+            root.join(".jess/packages")
+                .join(format!("{}-{}-{}.jpk", package.id, package.version, &package.digest[..16]));
+        assert!(kept.is_file(), "{}", kept.display());
+    }
+
+    // Again, it changes nothing.
+    let again = sync(&root, &[], &[&jpks], false).unwrap();
+    assert_eq!(again.lock, "unchanged");
+    assert!(again.packages.iter().all(|package| !package.installed));
+    assert_eq!(std::fs::read_to_string(root.join("jess.lock")).unwrap(), lock);
+    assert_eq!(sync(&root, &[], &[], true).unwrap().lock, "unchanged");
+
+    std::fs::remove_dir_all(&vendor).unwrap();
+    std::fs::remove_dir_all(&jpks).unwrap();
+    let opened = from(&root.join("app"));
+    assert_eq!(opened.lock.state, "fresh", "{:#?}", opened.lock);
+    run(&root, "org.example.app:main").unwrap();
+    run(&root, "org.example.tool:main").unwrap();
+
+    // Its tests have their dev-dependency; its target doesn't.
+    let reports = workspace::test(
+        &jess::lua::Options::default(),
+        &Locate::Root(root.clone()),
+        &[],
+        &temp.path().join("scratch"),
+    )
+    .unwrap();
+    assert_eq!((reports[0].passed, reports[0].failed), (2, 0), "{reports:#?}");
+    let resolved = workspace::resolve_target(
+        &common::runtime(),
+        &Locate::Root(root.clone()),
+        Some("org.example.app:main"),
+        &root,
+    )
+    .unwrap();
+    assert_eq!(
+        resolved
+            .plan
+            .packages
+            .iter()
+            .map(|package| package.id.as_str())
+            .collect::<Vec<_>>(),
+        ["org.example.app", "org.example.words"]
+    );
+    assert_eq!(resolved.pins.len(), 3);
+
+    // Moved somewhere else, it is the same workspace.
+    let moved = temp.path().join("moved");
+    std::fs::rename(&root, &moved).unwrap();
+    assert_eq!(from(&moved).lock.state, "fresh");
+    run(&moved, "org.example.app:main").unwrap();
+}
+
+/// A Package Source offered is packed into `.jess/packages`, with the digest its source has; a
+/// package named outright is the one for its id; and what is named must be something the
+/// workspace needs, and not one of its members.
+#[test]
+fn sync_packs_sources_and_takes_what_is_named() {
+    let (temp, root) = scratch();
+    let vendor = temp.path().join("vendor");
+    dependents(&root, &vendor, &["1.2.0", "1.3.0"]);
+
+    let ambiguous = sync(&root, &[], &[&vendor], false).unwrap_err();
+    assert!(
+        ambiguous.contains("org.example.words is offered more than once: 1.2.0 (source "),
+        "{ambiguous}"
+    );
+    assert!(
+        ambiguous.contains("name the one to pin with jess workspace sync <file>"),
+        "{ambiguous}"
+    );
+    assert!(!root.join("jess.lock").exists());
+
+    let older = vendor.join("words-1.2.0");
+    let synced = sync(&root, &[&older], &[&vendor], false).unwrap();
+    let words = synced
+        .packages
+        .iter()
+        .find(|package| package.id == "org.example.words")
+        .unwrap();
+    assert_eq!(words.version, "1.2.0");
+    let digest = jess::lua::package::inspect(&common::runtime(), &text(&older)).unwrap().digest;
+    assert_eq!(words.digest, digest);
+
+    // A newer version offered later doesn't move a pin that still does.
+    std::fs::remove_dir_all(&older).unwrap();
+    let kept = sync(&root, &[], &[&vendor], false).unwrap();
+    assert_eq!(kept.lock, "unchanged");
+    // Named outright, the newer one is the one.
+    let newer = sync(&root, &[&vendor.join("words-1.3.0")], &[&vendor], false).unwrap();
+    assert_eq!(newer.lock, "written");
+    assert!(
+        newer
+            .packages
+            .iter()
+            .any(|package| package.id == "org.example.words" && package.version == "1.3.0")
+    );
+
+    let member = sync(&root, &[&root.join("tool")], &[&vendor], false).unwrap_err();
+    assert!(
+        member.contains("is org.example.tool, which is the workspace's member 'tool'"),
+        "{member}"
+    );
+    member_alone(&temp.path().join("unused"), "unused");
+    let unused = sync(&root, &[&temp.path().join("unused")], &[&vendor], false).unwrap_err();
+    assert!(
+        unused.contains("is org.example.unused, which nothing in the workspace requires"),
+        "{unused}"
+    );
+}
+
+fn member_alone(root: &Path, name: &str) {
+    member(root, name, "1.0.0", "");
+}
+
+/// Every requirement on an id is met by the one version pinned for it, or sync says which
+/// requirements nothing offered meets, and who made them.
+#[test]
+fn sync_meets_every_requirement_or_says_whose_it_cannot() {
+    let (temp, root) = scratch();
+    let vendor = temp.path().join("vendor");
+    dependents(&root, &vendor, &["1.2.0", "1.3.0"]);
+    // app wants exactly 1.2.0; style, which tool uses, wants at least 1.3.
+    let manifest = root.join("app/jess.toml");
+    let text_of = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        &manifest,
+        text_of.replace("\"org.example.words\" = \"1\"", "\"org.example.words\" = \"=1.2.0\""),
+    )
+    .unwrap();
+    member(
+        &vendor.join("style"),
+        "style",
+        "1.0.0",
+        "[dependencies]\n\"org.example.words\" = \"^1.3\"\n",
+    );
+    let conflict = sync(&root, &[], &[&vendor], false).unwrap_err();
+    assert!(
+        conflict.contains("nothing offered for org.example.words is one the workspace can use"),
+        "{conflict}"
+    );
+    assert!(
+        conflict.contains("offered, but not meeting that: 1.2.0 (source"),
+        "{conflict}"
+    );
+    assert!(
+        conflict.contains("org.example.app 0.1.0 requires org.example.words =1.2.0"),
+        "{conflict}"
+    );
+    assert!(
+        conflict.contains("org.example.style 1.0.0 requires org.example.words ^1.3"),
+        "{conflict}"
+    );
+
+    // A requirement found only after its id was settled is checked against what was settled.
+    std::fs::write(
+        &manifest,
+        text_of.replace(
+            "\"org.example.words\" = \"1\"",
+            "\"org.example.base\" = \"1\"\n\"org.example.zed\" = \"1\"",
+        ),
+    )
+    .unwrap();
+    member(&vendor.join("base"), "base", "1.0.0", "");
+    member(
+        &vendor.join("zed"),
+        "zed",
+        "1.0.0",
+        "[dependencies]\n\"org.example.base\" = \"^1.5\"\n",
+    );
+    member(
+        &vendor.join("style"),
+        "style",
+        "1.0.0",
+        "[dependencies]\n\"org.example.words\" = \"^1.3\"\n",
+    );
+    let late = sync(&root, &[&vendor.join("words-1.3.0")], &[&vendor], false).unwrap_err();
+    assert!(
+        late.contains("no one org.example.base meets every requirement on it; 1.0.0 is the one selected"),
+        "{late}"
+    );
+    assert!(
+        late.contains("org.example.zed 1.0.0 requires org.example.base ^1.5"),
+        "{late}"
+    );
+
+    // A member a requirement names is the member, whatever is offered.
+    let (_temp, both) = scratch();
+    workspace_file(&both, &["lib", "user"]);
+    member(&both.join("lib"), "lib", "1.0.0", "");
+    member(
+        &both.join("user"),
+        "user",
+        "1.0.0",
+        "[dependencies]\n\"org.example.lib\" = \"2\"\n",
+    );
+    let outgrown = sync(&both, &[], &[], false).unwrap_err();
+    assert!(
+        outgrown.contains(
+            "org.example.user 1.0.0 requires org.example.lib 2, and the workspace's member 'lib' is org.example.lib 1.0.0"
+        ),
+        "{outgrown}"
+    );
+}
+
+/// The `dependents` workspace in a temporary folder, synced from its packages packed as JPKs:
+/// the folder, the workspace's root, the folder of JPKs, and the lock the sync wrote.
+fn synced() -> (tempfile::TempDir, PathBuf, PathBuf, String) {
+    let (temp, root) = scratch();
+    let (vendor, jpks) = (temp.path().join("vendor"), temp.path().join("jpks"));
+    dependents(&root, &vendor, &["1.2.0"]);
+    pack_all(&vendor, &jpks);
+    sync(&root, &[], &[&jpks], false).unwrap();
+    let lock = std::fs::read_to_string(root.join("jess.lock")).unwrap();
+    (temp, root, jpks, lock)
+}
+
+/// A package `jess.lock` pins that `.jess/packages` lacks stops a run until a sync puts it back,
+/// and a kept package that isn't the one pinned never runs.
+#[test]
+fn a_lock_runs_only_the_packages_it_pins() {
+    let (temp, root, jpks, _lock) = synced();
+    let words = from(&root)
+        .lock
+        .packages
+        .into_iter()
+        .find(|package| package.id == "org.example.words")
+        .unwrap();
+    let kept = PathBuf::from(&words.location);
+
+    // Missing from .jess/packages: a run names the file, sync without a source can't help, and a
+    // sync that can puts it back without touching the lock, even --locked.
+    std::fs::rename(&kept, temp.path().join("aside.jpk")).unwrap();
+    assert_eq!(from(&root).lock.state, "missing");
+    let missing = run(&root, "org.example.app:main").unwrap_err();
+    assert!(
+        missing.contains("jess.lock pins packages .jess/packages doesn't hold"),
+        "{missing}"
+    );
+    assert!(
+        missing.contains(&format!(
+            "'.jess/packages/{}' isn't there",
+            kept.file_name().unwrap().to_string_lossy()
+        )),
+        "{missing}"
+    );
+    let nowhere = sync(&root, &[], &[], false).unwrap_err();
+    assert!(
+        nowhere.contains("jess.lock pins 1.2.0, which isn't in .jess/packages"),
+        "{nowhere}"
+    );
+    let restored = sync(&root, &[], &[&jpks], true).unwrap();
+    assert_eq!(restored.lock, "unchanged");
+    assert!(kept.is_file());
+
+    // Not what was pinned: a different words 1.2.0 under the pinned name.
+    std::fs::rename(&kept, temp.path().join("aside.jpk")).unwrap();
+    member(&temp.path().join("forged"), "words", "1.2.0", "");
+    write(
+        &temp.path().join("forged"),
+        &[("src/init.jsl", "error('a forged package ran')\n")],
+    );
+    pack(&temp.path().join("forged"), &kept);
+    assert_eq!(from(&root).lock.state, "fresh");
+    let forged = run(&root, "org.example.app:main").unwrap_err();
+    assert!(
+        forged.contains(&format!("not the {} it is pinned to", words.digest)),
+        "{forged}"
+    );
+    std::fs::write(&kept, b"not a jpk").unwrap();
+    assert_eq!(from(&root).lock.state, "missing");
+    let fixed = sync(&root, &[], &[&jpks], false).unwrap();
+    assert!(
+        fixed
+            .packages
+            .iter()
+            .any(|package| package.id == "org.example.words" && package.installed)
+    );
+    run(&root, "org.example.app:main").unwrap();
+}
+
+/// A change to what the members require makes `jess.lock` stale, and a lock this jess can't read,
+/// or that names a file outside `.jess/packages`, opens nothing.
+#[test]
+fn a_lock_is_held_to_what_the_members_need() {
+    let (_temp, root, jpks, lock) = synced();
+    let manifest = root.join("tool/jess.toml");
+    let original = std::fs::read_to_string(&manifest).unwrap();
+    // A sync that could fix it does nothing with --locked; one that couldn't says why.
+    for (changed, expected, refused) in [
+        (
+            "\"org.example.style\" = \"2\"",
+            "org.example.tool 0.1.0 requires org.example.style 2, and jess.lock pins 1.0.0",
+            "nothing offered for org.example.style is one the workspace can use",
+        ),
+        (
+            "\"org.example.style\" = \"1\"\n\"org.example.other\" = \"1\"",
+            "requires org.example.other 1, which jess.lock doesn't pin",
+            "nothing offered for org.example.other is one the workspace can use",
+        ),
+        (
+            "",
+            "jess.lock pins org.example.style 1.0.0, which nothing in the workspace requires",
+            "isn't what syncing would write, and --locked leaves it as it is",
+        ),
+    ] {
+        std::fs::write(&manifest, original.replace("\"org.example.style\" = \"1\"", changed)).unwrap();
+        let opened = from(&root);
+        assert_eq!(opened.lock.state, "stale");
+        assert!(
+            opened.lock.problems.iter().any(|problem| problem.contains(expected)),
+            "{:#?}",
+            opened.lock.problems
+        );
+        let locked = sync(&root, &[], &[&jpks], true).unwrap_err();
+        assert!(locked.contains(refused), "{locked}");
+        assert_eq!(std::fs::read_to_string(root.join("jess.lock")).unwrap(), lock);
+    }
+    std::fs::write(&manifest, &original).unwrap();
+
+    // A lock this jess can't read, or that names a file outside the store, opens nothing.
+    for (from_text, to_text, expected) in [
+        (
+            "lock_version = 1",
+            "lock_version = 2",
+            "is lock_version 2, and this jess reads lock_version 1",
+        ),
+        (
+            "id = \"org.example.words\"",
+            "id = \"../../escape\"",
+            "id must be a package id",
+        ),
+        (
+            "source = \"local\"",
+            "source = \"registry\"",
+            "source 'registry' is not one this jess knows",
+        ),
+    ] {
+        std::fs::write(root.join("jess.lock"), lock.replacen(from_text, to_text, 1)).unwrap();
+        let problem = failure(&Locate::Root(root.clone()));
+        assert!(problem.contains(expected), "{problem}");
+    }
+}
+
+/// Two versions of one package kept side by side are no problem for the workspace, whose lock
+/// says which, and still are for a package path, which never chooses between them.
+#[test]
+fn the_lock_chooses_between_kept_versions() {
+    let (temp, root) = scratch();
+    let vendor = temp.path().join("vendor");
+    dependents(&root, &vendor, &["1.2.0", "1.3.0"]);
+    write(
+        &vendor.join("words-1.3.0"),
+        &[("src/init.jsl", "return { name = 'newer words' }\n")],
+    );
+    sync(&root, &[&vendor.join("words-1.3.0")], &[&vendor], false).unwrap();
+    sync(&root, &[&vendor.join("words-1.2.0")], &[&vendor], false).unwrap();
+    let kept = std::fs::read_dir(root.join(".jess/packages"))
+        .unwrap()
+        .filter(|entry| {
+            entry
+                .as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("org.example.words-")
+        })
+        .count();
+    assert_eq!(kept, 2);
+    // The pinned 1.2.0 is the one that runs: app asserts its name is 'words'.
+    run(&root, "org.example.app:main").unwrap();
+
+    let search = jess::lua::package::Search {
+        paths: vec![text(&root.join(".jess/packages"))],
+        roots: vec!["org.example.words".to_owned()],
+        ..Default::default()
+    };
+    let ambiguous = jess::lua::package::graph_with(&common::runtime(), &[], &[], &search)
+        .unwrap_err()
+        .to_string();
+    assert!(ambiguous.contains("has more than one candidate"), "{ambiguous}");
+}

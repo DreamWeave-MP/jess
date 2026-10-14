@@ -54,6 +54,12 @@ type WorkspaceModule = {
   read describe: (workspace: unknown) -> { [string]: unknown },
   read target: (workspace: unknown, name: string?, cwd: string) -> { [string]: unknown },
   read tests: (workspace: unknown, names: { string }) -> { { [string]: unknown } },
+  read sync: (
+    workspace: unknown,
+    artifacts: { string },
+    paths: { string },
+    locked: boolean
+  ) -> { [string]: unknown },
 }
 
 type PackageModule = {
@@ -298,6 +304,17 @@ local function workspaceTests(
   return workspaces.tests(located(start, explicit), names)
 end
 
+--- Syncs the workspace at `start`'s lock and `.jess/packages` from the packages offered.
+local function workspaceSync(
+  start: string,
+  explicit: boolean,
+  artifacts: { string },
+  paths: { string },
+  locked: boolean
+): { [string]: unknown }
+  return workspaces.sync(located(start, explicit), artifacts, paths, locked)
+end
+
 return table.freeze {
   inspect = inspect,
   pack = package.pack,
@@ -306,4 +323,5 @@ return table.freeze {
   workspace = workspace,
   workspaceTarget = workspaceTarget,
   workspaceTests = workspaceTests,
+  workspaceSync = workspaceSync,
 }

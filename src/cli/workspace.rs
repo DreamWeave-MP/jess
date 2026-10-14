@@ -34,6 +34,21 @@ enum WorkspaceCommand {
     /// Run a member's command target, with its package resolved over the workspace and exactly
     /// the capabilities the target declares, once granted.
     Run(RunArgs),
+    /// Pin what the members depend on beyond each other in jess.lock, and keep those packages,
+    /// as JPKs, in .jess/packages: from the packages offered here, and those already kept.
+    /// Nothing is fetched.
+    Sync {
+        /// A package to offer outright (repeatable): a Package Source folder or a .jpk, the one
+        /// for its id.
+        artifacts: Vec<PathBuf>,
+        /// A folder of packages to offer (repeatable): each Package Source folder and .jpk directly
+        /// inside it. Two that would each do for one id are an error; name one outright.
+        #[arg(long = "package-path", value_name = "FOLDER")]
+        package_paths: Vec<PathBuf>,
+        /// Fail rather than change jess.lock: packages it pins may still be put in .jess/packages.
+        #[arg(long)]
+        locked: bool,
+    },
     /// Run members' tests, each from its source and then packed, with its dependencies and
     /// dev-dependencies resolved over the workspace.
     Test {
@@ -69,6 +84,10 @@ fn locate(args: &WorkspaceArgs) -> Result<Locate, String> {
     args.workspace
         .as_ref()
         .map_or_else(|| current().map(Locate::From), |root| Ok(Locate::Root(root.clone())))
+}
+
+fn texts(paths: &[PathBuf]) -> Vec<String> {
+    paths.iter().map(|path| path.display().to_string()).collect()
 }
 
 fn current() -> Result<PathBuf, String> {
@@ -137,6 +156,21 @@ pub fn run(args: &WorkspaceArgs, format: Format) -> Result<u8, String> {
         }
         WorkspaceCommand::Run(run) => return run_target(at, run),
         WorkspaceCommand::Test { members } => test(&at, members, format)?,
+        WorkspaceCommand::Sync {
+            artifacts,
+            package_paths,
+            locked,
+        } => {
+            let lua = crate::run::lua_default()?;
+            let request = workspace::SyncRequest {
+                at,
+                artifacts: texts(artifacts),
+                paths: texts(package_paths),
+                locked: *locked,
+            };
+            let synced = workspace::sync(&lua, &request).map_err(|error| error.to_string())?;
+            output::print(&synced, format)?;
+        }
     }
     Ok(0)
 }

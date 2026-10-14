@@ -186,7 +186,10 @@ pub(crate) fn host_table(runtime: &Runtime, read: bool, write: bool) -> l3i::Res
         ("decodeToml", decode_toml, None),
         ("builtin", builtin, None),
     ];
-    gated_table(runtime, functions.into_iter().chain(path_functions(runtime, read)?))
+    gated_table(
+        runtime,
+        functions.into_iter().chain(workspace_functions(runtime, read, write)?),
+    )
 }
 
 /// A host function by name, and the capability it needs with whether the table's holder has it:
@@ -221,11 +224,13 @@ fn gated_table(runtime: &Runtime, functions: impl Iterator<Item = HostFunction>)
     Ok(table)
 }
 
-/// The path functions workspaces find folders with: `canonical`, a path with every link and `..`
-/// resolved (nil when nothing is there); `parent`, the folder holding a path (nil at the top); and
-/// `relative`, a path below a base as `/`-joined names (nil when it isn't below it). Only
-/// `canonical` touches the filesystem, so only it needs `read`.
-fn path_functions(runtime: &Runtime, read: bool) -> l3i::Result<[HostFunction; 3]> {
+/// The functions workspaces find folders and keep packages with.
+///
+/// `canonical` is a path with every link and `..` resolved (nil when nothing is there); `parent`
+/// the folder holding a path (nil at the top); `relative` a path below a base as `/`-joined names
+/// (nil when it isn't below it); `createDir` makes a folder and those it is in; and `remove`
+/// removes a file if it is there. `parent` and `relative` only work on paths, and need nothing.
+fn workspace_functions(runtime: &Runtime, read: bool, write: bool) -> l3i::Result<[HostFunction; 5]> {
     let canonical = runtime.bind_function("jess.package.canonical", |path: Text| -> l3i::Result<Option<String>> {
         match std::fs::canonicalize(&path.0) {
             Ok(canonical) => plain(&canonical).map(Some),
@@ -256,10 +261,21 @@ fn path_functions(runtime: &Runtime, read: bool) -> l3i::Result<[HostFunction; 3
             .collect::<l3i::Result<Vec<_>>>()
             .map(|names| Some(names.join("/")))
     })?;
+    let create_dir = runtime.bind_function("jess.package.createDir", |path: Text| {
+        std::fs::create_dir_all(&path.0).map_err(|source| error(format!("failed to create '{}': {source}", path.0)))
+    })?;
+    let remove = runtime.bind_function("jess.package.remove", |path: Text| match std::fs::remove_file(&path.0) {
+        Err(source) if source.kind() != std::io::ErrorKind::NotFound => {
+            Err(error(format!("failed to remove '{}': {source}", path.0)))
+        }
+        _ => Ok(()),
+    })?;
     Ok([
         ("canonical", canonical, Some((read, l3i::fs::READ_CAPABILITY))),
         ("parent", parent, None),
         ("relative", relative, None),
+        ("createDir", create_dir, Some((write, l3i::fs::WRITE_CAPABILITY))),
+        ("remove", remove, Some((write, l3i::fs::WRITE_CAPABILITY))),
     ])
 }
 

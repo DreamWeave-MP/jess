@@ -177,3 +177,84 @@ fn a_workspace_target_runs_from_inside_its_member() {
     );
     fs::remove_dir_all(root).unwrap();
 }
+
+/// The showcase, end to end: the libraries it needs are JPKs handed to `sync`, which pins them in
+/// jess.lock and keeps them in .jess/packages. With the JPKs gone, the tool's target runs from
+/// deep inside its member, offline, with its arguments and exit status, and only what is granted.
+#[test]
+fn the_showcase_syncs_its_jpks_and_runs_without_them() {
+    let showcase = Showcase::new("workspace-showcase");
+    let (workspace, jpks) = (showcase.workspace(), showcase.root.join("jpks"));
+    fs::create_dir_all(&jpks).unwrap();
+    for name in ["words", "style"] {
+        let packed = jess()
+            .arg("pack")
+            .arg(fixture("workspace-vendor").join(name))
+            .arg("--output")
+            .arg(jpks.join(format!("{name}.jpk")))
+            .output()
+            .unwrap();
+        assert!(packed.status.success(), "{}", String::from_utf8_lossy(&packed.stderr));
+    }
+
+    let unsynced = jess()
+        .current_dir(&workspace)
+        .args(["workspace", "run", "org.example.greeter:greet", "--trusted"])
+        .output()
+        .unwrap();
+    assert!(!unsynced.status.success());
+    assert!(
+        String::from_utf8_lossy(&unsynced.stderr).contains("jess.lock is out of date"),
+        "{}",
+        String::from_utf8_lossy(&unsynced.stderr)
+    );
+
+    let synced = json(
+        &jess()
+            .current_dir(&workspace)
+            .args(["--format", "json", "workspace", "sync"])
+            .arg(jpks.join("words.jpk"))
+            .arg(jpks.join("style.jpk"))
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(synced["lock"], "written");
+    assert_eq!(synced["packages"][0]["id"], "org.example.style");
+    assert_eq!(synced["packages"][1]["id"], "org.example.words");
+    fs::remove_dir_all(&jpks).unwrap();
+    let locked = jess()
+        .current_dir(&workspace)
+        .args(["workspace", "sync", "--locked"])
+        .output()
+        .unwrap();
+    assert!(locked.status.success(), "{}", String::from_utf8_lossy(&locked.stderr));
+
+    let inside = workspace.join("tools/greeter/src");
+    let run = |extra: &[&str]| {
+        jess()
+            .current_dir(&inside)
+            .args(["workspace", "run", "org.example.greeter:greet"])
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    let greeted = run(&["--trusted", "--", "one", "two"]);
+    assert_eq!(greeted.status.code(), Some(2), "{}", String::from_utf8_lossy(&greeted.stderr));
+    assert_eq!(
+        String::from_utf8(greeted.stdout).unwrap(),
+        "HELLO, ONE! (hello)\nHELLO, TWO! (hello)\n"
+    );
+    let denied = run(&["--", "one"]);
+    assert!(!denied.status.success());
+    assert!(
+        String::from_utf8_lossy(&denied.stderr).contains("required capability denied:\n    process.environment"),
+        "{}",
+        String::from_utf8_lossy(&denied.stderr)
+    );
+    let root = jess()
+        .current_dir(&workspace)
+        .args(["workspace", "run", "showcase"])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8(root.stdout).unwrap(), "hello, showcase\n");
+}
