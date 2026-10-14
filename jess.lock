@@ -1,0 +1,10 @@
+# Written by `jess workspace sync`: what the members depend on beyond each other, pinned.
+# Change a member's dependencies and sync again rather than editing this.
+lock_version = 1
+
+[[package]]
+id = "org.dreamweave.site"
+version = "0.1.0"
+digest = "139ce53b21dfa57c2a21c050ffeb16ac707d14e171779ee3ae285951751a12ad"
+source = "local"
+dependencies = []
