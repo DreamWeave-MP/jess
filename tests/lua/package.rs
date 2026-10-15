@@ -690,7 +690,7 @@ fn the_embedded_built_in_package_is_its_source() {
 /// Analysis is available without activation and through either accepted built-in provider.
 #[test]
 fn analysis_is_embedded_and_loads_from_both_package_providers() {
-    let scratch = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+    let scratch = env!("CARGO_TARGET_TMPDIR");
     let temp = tempfile::tempdir_in(scratch).unwrap();
     let packed = temp.path().join("builtin.jpk");
     package::pack(
