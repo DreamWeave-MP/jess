@@ -100,9 +100,9 @@ Closes the worker and waits for it to end, up to `timeoutSeconds` (without a tim
 
 {{ api_signature(value="jess.worker.send(message: unknown) -> ()") }}
 
-From inside a worker: sends a message to the domain, besides what the handler returns. For progress, or for more than one reply per message.
+From inside a worker: sends a message to the domain, besides what the handler returns. For progress, or for more than one reply per message. It never waits: at most 1,024 messages wait for the domain to receive them, and a send past that fails, so a handler that floods a domain that isn't receiving finds out instead of stalling.
 
-- **Errors:** in a domain's own code, `worker.send is for a worker's own code; a domain sends through the handle worker.spawn returned`.
+- **Errors:** in a domain's own code, `worker.send is for a worker's own code; a domain sends through the handle worker.spawn returned`; `jess.worker.send: the domain's queue is full: 1024 messages wait for it to receive them; send fewer, or reply less often`.
 
 ```luau
 --!strict
