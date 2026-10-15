@@ -324,10 +324,20 @@ local function readLock(root: string): { Locked }?
   return locked
 end
 
+--- Why the member `found` doesn't meet the requirement `by` makes of it, or nil when it does. A
+--- member is always the package its id names, so nothing pinned or offered can stand in for it.
+local function unmet(by: string, found: Member, requirement: string): string?
+  local manifest = found.manifest
+
+  if package.satisfies(manifest.version, requirement) then return nil end
+
+  return `{by} requires {manifest.id} {requirement}, and the workspace's member '{found.path}' is {manifest.id} {manifest.version}`
+end
+
 --- What the members require beyond each other, transitively through what `jess.lock` pins, and
---- whether the lock pins exactly that: every requirement met by the one version pinned, nothing
---- pinned that a member is or nothing requires, and every pinned package in `.jess/packages` as
---- the lock says it is. Reads manifests; opens nothing.
+--- whether the lock pins exactly that: every requirement met by the member its id names or by the
+--- one version pinned, nothing pinned that a member is or nothing requires, and every pinned
+--- package in `.jess/packages` as the lock says it is. Reads manifests; opens nothing.
 local function lockState(root: string, members: { Member }): Lock
   local entries = readLock(root)
   local packages: { Locked } = entries or {}
@@ -376,9 +386,15 @@ local function lockState(root: string, members: { Member }): Lock
 
   local function need(by: string, dependencies: { [string]: string })
     for _, id in sortedKeys(dependencies) do
-      local requirement = dependencies[id]
+      local requirement, found = dependencies[id], memberById[id]
 
-      if memberById[id] then continue end
+      if found then
+        local problem = unmet(by, found, requirement)
+
+        if problem then table.insert(stale, problem) end
+
+        continue
+      end
 
       local entry = pinned[id]
 
@@ -870,11 +886,9 @@ local function sync(
     for _, id in sortedKeys(dependencies) do
       local requirement, found = dependencies[id], memberById[id]
 
-      if found and not package.satisfies(found.manifest.version, requirement) then
-        fail(
-          `{by} requires {id} {requirement}, and the workspace's member '{found.path}' is {id} {found.manifest.version}`
-        )
-      end
+      local problem = found and unmet(by, found, requirement)
+
+      if problem then fail(problem) end
 
       if found then continue end
 

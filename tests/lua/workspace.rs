@@ -787,13 +787,14 @@ fn sync_meets_every_requirement_or_says_whose_it_cannot() {
         "1.0.0",
         "[dependencies]\n\"org.example.lib\" = \"2\"\n",
     );
+    let expected =
+        "org.example.user 1.0.0 requires org.example.lib 2, and the workspace's member 'lib' is org.example.lib 1.0.0";
     let outgrown = sync(&both, &[], &[], false).unwrap_err();
-    assert!(
-        outgrown.contains(
-            "org.example.user 1.0.0 requires org.example.lib 2, and the workspace's member 'lib' is org.example.lib 1.0.0"
-        ),
-        "{outgrown}"
-    );
+    assert!(outgrown.contains(expected), "{outgrown}");
+    // Opening the workspace says the same, though nothing outside it is needed.
+    let opened = from(&both);
+    assert_eq!(opened.lock.state, "stale");
+    assert_eq!(opened.lock.problems, [expected]);
 }
 
 /// The `dependents` workspace in a temporary folder, synced from its packages packed as JPKs:
