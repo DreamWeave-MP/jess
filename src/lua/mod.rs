@@ -190,6 +190,9 @@ pub fn runtime_with_profile(_options: Options, capabilities: &[String], profilin
 }
 
 /// Per-VM generic service and module-loading state.
+/// A chunk's bytecode and a hash of the source it was compiled from.
+type Compiled = (u64, Rc<Vec<u8>>);
+
 pub(crate) struct Jess {
     /// The `jess` module table, the global of the same name.
     pub(crate) module: Table,
@@ -198,9 +201,10 @@ pub(crate) struct Jess {
     pub(crate) array_marker: Table,
     /// The plan's compile options, for the chunks jess loads; set with the runtime.
     compile_options: RefCell<Option<l3i::source::CompileOptions>>,
-    /// Each chunk's bytecode by chunk name, compiled once per runtime. Chunks load on the thread that runs them (`LoadScope`), so Luau
-    /// resolves their builtin imports against the safe globals up front.
-    bytecode: RefCell<HashMap<String, Rc<Vec<u8>>>>,
+    /// Each chunk's bytecode by its key, with a hash of the source it was compiled from, compiled
+    /// once per runtime and again when the source changes. Chunks load on the thread that runs
+    /// them (`LoadScope`), so Luau resolves their builtin imports against the safe globals up front.
+    bytecode: RefCell<HashMap<String, Compiled>>,
     /// `require`'s cache: the standard libraries and installed modules by name, and every module
     /// loaded by its file.
     pub(crate) loaded: Table,
@@ -231,8 +235,15 @@ impl Jess {
     /// [`Jess::load`], with the bytecode cached under `key` rather than the chunk name: a package
     /// module's chunk name is the same in every generation of its package, its key is not.
     pub(crate) fn load_as(&self, scope: &impl Scope, key: &str, name: &str, source: &[u8]) -> l3i::Result<Function> {
+        let hash = {
+            let mut hasher = std::hash::DefaultHasher::new();
+            std::hash::Hasher::write(&mut hasher, source);
+            std::hash::Hasher::finish(&hasher)
+        };
         let cached = self.bytecode.borrow().get(key).cloned();
-        let bytecode = if let Some(bytecode) = cached {
+        let bytecode = if let Some((compiled, bytecode)) = cached
+            && compiled == hash
+        {
             bytecode
         } else {
             let source = std::str::from_utf8(source).map_err(|_| error(format!("{name}: the script isn't UTF-8")))?;
@@ -241,10 +252,16 @@ impl Jess {
                 .as_ref()
                 .ok_or_else(|| error("this runtime wasn't made by jess::lua::runtime"))?;
             let bytecode = Rc::new(l3i::source::compile(source, options)?);
-            self.bytecode.borrow_mut().insert(key.to_owned(), bytecode.clone());
+            self.bytecode.borrow_mut().insert(key.to_owned(), (hash, bytecode.clone()));
             bytecode
         };
         scope.load_bytecode(name, &bytecode)
+    }
+
+    /// Forgets the bytecode of every package module, when a new plan replaces the mounted one: an
+    /// old generation's modules are never loaded again, and their keys name their digests.
+    pub(crate) fn forget_package_bytecode(&self) {
+        self.bytecode.borrow_mut().retain(|key, _| !key.starts_with("\0package\0"));
     }
 }
 

@@ -832,6 +832,7 @@ pub fn activate_with(
                 }
                 Ok(())
             })?;
+            state.forget_package_bytecode();
             *state.packages.borrow_mut() = Some(mounted);
             Ok(())
         },

@@ -240,3 +240,25 @@ fn regexes_find_capture_replace_split_and_iterate() {
         "##,
     );
 }
+
+/// A runtime that runs a file twice runs what the file holds each time: bytecode is cached by
+/// the source it came from, not just by the chunk name.
+#[test]
+fn a_file_run_again_after_an_edit_runs_the_edit() {
+    let root = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("script-support-edited");
+    drop(std::fs::remove_dir_all(&root));
+    std::fs::create_dir_all(&root).unwrap();
+    let script = root.join("edited.jsl");
+    let runtime = lua();
+    let run_text = |text: &str| {
+        std::fs::write(&script, text).unwrap();
+        let values = jess::lua::scripts::run_file(&runtime, &script, &[]).unwrap();
+        runtime
+            .stack()
+            .with_frame(|frame| values[0].push_to(frame)?.read::<f64>())
+            .unwrap()
+    };
+    assert_eq!(run_text("return 1"), 1.0);
+    assert_eq!(run_text("return 2"), 2.0);
+    std::fs::remove_dir_all(root).unwrap();
+}
