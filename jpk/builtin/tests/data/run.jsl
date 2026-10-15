@@ -175,6 +175,20 @@ custom: !<tag:example.com,2026:thing> hello
     expect(function() yaml.decode 'value: *missing' end).toThrow 'YAML:'
     expect(function() yaml.decode 'a: 1\na: 2' end).toThrow 'YAML:'
   end)
+
+  suite.it('reads a node from where it starts, whatever blanks or comment follow it', function()
+    local value = yaml.decode(
+      'quoted: "hello world"   \r\nsingle: \'it\'\'s\' \nflow: [1, 2] # two\nmap: {a: 1} \n'
+        .. 'tagged: !!str "5" \nitems:\n  - "x" # first\n  - [3] \n'
+    )
+    expect(value.quoted).toBe 'hello world'
+    expect(value.single).toBe "it's"
+    expect(value.flow).toEqual { 1, 2 }
+    expect(value.map.a).toBe(1)
+    expect(value.tagged).toBe '5'
+    expect(value.items[1]).toBe 'x'
+    expect(value.items[2]).toEqual { 3 }
+  end)
 end)
 
 suite.describe('encode', function()

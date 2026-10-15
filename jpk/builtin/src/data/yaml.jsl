@@ -950,7 +950,9 @@ local function parseInlineBlock(text: string, index: number, parentIndent: numbe
   local line = Lines[index]
   local leading = #text - #string.gsub(text, '^[ \t]+', '')
   local clean = string.sub(text, leading + 1)
-  local position = line.start + (#line.text - #text) + leading
+  -- Every caller hands over the end of the line's content with its comment and trailing blanks
+  -- already cut, so `text` ends where the stripped line does, not where the line does.
+  local position = line.start + (#stripComment(line.text) - #text) + leading
 
   if string.sub(clean, 1, 1) == '|' or string.sub(clean, 1, 1) == '>' then
     local value, nextIndex = parseBlockScalar(index, position - line.start + 1, clean)
