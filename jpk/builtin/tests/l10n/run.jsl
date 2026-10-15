@@ -324,6 +324,125 @@ suite.describe('formatting', function()
   end)
 end)
 
+-- The cases jess's Rust formatter held before localization moved to Luau, with the text they
+-- expected then: ICU's plural rules, offsets, ordinals, selects, the locale's own number
+-- spelling and digits, percent rounding, and skeletons.
+suite.describe('formatting', function()
+  local function format(locale: string, pattern: string, arguments: { [string]: unknown }?): string
+    return l10n.new():formatPattern(locale, pattern, arguments or {})
+  end
+
+  suite.it('substitutes arguments by name, in any order, ignoring extras', function()
+    expect(format('en', 'Hello, {name}!', { name = 'Fargoth' })).toBe 'Hello, Fargoth!'
+    expect(format('en', '{on}', { on = true })).toBe 'true'
+    expect(format('en', '{first}{second}{first}', { second = '2', first = '1', third = '3' })).toBe '121'
+  end)
+
+  suite.it('matches exact cases before categories, and spells # in the locale', function()
+    local pattern = '{count, plural, =0 {No files} one {# file} other {# files}}'
+    expect(format('en', pattern, { count = 0 })).toBe 'No files'
+    expect(format('en', pattern, { count = 1 })).toBe '1 file'
+    expect(format('en', pattern, { count = 2 })).toBe '2 files'
+    expect(format('en', pattern, { count = 1234 })).toBe '1,234 files'
+    expect(format('en', pattern, { count = 1.5 })).toBe '1.5 files'
+  end)
+
+  suite.it('picks Polish, Russian, and Arabic plural categories', function()
+    local polish = '{count, plural, one {# plik} few {# pliki} many {# plików} other {# pliku}}'
+    expect(format('pl', polish, { count = 1 })).toBe '1 plik'
+    expect(format('pl', polish, { count = 2 })).toBe '2 pliki'
+    expect(format('pl', polish, { count = 5 })).toBe '5 plików'
+    expect(format('pl', polish, { count = 22 })).toBe '22 pliki'
+    expect(format('pl', polish, { count = 25 })).toBe '25 plików'
+    expect(format('pl', polish, { count = 1.5 })).toBe '1,5 pliku'
+
+    local russian = '{count, plural, one {# файл} few {# файла} many {# файлов} other {# файла}}'
+    expect(format('ru', russian, { count = 1 })).toBe '1 файл'
+    expect(format('ru', russian, { count = 3 })).toBe '3 файла'
+    expect(format('ru', russian, { count = 11 })).toBe '11 файлов'
+    expect(format('ru', russian, { count = 21 })).toBe '21 файл'
+    expect(format('ru', russian, { count = -1 })).toBe '-1 файл'
+
+    local arabic = '{count, plural, zero {zero} one {one} two {two} few {few} many {many} other {other}}'
+    local categories = {}
+    for _, count in { 0, 1, 2, 3, 11, 100 } do
+      table.insert(categories, format('ar', arabic, { count = count }))
+    end
+
+    expect(categories).toEqual { 'zero', 'one', 'two', 'few', 'many', 'other' }
+  end)
+
+  suite.it('shifts the category and # by an offset, but not the exact matches', function()
+    local pattern =
+      '{guests, plural, offset:1 =0 {nobody} =1 {{host}} one {{host} and # other} other {{host} and # others}}'
+    local function party(guests: number): string
+      return format('en', pattern, { guests = guests, host = 'Caius' })
+    end
+
+    expect(party(0)).toBe 'nobody'
+    expect(party(1)).toBe 'Caius'
+    expect(party(2)).toBe 'Caius and 1 other'
+    expect(party(3)).toBe 'Caius and 2 others'
+  end)
+
+  suite.it('spells ordinals', function()
+    local pattern = '{place, selectordinal, one {#st} two {#nd} few {#rd} other {#th}}'
+    local places = {}
+    for _, place in { 1, 2, 3, 4, 11, 21 } do
+      table.insert(places, format('en', pattern, { place = place }))
+    end
+
+    expect(places).toEqual { '1st', '2nd', '3rd', '4th', '11th', '21st' }
+  end)
+
+  suite.it('selects on strings and booleans', function()
+    local pattern = '{mode, select, edit {Editing} view {Viewing} other {Idle}}'
+    expect(format('en', pattern, { mode = 'edit' })).toBe 'Editing'
+    expect(format('en', pattern, { mode = 'view' })).toBe 'Viewing'
+    expect(format('en', pattern, { mode = 'anything' })).toBe 'Idle'
+    expect(format('en', '{on, select, true {On} other {Off}}', { on = true })).toBe 'On'
+    expect(format('en', '{on, select, true {On} other {Off}}', { on = false })).toBe 'Off'
+  end)
+
+  suite.it('spells numbers as the locale does, in its own digits', function()
+    local value = { value = 1234567.891 }
+    expect(format('en', '{value}', value)).toBe '1,234,567.891'
+    expect(format('de', '{value}', value)).toBe '1.234.567,891'
+    expect(format('fr', '{value, number}', value)).toBe '1\u{202f}234\u{202f}567,891'
+    expect(format('en', '{value, number, integer}', value)).toBe '1,234,568'
+    expect(format('en', '{value, number, :: group-off}', value)).toBe '1234567.891'
+    expect(format('en', '{value, number, ::.00}', value)).toBe '1,234,567.89'
+    expect(format('en', '{value, number, ::.00}', { value = 2 })).toBe '2.00'
+    expect(format('en', '{value, number, ::.0#}', { value = 2 })).toBe '2.0'
+    expect(format('en', '{value}', { value = 1.99996 })).toBe '2'
+    expect(format('en', '{value}', { value = -0.5 })).toBe '-0.5'
+    expect(format('en', '{value, number, :: group-min2}', { value = 1234 })).toBe '1234'
+    expect(format('en', '{value, number, :: group-min2}', { value = 12345 })).toBe '12,345'
+    expect(format('ar-EG', '{value}', { value = 123 })).toBe '١٢٣'
+  end)
+
+  suite.it('rounds a percent half to even, as ICU does', function()
+    -- The style keyword is DecimalFormat's percent: times 100, a whole number.
+    expect(format('en', '{value, number, percent}', { value = 0.42 })).toBe '42%'
+    expect(format('en', '{value, number, percent}', { value = 0.425 })).toBe '42%'
+    expect(format('en', '{value, number, percent}', { value = 0.435 })).toBe '44%'
+    expect(format('en', '{value, number, percent}', { value = 12.5 })).toBe '1,250%'
+    -- A skeleton's percent is only the sign; scale/100 multiplies.
+    expect(format('en', '{value, number, :: percent}', { value = 42.5 })).toBe '42.5%'
+    expect(format('de', '{value, number, :: percent scale/100 .0}', { value = 0.4256 })).toBe '42,6%'
+    expect(format('de', '{value, number, :: %x100 .0}', { value = 0.4256 })).toBe '42,6%'
+  end)
+
+  suite.it('keeps six fraction digits under a skeleton, three without one', function()
+    local value = { value = 0.123456789 }
+    expect(format('en', '{value}', value)).toBe '0.123'
+    expect(format('en', '{value, number}', value)).toBe '0.123'
+    expect(format('en', '{value, number, ::}', value)).toBe '0.123457'
+    expect(format('en', '{value, number, :: scale/1000}', value)).toBe '123.456789'
+    expect(format('en', '{value, number, :: scale/0.01}', { value = 1250 })).toBe '12.5'
+  end)
+end)
+
 suite.describe('loading', function()
   suite.it('catches a malformed pattern at load, with its place in the file', function()
     local files = {
