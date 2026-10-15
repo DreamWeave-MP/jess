@@ -103,82 +103,6 @@ local function summarize(samples: { number }): Summary
   return { median = median(samples), min = low, max = high }
 end
 
-local Escape = {
-  ['"'] = '\\"',
-  ['\\'] = '\\\\',
-  ['\b'] = '\\b',
-  ['\f'] = '\\f',
-  ['\n'] = '\\n',
-  ['\r'] = '\\r',
-  ['\t'] = '\\t',
-}
-
-local function jsonString(value: string): string
-  local escaped = string.gsub(value, '[%z\1-\31\\"]', function(character: string): string
-    local known = Escape[character]
-    if known then return known end
-
-    return string.format('\\u%04x', string.byte(character))
-  end)
-  return `"{escaped}"`
-end
-
-local encode: (unknown) -> string
-
-local function arrayLength(value: { [unknown]: unknown }): number?
-  local count = 0
-  local highest = 0
-  for key in value do
-    if type(key) ~= 'number' or key < 1 or key % 1 ~= 0 then return nil end
-
-    count += 1
-    highest = math.max(highest, key)
-  end
-
-  if count ~= highest then return nil end
-  return highest
-end
-
-local function encodeTable(value: { [unknown]: unknown }): string
-  local length = arrayLength(value)
-  if length then
-    local parts = table.create(length)
-    for index = 1, length do parts[index] = encode(value[index]) end
-    return `[{table.concat(parts, ',')}]`
-  end
-
-  local keys: { string } = {}
-  for key in value do
-    if type(key) ~= 'string' then fail('result tables need string keys or dense array indexes') end
-    table.insert(keys, key)
-  end
-  table.sort(keys)
-
-  local parts = table.create(#keys)
-  for index, key in keys do parts[index] = `{jsonString(key)}:{encode(value[key])}` end
-  return `\{{table.concat(parts, ',')}}`
-end
-
-encode = function(value: unknown): string
-  local kind = type(value)
-  if kind == 'string' then return jsonString(value :: string) end
-
-  if kind == 'number' then
-    local number = value :: number
-    if number ~= number or number == math.huge or number == -math.huge then
-      fail('cannot write a non-finite benchmark result')
-    end
-
-    return tostring(number)
-  end
-
-  if kind == 'boolean' then return tostring(value) end
-  if kind == 'table' then return encodeTable(value :: { [unknown]: unknown }) end
-  if value == nil then return 'null' end
-
-  fail(`cannot encode benchmark result value of type {kind}`)
-end
-
 local function findCanary(name: string): Canary?
   for _, canary in Canaries do
     if canary.name == name then return canary end
@@ -348,7 +272,7 @@ local function runCanaries(startAt: number): number
     print(string.format('  %.4f s median (%.4f–%.4f)', summary.median, summary.min, summary.max))
   end
 
-  assert(fs.writeFile(output, encode(results) .. '\n', { atomic = true, createParents = true }))
+  assert(fs.writeFile(output, json.encodeTable(results) .. '\n', { atomic = true, createParents = true }))
   print(`results: {output}`)
   if baseline then check(baseline, results, tolerance) end
   return 0

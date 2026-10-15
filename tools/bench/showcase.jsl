@@ -61,7 +61,7 @@ local process = require '@dream/process'
 local reading = require '@jess/json'
 
 local equivalence = require './equivalence'
-local json = require './json'
+local json = require '@jess/json'
 
 type Sample = { wall: number, cpu: number, user: number, system: number, rss: number }
 type Summary = { median: number, min: number, max: number }
@@ -873,7 +873,7 @@ local function facts(
     workload.module,
     workload.stateKey,
     fs.join(folder, 'openmw.cfg'),
-    json.encode(workload.options or {}),
+    json.encodeTable(workload.options or {}, { latin1 = true }),
   }
   table.move(rest, 1, #rest, #command + 1, command)
   measure(command, folder, environment, log)
@@ -1062,7 +1062,7 @@ local function printResults(results: Results)
     end
 
     for output, verdict in workload.equivalence do
-      local details = if verdict.details then `: {json.encode(verdict.details)}` else ''
+      local details = if verdict.details then `: {json.encodeTable(verdict.details, { latin1 = true })}` else ''
       print(`{string.rep(' ', 19)}{fs.fileName(output)}: {verdict.status}{details}`)
     end
   end
@@ -1137,7 +1137,8 @@ local function showcase(arguments: Arguments): number
   assert(fs.mkdir(folder, { recursive = true }))
   local suffix = if packed then '-showcase-packed.json' else '-showcase.json'
   local path = fs.join(folder, os.date '!%Y%m%d-%H%M%S' .. suffix)
-  assert(fs.writeFile(path, json.encode(results, 1) .. '\n', { atomic = true, createParents = true }))
+  local text = json.encodeTable(results, { indent = 1, latin1 = true })
+  assert(fs.writeFile(path, text .. '\n', { atomic = true, createParents = true }))
   printResults(results)
   local against = results.against
   if against then
@@ -1177,7 +1178,7 @@ end
 local function tomlLine(key: string, value: string | number): string
   if type(value) == 'number' then return `{key} = {value}` end
 
-  return `{key} = {json.string(value)}`
+  return `{key} = {json.encodeTable(value, { latin1 = true })}`
 end
 
 local function sortedKeys(value: unknown): { string }
@@ -1229,7 +1230,7 @@ local function docs(resultsPath: string, output: string): number
 
   for _, workload in workloads :: { unknown } do
     table.insert(lines, '')
-    table.insert(lines, `[{json.string(text(workload, 'name'))}]`)
+    table.insert(lines, `[{json.encodeTable(text(workload, 'name'), { latin1 = true })}]`)
     local implementations = field(workload, 'implementations')
     for _, side in { 'jess', 'native' } do
       local measured = field(implementations, side)

@@ -258,6 +258,15 @@ suite.describe('encode', function()
     expect(json.encode(values.array { json.decode 'null', yaml.decode 'null' })).toBe '[null,null]'
   end)
 
+  suite.it('writes a plain table with sorted keys, indented or on one line', function()
+    local value = { zeta = { 1, 2.5, 'x\ty' }, alpha = 'Caf\233', empty = {}, none = json.null }
+    expect(json.encodeTable(value)).toBe '{"alpha":"Caf\233","empty":[],"none":null,"zeta":[1,2.5,"x\\ty"]}'
+    expect(json.encodeTable(value, { latin1 = true })).toContain '"Caf\\u00e9"'
+    expect(json.encodeTable({ items = { 1 } }, { indent = 1 })).toBe '{\n "items": [\n  1\n ]\n}'
+    expect(function() json.encodeTable { 1, nil, 3 } end).toThrow 'string keys or dense array indexes'
+    expect(function() json.encodeTable(0 / 0) end).toThrow 'NaN or infinite'
+  end)
+
   suite.it('has one null, jess.null, everywhere', function()
     expect(json.null).toBe(jess.null)
     expect(yaml.decode 'null').toBe(jess.null)
