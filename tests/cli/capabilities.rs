@@ -193,3 +193,27 @@ fn an_entrypoint_needing_more_than_its_target_declares_is_refused_at_activation(
     }
     fs::remove_dir_all(root).unwrap();
 }
+
+/// A script whose path reads like a package module's (`<id>@<version>/...`) is still a loose
+/// script: it gets no package's scope, so the built-in package's unexported modules stay out of reach.
+#[test]
+fn a_script_named_like_a_package_module_is_a_loose_script() {
+    let root = temp_dir_path("capability-chunk-name");
+    drop(fs::remove_dir_all(&root));
+    fs::create_dir_all(root.join("org.dreamweave.jess@0.1.0")).unwrap();
+    fs::write(
+        root.join("org.dreamweave.jess@0.1.0/x.jsl"),
+        "local ok, problem = pcall(require, './src/data/common')\nprint(ok, problem)\n",
+    )
+    .unwrap();
+
+    let output = jess()
+        .current_dir(&root)
+        .args(["run", "org.dreamweave.jess@0.1.0/x.jsl"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let printed = String::from_utf8(output.stdout).unwrap();
+    assert!(printed.starts_with("false\tmodule not found: ./src/data/common"), "{printed}");
+    fs::remove_dir_all(root).unwrap();
+}

@@ -25,13 +25,27 @@ fn script_call(runtime: &Runtime) -> l3i::runtime::CallScope<'_> {
     )
 }
 
+/// The chunk name a loose script at `path` loads with: `@` and the path, with `./` in front of a
+/// relative path whose first name holds an `@` or a `:`.
+///
+/// A package module's chunk is `@<id>@<version>/...` and the built-in decoder's
+/// `@jess:bootstrap/...`, and `require` gives a chunk the package scope its name names. With the
+/// `./`, a script can't be taken for one of them, whatever its file is called.
+pub(crate) fn chunk_name(path: &str) -> String {
+    let first = path.split(['/', '\\']).next().unwrap_or_default();
+    if Path::new(path).is_absolute() || !first.contains(['@', ':']) {
+        return format!("@{path}");
+    }
+    format!("@./{path}")
+}
+
 /// Loads a named source chunk as a function.
 ///
 /// # Errors
 /// Returns a compilation error or an error if the runtime has no Jess host state.
 pub fn load(runtime: &Runtime, name: &str, source: &[u8]) -> l3i::Result<Function> {
     let jess = state(runtime)?;
-    jess.load(&runtime.stack(), &format!("@{name}"), source)
+    jess.load(&runtime.stack(), &chunk_name(name), source)
 }
 
 /// Runs a file, passing its arguments through `...` and the global `arg` table.
@@ -88,7 +102,7 @@ pub fn load_module<T: Userdata + Clone>(runtime: &Runtime, module: &Path) -> l3i
     let name = module.display().to_string();
     let function = if module.is_file() {
         let source = std::fs::read(module).map_err(|source| error(format!("failed to read '{name}': {source}")))?;
-        jess.load(&runtime.stack(), &format!("@{name}"), &source)?
+        jess.load(&runtime.stack(), &chunk_name(&name), &source)?
     } else {
         Function::from_value(runtime.global("require")?)?
     };
