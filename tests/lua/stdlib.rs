@@ -167,3 +167,36 @@ fn numbers_are_compared_within_a_tolerance() {
         ",
     );
 }
+
+/// The built-in writer the CLI prints through spells a float as `serde_json` does, Ryū's digits and
+/// layout, including where two shortest spellings both read back as the value.
+#[test]
+fn floats_are_written_as_serde_json_writes_them() {
+    let values = [
+        0.1,
+        2.0 / 3.0,
+        1e21,
+        1e-7,
+        123.456,
+        -42.5,
+        802_532_279_307_174.2,
+        5e-324,
+        f64::MAX,
+        1e15,
+        1e16,
+    ];
+    // And a spread of values across the whole range, from a fixed seed.
+    let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+    let mut values = values.to_vec();
+    for _ in 0..20_000 {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        let value = f64::from_bits(state);
+        if value.is_finite() {
+            values.push(value);
+        }
+    }
+    let written = jess::lua::document::encode(&serde_json::json!(values), "json").unwrap();
+    assert_eq!(written, serde_json::to_string(&values).unwrap());
+}
