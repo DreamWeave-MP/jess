@@ -29,7 +29,7 @@ use crate::runtime::context::Phase;
 use crate::runtime::diagnostics::{Diagnostic, DiagnosticKind, Severity};
 use crate::runtime::domain::{DomainCore, DomainLink};
 use crate::runtime::error::RuntimeError;
-use crate::runtime::ids::WorkerId;
+use crate::runtime::ids::{CapabilityId, WorkerId};
 use crate::runtime::message::{Message, ResourceHandle};
 use crate::runtime::worker::{WorkerLink, WorkerSpec};
 
@@ -260,7 +260,16 @@ fn spawn(bindings: &Bindings, call: &Call<'_>, options: ValueView<'_>) -> l3i::R
         spec = spec.chunk_name(format!("=worker@{location}"));
     }
     if let Some(names) = capabilities {
-        spec = spec.capabilities(CapabilitySet::from_names(names).map_err(l3i::Error::from)?);
+        let mut set = CapabilitySet::empty();
+        for name in &names {
+            // Looked up, not interned: interned names live as long as the process, and a name
+            // nothing interned is one nobody holds, so it can't be delegated anyway.
+            let id = CapabilityId::lookup(name).ok_or_else(|| {
+                l3i::Error::permission(format!("worker.spawn: capability '{name}' isn't one this domain holds"))
+            })?;
+            set.insert(id);
+        }
+        spec = spec.capabilities(set);
     }
     if share_services == Some(true) {
         spec = spec.share_all();

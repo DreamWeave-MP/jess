@@ -357,3 +357,38 @@ fn the_plan_declares_types_luau_accepts() {
         );
     }
 }
+
+/// A capability name a script makes up is looked up, never interned: interned names live as long
+/// as the process.
+#[test]
+fn a_script_cannot_intern_a_capability_name() {
+    let harness = support::domain("inventive", &[WORKER_SPAWN]);
+    let domain = &harness.domain;
+    domain
+        .register_context(ContextSpec::new("main").schedule([Phase::OnDemand]))
+        .unwrap();
+    domain
+        .load_source(
+            "=inventive",
+            r"
+            local context = require('@jess/context')
+            local worker = require('@jess/worker')
+
+            context.bind('main', {
+              onDemand = function()
+                worker.spawn { source = 'return function() end', capabilities = { 'made.up.never' } }
+              end,
+            })
+            ",
+        )
+        .unwrap();
+    domain.start().unwrap();
+    let report = domain.run_phase(Phase::OnDemand, &Message::Nil).unwrap();
+    let message = report.failures[0].to_string();
+    assert!(
+        message.contains("worker.spawn: capability 'made.up.never' isn't one this domain holds"),
+        "{message}"
+    );
+    assert_eq!(CapabilityId::lookup("made.up.never"), None);
+    domain.stop().unwrap();
+}
