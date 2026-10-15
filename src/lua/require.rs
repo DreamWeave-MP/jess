@@ -132,7 +132,16 @@ pub fn require(call: &Call<'_>, jess: &Jess, name: &str) -> l3i::Result<StackRes
             let value = chunk
                 .invoke_with(frame, (name,), |_, value| Value::store(value))
                 .map_err(crate::lua::callback_error)?;
-            value.push_to(frame)?;
+            let pushed = value.push_to(frame)?;
+            // A package module's export is shared by every module that requires it, so it is
+            // frozen once returned: one package can't patch another's API for the whole plan. A
+            // loose script's own files (keyed by their chunk name, not `\0...`) stay its business.
+            if module.key.starts_with('\0') && pushed.is_table() {
+                let table = pushed.as_table()?;
+                if !table.is_read_only() {
+                    table.set_read_only(true)?;
+                }
+            }
             loaded.raw_set(frame, &module.key)?;
             value
         } else {

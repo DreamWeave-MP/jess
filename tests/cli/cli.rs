@@ -520,3 +520,30 @@ fn run_finishes_a_writer_the_script_never_closed() {
     assert_eq!(fs::read(root.join("out.txt")).unwrap(), vec![b'x'; 100]);
     fs::remove_dir_all(root).unwrap();
 }
+
+/// A package module's export is frozen once it returns: no one patches it for the whole plan.
+#[test]
+fn a_package_export_is_frozen() {
+    let root = temp_dir_path("package-export-frozen");
+    drop(fs::remove_dir_all(&root));
+    tool_over_a_package_path(&root);
+    fs::write(
+        root.join("patch.jsl"),
+        "local base = require('@base')\nprint(pcall(function() base.name = 'patched' end))\nprint(base.name)\n",
+    )
+    .unwrap();
+
+    let output = jess()
+        .args(["run", "--package-path"])
+        .arg(root.join("packages"))
+        .args(["--layer", "example.base"])
+        .arg(root.join("patch.jsl"))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let printed = String::from_utf8(output.stdout).unwrap();
+    assert!(printed.starts_with("false\t"), "{printed}");
+    assert!(printed.contains("readonly"), "{printed}");
+    assert!(printed.ends_with("base\n"), "{printed}");
+    fs::remove_dir_all(root).unwrap();
+}

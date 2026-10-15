@@ -88,7 +88,7 @@ Paths are canonical: forward slashes, relative, no `..`. A Package Source can't 
 
 A package's modules are reachable two ways, and only two.
 
-**By exported name.** `require('@dreamwind/tools/tes3merge')` loads the file the manifest maps that name to. A plan's namespace is every export of every layer of every package it selected, activated or not: an export is inert, so making it resolvable starts nothing. Export names are `@scope/...`, lowercase. `@jess/` is jess's, and the only package that may export into it is jess's own [built-in package](#the-built-in-package). A name the host already has (`@dream/vfs`, `@dream/bytes`) is a resolution error, and so is a name two packages export: nothing is chosen by load order, because "whichever loaded last" is not a design.
+**By exported name.** `require('@dreamwind/tools/tes3merge')` loads the file the manifest maps that name to. A plan's namespace is every export of every layer of every package it selected, activated or not: an export is inert, so making it resolvable starts nothing. Export names are `@scope/...`, lowercase. `@jess/` is jess's, and the only package that may export into it is jess's own [built-in package](#the-built-in-package). A name the host already has (`@dream/vfs`, `@dream/bytes`) is a resolution error, and so is a name two packages export: nothing is chosen by load order, because "whichever loaded last" is not a design. What a package module returns is shared by every module that requires it, so a table it returns is frozen as it returns (shallowly, like `table.freeze`): no package patches another's API for the whole plan, and state a module keeps belongs in a table of its own, not on its export.
 
 **Relatively, from inside the package.** `./`, `../`, and `@self/` work exactly as they do for files on disk: relative to the requiring module, an `init.jsl` standing for its folder. The result has to stay inside the package. A path that climbs out is an error, not a lookup somewhere else:
 
@@ -145,7 +145,7 @@ jess workspace test                            # every member's tests
 
 ## The built-in package
 
-`jpk/builtin` is jess's own package, `org.dreamweave.jess`: the Luau tools jess itself is checked with, shipped the way any Luau ships. Today it's one layer, `jess.style`, exporting [`@jess/style`](@/docs/api/style.md), the [style checker](@/docs/contributing/luau-style.md#the-checker).
+`jpk/builtin` is jess's own package, `org.dreamweave.jess`: the Luau libraries and tools every runtime can require, shipped the way any Luau ships. Its layers are `jess.style`, exporting [`@jess/style`](@/docs/api/style.md), the [style checker](@/docs/contributing/luau-style.md#the-checker), and `@jess/analysis`; `jess.data`, the codecs (`@jess/json`, [`@jess/data/toml`](@/docs/api/toml.md), `@jess/data/value`, `@jess/yaml`); and `jess.l10n`, [`@jess/l10n`](@/docs/api/l10n.md). Its tests ship in it.
 
 jess carries it. The binary embeds the package's manifest and payload, taken from `jpk/builtin` when jess is built, and its exports resolve in every runtime with nothing activated: `require '@jess/style'` just works, in `jess run`, in a package, in a Rust host's VM.
 
