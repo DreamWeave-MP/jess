@@ -56,11 +56,11 @@ A worker whose module does not load, does not return a function, or raises in it
 
 {{ api_signature(value="worker:send(message: unknown) -> ()") }}
 
-Queues a message for the worker's handler. Messages arrive in order.
+Queues a message for the worker's handler. Messages arrive in order. At most 1,024 wait for the handler at once: a domain that sends faster than its worker handles is told so, instead of queueing without bound.
 
 Only transferable values cross: `nil`, booleans, numbers, integers, strings, vectors, buffers, tables of those with string or number keys, and resource handles. Anything else is an error naming where it was, and nothing is sent.
 
-- **Errors:** `message.<path>: a <type> can't cross a worker or event boundary`; `the worker is stopped; it takes no more messages`.
+- **Errors:** `message.<path>: a <type> can't cross a worker or event boundary`; `the worker is stopped; it takes no more messages`; `the worker's queue is full: 1024 messages wait for its handler; receive its replies, or send fewer`.
 
 ```luau
 --!strict
@@ -78,7 +78,7 @@ A buffer arrives as a fresh buffer of the same bytes: writing the copy changes n
 
 {{ api_signature(value="worker:receive(timeoutSeconds: number?) -> unknown") }}
 
-The worker's next reply, waiting up to `timeoutSeconds` for one; without a timeout it does not wait. `nil` when there is none in that time, or when the worker has ended with nothing left to say. A failure the worker reported comes back as an error, once.
+The worker's next reply, waiting up to `timeoutSeconds` for one; without a timeout it does not wait. The wait never outlasts the execution time limit of the code that waits: when the limit runs out first, the call is stopped with the limit's error, as a loop would be. `nil` when there is none in that time, or when the worker has ended with nothing left to say. A failure the worker reported comes back as an error, once.
 
 - **Errors:** the worker's failure, as `<domain> <generation> <worker> (<module>) failed at <stage>: <message>`.
 
@@ -92,7 +92,7 @@ Asks the worker to stop after the messages already queued for it.
 
 {{ api_signature(value="worker:join(timeoutSeconds: number?) -> string") }}
 
-Closes the worker and waits for it to end, up to `timeoutSeconds` (without a timeout, as long as it takes), then returns its final state: `stopped` or `failed`. Replies it sent before ending stay readable through `receive`.
+Closes the worker and waits for it to end, up to `timeoutSeconds` (without a timeout, as long as it takes), and never past the execution time limit of the code that waits, then returns its final state: `stopped` or `failed`. Replies it sent before ending stay readable through `receive`.
 
 - **Errors:** `<worker> did not answer in time`.
 
