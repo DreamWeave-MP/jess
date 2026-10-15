@@ -940,7 +940,7 @@ pub struct PackageTest {
     pub version: String,
     /// The test modules the manifest names, as given there.
     pub tests: Vec<String>,
-    /// Each provider's run, source first; none for a JPK, which carries no tests.
+    /// Each provider's run, source first; none for a JPK, whose tests run from its source.
     pub providers: Vec<ProviderRun>,
     /// Cases that passed, over every provider.
     pub passed: usize,
@@ -967,7 +967,7 @@ pub fn test(options: &crate::lua::Options, location: &Path, scratch: &Path) -> l
 /// the package with its `[dependencies]` and `[dev-dependencies]`, which resolve over `packages`
 /// (handed over outright) and the package paths and candidates of `search`; whatever its roots
 /// and dev say, the package is the root, its dev-dependencies selected with it. The tests are the
-/// host's scripts, so they hold the whole plan's namespace. A JPK carries no tests, so for one
+/// host's scripts, so they hold the whole plan's namespace. A JPK's tests run from its source, so for one
 /// this reports none.
 ///
 /// # Errors

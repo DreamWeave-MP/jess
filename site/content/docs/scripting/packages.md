@@ -42,7 +42,7 @@ manifest_version = 1
 id = "com.example.lightbooks"
 version = "1.0.0"
 jess_api = "1"
-include = ["src"]
+include = ["src", "tests"]
 tests = ["tests/run.jsl"]
 
 [dependencies]
@@ -75,8 +75,8 @@ Dreamwind's own is [`jpk/dreamwind/jess.toml`](https://github.com/DreamWeave-MP/
 | `package.id` | The package's identity: two or more lowercase words joined by dots, like a reversed domain. Never inferred from a file name. |
 | `package.version` | `major.minor.patch`. |
 | `package.jess_api` | `"1"`, the package API generation this jess provides. It moves when the package contract breaks, not when jess's version does. |
-| `package.include` | The payload: folders and files, relative to the manifest, that ship. `jess.toml` always does. Everything else (tests, goldens, benchmarks, `.git`, `target/`) doesn't, without an ignore list. |
-| `package.tests` | Test modules for [`jess package test`](@/docs/cli/package.md#jess-package-test). Usually outside `include`: tests are source-only. |
+| `package.include` | The payload: folders and files, relative to the manifest, that ship. `jess.toml` always does, and the tests the manifest names must be among them. Everything else (benchmarks, `.git`, `target/`) doesn't, without an ignore list, and neither do an editor's or a merge tool's leftovers (`*.bak*`, `*~`, `*.orig`) under an included folder. |
+| `package.tests` | Test modules for [`jess package test`](@/docs/cli/package.md#jess-package-test). Each must be in the payload, under a folder `include` names: tests and their fixtures ship in the JPK. |
 | `dependencies` | Other packages this one's modules use, by id, each with a [version requirement](@/docs/api/package.md#package-satisfies). A dependency makes that package's exports resolvable; it activates none of its layers. |
 | `modules` | The package's named modules, each mapped to a `.jsl` file in the payload. Every name is some layer's export or entrypoint; a name nothing uses is an error. Everything else in the payload is private, reachable only by relative `require`. |
 | `[[layer]]` | Each layer: its `id`, the layers it `requires`, and the module names it `exports`. |

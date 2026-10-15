@@ -377,7 +377,7 @@ id = "org.example.tool"
 version = "1.0.0"
 jess_api = "1"
 default_target = "greet"
-include = ["src"]
+include = ["src", "tests"]
 tests = ["tests/run.jsl"]
 [dependencies]
 "org.example.base" = "1"
