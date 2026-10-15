@@ -1,5 +1,4 @@
 --!strict
---!native
 
 local log = require('@jess/log').new 'main'
 
