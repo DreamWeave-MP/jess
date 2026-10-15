@@ -51,4 +51,6 @@ return table.freeze {
   name = 'safeenv',
   path = 'tools/bench/canaries/safeenv.jsl',
   run = run,
+  --- The loop the canary times, for the test that checks both environments compute alike.
+  makeLoop = makeLoop,
 }

@@ -6,7 +6,7 @@ extra:
   kind: reference
 ---
 
-{{ api_signature(value="jess run [--package PACKAGE]... [--layer ID]... <SCRIPT> [ARGS]...") }}
+{{ api_signature(value="jess run [--package PACKAGE]... [--layer ID]... [--capability NAME]... <SCRIPT> [ARGS]...") }}
 
 Runs a Luau script with the whole jess API loaded.
 
@@ -16,6 +16,7 @@ Runs a Luau script with the whole jess API loaded.
 | `[ARGS]...` | Everything after the script, passed to it as strings. Flags here belong to the script, not to jess: `jess run fix.jsl --verbose` hands `--verbose` to `fix.jsl`. |
 | `--package PACKAGE` | Activate a [package](@/docs/scripting/packages.md), a Package Source folder or a `.jpk`, before the script runs (repeatable). Its exports are then `require`-able by the script, and the activated layers' entrypoints have run. |
 | `--layer ID` | Activate only this layer of the packages, and the layers it requires (repeatable). Without any, every layer they declare. Needs `--package`. |
+| `--capability NAME` | Grant the script a capability it doesn't hold by default (repeatable): `filesystem.read`, `network.transport`, ... A name no part of jess declares is an error, not a grant of nothing. |
 
 Plus the [global options](@/docs/cli/global-options.md).
 
@@ -82,11 +83,23 @@ $ jess run --package greeter.jpk hello.jsl
 Wake up, Nerevarine
 ```
 
-A plan that doesn't resolve stops the run before anything has started. jess runs packages under the trusted policy for now: whatever capabilities an entrypoint requires, it gets, and `jess package graph` shows what that is.
+A plan that doesn't resolve stops the run before anything has started. An entrypoint is admitted against what the script holds (below): one that requires more stops the run before anything is activated, and `jess package graph` shows what each requires.
+
+## Capabilities
+
+A script you run is yours, so it holds what you already have: its terminal (`process.stdio`, for `@dream/process`'s `write`) and the input devices in front of you (`input.actions`, `input.observe`, `input.configure`). Everything else is a flag away and denied without one, with the function and the capability named:
+
+```text
+$ jess run read.jsl
+error: dream.fs.readFileString: needs the 'filesystem.read' capability, which this runtime does not grant
+$ jess run --capability filesystem.read read.jsl
+```
+
+There's no script domain under `jess run`, so `@jess/worker`'s `spawn` and `@jess/context`'s `bind` refuse: `worker.spawn: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and package targets run scripts outside one`.
 
 ## Output
 
-`jess run` doesn't print a structured document. What you see is whatever the script `print`s, as it prints it. A script's return values are ignored.
+`jess run` doesn't print a structured document. What you see is whatever the script `print`s, as it prints it. A script's first returned number, an integer from 0 to 255, is the exit status; other return values are ignored.
 
 ## Errors
 

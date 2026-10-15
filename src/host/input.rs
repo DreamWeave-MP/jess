@@ -1,6 +1,7 @@
 //! The input side of a host: a backend polled into the domain's [`InputService`], one tick per
-//! frame at the host's clock, and the tick's action events and intents as the input phase's
-//! payload.
+//! frame at the host's clock, and the tick's action events as the input phase's payload.
+//!
+//! Turning them into intents is the script's (`@jess/input`'s router).
 //!
 //! The service is the domain's ([`crate::host::SharedInput`]): `jess.input.runtime()` under the domain
 //! hands scripts the same one, so what a script installs is what the host ticks, and what the
@@ -11,9 +12,9 @@ use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::input::{
-    ActionEventKind, Backend, BackendError, InputService, IntentScope, MonotonicClock, StubBackend, Tick, Timestamp, Value,
+    ActionEventKind, Backend, BackendError, InputService, MonotonicClock, StubBackend, Tick, Timestamp, Value,
 };
-use crate::runtime::{Message, ScriptDomain};
+use crate::runtime::Message;
 
 use crate::host::SharedInput;
 
@@ -99,7 +100,7 @@ impl Driver {
 
     /// Polls the backend, ticks the service, and returns the phase payload if the tick produced
     /// action events.
-    pub(crate) fn tick(&mut self, domain: &ScriptDomain) -> Result<Option<Message>, BackendError> {
+    pub(crate) fn tick(&mut self) -> Result<Option<Message>, BackendError> {
         let mut service = lock(&self.service);
         let now = match self.clock {
             Clock::Monotonic(clock) => clock.now(),
@@ -108,13 +109,9 @@ impl Driver {
         if let Some(backend) = &mut self.backend {
             backend.poll(&service.sender(), now)?;
         }
-        let scope = IntentScope {
-            domain: Some(u64::from(domain.id().raw())),
-            ..IntentScope::default()
-        };
-        let (generation, events, intents) = {
-            let tick = service.tick(now, scope);
-            (tick.generation, tick.events.to_vec(), tick.intents.to_vec())
+        let (generation, events) = {
+            let tick = service.tick(now);
+            (tick.generation, tick.events.to_vec())
         };
         if events.is_empty() {
             return Ok(None);
@@ -123,7 +120,6 @@ impl Driver {
             now,
             generation,
             events: &events,
-            intents: &intents,
         };
         let payload = payload(&service, &tick);
         drop(service);
@@ -156,21 +152,17 @@ fn value_message(value: Value) -> Message {
     }
 }
 
-/// One event or intent row: `{ intent?, action, kind, value, time, device? }`, the row
-/// `InputRuntime:tick()` and `InputRuntime:intents()` return to a script.
+/// One event row: `{ action, kind, value, time, device? }`, the row `InputRuntime:tick()` returns
+/// to a script.
 fn row(
     service: &InputService,
-    intent: Option<&str>,
     action: crate::input::ActionId,
     kind: ActionEventKind,
     value: Value,
     time: Timestamp,
     device: Option<crate::input::DeviceId>,
 ) -> Message {
-    let mut fields: Vec<(&str, Message)> = Vec::with_capacity(6);
-    if let Some(intent) = intent {
-        fields.push(("intent", Message::text(intent)));
-    }
+    let mut fields: Vec<(&str, Message)> = Vec::with_capacity(5);
     fields.push(("action", Message::text(service.action_name(action).unwrap_or_default())));
     fields.push(("kind", Message::text(kind_name(kind))));
     fields.push(("value", value_message(value)));
@@ -188,43 +180,17 @@ fn row(
 ///   time = <seconds>,             -- the tick's time on the host's clock
 ///   generation = <number>,        -- the graph generation the events came from
 ///   events = { { action, kind, value, time, device? }, ... },
-///   intents = { { intent, action, kind, value, time, device? }, ... },
 /// }
 /// ```
 ///
-/// The rows are the ones `InputRuntime:tick()` and `InputRuntime:intents()` return, so a script
-/// reads a phase payload and a headless tick the same way.
+/// The rows are the ones `InputRuntime:tick()` returns, so a script reads a phase payload and a
+/// headless tick the same way.
 #[must_use]
 pub fn payload(service: &InputService, tick: &Tick<'_>) -> Message {
     let events = tick
         .events
         .iter()
-        .map(|event| {
-            row(
-                service,
-                None,
-                event.action,
-                event.kind,
-                event.value,
-                event.timestamp,
-                event.device,
-            )
-        })
-        .collect();
-    let intents = tick
-        .intents
-        .iter()
-        .map(|dispatch| {
-            row(
-                service,
-                Some(service.intents().name(dispatch.intent).unwrap_or_default()),
-                dispatch.action,
-                dispatch.kind,
-                dispatch.value,
-                dispatch.timestamp,
-                dispatch.device,
-            )
-        })
+        .map(|event| row(service, event.action, event.kind, event.value, event.timestamp, event.device))
         .collect();
     #[allow(clippy::cast_precision_loss)] // Generations are counted in small numbers.
     let generation = tick.generation.value() as f64;
@@ -232,6 +198,5 @@ pub fn payload(service: &InputService, tick: &Tick<'_>) -> Message {
         ("time", Message::Number(seconds(tick.now))),
         ("generation", Message::Number(generation)),
         ("events", Message::List(events)),
-        ("intents", Message::List(intents)),
     ])
 }

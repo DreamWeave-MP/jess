@@ -1,15 +1,14 @@
 //! The application kernel, end to end and headless: one host domain from jess's own plan, with a
-//! localization registry and a live input runtime attached, walked through everything the GUI
-//! pass will stand on. This is the substrate handoff's integration fixture (section 18), minus
+//! live input runtime attached, walked through everything the GUI pass will stand on. This is the substrate handoff's integration fixture (section 18), minus
 //! the package and presentation items that belong to later passes.
 //!
 //! ```text
 //! Host
-//! ├── services: Mutex<InputService> (synthetic), RwLock<Registry> (common: en, pl)
-//! └── domain "app": input.actions, input.configure, l10n.read, l10n.configure, worker.spawn
+//! ├── services: Mutex<InputService> (synthetic)
+//! └── domain "app": input.actions, input.configure, worker.spawn
 //!     ├── context main:  startup / update / event / shutdown   (the domain's grant)
 //!     ├── context input: input                                  (input.actions only)
-//!     └── worker greeter: l10n.read, shares the registry, no input at all
+//!     └── worker greeter: no capabilities, its own @jess/l10n registry, no input at all
 //! ```
 //!
 //! Each numbered step below is one thing the fixture proves. Globals are read-only in a jess
@@ -18,12 +17,11 @@
 //! test binds, through which it calls into the script under the `main` context's authority.
 
 use std::cell::RefCell;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use jess::host::{Host, HostSpec, InputSource, SharedInput, SharedRegistry};
+use jess::host::{Host, HostSpec, InputSource, SharedInput};
 use jess::input::{Control, Key};
-use jess::l10n::{MemoryFiles, Registry, VfsProvider};
 use jess::lua::Options;
 use jess::lua::l3i::Runtime;
 use jess::lua::l3i::value::Function;
@@ -37,7 +35,7 @@ const MAIN: &str = r"
 local context = require('@jess/context')
 local worker = require('@jess/worker')
 local l10n = require('@jess/l10n')
-local input = jess.input
+local input = require('@jess/input')
 
 local log = {}
 
@@ -45,8 +43,16 @@ local function note(line: string)
   table.insert(log, line)
 end
 
+-- Localization is the runtime's own: a registry over bundles the script holds.
+l10n.addProvider(l10n.files('kernel', {
+  ['l10n/common/en.toml'] = [[hello = 'Hello, {name}!']],
+  ['l10n/common/pl.toml'] = [[hello = 'Cześć, {name}!']],
+}, 'l10n'))
+assert(#l10n.reload() == 0)
+
 local common = l10n.bundle 'common'
 local runtime = input.runtime()
+local router = input.router()
 local greeter
 
 local calls = {}
@@ -54,7 +60,7 @@ local calls = {}
 context.bind('main', {
   startup = function()
     -- The live runtime: the host ticks it, the script configures it.
-    runtime:install {
+    runtime:install(input.graph {
       actions = {
         { name = 'ui.accept', valueType = 'digital' },
         { name = 'quickSave', valueType = 'digital' },
@@ -69,20 +75,24 @@ context.bind('main', {
           },
         },
       },
-    }
+    })
     runtime:setActive 'ui'
-    runtime:route('ui.accept', 'pressed', 'ui.activate')
+    router:route('ui.accept', 'pressed', 'ui.activate')
     note(`startup {common('hello', { name = 'Fargoth' })} gen {l10n.generation()}`)
 
-    -- A worker that localizes through the shared registry and has no say over input: it sees
-    -- the domain's services but holds l10n.read alone.
+    -- A worker that localizes with a registry of its own and has no say over input: it sees
+    -- the domain's services but holds no capability.
     greeter = worker.spawn {
       name = 'greeter',
-      capabilities = { 'l10n.read' },
+      capabilities = {},
       shareServices = true,
       source = [[
+        local l10n = require('@jess/l10n')
+        l10n.addProvider(l10n.files('greeter', { ['common/en.toml'] = [=[hello = 'Hello, {name}!']=] }))
+        l10n.reload()
+        local common = l10n.bundle 'common'
+
         return function(message)
-          local common = jess.l10n.bundle 'common'
           local ok, problem = pcall(function()
             return jess.input.runtime():action 'ui.accept'
           end)
@@ -98,7 +108,7 @@ context.bind('main', {
   end,
 
   event = function(payload)
-    note(`event {payload.event} gen {payload.generation} locales {table.concat(payload.locales, ',')} now {common('hello', { name = 'Fargoth' })}`)
+    note(`event {payload.event}`)
   end,
 
   shutdown = function()
@@ -112,20 +122,18 @@ context.bind('input', {
       note(`input {event.action} {event.kind} device {event.device} gen {payload.generation}`)
     end
 
-    for _, intent in payload.intents do
+    for _, intent in router:dispatch(payload.events) do
       note(`intent {intent.intent} <- {intent.action} {intent.kind} value {tostring(intent.value)}`)
     end
 
     -- This context holds input.actions only: it may read input and nothing else.
-    local ok, problem = pcall(l10n.bundle, 'common')
-    note(`input-context l10n {ok and 'allowed' or problem}`)
     local ok, problem = pcall(runtime.setActive, runtime, 'ui')
     note(`input-context configure {ok and 'allowed' or problem}`)
   end,
 })
 
 function calls.switchLocale(tag: string)
-  note(`setLocales {l10n.setLocales(tag)}`)
+  note(`setLocales {l10n.setLocales(tag)} now {common('hello', { name = 'Fargoth' })}`)
 end
 
 function calls.pressEnter()
@@ -177,16 +185,6 @@ return function()
   return table.concat(log, '\n')
 end
 ";
-
-fn registry() -> Registry {
-    let files = MemoryFiles::new();
-    files.insert("l10n/common/en.toml", "hello = 'Hello, {name}!'");
-    files.insert("l10n/common/pl.toml", "hello = 'Cześć, {name}!'");
-    let mut registry = Registry::new();
-    registry.add_provider(VfsProvider::new("kernel", "l10n", files));
-    assert!(registry.reload().is_clean());
-    registry
-}
 
 /// Loads `source` as the domain's code and keeps what the chunk returned: the log reader, and
 /// for the first generation the `onDemand` handler, bound to `main`.
@@ -241,25 +239,15 @@ fn the_application_kernel_end_to_end() {
     let sink: Arc<dyn DiagnosticSink> = diagnostics.clone();
     let factory: Arc<dyn RuntimeFactory> = Arc::new(|| jess::lua::runtime(Options::default()));
 
-    // 1. One host domain from jess's plan, restricted grant, registry and input attached.
-    let grant = RootAuthority::new().grant(
-        CapabilitySet::from_names([
-            "input.actions",
-            "input.configure",
-            "l10n.read",
-            "l10n.configure",
-            WORKER_SPAWN,
-        ])
-        .unwrap(),
-    );
+    // 1. One host domain from jess's plan, restricted grant, input attached.
+    let grant =
+        RootAuthority::new().grant(CapabilitySet::from_names(["input.actions", "input.configure", WORKER_SPAWN]).unwrap());
     let mut host = Host::create(
         factory,
-        HostSpec::new(DomainSpec::new("app", grant).diagnostics(sink))
-            .input(InputSource::Synthetic)
-            .localization(registry()),
+        HostSpec::new(DomainSpec::new("app", grant).diagnostics(sink)).input(InputSource::Synthetic),
     )
     .unwrap();
-    assert!(host.domain().service::<SharedInput>().is_some() && host.domain().service::<SharedRegistry>().is_some());
+    assert!(host.domain().service::<SharedInput>().is_some());
 
     // 2. Two contexts: the application's, and an input context holding only input.actions.
     let main = host
@@ -289,7 +277,7 @@ fn the_application_kernel_end_to_end() {
     assert_eq!(host.domain().workers().len(), 1);
     assert!(host.input().unwrap().lock().unwrap().runtime().graph().is_some());
 
-    // 4. The worker reads the shared registry and is refused input: no service and no grant.
+    // 4. The worker formats from its own registry and is refused input: it holds no grant.
     call(&host, "askGreeter", Message::text("Fargoth"));
     let greeted = log(&host, &reader).pop().unwrap();
     let worker = host.domain().workers()[0].id;
@@ -301,9 +289,9 @@ fn the_application_kernel_end_to_end() {
         )
     );
 
-    // 5. Keys pressed on the host's synthetic side become action events and intents in the input
-    //    phase, with provenance and the graph generation; the input context's own capability
-    //    checks hold.
+    // 5. Keys pressed on the host's synthetic side become action events in the input phase,
+    //    with provenance and the graph generation, and the script's router makes intents of
+    //    them; the input context's own capability checks hold.
     let keyboard = {
         let mut service = host.input().unwrap().lock().unwrap();
         let keyboard = service.synthetic().connect_keyboard();
@@ -321,7 +309,6 @@ fn the_application_kernel_end_to_end() {
             greeted,
             "input ui.accept pressed device 0 gen 1".to_owned(),
             "intent ui.activate <- ui.accept pressed value true".to_owned(),
-            format!("input-context l10n capability 'l10n.read' denied to {input_attribution}"),
             format!("input-context configure capability 'input.configure' denied to {input_attribution}"),
             "update accept=true".to_owned(),
         ]
@@ -335,7 +322,6 @@ fn the_application_kernel_end_to_end() {
         denied,
         [
             ("input.actions", host.domain().attribution().in_worker(worker)),
-            ("l10n.read", input_attribution),
             ("input.configure", input_attribution),
         ]
     );
@@ -360,24 +346,14 @@ fn the_application_kernel_end_to_end() {
         "{entries:?}"
     );
 
-    // 7. A locale switch from the script raises the registry's generation; the host broadcasts
-    //    l10n.changed at the next frame, and the handler formats in the new locale.
+    // 7. A locale switch from the script raises its registry's generation and changes the text at
+    //    once: no reload, and nothing for the host to do.
     call(&host, "switchLocale", Message::text("pl-PL"));
-    let frame = host.frame(Duration::from_millis(16)).unwrap();
-    assert_eq!(frame.localization_changed.map(jess::l10n::Generation::get), Some(2));
-    assert_eq!(frame.tick.events.delivered, 1);
     let entries = log(&host, &reader);
-    assert!(entries.contains(&"setLocales 2".to_owned()), "{entries:?}");
-    assert_eq!(
-        entries.last().unwrap(),
-        "event l10n.changed gen 2 locales pl-PL now Cześć, Fargoth!"
-    );
-    let registry = host.localization().unwrap().read().unwrap();
-    assert_eq!(registry.preferred_locales().len(), 1);
-    drop(registry);
+    assert_eq!(entries.last().unwrap(), "setLocales 2 now Cześć, Fargoth!");
 
     // 8. A restart: the old generation's handlers, worker, graph, and queued events go; the
-    //    devices and the registry stay; a key held across the restart is not the new code's press.
+    //    devices stay; a key held across the restart is not the new code's press.
     host.input()
         .unwrap()
         .lock()
@@ -402,11 +378,6 @@ fn the_application_kernel_end_to_end() {
     assert_eq!(log(&host, &reader), ["update2 graph=false"]);
     assert_eq!(host.domain().stats().stale_discarded, 1);
     assert_eq!(diagnostics.of_kind(DiagnosticKind::StaleGenerationDiscarded).len(), 1);
-    assert_eq!(
-        host.localization().unwrap().read().unwrap().generation().get(),
-        2,
-        "the registry is the host's: the locale survived"
-    );
     assert!(
         host.input().unwrap().lock().unwrap().device(keyboard.index()).is_some(),
         "so did the keyboard"
@@ -427,8 +398,8 @@ fn the_application_kernel_end_to_end() {
     let denials = diagnostics.of_kind(DiagnosticKind::CapabilityDenied).len();
     assert_eq!(
         denials,
-        1 + 2 * 3,
-        "the worker's one, and the input context's two per input phase, in three phases"
+        1 + 3,
+        "the worker's one, and the input context's one per input phase, in three phases"
     );
     let worker_failures = diagnostics.of_kind(DiagnosticKind::WorkerFailed);
     assert!(worker_failures.is_empty(), "{worker_failures:?}");
@@ -439,16 +410,11 @@ fn the_application_kernel_end_to_end() {
 #[test]
 fn the_service_types_are_the_contract() {
     let service: Arc<SharedInput> = Arc::new(Mutex::new(jess::input::InputService::new()));
-    let registry: Arc<SharedRegistry> = Arc::new(RwLock::new(Registry::new()));
     assert_eq!(
         std::any::type_name::<SharedInput>(),
         std::any::type_name::<Mutex<jess::input::InputService>>()
     );
-    assert_eq!(
-        std::any::type_name::<SharedRegistry>(),
-        std::any::type_name::<RwLock<Registry>>()
-    );
-    drop((service, registry));
+    drop(service);
 }
 
 /// `@jess/log` under a domain with a log stream: a context's records and a worker's arrive in

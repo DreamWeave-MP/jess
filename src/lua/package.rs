@@ -9,6 +9,11 @@
 //! A package module's chunk name is `@<id>@<version>/<path>`, which diagnostics show; its cache
 //! identity is its package's id and content digest and its path, so two generations of one package
 //! version never share a cached module.
+//!
+//! An activation plan is one trust zone: every package it mounts runs in the one runtime, with the
+//! capabilities that runtime was granted. Admission refuses an entrypoint that requires more than
+//! the grant, but nothing separates one admitted package from another; per-package isolation
+//! (contexts or VMs of their own) is not built yet.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Seek, SeekFrom};
@@ -106,14 +111,14 @@ impl Mounted {
 ///
 /// `read` and `write` say whether whoever holds the table may read and write the host's files.
 /// The module scripts require gets what the runtime's policy grants, so a script can't open or
-/// pack a package it couldn't have read or written through `jess.fs`; the host's own package
+/// pack a package it couldn't have read or written through `@dream/fs`; the host's own package
 /// operations get both, since inspecting and activating packages is the host acting.
 pub(crate) fn host_table(runtime: &Runtime, read: bool, write: bool) -> l3i::Result<Table> {
     let list_tree = runtime.bind_function("jess.package.listTree", |call: &Call<'_>, root: Text| {
         let mut entries = Vec::new();
         walk(Path::new(&root.0), "", &mut entries)?;
         entries.sort_by(|a, b| a.0.cmp(&b.0));
-        crate::lua::lua::push_list(call, entries.into_iter(), |frame, (path, kind)| {
+        l3i::stack::push_list(call, entries.into_iter(), |frame, (path, kind)| {
             crate::lua::push_table(frame, 0, 2, |frame, row| {
                 row.raw_set_value(frame, "path", &path)?;
                 row.raw_set_value(frame, "kind", &kind)
@@ -152,7 +157,7 @@ pub(crate) fn host_table(runtime: &Runtime, read: bool, write: bool) -> l3i::Res
     let list_dir = runtime.bind_function("jess.package.listDir", |call: &Call<'_>, root: Text| {
         let mut entries = children(Path::new(&root.0))?;
         entries.sort_by(|a, b| a.0.cmp(&b.0));
-        crate::lua::lua::push_list(call, entries.into_iter(), |frame, (name, kind)| {
+        l3i::stack::push_list(call, entries.into_iter(), |frame, (name, kind)| {
             crate::lua::push_table(frame, 0, 2, |frame, row| {
                 row.raw_set_value(frame, "name", &name)?;
                 row.raw_set_value(frame, "kind", &kind)
@@ -163,8 +168,16 @@ pub(crate) fn host_table(runtime: &Runtime, read: bool, write: bool) -> l3i::Res
     let replace = runtime.bind_function("jess.package.replace", |path: Text, data: Bytes| {
         crate::lua::files::replace_file(Path::new(&path.0), &data.0).map_err(error)
     })?;
-    let decode_toml = runtime.bind_function("jess.package.decodeToml", |call: &Call<'_>, text: Text| {
-        crate::lua::toml::decode(call, &text.0).map(|(value, _)| value)
+    // jess reads TOML with one codec, the built-in package's, loaded the first time a manifest, lock
+    // or workspace file is read.
+    let decoder = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let decode_toml = runtime.bind_function("jess.package.decodeToml", move |call: &Call<'_>, text: Text| {
+        let decode = crate::lua::builtin::decoder(call, &decoder)?;
+        let document = decode
+            .invoke_with(call, (text.0.as_str(),), |_, document| Value::store(document))
+            .map_err(crate::lua::callback_error)?;
+        document.push_to_scope(call)?;
+        Ok::<_, l3i::Error>(l3i::bind::StackResults)
     })?;
     let builtin = runtime.bind_function("jess.package.builtin", |call: &Call<'_>| {
         crate::lua::lua::push_table(call, 0, crate::lua::builtin::FILES.len(), |frame, files| {
@@ -202,12 +215,10 @@ fn gated_table(runtime: &Runtime, functions: impl Iterator<Item = HostFunction>)
     let mut gated = Vec::new();
     for (name, function, needs) in functions {
         let function = match needs {
-            Some((false, capability)) => {
-                let message = crate::lua::plan::denied("@jess/package", capability);
-                runtime.bind_function(&format!("jess.package.{name}"), move |_: ArgView<'_>| -> l3i::Result<()> {
-                    Err(l3i::Error::permission(message.clone()))
-                })?
-            }
+            Some((false, capability)) => runtime
+                .bind_function(&format!("jess.package.{name}"), move |_: ArgView<'_>| -> l3i::Result<()> {
+                    Err(l3i::Error::denied("@jess/package", capability))
+                })?,
             _ => function,
         };
         gated.push((name, function));
@@ -666,7 +677,8 @@ pub(crate) fn host_modules(runtime: &Runtime) -> l3i::Result<Vec<String>> {
     names.push("@jess".to_owned());
     // The built-in package's exports stay open to the one package that may hold them, a copy of
     // the built-in package itself; `@jess/package` refuses any other.
-    names.retain(|name| crate::lua::builtin::export(name).is_none());
+    let manifest = crate::lua::builtin::manifest(&stack, &jess)?;
+    names.retain(|name| manifest.export(name).is_none());
     names.sort();
     names.dedup();
     Ok(names)
@@ -818,6 +830,7 @@ pub fn activate_with(
                 }
                 Ok(())
             })?;
+            state.forget_package_bytecode();
             *state.packages.borrow_mut() = Some(mounted);
             Ok(())
         },
@@ -881,7 +894,7 @@ pub(crate) fn string_list(scope: &impl Scope, items: &[String]) -> l3i::Result<T
     crate::lua::lua::stored_table(scope, |frame| {
         let table = frame.push_table(items.len(), 0)?;
         for (index, item) in items.iter().enumerate() {
-            frame.push_string(item);
+            frame.push_string(item)?;
             table.raw_set_index(frame, index as i64 + 1)?;
         }
         Ok(())
@@ -925,7 +938,7 @@ pub struct PackageTest {
     pub version: String,
     /// The test modules the manifest names, as given there.
     pub tests: Vec<String>,
-    /// Each provider's run, source first; none for a JPK, which carries no tests.
+    /// Each provider's run, source first; none for a JPK, whose tests run from its source.
     pub providers: Vec<ProviderRun>,
     /// Cases that passed, over every provider.
     pub passed: usize,
@@ -952,7 +965,7 @@ pub fn test(options: &crate::lua::Options, location: &Path, scratch: &Path) -> l
 /// the package with its `[dependencies]` and `[dev-dependencies]`, which resolve over `packages`
 /// (handed over outright) and the package paths and candidates of `search`; whatever its roots
 /// and dev say, the package is the root, its dev-dependencies selected with it. The tests are the
-/// host's scripts, so they hold the whole plan's namespace. A JPK carries no tests, so for one
+/// host's scripts, so they hold the whole plan's namespace. A JPK's tests run from its source, so for one
 /// this reports none.
 ///
 /// # Errors
@@ -968,11 +981,11 @@ pub fn test_with(
     // Package tests are an explicit host action over a caller-chosen package, so their test code
     // gets scratch filesystem access and terminal/environment reporting. Process spawning remains
     // denied unless a host separately approves it.
-    let test_capabilities = [
+    let test_capabilities = crate::lua::host_script_grant(&[
         l3i::fs::READ_CAPABILITY.to_owned(),
         l3i::fs::WRITE_CAPABILITY.to_owned(),
         l3i::process::ENVIRONMENT_CAPABILITY.to_owned(),
-    ];
+    ]);
     let runtime = crate::lua::runtime_with_capabilities(options.clone(), &test_capabilities)?;
     let display = location.display().to_string();
     let inspection = inspect(&runtime, &display)?;
@@ -1151,7 +1164,9 @@ pub fn run_target(options: &crate::lua::Options, request: &TargetRequest) -> l3i
         roots: vec![package.clone()],
         dev: Vec::new(),
     };
-    activate_with(&runtime, &locations, &layers, request.grant.as_deref(), &search)?;
+    // The runtime holds what the target declares, so its entrypoints are admitted against exactly
+    // that, whatever the request granted beyond it.
+    activate_with(&runtime, &locations, &layers, Some(&target.capabilities), &search)?;
     let jess = crate::lua::state(&runtime)?;
     let (chunk, function) = {
         let mounted = jess.packages.borrow();

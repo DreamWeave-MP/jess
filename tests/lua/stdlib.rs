@@ -149,3 +149,54 @@ fn every_module_is_typed_through_require() {
     let wrong = common::type_check("local jpk = require '@jess/jpk'\nlocal size: number = jpk.write {}\n");
     assert!(wrong.contains("buffer"), "{wrong}");
 }
+
+#[test]
+fn numbers_are_compared_within_a_tolerance() {
+    common::run(
+        &common::runtime(),
+        r"
+        local test = require('@jess/test')
+        test.expect(0.1 + 0.2).toBeCloseTo(0.3)
+        test.expect(1.004).toBeCloseTo(1, 0.01)
+        -- The expectation raises on purpose; its message is what's compared.
+        local ok, problem = pcall(function() test.expect(1).toBeCloseTo(1.1, 0.01) end)
+        assert(not ok and string.find(problem, 'to be within 0.01 of 1.1', 1, true), problem)
+        -- Not a number at all.
+        ok = pcall(function() test.expect('1').toBeCloseTo(1) end)
+        assert(not ok)
+        ",
+    );
+}
+
+/// The built-in writer the CLI prints through spells a float as `serde_json` does, Ryū's digits and
+/// layout, including where two shortest spellings both read back as the value.
+#[test]
+fn floats_are_written_as_serde_json_writes_them() {
+    let values = [
+        0.1,
+        2.0 / 3.0,
+        1e21,
+        1e-7,
+        123.456,
+        -42.5,
+        802_532_279_307_174.2,
+        5e-324,
+        f64::MAX,
+        1e15,
+        1e16,
+    ];
+    // And a spread of values across the whole range, from a fixed seed.
+    let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+    let mut values = values.to_vec();
+    for _ in 0..20_000 {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        let value = f64::from_bits(state);
+        if value.is_finite() {
+            values.push(value);
+        }
+    }
+    let written = jess::lua::document::encode(&serde_json::json!(values), "json").unwrap();
+    assert_eq!(written, serde_json::to_string(&values).unwrap());
+}

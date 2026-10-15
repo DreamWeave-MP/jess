@@ -4,7 +4,6 @@
 
 pub mod host;
 pub mod input;
-pub mod l10n;
 pub mod lua;
 pub mod render;
 pub mod runtime;

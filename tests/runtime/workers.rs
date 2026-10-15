@@ -428,3 +428,67 @@ fn domains_and_workers_come_and_go_without_leaking() {
         assert!(support::lane_gone(worker), "{worker}'s lane outlived its domain");
     }
 }
+
+#[test]
+fn a_worker_queue_is_bounded_and_says_when_it_is_full() {
+    let rendezvous = Rendezvous::new(2);
+    let harness = support::domain_from(support::factory_with(Arc::clone(&rendezvous)), "bounded", &[]);
+    let domain = &harness.domain;
+    let source = "local rendezvous = require('@test/rendezvous')\n\
+                  return function(message) if message == 'block' then rendezvous.meet() end end";
+    let worker = domain.spawn_worker(WorkerSpec::new("slow", source)).unwrap();
+    domain.send_to_worker(worker, Message::text("block")).unwrap();
+
+    // The handler is held on `block`, so the queue fills, and the next send says so.
+    let mut accepted = 0;
+    let full = loop {
+        match domain.send_to_worker(worker, Message::Nil) {
+            Ok(()) => accepted += 1,
+            Err(error) => break error,
+        }
+        assert!(accepted <= jess::runtime::WORKER_QUEUE, "the queue grew past its bound");
+    };
+    assert!(full.to_string().contains("the worker's queue is full"), "{full}");
+    assert!(accepted >= jess::runtime::WORKER_QUEUE - 1, "{accepted}");
+
+    // Closing a full queue doesn't block the domain: the lane stops once it has caught up.
+    domain.close_worker(worker).unwrap();
+    assert!(rendezvous.meet());
+    assert_eq!(domain.join_worker(worker, WAIT).unwrap(), WorkerState::Stopped);
+}
+
+#[test]
+fn a_wait_on_a_worker_is_bounded_by_the_execution_time_limit() {
+    let harness = support::domain("waiting", &[jess::runtime::WORKER_SPAWN]);
+    let domain = &harness.domain;
+    domain
+        .register_context(
+            jess::runtime::ContextSpec::new("main")
+                .schedule([jess::runtime::Phase::OnDemand])
+                .budget(Budget::time(Duration::from_millis(100))),
+        )
+        .unwrap();
+    domain
+        .load_source(
+            "=waiting",
+            r"
+            local context = require('@jess/context')
+            local worker = require('@jess/worker')
+            local silent = worker.spawn { source = 'return function() end' }
+
+            context.bind('main', {
+              onDemand = function()
+                silent:receive(1e300)
+              end,
+            })
+            ",
+        )
+        .unwrap();
+    domain.start().unwrap();
+    let began = std::time::Instant::now();
+    let report = domain.run_phase(jess::runtime::Phase::OnDemand, &Message::Nil).unwrap();
+    assert!(began.elapsed() < Duration::from_secs(10), "the wait outlived the limit");
+    let message = report.failures[0].to_string();
+    assert!(message.contains("execution time limit"), "{message}");
+    domain.stop().unwrap();
+}

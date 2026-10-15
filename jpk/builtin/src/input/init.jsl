@@ -1,0 +1,631 @@
+--!strict
+-- @jess/input: binding documents, how people see them, and what action edges mean, over the
+-- native half (`jess.input`).
+--
+-- Rust owns device truth, the control vocabulary, compiling and evaluating the action graph, and
+-- the runtime a host ticks. Everything that decides what input means to a person is here: the
+-- builders that write a binding document, the labels a glyph family gives controls, the shape of
+-- a binding a GUI draws, the conflicts a remapping screen warns about, and the routes that turn
+-- action edges into intents. All of it reads the document or the events, never a device.
+
+local Json = require '@jess/json'
+
+local Native = jess.input
+
+export type ValueType = InputValueType
+export type Family = InputFamily
+export type EventKind = 'pressed' | 'released' | 'changed'
+
+--- Where something was declared, for diagnostics.
+export type Origin = { file: string, line: number, column: number }
+
+--- One node of a binding, tagged by `type`, with its inputs nested. Durations are milliseconds
+--- (`withinMs`, `durationMs`), which is how the document stores them; the builders take seconds.
+export type Node =
+  { type: 'sourceButton', control: string, device: number? }
+  | { type: 'sourceAxis', control: string, device: number? }
+  | { type: 'constant', value: number }
+  | { type: 'invert', input: Node }
+  | { type: 'scale', input: Node, factor: number }
+  | { type: 'deadzone', input: Node, inner: number, outer: number }
+  | { type: 'threshold', input: Node, level: number }
+  | { type: 'chord', members: { Node } }
+  | { type: 'any', members: { Node } }
+  | { type: 'gate', input: Node, condition: Node }
+  | { type: 'tap', input: Node, withinMs: number }
+  | { type: 'hold', input: Node, durationMs: number }
+  | { type: 'axisFromButtons', negative: Node, positive: Node }
+  | { type: 'vector2', horizontal: Node, vertical: Node }
+  | { type: 'actionActive', action: string }
+  | { type: 'actionValue', action: string }
+
+--- An action's declaration.
+export type Action = { name: string, valueType: ValueType, origin: Origin? }
+
+--- One binding: the action, by name, and the node tree that produces its value.
+export type Binding = { action: string, input: Node }
+
+--- An action set: the bindings of one mode. Any number of sets can be active at once.
+export type Set = { name: string, owner: string, bindings: { Binding }, origin: Origin? }
+
+--- An action layer over the active sets: its bindings replace lower ones for the actions it
+--- names, and `masks` silences actions. The layer pushed last decides first.
+export type Layer = {
+  name: string,
+  owner: string,
+  bindings: { Binding },
+  masks: { string }?,
+  origin: Origin?,
+}
+
+--- A binding document. `graph` fills in `version`, `sets`, and `layers` when they are left out.
+export type Document = {
+  version: number?,
+  actions: { Action },
+  sets: { Set }?,
+  layers: { Layer }?,
+}
+
+--- Where a binding is in a document: its set or layer, and its position in that one's
+--- `bindings`, from 1.
+export type Location = { set: string?, layer: string?, index: number }
+
+--- A binding's shape, for a GUI to draw. Modifiers (`invert`, `scale`, `deadzone`, `threshold`)
+--- draw as their input; thresholds of `tap` and `hold` are seconds.
+export type Presentation =
+  { kind: 'control', control: string, family: Family, label: string }
+  | { kind: 'chord', parts: { Presentation } }
+  | { kind: 'anyOf', parts: { Presentation } }
+  | { kind: 'tap', input: Presentation, within: number }
+  | { kind: 'hold', input: Presentation, duration: number }
+  | { kind: 'axis', negative: Presentation, positive: Presentation }
+  | { kind: 'vector2', horizontal: Presentation, vertical: Presentation }
+  | { kind: 'while', input: Presentation, condition: Presentation }
+  | { kind: 'action', action: string }
+  | { kind: 'constant' }
+
+--- One binding of an action as presentation data.
+export type BindingPresentation = {
+  action: string,
+  location: Location,
+  family: Family,
+  shape: Presentation,
+}
+
+export type ConflictKind = 'press' | 'tap' | 'hold' | 'axis'
+
+--- Two bindings in one set or layer that fire different actions from the same input.
+export type Conflict = {
+  owner: { set: string?, layer: string? },
+  kind: ConflictKind,
+  controls: { string },
+  actions: { string },
+  bindings: { Location },
+}
+
+--- One route: this edge of this action is this intent.
+export type Route = { action: string, kind: EventKind, intent: string }
+
+--- An intent a routed action edge dispatched: the event, and the intent it means.
+export type Intent = {
+  intent: string,
+  action: string,
+  kind: EventKind,
+  value: InputValue,
+  time: number,
+  device: number?,
+}
+
+-- Building ------------------------------------------------------------------------------------
+
+--- The control classes whose controls are buttons; every other class is an axis.
+local Digital: { [string]: true } = { key = true, pointerButton = true, gamepadButton = true, touch = true }
+
+local function class(control: string): string
+  return string.match(control, '^[^:]*') :: string
+end
+
+local function sourceButton(control: string): Node
+  return { type = 'sourceButton', control = control }
+end
+
+local function sourceAxis(control: string): Node
+  return { type = 'sourceAxis', control = control }
+end
+
+local function millis(name: string, seconds: number): number
+  if seconds ~= seconds or seconds < 0 or seconds == math.huge then
+    error(`input.{name} takes a duration in seconds, not {seconds}`, 3)
+  end
+
+  return math.round(seconds * 1000)
+end
+
+--- A key by its W3C position name (`KeyA`, `ControlLeft`, `Numpad7`).
+local function key(name: string): Node return sourceButton(Native.control(`key:{name}`)) end
+
+local function pointerButton(name: string): Node
+  return sourceButton(Native.control(`pointerButton:{name}`))
+end
+
+--- A gamepad button by position (`South`, `LeftBumper`, `DPadUp`).
+local function gamepadButton(name: string): Node
+  return sourceButton(Native.control(`gamepadButton:{name}`))
+end
+
+--- Any button, as `class:Name`.
+local function button(control: string): Node
+  local canonical = Native.control(control)
+  if not Digital[class(canonical)] then
+    error(`input.button reads a button, and {canonical} is an axis; use input.axis`, 2)
+  end
+
+  return sourceButton(canonical)
+end
+
+--- Any axis, as `class:Name` (`gamepadAxis:LeftStickX`, `pointerAxis:DeltaY`).
+local function axis(control: string): Node
+  local canonical = Native.control(control)
+  if Digital[class(canonical)] then
+    error(`input.axis reads an axis, and {canonical} is a button; use input.button`, 2)
+  end
+
+  return sourceAxis(canonical)
+end
+
+local function gamepadAxis(name: string): Node
+  return sourceAxis(Native.control(`gamepadAxis:{name}`))
+end
+
+local function pointerAxis(name: string): Node
+  return sourceAxis(Native.control(`pointerAxis:{name}`))
+end
+
+local function constant(value: number): Node return { type = 'constant', value = value } end
+
+local function invert(input: Node): Node return { type = 'invert', input = input } end
+
+local function scale(input: Node, factor: number): Node
+  return { type = 'scale', input = input, factor = factor }
+end
+
+--- Zero at or below `inner`, one at or above `outer`, rescaled between; radial on a vector.
+local function deadzone(input: Node, inner: number, outer: number): Node
+  return { type = 'deadzone', input = input, inner = inner, outer = outer }
+end
+
+--- A scalar as a button, on at or above `level`.
+local function threshold(input: Node, level: number): Node
+  return { type = 'threshold', input = input, level = level }
+end
+
+--- Every member held; on when the last lands, off when any lifts.
+local function chord(members: { Node }): Node return { type = 'chord', members = members } end
+
+local function any(members: { Node }): Node return { type = 'any', members = members } end
+
+--- `input` while `condition` is on, the type's zero otherwise.
+local function gate(input: Node, condition: Node): Node
+  return { type = 'gate', input = input, condition = condition }
+end
+
+--- On for one tick when `input` is released within `within` seconds of its press.
+local function tap(input: Node, within: number): Node
+  return { type = 'tap', input = input, withinMs = millis('tap', within) }
+end
+
+--- On once `input` has been held for `duration` seconds, until it is released.
+local function hold(input: Node, duration: number): Node
+  return { type = 'hold', input = input, durationMs = millis('hold', duration) }
+end
+
+--- `-1`, `0`, or `1` from two buttons.
+local function axisFromButtons(negative: Node, positive: Node): Node
+  return { type = 'axisFromButtons', negative = negative, positive = positive }
+end
+
+--- A vector from two scalars: `horizontal` is its x, `vertical` its y.
+local function vector2(horizontal: Node, vertical: Node): Node
+  return { type = 'vector2', horizontal = horizontal, vertical = vertical }
+end
+
+--- Whether another action is active this tick.
+local function actionActive(action: string): Node
+  return { type = 'actionActive', action = action }
+end
+
+--- Another action's value this tick.
+local function actionValue(action: string): Node return { type = 'actionValue', action = action } end
+
+-- Compiling -----------------------------------------------------------------------------------
+
+--- Compiles and validates a document; every problem is reported at once, by place. The
+--- document isn't changed.
+local function graph(document: Document): InputGraph
+  local complete = table.clone(document)
+  complete.version = complete.version or Native.formatVersion
+  complete.sets = complete.sets or {}
+  complete.layers = complete.layers or {}
+  return Native.graph(Json.encodeTable(complete))
+end
+
+--- Compiles a saved document, as `toJson` wrote it.
+local function fromJson(text: string): InputGraph return Native.graph(text) end
+
+--- A compiled graph's document, with everything `graph` fills in filled in.
+local function document(compiled: InputGraph): Document
+  return Json.decode(compiled:toJson()) :: Document
+end
+
+-- Presenting ----------------------------------------------------------------------------------
+
+--- What each family calls the gamepad buttons it names its own way; the rest keep their
+--- positional names. Nintendo's face buttons are swapped against Xbox's: A is east.
+local GamepadLabels: { [Family]: { [string]: string } } = {
+  xbox = {
+    South = 'A',
+    East = 'B',
+    West = 'X',
+    North = 'Y',
+    LeftBumper = 'LB',
+    RightBumper = 'RB',
+    LeftTrigger = 'LT',
+    RightTrigger = 'RT',
+    Select = 'View',
+    Start = 'Menu',
+    Guide = 'Xbox',
+    LeftStick = 'LS',
+    RightStick = 'RS',
+  },
+  playstation = {
+    South = 'Cross',
+    East = 'Circle',
+    West = 'Square',
+    North = 'Triangle',
+    LeftBumper = 'L1',
+    RightBumper = 'R1',
+    LeftTrigger = 'L2',
+    RightTrigger = 'R2',
+    Select = 'Create',
+    Start = 'Options',
+    Guide = 'PS',
+    LeftStick = 'L3',
+    RightStick = 'R3',
+  },
+  nintendo = {
+    East = 'A',
+    South = 'B',
+    North = 'X',
+    West = 'Y',
+    LeftBumper = 'L',
+    RightBumper = 'R',
+    LeftTrigger = 'ZL',
+    RightTrigger = 'ZR',
+    Select = 'Minus',
+    Start = 'Plus',
+    Guide = 'Home',
+    LeftStick = 'LS',
+    RightStick = 'RS',
+  },
+}
+
+--- The device kind each control class belongs to, and the families that draw each kind.
+local ClassKinds: { [string]: string } = {
+  key = 'keyboard',
+  pointerButton = 'pointer',
+  pointerAxis = 'pointer',
+  gamepadButton = 'gamepad',
+  gamepadAxis = 'gamepad',
+  touch = 'touch',
+  touchAxis = 'touch',
+}
+
+local FamilyKinds: { [Family]: { [string]: true } } = {
+  keyboardMouse = { keyboard = true, pointer = true },
+  xbox = { gamepad = true },
+  playstation = { gamepad = true },
+  nintendo = { gamepad = true },
+  genericGamepad = { gamepad = true },
+  touch = { touch = true },
+}
+
+local function checkFamily(family: Family)
+  if FamilyKinds[family] then return end
+
+  error(
+    `a presentation family is keyboardMouse, xbox, playstation, nintendo, genericGamepad, or touch, not {family}`,
+    3
+  )
+end
+
+--- The glyph identifier `family` gives `control` (`class:Name`): `A` for an Xbox pad's south
+--- button, `Cross` for a PlayStation's, a key's position name, `Contact0` for a touch. A theme
+--- maps it to whatever it draws.
+local function label(family: Family, control: string): string
+  checkFamily(family)
+  local canonical = Native.control(control)
+  local controlClass, name = string.match(canonical, '^([^:]*):(.*)$')
+  assert(controlClass and name, 'a canonical control is class:name')
+
+  if controlClass == 'gamepadButton' then
+    local labels = GamepadLabels[family]
+    return labels and labels[name] or name
+  end
+
+  if controlClass == 'touch' then return `Contact{name}` end
+
+  if controlClass == 'touchAxis' then
+    local contact, touchAxis = string.match(name, '^(%d+):(.*)$')
+    return `Contact{contact}{touchAxis}`
+  end
+
+  return name
+end
+
+type Presented = { shape: Presentation, covered: boolean }
+
+local function present(node: Node, family: Family): Presented
+  local covered = true
+
+  local function visit(part: Node): Presentation
+    if part.type == 'sourceButton' or part.type == 'sourceAxis' then
+      covered = covered and FamilyKinds[family][ClassKinds[class(part.control)]] == true
+      return { kind = 'control', control = part.control, family = family, label = label(family, part.control) }
+    end
+
+    if part.type == 'constant' then return { kind = 'constant' } end
+
+    if part.type == 'invert' or part.type == 'scale' then return visit(part.input) end
+    if part.type == 'deadzone' or part.type == 'threshold' then return visit(part.input) end
+
+    if part.type == 'chord' or part.type == 'any' then
+      local parts: { Presentation } = {}
+      for index, member in part.members do
+        parts[index] = visit(member)
+      end
+
+      return if part.type == 'chord' then { kind = 'chord', parts = parts } else { kind = 'anyOf', parts = parts }
+    end
+
+    if part.type == 'gate' then
+      return { kind = 'while', input = visit(part.input), condition = visit(part.condition) }
+    end
+
+    if part.type == 'tap' then return { kind = 'tap', input = visit(part.input), within = part.withinMs / 1000 } end
+
+    if part.type == 'hold' then
+      return { kind = 'hold', input = visit(part.input), duration = part.durationMs / 1000 }
+    end
+
+    if part.type == 'axisFromButtons' then
+      return { kind = 'axis', negative = visit(part.negative), positive = visit(part.positive) }
+    end
+
+    if part.type == 'vector2' then
+      return { kind = 'vector2', horizontal = visit(part.horizontal), vertical = visit(part.vertical) }
+    end
+
+    return { kind = 'action', action = part.action }
+  end
+
+  local shape = visit(node)
+  return { shape = shape, covered = covered }
+end
+
+type Owned = { bindings: { Binding }, name: string, isSet: boolean }
+
+--- Every set's and layer's bindings, sets first, in document order.
+local function owners(document: Document): { Owned }
+  local found = {}
+  for _, set in document.sets or {} do
+    table.insert(found, { bindings = set.bindings, name = set.name, isSet = true })
+  end
+
+  for _, layer in document.layers or {} do
+    table.insert(found, { bindings = layer.bindings, name = layer.name, isSet = false })
+  end
+
+  return found
+end
+
+local function locate(owner: Owned, index: number): Location
+  if owner.isSet then return { set = owner.name, index = index } end
+
+  return { layer = owner.name, index = index }
+end
+
+--- Where `action`'s bindings are, sets first.
+local function bindings(document: Document, action: string): { Location }
+  local found = {}
+  for _, owner in owners(document) do
+    for index, binding in owner.bindings do
+      if binding.action == action then table.insert(found, locate(owner, index)) end
+    end
+  end
+
+  return found
+end
+
+--- `action`'s bindings a person using `family` can press, as presentation data: a binding that
+--- needs a device the family doesn't draw is left out.
+local function presentations(document: Document, action: string, family: Family): { BindingPresentation }
+  checkFamily(family)
+  local found = {}
+  for _, owner in owners(document) do
+    for index, binding in owner.bindings do
+      if binding.action ~= action then continue end
+
+      local presented = present(binding.input, family)
+      if not presented.covered then continue end
+
+      table.insert(found, { action = action, location = locate(owner, index), family = family, shape = presented.shape })
+    end
+  end
+
+  return found
+end
+
+type Signature = { kind: ConflictKind, controls: { string }, key: string }
+
+--- The controls a binding presses when it is buttons only (one, or a chord of them) on no
+--- particular device, sorted; nil for anything else.
+local function pressed(node: Node): { string }?
+  if node.type == 'sourceButton' then return if node.device then nil else { node.control } end
+
+  if node.type ~= 'chord' then return nil end
+
+  local controls = {}
+  for _, member in node.members do
+    if member.type ~= 'sourceButton' or member.device then return nil end
+
+    table.insert(controls, member.control)
+  end
+
+  table.sort(controls)
+  return controls
+end
+
+local function signature(node: Node): Signature?
+  local kind: ConflictKind, controls: { string }? = 'press', nil
+  if node.type == 'tap' then
+    kind, controls = 'tap', pressed(node.input)
+  elseif node.type == 'hold' then
+    kind, controls = 'hold', pressed(node.input)
+  elseif node.type == 'sourceAxis' then
+    kind, controls = 'axis', if node.device then nil else { node.control }
+  else
+    controls = pressed(node)
+  end
+
+  if not controls then return nil end
+
+  return { kind = kind, controls = controls, key = `{kind} {table.concat(controls, ' ')}` }
+end
+
+--- The plain conflicts: two bindings in one set or layer firing different actions from the same
+--- buttons pressed the same way, or the same axis. Bindings with modifiers, gates, or a device
+--- of their own are never plain.
+local function conflicts(document: Document): { Conflict }
+  local found = {}
+  for _, owner in owners(document) do
+    local signatures: { Signature | false } = {}
+    for index, binding in owner.bindings do
+      signatures[index] = signature(binding.input) or false
+    end
+
+    for first, firstSignature in signatures do
+      if not firstSignature then continue end
+
+      for second = first + 1, #signatures do
+        local secondSignature = signatures[second]
+        if not secondSignature or secondSignature.key ~= firstSignature.key then continue end
+
+        local firstAction, secondAction = owner.bindings[first].action, owner.bindings[second].action
+        if firstAction == secondAction then continue end
+
+        table.insert(found, {
+          owner = if owner.isSet then { set = owner.name } else { layer = owner.name },
+          kind = firstSignature.kind,
+          controls = table.clone(firstSignature.controls),
+          actions = { firstAction, secondAction },
+          bindings = { locate(owner, first), locate(owner, second) },
+        })
+      end
+    end
+  end
+
+  return found
+end
+
+-- Routing -------------------------------------------------------------------------------------
+
+local EventKinds: { [string]: true } = { pressed = true, released = true, changed = true }
+
+type RouterState = { added: { Route } }
+
+local RouterMethods = {}
+RouterMethods.__index = RouterMethods
+RouterMethods.__metatable = false
+
+--- Routes `kind` edges of `action` to `intent`. Routes are by name, so they outlive every graph:
+--- a route to an action no graph declares waits for one that does.
+function RouterMethods.route(router: RouterState, action: string, kind: EventKind, intent: string)
+  if not EventKinds[kind] then
+    error(`an action event kind is pressed, released, or changed, not {kind}`, 2)
+  end
+
+  table.insert(router.added, { action = action, kind = kind, intent = intent })
+end
+
+--- The routes, in the order they were added.
+function RouterMethods.routes(router: RouterState): { Route }
+  return table.clone(router.added)
+end
+
+function RouterMethods.clear(router: RouterState)
+  table.clear(router.added)
+end
+
+--- The intents `events` (a tick's action events, in order) dispatch: each event's routes, in the
+--- order they were added. An event no route matches dispatches nothing.
+function RouterMethods.dispatch(router: RouterState, events: { InputActionEvent }): { Intent }
+  local found = {}
+  for _, event in events do
+    for _, route in router.added do
+      if route.action ~= event.action or route.kind ~= event.kind then continue end
+
+      table.insert(found, {
+        intent = route.intent,
+        action = event.action,
+        kind = event.kind,
+        value = event.value,
+        time = event.time,
+        device = event.device,
+      })
+    end
+  end
+
+  return found
+end
+
+local RouterMetatable = table.freeze(RouterMethods)
+
+--- A table of routes from action edges to intents. It has no targets, no focus, and no command
+--- table: what an intent does is the application's.
+export type Router = typeof(setmetatable({} :: RouterState, RouterMetatable))
+
+local function router(): Router return setmetatable({ added = {} }, RouterMetatable) end
+
+return table.freeze {
+  formatVersion = Native.formatVersion,
+  key = key,
+  pointerButton = pointerButton,
+  gamepadButton = gamepadButton,
+  button = button,
+  axis = axis,
+  gamepadAxis = gamepadAxis,
+  pointerAxis = pointerAxis,
+  constant = constant,
+  invert = invert,
+  scale = scale,
+  deadzone = deadzone,
+  threshold = threshold,
+  chord = chord,
+  any = any,
+  gate = gate,
+  tap = tap,
+  hold = hold,
+  axisFromButtons = axisFromButtons,
+  vector2 = vector2,
+  actionActive = actionActive,
+  actionValue = actionValue,
+  graph = graph,
+  fromJson = fromJson,
+  document = document,
+  label = label,
+  bindings = bindings,
+  presentations = presentations,
+  conflicts = conflicts,
+  router = router,
+  runtime = Native.runtime,
+}

@@ -3,28 +3,23 @@
   "actions": [
     {
       "name": "move",
-      "value_type": "vector2",
-      "origin": null
+      "valueType": "vector2"
     },
     {
       "name": "quickSave",
-      "value_type": "digital",
-      "origin": null
+      "valueType": "digital"
     },
     {
       "name": "interact",
-      "value_type": "digital",
-      "origin": null
+      "valueType": "digital"
     },
     {
       "name": "contextMenu",
-      "value_type": "digital",
-      "origin": null
+      "valueType": "digital"
     },
     {
       "name": "sprint",
-      "value_type": "digital",
-      "origin": null
+      "valueType": "digital"
     }
   ],
   "sets": [
@@ -36,30 +31,26 @@
           "action": "move",
           "input": {
             "type": "vector2",
-            "x": {
+            "horizontal": {
               "type": "axisFromButtons",
               "negative": {
                 "type": "sourceButton",
-                "control": "key:KeyA",
-                "device": null
+                "control": "key:KeyA"
               },
               "positive": {
                 "type": "sourceButton",
-                "control": "key:KeyD",
-                "device": null
+                "control": "key:KeyD"
               }
             },
-            "y": {
+            "vertical": {
               "type": "axisFromButtons",
               "negative": {
                 "type": "sourceButton",
-                "control": "key:KeyS",
-                "device": null
+                "control": "key:KeyS"
               },
               "positive": {
                 "type": "sourceButton",
-                "control": "key:KeyW",
-                "device": null
+                "control": "key:KeyW"
               }
             }
           }
@@ -71,13 +62,11 @@
             "members": [
               {
                 "type": "sourceButton",
-                "control": "key:ControlLeft",
-                "device": null
+                "control": "key:ControlLeft"
               },
               {
                 "type": "sourceButton",
-                "control": "key:KeyS",
-                "device": null
+                "control": "key:KeyS"
               }
             ]
           }
@@ -88,10 +77,9 @@
             "type": "tap",
             "input": {
               "type": "sourceButton",
-              "control": "gamepadButton:South",
-              "device": null
+              "control": "gamepadButton:South"
             },
-            "within_ms": 200
+            "withinMs": 200
           }
         },
         {
@@ -100,10 +88,9 @@
             "type": "hold",
             "input": {
               "type": "sourceButton",
-              "control": "gamepadButton:South",
-              "device": null
+              "control": "gamepadButton:South"
             },
-            "duration_ms": 350
+            "durationMs": 350
           }
         },
         {
@@ -112,8 +99,7 @@
             "type": "gate",
             "input": {
               "type": "sourceButton",
-              "control": "key:ShiftLeft",
-              "device": null
+              "control": "key:ShiftLeft"
             },
             "condition": {
               "type": "actionActive",
@@ -138,15 +124,13 @@
           "action": "interact",
           "input": {
             "type": "sourceButton",
-            "control": "key:KeyE",
-            "device": null
+            "control": "key:KeyE"
           }
         }
       ],
       "masks": [
         "sprint"
-      ],
-      "origin": null
+      ]
     }
   ]
 }

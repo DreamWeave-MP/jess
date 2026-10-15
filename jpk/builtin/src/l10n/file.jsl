@@ -1,0 +1,174 @@
+--!strict
+-- The bundle file format: one flat TOML table of message ids to patterns.
+--
+-- ```toml
+-- # Comments survive translators.
+-- hello = "Hello, {name}!"
+-- file_count = '''
+-- {count, plural,
+--   =0 {No files}
+--   one {# file}
+--   other {# files}}'''
+-- ```
+
+local Toml = require '../data/tomldecode'
+
+--- One message as a file spells it: its id, its pattern, where the id is (1-based line, and column
+--- in characters), and the byte where the pattern starts in the file when the file spells it
+--- verbatim (no escapes), so an error inside it can be placed exactly.
+export type RawMessage = { id: string, pattern: string, line: number, column: number, patternAt: number? }
+
+--- Something wrong with a file: where, why, the message it belongs to if any, and whether it is a
+--- duplicate id.
+export type FileError = { line: number, column: number, reason: string, message: string?, duplicate: boolean }
+
+--- Where each line of `text` starts, for turning byte offsets into lines and columns.
+export type Lines = { text: string, starts: { number } }
+
+local function lines(text: string): Lines
+  local starts = { 1 }
+  local search = 1
+  while true do
+    local found = string.find(text, '\n', search, true)
+    if not found then break end
+
+    table.insert(starts, found + 1)
+    search = found + 1
+  end
+
+  return { text = text, starts = starts }
+end
+
+--- The 1-based line and column (in characters) of the 1-based byte `at`.
+local function position(index: Lines, at: number): (number, number)
+  local starts = index.starts
+  local low, high = 1, #starts
+  while low < high do
+    local middle = (low + high + 1) // 2
+    if starts[middle] <= at then low = middle else high = middle - 1 end
+  end
+
+  local lineStart = starts[low]
+  local stop = math.min(at, #index.text + 1) - 1
+  local column = if stop >= lineStart then (utf8.len(index.text, lineStart, stop) or (stop - lineStart + 1)) + 1 else 1
+  return low, column
+end
+
+-- Control characters spelled as Rust's escape_debug spells them, so an id with a tab or a newline
+-- in it shows what it holds.
+local function escape(text: string): string
+  local escaped = string.gsub(text, '%c', function(character: string): string
+    if character == '\t' then return '\\t' end
+    if character == '\n' then return '\\n' end
+    if character == '\r' then return '\\r' end
+
+    return string.format('\\u{%x}', string.byte(character))
+  end)
+  return escaped
+end
+
+--- Why `id` can't be a message id, or nil when it can.
+local function invalidId(id: string): string?
+  if id == '' then return "a message id can't be empty" end
+  if string.find(id, '[%s%c]') then return `message id '{escape(id)}' has whitespace in it` end
+
+  return nil
+end
+
+--- The TOML type a decoded value was written as, as an error names it.
+local function typeName(value: unknown, key: string, floats: { [any]: boolean }, layout: Toml.Layout): string
+  local kind = typeof(value)
+  if kind == 'integer' then return 'integer' end
+  if kind == 'boolean' then return 'boolean' end
+
+  if kind == 'number' then return if floats[key] then 'float' else 'integer' end
+
+  if kind == 'string' then return 'datetime' end
+
+  local inner = layout[value]
+  return if inner and inner.keys then 'table' else 'array'
+end
+
+--- The messages of a bundle file, in file order, and everything wrong with it. A file that isn't
+--- TOML at all has no messages and one error.
+local function parse(text: string): ({ RawMessage }, { FileError })
+  local index = lines(text)
+  local options: Toml.Options = { positions = true }
+  -- The decoder raises a malformed document as `toml: <reason> at line <n>, column <n>`.
+  local ok, document, layout = pcall(Toml.decode, text, options)
+  if not ok then
+    local message = tostring(document)
+    local reason, line, column = string.match(message, '^toml: (.*) at line (%d+), column (%d+)$')
+    local why = reason or message
+    return {}, {
+      {
+        line = tonumber(line) or 1,
+        column = tonumber(column) or 1,
+        reason = why,
+        duplicate = string.find(why, 'duplicate key', 1, true) ~= nil,
+      },
+    }
+  end
+
+  local messages: { RawMessage } = {}
+  local errors: { FileError } = {}
+  local entry = layout[document]
+  local positions = entry.positions or {}
+  local datetimes = entry.datetimes
+
+  for _, id in entry.keys or {} do
+    local recorded = positions[id]
+    local line, column = 1, 1
+    if recorded then line, column = position(index, recorded.key) end
+
+    local invalid = invalidId(id)
+    if invalid then
+      table.insert(errors, { line = line, column = column, reason = invalid, message = id, duplicate = false })
+      continue
+    end
+
+    local value = document[id]
+    if type(value) ~= 'string' or datetimes[id] then
+      local valueLine, valueColumn = line, column
+      if recorded then valueLine, valueColumn = position(index, recorded.value) end
+
+      local written = typeName(value, id, entry.floats, layout)
+      table.insert(errors, {
+        line = valueLine,
+        column = valueColumn,
+        reason = `message '{id}' must be a string pattern, not {written}; a bundle file is one flat table of id = "pattern"`,
+        message = id,
+        duplicate = false,
+      })
+      continue
+    end
+
+    local patternAt: number? = nil
+    if recorded then
+      local found = string.find(string.sub(text, recorded.value, recorded.valueEnd), value, 1, true)
+      if found then patternAt = recorded.value + found - 1 end
+    end
+
+    table.insert(messages, { id = id, pattern = value, line = line, column = column, patternAt = patternAt })
+  end
+
+  table.sort(messages, function(left: RawMessage, right: RawMessage): boolean
+    if left.line ~= right.line then return left.line < right.line end
+
+    return left.column < right.column
+  end)
+
+  table.sort(errors, function(left: FileError, right: FileError): boolean
+    if left.line ~= right.line then return left.line < right.line end
+
+    return left.column < right.column
+  end)
+  return messages, errors
+end
+
+return table.freeze {
+  parse = parse,
+  lines = lines,
+  position = position,
+  invalidId = invalidId,
+}

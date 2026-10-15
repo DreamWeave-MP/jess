@@ -11,7 +11,7 @@
 //! several domains and workers, and nothing about it is process-global mutable state.
 
 use std::cell::RefCell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::sync::{Arc, PoisonError, RwLock};
 
@@ -25,11 +25,22 @@ use crate::runtime::service::Services;
 /// The capability a script needs to spawn a worker from Luau.
 pub const WORKER_SPAWN: &str = "worker.spawn";
 
-static NAMES: RwLock<Vec<&'static str>> = RwLock::new(Vec::new());
+/// Every interned name, by id, and each name's id.
+#[derive(Default)]
+struct Names {
+    by_id: Vec<&'static str>,
+    ids: HashMap<&'static str, CapabilityId>,
+}
+
+static NAMES: RwLock<Option<Names>> = RwLock::new(None);
 
 impl CapabilityId {
     /// The id of `name`, interning it on first use. A name is one or more segments of lowercase
     /// ASCII letters, digits, and hyphens, separated by dots.
+    ///
+    /// Interned names live as long as the process, so only the host's own vocabulary is interned:
+    /// the names Rust grants and checks. A name a script supplies is looked up
+    /// ([`CapabilityId::lookup`]); one nothing interned is one nobody holds.
     ///
     /// # Errors
     ///
@@ -45,14 +56,19 @@ impl CapabilityId {
         if let Some(id) = Self::lookup(name) {
             return Ok(id);
         }
-        let mut names = NAMES.write().unwrap_or_else(PoisonError::into_inner);
-        if let Some(index) = names.iter().position(|known| *known == name) {
-            return Ok(Self::at(index));
+        let mut guard = NAMES.write().unwrap_or_else(PoisonError::into_inner);
+        let names = guard.get_or_insert_with(Names::default);
+        if let Some(id) = names.ids.get(name) {
+            return Ok(*id);
         }
         // Interned once per distinct name for the life of the process, so `name()` can hand out
-        // a `&'static str` without a lock.
-        names.push(Box::leak(name.to_owned().into_boxed_str()));
-        Ok(Self::at(names.len() - 1))
+        // a `&'static str`.
+        let name: &'static str = Box::leak(name.to_owned().into_boxed_str());
+        let id = Self::at(names.by_id.len());
+        names.by_id.push(name);
+        names.ids.insert(name, id);
+        drop(guard);
+        Ok(id)
     }
 
     fn at(index: usize) -> CapabilityId {
@@ -63,7 +79,7 @@ impl CapabilityId {
     #[must_use]
     pub fn lookup(name: &str) -> Option<CapabilityId> {
         let names = NAMES.read().unwrap_or_else(PoisonError::into_inner);
-        names.iter().position(|known| *known == name).map(Self::at)
+        names.as_ref()?.ids.get(name).copied()
     }
 
     /// The interned name.
@@ -74,7 +90,10 @@ impl CapabilityId {
     #[must_use]
     pub fn name(self) -> &'static str {
         let names = NAMES.read().unwrap_or_else(PoisonError::into_inner);
-        names.get(self.0 as usize).copied().expect("a CapabilityId comes from intern")
+        names
+            .as_ref()
+            .and_then(|names| names.by_id.get(self.0 as usize).copied())
+            .expect("a CapabilityId comes from intern")
     }
 }
 

@@ -1,0 +1,86 @@
+--!strict
+-- The fixture bundles of @jess/l10n's acceptance cases, as `<bundle>/<locale>.toml` paths to text.
+-- `base` is a package's own bundle (`common` in en, pl, pt, de); `layer` is a contribution over it.
+
+local Base: { [string]: string } = {
+  ['common/en.toml'] = [[
+# The fixture bundle of @jess/l10n's acceptance cases: one of each thing a message can do.
+
+# Simple replacement.
+hello = "Hello, {name}!"
+
+# Plural, with an exact match and CLDR categories.
+file_count = '''
+{count, plural,
+  =0 {No files}
+  one {# file}
+  other {# files}}'''
+
+# Select.
+mode_label = "{mode, select, edit {Editing} view {Viewing} other {Idle}}"
+
+# Number formatting.
+percent_complete = "{progress, number, percent} complete"
+
+# Only this locale has it: every other locale reaches it through the bundle's fallback.
+fallback_only = "Only English says this"
+]],
+
+  ['common/pl.toml'] = [[
+hello = "Cześć, {name}!"
+
+# Polish has four plural categories: 1 plik, 2 pliki, 5 plików, 1,5 pliku.
+file_count = '''
+{count, plural,
+  =0 {Brak plików}
+  one {# plik}
+  few {# pliki}
+  many {# plików}
+  other {# pliku}}'''
+
+mode_label = "{mode, select, edit {Edycja} view {Podgląd} other {Bezczynny}}"
+
+percent_complete = "Ukończono {progress, number, percent}"
+]],
+
+  ['common/pt.toml'] = [[
+# Portuguese has a language file and no regional one: pt-BR and pt-PT both land here.
+hello = "Olá, {name}!"
+]],
+
+  ['common/de.toml'] = [[
+hello = "Hallo, {name}!"
+
+file_count = '''
+{count, plural,
+  =0 {Keine Dateien}
+  one {# Datei}
+  other {# Dateien}}'''
+
+percent_complete = "{progress, number, :: percent scale/100 .0} abgeschlossen"
+]],
+}
+
+local Layer: { [string]: string } = {
+  ['common/en.toml'] = [[
+# A layer over the base bundle: it replaces one message and adds one.
+hello = "Howdy, {name}!"
+layer_only = "From the layer"
+]],
+}
+
+--- `files` under `prefix`, as a fresh table a case may change.
+local function under(prefix: string, files: { [string]: string }): { [string]: string }
+  local moved = {}
+  for path, text in files do
+    moved[`{prefix}/{path}`] = text
+  end
+
+  return moved
+end
+
+return table.freeze {
+  base = table.freeze(Base),
+  layer = table.freeze(Layer),
+  under = under,
+}

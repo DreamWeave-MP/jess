@@ -87,6 +87,22 @@ fn run_executes_jsl_scripts_with_arguments() {
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     assert_eq!(String::from_utf8(output.stdout).unwrap(), "hi jess\tgeneric argument\ttrue\n");
 
+    fs::write(
+        root.join("write.jsl"),
+        "local process = require('@dream/process')\nprocess.write('stdout', 'raw')\nprocess.write('stderr', 'err')\n",
+    )
+    .unwrap();
+    let written = Command::new(env!("CARGO_BIN_EXE_jess"))
+        .arg("run")
+        .arg(root.join("write.jsl"))
+        .output()
+        .unwrap();
+    assert!(written.status.success(), "{}", String::from_utf8_lossy(&written.stderr));
+    assert_eq!(
+        (written.stdout.as_slice(), written.stderr.as_slice()),
+        (&b"raw"[..], &b"err"[..])
+    );
+
     fs::write(root.join("failing.jsl"), "error('nope')").unwrap();
     let failed = Command::new(env!("CARGO_BIN_EXE_jess"))
         .args(["run"])
@@ -361,7 +377,7 @@ id = "org.example.tool"
 version = "1.0.0"
 jess_api = "1"
 default_target = "greet"
-include = ["src"]
+include = ["src", "tests"]
 tests = ["tests/run.jsl"]
 [dependencies]
 "org.example.base" = "1"
@@ -478,5 +494,56 @@ fn packages_resolve_over_a_package_path_and_run_their_targets() {
     let granted = run(&["--capability", "process.environment", "--target", "greet"]);
     assert_eq!(granted.status.code(), Some(0), "{}", String::from_utf8_lossy(&granted.stderr));
     assert_eq!(String::from_utf8(granted.stdout).unwrap(), "hello from base\n");
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// `jess run` leaves the runtime for the process's exit to reclaim, but closes what buffers first:
+/// a writer the script never closed still leaves the whole file.
+#[test]
+fn run_finishes_a_writer_the_script_never_closed() {
+    let root = temp_dir_path("run-unclosed-writer");
+    drop(fs::remove_dir_all(&root));
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("write.jsl"),
+        "local fs = require('@dream/fs')\nlocal out = fs.openWrite(...)\nout:write(string.rep('x', 100))\n",
+    )
+    .unwrap();
+
+    let output = jess()
+        .args(["run", "--capability", "filesystem.write"])
+        .arg(root.join("write.jsl"))
+        .arg(root.join("out.txt"))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(fs::read(root.join("out.txt")).unwrap(), vec![b'x'; 100]);
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// A package module's export is frozen once it returns: no one patches it for the whole plan.
+#[test]
+fn a_package_export_is_frozen() {
+    let root = temp_dir_path("package-export-frozen");
+    drop(fs::remove_dir_all(&root));
+    tool_over_a_package_path(&root);
+    fs::write(
+        root.join("patch.jsl"),
+        "local base = require('@base')\nprint(pcall(function() base.name = 'patched' end))\nprint(base.name)\n",
+    )
+    .unwrap();
+
+    let output = jess()
+        .args(["run", "--package-path"])
+        .arg(root.join("packages"))
+        .args(["--layer", "example.base"])
+        .arg(root.join("patch.jsl"))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let printed = String::from_utf8(output.stdout).unwrap();
+    assert!(printed.starts_with("false\t"), "{printed}");
+    assert!(printed.contains("readonly"), "{printed}");
+    assert!(printed.ends_with("base\n"), "{printed}");
     fs::remove_dir_all(root).unwrap();
 }

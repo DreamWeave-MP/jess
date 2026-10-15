@@ -29,7 +29,7 @@ use crate::runtime::context::Phase;
 use crate::runtime::diagnostics::{Diagnostic, DiagnosticKind, Severity};
 use crate::runtime::domain::{DomainCore, DomainLink};
 use crate::runtime::error::RuntimeError;
-use crate::runtime::ids::WorkerId;
+use crate::runtime::ids::{CapabilityId, WorkerId};
 use crate::runtime::message::{Message, ResourceHandle};
 use crate::runtime::worker::{WorkerLink, WorkerSpec};
 
@@ -96,7 +96,9 @@ impl Bindings {
 }
 
 fn detached(function: &str) -> l3i::Error {
-    l3i::Error::runtime(format!("{function}: no ScriptDomain owns this runtime"))
+    l3i::Error::permission(format!(
+        "{function}: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and package targets run scripts outside one"
+    ))
 }
 
 fn attach(runtime: &Runtime, owner: Owner) {
@@ -141,14 +143,30 @@ impl WorkerHandle {
     }
 }
 
-/// A timeout in seconds as a script gives it: absent or zero does not wait.
+/// How long a script asked to wait: absent is `None`, and a wait too long to represent waits as
+/// long as it takes.
 fn timeout(seconds: Option<f64>) -> l3i::Result<Option<Duration>> {
     match seconds {
         None => Ok(None),
-        Some(seconds) if seconds.is_finite() && seconds >= 0.0 => Ok(Some(Duration::from_secs_f64(seconds))),
+        Some(seconds) if seconds.is_finite() && seconds >= 0.0 => {
+            Ok(Some(Duration::try_from_secs_f64(seconds).unwrap_or(Duration::MAX)))
+        }
         Some(seconds) => Err(l3i::Error::runtime(format!(
             "a timeout is a number of seconds from 0, not {seconds}"
         ))),
+    }
+}
+
+/// `wait` clamped to what the runtime's watchdog has left, so a script blocked on a worker is still
+/// stopped by the execution time limit (`None` waits as long as it takes), and whether the clamp
+/// cut it short.
+fn clamped(call: &Call<'_>, wait: Option<Duration>) -> (Option<Duration>, bool) {
+    let Some(remaining) = l3i::runtime::watchdog_remaining(call) else {
+        return (wait, false);
+    };
+    match wait {
+        Some(wait) if wait <= remaining => (Some(wait), false),
+        _ => (Some(remaining), true),
     }
 }
 
@@ -258,7 +276,16 @@ fn spawn(bindings: &Bindings, call: &Call<'_>, options: ValueView<'_>) -> l3i::R
         spec = spec.chunk_name(format!("=worker@{location}"));
     }
     if let Some(names) = capabilities {
-        spec = spec.capabilities(CapabilitySet::from_names(names).map_err(l3i::Error::from)?);
+        let mut set = CapabilitySet::empty();
+        for name in &names {
+            // Looked up, not interned: interned names live as long as the process, and a name
+            // nothing interned is one nobody holds, so it can't be delegated anyway.
+            let id = CapabilityId::lookup(name).ok_or_else(|| {
+                l3i::Error::permission(format!("worker.spawn: capability '{name}' isn't one this domain holds"))
+            })?;
+            set.insert(id);
+        }
+        spec = spec.capabilities(set);
     }
     if share_services == Some(true) {
         spec = spec.share_all();
@@ -315,10 +342,17 @@ impl Extension for RuntimeExtension {
             .method(
                 "receive",
                 |this: &WorkerHandle, call: &Call<'_>, seconds: Option<f64>| -> l3i::Result<StackResults> {
-                    let reply = this
-                        .domain()?
-                        .receive_from_worker(this.id, timeout(seconds)?)
-                        .map_err(l3i::Error::from)?;
+                    // Absent or zero doesn't wait at all.
+                    let asked = timeout(seconds)?;
+                    let (wait, cut) = if asked.is_some() {
+                        clamped(call, asked)
+                    } else {
+                        (None, false)
+                    };
+                    let reply = this.domain()?.receive_from_worker(this.id, wait).map_err(l3i::Error::from)?;
+                    if cut && reply.is_none() {
+                        l3i::runtime::expire_if_due(call);
+                    }
                     reply.unwrap_or(Message::Nil).push_into(call)?;
                     Ok(StackResults)
                 },
@@ -332,11 +366,19 @@ impl Extension for RuntimeExtension {
             .signature("(self): ()")
             .doc("Asks the worker to stop after the messages already queued.");
         worker
-            .method("join", |this: &WorkerHandle, seconds: Option<f64>| -> l3i::Result<String> {
-                let waited = if seconds.is_some() { timeout(seconds)? } else { None };
-                let state = this.domain()?.join_worker(this.id, waited).map_err(l3i::Error::from)?;
-                Ok(state.to_string())
-            })
+            .method(
+                "join",
+                |this: &WorkerHandle, call: &Call<'_>, seconds: Option<f64>| -> l3i::Result<String> {
+                    // Absent waits as long as it takes, or as long as the watchdog allows.
+                    let (wait, cut) = clamped(call, timeout(seconds)?);
+                    let joined = this.domain()?.join_worker(this.id, wait);
+                    if cut && joined.is_err() {
+                        l3i::runtime::expire_if_due(call);
+                    }
+                    let state = joined.map_err(l3i::Error::from)?;
+                    Ok(state.to_string())
+                },
+            )
             .signature("(self, timeoutSeconds: number?): string")
             .doc("Closes the worker and waits for it to end; returns its final state.");
         worker.metamethod("__tostring", |this: &WorkerHandle| format!("Worker({})", this.id));

@@ -1,4 +1,4 @@
-//! Input for jess applications: device truth, an action graph, and semantic intents.
+//! Input for jess applications: device truth, an action graph, and the actions it evaluates.
 //!
 //! Input is a stack, and each layer only knows the one under it:
 //!
@@ -13,13 +13,14 @@
 //!     v
 //! semantic actions           ActionState, ActionEvent
 //!     v
-//! intents                    IntentRouter, IntentDispatch           (a consumer supplies scope)
+//! intents                    @jess/input's router, in Luau          (a consumer supplies scope)
 //! ```
 //!
 //! The module knows what a key is and what a chord is. It doesn't know what jumping is: action
 //! names belong to the packages that declare them, and nothing here reserves one. It draws
-//! nothing either; [`presentations`] hands a GUI the shape of a binding and the label each
-//! control's [`PresentationFamily`] gives it, and the GUI decides what that looks like.
+//! nothing, and names nothing for people: a device reports its [`PresentationFamily`], and the
+//! labels a family gives controls, the shape of a binding a GUI draws, and conflict checks are
+//! Luau (`@jess/input`), over the binding document.
 //!
 //! The default build is headless and has no platform dependencies. Real devices come from a
 //! [`Backend`] behind a feature; tests, replays, and scripts use a [`SyntheticSource`], whose
@@ -63,10 +64,10 @@
 //!
 //! # Sharing one runtime
 //!
-//! An application has one input. [`InputService`] is the runtime plus what a script configures
-//! around it (intent routes by name, a synthetic side), as one unit a host can put behind a
-//! `Mutex`, tick at its input phase, and hand to a script runtime as a service. `jess::host`
-//! ticks it; `jess.input` binds to it when the script's domain carries one.
+//! An application has one input. [`InputService`] is the runtime plus its synthetic side, as one
+//! unit a host can put behind a `Mutex`, tick at its input phase, and hand to a script runtime
+//! as a service. `jess::host` ticks it; `jess.input` binds to it when the script's domain
+//! carries one.
 //!
 //! # What is reserved
 //!
@@ -84,8 +85,6 @@ mod event;
 mod family;
 pub mod graph;
 mod id;
-mod intent;
-mod presentation;
 mod queue;
 mod runtime;
 mod service;
@@ -107,15 +106,10 @@ pub use graph::spec::{
     ActionSpec, BindingLocation, BindingSpec, FORMAT_VERSION, GraphSpec, LayerSpec, NodeSpec, Origin, Owner, SetSpec,
     SpecError, ValueType,
 };
-pub use id::{ActionId, BindingId, DeviceId, Generation, IntentId, LayerId, NodeId, SetId};
-pub use intent::{IntentDispatch, IntentRegistry, IntentRoute, IntentRouter, IntentScope};
-pub use presentation::{
-    BindingPresentation, Conflict, ConflictKind, ControlPresentation, Presentation, binding_presentation, conflicts,
-    presentations,
-};
+pub use id::{ActionId, BindingId, DeviceId, Generation, LayerId, NodeId, SetId};
 pub use queue::{EventSender, InputQueue};
 pub use runtime::{InputRuntime, RuntimeError, RuntimeStats};
-pub use service::{InputService, NamedRoute, Tick};
+pub use service::{InputService, Tick};
 pub use state::{AxisState, ButtonState, DeviceState, InputState};
 pub use synthetic::SyntheticSource;
 pub use time::{MonotonicClock, Timestamp};
@@ -128,18 +122,17 @@ pub use time::{MonotonicClock, Timestamp};
 /// runtime checks the same three things everywhere, and so a package that only consumes actions
 /// never needs to be trusted with raw keystrokes. `jess.input` checks them through
 /// `jess::runtime::require_capability` on every call that touches a runtime, whenever the script
-/// runs under a `ScriptDomain`; outside any domain (a plain `jess run`, a test) nothing holds
-/// authority and every call succeeds, since the process's own user is running it.
+/// runs under a `ScriptDomain`; outside any domain the runtime's own grant decides.
 pub mod capability {
     /// Reading raw device truth: [`crate::input::InputState`], device descriptors, and device events.
     /// A package granted this can see every key pressed while it runs.
     pub const OBSERVE: &str = "input.observe";
 
-    /// Reading semantic actions and intents: [`crate::input::ActionState`], [`crate::input::ActionEvent`],
-    /// intent dispatches, and binding presentation. No raw device state.
+    /// Reading semantic actions: [`crate::input::ActionState`] and [`crate::input::ActionEvent`]. No raw
+    /// device state.
     pub const ACTIONS: &str = "input.actions";
 
-    /// Changing input: installing a graph, remapping, activating sets, pushing layers, adding
-    /// intent routes, and pushing synthetic events.
+    /// Changing input: installing a graph, remapping, activating sets, pushing layers, and pushing
+    /// synthetic events.
     pub const CONFIGURE: &str = "input.configure";
 }

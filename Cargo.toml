@@ -38,21 +38,11 @@ gilrs = ["dep:gilrs"]
 clap = { version = "^4.5", features = ["derive", "env", "wrap_help"] }
 clap_complete = "^4.5"
 clap_mangen = "^0.2"
-fixed_decimal = { version = "0.7.2", features = ["ryu"] }
-icu_decimal = "2.3.0"
-icu_locale_core = "2.3.0"
-icu_plurals = "2.3.0"
-icu_provider = { version = "2.3.1", features = ["sync"] }
-# The main branch until 2.0.0 is on crates.io.
-l3i = { git = "https://github.com/DreamWeave-MP/l3i", branch = "main", features = ["jit", "bytes-text", "bytes-codecs", "bytes-digests", "bytes-regex", "data", "dns", "fs", "intern", "intl", "process", "syntax", "tcp", "tls"] }
-regex = "^1.10"
+l3i = { version = "2.1.0", features = ["jit", "bytes-text", "bytes-codecs", "bytes-digests", "bytes-regex", "data", "dns", "fs", "intern", "intl", "process", "syntax", "tcp", "tls"] }
 serde = { version = "^1.0", features = ["derive"] }
 serde-value = "^0.7"
 serde_json = { version = "^1.0", features = ["preserve_order"] }
-serde_yaml = "^0.9"
 tempfile = "^3.23"
-toml = { version = "^1.1", features = ["preserve_order"] }
-writeable = "0.6.3"
 
 [target.'cfg(unix)'.dependencies]
 # Only for restoring SIGPIPE, which Windows lacks.
@@ -66,24 +56,17 @@ gilrs = { version = "^0.11", optional = true }
 
 
 [dev-dependencies]
-l3i = { git = "https://github.com/DreamWeave-MP/l3i", branch = "main", features = ["analysis"] }
+l3i = { version = "2.1.0", features = ["analysis"] }
 naga = { version = "30.0.1", features = ["wgsl-in"] }
 pollster = "0.4.0"
+serde_yaml = "^0.9"
+toml = { version = "^1.1", features = ["preserve_order"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "vulkan", "gles", "metal", "dx12"] }
 
 [[bin]]
 name = "jess"
 path = "src/main.rs"
 doc = false
-
-[[bench]]
-name = "l10n"
-path = "benches/l10n.rs"
-harness = false
-
-[[test]]
-name = "l10n"
-path = "tests/l10n/acceptance.rs"
 
 [[test]]
 name = "runtime"

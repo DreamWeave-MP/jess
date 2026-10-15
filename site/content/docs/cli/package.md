@@ -31,7 +31,7 @@ manifest_version = 1
 id = "com.example.greeter"
 version = "1.0.0"
 jess_api = "1"
-include = ["src"]
+include = ["src", "tests"]
 tests = ["tests/run.jsl"]
 
 [modules]
@@ -56,14 +56,14 @@ $ jess pack greeter -o greeter.jpk
 input: greeter
 id: com.example.greeter
 version: 1.0.0
-digest: dab090658ab19adbb8fc0f6e125269cde47027ce918173b1bd9c9fad313c5971
-files: 3
-size: 703
+digest: 6fdd1a56f49cf9b23f2f9765b0cfce84836ba001cf57a602aa5ea47f7768e35b
+files: 4
+size: 1074
 written:
   path: greeter.jpk
 ```
 
-Three files: `tests/run.jsl` isn't in `include`, so it stayed home.
+Four files: `include` names `tests`, so the test ships with the code it tests.
 
 ## jess package inspect
 
@@ -74,12 +74,12 @@ $ jess package inspect greeter.jpk
 input: greeter.jpk
 id: com.example.greeter
 version: 1.0.0
-digest: dab090658ab19adbb8fc0f6e125269cde47027ce918173b1bd9c9fad313c5971
+digest: 6fdd1a56f49cf9b23f2f9765b0cfce84836ba001cf57a602aa5ea47f7768e35b
 kind: jpk
 location: greeter.jpk
 jess_api: '1'
 default_target: null
-files: 3
+files: 4
 modules:
 - name: '@greeter'
   path: src/init.jsl
@@ -129,7 +129,7 @@ layers:
 packages:
 - id: com.example.greeter
   version: 1.0.0
-  digest: dab090658ab19adbb8fc0f6e125269cde47027ce918173b1bd9c9fad313c5971
+  digest: 6fdd1a56f49cf9b23f2f9765b0cfce84836ba001cf57a602aa5ea47f7768e35b
   kind: source
   location: greeter
 modules:
@@ -155,7 +155,7 @@ tests:
 providers:
 - kind: source
   location: greeter
-  digest: dab090658ab19adbb8fc0f6e125269cde47027ce918173b1bd9c9fad313c5971
+  digest: 6fdd1a56f49cf9b23f2f9765b0cfce84836ba001cf57a602aa5ea47f7768e35b
   run:
     passed: 1
     failed: 0
@@ -173,17 +173,17 @@ providers:
       logs: []
 - kind: jpk
   location: /tmp/jess-package-test-737072/com.example.greeter-1.0.0.jpk
-  digest: dab090658ab19adbb8fc0f6e125269cde47027ce918173b1bd9c9fad313c5971
+  digest: 6fdd1a56f49cf9b23f2f9765b0cfce84836ba001cf57a602aa5ea47f7768e35b
   run:
     ...the same, from the JPK...
 passed: 2
 failed: 0
 ```
 
-Tests are source-only: they and their fixtures stay out of the JPK, so a shipped package doesn't carry megabytes of goldens nobody runs. Given a `.jpk`, `jess package test` reports no providers, says so on stderr, and succeeds with nothing run:
+Tests ship in the payload: a Package Source refuses to open when its manifest names a test its `include` doesn't cover, so every JPK carries its tests and their fixtures. They run from the source, though: given a `.jpk`, `jess package test` reports no providers, says so on stderr, and succeeds with nothing run:
 
 ```text
-jess: greeter.jpk carries no tests; run `jess package test` on its Package Source
+jess: greeter.jpk: tests run from a Package Source; run `jess package test` on its source
 ```
 
 ## jess package run

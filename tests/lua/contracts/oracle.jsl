@@ -55,13 +55,6 @@ function oracle.fnv(data: string | buffer): string
   return string.format('%08x', hash)
 end
 
---- A file's length and hash, or nil when it doesn't exist.
-function oracle.file(path: string): { length: number, fnv: string }?
-  local contents = jess.fs.read(path)
-  if contents == nil then return nil end
-  return { length = #contents, fnv = oracle.fnv(contents) }
-end
-
 --- A table's keys, sorted as strings.
 function oracle.keys(value: { [any]: any }): { string }
   local keys = {}

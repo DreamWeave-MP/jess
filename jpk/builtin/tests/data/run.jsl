@@ -64,6 +64,11 @@ inline = {
     expect(value.inline).toEqual { one = 1, two = 2 }
     expect(layout[value].keys).toEqual { 'name', 'max', 'small', 'float', 'when', 'mixed', 'inline' }
     expect(layout[value].floats.float).toBe(true)
+    expect(layout[value].datetimes.when).toBe(true)
+    expect(layout[value].datetimes.name).toBe(nil)
+
+    local times, timesLayout = toml.decode 'times = [1979-05-27, 2, 07:32:00]'
+    expect(timesLayout[times.times].datetimes).toEqual { [1] = true, [3] = true }
   end)
 
   suite.it('implements dotted tables and arrays of tables', function()
@@ -100,6 +105,25 @@ color = "gray"
     for _, source in invalid do
       expect(function() toml.decode(source) end).toThrow 'toml:'
     end
+  end)
+
+  suite.it('places a duplicate key at the key, inline or not', function()
+    expect(function() toml.decode 'a = 1\na = 22\n' end).toThrow "duplicate key 'a' at line 2, column 1"
+    expect(function() toml.decode 't = { a = 1, a = 2 }' end).toThrow "duplicate key 'a' at line 1, column 14"
+  end)
+
+  suite.it('records where keys and values are, when asked', function()
+    local text = 'name = "Fargoth"\n[owner]\nage = 3\n'
+    local document, layout = toml.decode(text, { positions = true })
+    local positions = assert(layout[document].positions)
+    local name = positions.name
+    expect(name.key).toBe(1)
+    expect(string.sub(text, name.value, name.valueEnd)).toBe '"Fargoth"'
+    expect(positions.owner.key).toBe(19)
+    expect(assert(layout[document.owner].positions).age.value).toBe(32)
+
+    local again, plain = toml.decode(text)
+    expect(plain[again].positions).toBeNil()
   end)
 end)
 
@@ -232,6 +256,22 @@ suite.describe('encode', function()
 
   suite.it('writes a null a decoder read as a null', function()
     expect(json.encode(values.array { json.decode 'null', yaml.decode 'null' })).toBe '[null,null]'
+  end)
+
+  suite.it('writes a plain table with sorted keys, indented or on one line', function()
+    local value = { zeta = { 1, 2.5, 'x\ty' }, alpha = 'Caf\233', empty = {}, none = json.null }
+    expect(json.encodeTable(value)).toBe '{"alpha":"Caf\233","empty":[],"none":null,"zeta":[1,2.5,"x\\ty"]}'
+    expect(json.encodeTable(value, { latin1 = true })).toContain '"Caf\\u00e9"'
+    expect(json.encodeTable({ items = { 1 } }, { indent = 1 })).toBe '{\n "items": [\n  1\n ]\n}'
+    expect(function() json.encodeTable { 1, nil, 3 } end).toThrow 'string keys or dense array indexes'
+    expect(function() json.encodeTable(0 / 0) end).toThrow 'NaN or infinite'
+  end)
+
+  suite.it('has one null, jess.null, everywhere', function()
+    expect(json.null).toBe(jess.null)
+    expect(yaml.decode 'null').toBe(jess.null)
+    expect(values.Null).toBe(jess.null)
+    expect(json.encode(jess.null)).toBe 'null'
   end)
 
   suite.it('refuses a table it would have to guess about, and a format it doesn\'t write', function()

@@ -1,0 +1,633 @@
+--!strict
+-- @jess/l10n's acceptance cases, over the fixture bundles in ./fixtures. Cases that change files
+-- mid-run change a `files` provider's table; the folder case writes the fixtures under the
+-- scratch root.
+local Fs = require '@dream/fs'
+local Fixtures = require './fixtures'
+local l10n = require '@jess/l10n'
+local test = require '@jess/test'
+local expect = test.expect
+local suite = test.new()
+
+type Registry = l10n.Registry
+type Bundle = l10n.Bundle
+type Diagnostic = l10n.Diagnostic
+
+local function clean(diagnostics: { Diagnostic }): boolean
+  for _, diagnostic in diagnostics do
+    if diagnostic.severity == 'error' then return false end
+  end
+
+  return true
+end
+
+local function kinds(diagnostics: { Diagnostic }): { string }
+  local found = {}
+  for _, diagnostic in diagnostics do
+    table.insert(found, diagnostic.kind)
+  end
+
+  return found
+end
+
+local function registryOver(...: l10n.Provider): Registry
+  local registry = l10n.new()
+  for _, provider in { ... } do
+    registry:addProvider(provider)
+  end
+
+  local diagnostics = registry:reload()
+  expect(kinds(diagnostics)).toEqual {}
+  return registry
+end
+
+--- A registry over the base fixture, loaded, and its `common` bundle.
+local function base(): (Registry, Bundle)
+  local registry = registryOver(l10n.files('base', Fixtures.base))
+  return registry, registry:bundle 'common'
+end
+
+--- The base fixture's files as a table under `l10n/`, for cases that change them.
+local function baseInMemory(): { [string]: string }
+  return Fixtures.under('l10n', Fixtures.base)
+end
+
+-- The folder where the base and layer fixtures are written, once per run.
+local folders: string? = nil
+
+local function fixtureFolders(): string
+  if folders then return folders end
+
+  local root = Fs.join(assert(rawget(_G, 'scratchRoot') :: string?, 'the case needs a scratchRoot'), 'l10n')
+  local sets: { [string]: { [string]: string } } = { base = Fixtures.base, layer = Fixtures.layer }
+  for name, files in sets do
+    for path, text in files do
+      local written, problem = Fs.writeFile(Fs.join(root, name, path), text, { createParents = true })
+      assert(written, problem)
+    end
+  end
+
+  folders = root
+  return root
+end
+
+suite.describe('resolution', function()
+  suite.it('resolves the default locale', function()
+    local registry, common = base()
+    expect(registry:locales()).toEqual {}
+    expect(common('hello', { name = 'Fargoth' })).toBe 'Hello, Fargoth!'
+
+    local info = assert(common:lookup 'hello')
+    expect(info.locale).toBe 'en'
+    -- With no preference the bundle's own locale isn't a fallback.
+    expect(info.fallback).toBe(false)
+  end)
+
+  suite.it('resolves an exact locale', function()
+    local registry, common = base()
+    registry:setLocales 'pl'
+    expect(common('hello', { name = 'Fargoth' })).toBe 'Cześć, Fargoth!'
+
+    local info = assert(common:lookup 'hello')
+    expect(info.locale).toBe 'pl'
+    expect(info.fallback).toBe(false)
+  end)
+
+  suite.it('falls back from a regional locale to its language', function()
+    local registry, common = base()
+    registry:setLocales 'pt-BR'
+    expect(common:chain()).toEqual { 'pt-BR', 'pt', 'en' }
+    expect(common('hello', { name = 'Fargoth' })).toBe 'Olá, Fargoth!'
+
+    local info = assert(common:lookup 'hello')
+    expect(info.locale).toBe 'pt'
+    expect(info.fallback).toBe(true)
+
+    -- Every preferred locale's parents come before the next preferred locale.
+    registry:setLocales { 'zh-Hant-TW', 'de-AT', 'de' }
+    expect(common:chain()).toEqual { 'zh-Hant-TW', 'zh-Hant', 'zh', 'de-AT', 'de', 'en' }
+    expect(common('hello', { name = 'Fargoth' })).toBe 'Hallo, Fargoth!'
+  end)
+
+  suite.it("uses the bundle's fallback locale, which needn't be English", function()
+    local registry, common = base()
+    registry:setLocales 'pl'
+    expect(common 'fallback_only').toBe 'Only English says this'
+
+    -- pt has no file_count; with de as the bundle's fallback, German supplies it.
+    registry:setLocales 'pt-BR'
+    expect(common('file_count', { count = 2 })).toBe '2 files'
+
+    local before = registry:generation()
+    local german = registry:bundle('common', 'de')
+    expect(registry:generation() > before).toBe(true)
+    expect(german:fallback()).toBe 'de'
+    expect(common('file_count', { count = 2 })).toBe '2 Dateien'
+
+    -- The fallback is one locale, not a chain: nothing reaches English any more.
+    expect(function() common 'fallback_only' end).toThrow "bundle 'common' has no message 'fallback_only' in pt-BR, pt, de"
+  end)
+
+  suite.it('changes the output at a locale switch, with no reload', function()
+    local registry, common = base()
+    local loaded = registry:generation()
+    expect(common('hello', { name = 'Fargoth' })).toBe 'Hello, Fargoth!'
+
+    local polish = registry:setLocales { 'pl' }
+    expect(polish > loaded).toBe(true)
+    expect(common('hello', { name = 'Fargoth' })).toBe 'Cześć, Fargoth!'
+
+    local german = registry:setLocales { 'de', 'pl' }
+    expect(german > polish).toBe(true)
+    expect(common('hello', { name = 'Fargoth' })).toBe 'Hallo, Fargoth!'
+
+    registry:setLocales {}
+    expect(common('hello', { name = 'Fargoth' })).toBe 'Hello, Fargoth!'
+    -- The bundle itself didn't change; only what the chain picks from it.
+    expect(common:generation()).toBe(loaded)
+  end)
+
+  suite.it('canonicalizes the locales it is given and refuses what is not one', function()
+    local registry = l10n.new()
+    registry:setLocales { 'pt_br', 'PT-br', 'de' }
+    expect(registry:locales()).toEqual { 'pt-BR', 'de' }
+    expect(function() registry:setLocales 'english' end).toThrow "'english' isn't a BCP 47 locale"
+    expect(function() registry:setLocales 'en-x-private' end).toThrow 'extension or private-use subtag'
+  end)
+end)
+
+suite.describe('formatting', function()
+  suite.it('picks plural categories by locale', function()
+    local registry, common = base()
+    local function count(value: number): string
+      return common('file_count', { count = value })
+    end
+
+    expect(count(0)).toBe 'No files'
+    expect(count(1)).toBe '1 file'
+    expect(count(2)).toBe '2 files'
+    expect(count(5)).toBe '5 files'
+    expect(count(22)).toBe '22 files'
+
+    registry:setLocales 'pl'
+    expect(count(0)).toBe 'Brak plików'
+    expect(count(1)).toBe '1 plik'
+    expect(count(2)).toBe '2 pliki'
+    expect(count(5)).toBe '5 plików'
+    expect(count(22)).toBe '22 pliki'
+    expect(count(1.5)).toBe '1,5 pliku'
+    expect(count(1234)).toBe '1234 pliki'
+    expect(count(12345)).toBe '12\u{a0}345 plików'
+  end)
+
+  suite.it('selects', function()
+    local registry, common = base()
+    local function mode(value: string): string
+      return common('mode_label', { mode = value })
+    end
+
+    expect(mode 'edit').toBe 'Editing'
+    expect(mode 'view').toBe 'Viewing'
+    expect(mode 'asleep').toBe 'Idle'
+
+    registry:setLocales 'pl'
+    expect(mode 'edit').toBe 'Edycja'
+    expect(mode 'asleep').toBe 'Bezczynny'
+  end)
+
+  suite.it('formats numbers by the locale the message came from', function()
+    local registry, common = base()
+    expect(common('percent_complete', { progress = 0.42 })).toBe '42% complete'
+
+    registry:setLocales 'pl'
+    expect(common('percent_complete', { progress = 0.42 })).toBe 'Ukończono 42%'
+
+    registry:setLocales 'de'
+    expect(common('percent_complete', { progress = 0.425 })).toBe '42,5% abgeschlossen'
+  end)
+
+  suite.it('reports a missing argument clearly', function()
+    local _, common = base()
+    expect(function() common 'hello' end).toThrow "bundle 'common', message 'hello' (en): argument 'name' is missing"
+
+    local text, diagnostic = common:tryFormat 'hello'
+    expect(text).toBeNil()
+
+    local found = assert(diagnostic)
+    expect(found.kind).toBe 'missing-argument'
+    expect(found.bundle).toBe 'common'
+    expect(found.message).toBe 'hello'
+    expect(found.locale).toBe 'en'
+  end)
+
+  suite.it('reports an unsupported argument type clearly', function()
+    local _, common = base()
+    expect(function() common('file_count', { count = 'many' }) end).toThrow(
+      "bundle 'common', message 'file_count' (en): argument 'count' must be a number, not a string"
+    )
+
+    local _, diagnostic = common:tryFormat('file_count', { count = 'many' })
+    expect(assert(diagnostic).kind).toBe 'unsupported-argument-type'
+    expect(function() common('mode_label', { mode = 3 }) end).toThrow(
+      "bundle 'common', message 'mode_label' (en): argument 'mode' must be a string or boolean, not a number"
+    )
+
+    -- What a pattern needs is inspectable before anything is formatted.
+    local arguments = assert(common:lookup 'mode_label').arguments
+    expect(arguments[1].name).toBe 'mode'
+    expect(arguments[1].kind).toBe 'select'
+  end)
+
+  suite.it('checks the variables table a script passes', function()
+    local _, common = base()
+    expect(function() common('hello', 'Fargoth') end).toThrow(
+      "variables for message 'hello' of bundle 'common' must be a table, not string"
+    )
+    expect(function() common('hello', { 'Fargoth' }) end).toThrow(
+      "variables for message 'hello' of bundle 'common' are named by strings, not number"
+    )
+    expect(function() common('hello', { name = {} }) end).toThrow(
+      "variable 'name' of message 'hello' in bundle 'common' must be a string, number, or boolean, not table"
+    )
+  end)
+
+  suite.it('makes a missing message an error naming what was tried, with a loud placeholder', function()
+    local registry, common = base()
+    registry:setLocales 'pl-PL'
+    expect(function() common 'no_such_message' end).toThrow "bundle 'common' has no message 'no_such_message' in pl-PL, pl, en"
+
+    local text, diagnostic = common:tryFormat 'no_such_message'
+    -- A missing message is never an empty success.
+    expect(text).toBeNil()
+    expect(assert(diagnostic).kind).toBe 'missing-message'
+    expect(common:placeholder 'no_such_message').toBe '[[common:no_such_message]]'
+    expect(common:lookup 'no_such_message').toBeNil()
+    expect(common:has 'no_such_message').toBe(false)
+    expect(common:has 'hello').toBe(true)
+  end)
+
+  suite.it('answers the literal text of a message with no arguments', function()
+    local registry, common = base()
+    expect(common:literal 'fallback_only').toBe 'Only English says this'
+    -- A message with arguments has to be formatted.
+    expect(common:literal 'hello').toBeNil()
+    expect(common:literal 'missing').toBeNil()
+
+    registry:setLocales 'pl'
+    expect(common:literal 'fallback_only').toBe 'Only English says this'
+  end)
+
+  suite.it('gives the same text from a warm registry, a fresh one, and after a reload', function()
+    local cached, common = base()
+    cached:setLocales 'pl'
+    local cases: { { message: string, values: { [string]: l10n.Value } } } = {
+      { message = 'hello', values = { name = 'Fargoth' } },
+      { message = 'file_count', values = { count = 5 } },
+      { message = 'mode_label', values = { mode = 'view' } },
+      { message = 'percent_complete', values = { progress = 0.5 } },
+      { message = 'fallback_only', values = {} },
+    }
+
+    for _, case in cases do
+      local first = common(case.message, case.values)
+      for _ = 1, 3 do
+        expect(common(case.message, case.values)).toBe(first)
+      end
+
+      local fresh, freshCommon = base()
+      fresh:setLocales 'pl'
+      expect(freshCommon(case.message, case.values)).toBe(first)
+
+      expect(clean((cached:reload()))).toBe(true)
+      expect(common(case.message, case.values)).toBe(first)
+
+      cached:setLocales 'de'
+      cached:setLocales 'pl'
+      expect(common(case.message, case.values)).toBe(first)
+    end
+  end)
+
+  suite.it('formats and checks a pattern that is in no bundle', function()
+    local registry = l10n.new()
+    local pattern = '{count, plural, one {# plik} few {# pliki} many {# plików} other {# pliku}}'
+    expect(registry:formatPattern('pl', pattern, { count = 5 })).toBe '5 plików'
+    expect(function() registry:formatPattern('pl', '{count, plural, one {# plik}}') end).toThrow "the pattern doesn't compile"
+    expect(function() registry:formatPattern('pl', '{count}') end).toThrow "argument 'count' is missing"
+
+    local arguments = assert(l10n.checkPattern(pattern))
+    expect(arguments[1].name).toBe 'count'
+    expect(arguments[1].kind).toBe 'number'
+
+    local none, problem = l10n.checkPattern '{count'
+    expect(none).toBeNil()
+    expect(problem).toContain 'at offset'
+  end)
+end)
+
+suite.describe('loading', function()
+  suite.it('catches a malformed pattern at load, with its place in the file', function()
+    local files = {
+      ['l10n/common/en.toml'] = "good = 'Fine'\n\nbroken = '''\n{count, plural,\n  one {# file}\n  othr {# files}}'''\nunclosed = \"{name\"\n",
+    }
+    local registry = l10n.new()
+    registry:addProvider(l10n.files('package', files, 'l10n'))
+
+    local diagnostics, report = registry:reload()
+    expect(clean(diagnostics)).toBe(false)
+
+    local errors: { Diagnostic } = {}
+    for _, diagnostic in diagnostics do
+      if diagnostic.kind == 'pattern-parse-failure' then table.insert(errors, diagnostic) end
+    end
+
+    expect(#errors).toBe(2)
+
+    local broken = errors[1]
+    expect(broken.severity).toBe 'error'
+    expect(broken.provider).toBe 'package'
+    expect(broken.path).toBe 'l10n/common/en.toml'
+    expect(broken.bundle).toBe 'common'
+    expect(broken.locale).toBe 'en'
+    expect(broken.message).toBe 'broken'
+    -- The bad selector's own line and column.
+    expect(broken.line).toBe(6)
+    expect(broken.column).toBe(3)
+    expect(broken.generation).toBe(report.generation)
+    expect(tostring(broken)).toBe(
+      "error[pattern-parse-failure] l10n/common/en.toml:6:3 (provider package): common/en 'broken': at offset 33: 'othr' isn't a plural case; use =n, zero, one, two, few, many, or other"
+    )
+    expect(errors[2].message).toBe 'unclosed'
+    expect(errors[2].line).toBe(7)
+
+    -- With no good generation to keep, the first load takes what compiled.
+    expect(report.updated).toEqual { 'common' }
+
+    local common = registry:bundle 'common'
+    expect(common 'good').toBe 'Fine'
+    expect(function() common('broken', { count = 1 }) end).toThrow "has no message 'broken'"
+  end)
+
+  suite.it('makes a duplicate message a deterministic error that neither definition wins', function()
+    local files = { ['l10n/common/en.toml'] = "hello = 'first'\nhello = 'second'\n" }
+    local registry = l10n.new()
+    registry:addProvider(l10n.files('package', files, 'l10n'))
+
+    local duplicate = registry:reload()[1]
+    expect(duplicate.kind).toBe 'duplicate-message'
+    expect(duplicate.line).toBe(2)
+    expect(duplicate.column).toBe(1)
+    expect(duplicate.path).toBe 'l10n/common/en.toml'
+
+    -- Two files of one provider for one locale sit at the same precedence: a collision.
+    files['l10n/common/en.toml'] = "hello = 'lowercase file'\n"
+    files['l10n/common/EN.toml'] = "hello = 'uppercase file'\n"
+
+    local first, report = registry:reload()
+    local collisions: { string? } = {}
+    for _, diagnostic in first do
+      if diagnostic.kind == 'provider-collision' then table.insert(collisions, diagnostic.path) end
+    end
+
+    expect(collisions).toEqual { 'l10n/common/EN.toml', 'l10n/common/en.toml' }
+    expect(report.kept).toEqual { 'common' }
+
+    -- The same files report the same way every time.
+    local again = registry:reload()
+    local texts: { string }, againTexts: { string } = {}, {}
+    for index, diagnostic in first do
+      texts[index] = tostring(diagnostic)
+    end
+
+    for index, diagnostic in again do
+      againTexts[index] = tostring(diagnostic)
+    end
+
+    expect(againTexts).toEqual(texts)
+  end)
+
+  suite.it('gives providers precedence in registration order', function()
+    local registry = registryOver(l10n.files('base', Fixtures.base), l10n.files('layer', Fixtures.layer))
+    local common = registry:bundle 'common'
+    expect(common('hello', { name = 'Fargoth' })).toBe 'Howdy, Fargoth!'
+    -- Messages merge by id: the layer adds one and leaves the rest of the base alone.
+    expect(common 'layer_only').toBe 'From the layer'
+    expect(common 'fallback_only').toBe 'Only English says this'
+
+    -- The override is per locale: Polish still comes from the base.
+    registry:setLocales 'pl'
+    expect(common('hello', { name = 'Fargoth' })).toBe 'Cześć, Fargoth!'
+
+    local reversed = registryOver(l10n.files('layer', Fixtures.layer), l10n.files('base', Fixtures.base))
+    local other = reversed:bundle 'common'
+    expect(other('hello', { name = 'Fargoth' })).toBe 'Hello, Fargoth!'
+    expect(other 'layer_only').toBe 'From the layer'
+  end)
+
+  suite.it('keeps where every message came from', function()
+    local root = fixtureFolders()
+    local registry = l10n.new()
+    registry:addDirectory(Fs.join(root, 'base'), 'base')
+    registry:addDirectory(Fs.join(root, 'layer'), 'layer')
+    expect(kinds((registry:reload()))).toEqual {}
+
+    local common = registry:bundle 'common'
+    local hello = assert(common:lookup 'hello')
+    expect(hello.provider).toBe 'layer'
+    expect(hello.path).toBe(Fs.join(root, 'layer', 'common', 'en.toml'))
+    expect(hello.line).toBe(2)
+    expect(hello.column).toBe(1)
+
+    local fileCount = assert(common:lookup 'file_count')
+    expect(fileCount.provider).toBe 'base'
+    expect(fileCount.path).toBe(Fs.join(root, 'base', 'common', 'en.toml'))
+    expect(fileCount.line).toBe(7)
+
+    -- Is this message missing in that locale? Which file defines it there?
+    expect(common:lookup('fallback_only', 'pl')).toBeNil()
+
+    local polish = assert(common:lookup('hello', 'pl'))
+    expect(polish.provider).toBe 'base'
+    expect(polish.path).toBe(Fs.join(root, 'base', 'common', 'pl.toml'))
+    expect(common:lookup('mode_label', 'de')).toBeNil()
+  end)
+
+  suite.it('enumerates providers, bundles, locales, and messages', function()
+    local registry = registryOver(l10n.files('base', Fixtures.base), l10n.files('layer', Fixtures.layer))
+    expect(registry:providers()).toEqual { 'base', 'layer' }
+    expect(registry:bundles()).toEqual { 'common' }
+
+    local common = registry:bundle 'common'
+    expect(common.name).toBe 'common'
+    expect(tostring(common)).toBe 'L10nBundle(common)'
+    expect(common:locales()).toEqual { 'de', 'en', 'pl', 'pt' }
+    expect(common:messages()).toEqual {
+      'fallback_only',
+      'file_count',
+      'hello',
+      'layer_only',
+      'mode_label',
+      'percent_complete',
+    }
+    expect(common:generation()).toBe(registry:generation())
+  end)
+
+  suite.it('keeps the last good generation when a hot reload fails', function()
+    local files = baseInMemory()
+    files['l10n/other/en.toml'] = "title = 'Other'"
+
+    local registry = registryOver(l10n.files('package', files, 'l10n'))
+    local common, other = registry:bundle 'common', registry:bundle 'other'
+    local good = registry:generation()
+
+    -- A good edit is live after one reload.
+    files['l10n/common/en.toml'] = "hello = 'Hi, {name}!'"
+
+    local diagnostics, report = registry:reload()
+    expect(clean(diagnostics)).toBe(true)
+    expect(report.generation > good).toBe(true)
+    expect(common('hello', { name = 'Fargoth' })).toBe 'Hi, Fargoth!'
+    good = registry:generation()
+
+    -- A bad edit to one locale of `common`, and a good edit to `other`, in the same reload.
+    files['l10n/common/pl.toml'] = "hello = 'Cześć, {name'"
+    files['l10n/common/en.toml'] = "hello = 'Hey, {name}!'"
+    files['l10n/other/en.toml'] = "title = 'Another'"
+    diagnostics, report = registry:reload()
+    expect(report.kept).toEqual { 'common' }
+    expect(report.updated).toEqual { 'other' }
+    expect(kinds(diagnostics)).toEqual { 'pattern-parse-failure' }
+    expect(diagnostics[1].locale).toBe 'pl'
+
+    -- The whole bundle keeps its last good generation: English didn't take the new text either.
+    expect(common('hello', { name = 'Fargoth' })).toBe 'Hi, Fargoth!'
+    expect(common:generation()).toBe(good)
+    registry:setLocales 'pl'
+    expect(common('hello', { name = 'Fargoth' })).toBe 'Cześć, Fargoth!'
+
+    -- The bundle that did load is live.
+    expect(other 'title').toBe 'Another'
+    expect(other:generation() > good).toBe(true)
+
+    -- A file that isn't even TOML keeps the last good generation too.
+    files['l10n/common/pl.toml'] = 'hello = '
+    diagnostics, report = registry:reload()
+    expect(report.kept).toEqual { 'common' }
+    expect(kinds(diagnostics)).toContain 'bundle-parse-failure'
+    expect(common('hello', { name = 'Fargoth' })).toBe 'Cześć, Fargoth!'
+
+    -- Fixing the file makes the next reload take everything, including the English edit.
+    files['l10n/common/pl.toml'] = "hello = 'Hej, {name}!'"
+    diagnostics, report = registry:reload()
+    expect(clean(diagnostics)).toBe(true)
+    expect(report.updated).toEqual { 'common', 'other' }
+    expect(common('hello', { name = 'Fargoth' })).toBe 'Hej, Fargoth!'
+    registry:setLocales {}
+    expect(common('hello', { name = 'Fargoth' })).toBe 'Hey, Fargoth!'
+  end)
+
+  suite.it('changes nothing when a provider cannot list its files', function()
+    local inner = l10n.files('inner', baseInMemory(), 'l10n')
+    local broken = false
+    local flaky: l10n.Provider = {
+      name = 'flaky',
+      resources = function(): ({ l10n.Resource }?, string?, string?)
+        if broken then return nil, 'the archive went away', 'l10n' end
+
+        return inner.resources()
+      end,
+      read = inner.read,
+    }
+
+    local registry = registryOver(flaky)
+    local common = registry:bundle 'common'
+    local generation = registry:generation()
+
+    broken = true
+    local diagnostics, report = registry:reload()
+    expect(report.generation).toBe(generation)
+    expect(report.kept).toEqual { 'common' }
+    expect(report.updated).toEqual {}
+    expect(kinds(diagnostics)).toEqual { 'provider-failure' }
+    expect(diagnostics[1].provider).toBe 'flaky'
+    expect(diagnostics[1].path).toBe 'l10n'
+    expect(diagnostics[1].detail).toContain 'the archive went away'
+    expect(common('hello', { name = 'Fargoth' })).toBe 'Hello, Fargoth!'
+  end)
+
+  suite.it('reads a folder and a table of the same files the same way', function()
+    local root = fixtureFolders()
+    local fromFolder = l10n.new()
+    fromFolder:addDirectory(Fs.join(root, 'base'), 'base')
+    expect(kinds((fromFolder:reload()))).toEqual {}
+
+    local fromFiles = registryOver(l10n.files('base', baseInMemory(), 'l10n'))
+    local folderCommon, filesCommon = fromFolder:bundle 'common', fromFiles:bundle 'common'
+    local cases: { { message: string, values: { [string]: l10n.Value } } } = {
+      { message = 'hello', values = { name = 'Fargoth' } },
+      { message = 'file_count', values = { count = 3 } },
+      { message = 'mode_label', values = { mode = 'edit' } },
+      { message = 'percent_complete', values = { progress = 0.25 } },
+      { message = 'fallback_only', values = {} },
+    }
+
+    for _, tag in { 'en', 'pl', 'pt-BR', 'de-AT' } do
+      fromFolder:setLocales(tag)
+      fromFiles:setLocales(tag)
+      for _, case in cases do
+        expect(folderCommon(case.message, case.values)).toBe(filesCommon(case.message, case.values))
+      end
+    end
+  end)
+
+  suite.it('reports files and folders that cannot be what they are named for', function()
+    local files = {
+      ['l10n/common/en.toml'] = "hello = 'Hello'",
+      ['l10n/common/english.toml'] = "hello = 'Hello'",
+      ['l10n/bad name/en.toml'] = "hello = 'Hello'",
+    }
+    local registry = l10n.new()
+    registry:addProvider(l10n.files('package', files, 'l10n'))
+
+    local diagnostics = registry:reload()
+    expect(kinds(diagnostics)).toEqual { 'invalid-bundle-name', 'invalid-locale' }
+    expect(diagnostics[1].path).toBe 'l10n/bad name/en.toml'
+    expect(diagnostics[2].path).toBe 'l10n/common/english.toml'
+    expect(diagnostics[2].bundle).toBe 'common'
+    expect(function() registry:bundle 'bad name' end).toThrow "'bad name' isn't a bundle name"
+  end)
+
+  suite.it('warns about a bundle nobody has files for, and every message in it is missing', function()
+    local registry = l10n.new()
+    local ghost = registry:bundle 'ghost'
+    local diagnostics = registry:reload()
+    -- A warning isn't an error.
+    expect(clean(diagnostics)).toBe(true)
+    expect(kinds(diagnostics)).toEqual { 'empty-bundle' }
+    expect(diagnostics[1].severity).toBe 'warning'
+    expect(function() ghost 'anything' end).toThrow "bundle 'ghost' has no message 'anything' in en"
+  end)
+
+  suite.it('accepts the bundle names a package namespaces with, and nothing else', function()
+    local registry = l10n.new()
+    for _, name in { 'common', 'jess.common', 's3maphore.playlist-editor', 'OMWEngine', 'a_b.c-d.e9' } do
+      expect(registry:bundle(name).name).toBe(name)
+    end
+
+    for _, name in { '', '.', 'a..b', '.a', 'a.', 'a/b', 'a b', '../etc', 'ünï' } do
+      expect(function() registry:bundle(name) end).toThrow "isn't a bundle name"
+    end
+  end)
+end)
+
+suite.describe('the module', function()
+  suite.it("works on the runtime's own registry, apart from every new one", function()
+    local before = l10n.generation()
+    local made = l10n.new()
+    made:setLocales 'pl'
+    expect(l10n.generation()).toBe(before)
+    expect(made:generation()).toBe(1)
+    expect(l10n.locales()).toEqual {}
+  end)
+end)
+
+return suite

@@ -285,8 +285,117 @@ end
 --- A value built with `@jess/data/value` as JSON: compact, on one line, as serde_json writes it.
 local function encode(value: Values.Value): string return Values.encode(value, 'json') end
 
+-- Plain tables -------------------------------------------------------------------------------------
+
+--- How `encodeTable` writes: `indent` spaces per level over lines (one line without it), and with
+--- `latin1` every byte outside printable ASCII escaped as the Latin-1 code point it is.
+export type TableOptions = { indent: number?, latin1: boolean? }
+
+local TableEscape: { [string]: string } = {
+  ['"'] = '\\"',
+  ['\\'] = '\\\\',
+  ['\b'] = '\\b',
+  ['\f'] = '\\f',
+  ['\n'] = '\\n',
+  ['\r'] = '\\r',
+  ['\t'] = '\\t',
+}
+
+local function tableString(value: string, latin1: boolean): string
+  local escapable = if latin1 then '[%z\1-\31\\"\127-\255]' else '[%z\1-\31\\"]'
+  local escaped = string.gsub(value, escapable, function(character: string): string
+    local known = TableEscape[character]
+    if known then return known end
+
+    return string.format('\\u%04x', string.byte(character))
+  end)
+  return `"{escaped}"`
+end
+
+--- The length of `value` when its keys are exactly 1 to some n, else nil.
+local function denseLength(value: { [unknown]: unknown }): number?
+  local count, highest = 0, 0
+  for key in value do
+    if type(key) ~= 'number' or key < 1 or key % 1 ~= 0 then return nil end
+
+    count += 1
+    highest = math.max(highest, key)
+  end
+
+  if count ~= highest then return nil end
+
+  return highest
+end
+
+local function tableValue(value: unknown, options: TableOptions, depth: number): string
+  local kind = type(value)
+  if kind == 'string' then return tableString(value :: string, options.latin1 == true) end
+
+  if kind == 'number' then
+    local number = value :: number
+    if number ~= number or number == math.huge or number == -math.huge then
+      error('json: a number that is NaN or infinite has no JSON', 0)
+    end
+
+    return tostring(number)
+  end
+
+  if kind == 'boolean' then return tostring(value) end
+  if value == nil or value == Null then return 'null' end
+
+  if kind ~= 'table' then return error(`json: a {kind} has no JSON`, 0) end
+
+  local fields = value :: { [unknown]: unknown }
+  local indent = options.indent
+  local open, close, separator = '', '', ','
+  if indent then
+    open = '\n' .. string.rep(' ', indent * (depth + 1))
+    close = '\n' .. string.rep(' ', indent * depth)
+    separator = ',' .. open
+  end
+
+  local count = denseLength(fields)
+  if count then
+    if count == 0 then return '[]' end
+
+    local parts = table.create(count)
+    for index = 1, count do
+      parts[index] = tableValue(fields[index], options, depth + 1)
+    end
+
+    return `[{open}{table.concat(parts, separator)}{close}]`
+  end
+
+  local keys: { string } = {}
+  for key in fields do
+    if type(key) ~= 'string' then error('json: a table needs string keys or dense array indexes', 0) end
+
+    table.insert(keys, key)
+  end
+
+  if #keys == 0 then return '{}' end
+
+  table.sort(keys)
+  local colon = if indent then ': ' else ':'
+  local latin1 = options.latin1 == true
+  local parts = table.create(#keys)
+  for index, key in keys do
+    parts[index] = `{tableString(key, latin1)}{colon}{tableValue(fields[key], options, depth + 1)}`
+  end
+
+  return `\{{open}{table.concat(parts, separator)}{close}}`
+end
+
+--- A plain Luau table as JSON, for tools that write what people read and diff: dense integer keys
+--- an array, string keys an object with its keys sorted, `nil` and the null `null`. A field that
+--- is nil is absent; a hole in an array makes it an object, which then needs string keys.
+local function encodeTable(value: unknown, options: TableOptions?): string
+  return tableValue(value, options or {}, 0)
+end
+
 return table.freeze {
   null = Null,
   decode = decode,
   encode = encode,
+  encodeTable = encodeTable,
 }

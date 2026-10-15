@@ -113,9 +113,9 @@ A fixture never pins a bug. Where current behavior is a bug, the fixture pins on
 
 ### 17. TOML integers past 2^53 lose precision
 
-- **What:** `jess.toml.decode` reads integers as Luau numbers, so `9007199254740993` reads as `2^53`.
-- **Class:** compatibility (documented in `toml.rs`).
-- **Decision:** pinned (`toml/toml`, `bigRounded`).
+- **What:** `jess.toml.decode` read integers as Luau numbers, so `9007199254740993` read as `2^53`.
+- **Decision:** fixed by removal. jess reads TOML with the built-in package's `@jess/data/toml`, which
+  keeps an integer past 2^53 exact as an l3i `integer`; `jess.toml` and its fixture are gone.
 
 ### 18. `__tostring` formats
 
@@ -251,11 +251,15 @@ A fixture never pins a bug. Where current behavior is a bug, the fixture pins on
 
 ### 39. `jess.input` and `jess.l10n` bind to the domain's services, and check capabilities only there
 
+- **Superseded for `jess.l10n`** by 47: localization left the native API; what follows holds for `jess.input`.
+
 - **What:** under a `ScriptDomain` that carries a `Mutex<jess_input::InputService>` or a `RwLock<jess_l10n::Registry>` service (jess-host attaches both), `jess.input.runtime()` is the application's live input (the host ticks it; `tick` and `advance` are refused) and every `jess.l10n` call reaches the application's registry; anywhere else each runtime keeps a headless runtime and a registry of its own, which is what the fixtures drive. Every runtime method and every l10n call checks its capability (`input.actions`, `input.observe`, `input.configure`, `l10n.read`, `l10n.configure`) through the broker when the script runs under a domain; outside any domain nothing holds authority and nothing is checked, since the process's own user is running the script.
 - **Class:** addition. No fixture changed: the fixtures run outside any domain, where the API is what it was.
 - **Decision:** pinned in `lua_api` (`input_and_l10n_calls_are_denied_without_their_capabilities_under_a_domain`, `a_domain_registry_is_shared_with_the_workers_the_host_shares_it_with`, `a_domain_input_service_is_the_live_runtime_and_the_host_ticks_it`) and in the kernel fixture; the denial is the broker's, `capability 'input.actions' denied to domain#1 gen#1 context#2`, as `pcall` reads it.
 
 ### 40. A worker shares the domain's services only when its spawner says `shareServices = true`
+
+- **Since 47** no service carries localization: a worker's `@jess/l10n` is always its own.
 
 - **What:** `worker.spawn` takes `shareServices`, a boolean: `true` gives the worker every service its domain carries (`WorkerSpec::share_all`), so `jess.l10n` in it formats from the application's registry; absent or `false`, the worker has none and its `jess.input.runtime()` and `jess.l10n` are its own. A script can't name a Rust type, so the choice is all or nothing; the worker's capabilities still say what it may do with what it sees.
 - **Class:** addition. The unknown-option message names the new option.
@@ -304,3 +308,35 @@ A fixture never pins a bug. Where current behavior is a bug, the fixture pins on
 - **What:** `jess.nif.sceneBytes` returns jess-nif's scene of a Morrowind NIF as a table (`e8b3eab`), and `jess.nif.dumpBytes` takes `reader = 'gamebryo'` to read any version with the reader OpenMW uses (`cf48a1d`); both landed without their inventory entries.
 - **Class:** addition.
 - **Decision:** `sceneBytes` joins `[modules."jess.nif"]`, and `reader` joins `[options."jess.nif.dumpBytes"]`'s keys.
+
+## Localization
+
+### 47. `jess.l10n` left the native API for `@jess/l10n`, the built-in package's Luau
+
+- **What:** the ICU MessageFormat registry is Luau now (`jpk/builtin/src/l10n`), over `@dream/intl`'s CLDR plural rules and decimal formatting. `jess.l10n` and the `L10nBundle` userdata are gone. Each runtime has its own registry, so the host no longer attaches one or posts `l10n.changed`. `l10n.read` and `l10n.configure` are gone too: a folder is read through `@dream/fs`, so `filesystem.read` gates it.
+- **Class:** removal. `jess` lost the `l10n` member; `@jess/l10n` is still the require path, with the same functions plus `new`, `files`, `directory`, `addProvider`, `providers`, `formatPattern`, and `checkPattern`.
+- **Decision:** the `@jess` member list in `contracts.rs` dropped `l10n`. The acceptance cases are `jpk/builtin/tests/l10n/run.jsl`, and the kernel fixture's script and worker each configure their own registry.
+
+## Files
+
+### 48. `jess.fs` left the native API for l3i's `@dream/fs`
+
+- **What:** jess had a second file API next to l3i's, with its own errors (raising where `@dream/fs` answers `nil, message, kind`), its own list order (the filesystem's, where `@dream/fs` sorts), and its own backups. `jess.fs` and `src/lua/fs.rs` are gone; the built-in package, the tools, and the site use `@dream/fs`. 16 and 41 describe the removed API.
+- **Class:** removal. `jess` lost the `fs` member, and the orphaned `fs/fs` fixture went with it.
+- **Decision:** the member list in `contracts.rs` dropped `fs`. A backup before writing is a tool's policy, not a file API's.
+
+## Regular expressions
+
+### 49. `jess.regex` left the native API for l3i's `bytes.regex`
+
+- **What:** jess and l3i each bound the `regex` crate, with different position conventions (jess's 1-based and inclusive, l3i's 0-based and exclusive) and different error text. `bytes.regex` gained what only `jess.regex` had (`match`, `captures`, `matches`, `replace`, `replaceAll`, `split`, `regexEscape`); `jess.regex`, `src/lua/regexp.rs`, the `Regex` types, and the `regex` dependency are gone.
+- **Class:** removal. `jess` lost the `regex` member, and the `regex/regex` fixture went with it.
+- **Decision:** the member list and the fixture list in `contracts.rs` dropped `regex`; `api/regex.md` maps every call, positions included.
+
+## Input
+
+### 50. Input policy left the native API for `@jess/input`, the built-in package's Luau
+
+- **What:** the binding builders (`key`, `chord`, `tap`, ...), labels, binding presentation, conflict checks, and intent routing are Luau now (`jpk/builtin/src/input`), over the document and the action events. `jess.input` keeps what is native: `graph(json)`, which compiles a document encoded as JSON, `control(text)`, the control vocabulary, `formatVersion`, and `runtime`. The graph's `spec`, `bindings`, `presentations`, and `conflicts` methods, `fromJson`, and the runtime's `route` and `intents` are gone, `runtime:install` takes only a compiled graph, and the host's input phase payload has no `intents`: a script's `input.router()` makes them with `router:dispatch(payload.events)`. The binding document is camelCase (`valueType`, `withinMs`, `durationMs`), leaves absent optional fields out instead of writing `null`, and names a `vector2`'s scalars `horizontal` and `vertical`. Binding locations count from 1.
+- **Class:** removal and break. `require('@jess/input')` is the built-in package's module, no longer `jess.input`.
+- **Decision:** the `@jess` member list in `contracts.rs` dropped `input` for a check that `@jess/input` wraps it; the input acceptance fixture runs through `@jess/input` (its binding and conflict indexes now from 1, conflict controls sorted by name), and the kernel fixture routes its intent with a router. `jpk/builtin/tests/input/run.jsl` holds the labels, presentation, conflicts, and routes.

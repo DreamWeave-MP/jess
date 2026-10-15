@@ -8,7 +8,7 @@ extra:
 
 {{ api_signature(value="jess.worker: { spawn, send }") }}
 
-Also `require('@jess/worker')`. A worker is a second Luau state the [ScriptDomain](@/docs/contributing/script-domains.md) owns, with its own globals, its own modules, and its own garbage collector, able to run while the domain's own code does. It sees nothing of the domain but the messages it is sent. Under `jess run` there is no domain, so `spawn` errors with `worker.spawn: no ScriptDomain owns this runtime`.
+Also `require('@jess/worker')`. A worker is a second Luau state the [ScriptDomain](@/docs/contributing/script-domains.md) owns, with its own globals, its own modules, and its own garbage collector, able to run while the domain's own code does. It sees nothing of the domain but the messages it is sent. Under `jess run` there is no domain, so `spawn` errors with `worker.spawn: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and package targets run scripts outside one`.
 
 ## jess.worker.spawn
 
@@ -19,7 +19,7 @@ Spawns a worker and returns its handle. Needs the `worker.spawn` capability.
 - `source`: the worker module's Luau source. It is a chunk that returns the message handler, `function(message) ... return reply end`; the handler is called once per message, and the value it returns is the reply (`nil` is no reply).
 - `name`: for diagnostics and profiles; by default, where `spawn` was called.
 - `capabilities`: the names the worker holds, a subset of the calling context's. By default it inherits them all.
-- `shareServices`: `true` gives the worker the domain's services (under a host, its live input and its localization registry), so `jess.l10n` in the worker formats from the application's registry. Off by default: a worker exists to run apart from the domain's state, and its capabilities still say what it may do with what it sees.
+- `shareServices`: `true` gives the worker the domain's services (under a host, its live input). Off by default: a worker exists to run apart from the domain's state, and its capabilities still say what it may do with what it sees.
 
 The worker's runtime comes from the same plan as the domain's, so a worker under jess has the whole jess API: it can open plugins, read the VFS, and check NIFs, with its own state.
 
@@ -56,11 +56,11 @@ A worker whose module does not load, does not return a function, or raises in it
 
 {{ api_signature(value="worker:send(message: unknown) -> ()") }}
 
-Queues a message for the worker's handler. Messages arrive in order.
+Queues a message for the worker's handler. Messages arrive in order. At most 1,024 wait for the handler at once: a domain that sends faster than its worker handles is told so, instead of queueing without bound.
 
 Only transferable values cross: `nil`, booleans, numbers, integers, strings, vectors, buffers, tables of those with string or number keys, and resource handles. Anything else is an error naming where it was, and nothing is sent.
 
-- **Errors:** `message.<path>: a <type> can't cross a worker or event boundary`; `the worker is stopped; it takes no more messages`.
+- **Errors:** `message.<path>: a <type> can't cross a worker or event boundary`; `the worker is stopped; it takes no more messages`; `the worker's queue is full: 1024 messages wait for its handler; receive its replies, or send fewer`.
 
 ```luau
 --!strict
@@ -78,7 +78,7 @@ A buffer arrives as a fresh buffer of the same bytes: writing the copy changes n
 
 {{ api_signature(value="worker:receive(timeoutSeconds: number?) -> unknown") }}
 
-The worker's next reply, waiting up to `timeoutSeconds` for one; without a timeout it does not wait. `nil` when there is none in that time, or when the worker has ended with nothing left to say. A failure the worker reported comes back as an error, once.
+The worker's next reply, waiting up to `timeoutSeconds` for one; without a timeout it does not wait. The wait never outlasts the execution time limit of the code that waits: when the limit runs out first, the call is stopped with the limit's error, as a loop would be. `nil` when there is none in that time, or when the worker has ended with nothing left to say. A failure the worker reported comes back as an error, once.
 
 - **Errors:** the worker's failure, as `<domain> <generation> <worker> (<module>) failed at <stage>: <message>`.
 
@@ -92,7 +92,7 @@ Asks the worker to stop after the messages already queued for it.
 
 {{ api_signature(value="worker:join(timeoutSeconds: number?) -> string") }}
 
-Closes the worker and waits for it to end, up to `timeoutSeconds` (without a timeout, as long as it takes), then returns its final state: `stopped` or `failed`. Replies it sent before ending stay readable through `receive`.
+Closes the worker and waits for it to end, up to `timeoutSeconds` (without a timeout, as long as it takes), and never past the execution time limit of the code that waits, then returns its final state: `stopped` or `failed`. Replies it sent before ending stay readable through `receive`.
 
 - **Errors:** `<worker> did not answer in time`.
 

@@ -50,10 +50,10 @@ enum PackageCommand {
     },
     /// Run the tests a Package Source's manifest names, against the source and then against it
     /// packed into a temporary JPK, and check both providers give the same digest. The package's
-    /// [dependencies] and [dev-dependencies] are selected with it. A .jpk carries no tests and
-    /// reports none.
+    /// [dependencies] and [dev-dependencies] are selected with it. A .jpk ships its tests, but
+    /// they run from its source: given one, nothing runs.
     Test {
-        /// A Package Source folder (or a .jpk, which has no tests to run).
+        /// A Package Source folder (a .jpk's tests run from its source).
         package: PathBuf,
         /// A package its dependencies resolve over (repeatable): a Package Source folder or a .jpk.
         #[arg(long = "package", value_name = "PACKAGE")]
@@ -187,8 +187,7 @@ fn run_target(args: &RunTargetArgs) -> Result<u8, String> {
     };
     let ran = jess::lua::package::run_target(&jess::lua::Options::default(), &request).map_err(|error| error.to_string())?;
     let status = crate::run::script_status(&ran.runtime, &ran.values);
-    // Nothing in the state needs dropping to finish its work: targets write files as they go.
-    crate::leave(ran);
+    crate::leave(ran.runtime, ran.values);
     status
 }
 
@@ -249,7 +248,7 @@ pub fn run(args: &PackageArgs, format: Format) -> Result<u8, String> {
             output::print(&report, format)?;
             if report.providers.is_empty() {
                 eprintln!(
-                    "jess: {} carries no tests; run `jess package test` on its Package Source",
+                    "jess: {}: tests run from a Package Source; run `jess package test` on its source",
                     package.display()
                 );
             }

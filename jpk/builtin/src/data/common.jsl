@@ -3,7 +3,8 @@
 -- Shared cold-path machinery for jess's text data parsers. The parsers keep their hot scanners in
 -- their own modules; this file owns the one null sentinel and error/Unicode helpers they share.
 
-local Null = newproxy(false)
+-- The one null: jess.null, which jess's own conversions produce and recognize too.
+local Null = jess.null
 
 local function location(text: string, at: number): (number, number)
   local line, lineStart, search = 1, 0, 1

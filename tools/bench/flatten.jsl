@@ -20,6 +20,7 @@ spelling keeps both sides reading the same load order. Each respelling is printe
 `respelled <config name> -> <file name>`, for the harness to record.
 ]]
 
+local fs = require '@dream/fs'
 local openmw = require '@openmw'
 
 local output: string?, config: string? = ...
@@ -46,7 +47,7 @@ if context.encoding then table.insert(lines, `encoding={context.encoding}`) end
 -- The context lists the engine's resources/vfs first when the chain names `resources`; the
 -- tools don't read it, and the old harness didn't write it.
 local resources = context:configuration():path 'resources'
-local engineVfs = resources and jess.fs.join(resources, 'vfs')
+local engineVfs = resources and fs.join(resources, 'vfs')
 for _, folder in context.dataDirs do
   if folder == engineVfs then continue end
 
@@ -61,7 +62,7 @@ for _, file in context:content() do
   if excluded[string.lower(file.name)] then continue end
 
   local name = file.name
-  local onDisk = file.path and jess.fs.fileName(file.path)
+  local onDisk = file.path and fs.fileName(file.path)
   if onDisk and onDisk ~= name then
     print(`respelled {name} -> {onDisk}`)
     name = onDisk
@@ -71,5 +72,5 @@ for _, file in context:content() do
   table.insert(content, `{name}\t{file.path or ''}`)
 end
 
-jess.fs.write(jess.fs.join(output, 'openmw.cfg.in'), table.concat(lines, '\n') .. '\n')
-jess.fs.write(jess.fs.join(output, 'content.tsv'), table.concat(content, '\n') .. '\n')
+assert(fs.writeFile(fs.join(output, 'openmw.cfg.in'), table.concat(lines, '\n') .. '\n', { atomic = true, createParents = true }))
+assert(fs.writeFile(fs.join(output, 'content.tsv'), table.concat(content, '\n') .. '\n', { atomic = true, createParents = true }))

@@ -14,7 +14,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 pub use crate::lua::files::Written;
-use crate::lua::files::{Backup, write_file_with};
+use crate::lua::files::write_with_backup;
 
 /// The types folder, refreshed on every run.
 pub const TYPES_FOLDER: &str = "types";
@@ -149,7 +149,7 @@ pub fn init(dir: &Path, options: &InitOptions) -> io::Result<InitReport> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let written = write_file_with(&path, contents.as_bytes(), Backup::Keep).map_err(io::Error::other)?;
+        let written = write_with_backup(&path, contents.as_bytes()).map_err(io::Error::other)?;
         report.written.push(written);
     }
     Ok(report)

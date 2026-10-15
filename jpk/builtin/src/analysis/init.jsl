@@ -5,6 +5,7 @@
 -- This module deliberately knows Luau and Jess, not OpenMW. Domain packages consume its stable
 -- source/workspace facts and add their own semantics without growing builtin.jpk into a plugin
 -- framework.
+local Fs = require '@dream/fs'
 local luau = require '@dream/luau'
 
 export type Span = {
@@ -684,7 +685,8 @@ local function defaultExtensions(): { [string]: boolean }
 end
 
 local function extension(path: string): string
-  return string.lower(string.match(path, '(%.[^./]+)$') or '')
+  local found = Fs.extension(path)
+  return if found then `.{string.lower(found)}` else ''
 end
 
 local function collectFiles(paths: { string }, options: WorkspaceOptions?): { string }
@@ -703,15 +705,18 @@ local function collectFiles(paths: { string }, options: WorkspaceOptions?): { st
   local found, seen = {}, {}
 
   local function visit(path: string)
-    if jess.fs.isDir(path) then
-      for _, name in jess.fs.list(path) do
+    if Fs.isDir(path) then
+      local names, problem = Fs.list(path)
+      if not names then error(`{path}: {problem}`, 0) end
+
+      for _, name in names do
         if string.sub(name, 1, 1) == '.' or skipped[name] then continue end
-        visit(jess.fs.join(path, name))
+        visit(Fs.join(path, name))
       end
       return
     end
 
-    if not jess.fs.isFile(path) or not extensions[extension(path)] then return end
+    if not Fs.isFile(path) or not extensions[extension(path)] then return end
     -- Keep the physical filesystem path intact. On POSIX, a backslash is a legal filename
     -- character; normalizing it here can turn a real file into a nonexistent path. Logical/module
     -- path normalization happens separately in moduleKey/moduleSuffixIndex.
@@ -723,7 +728,7 @@ local function collectFiles(paths: { string }, options: WorkspaceOptions?): { st
   for _, path in paths do
     -- A root that isn't there is a mistake in the paths given, not a workspace with nothing in
     -- it: finding no files would read as finding nothing wrong.
-    if not jess.fs.exists(path) then error(`{path}: no such file or folder`) end
+    if not Fs.exists(path) then error(`{path}: no such file or folder`) end
 
     visit(path)
   end
@@ -771,7 +776,7 @@ local function workspace(paths: { string }, options: WorkspaceOptions?): Workspa
   local sources, byPath, byModule = {}, {}, {}
 
   for _, path in files do
-    local text = jess.fs.read(path)
+    local text = Fs.readFileString(path)
     if not text then continue end
     if given.transform then text = given.transform(text, path) end
     local source = analyze(text, { path = path })
@@ -821,8 +826,8 @@ local function workspace(paths: { string }, options: WorkspaceOptions?): Workspa
 end
 
 local function file(path: string): Source
-  local text = jess.fs.read(path)
-  if not text then error(`{path}: no such file`) end
+  local text, problem = Fs.readFileString(path)
+  if not text then error(`{path}: {problem}`, 0) end
   return analyze(text, { path = normalizePath(path) })
 end
 

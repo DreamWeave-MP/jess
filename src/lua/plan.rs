@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
 use l3i::Runtime;
-use l3i::bind::{ArgView, Binding};
+use l3i::bind::Binding;
 use l3i::extension::{
     Extension, ExtensionDescriptor, InstallContext, NativeCodePolicy, RuntimePlan, RuntimePlanBuilder, RuntimePolicy,
     UserdataBuilder,
@@ -120,8 +120,13 @@ fn builder(capabilities: &[String], profiling: bool) -> RuntimePlanBuilder {
 
 /// The members of `@jess`, installed per runtime. Each table among them is also the module
 /// `@jess/<name>` (`require("@jess/shader")`).
-pub(crate) const MEMBERS: [&str; 11] = [
-    "version", "null", "fs", "toml", "regex", "shader", "context", "worker", "l10n", "input", "bench",
+pub(crate) const MEMBERS: [&str; 7] = ["version", "null", "shader", "context", "worker", "input", "bench"];
+
+/// The capabilities `jess.input` checks.
+const INPUT_CAPABILITIES: [&str; 3] = [
+    crate::input::capability::ACTIONS,
+    crate::input::capability::OBSERVE,
+    crate::input::capability::CONFIGURE,
 ];
 
 /// jess's Luau API: the `@jess` module and every jess userdata type.
@@ -136,13 +141,12 @@ impl Extension for JessExtension {
     fn describe(&self, d: &mut ExtensionDescriptor) -> l3i::Result<()> {
         // `jess.context` and `jess.worker` are the runtime's `@jess/context` and `@jess/worker`.
         d.requires(crate::runtime::luau::EXTENSION_ID);
-        crate::lua::regexp::describe(d);
         crate::lua::shader::describe(d);
-        crate::lua::l10n::describe(d);
         crate::lua::input::describe(d);
-        // `jess.fs` reaches the host's files only as far as the runtime's policy lets it.
-        d.optional_capability(l3i::fs::READ_CAPABILITY);
-        d.optional_capability(l3i::fs::WRITE_CAPABILITY);
+        // `jess.input` checks these against the plan outside a domain, and the broker inside one.
+        for capability in INPUT_CAPABILITIES {
+            d.optional_capability(capability);
+        }
         let module = d.module(MODULE);
         module.doc("Generic native services for Luau applications.");
         for name in MEMBERS {
@@ -152,19 +156,19 @@ impl Extension for JessExtension {
     }
 
     fn install(&self, cx: &mut InstallContext<'_>) -> l3i::Result<()> {
-        let read = cx.has_capability(l3i::fs::READ_CAPABILITY)?;
-        let write = cx.has_capability(l3i::fs::WRITE_CAPABILITY)?;
+        let mut granted = Vec::new();
+        for capability in INPUT_CAPABILITIES {
+            if cx.has_capability(capability)? {
+                granted.push(capability);
+            }
+        }
         let runtime = cx.runtime();
         let module = cx.module(MODULE)?.table().clone();
-        let jess = cx.insert_state(Jess::new(runtime, module)?);
-        let l10n = crate::lua::l10n::install(cx)?;
+        let jess = cx.insert_state(Jess::new(runtime, module, granted)?);
         let module = cx.module(MODULE)?;
         module.set("version", env!("CARGO_PKG_VERSION"))?;
         module.set("null", &crate::lua::convert::NULL)?;
-        module.set("fs", &crate::lua::fs::module(runtime, read, write)?)?;
         module.set("bench", &crate::lua::bench::module(runtime)?)?;
-        module.set("toml", &crate::lua::toml::module(runtime, &jess)?)?;
-        module.set("regex", &crate::lua::regexp::module(runtime, &jess)?)?;
         module.set("shader", &crate::lua::shader::module(runtime, &jess)?)?;
         let modules = cx
             .state_of::<crate::runtime::luau::Modules>(crate::runtime::luau::EXTENSION_ID)?
@@ -172,36 +176,28 @@ impl Extension for JessExtension {
         let module = cx.module(MODULE)?;
         module.set("context", &modules.context)?;
         module.set("worker", &modules.worker)?;
-        module.set("l10n", &l10n)?;
         module.set("input", &crate::lua::input::module(runtime, &jess)?)?;
         Ok(())
     }
 }
 
 impl Jess {
-    fn new(runtime: &Runtime, module: Table) -> l3i::Result<Self> {
+    fn new(runtime: &Runtime, module: Table, granted: Vec<&'static str>) -> l3i::Result<Self> {
         let tostring = Function::from_value(runtime.global("tostring")?)?;
-        let (array_marker, loaded) = {
-            let stack = runtime.stack();
-            (Table::new(&stack, 0, 0)?, Table::new(&stack, 0, 32)?)
-        };
-        l3i::readonly::make_read_only(runtime, &array_marker)?;
+        let loaded = Table::new(&runtime.stack(), 0, 32)?;
         Ok(Self {
             module,
-            array_marker,
             compile_options: RefCell::new(None),
             bytecode: RefCell::new(HashMap::new()),
             loaded,
             luau_require: RefCell::new(None),
             packages: RefCell::new(None),
             tostring,
+            builtin: RefCell::new(None),
+            toml_decode: RefCell::new(None),
+            granted,
         })
     }
-}
-
-/// What `function` raises in a runtime whose policy doesn't grant `capability`.
-pub(crate) fn denied(function: &str, capability: &str) -> String {
-    format!("{function}: needs the '{capability}' capability, which this runtime does not grant")
 }
 
 /// A generic sub-module bound under `jess.<name>`, frozen once filled.
@@ -225,24 +221,6 @@ impl<'r> Functions<'r> {
         let function = self.runtime.bind_function(&format!("jess.{}.{key}", self.name), callable)?;
         self.table.set(&self.runtime.stack(), key, &function)?;
         Ok(self)
-    }
-
-    /// Binds `callable` as `key` when the runtime was `granted` the `capability` it needs, and
-    /// otherwise a function that raises the permission error naming it, as l3i's own modules do.
-    pub(crate) fn gated<F: Binding<M>, M>(
-        &self,
-        key: &str,
-        capability: &str,
-        granted: bool,
-        callable: F,
-    ) -> l3i::Result<&Self> {
-        if granted {
-            return self.function(key, callable);
-        }
-        let message = denied(&format!("jess.{}.{key}", self.name), capability);
-        self.function(key, move |_: ArgView<'_>| -> l3i::Result<()> {
-            Err(l3i::Error::permission(message.clone()))
-        })
     }
 
     pub(crate) fn set<T: l3i::convert::Push + ?Sized>(&self, key: &str, value: &T) -> l3i::Result<&Self> {

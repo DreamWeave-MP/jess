@@ -1,14 +1,20 @@
 manifest_version = 1
 
-# jess's built-in package: the Luau tools jess itself is checked with, as Luau. It is the one
+# jess's built-in package: the Luau libraries and tools every runtime can require. It is the one
 # package that may export under @jess/, jess's own namespace.
 
 [package]
 id = "org.dreamweave.jess"
 version = "0.1.0"
 jess_api = "1"
-include = ["src"]
-tests = ["tests/style/run.jsl", "tests/data/run.jsl", "tests/analysis/run.jsl"]
+include = ["src", "tests"]
+tests = [
+  "tests/style/run.jsl",
+  "tests/data/run.jsl",
+  "tests/analysis/run.jsl",
+  "tests/l10n/run.jsl",
+  "tests/input/run.jsl",
+]
 
 [modules]
 "@jess/style" = "src/style/init.jsl"
@@ -17,6 +23,8 @@ tests = ["tests/style/run.jsl", "tests/data/run.jsl", "tests/analysis/run.jsl"]
 "@jess/data/toml" = "src/data/toml.jsl"
 "@jess/data/value" = "src/data/value.jsl"
 "@jess/yaml" = "src/data/yaml.jsl"
+"@jess/l10n" = "src/l10n/init.jsl"
+"@jess/input" = "src/input/init.jsl"
 
 [[layer]]
 id = "jess.style"
@@ -25,3 +33,11 @@ exports = ["@jess/style", "@jess/analysis"]
 [[layer]]
 id = "jess.data"
 exports = ["@jess/json", "@jess/data/toml", "@jess/data/value", "@jess/yaml"]
+
+[[layer]]
+id = "jess.l10n"
+exports = ["@jess/l10n"]
+
+[[layer]]
+id = "jess.input"
+exports = ["@jess/input"]

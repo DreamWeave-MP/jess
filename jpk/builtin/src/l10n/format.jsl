@@ -1,0 +1,219 @@
+--!strict
+-- Formatting a compiled pattern: argument values, one locale's rules, and the walk over its parts.
+--
+-- A locale's rules are @dream/intl's: its CLDR cardinal and ordinal plural rules, and a decimal
+-- formatter per number style, each built the first time a pattern needs it and kept.
+
+local Bytes = require '@dream/bytes'
+local Intl = require '@dream/intl'
+local Pattern = require './pattern'
+
+export type Value = string | number | boolean
+
+--- What a locale formats with: its tag and its plural rules and formatters, built on first use.
+export type Rules = {
+  tag: string,
+  cardinal: dream_intl_PluralRules?,
+  ordinal: dream_intl_PluralRules?,
+  formatters: { [string]: dream_intl_DecimalFormatter },
+}
+
+--- Why a message that exists didn't format: `missing` (the pattern names an argument the caller
+--- didn't pass), `wrong-type` (one the pattern can't use there) or `not-finite` (a number that is
+--- NaN or infinite).
+export type ArgumentError = { kind: 'missing' | 'wrong-type' | 'not-finite', argument: string, detail: string }
+
+type Run = {
+  pattern: Pattern.Pattern,
+  rules: Rules,
+  values: { [string]: Value },
+  out: { string },
+}
+
+-- Raised inside a run and caught by `format`, its only caller.
+type Failure = { failure: ArgumentError }
+
+local function fail(failure: ArgumentError): never
+  local raised: Failure = { failure = failure }
+  error(raised, 0)
+end
+
+local function rules(tag: string): Rules
+  return { tag = tag, formatters = {} }
+end
+
+local function pluralRules(locale: Rules, ordinal: boolean): dream_intl_PluralRules
+  if ordinal then
+    local found = locale.ordinal or Intl.pluralRules(locale.tag, 'ordinal')
+    locale.ordinal = found
+    return found
+  end
+
+  local found = locale.cardinal or Intl.pluralRules(locale.tag, 'cardinal')
+  locale.cardinal = found
+  return found
+end
+
+local function formatter(locale: Rules, style: Pattern.NumberStyle): dream_intl_DecimalFormatter
+  local found = locale.formatters[style.key]
+  if found then return found end
+
+  local created = Intl.decimalFormatter(locale.tag, {
+    grouping = style.grouping,
+    minFractionDigits = style.minFraction,
+    maxFractionDigits = style.maxFraction,
+  })
+  locale.formatters[style.key] = created
+  return created
+end
+
+local function typeName(value: Value): string
+  return type(value)
+end
+
+local function argumentName(run: Run, slot: number): string
+  return run.pattern.arguments[slot].name
+end
+
+local function wrongType(run: Run, slot: number, value: Value): never
+  local argument = run.pattern.arguments[slot]
+  local expected = if argument.kind == 'select' then 'string or boolean' else 'number'
+  return fail {
+    kind = 'wrong-type',
+    argument = argument.name,
+    detail = `argument '{argument.name}' must be a {expected}, not a {typeName(value)}`,
+  }
+end
+
+local function value(run: Run, slot: number): Value
+  local name = argumentName(run, slot)
+  local found = run.values[name]
+  if found == nil then return fail { kind = 'missing', argument = name, detail = `argument '{name}' is missing` } end
+
+  return found
+end
+
+local function number(run: Run, slot: number, given: Value): number
+  if type(given) ~= 'number' then return wrongType(run, slot, given) end
+
+  if given ~= given or given == math.huge or given == -math.huge then
+    local name = argumentName(run, slot)
+    return fail { kind = 'not-finite', argument = name, detail = `argument '{name}' is not a finite number` }
+  end
+
+  return given
+end
+
+--- `value` times ten to the `scale`, as an exact decimal string: the shortest digits that read back
+--- as the double, moved `scale` places, so scaling adds no binary rounding.
+local function scaled(given: number, scale: number): string
+  local digits, exponent = Bytes.shortest(given)
+  local sign = ''
+  local text = digits :: string
+  if string.sub(text, 1, 1) == '-' then sign, text = '-', string.sub(text, 2) end
+
+  local point = (exponent :: number) + scale
+  if point >= 0 then return sign .. text .. string.rep('0', point) end
+
+  local whole = #text + point
+  if whole > 0 then return `{sign}{string.sub(text, 1, whole)}.{string.sub(text, whole + 1)}` end
+
+  return `{sign}0.{string.rep('0', -whole)}{text}`
+end
+
+local function writeNumber(run: Run, style: Pattern.NumberStyle, given: number)
+  local input: number | string = if style.scale == 0 then given else scaled(given, style.scale)
+  table.insert(run.out, formatter(run.rules, style):format(input))
+  if style.percent then table.insert(run.out, '%') end
+end
+
+local writeParts: (run: Run, parts: { Pattern.Part }) -> ()
+
+--- The case a plural picks: an exact match on the value before the offset, else the category of
+--- the value minus the offset, else `other`; ICU's PluralFormat order.
+local function pluralCase(run: Run, slot: number, ordinal: boolean, offset: number, cases: { Pattern.Case }): { Pattern.Part }
+  local given = number(run, slot, value(run, slot))
+
+  for _, case in cases do
+    local selector = case.selector
+    if selector.kind == 'exact' and selector.value == given then return case.parts end
+  end
+
+  local category = pluralRules(run.rules, ordinal):category(given - offset)
+  local other: { Pattern.Part } = {}
+  for _, case in cases do
+    local selector = case.selector
+    if selector.kind == 'category' and selector.category == category then return case.parts end
+    if selector.kind == 'other' then other = case.parts end
+  end
+
+  return other
+end
+
+local function selectCase(run: Run, slot: number, cases: { Pattern.Case }): { Pattern.Part }
+  local given = value(run, slot)
+  local key: string
+  if type(given) == 'string' then
+    key = given
+  elseif type(given) == 'boolean' then
+    key = if given then 'true' else 'false'
+  else
+    return wrongType(run, slot, given)
+  end
+
+  local other: { Pattern.Part } = {}
+  for _, case in cases do
+    local selector = case.selector
+    if selector.kind == 'keyword' and selector.keyword == key then return case.parts end
+    if selector.kind == 'other' then other = case.parts end
+  end
+
+  return other
+end
+
+writeParts = function(run: Run, parts: { Pattern.Part })
+  for _, part in parts do
+    if part.kind == 'text' then
+      table.insert(run.out, part.text)
+    elseif part.kind == 'simple' then
+      local given = value(run, part.slot)
+      if type(given) == 'string' then
+        table.insert(run.out, given)
+      elseif type(given) == 'boolean' then
+        table.insert(run.out, if given then 'true' else 'false')
+      else
+        writeNumber(run, Pattern.defaultStyle, number(run, part.slot, given))
+      end
+    elseif part.kind == 'number' then
+      writeNumber(run, part.style, number(run, part.slot, value(run, part.slot)))
+    elseif part.kind == 'pound' then
+      writeNumber(run, Pattern.defaultStyle, number(run, part.slot, value(run, part.slot)) - part.offset)
+    elseif part.kind == 'plural' then
+      writeParts(run, pluralCase(run, part.slot, part.ordinal, part.offset, part.cases))
+    elseif part.kind == 'select' then
+      writeParts(run, selectCase(run, part.slot, part.cases))
+    end
+  end
+end
+
+local function render(run: Run): string
+  writeParts(run, run.pattern.parts)
+  return table.concat(run.out)
+end
+
+--- `pattern` formatted with `locale`'s rules and `values`, or nil and why an argument was refused.
+local function format(pattern: Pattern.Pattern, locale: Rules, values: { [string]: Value }): (string?, ArgumentError?)
+  local run: Run = { pattern = pattern, rules = locale, values = values, out = {} }
+  -- A run raises an argument it can't use as a table; anything else is a bug and propagates.
+  local ok, result = pcall(render, run)
+  if ok then return result :: string, nil end
+
+  if type(result) == 'table' and (result :: Failure).failure then return nil, (result :: Failure).failure end
+
+  error(result, 0)
+end
+
+return table.freeze {
+  rules = rules,
+  format = format,
+}

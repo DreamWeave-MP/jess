@@ -13,7 +13,8 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError, sync_channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -176,6 +177,12 @@ pub struct WorkerInfo {
     pub generation: Generation,
 }
 
+/// How many messages may wait in each direction between a domain and one worker.
+///
+/// A domain that sends faster than its worker handles is told the queue is full instead of
+/// growing it without bound; a worker that replies faster than its domain receives waits for room.
+pub const WORKER_QUEUE: usize = 1024;
+
 pub enum Command {
     Message { message: Message, sent: Instant },
     Close,
@@ -192,7 +199,7 @@ pub enum Output {
 #[derive(Clone)]
 pub struct WorkerLink {
     pub(crate) attribution: Attribution,
-    pub(crate) outbox: Sender<Output>,
+    pub(crate) outbox: SyncSender<Output>,
     pub(crate) counters: Arc<Counters>,
     pub(crate) profiler: Arc<dyn ProfileSink>,
 }
@@ -236,8 +243,11 @@ pub struct WorkerRecord {
     pub(crate) attribution: Attribution,
     pub(crate) state: WorkerState,
     on_failure: WorkerFailurePolicy,
-    inbox: Sender<Command>,
+    inbox: SyncSender<Command>,
     outbox: Receiver<Output>,
+    /// Set by `close`: the lane stops once its queue is empty, even when the queue was too full
+    /// to take a `Close`.
+    closing: Arc<AtomicBool>,
     /// Replies read off the channel while waiting for something else (a join), kept in order.
     pending: VecDeque<Message>,
     /// A failure read off the channel while waiting for something else, reported on the next
@@ -249,15 +259,17 @@ pub struct WorkerRecord {
 impl WorkerRecord {
     /// Starts a lane for `launch` and returns the domain's side of it.
     pub(crate) fn spawn(id: WorkerId, launch: Launch) -> Result<WorkerRecord, RuntimeError> {
-        let (inbox, commands) = channel::<Command>();
-        let (results, outbox) = channel::<Output>();
+        let (inbox, commands) = sync_channel::<Command>(WORKER_QUEUE);
+        let (results, outbox) = sync_channel::<Output>(WORKER_QUEUE);
+        let closing = Arc::new(AtomicBool::new(false));
+        let lane_closing = Arc::clone(&closing);
         let name = launch.spec.name.clone();
         let module = launch.spec.chunk_name.clone();
         let on_failure = launch.spec.on_failure;
         let attribution = launch.attribution;
         let lane = std::thread::Builder::new()
             .name(format!("jess-{id}"))
-            .spawn(move || run(&launch, &commands, &results))
+            .spawn(move || run(&launch, &commands, &results, &lane_closing))
             .map_err(|error| {
                 RuntimeError::Worker(WorkerError {
                     attribution,
@@ -275,6 +287,7 @@ impl WorkerRecord {
             on_failure,
             inbox,
             outbox,
+            closing,
             pending: VecDeque::new(),
             failure: None,
             lane: Some(lane),
@@ -304,12 +317,15 @@ impl WorkerRecord {
         if matches!(self.state, WorkerState::Stopped | WorkerState::Failed) {
             return Err(self.ended(&format!("the worker is {}; it takes no more messages", self.state)));
         }
+        let sent = Instant::now();
         self.inbox
-            .send(Command::Message {
-                message,
-                sent: Instant::now(),
+            .try_send(Command::Message { message, sent })
+            .map_err(|error| match error {
+                TrySendError::Full(_) => self.ended(&format!(
+                    "the worker's queue is full: {WORKER_QUEUE} messages wait for its handler; receive its replies, or send fewer"
+                )),
+                TrySendError::Disconnected(_) => self.ended("the worker's lane has ended; it takes no more messages"),
             })
-            .map_err(|_| self.ended("the worker's lane has ended; it takes no more messages"))
     }
 
     fn absorb(&mut self, output: Output) -> Option<Result<Message, RuntimeError>> {
@@ -347,14 +363,19 @@ impl WorkerRecord {
         if let Some(error) = self.failure.take() {
             return Err(RuntimeError::Worker(error));
         }
-        let deadline = timeout.map(|timeout| Instant::now() + timeout);
+        // `None` doesn't wait; a wait too long for an `Instant` waits as long as it takes.
+        let deadline = timeout.map(|timeout| Instant::now().checked_add(timeout));
         loop {
             let output = match deadline {
                 None => match self.outbox.try_recv() {
                     Ok(output) => output,
                     Err(TryRecvError::Empty | TryRecvError::Disconnected) => return Ok(None),
                 },
-                Some(deadline) => match self.outbox.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Some(None) => match self.outbox.recv() {
+                    Ok(output) => output,
+                    Err(_) => return Ok(None),
+                },
+                Some(Some(deadline)) => match self.outbox.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
                     Ok(output) => output,
                     Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => return Ok(None),
                 },
@@ -371,15 +392,19 @@ impl WorkerRecord {
 
     /// Asks the worker to stop after the messages already queued.
     pub(crate) fn close(&self) {
-        // A lane that already ended has dropped its receiver; there is nobody left to tell.
-        drop(self.inbox.send(Command::Close));
+        self.closing.store(true, Ordering::Release);
+        // Wakes a lane waiting on an empty queue. A full queue can't take it, and needn't: the
+        // lane sees the flag once it has handled what is queued. A lane that already ended has
+        // dropped its receiver, and there is nobody left to tell.
+        drop(self.inbox.try_send(Command::Close));
     }
 
     /// Closes the worker and waits for its lane to end, up to `timeout` (`None` waits as long
     /// as it takes). Replies it sent before ending stay readable through `receive`.
     pub(crate) fn join(&mut self, timeout: Option<Duration>) -> Result<WorkerState, RuntimeError> {
         self.close();
-        let deadline = timeout.map(|timeout| Instant::now() + timeout);
+        // A wait too long for an `Instant` waits as long as it takes, as `None` does.
+        let deadline = timeout.and_then(|timeout| Instant::now().checked_add(timeout));
         while self.lane.as_ref().is_some_and(|lane| !lane.is_finished()) {
             let output = match deadline {
                 None => self.outbox.recv().ok(),
@@ -428,7 +453,7 @@ impl WorkerRecord {
     }
 }
 
-fn fail(launch: &Launch, results: &Sender<Output>, stage: WorkerStage, message: String) {
+fn fail(launch: &Launch, results: &SyncSender<Output>, stage: WorkerStage, message: String) {
     let error = WorkerError {
         attribution: launch.attribution,
         module: launch.spec.chunk_name.clone(),
@@ -452,12 +477,12 @@ fn fail(launch: &Launch, results: &Sender<Output>, stage: WorkerStage, message: 
 /// A worker's lane: build the runtime here, load the module, then handle messages until closed.
 /// The runtime is dropped here too, before `Finished` is sent, so a joined worker has released
 /// its Luau state.
-fn run(launch: &Launch, commands: &Receiver<Command>, results: &Sender<Output>) {
-    serve(launch, commands, results);
+fn run(launch: &Launch, commands: &Receiver<Command>, results: &SyncSender<Output>, closing: &AtomicBool) {
+    serve(launch, commands, results, closing);
     drop(results.send(Output::Finished));
 }
 
-fn serve(launch: &Launch, commands: &Receiver<Command>, results: &Sender<Output>) {
+fn serve(launch: &Launch, commands: &Receiver<Command>, results: &SyncSender<Output>, closing: &AtomicBool) {
     let started = Instant::now();
     let built = launch.factory.create().and_then(|runtime| {
         if let Some(setup) = &launch.setup {
@@ -508,7 +533,7 @@ fn serve(launch: &Launch, commands: &Receiver<Command>, results: &Sender<Output>
     if results.send(Output::Ready).is_err() {
         return;
     }
-    handle_messages(launch, &runtime, &handler, scope, commands, results);
+    handle_messages(launch, &runtime, &handler, scope, commands, results, closing);
 }
 
 /// Runs the worker's module and takes the handler it returns; the error is the message for a
@@ -535,9 +560,19 @@ fn handle_messages(
     handler: &l3i::value::Function,
     scope: CallContext,
     commands: &Receiver<Command>,
-    results: &Sender<Output>,
+    results: &SyncSender<Output>,
+    closing: &AtomicBool,
 ) {
-    while let Ok(Command::Message { message, sent }) = commands.recv() {
+    loop {
+        // Once closing, what is queued still runs; an empty queue ends the lane.
+        let command = if closing.load(Ordering::Acquire) {
+            commands.try_recv().ok()
+        } else {
+            commands.recv().ok()
+        };
+        let Some(Command::Message { message, sent }) = command else {
+            return;
+        };
         let queue_delay = sent.elapsed();
         let began = Instant::now();
         let outcome = {

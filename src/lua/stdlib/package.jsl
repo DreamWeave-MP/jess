@@ -807,6 +807,17 @@ local function canonicalFiles(manifest: Manifest, paths: { string }, where: stri
   return rest
 end
 
+--- Whether a file found under an included folder is an editor's or a merge tool's leftover
+--- (`init.jsl.bak`, `init.jsl~`, `init.jsl.orig`), which is never payload: one left in a folder
+--- would change the package's digest and ship in its JPK.
+local function isLeftover(path: string): boolean
+  local name = string.match(path, '[^/]+$') or path
+
+  return string.find(name, '.bak', 1, true) ~= nil
+    or string.sub(name, -1) == '~'
+    or string.sub(name, -5) == '.orig'
+end
+
 local function openSource(location: string): Package
   local text = host.readFile(`{location}/{Manifest}`)
 
@@ -829,7 +840,7 @@ local function openSource(location: string): Package
 
         if entry.kind == 'other' then fail(`'{location}': '{path}' is not a file or folder`) end
 
-        if entry.kind == 'file' then table.insert(paths, path) end
+        if entry.kind == 'file' and not isLeftover(path) then table.insert(paths, path) end
       end
     elseif host.fileSize(full) then
       table.insert(paths, root)
@@ -839,6 +850,17 @@ local function openSource(location: string): Package
   end
 
   local files = canonicalFiles(manifest, paths, location)
+
+  -- Tests ship in the payload, so a JPK can be tested as its source is. One packed before that
+  -- may lack them; a source may not.
+  for _, test in manifest.tests do
+    if table.find(files, test) then continue end
+
+    fail(
+      `'{location}': [package] tests names '{test}', which the payload doesn't hold: put it under a folder [package] include names`
+    )
+  end
+
   local digest, read = seal(
     location,
     files,

@@ -109,7 +109,7 @@ fn tool_and_library(root: &Path) {
     write(
         "tool/jess.toml",
         "manifest_version = 1\n[package]\nid = \"org.example.tool\"\nversion = \"1.0.0\"\njess_api = \"1\"\n\
-         default_target = \"greet\"\ninclude = [\"src\"]\ntests = [\"tests/run.jsl\"]\n\
+         default_target = \"greet\"\ninclude = [\"src\", \"tests\"]\ntests = [\"tests/run.jsl\"]\n\
          [dependencies]\n\"org.example.lib\" = \"1\"\n\
          [targets.greet]\nkind = \"command\"\nentry = \"src/greet.jsl\"\ncapabilities = [\"process.environment\"]\n",
     );

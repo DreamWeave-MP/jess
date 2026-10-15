@@ -4,5 +4,3 @@
 mod common;
 mod gameplay;
 mod graph;
-mod intents;
-mod presentation;

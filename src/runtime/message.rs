@@ -310,13 +310,13 @@ fn format_number(number: f64) -> String {
 pub fn push_message(frame: &Frame<'_>, message: &Message) -> l3i::Result<()> {
     match message {
         Message::Nil => {
-            frame.push_nil();
+            frame.push_nil()?;
         }
         Message::Boolean(value) => {
-            frame.push_boolean(*value);
+            frame.push_boolean(*value)?;
         }
         Message::Number(value) => {
-            frame.push_number(*value);
+            frame.push_number(*value)?;
         }
         Message::Integer(value) => {
             frame.push(&Integer(*value))?;

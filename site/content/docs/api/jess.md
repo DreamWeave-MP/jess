@@ -6,7 +6,7 @@ extra:
   kind: api
 ---
 
-{{ api_signature(value="jess: { version, null, meta, plugin, select, save, nif, openmw, luadata, compare, fs, toml, regex, shader, context, worker, l10n, input }") }}
+{{ api_signature(value="jess: { version, null, meta, plugin, select, save, nif, openmw, luadata, compare, fs, shader, context, worker, input }") }}
 
 `jess` is the global table every script gets, however it was started: `jess run`, `jess test`, `jess plugin modify --script`, or `jess nif modify --script`. It holds one table per module, plus the few values that belong to no module and had to live somewhere.
 
@@ -31,14 +31,14 @@ extra:
 | `jess.openmw` | Config contexts, active content, VFS reads | [jess.openmw and OpenMwContext](@/docs/api/openmw.md) |
 | `jess.luadata` | OpenMW's serialized Lua data | [jess.luadata](@/docs/api/luadata.md) |
 | `jess.compare` | Byte comparisons, common records, diffs, overlapping topics | [jess.compare](@/docs/api/compare.md) |
-| `jess.fs` | Files and folders | [jess.fs](@/docs/api/fs.md) |
-| `jess.toml` | TOML documents as tables | [jess.toml](@/docs/api/toml.md) |
-| `jess.regex` | Rust regular expressions | [jess.regex](@/docs/api/regex.md) |
+| `@dream/fs` | Files and folders | [Files](@/docs/api/fs.md) |
+| `@jess/data/toml` | TOML documents as tables, and back | [@jess/data/toml](@/docs/api/toml.md) |
+| `bytes.regex` | Rust regular expressions | [Regular expressions](@/docs/api/regex.md) |
 | `jess.shader` | Typed shader programs from Luau modules | [jess.shader](@/docs/api/shader.md) |
-| `jess.input` | Action graphs and a headless input runtime | [jess.input](@/docs/api/input.md) |
+| `@jess/input` | Action graphs, labels, conflicts, intents, and the input runtime | [@jess/input](@/docs/api/input.md) |
 | `jess.context` | Handlers for the phases a ScriptDomain schedules | [jess.context](@/docs/api/context.md) |
 | `jess.worker` | Isolated Luau workers and their messages | [jess.worker](@/docs/api/worker.md) |
-| `jess.l10n` | Localized text from message bundles | [jess.l10n](@/docs/api/l10n.md) |
+| `@jess/l10n` | Localized text from message bundles | [@jess/l10n](@/docs/api/l10n.md) |
 | `LightRecord`, `NiNodeRecord`, ... | Generated record and NIF types | [Record and NIF Types](@/docs/api/record-types.md) |
 | `vfstool`, `openmwConfig`, `dreamPath` | The libraries jess is built on | [Downstream Globals](@/docs/api/downstream-globals.md) |
 
@@ -64,6 +64,7 @@ The value that fills an empty slot in an array, where `nil` would end the array 
 Luau arrays can't hold `nil` in the middle: `{ a, nil, b }` has length 1 or 3 depending on how it was built, and `ipairs` stops at the gap. jess uses `jess.null` wherever a list keeps its positions, most often an empty link in a NIF record's `children`, `properties`, or `effects`. You'll find it in tables from `decode()` and `toTable()`, and you can write it wherever an empty link is allowed.
 
 - **Type:** `JessNull`, an opaque userdata. `typeof(jess.null)` is `"userdata"`.
+- **One null:** it is also the null the built-in codecs read and write: `require('@jess/json').null`, `require('@jess/yaml').null`, and `@jess/data/value`'s `Null` are `jess.null`, so a null decoded from JSON is the one any jess API takes.
 - **Comparing:** `value == jess.null` works. A live list view reads an empty link as `nil`, and a copied table holds `jess.null` in that slot, so the types spell such a table's items as `number | JessNull`.
 
 ```luau

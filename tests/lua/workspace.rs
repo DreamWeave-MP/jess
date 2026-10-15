@@ -9,6 +9,12 @@ use super::{common, text, write};
 /// A package `org.example.<name>` at `root`, version `version`, with `extra` after its `[package]`
 /// table: one layer, `example.<name>`, exporting `@<name>`.
 fn member(root: &Path, name: &str, version: &str, extra: &str) {
+    // Tests ship in the payload.
+    let include = if extra.contains("tests = [") {
+        r#"["src", "tests"]"#
+    } else {
+        r#"["src"]"#
+    };
     write(
         root,
         &[
@@ -16,7 +22,7 @@ fn member(root: &Path, name: &str, version: &str, extra: &str) {
                 "jess.toml",
                 &format!(
                     "manifest_version = 1\n[package]\nid = \"org.example.{name}\"\nversion = \"{version}\"\n\
-                     jess_api = \"1\"\ninclude = [\"src\"]\n{extra}\n[modules]\n\"@{name}\" = \"src/init.jsl\"\n\
+                     jess_api = \"1\"\ninclude = {include}\n{extra}\n[modules]\n\"@{name}\" = \"src/init.jsl\"\n\
                      [[layer]]\nid = \"example.{name}\"\nexports = [\"@{name}\"]\n"
                 ),
             ),

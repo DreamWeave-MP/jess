@@ -2,6 +2,7 @@
 --!native
 -- @jess/style's own cases: for every rule, code that follows it and code that doesn't, with the
 -- findings the checker gives for the second, each as `line:column rule`.
+local Fs = require '@dream/fs'
 local style = require '@jess/style'
 local test = require '@jess/test'
 local expect = test.expect
@@ -643,6 +644,32 @@ suite.describe('markdown', function()
     expect(#blocks).toBe(2)
     expect({ blocks[1].line, blocks[1].source }).toEqual { 3, 'print(1)\n' }
     expect({ blocks[2].line, blocks[2].source }).toEqual { 11, 'print(2)\n' }
+  end)
+end)
+
+suite.describe('a package', function()
+  suite.it('holds its payload to strict and no any, and the rest to the style alone', function()
+    local scratch = assert(rawget(_G, 'scratchRoot') :: string?, 'the case needs a scratchRoot')
+    local root = Fs.join(scratch, 'style-package')
+    local sources: { [string]: string } = {
+      ['src/init.jsl'] = '--!strict\nreturn function(): any return 1 end\n',
+      ['tests/run.jsl'] = '--!strict\nreturn function(): any return 1 end\n',
+    }
+
+    for path, text in sources do
+      local written, problem = Fs.writeFile(Fs.join(root, path), text, { createParents = true })
+      assert(written, problem)
+    end
+
+    local findings = style.checkPackage(root)
+    local payload = `{root}/src/init.jsl`
+    expect(#findings > 0).toBeTruthy()
+
+    for _, finding in findings do
+      expect(string.sub(finding, 1, #payload)).toBe(payload)
+    end
+
+    expect(style.checkPackage(root, {})).toEqual {}
   end)
 end)
 

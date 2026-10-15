@@ -1,0 +1,905 @@
+--!strict
+--!native
+-- TOML 1.1.0, decoded directly into Luau values. Integers in Luau's exact-number range remain
+-- numbers; larger signed 64-bit values use l3i's exact `integer` type, and datetimes are strings.
+-- The second result is a layout side channel: each table's keys in document order, and which
+-- values of each table or array were written as floats and which as datetimes.
+--
+-- It requires nothing but ./common, so jess can load it to read package manifests before any
+-- package, this one included, is resolved.
+local Common = require './common'
+
+local SafeIntegerMax = integer.fromstring('9007199254740991')
+local SafeIntegerMin = integer.fromstring('-9007199254740991')
+
+export type Value = any
+export type Table = { [string]: Value }
+export type Kind = 'float' | 'datetime'
+--- Where a key and its value are in the text, as 1-based byte offsets: the key's first byte, and the
+--- first and last byte of the value as written (quotes included).
+export type Position = { key: number, value: number, valueEnd: number }
+
+export type Options = { positions: boolean? }
+
+type LayoutEntry = {
+  keys: { string }?,
+  floats: { [any]: boolean },
+  datetimes: { [any]: boolean },
+  positions: { [string]: Position }?,
+}
+export type Layout = { [any]: LayoutEntry }
+
+local source = ''
+local length = 0
+local at = 1
+local layout: Layout = {}
+local kinds: { [any]: string } = {}
+local arraysOfTables: { [any]: boolean } = {}
+-- Byte positions of each key and its value, kept only when a caller asks (`positions = true`).
+local positions: { [Table]: { [string]: Position } }? = nil
+local root: Table, current: Table = {}, {}
+
+local BasicEscape: { [number]: string } = {
+  [34] = '"',
+  [92] = '\\',
+  [98] = '\b',
+  [101] = '\27',
+  [102] = '\f',
+  [110] = '\n',
+  [114] = '\r',
+  [116] = '\t',
+}
+
+local function fail(message: string): never
+  Common.fail('toml', source, at, message)
+  error('unreachable', 0)
+end
+
+local function entry(container: any): LayoutEntry
+  local found = layout[container]
+  if found then return found end
+
+  local created: LayoutEntry = { keys = nil, floats = {}, datetimes = {} }
+  layout[container] = created
+  return created
+end
+
+type TableEntry = {
+  keys: { string },
+  floats: { [any]: boolean },
+  datetimes: { [any]: boolean },
+  positions: { [string]: Position }?,
+}
+
+local function tableEntry(container: Table): TableEntry
+  local found = layout[container]
+  if found then return found :: any end
+
+  local created: TableEntry = { keys = {}, floats = {}, datetimes = {} }
+  layout[container] = created :: any
+  return created
+end
+
+local function newTable(kind: string): Table
+  local value: Table = {}
+  kinds[value] = kind
+  layout[value] = { keys = {}, floats = {}, datetimes = {} }
+  return value
+end
+
+local function newArray(): { Value }
+  local value: { Value } = {}
+  layout[value] = { floats = {}, datetimes = {} }
+  return value
+end
+
+local function rememberKey(container: Table, key: string)
+  local keys = tableEntry(container).keys
+  table.insert(keys, key)
+end
+
+local function mark(found: LayoutEntry | TableEntry, key: any, kind: Kind?)
+  if kind == 'float' then found.floats[key] = true end
+  if kind == 'datetime' then found.datetimes[key] = true end
+end
+
+--- Puts a key that must be new; a duplicate is reported at `keyAt`, where its key starts.
+local function putNew(container: Table, key: string, value: Value, kind: Kind?, keyAt: number)
+  if container[key] ~= nil then
+    at = keyAt
+    fail(`duplicate key '{key}'`)
+  end
+
+  container[key] = value
+  rememberKey(container, key)
+  mark(tableEntry(container), key, kind)
+end
+
+local function isHorizontal(byte: number?): boolean
+  return byte == 9 or byte == 32
+end
+
+local function skipHorizontal()
+  while isHorizontal(string.byte(source, at)) do at += 1 end
+end
+
+local function consumeNewline(): boolean
+  local byte = string.byte(source, at)
+  if byte == 10 then
+    at += 1
+    return true
+  end
+
+  if byte == 13 and string.byte(source, at + 1) == 10 then
+    at += 2
+    return true
+  end
+
+  return false
+end
+
+local function skipComment()
+  if string.byte(source, at) ~= 35 then return end
+
+  at += 1
+  while at <= length do
+    local byte = string.byte(source, at)
+    if byte == 10 or byte == 13 then return end
+    if byte == 127 or (byte and byte < 32 and byte ~= 9) then fail('control character in comment') end
+
+    at += 1
+  end
+end
+
+local function skipDocumentSpace()
+  while true do
+    skipHorizontal()
+    if string.byte(source, at) == 35 then
+      skipComment()
+    end
+
+    if not consumeNewline() then return end
+  end
+end
+
+local function skipValueSpace()
+  while true do
+    skipHorizontal()
+    if string.byte(source, at) == 35 then
+      skipComment()
+    end
+
+    if not consumeNewline() then return end
+  end
+end
+
+local function unicodeEscape(digits: number): string
+  local codepoint = Common.hex(source, at, digits)
+  if not codepoint then fail('invalid Unicode escape') end
+  local value = codepoint :: number
+
+  if value > 0x10FFFF or (value >= 0xD800 and value <= 0xDFFF) then
+    fail('Unicode escape is not a scalar value')
+  end
+
+  at += digits
+  return utf8.char(value)
+end
+
+local function parseBasicString(multiline: boolean): string
+  local delimiter = if multiline then 3 else 1
+  at += delimiter
+
+  if multiline then
+    if string.byte(source, at) == 10 then
+      at += 1
+    elseif string.byte(source, at) == 13 and string.byte(source, at + 1) == 10 then
+      at += 2
+    end
+  end
+
+  local parts: { string } = {}
+  local chunk = at
+
+  while at <= length do
+    local byte = string.byte(source, at)
+    if byte == 34 then
+      local run = 1
+      while string.byte(source, at + run) == 34 do run += 1 end
+
+      if multiline then
+        if run >= 3 then
+          if at > chunk then table.insert(parts, string.sub(source, chunk, at - 1)) end
+          if run > 5 then fail('too many quotation marks in multi-line basic string') end
+          if run > 3 then table.insert(parts, string.rep('"', run - 3)) end
+
+          at += run
+          return table.concat(parts)
+        end
+        at += run
+        continue
+      end
+
+      if at > chunk then table.insert(parts, string.sub(source, chunk, at - 1)) end
+      at += 1
+      return table.concat(parts)
+    end
+
+    if byte == 92 then
+      if at > chunk then table.insert(parts, string.sub(source, chunk, at - 1)) end
+
+      if multiline then
+        local probe = at + 1
+        while isHorizontal(string.byte(source, probe)) do probe += 1 end
+        local hasNewline = string.byte(source, probe) == 10
+          or (string.byte(source, probe) == 13 and string.byte(source, probe + 1) == 10)
+        if hasNewline then
+          at = probe
+          consumeNewline()
+          while true do
+            while isHorizontal(string.byte(source, at)) do at += 1 end
+            if not consumeNewline() then break end
+          end
+          chunk = at
+          continue
+        end
+      end
+
+      local escaped = string.byte(source, at + 1)
+      local replacement = escaped and BasicEscape[escaped]
+      if replacement then
+        table.insert(parts, replacement)
+        at += 2
+      elseif escaped == 120 then
+        at += 2
+        table.insert(parts, unicodeEscape(2))
+      elseif escaped == 117 then
+        at += 2
+        table.insert(parts, unicodeEscape(4))
+      elseif escaped == 85 then
+        at += 2
+        table.insert(parts, unicodeEscape(8))
+      else
+        fail('invalid escape sequence in basic string')
+      end
+      chunk = at
+      continue
+    end
+
+    if byte == 10 then
+      if not multiline then fail('newline in basic string') end
+      at += 1
+      continue
+    end
+
+    if byte == 13 then
+      if not multiline or string.byte(source, at + 1) ~= 10 then fail('bare carriage return in basic string') end
+      if at > chunk then table.insert(parts, string.sub(source, chunk, at - 1)) end
+      table.insert(parts, '\n')
+      at += 2
+      chunk = at
+      continue
+    end
+
+    if byte == 127 or (byte and byte < 32 and byte ~= 9 and not (multiline and byte == 10)) then
+      fail('control character in basic string')
+    end
+
+    at += 1
+  end
+
+  fail('unterminated basic string')
+  error('unreachable', 0)
+end
+
+local function parseLiteralString(multiline: boolean): string
+  local delimiter = if multiline then 3 else 1
+  at += delimiter
+
+  if multiline then
+    if string.byte(source, at) == 10 then
+      at += 1
+    elseif string.byte(source, at) == 13 and string.byte(source, at + 1) == 10 then
+      at += 2
+    end
+  end
+
+  local parts: { string } = {}
+  local chunk = at
+
+  while at <= length do
+    local byte = string.byte(source, at)
+    if byte == 39 then
+      local run = 1
+      while string.byte(source, at + run) == 39 do run += 1 end
+
+      if multiline then
+        if run >= 3 then
+          if at > chunk then table.insert(parts, string.sub(source, chunk, at - 1)) end
+          if run > 5 then fail('too many apostrophes in multi-line literal string') end
+          if run > 3 then table.insert(parts, string.rep("'", run - 3)) end
+
+          at += run
+          return table.concat(parts)
+        end
+        at += run
+        continue
+      end
+
+      if at > chunk then table.insert(parts, string.sub(source, chunk, at - 1)) end
+      at += 1
+      return table.concat(parts)
+    end
+
+    if byte == 10 then
+      if not multiline then fail('newline in literal string') end
+      at += 1
+      continue
+    end
+
+    if byte == 13 then
+      if not multiline or string.byte(source, at + 1) ~= 10 then fail('bare carriage return in literal string') end
+      if at > chunk then table.insert(parts, string.sub(source, chunk, at - 1)) end
+      table.insert(parts, '\n')
+      at += 2
+      chunk = at
+      continue
+    end
+
+    if byte == 127 or (byte and byte < 32 and byte ~= 9 and not (multiline and byte == 10)) then
+      fail('control character in literal string')
+    end
+
+    at += 1
+  end
+
+  fail('unterminated literal string')
+  error('unreachable', 0)
+end
+
+local function parseString(): string
+  local byte = string.byte(source, at)
+  if byte == 34 then
+    return parseBasicString(string.sub(source, at, at + 2) == '"""')
+  end
+
+  if byte == 39 then
+    return parseLiteralString(string.sub(source, at, at + 2) == "'''")
+  end
+
+  fail('expected string')
+  error('unreachable', 0)
+end
+
+local function bareKeyByte(byte: number?): boolean
+  return byte ~= nil
+    and ((byte >= 48 and byte <= 57) or (byte >= 65 and byte <= 90) or (byte >= 97 and byte <= 122) or byte == 95 or byte == 45)
+end
+
+local function parseKeyPart(): string
+  skipHorizontal()
+  local byte = string.byte(source, at)
+  if byte == 34 or byte == 39 then
+    if string.sub(source, at, at + 2) == '"""' or string.sub(source, at, at + 2) == "'''" then
+      fail('multi-line strings cannot be keys')
+    end
+    return parseString()
+  end
+
+  local start = at
+  while bareKeyByte(string.byte(source, at)) do at += 1 end
+  if at == start then fail('expected key') end
+
+  return string.sub(source, start, at - 1)
+end
+
+local function parseKeyPath(): { string }
+  local path = { parseKeyPart() }
+  skipHorizontal()
+
+  while string.byte(source, at) == 46 do
+    at += 1
+    table.insert(path, parseKeyPart())
+    skipHorizontal()
+  end
+
+  return path
+end
+
+local function validUnderscores(text: string): boolean
+  for position = 1, #text do
+    if string.byte(text, position) == 95 then
+      local before, after = string.byte(text, position - 1), string.byte(text, position + 1)
+      if not before or not after or before < 48 or before > 57 or after < 48 or after > 57 then return false end
+    end
+  end
+
+  return true
+end
+
+local function cleanNumber(text: string): string
+  if not validUnderscores(text) then fail('underscore in number is not surrounded by digits') end
+  return (string.gsub(text, '_', ''))
+end
+
+local function decimalInteger(text: string): any
+  local clean = cleanNumber(text)
+  local position = 1
+  local first = string.byte(clean, position)
+  if first == 43 or first == 45 then position += 1 end
+
+  local digits = string.sub(clean, position)
+  if not string.find(digits, '^%d+$') then return nil end
+  if #digits > 1 and string.byte(digits, 1) == 48 then fail('leading zero in integer') end
+
+  local value = integer.fromstring(clean)
+  if not value then fail('integer is outside signed 64-bit range') end
+  if integer.ge(value, SafeIntegerMin) and integer.le(value, SafeIntegerMax) then return integer.tonumber(value) end
+  return value
+end
+
+local function radixDigit(byte: number?, prefix: number): boolean
+  if not byte then return false end
+
+  if prefix == 120 then
+    return (byte >= 48 and byte <= 57) or (byte >= 65 and byte <= 70) or (byte >= 97 and byte <= 102)
+  end
+
+  if prefix == 111 then return byte >= 48 and byte <= 55 end
+
+  return byte == 48 or byte == 49
+end
+
+local function radixInteger(text: string): any
+  if string.byte(text, 1) == 43 or string.byte(text, 1) == 45 then return nil end
+  if string.byte(text, 1) ~= 48 then return nil end
+
+  local prefix = string.byte(text, 2)
+  if prefix ~= 120 and prefix ~= 111 and prefix ~= 98 then return nil end
+  if not radixDigit(string.byte(text, 3), prefix) then fail('invalid digit in radix integer') end
+
+  for position = 3, #text do
+    local byte = string.byte(text, position)
+    if byte == 95 then
+      if not radixDigit(string.byte(text, position - 1), prefix)
+        or not radixDigit(string.byte(text, position + 1), prefix) then
+        fail('underscore in radix integer is not surrounded by digits')
+      end
+    elseif not radixDigit(byte, prefix) then
+      fail('invalid digit in radix integer')
+    end
+  end
+
+  local clean = string.gsub(text, '_', '')
+  local base = if prefix == 120 then 16 elseif prefix == 111 then 8 else 2
+  local value = integer.fromstring(string.sub(clean, 3), base)
+  if not value or integer.lt(value, 0i) then fail('radix integer is outside signed 64-bit range') end
+  if integer.le(value, SafeIntegerMax) then return integer.tonumber(value) end
+  return value
+end
+
+local function decimalFloat(text: string): number?
+  if text == 'inf' or text == '+inf' then return math.huge end
+  if text == '-inf' then return -math.huge end
+  if text == 'nan' or text == '+nan' then return 0 / 0 end
+  if text == '-nan' then return -(0 / 0) end
+
+  local clean = cleanNumber(text)
+  local position = 1
+  local byte = string.byte(clean, position)
+  if byte == 43 or byte == 45 then position += 1 end
+
+  local integerStart = position
+  while true do
+    byte = string.byte(clean, position)
+    if not byte or byte < 48 or byte > 57 then break end
+    position += 1
+  end
+
+  if position == integerStart then return nil end
+  if position - integerStart > 1 and string.byte(clean, integerStart) == 48 then fail('leading zero in float') end
+
+  local hasFraction, hasExponent = false, false
+  if string.byte(clean, position) == 46 then
+    hasFraction = true
+    position += 1
+    local fractionStart = position
+    while true do
+      byte = string.byte(clean, position)
+      if not byte or byte < 48 or byte > 57 then break end
+      position += 1
+    end
+
+    if position == fractionStart then fail('fraction has no digits') end
+  end
+
+  byte = string.byte(clean, position)
+  if byte == 69 or byte == 101 then
+    hasExponent = true
+    position += 1
+    byte = string.byte(clean, position)
+    if byte == 43 or byte == 45 then position += 1 end
+
+    local exponentStart = position
+    while true do
+      byte = string.byte(clean, position)
+      if not byte or byte < 48 or byte > 57 then break end
+      position += 1
+    end
+
+    if position == exponentStart then fail('exponent has no digits') end
+  end
+
+  if position <= #clean or not hasFraction and not hasExponent then return nil end
+
+  local value = tonumber(clean)
+  if not value or value == math.huge or value == -math.huge then fail('floating-point number overflowed') end
+  return value
+end
+
+local function leapYear(year: number): boolean
+  return year % 4 == 0 and (year % 100 ~= 0 or year % 400 == 0)
+end
+
+local function validDate(text: string): boolean
+  local yearText, monthText, dayText = string.match(text, '^(%d%d%d%d)%-(%d%d)%-(%d%d)$')
+  if not yearText then return false end
+
+  local year, month, day = tonumber(yearText) :: number, tonumber(monthText) :: number, tonumber(dayText) :: number
+  if month < 1 or month > 12 then return false end
+
+  local days = if month == 2 then (if leapYear(year) then 29 else 28)
+    elseif month == 4 or month == 6 or month == 9 or month == 11 then 30
+    else 31
+  return day >= 1 and day <= days
+end
+
+local function validTime(text: string): boolean
+  local hourText, minuteText, rest = string.match(text, '^(%d%d):(%d%d)(.*)$')
+  if not hourText or not minuteText or rest == nil then return false end
+  local restValue = rest :: string
+
+  local hour, minute = tonumber(hourText) :: number, tonumber(minuteText) :: number
+  if hour > 23 or minute > 59 then return false end
+  if restValue == '' then return true end
+
+  local secondText, fraction = string.match(restValue, '^:(%d%d)(.*)$')
+  if not secondText or fraction == nil then return false end
+  local fractionValue = fraction :: string
+  local second = tonumber(secondText) :: number
+  if second > 60 then return false end
+  if fractionValue == '' then return true end
+
+  return string.find(fractionValue, '^%.%d+$') ~= nil
+end
+
+local function validOffset(text: string): boolean
+  if text == 'Z' or text == 'z' then return true end
+
+  local sign, hourText, minuteText = string.match(text, '^([+-])(%d%d):(%d%d)$')
+  if not sign then return false end
+  return (tonumber(hourText) :: number) <= 23 and (tonumber(minuteText) :: number) <= 59
+end
+
+local function datetime(text: string): string?
+  if validDate(text) then return text end
+  if validTime(text) then return text end
+
+  if #text >= 16 and string.byte(text, 5) == 45 and string.byte(text, 8) == 45 then
+    local date = string.sub(text, 1, 10)
+    local separator = string.sub(text, 11, 11)
+    if not validDate(date) or separator ~= 'T' and separator ~= 't' and separator ~= ' ' then return nil end
+
+    local tail = string.sub(text, 12)
+    for split = #tail, 5, -1 do
+      local time = string.sub(tail, 1, split)
+      local offset = string.sub(tail, split + 1)
+      if validTime(time) and (offset == '' or validOffset(offset)) then
+        local normalizedOffset = if offset == 'z' then 'Z' else offset
+        return `{date}T{time}{normalizedOffset}`
+      end
+    end
+  end
+
+  return nil
+end
+
+local parseValue: (string?) -> (Value, Kind?)
+
+local function parseArray(): { Value }
+  at += 1
+  local values = newArray()
+  local count = 0
+  skipValueSpace()
+  if string.byte(source, at) == 93 then
+    at += 1
+    return values
+  end
+
+  while true do
+    local value, kind = parseValue('array')
+    count += 1
+    values[count] = value
+    mark(entry(values), count, kind)
+
+    skipValueSpace()
+    local byte = string.byte(source, at)
+    if byte == 93 then
+      at += 1
+      return values
+    end
+
+    if byte ~= 44 then fail("expected ',' or ']' in array") end
+
+    at += 1
+    skipValueSpace()
+    if string.byte(source, at) == 93 then
+      at += 1
+      return values
+    end
+  end
+end
+
+local function descendForDotted(container: Table, path: { string }, inline: boolean): Table
+  local target = container
+
+  for index = 1, #path - 1 do
+    local key = path[index]
+    local value = target[key]
+    if value == nil then
+      local created = newTable(if inline then 'inline' else 'dotted')
+      target[key] = created
+      rememberKey(target, key)
+      target = created
+    elseif type(value) == 'table' and not arraysOfTables[value] then
+      if kinds[value] == 'inline' and not inline then fail(`cannot add to inline table '{key}'`) end
+      target = value :: Table
+    else
+      fail(`key '{key}' is not a table`)
+    end
+  end
+
+  return target
+end
+
+local function parseInlineTable(): Table
+  at += 1
+  local value = newTable('inline')
+  skipValueSpace()
+  if string.byte(source, at) == 125 then
+    at += 1
+    return value
+  end
+
+  while true do
+    local keyAt = at
+    local path = parseKeyPath()
+    skipValueSpace()
+    if string.byte(source, at) ~= 61 then fail("expected '=' in inline table") end
+
+    at += 1
+    skipValueSpace()
+    local item, kind = parseValue('inline')
+    local target = descendForDotted(value, path, true)
+    putNew(target, path[#path], item, kind, keyAt)
+
+    skipValueSpace()
+    local byte = string.byte(source, at)
+    if byte == 125 then
+      at += 1
+      return value
+    end
+
+    if byte ~= 44 then fail("expected ',' or '}' in inline table") end
+
+    at += 1
+    skipValueSpace()
+    if string.byte(source, at) == 125 then
+      at += 1
+      return value
+    end
+  end
+end
+
+local function parseBare(context: string?): (Value, Kind?)
+  local start = at
+  local finish = at - 1
+
+  while at <= length do
+    local byte = string.byte(source, at)
+    if byte == 35 or byte == 10 or byte == 13 then break end
+    if context == 'array' and (byte == 44 or byte == 93) then break end
+    if context == 'inline' and (byte == 44 or byte == 125) then break end
+
+    if not isHorizontal(byte) then finish = at end
+    at += 1
+  end
+
+  if finish < start then fail('expected value') end
+
+  local text = string.sub(source, start, finish)
+  at = finish + 1
+  if text == 'true' then return true, nil end
+  if text == 'false' then return false, nil end
+
+  local date = datetime(text)
+  if date then return date, 'datetime' end
+
+  local radix = radixInteger(text)
+  if radix then return radix, nil end
+
+  local float = decimalFloat(text)
+  if float ~= nil then return float, 'float' end
+
+  local integerValue = decimalInteger(text)
+  if integerValue then return integerValue, nil end
+
+  fail(`invalid value '{text}'`)
+  error('unreachable', 0)
+end
+
+parseValue = function(context: string?): (Value, Kind?)
+  local byte = string.byte(source, at)
+  if byte == 34 or byte == 39 then return parseString(), nil end
+  if byte == 91 then return parseArray(), nil end
+  if byte == 123 then return parseInlineTable(), nil end
+
+  return parseBare(context)
+end
+
+local function lastArrayTable(value: any, key: string): Table
+  if type(value) ~= 'table' or not arraysOfTables[value] or #value == 0 then fail(`'{key}' is not a defined array of tables`) end
+  return value[#value] :: Table
+end
+
+local function descendHeader(path: { string }): (Table, string)
+  local target = root
+
+  for index = 1, #path - 1 do
+    local key = path[index]
+    local value = target[key]
+    if value == nil then
+      local created = newTable('implicit')
+      target[key] = created
+      rememberKey(target, key)
+      target = created
+    elseif type(value) == 'table' and arraysOfTables[value] then
+      target = lastArrayTable(value, key)
+    elseif type(value) == 'table' then
+      if kinds[value] == 'inline' then fail(`cannot extend inline table '{key}'`) end
+      target = value :: Table
+    else
+      fail(`'{key}' is not a table`)
+    end
+  end
+
+  return target, path[#path]
+end
+
+local function parseHeader()
+  local headerAt = at
+  local arrayHeader = string.byte(source, at + 1) == 91
+  at += if arrayHeader then 2 else 1
+  local keyAt = at
+  local path = parseKeyPath()
+  skipHorizontal()
+
+  if arrayHeader then
+    if string.byte(source, at) ~= 93 or string.byte(source, at + 1) ~= 93 then fail("expected ']]'") end
+    at += 2
+  else
+    if string.byte(source, at) ~= 93 then fail("expected ']'") end
+    at += 1
+  end
+
+  skipHorizontal()
+  if string.byte(source, at) == 35 then skipComment() end
+  if at <= length and not consumeNewline() then fail('table header must end at the line') end
+
+  local parent, key = descendHeader(path)
+  local existing = parent[key]
+  if positions and existing == nil then
+    local recorded = positions[parent] or {}
+    positions[parent] = recorded
+    recorded[key] = { key = keyAt, value = headerAt, valueEnd = headerAt }
+  end
+
+  if arrayHeader then
+    local array: { Value }
+    if existing == nil then
+      array = newArray()
+      arraysOfTables[array] = true
+      parent[key] = array
+      rememberKey(parent, key)
+    elseif type(existing) == 'table' and arraysOfTables[existing] then
+      array = existing :: { Value }
+    else
+      fail(`'{key}' is already defined and is not an array of tables`)
+    end
+
+    local tableValue = newTable('array-element')
+    table.insert(array, tableValue)
+    current = tableValue
+    return
+  end
+
+  if existing == nil then
+    local created = newTable('explicit')
+    parent[key] = created
+    rememberKey(parent, key)
+    current = created
+    return
+  end
+
+  if type(existing) ~= 'table' or arraysOfTables[existing] then fail(`table '{key}' conflicts with an existing value`) end
+
+  local kind = kinds[existing]
+  if kind ~= 'implicit' then fail(`table '{key}' is already defined`) end
+
+  kinds[existing] = 'explicit'
+  current = existing :: Table
+end
+
+local function parsePair()
+  local keyAt = at
+  local path = parseKeyPath()
+  skipHorizontal()
+  if string.byte(source, at) ~= 61 then fail("expected '=' after key") end
+
+  at += 1
+  skipHorizontal()
+  local valueAt = at
+  local value, kind = parseValue(nil)
+  local target = descendForDotted(current, path, false)
+  putNew(target, path[#path], value, kind, keyAt)
+
+  if positions then
+    local recorded = positions[target] or {}
+    positions[target] = recorded
+    recorded[path[#path]] = { key = keyAt, value = valueAt, valueEnd = at - 1 }
+  end
+
+  skipHorizontal()
+  if string.byte(source, at) == 35 then skipComment() end
+  if at <= length and not consumeNewline() then fail('key/value pair must end at the line') end
+end
+
+--- `text` as Luau values, and its layout. With `positions`, each table's layout entry also holds
+--- `positions`: where each key written as `key = value` (not inside an inline table), or first
+--- named by a table header, is in the text, and where its value (or its header) is.
+local function decode(text: string, options: Options?): (Table, Layout)
+  Common.validateUtf8('toml', text)
+  source, length, at = text, #text, 1
+  layout, kinds, arraysOfTables = {}, {}, {}
+  positions = if options and options.positions then {} else nil
+  root = newTable('root')
+  current = root
+
+  if string.sub(source, 1, 3) == '\239\187\191' then at = 4 end
+
+  skipDocumentSpace()
+  while at <= length do
+    if string.byte(source, at) == 91 then
+      parseHeader()
+    else
+      parsePair()
+    end
+    skipDocumentSpace()
+  end
+
+  if positions then
+    for container, recorded in positions do
+      local entry = layout[container]
+      if entry then entry.positions = recorded end
+    end
+
+    positions = nil
+  end
+
+  return root, layout
+end
+
+return table.freeze {
+  version = '1.1.0',
+  decode = decode,
+}

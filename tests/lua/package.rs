@@ -34,7 +34,7 @@ id = "org.example.alpha"
 version = "1.2.3"
 jess_api = "1"
 default_target = "greet"
-include = ["src"]
+include = ["src", "tests"]
 tests = ["tests/run.jsl"]
 
 [modules]
@@ -113,6 +113,10 @@ fn a_package_source_and_its_jpk_are_one_package() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("alpha");
     alpha(&source);
+    // An editor's and a merge tool's leftovers are never payload.
+    for leftover in ["src/init.jsl.bak", "src/init.jsl~", "src/init.jsl.orig"] {
+        std::fs::write(source.join(leftover), "return nil\n").unwrap();
+    }
     let runtime = common::runtime();
     let jpk = temp.path().join("alpha.jpk");
     let packed = package::pack(&runtime, &source.display().to_string(), &jpk.display().to_string()).unwrap();
@@ -126,7 +130,10 @@ fn a_package_source_and_its_jpk_are_one_package() {
     assert_eq!(from_jpk.kind, "jpk");
     assert_eq!(from_source.digest, from_jpk.digest);
     assert_eq!(from_source.digest, packed.digest);
-    assert_eq!(from_source.files, 8, "the manifest and src/, not tests/ or outside.jsl");
+    assert_eq!(
+        from_source.files, 9,
+        "the manifest, src/, and tests/, not outside.jsl or leftovers"
+    );
     assert_eq!(from_source.files, from_jpk.files);
     assert_eq!(from_source.default_target.as_deref(), Some("greet"));
     assert_eq!(from_source.managed.len(), 1);
@@ -552,7 +559,7 @@ fn a_script_opens_and_packs_only_what_it_may_read_and_write() {
                refused(noRead, package.candidates, folder)\n\
              end\n\
              if mayWrite then\n  \
-               assert(package.pack(source, output).files == 8)\n\
+               assert(package.pack(source, output).files == 9)\n\
              else\n  \
                refused(if mayRead then noWrite else noRead, package.pack, source, output)\n\
              end",
@@ -581,11 +588,11 @@ fn a_jpk_holds_only_its_payload() {
         &runtime,
         "local jpk = require '@jess/jpk'\n\
          local manifest = 'manifest_version = 1\\n[package]\\nid = \"org.example.extra\"\\nversion = \"1.0.0\"\\njess_api = \"1\"\\ninclude = [\"src\"]\\n'\n\
-         jess.fs.replace(output, jpk.write {\n\
+         assert(require('@dream/fs').writeFile(output, jpk.write {\n\
            { path = 'jess.toml', data = buffer.fromstring(manifest) },\n\
            { path = 'src/a.jsl', data = buffer.fromstring('return 1') },\n\
            { path = 'smuggled.jsl', data = buffer.fromstring('return 2') },\n\
-         })",
+         }, { atomic = true }))",
     );
     let problem = package::inspect(&runtime, &jpk.display().to_string())
         .unwrap_err()
@@ -675,7 +682,9 @@ fn the_embedded_built_in_package_is_its_source() {
     }
     let root = builtin();
     let mut files = vec!["jess.toml".to_owned()];
-    walk(&root, &root.join("src"), &mut files);
+    for folder in ["src", "tests"] {
+        walk(&root, &root.join(folder), &mut files);
+    }
     files.sort();
     let embedded = jess::lua::builtin::FILES
         .iter()
@@ -690,7 +699,7 @@ fn the_embedded_built_in_package_is_its_source() {
 /// Analysis is available without activation and through either accepted built-in provider.
 #[test]
 fn analysis_is_embedded_and_loads_from_both_package_providers() {
-    let scratch = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+    let scratch = env!("CARGO_TARGET_TMPDIR");
     let temp = tempfile::tempdir_in(scratch).unwrap();
     let packed = temp.path().join("builtin.jpk");
     package::pack(
@@ -818,6 +827,12 @@ fn entrypoints_run_only_for_the_layers_activated() {
 /// A package `org.example.<name>` at `root`: one layer, `example.<name>`, exporting `@<name>` from
 /// `source`. `extra` is the rest of the manifest: more `[package]` fields, then other tables.
 fn library(root: &Path, name: &str, extra: &str, source: &str) {
+    // Tests ship in the payload.
+    let include = if extra.contains("tests = [") {
+        r#"["src", "tests"]"#
+    } else {
+        r#"["src"]"#
+    };
     write(
         root,
         &[
@@ -825,7 +840,7 @@ fn library(root: &Path, name: &str, extra: &str, source: &str) {
                 "jess.toml",
                 &format!(
                     "manifest_version = 1\n[package]\nid = \"org.example.{name}\"\nversion = \"1.0.0\"\njess_api = \"1\"\n\
-                     include = [\"src\"]\n{extra}\n[modules]\n\"@{name}\" = \"src/init.jsl\"\n\
+                     include = {include}\n{extra}\n[modules]\n\"@{name}\" = \"src/init.jsl\"\n\
                      [[layer]]\nid = \"example.{name}\"\nexports = [\"@{name}\"]\n"
                 ),
             ),
@@ -1290,4 +1305,29 @@ fn a_pinned_package_has_the_digest_it_is_pinned_to() {
             "{refused}"
         );
     }
+}
+
+/// A Package Source holds the tests its manifest names, so its JPK carries them.
+#[test]
+fn a_source_whose_tests_are_outside_its_payload_is_refused() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("outside");
+    std::fs::create_dir_all(source.join("src")).unwrap();
+    std::fs::create_dir_all(source.join("tests")).unwrap();
+    std::fs::write(source.join("src/init.jsl"), "return {}\n").unwrap();
+    std::fs::write(source.join("tests/run.jsl"), "return nil\n").unwrap();
+    std::fs::write(
+        source.join("jess.toml"),
+        "manifest_version = 1\n[package]\nid = \"org.example.outside\"\nversion = \"1.0.0\"\njess_api = \"1\"\n\
+         include = [\"src\"]\ntests = [\"tests/run.jsl\"]\n[modules]\n\"@outside\" = \"src/init.jsl\"\n\
+         [[layer]]\nid = \"example.outside\"\nexports = [\"@outside\"]\n",
+    )
+    .unwrap();
+    let error = package::inspect(&common::runtime(), &source.display().to_string()).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("[package] tests names 'tests/run.jsl', which the payload doesn't hold"),
+        "{error}"
+    );
 }

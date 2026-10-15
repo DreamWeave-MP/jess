@@ -1,0 +1,83 @@
+--!strict
+-- Locale identity: a validated BCP 47 tag, spelled canonically by @dream/intl, and the parents it
+-- falls back through.
+
+local Intl = require '@dream/intl'
+
+--- A locale: its canonical tag (`pt-BR`) and its subtags.
+export type Locale = {
+  read tag: string,
+  read language: string,
+  read script: string?,
+  read region: string?,
+  read variants: { string },
+}
+
+local function fromTag(tag: string): Locale
+  local parsed = Intl.locale(tag)
+  return table.freeze {
+    tag = parsed:tag(),
+    language = parsed:language(),
+    script = parsed:script(),
+    region = parsed:region(),
+    variants = table.freeze(parsed:variants()),
+  }
+end
+
+--- The locale `input` names, or nil and why it isn't one jess takes. Parsing canonicalizes case and
+--- separators (`pt_br` is `pt-BR`). Extensions and private-use subtags are refused: nothing reads
+--- them, and a locale carrying one would name a different file from the one it falls back to.
+local function parse(input: string): (Locale?, string?)
+  if input == '' then return nil, "a locale can't be empty" end
+
+  local subtags = string.split(string.gsub(input, '_', '-'), '-')
+  for index = 2, #subtags do
+    if #subtags[index] ~= 1 then continue end
+
+    return nil,
+      `'{input}' has an extension or private-use subtag; jess locales are a language, an optional script and region, and variants`
+  end
+
+  -- @dream/intl raises for a tag that isn't BCP 47, naming why after "language tag: ".
+  local ok, result = pcall(fromTag, input)
+  if ok then return result :: Locale, nil end
+
+  local reason = string.match(tostring(result), 'language tag: (.*)$') or tostring(result)
+  return nil, `'{input}' isn't a BCP 47 locale: {reason}`
+end
+
+--- The next less specific locale, or nil for a bare language: the variants go first, all at once,
+--- then the region, then the script (`zh-Hant-TW-pinyin`, `zh-Hant-TW`, `zh-Hant`, `zh`). This is
+--- OpenMW's order (`MessageBundles::setPreferredLocales`, components/l10n/messagebundles.cpp), except
+--- that OpenMW drops a script with the variant; jess keeps it until the region is gone.
+local function parent(locale: Locale): Locale?
+  local script, region = locale.script, locale.region
+  if #locale.variants == 0 then
+    if not script and not region then return nil end
+
+    if region then region = nil else script = nil end
+  end
+
+  local tag = locale.language
+  if script then tag ..= `-{script}` end
+  if region then tag ..= `-{region}` end
+
+  return fromTag(tag)
+end
+
+--- `locale` and every parent, most specific first.
+local function chain(locale: Locale): { Locale }
+  local found = { locale }
+  while true do
+    local next = parent(found[#found])
+    if not next then return found end
+
+    table.insert(found, next)
+  end
+end
+
+return table.freeze {
+  parse = parse,
+  parent = parent,
+  chain = chain,
+}

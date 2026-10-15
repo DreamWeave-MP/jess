@@ -28,7 +28,7 @@ Opens the package at `location`: a Package Source folder (the folder holding `je
 | `files` | The payload, in canonical order: `jess.toml` first, then every other path bytewise. |
 | `read(path)` | A payload file's bytes, or nil for a path that isn't in the payload. |
 
-Opening checks the whole package before it returns. A Package Source must not hold symlinks, files that are neither file nor folder, or two paths that differ only in case (`Name.jsl` and `name.jsl` are one file on Windows and a fresh bug everywhere else). A JPK must hold nothing outside its manifest's `include`. Every module the manifest exports must be in the payload.
+Opening checks the whole package before it returns. A Package Source must not hold symlinks, files that are neither file nor folder, or two paths that differ only in case (`Name.jsl` and `name.jsl` are one file on Windows and a fresh bug everywhere else). A JPK must hold nothing outside its manifest's `include`. Every module the manifest exports must be in the payload, and a Package Source must hold every test its manifest names.
 
 ```luau
 --!strict
@@ -44,17 +44,18 @@ end
 
 ```text
 com.example.greeter	1.0.0	source
-dab090658ab19adbb8fc0f6e125269cde47027ce918173b1bd9c9fad313c5971
+6fdd1a56f49cf9b23f2f9765b0cfce84836ba001cf57a602aa5ea47f7768e35b
 jess.toml
 src/init.jsl
 src/words.jsl
+tests/run.jsl
 ```
 
 ## package.pack
 
 {{ api_signature(value="package.pack(source: string, output: string) -> JessPackResult") }}
 
-Packs the Package Source at `source` into the [canonical JPK](@/docs/api/jpk.md#the-canonical-writer) at `output`, written through a temporary file and a rename. Returns `{ path, digest, files, size }`. Only the payload goes in: `jess.toml` and what `include` names. Tests, goldens, editor droppings, and `.git` stay home. [`jess pack`](@/docs/cli/package.md#jess-pack) is this function.
+Packs the Package Source at `source` into the [canonical JPK](@/docs/api/jpk.md#the-canonical-writer) at `output`, written through a temporary file and a rename. Returns `{ path, digest, files, size }`. Only the payload goes in: `jess.toml` and what `include` names, which holds the tests the manifest names. Benchmarks, `.git`, and an editor's or a merge tool's leftovers (`*.bak*`, `*~`, `*.orig`) stay home. [`jess pack`](@/docs/cli/package.md#jess-pack) is this function.
 
 ## package.resolve
 

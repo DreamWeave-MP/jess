@@ -245,11 +245,20 @@ fn a_script_cannot_widen_its_own_authority() {
 fn a_runtime_no_domain_owns_has_the_modules_and_refuses_to_use_them() {
     let runtime = Runtime::from_plan(&support::plan().unwrap()).unwrap();
     let bind = runtime.exec("require('@jess/context').bind('main', {})").unwrap_err();
-    assert_eq!(bind.to_string(), "context.bind: no ScriptDomain owns this runtime");
+    assert_eq!(
+        bind.to_string(),
+        "context.bind: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and package targets run scripts outside one"
+    );
     let spawn = runtime.exec("require('@jess/worker').spawn { source = '' }").unwrap_err();
-    assert_eq!(spawn.to_string(), "worker.spawn: no ScriptDomain owns this runtime");
+    assert_eq!(
+        spawn.to_string(),
+        "worker.spawn: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and package targets run scripts outside one"
+    );
     let send = runtime.exec("require('@jess/worker').send(1)").unwrap_err();
-    assert_eq!(send.to_string(), "worker.send: no ScriptDomain owns this runtime");
+    assert_eq!(
+        send.to_string(),
+        "worker.send: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and package targets run scripts outside one"
+    );
 }
 
 #[test]
@@ -347,4 +356,39 @@ fn the_plan_declares_types_luau_accepts() {
             "the definitions lack `{declared}`:\n{definitions}"
         );
     }
+}
+
+/// A capability name a script makes up is looked up, never interned: interned names live as long
+/// as the process.
+#[test]
+fn a_script_cannot_intern_a_capability_name() {
+    let harness = support::domain("inventive", &[WORKER_SPAWN]);
+    let domain = &harness.domain;
+    domain
+        .register_context(ContextSpec::new("main").schedule([Phase::OnDemand]))
+        .unwrap();
+    domain
+        .load_source(
+            "=inventive",
+            r"
+            local context = require('@jess/context')
+            local worker = require('@jess/worker')
+
+            context.bind('main', {
+              onDemand = function()
+                worker.spawn { source = 'return function() end', capabilities = { 'made.up.never' } }
+              end,
+            })
+            ",
+        )
+        .unwrap();
+    domain.start().unwrap();
+    let report = domain.run_phase(Phase::OnDemand, &Message::Nil).unwrap();
+    let message = report.failures[0].to_string();
+    assert!(
+        message.contains("worker.spawn: capability 'made.up.never' isn't one this domain holds"),
+        "{message}"
+    );
+    assert_eq!(CapabilityId::lookup("made.up.never"), None);
+    domain.stop().unwrap();
 }

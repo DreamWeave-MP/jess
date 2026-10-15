@@ -22,7 +22,7 @@ local tcp = require '@dream/tcp'
 
 local Host = arg[1] or '127.0.0.1'
 local Port = tonumber(arg[2] or '63333')
-local Output = arg[3] or jess.fs.join(paths.root, 'target', 'site-dev')
+local Output = arg[3] or fs.join(paths.root, 'target', 'site-dev')
 if not Port then error(`serve: the port must be a number, not "{arg[2]}"`, 0) end
 
 local WatchedFolders = { 'content', 'templates', 'sass', 'static', 'data' }
@@ -72,7 +72,7 @@ type Connection = {
 local function snapshot(): string
   local rows: { string } = {}
   for _, name in WatchedFiles do
-    local stat = jess.fs.stat(jess.fs.join(paths.site, name))
+    local stat = fs.stat(fs.join(paths.site, name))
     if not stat then continue end
 
     table.insert(rows, `{name}\t{stat.size}\t{stat.modifiedSeconds or 0}.{stat.modifiedNanoseconds or 0}`)
@@ -80,7 +80,7 @@ local function snapshot(): string
 
   for _, folder in WatchedFolders do
     local walk = fs.walk(
-      jess.fs.join(paths.site, folder),
+      fs.join(paths.site, folder),
       { include = 'files', metadata = true, sort = true, skipErrors = true }
     )
     if not walk then continue end
@@ -146,10 +146,10 @@ local function fileFor(target: string): (string?, number)
   local candidate = Output .. path
   if string.sub(candidate, -1) == '/' then candidate ..= 'index.html' end
 
-  if jess.fs.isFile(candidate) then return candidate, 200 end
+  if fs.isFile(candidate) then return candidate, 200 end
 
-  local index = jess.fs.join(candidate, 'index.html')
-  if jess.fs.isDir(candidate) and jess.fs.isFile(index) then return index, 200 end
+  local index = fs.join(candidate, 'index.html')
+  if fs.isDir(candidate) and fs.isFile(index) then return index, 200 end
 
   return nil, 404
 end
@@ -189,7 +189,7 @@ local function answer(connection: Connection)
     local body = fs.readFile(file) or buffer.create(0)
     connection.response = response(200, 'OK', MimeTypes[extension] or 'application/octet-stream', body, head)
   elseif status == 404 then
-    local body = fs.readFile(jess.fs.join(Output, '404.html'))
+    local body = fs.readFile(fs.join(Output, '404.html'))
     connection.response = if body
       then response(404, 'Not Found', MimeTypes.html, body, head)
       else text(404, 'Not Found', head)
@@ -306,8 +306,8 @@ local function dispatch()
   end
 end
 
-local parent = jess.fs.parent(Output)
-if parent and parent ~= '' then jess.fs.createDir(parent) end
+local parent = fs.parent(Output)
+if parent and parent ~= '' then assert(fs.mkdir(parent, { recursive = true })) end
 
 if not build() then error('serve: the first build failed; nothing to serve', 0) end
 

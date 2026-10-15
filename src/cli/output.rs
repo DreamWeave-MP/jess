@@ -1,5 +1,6 @@
-//! Structured output: every command prints one YAML, JSON, or TOML document to stdout.
-//!
+//! Structured output: every command prints one YAML, JSON, or TOML document to stdout, written by
+//! the built-in package's `@jess/data/value`, jess's one writer of those formats.
+
 use std::io::{self, BufWriter, StdoutLock, Write};
 
 use clap::ValueEnum;
@@ -49,20 +50,20 @@ impl Write for Stdout {
 ///
 /// # Errors
 ///
-/// Returns an error if `value` can't be serialized in `format` or stdout can't be written.
+/// Returns an error if `value` can't be written in `format` or stdout can't be written.
 pub fn print(value: &impl Serialize, format: Format) -> Result<(), String> {
-    let mut out = Stdout::new();
-    match format {
-        Format::Yaml => serde_yaml::to_writer(&mut out, value).map_err(|error| write_error(&error))?,
-        Format::Json => {
-            serde_json::to_writer(&mut out, value).map_err(|error| write_error(&error))?;
-            out.write_all(b"\n").map_err(|error| write_error(&error))?;
-        }
-        Format::Toml => {
-            let text = toml::to_string(value).map_err(|error| write_error(&error))?;
-            out.write_all(text.as_bytes()).map_err(|error| write_error(&error))?;
-        }
+    let value = serde_json::to_value(value).map_err(|error| write_error(&error))?;
+    let name = match format {
+        Format::Yaml => "yaml",
+        Format::Json => "json",
+        Format::Toml => "toml",
+    };
+    let mut text = jess::lua::document::encode(&value, name).map_err(|error| write_error(&error))?;
+    if !text.ends_with('\n') {
+        text.push('\n');
     }
+    let mut out = Stdout::new();
+    out.write_all(text.as_bytes()).map_err(|error| write_error(&error))?;
     out.flush().map_err(|error| write_error(&error))
 }
 

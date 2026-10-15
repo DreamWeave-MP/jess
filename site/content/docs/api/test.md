@@ -75,6 +75,7 @@ An assertion on `actual`. Each check raises with what it saw and what it wanted,
 | `toEqual(expected)` | Deep equality: same keys, values compared the same way, cycles handled. Tables only compare with tables; anything else is `rawequal`. |
 | `toBeTruthy()`, `toBeFalsy()`, `toBeNil()` | What they say. |
 | `toContain(item)` | `actual` is a string containing `item`, or a list with an element that `toEqual`s it. |
+| `toBeCloseTo(expected, tolerance?)` | `actual` is a number within `tolerance` (default `1e-9`) of `expected`, for floating-point results that needn't be exact. |
 | `toThrow(contains?)` | `actual` is a function that raises, and its message contains `contains` when given. The one place a test catches an error on purpose. |
 
 ## Running

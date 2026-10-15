@@ -61,7 +61,7 @@ local process = require '@dream/process'
 local reading = require '@jess/json'
 
 local equivalence = require './equivalence'
-local json = require './json'
+local json = require '@jess/json'
 
 type Sample = { wall: number, cpu: number, user: number, system: number, rss: number }
 type Summary = { median: number, min: number, max: number }
@@ -348,9 +348,9 @@ local function fail(message: string): never error(`bench: {message}`, 0) end
 
 -- Where this script is, and from it the repository root; relative when run from the root.
 local function scriptRoot(): string
-  local bench = jess.fs.parent(arg[0])
-  local tools = bench and jess.fs.parent(bench)
-  local root = tools and jess.fs.parent(tools)
+  local bench = fs.parent(arg[0])
+  local tools = bench and fs.parent(bench)
+  local root = tools and fs.parent(tools)
   if root and root ~= '' then return root end
 
   return '.'
@@ -364,9 +364,9 @@ local function absolute(path: string): string
 end
 
 local Root = absolute(scriptRoot())
-local Tools = jess.fs.join(Root, 'tools', 'bench')
-local Work = jess.fs.join(Root, 'target', 'bench')
-local SiteData = jess.fs.join(Root, 'site', 'data', 'benchmarks.toml')
+local Tools = fs.join(Root, 'tools', 'bench')
+local Work = fs.join(Root, 'target', 'bench')
+local SiteData = fs.join(Root, 'site', 'data', 'benchmarks.toml')
 
 local function trim(text: string): string return (string.gsub(text, '^%s*(.-)%s*$', '%1')) end
 
@@ -400,21 +400,21 @@ local function capture(program: string, args: { string }, cwd: string?): string
 end
 
 local function readText(path: string): string
-  local text = jess.fs.read(path)
+  local text = fs.readFileString(path)
   if not text then fail(`can't read {path}`) end
 
   return text :: string
 end
 
 local function readBuffer(path: string): buffer
-  local data = jess.fs.readBuffer(path)
+  local data = fs.readFile(path)
   if not data then fail(`can't read {path}`) end
 
   return data :: buffer
 end
 
 local function removeTree(path: string)
-  if not jess.fs.exists(path) then return end
+  if not fs.exists(path) then return end
 
   local removed, message = fs.remove(path, { recursive = true })
   if not removed then fail(`can't remove {path}: {message}`) end
@@ -447,7 +447,7 @@ local function git(args: { string }): string return trim(capture('git', args, Ro
 
 local function keyValues(path: string, separator: string): { [string]: string }
   local values: { [string]: string } = {}
-  local text = jess.fs.read(path)
+  local text = fs.readFileString(path)
   if not text then return values end
 
   for line in string.gmatch(text, '[^\n]+') do
@@ -472,10 +472,10 @@ local function machineContext(): Machine
 
   local memory = keyValues('/proc/meminfo', ':').MemTotal or '0 kB'
   local governorPath = '/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor'
-  local governor = jess.fs.read(governorPath)
+  local governor = fs.readFileString(governorPath)
   return {
     os = keyValues('/etc/os-release', '=').PRETTY_NAME or 'Linux',
-    kernel = trim(jess.fs.read '/proc/sys/kernel/osrelease' or 'unknown'),
+    kernel = trim(fs.readFileString '/proc/sys/kernel/osrelease' or 'unknown'),
     cpu = string.match(cpuInfo, 'model name%s*:%s*([^\n]+)') or 'unknown',
     threads = threads,
     memory_bytes = (tonumber(string.match(memory, '%d+')) or 0) * 1024,
@@ -506,7 +506,7 @@ local function busiestProcesses(): { string }
 end
 
 local function l3iVersion(): string
-  local lock = readText(jess.fs.join(Root, 'Cargo.lock'))
+  local lock = readText(fs.join(Root, 'Cargo.lock'))
   local version = string.match(lock, 'name = "l3i"\nversion = "([^"]+)"')
   if not version then fail("Cargo.lock doesn't name l3i") end
 
@@ -514,10 +514,10 @@ local function l3iVersion(): string
 end
 
 local function luauVersion(binary: string): string
-  local folder = jess.fs.join(Work, 'types')
+  local folder = fs.join(Work, 'types')
   capture(binary, { 'luau-types', folder })
   -- The definitions' first line names the Luau the binary runs; `_VERSION` is just "Luau".
-  local header = readText(jess.fs.join(folder, 'jess.d.jsl'))
+  local header = readText(fs.join(folder, 'jess.d.jsl'))
   local firstLine = string.match(header, '^[^\n]*') or ''
   return string.match(firstLine, 'for (Luau %S+)') or 'Luau'
 end
@@ -537,7 +537,7 @@ local function jessContext(binary: string, runtime: string?): JessContext
     dirty = git { 'status', '--porcelain', '--untracked-files=no' } ~= '',
     binary = relativeToRoot(binary),
     binary_sha256 = sha256File(binary),
-    profile = jess.fs.fileName(jess.fs.parent(binary) or '') or '',
+    profile = fs.fileName(fs.parent(binary) or '') or '',
     verified = true,
     runtime = runtime or `l3i {l3iVersion()}`,
     luau = luauVersion(binary),
@@ -567,8 +567,8 @@ end
 --- The environment every measured process gets: the user's, minus anything that points jess or
 --- OpenMW at a config, with a home folder of its own so no tool finds or writes the real one.
 local function isolatedEnvironment(): { [string]: string }
-  local home = jess.fs.join(Work, 'home')
-  jess.fs.createDir(jess.fs.join(home, '.config'))
+  local home = fs.join(Work, 'home')
+  assert(fs.mkdir(fs.join(home, '.config'), { recursive = true }))
   local environment: { [string]: string } = {}
   for entry in string.gmatch(capture('env', { '-0' }), '[^%z]+') do
     local name, value = string.match(entry, '^([^=]+)=(.*)$')
@@ -580,7 +580,7 @@ local function isolatedEnvironment(): { [string]: string }
   end
 
   environment.HOME = home
-  environment.XDG_CONFIG_HOME = jess.fs.join(home, '.config')
+  environment.XDG_CONFIG_HOME = fs.join(home, '.config')
   return environment
 end
 
@@ -598,7 +598,7 @@ local function measure(
   log: string
 ): Sample
   local timings = log .. '.time'
-  jess.fs.remove(timings)
+  fs.remove(timings)
   local args = { '-f', '%e %U %S %M', '-o', timings }
   table.move(command, 1, #command, #args + 1, args)
   local result = run(TimeBinary, args, {
@@ -608,7 +608,7 @@ local function measure(
     stdout = 'capture',
     stderr = 'capture',
   })
-  jess.fs.write(log, (result.stdout or '') .. (result.stderr or ''))
+  assert(fs.writeFile(log, (result.stdout or '') .. (result.stderr or ''), { atomic = true, createParents = true }))
   if not result.success then
     fail(`{table.concat(command, ' ')} exited with {result.code}; {log}:\n{tail(readText(log), 5)}`)
   end
@@ -665,7 +665,7 @@ end
 type Provider = { folder: string, extension: string, placeholder: string }
 
 local function packageIn(provider: Provider, name: string): string
-  return jess.fs.join(provider.folder, name .. provider.extension)
+  return fs.join(provider.folder, name .. provider.extension)
 end
 
 local function packagePattern(provider: Provider, name: string): string
@@ -676,7 +676,7 @@ end
 --- `folder`, each once, so the folder holds exactly what the tools need, as an install would.
 local function packClosure(binary: string, packages: string, selected: { Workload }, folder: string): Packed
   removeTree(folder)
-  jess.fs.createDir(folder)
+  assert(fs.mkdir(folder, { recursive = true }))
   local packed: Packed = { folder = relativeToRoot(folder), packages = {} }
   for _, workload in selected do
     local planText = capture(binary, {
@@ -686,17 +686,17 @@ local function packClosure(binary: string, packages: string, selected: { Workloa
       'json',
       '--package-path',
       packages,
-      jess.fs.join(packages, workload.package),
+      fs.join(packages, workload.package),
     })
     local members = field(reading.decode(planText) :: unknown, 'packages')
     if type(members) ~= 'table' then fail(`the activation plan of {workload.package} names no packages`) end
 
     for _, member in members :: { unknown } do
       local location = text(member, 'location')
-      local name = jess.fs.fileName(location) or fail(`can't name the package at '{location}'`)
+      local name = fs.fileName(location) or fail(`can't name the package at '{location}'`)
       if packed.packages[name] then continue end
 
-      local output = jess.fs.join(folder, name .. '.jpk')
+      local output = fs.join(folder, name .. '.jpk')
       local written = reading.decode(capture(binary, { 'pack', '--format', 'json', '-o', output, location })) :: unknown
       packed.packages[name] = {
         id = text(written, 'id'),
@@ -765,7 +765,7 @@ end
 
 --- Writes the load order as one standalone config and returns its facts and the config's text.
 local function flatten(binary: string, config: string, folder: string, packages: string): (LoadOrder, string)
-  jess.fs.createDir(folder)
+  assert(fs.mkdir(folder, { recursive = true }))
   local args = {
     'run',
     '--capability',
@@ -773,10 +773,10 @@ local function flatten(binary: string, config: string, folder: string, packages:
     '--capability',
     'filesystem.write',
     '--package',
-    jess.fs.join(packages, 'openmw'),
+    fs.join(packages, 'openmw'),
     '--package-path',
     packages,
-    jess.fs.join(Tools, 'flatten.jsl'),
+    fs.join(Tools, 'flatten.jsl'),
     folder,
     config,
   }
@@ -787,14 +787,15 @@ local function flatten(binary: string, config: string, folder: string, packages:
     if change then table.insert(respelled, change) end
   end
 
-  local base = readText(jess.fs.join(folder, 'openmw.cfg.in'))
+  local base = readText(fs.join(folder, 'openmw.cfg.in'))
   local contentFiles, plugins, pluginBytes = 0, 0, 0
-  for line in string.gmatch(readText(jess.fs.join(folder, 'content.tsv')), '[^\n]+') do
+  for line in string.gmatch(readText(fs.join(folder, 'content.tsv')), '[^\n]+') do
     local name, path = string.match(line, '^([^\t]*)\t(.*)$')
     if not name then continue end
 
     contentFiles += 1
-    local size = if path ~= '' then jess.fs.size(path :: string) else nil
+    local stat = if path ~= '' then fs.stat(path :: string) else nil
+    local size = if stat then stat.size else nil
     if size and not string.find(string.lower(name :: string), '%.omwscripts$') then
       plugins += 1
       pluginBytes += size
@@ -826,11 +827,11 @@ end
 --- A fresh run folder: the config with its own data-local, and the seeds.
 local function prepare(folder: string, workload: Workload, base: string)
   removeTree(folder)
-  jess.fs.createDir(jess.fs.join(folder, 'data-local'))
-  local config = `{base}data-local={quoted(jess.fs.join(folder, 'data-local'))}\n`
-  jess.fs.write(jess.fs.join(folder, 'openmw.cfg'), config)
+  assert(fs.mkdir(fs.join(folder, 'data-local'), { recursive = true }))
+  local config = `{base}data-local={quoted(fs.join(folder, 'data-local'))}\n`
+  assert(fs.writeFile(fs.join(folder, 'openmw.cfg'), config, { atomic = true, createParents = true }))
   for _, seed in workload.seeds or {} do
-    jess.fs.write(jess.fs.join(folder, seed.name), withFolder(seed.text, folder))
+    assert(fs.writeFile(fs.join(folder, seed.name), withFolder(seed.text, folder), { atomic = true, createParents = true }))
   end
 end
 
@@ -844,7 +845,7 @@ local function nativeVersion(tool: string, log: string): string?
     return string.match(text, '%d+%.%d+%.%d+%.%d+') or string.match(text, '%d+%.%d+%.%d+')
   end
 
-  local printed = versionIn(string.sub(jess.fs.read(log) or '', 1, 4096))
+  local printed = versionIn(string.sub(fs.readFileString(log) or '', 1, 4096))
   if printed then return printed end
 
   local result = run(tool, { '--version' }, { stdout = 'capture', stderr = 'capture' })
@@ -868,11 +869,11 @@ local function facts(
     packageIn(provider, workload.package),
     '--package-path',
     provider.folder,
-    jess.fs.join(Tools, 'facts.jsl'),
+    fs.join(Tools, 'facts.jsl'),
     workload.module,
     workload.stateKey,
-    jess.fs.join(folder, 'openmw.cfg'),
-    json.encode(workload.options or {}),
+    fs.join(folder, 'openmw.cfg'),
+    json.encodeTable(workload.options or {}, { latin1 = true }),
   }
   table.move(rest, 1, #rest, #command + 1, command)
   measure(command, folder, environment, log)
@@ -895,8 +896,8 @@ local function runWorkload(
   environment: { [string]: string },
   arguments: Arguments
 ): WorkloadResult
-  local folder = jess.fs.join(Work, 'showcase', workload.name)
-  local runFolder = jess.fs.join(folder, 'run')
+  local folder = fs.join(Work, 'showcase', workload.name)
+  local runFolder = fs.join(folder, 'run')
   local jessCommand = { binary, 'package', 'run', '--trusted', '--package-path', provider.folder, packageIn(provider, workload.package), '--' }
   table.move(workload.args, 1, #workload.args, #jessCommand + 1, jessCommand)
   local jessPattern = { '{tool}', 'package', 'run', '--trusted', '--package-path', provider.placeholder, packagePattern(provider, workload.package), '--' }
@@ -925,40 +926,40 @@ local function runWorkload(
     -- Alternating keeps drift on a long run from favoring either one.
     for _, side in sides do
       prepare(runFolder, workload, base)
-      local sample = measure(withFolders(side.command, runFolder), runFolder, environment, jess.fs.join(folder, `{side.name}.log`))
+      local sample = measure(withFolders(side.command, runFolder), runFolder, environment, fs.join(folder, `{side.name}.log`))
       print(string.format('  %s %s %d/%d: %.2f s', workload.name, side.name, round, rounds, sample.wall))
       if round <= arguments.warmup then continue end
 
       table.insert(samples[side.name], sample)
       if round < rounds then continue end
 
-      local keep = jess.fs.join(folder, side.name)
+      local keep = fs.join(folder, side.name)
       removeTree(keep)
-      jess.fs.createDir(keep)
+      assert(fs.mkdir(keep, { recursive = true }))
       for _, output in workload.outputs do
-        local source = jess.fs.join(runFolder, output)
-        if not jess.fs.isFile(source) then fail(`{workload.name} {side.name} didn't write {output}`) end
+        local source = fs.join(runFolder, output)
+        if not fs.isFile(source) then fail(`{workload.name} {side.name} didn't write {output}`) end
 
-        jess.fs.copy(source, jess.fs.join(keep, jess.fs.fileName(output) :: string))
+        assert(fs.copy(source, fs.join(keep, fs.fileName(output) :: string)))
       end
     end
   end
 
   -- One more, unmeasured, to record what the module reports about the load order.
   prepare(runFolder, workload, base)
-  local reported = facts(workload, binary, provider, runFolder, environment, jess.fs.join(folder, 'facts.log'))
+  local reported = facts(workload, binary, provider, runFolder, environment, fs.join(folder, 'facts.log'))
 
   local implementations: { [string]: Implementation } = {}
   for _, side in sides do
     local outputs: { [string]: equivalence.Description } = {}
     for _, output in workload.outputs do
-      local kept = jess.fs.join(folder, side.name, jess.fs.fileName(output) :: string)
+      local kept = fs.join(folder, side.name, fs.fileName(output) :: string)
       outputs[output] = equivalence.describe(readBuffer(kept))
     end
 
     implementations[side.name] = {
       title = if side.name == 'jess' then 'jess' else (native :: Native).title,
-      version = if side.name == 'jess' then nil else nativeVersion(tool :: string, jess.fs.join(folder, 'native.log')),
+      version = if side.name == 'jess' then nil else nativeVersion(tool :: string, fs.join(folder, 'native.log')),
       command = side.pattern,
       samples = samples[side.name],
       summary = summary(samples[side.name]),
@@ -970,9 +971,9 @@ local function runWorkload(
   if tool and native then
     local known = workload.known or {}
     for _, output in workload.outputs do
-      local name = jess.fs.fileName(output) :: string
-      local jessData = readBuffer(jess.fs.join(folder, 'jess', name))
-      local nativeData = readBuffer(jess.fs.join(folder, 'native', name))
+      local name = fs.fileName(output) :: string
+      local jessData = readBuffer(fs.join(folder, 'jess', name))
+      local nativeData = readBuffer(fs.join(folder, 'native', name))
       verdicts[output] = equivalence.compare(jessData, nativeData, known[output] or {})
     end
   end
@@ -990,8 +991,8 @@ end
 
 local function onPath(name: string): string?
   for folder in string.gmatch(process.env 'PATH' or '', '[^:]+') do
-    local candidate = jess.fs.join(folder, name)
-    if jess.fs.isFile(candidate) then return candidate end
+    local candidate = fs.join(folder, name)
+    if fs.isFile(candidate) then return candidate end
   end
 
   return nil
@@ -1019,7 +1020,7 @@ local function nativeTools(arguments: Arguments, selected: { Workload }): { [str
       hint = 'build OpenMWMergedLands with cargo build --release and pass --merged-lands, or --no-native'
     end
 
-    if not given or not jess.fs.isFile(given) then fail(`no native binary for {workload.name}; {hint}`) end
+    if not given or not fs.isFile(given) then fail(`no native binary for {workload.name}; {hint}`) end
 
     tools[native.key] = absolute(given :: string)
   end
@@ -1061,8 +1062,8 @@ local function printResults(results: Results)
     end
 
     for output, verdict in workload.equivalence do
-      local details = if verdict.details then `: {json.encode(verdict.details)}` else ''
-      print(`{string.rep(' ', 19)}{jess.fs.fileName(output)}: {verdict.status}{details}`)
+      local details = if verdict.details then `: {json.encodeTable(verdict.details, { latin1 = true })}` else ''
+      print(`{string.rep(' ', 19)}{fs.fileName(output)}: {verdict.status}{details}`)
     end
   end
 
@@ -1072,16 +1073,16 @@ end
 
 local function showcase(arguments: Arguments): number
   local binary = absolute(arguments.jess or onPath 'jess' or fail 'no jess on PATH; pass --jess')
-  local packages = absolute(arguments.packages or jess.fs.join(Root, 'jpk'))
+  local packages = absolute(arguments.packages or fs.join(Root, 'jpk'))
   local home = process.env 'HOME' or fail 'HOME is unset'
-  local configHome = process.env 'XDG_CONFIG_HOME' or jess.fs.join(home, '.config')
-  local config = absolute(arguments.openmwCfg or jess.fs.join(configHome, 'openmw', 'openmw.cfg'))
-  jess.fs.createDir(Work)
+  local configHome = process.env 'XDG_CONFIG_HOME' or fs.join(home, '.config')
+  local config = absolute(arguments.openmwCfg or fs.join(configHome, 'openmw', 'openmw.cfg'))
+  assert(fs.mkdir(Work, { recursive = true }))
 
   local selected = [for workload in Workloads if not next(arguments.only) or arguments.only[workload.name] => workload]
   local tools = nativeTools(arguments, selected)
   local context = jessContext(binary, arguments.runtime)
-  local loadOrder, base = flatten(binary, config, jess.fs.join(Work, 'config'), packages)
+  local loadOrder, base = flatten(binary, config, fs.join(Work, 'config'), packages)
   local environment = isolatedEnvironment()
 
   -- The jess side runs from the source folders, or from JPKs packed once here, each tool's own
@@ -1089,7 +1090,7 @@ local function showcase(arguments: Arguments): number
   local provider: Provider = { folder = packages, extension = '', placeholder = '{packages}' }
   local packed: Packed? = nil
   if arguments.packed then
-    local packedFolder = jess.fs.join(Work, 'jpk')
+    local packedFolder = fs.join(Work, 'jpk')
     packed = packClosure(binary, packages, selected, packedFolder)
     provider = { folder = packedFolder, extension = '.jpk', placeholder = '{packed}' }
   end
@@ -1098,7 +1099,7 @@ local function showcase(arguments: Arguments): number
 
   local natives: { [string]: { binary: string, sha256: string } } = {}
   for key, tool in tools do
-    natives[key] = { binary = jess.fs.fileName(tool) :: string, sha256 = sha256File(tool) }
+    natives[key] = { binary = fs.fileName(tool) :: string, sha256 = sha256File(tool) }
   end
 
   local results: Results = {
@@ -1132,11 +1133,12 @@ local function showcase(arguments: Arguments): number
   results.load_end = loadAverage()
   if arguments.against then results.against = compareAgainst(absolute(arguments.against), results) end
 
-  local folder = jess.fs.join(Work, 'results')
-  jess.fs.createDir(folder)
+  local folder = fs.join(Work, 'results')
+  assert(fs.mkdir(folder, { recursive = true }))
   local suffix = if packed then '-showcase-packed.json' else '-showcase.json'
-  local path = jess.fs.join(folder, os.date '!%Y%m%d-%H%M%S' .. suffix)
-  jess.fs.write(path, json.encode(results, 1) .. '\n')
+  local path = fs.join(folder, os.date '!%Y%m%d-%H%M%S' .. suffix)
+  local text = json.encodeTable(results, { indent = 1, latin1 = true })
+  assert(fs.writeFile(path, text .. '\n', { atomic = true, createParents = true }))
   printResults(results)
   local against = results.against
   if against then
@@ -1144,7 +1146,7 @@ local function showcase(arguments: Arguments): number
     for _, workload in results.workloads do
       for side, comparisons in against.outputs[workload.name] or {} do
         for output, status in comparisons do
-          print(`  {workload.name} {side} {jess.fs.fileName(output)}: {status}`)
+          print(`  {workload.name} {side} {fs.fileName(output)}: {status}`)
         end
       end
     end
@@ -1176,7 +1178,7 @@ end
 local function tomlLine(key: string, value: string | number): string
   if type(value) == 'number' then return `{key} = {value}` end
 
-  return `{key} = {json.string(value)}`
+  return `{key} = {json.encodeTable(value, { latin1 = true })}`
 end
 
 local function sortedKeys(value: unknown): { string }
@@ -1228,7 +1230,7 @@ local function docs(resultsPath: string, output: string): number
 
   for _, workload in workloads :: { unknown } do
     table.insert(lines, '')
-    table.insert(lines, `[{json.string(text(workload, 'name'))}]`)
+    table.insert(lines, `[{json.encodeTable(text(workload, 'name'), { latin1 = true })}]`)
     local implementations = field(workload, 'implementations')
     for _, side in { 'jess', 'native' } do
       local measured = field(implementations, side)
@@ -1263,7 +1265,7 @@ local function docs(resultsPath: string, output: string): number
     end
   end
 
-  jess.fs.write(output, table.concat(lines, '\n') .. '\n')
+  assert(fs.writeFile(output, table.concat(lines, '\n') .. '\n', { atomic = true, createParents = true }))
   print(`wrote {relativeToRoot(output)}`)
   return 0
 end

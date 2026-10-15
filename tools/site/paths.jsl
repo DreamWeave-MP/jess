@@ -3,14 +3,16 @@
 -- Where the repository's site is: the nearest folder, from the one the command runs in up, that
 -- holds `site/config.toml`. A package's target has no folder of its own to start from (a JPK has
 -- none), so the repository is found from wherever inside it the command runs.
+local fs = require '@dream/fs'
+
 local function repositoryRoot(): string
-  local start = jess.fs.cwd()
+  local start = assert(fs.cwd())
   local folder: string? = start
 
   while folder and folder ~= '' do
-    if jess.fs.isFile(jess.fs.join(folder, 'site', 'config.toml')) then return folder end
+    if fs.isFile(fs.join(folder, 'site', 'config.toml')) then return folder end
 
-    local above = jess.fs.parent(folder)
+    local above = fs.parent(folder)
 
     if above == folder then break end
 
@@ -24,6 +26,6 @@ local Root = repositoryRoot()
 
 return table.freeze {
   root = Root,
-  site = jess.fs.join(Root, 'site'),
-  public = jess.fs.join(Root, 'site', 'public'),
+  site = fs.join(Root, 'site'),
+  public = fs.join(Root, 'site', 'public'),
 }

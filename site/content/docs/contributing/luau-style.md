@@ -71,12 +71,12 @@ local defaults = {
 
 Script code that breaks an invariant calls `error` and stops. It doesn't wrap its own functions in `pcall` to rewrap the message; pass the context in and raise the final message where the problem is found.
 
-`pcall` goes around a call into a Rust API that can legitimately throw, and nowhere else: `jess.regex.new` on a user's pattern, `record:decode()` on a malformed record, `openmw:activate` on a file outside the data folders. Every one gets a comment naming what throws and why the script carries on.
+`pcall` goes around a call into a Rust API that can legitimately throw, and nowhere else: `bytes.regex` on a user's pattern, `record:decode()` on a malformed record, `openmw:activate` on a file outside the data folders. Every one gets a comment naming what throws and why the script carries on.
 
 ```luau
--- `jess.regex.new` throws on a pattern Rust's regex crate rejects. Every bad pattern is reported
+-- `bytes.regex` throws on a pattern Rust's regex crate rejects. Every bad pattern is reported
 -- before the run stops, so each is caught here and collected.
-local compiled, regex = pcall(jess.regex.new, pattern, CaseInsensitive)
+local compiled, regex = pcall(bytes.regex, pattern, CaseInsensitive)
 ```
 
 A `pcall` without that comment is a bug report waiting to happen, and the checker treats it as one: it's an error, in capitals. The comment goes right above the statement holding the call, or above the statement that holds that one from its first line (a function whose first statement is the `pcall`, an `if` whose body is). One comment above a run of `pcall`s with no blank line between them speaks for the whole run, which is how a test that throws on purpose five times in a row reads. A `---@type` annotation or a `--!` directive isn't a comment for this purpose; it says nothing about what throws.

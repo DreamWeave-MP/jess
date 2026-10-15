@@ -51,7 +51,7 @@ impl fmt::Display for ValueType {
 /// Where in an author's source something was declared, for diagnostics.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 #[derive(serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Origin {
     /// The source file, as the author's runtime names it.
     pub file: String,
@@ -77,21 +77,21 @@ impl fmt::Display for Origin {
 /// `ui.accept` and `game.move` are conventions of the packages that declare them.
 #[derive(Clone, PartialEq, Eq, Debug)]
 #[derive(serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ActionSpec {
     /// The action's name, unique in the graph.
     pub name: String,
     /// The shape of its value. Every binding to the action must produce this type.
     pub value_type: ValueType,
     /// Where it was declared.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<Origin>,
 }
 
 /// One binding: an action, and the node tree whose output is the action's value.
 #[derive(Clone, PartialEq, Debug)]
 #[derive(serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BindingSpec {
     /// The action bound, by name.
     pub action: String,
@@ -106,7 +106,7 @@ pub struct BindingSpec {
 /// [`crate::input::Evaluator::evaluate`]).
 #[derive(Clone, PartialEq, Debug)]
 #[derive(serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SetSpec {
     /// The set's name, unique among sets.
     pub name: String,
@@ -115,7 +115,7 @@ pub struct SetSpec {
     /// The set's bindings, in author order.
     pub bindings: Vec<BindingSpec>,
     /// Where it was declared.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<Origin>,
 }
 
@@ -127,7 +127,7 @@ pub struct SetSpec {
 /// layers are active, the one pushed last is on top and decides first.
 #[derive(Clone, PartialEq, Debug)]
 #[derive(serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LayerSpec {
     /// The layer's name, unique among layers.
     pub name: String,
@@ -139,7 +139,7 @@ pub struct LayerSpec {
     #[serde(default)]
     pub masks: Vec<String>,
     /// Where it was declared.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<Origin>,
 }
 
@@ -150,14 +150,19 @@ pub struct LayerSpec {
 /// is coerced. Durations are whole milliseconds on the monotonic clock.
 #[derive(Clone, PartialEq, Debug)]
 #[derive(serde::Serialize, serde::Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub enum NodeSpec {
     /// A button: digital. On any connected device that has the control, or on `device` alone.
     SourceButton {
         /// The button.
         control: Control,
         /// A single device to read, or every device of the control's kind.
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         device: Option<DeviceId>,
     },
     /// An axis: scalar, in the control's range.
@@ -165,7 +170,7 @@ pub enum NodeSpec {
         /// The axis.
         control: Control,
         /// A single device to read, or every device of the control's kind.
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         device: Option<DeviceId>,
     },
     /// A fixed scalar.
@@ -246,11 +251,13 @@ pub enum NodeSpec {
         /// The digital input for `1`.
         positive: Box<Self>,
     },
-    /// Two scalars as a vector.
+    /// Two scalars as a vector. The document calls them `horizontal` and `vertical`.
     Vector2 {
         /// The scalar `x`.
+        #[serde(rename = "horizontal")]
         x: Box<Self>,
         /// The scalar `y`.
+        #[serde(rename = "vertical")]
         y: Box<Self>,
     },
     /// Whether another action is active, this tick: digital. The dependency is structural, so a
@@ -509,7 +516,7 @@ impl std::error::Error for SpecError {}
 /// A binding document: the actions, and the sets and layers that bind them.
 #[derive(Clone, PartialEq, Debug)]
 #[derive(serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GraphSpec {
     /// The format version, [`FORMAT_VERSION`].
     pub version: u32,

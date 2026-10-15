@@ -122,7 +122,7 @@ fn the_generated_definitions_follow_the_style() {
 /// `jess package test`: the checker's own suite, from the Package Source and from it packed.
 #[test]
 fn the_checker_passes_its_own_suite_from_both_providers() {
-    let scratch = tempfile::tempdir_in(repo_root().join("target")).unwrap();
+    let scratch = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let report = jess::lua::package::test(&jess::lua::Options::default(), &builtin(), scratch.path())
         .unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(report.failed, 0, "{report:#?}");
@@ -147,6 +147,8 @@ fn the_checker_type_checks_against_the_definitions() {
             ("@jess/yaml", "builtin/src/data/yaml"),
             ("@jess/data/toml", "builtin/src/data/toml"),
             ("@jess/data/value", "builtin/src/data/value"),
+            ("@jess/l10n", "builtin/src/l10n"),
+            ("@jess/input", "builtin/src/input"),
         ],
     );
     assert!(report.is_empty(), "{report}");

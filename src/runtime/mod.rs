@@ -96,4 +96,4 @@ pub use message::{MAX_DEPTH, Message, MessageKey, ResourceHandle, TransferError,
 pub use profile::{CollectedProfile, Direction, DiscardProfile, DomainStats, ProfileEvent, ProfileSink};
 pub use resources::OwnedResource;
 pub use service::Services;
-pub use worker::{WorkerFailurePolicy, WorkerInfo, WorkerSpec, WorkerState};
+pub use worker::{WORKER_QUEUE, WorkerFailurePolicy, WorkerInfo, WorkerSpec, WorkerState};

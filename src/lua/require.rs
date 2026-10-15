@@ -13,6 +13,10 @@ use crate::lua::{Jess, error};
 /// Standard libraries available by name.
 const PRELOADED: [&str; 6] = ["coroutine", "math", "string", "table", "utf8", "os"];
 
+/// The members the built-in package wraps in a Luau module of the same `@jess/` name: `jess.input`
+/// is the native half of `@jess/input`.
+const WRAPPED: [&str; 1] = ["input"];
+
 /// Fills `require`'s cache with what it hands out by name: the preloaded standard libraries, and
 /// the installed modules by their global names, with and without a leading `@`. Luau's own
 /// `require`, which the plan installed, is kept for the `@` module paths it knows.
@@ -32,9 +36,10 @@ pub fn seed_require(runtime: &Runtime, jess: &Jess) -> l3i::Result<()> {
             module.push_to(frame)?;
             loaded.raw_set(frame, name)?;
         }
-        // Each of jess's own modules is `@jess/<name>` too: `require("@jess/shader")`.
+        // Each of jess's own modules is `@jess/<name>` too: `require("@jess/shader")`, except the
+        // ones the built-in package wraps, whose `@jess/` name is its Luau module.
         let jess_module = jess.module.push_to(frame)?;
-        for name in crate::lua::plan::MEMBERS {
+        for name in crate::lua::plan::MEMBERS.into_iter().filter(|name| !WRAPPED.contains(name)) {
             frame.with_frame(|frame| {
                 let member = jess_module.raw_get(frame, name)?;
                 if member.is_table() {
@@ -74,11 +79,11 @@ pub fn require(call: &Call<'_>, jess: &Jess, name: &str) -> l3i::Result<StackRes
     let mut export = if relative { None } else { package_export(call, jess, name)? };
     // The built-in package's exports resolve in every runtime; a copy of it activated from disk
     // is byte for byte the same package, and was found first.
-    if export.is_none()
-        && !relative
-        && let Some(path) = crate::lua::builtin::export(name)
-    {
-        export = crate::lua::builtin::module(path).map(Module::from);
+    if export.is_none() && !relative && name.starts_with("@jess/") {
+        let manifest = crate::lua::builtin::manifest(call, jess)?;
+        if let Some(path) = manifest.export(name) {
+            export = manifest.module(path).map(Module::from);
+        }
     }
     // `@jess/` is jess's own namespace: its built-in modules, its members, and the exports of its
     // built-in package, never a file.
@@ -132,7 +137,16 @@ pub fn require(call: &Call<'_>, jess: &Jess, name: &str) -> l3i::Result<StackRes
             let value = chunk
                 .invoke_with(frame, (name,), |_, value| Value::store(value))
                 .map_err(crate::lua::callback_error)?;
-            value.push_to(frame)?;
+            let pushed = value.push_to(frame)?;
+            // A package module's export is shared by every module that requires it, so it is
+            // frozen once returned: one package can't patch another's API for the whole plan. A
+            // loose script's own files (keyed by their chunk name, not `\0...`) stay its business.
+            if module.key.starts_with('\0') && pushed.is_table() {
+                let table = pushed.as_table()?;
+                if !table.is_read_only() {
+                    table.set_read_only(true)?;
+                }
+            }
             loaded.raw_set(frame, &module.key)?;
             value
         } else {
@@ -253,14 +267,26 @@ fn package_relative(call: &Call<'_>, jess: &Jess, name: &str, caller: Option<&st
         }
         return Err(error(format!("module not found: {name} (required by {caller})")));
     }
-    // The built-in package, when it wasn't activated from disk.
-    if let Some(path) = caller.strip_prefix(crate::lua::builtin::prefix()) {
+    // The modules the bootstrap loaded to read TOML, before any manifest was read.
+    if let Some(path) = caller.strip_prefix(crate::lua::builtin::BOOTSTRAP_PREFIX) {
         for candidate in relative_candidates(name, caller, path, crate::lua::builtin::ID)? {
-            if let Some(module) = crate::lua::builtin::module(&candidate) {
+            if let Some(module) = crate::lua::builtin::bootstrap_module(&candidate) {
                 return Ok(Some(module.into()));
             }
         }
         return Err(error(format!("module not found: {name} (required by {caller})")));
+    }
+    // The built-in package, when it wasn't activated from disk.
+    if caller.starts_with(&format!("@{}@", crate::lua::builtin::ID)) {
+        let manifest = crate::lua::builtin::manifest(call, jess)?;
+        if let Some(path) = caller.strip_prefix(manifest.prefix()) {
+            for candidate in relative_candidates(name, caller, path, crate::lua::builtin::ID)? {
+                if let Some(module) = manifest.module(&candidate) {
+                    return Ok(Some(module.into()));
+                }
+            }
+            return Err(error(format!("module not found: {name} (required by {caller})")));
+        }
     }
     Ok(None)
 }
@@ -304,6 +330,12 @@ fn relative_candidates(name: &str, caller: &str, path: &str, package: &str) -> l
 }
 
 /// Resolves a file import relative to its calling script.
+///
+/// It reads the host's files without `filesystem.read`, on purpose: a loose script's sibling
+/// modules are its own code, which the host chose to run when it ran the script, and reading them
+/// is loading code, not reading data. Only a loose script gets here: a package module's relative
+/// imports resolve inside its payload (`package_relative`), and a chunk can't pass for a loose
+/// script's (`scripts::chunk_name`).
 fn find_relative(name: &str, caller: Option<&str>) -> l3i::Result<Module> {
     let not_found = || error(format!("module not found: {name}"));
     let Some(caller) = caller.and_then(|caller| caller.strip_prefix('@')) else {

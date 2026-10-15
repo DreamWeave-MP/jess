@@ -4,6 +4,7 @@
 -- built-in Jess data format, not a privileged Rust path. Presentation trivia is discarded, while
 -- anchors/aliases preserve graph identity and custom tags are represented explicitly.
 
+local Bytes = require '@dream/bytes'
 local Common = require './common'
 local Values = require './value'
 
@@ -40,14 +41,6 @@ local function failLine(index: number, column: number, message: string): never
   local line = Lines[index]
   failAt((line and line.start or length + 1) + column - 1, message)
   error('unreachable', 0)
-end
-
-local function trimRight(text: string): string
-  return (string.gsub(text, '[ \t]+$', ''))
-end
-
-local function trim(text: string): string
-  return (string.gsub(string.gsub(text, '^[ \t]+', ''), '[ \t]+$', ''))
 end
 
 local function isSeparation(byte: number?): boolean
@@ -145,13 +138,13 @@ local function stripComment(text: string): string
       elseif byte == 93 or byte == 125 then
         if depth > 0 then depth -= 1 end
       elseif byte == 35 and (index == 1 or isSeparation(string.byte(text, index - 1))) then
-        return trimRight(string.sub(text, 1, index - 1))
+        return Bytes.trimEnd(string.sub(text, 1, index - 1), ' \t')
       end
     end
     index += 1
   end
 
-  return trimRight(text)
+  return Bytes.trimEnd(text, ' \t')
 end
 
 local function significant(index: number): (number?, string?)
@@ -448,7 +441,7 @@ local function foldQuoted(rawLines: { string }): string
   for index, line in rawLines do
     -- White space before a physical line break is presentation separation, but white space before
     -- the closing quote is scalar content and must survive.
-    table.insert(cleaned, index < #rawLines and trimRight(line) or line)
+    table.insert(cleaned, index < #rawLines and Bytes.trimEnd(line, ' \t') or line)
   end
   return foldLines(cleaned)
 end
@@ -606,7 +599,7 @@ local function parseFlowPlain(stopColon: boolean): (string, number)
 
     if byte == 10 then
       if flowCollections == 0 then break end
-      table.insert(lines, trimRight(string.sub(source, lineStart, flowAt - 1)))
+      table.insert(lines, Bytes.trimEnd(string.sub(source, lineStart, flowAt - 1), ' \t'))
       flowAt += 1
       while string.byte(source, flowAt) == 32 or string.byte(source, flowAt) == 9 do flowAt += 1 end
       lineStart = flowAt
@@ -615,7 +608,7 @@ local function parseFlowPlain(stopColon: boolean): (string, number)
     flowAt += 1
   end
 
-  local tail = trimRight(string.sub(source, lineStart, flowAt - 1))
+  local tail = Bytes.trimEnd(string.sub(source, lineStart, flowAt - 1), ' \t')
   if #lines == 0 then
     if tail == '' then failAt(start, 'expected scalar content') end
     return tail, start
@@ -785,7 +778,7 @@ local function ensureInlineFinished(lineIndex: number): number
   local restStart = flowAt - line.start + 1
   local rest = string.sub(line.text, math.max(1, restStart))
   local clean = stripComment(rest)
-  if trim(clean) ~= '' then failAt(flowAt, 'unexpected content after node') end
+  if Bytes.trim(clean, ' \t') ~= '' then failAt(flowAt, 'unexpected content after node') end
   return endingLine + 1
 end
 
@@ -813,7 +806,7 @@ local function parseBlockScalar(index: number, indicatorColumn: number, token: s
       if explicit then failLine(index, indicatorColumn + offset, 'duplicate block scalar indentation indicator') end
       explicit = byte - 48
     elseif byte == 32 or byte == 9 then
-      local trailing = trim(string.sub(modifiers, offset))
+      local trailing = Bytes.trim(string.sub(modifiers, offset), ' \t')
       if trailing ~= '' then failLine(index, indicatorColumn + offset, 'invalid block scalar header') end
       break
     else
@@ -827,7 +820,7 @@ local function parseBlockScalar(index: number, indicatorColumn: number, token: s
   if not contentIndent then
     while scan <= #Lines do
       local candidate = Lines[scan]
-      if candidate.text ~= '' and trim(candidate.text) ~= '' then
+      if candidate.text ~= '' and Bytes.trim(candidate.text, ' \t') ~= '' then
         if candidate.indent <= parentIndent then
           contentIndent = parentIndent + 1
         else
@@ -846,7 +839,7 @@ local function parseBlockScalar(index: number, indicatorColumn: number, token: s
   scan = index + 1
   while scan <= #Lines do
     local candidate = Lines[scan]
-    local blank = trim(candidate.text) == ''
+    local blank = Bytes.trim(candidate.text, ' \t') == ''
     if not blank and candidate.indent < contentIndent then break end
     if not blank and candidate.indent <= parentIndent then break end
 
@@ -897,7 +890,7 @@ local function startsSpecialInline(text: string): boolean
 end
 
 local function propertyOnly(text: string): (string?, string?, boolean)
-  local rest = trim(stripComment(text))
+  local rest = Bytes.trim(stripComment(text), ' \t')
   local tag: string? = nil
   local anchor: string? = nil
 
@@ -909,11 +902,11 @@ local function propertyOnly(text: string): (string?, string?, boolean)
       local close = string.find(rest, '>', 3, true)
       if not close then return tag, anchor, false end
       token = string.sub(rest, 1, close)
-      rest = trim(string.sub(rest, close + 1))
+      rest = Bytes.trim(string.sub(rest, close + 1), ' \t')
     else
       local space = string.find(rest, '[ \t]')
       token = space and string.sub(rest, 1, space - 1) or rest
-      rest = space and trim(string.sub(rest, space + 1)) or ''
+      rest = space and Bytes.trim(string.sub(rest, space + 1), ' \t') or ''
     end
 
     if first == '!' then
@@ -929,7 +922,7 @@ local function propertyOnly(text: string): (string?, string?, boolean)
 end
 
 local function parsePlainBlock(first: string, index: number, parentIndent: number, position: number): (any, number)
-  local lines = { trim(first) }
+  local lines = { Bytes.trim(first, ' \t') }
   local scan = index + 1
 
   while scan <= #Lines do
@@ -946,7 +939,7 @@ local function parsePlainBlock(first: string, index: number, parentIndent: numbe
     end
 
     if candidate.indent <= parentIndent then break end
-    table.insert(lines, trim(clean))
+    table.insert(lines, Bytes.trim(clean, ' \t'))
     scan += 1
   end
 
@@ -975,7 +968,7 @@ local function parseInlineBlock(text: string, index: number, parentIndent: numbe
 end
 
 local function parseKeyText(text: string, index: number, depth: number): any
-  local clean = trim(text)
+  local clean = Bytes.trim(text, ' \t')
   if clean == '' then return Null end
   local line = Lines[index]
   local relative = string.find(line.text, clean, 1, true) or 1
@@ -1022,7 +1015,7 @@ local function parseBlockSequence(index: number, indent: number, depth: number, 
     if string.sub(rest, 1, 1) == ' ' or string.sub(rest, 1, 1) == '\t' then rest = string.sub(rest, 2) end
     rest = stripComment(rest)
 
-    if trim(rest) == '' then
+    if Bytes.trim(rest, ' \t') == '' then
       local child, childContent = significant(foundAt + 1)
       if child and childContent and not documentMarker(childContent) and Lines[child].indent > indent then
         local value, nextIndex = parseBlockNode(child, Lines[child].indent, depth + 1, nil, nil)
@@ -1061,13 +1054,13 @@ local function parseBlockSequence(index: number, indent: number, depth: number, 
     end
 
     local colon = mapColon(rest)
-    if colon and not startsSpecialInline(trim(rest)) then
+    if colon and not startsSpecialInline(Bytes.trim(rest, ' \t')) then
       local map: { [any]: any } = {}
       local key = parseKeyText(string.sub(rest, 1, colon - 1), foundAt, depth + 1)
       local rhs = string.sub(rest, colon + 1)
       local value: any
       local nextIndex: number
-      if trim(stripComment(rhs)) == '' then
+      if Bytes.trim(stripComment(rhs), ' \t') == '' then
         local child, childContent = significant(foundAt + 1)
         if child and childContent and Lines[child].indent > indent then
           value, nextIndex = parseBlockNode(child, Lines[child].indent, depth + 2, nil, nil)
@@ -1122,7 +1115,7 @@ local function parseBlockMapping(index: number, indent: number, depth: number, t
 
     if looksExplicitKey(content) then
       local afterQuestion = stripComment(string.sub(content, 2))
-      key = trim(afterQuestion) == '' and Null or parseKeyText(afterQuestion, found, depth + 1)
+      key = Bytes.trim(afterQuestion, ' \t') == '' and Null or parseKeyText(afterQuestion, found, depth + 1)
       local valueLine, valueContent = significant(found + 1)
       if not valueLine or not valueContent or Lines[valueLine].indent ~= indent or string.byte(valueContent, 1) ~= 58
         or not isSeparation(string.byte(valueContent, 2)) then
@@ -1153,7 +1146,7 @@ local function parseBlockMapping(index: number, indent: number, depth: number, t
         registerAnchor(propertyAnchor, value, line.start + indent)
         nextIndex = found + 1
       end
-    elseif trim(cleanRhs) == '' then
+    elseif Bytes.trim(cleanRhs, ' \t') == '' then
       local child, childContent = significant(found + 1)
       if child and childContent and not documentMarker(childContent) then
         local childIndent = Lines[child].indent
@@ -1181,7 +1174,7 @@ local function parsePropertyPrefix(text: string, index: number): (string?, strin
   flowAt = base
   local tag, anchor = parseProperties()
   local consumed = flowAt - base
-  return tag, anchor, trim(string.sub(text, consumed + 1))
+  return tag, anchor, Bytes.trim(string.sub(text, consumed + 1), ' \t')
 end
 
 parseBlockNodeImpl = function(index: number, indent: number, depth: number, inheritedTag: string?, inheritedAnchor: string?): (any, number)
@@ -1230,10 +1223,10 @@ end
 
 local function parseDirective(index: number, content: string): number
   if string.sub(content, 1, 5) == '%YAML' and isSeparation(string.byte(content, 6)) then
-    local version = trim(string.sub(content, 6))
+    local version = Bytes.trim(string.sub(content, 6), ' \t')
     if version ~= '1.2' then failLine(index, 1, `unsupported YAML version {version}`) end
   elseif string.sub(content, 1, 4) == '%TAG' and isSeparation(string.byte(content, 5)) then
-    local rest = trim(string.sub(content, 5))
+    local rest = Bytes.trim(string.sub(content, 5), ' \t')
     local handle, prefix = string.match(rest, '^(%S+)%s+(%S+)$')
     if not handle or not prefix or string.sub(handle, 1, 1) ~= '!' or string.sub(handle, -1) ~= '!' then
       failLine(index, 1, 'invalid %TAG directive')

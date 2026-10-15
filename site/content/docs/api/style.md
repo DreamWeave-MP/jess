@@ -6,7 +6,7 @@ extra:
   kind: api
 ---
 
-{{ api_signature(value="require('@jess/style'): { check, checkFile, files, format, markdownBlocks, rules, run }") }}
+{{ api_signature(value="require('@jess/style'): { check, checkFile, checkPackage, files, format, markdownBlocks, rules, run }") }}
 
 The [Luau style](@/docs/contributing/luau-style.md) as a checker. It's an export of jess's [built-in package](@/docs/scripting/packages.md#the-built-in-package), `jpk/builtin`, layer `jess.style`, which the binary carries, so every script can `require` it.
 
@@ -71,6 +71,27 @@ The `.jsl` and `.lua` files under each path, sorted. A path that's a file is kep
 {{ api_signature(value="style.run(paths: { string }, options: Options?) -> (number, number)") }}
 
 Checks every file `style.files(paths)` finds, prints each finding with `style.format`, and returns how many errors and how many warnings there were.
+
+### style.checkPackage
+
+{{ api_signature(value="style.checkPackage(root: string, payload: Options?) -> { string }") }}
+
+Every finding under the package folder `root`, each formatted with `style.format` and its path: what a package's own style test checks. Files in the payload, `<root>/src/`, are also held to `payload`, by default `--!strict` and no `any`; tests, benches, and tools follow the style alone.
+
+```luau
+--!strict
+local style = require '@jess/style'
+local test = require '@jess/test'
+
+local suite = test.new()
+
+suite.it('passes @jess/style', function()
+  local root = string.match(debug.info(1, 's'), '^[@=]?(.*)/tests/[^/]*$') or '.'
+  test.expect(table.concat(style.checkPackage(root), '\n')).toBe ''
+end)
+
+return suite
+```
 
 ### style.format
 
