@@ -1,5 +1,4 @@
 --!strict
---!native
 --[[
 A development server for the repository's site, entirely in Jess: builds site/ into a folder,
 serves it over HTTP/1.1, and rebuilds it when a source changes.

@@ -1,5 +1,4 @@
 --!strict
---!native
 --[[
 Flattens an OpenMW config chain into one standalone config for the benchmark.
 

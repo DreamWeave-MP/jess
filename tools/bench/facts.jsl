@@ -1,5 +1,4 @@
 --!strict
---!native
 --[[
 Runs one of the load-order tools through its module, the way its command line does, and prints
 what it reports about the load order: one `fact <state key>.<field> <value>` line per field of

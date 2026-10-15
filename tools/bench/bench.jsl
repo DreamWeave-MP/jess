@@ -1,5 +1,4 @@
 --!strict
---!native
 -- Jess's native-kernel benchmark harness. Everything measured here belongs to Jess itself; package-
 -- specific workloads live with their packages. Run with
 -- `jess run --capability filesystem.read --capability filesystem.write tools/bench/bench.jsl canaries`.

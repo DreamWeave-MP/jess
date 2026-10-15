@@ -1,5 +1,4 @@
 --!strict
---!native
 -- A production build of the repository's site through org.dreamweave.site, into site/public or the
 -- folder given, with `base_url` from config.toml unless a second argument replaces it:
 --

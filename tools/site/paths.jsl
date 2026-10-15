@@ -1,5 +1,4 @@
 --!strict
---!native
 -- Where the repository's site is: the nearest folder, from the one the command runs in up, that
 -- holds `site/config.toml`. A package's target has no folder of its own to start from (a JPK has
 -- none), so the repository is found from wherever inside it the command runs.

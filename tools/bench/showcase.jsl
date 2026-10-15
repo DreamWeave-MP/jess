@@ -1,5 +1,4 @@
 --!strict
---!native
 --[[
 The showcase: the Luau ports of the load-order tools, run on jess from their packages, next to
 the native tools they port, over the real load order; and whether both wrote the same files.
