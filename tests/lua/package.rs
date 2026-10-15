@@ -675,7 +675,9 @@ fn the_embedded_built_in_package_is_its_source() {
     }
     let root = builtin();
     let mut files = vec!["jess.toml".to_owned()];
-    walk(&root, &root.join("src"), &mut files);
+    for folder in ["src", "tests"] {
+        walk(&root, &root.join(folder), &mut files);
+    }
     files.sort();
     let embedded = jess::lua::builtin::FILES
         .iter()

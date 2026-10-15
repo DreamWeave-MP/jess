@@ -54,6 +54,12 @@ pub const FILES: &[(&str, &str)] = &[
     ("src/style/check.jsl", include_str!("../../jpk/builtin/src/style/check.jsl")),
     ("src/style/init.jsl", include_str!("../../jpk/builtin/src/style/init.jsl")),
     ("src/style/rules.jsl", include_str!("../../jpk/builtin/src/style/rules.jsl")),
+    (
+        "tests/analysis/run.jsl",
+        include_str!("../../jpk/builtin/tests/analysis/run.jsl"),
+    ),
+    ("tests/data/run.jsl", include_str!("../../jpk/builtin/tests/data/run.jsl")),
+    ("tests/style/run.jsl", include_str!("../../jpk/builtin/tests/style/run.jsl")),
 ];
 
 /// What `require` needs from the manifest: the version, for chunk names, and the modules.
