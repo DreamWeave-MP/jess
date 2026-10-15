@@ -1,7 +1,7 @@
 //! The repo's Luau style. `@jess/style`, the checker in jess's built-in package (`jpk/builtin`),
-//! runs over every `.jsl` file owned by this repo under `src/` and `tools/`, the ```` ```luau ```` blocks
-//! in the site's pages, and `jess luau-types`' definitions, and any finding fails the test. It is
-//! activated like any package, from the Package Source.
+//! runs over every `.jsl` file owned by this repo under `src/`, `tools/`, and `jpk/builtin/`, the
+//! ```` ```luau ```` blocks in the site's pages, and `jess luau-types`' definitions, and any
+//! finding fails the test. It is activated like any package, from the Package Source.
 
 use jess::lua::l3i::Runtime;
 use jess::lua::l3i::value::Table;
@@ -93,7 +93,7 @@ fn check_file(runtime: &Runtime, path: &str) -> Vec<String> {
 fn luau_sources_follow_the_style() {
     let runtime = checker();
     let mut findings = Vec::new();
-    for path in files(&["src", "tools"], &["jsl"]) {
+    for path in files(&["src", "tools", "jpk/builtin"], &["jsl"]) {
         findings.extend(check_file(&runtime, &path));
     }
     assert!(findings.is_empty(), "{}", findings.join("\n"));
