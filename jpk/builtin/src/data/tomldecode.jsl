@@ -15,7 +15,18 @@ local SafeIntegerMin = integer.fromstring('-9007199254740991')
 export type Value = any
 export type Table = { [string]: Value }
 export type Kind = 'float' | 'datetime'
-type LayoutEntry = { keys: { string }?, floats: { [any]: boolean }, datetimes: { [any]: boolean } }
+--- Where a key and its value are in the text, as 1-based byte offsets: the key's first byte, and the
+--- first and last byte of the value as written (quotes included).
+export type Position = { key: number, value: number, valueEnd: number }
+
+export type Options = { positions: boolean? }
+
+type LayoutEntry = {
+  keys: { string }?,
+  floats: { [any]: boolean },
+  datetimes: { [any]: boolean },
+  positions: { [string]: Position }?,
+}
 export type Layout = { [any]: LayoutEntry }
 
 local source = ''
@@ -24,6 +35,8 @@ local at = 1
 local layout: Layout = {}
 local kinds: { [any]: string } = {}
 local arraysOfTables: { [any]: boolean } = {}
+-- Byte positions of each key and its value, kept only when a caller asks (`positions = true`).
+local positions: { [Table]: { [string]: Position } }? = nil
 local root: Table, current: Table = {}, {}
 
 local BasicEscape: { [number]: string } = {
@@ -51,7 +64,12 @@ local function entry(container: any): LayoutEntry
   return created
 end
 
-type TableEntry = { keys: { string }, floats: { [any]: boolean }, datetimes: { [any]: boolean } }
+type TableEntry = {
+  keys: { string },
+  floats: { [any]: boolean },
+  datetimes: { [any]: boolean },
+  positions: { [string]: Position }?,
+}
 
 local function tableEntry(container: Table): TableEntry
   local found = layout[container]
@@ -85,8 +103,12 @@ local function mark(found: LayoutEntry | TableEntry, key: any, kind: Kind?)
   if kind == 'datetime' then found.datetimes[key] = true end
 end
 
-local function putNew(container: Table, key: string, value: Value, kind: Kind?)
-  if container[key] ~= nil then fail(`duplicate key '{key}'`) end
+--- Puts a key that must be new; a duplicate is reported at `keyAt`, where its key starts.
+local function putNew(container: Table, key: string, value: Value, kind: Kind?, keyAt: number)
+  if container[key] ~= nil then
+    at = keyAt
+    fail(`duplicate key '{key}'`)
+  end
 
   container[key] = value
   rememberKey(container, key)
@@ -650,6 +672,7 @@ local function parseInlineTable(): Table
   end
 
   while true do
+    local keyAt = at
     local path = parseKeyPath()
     skipValueSpace()
     if string.byte(source, at) ~= 61 then fail("expected '=' in inline table") end
@@ -658,7 +681,7 @@ local function parseInlineTable(): Table
     skipValueSpace()
     local item, kind = parseValue('inline')
     local target = descendForDotted(value, path, true)
-    putNew(target, path[#path], item, kind)
+    putNew(target, path[#path], item, kind, keyAt)
 
     skipValueSpace()
     local byte = string.byte(source, at)
@@ -754,8 +777,10 @@ local function descendHeader(path: { string }): (Table, string)
 end
 
 local function parseHeader()
+  local headerAt = at
   local arrayHeader = string.byte(source, at + 1) == 91
   at += if arrayHeader then 2 else 1
+  local keyAt = at
   local path = parseKeyPath()
   skipHorizontal()
 
@@ -773,6 +798,12 @@ local function parseHeader()
 
   local parent, key = descendHeader(path)
   local existing = parent[key]
+  if positions and existing == nil then
+    local recorded = positions[parent] or {}
+    positions[parent] = recorded
+    recorded[key] = { key = keyAt, value = headerAt, valueEnd = headerAt }
+  end
+
   if arrayHeader then
     local array: { Value }
     if existing == nil then
@@ -810,25 +841,37 @@ local function parseHeader()
 end
 
 local function parsePair()
+  local keyAt = at
   local path = parseKeyPath()
   skipHorizontal()
   if string.byte(source, at) ~= 61 then fail("expected '=' after key") end
 
   at += 1
   skipHorizontal()
+  local valueAt = at
   local value, kind = parseValue(nil)
   local target = descendForDotted(current, path, false)
-  putNew(target, path[#path], value, kind)
+  putNew(target, path[#path], value, kind, keyAt)
+
+  if positions then
+    local recorded = positions[target] or {}
+    positions[target] = recorded
+    recorded[path[#path]] = { key = keyAt, value = valueAt, valueEnd = at - 1 }
+  end
 
   skipHorizontal()
   if string.byte(source, at) == 35 then skipComment() end
   if at <= length and not consumeNewline() then fail('key/value pair must end at the line') end
 end
 
-local function decode(text: string): (Table, Layout)
+--- `text` as Luau values, and its layout. With `positions`, each table's layout entry also holds
+--- `positions`: where each key written as `key = value` (not inside an inline table), or first
+--- named by a table header, is in the text, and where its value (or its header) is.
+local function decode(text: string, options: Options?): (Table, Layout)
   Common.validateUtf8('toml', text)
   source, length, at = text, #text, 1
   layout, kinds, arraysOfTables = {}, {}, {}
+  positions = if options and options.positions then {} else nil
   root = newTable('root')
   current = root
 
@@ -842,6 +885,15 @@ local function decode(text: string): (Table, Layout)
       parsePair()
     end
     skipDocumentSpace()
+  end
+
+  if positions then
+    for container, recorded in positions do
+      local entry = layout[container]
+      if entry then entry.positions = recorded end
+    end
+
+    positions = nil
   end
 
   return root, layout

@@ -15,18 +15,33 @@ is yours.
 
 ## decode
 
-{{ api_signature(value="toml.decode(text: string) -> (toml.Table, toml.Layout)") }}
+{{ api_signature(value="toml.decode(text: string, options: { positions: boolean? }?) -> (toml.Table, toml.Layout)") }}
 
 Parses a TOML document, returning its tables and a layout table for what Luau tables forget.
 
-- **Parameters:** `text`, the whole document, as UTF-8.
+- **Parameters:** `text`, the whole document, as UTF-8. `options.positions`: also record where
+  each key sits in the text.
 - **Returns:** two values:
   1. The document's top-level table.
   2. The layout, keyed by each decoded table and array (by identity). For a table, the entry has
      `keys`, its keys in document order; `floats`, which marks keys written as floats (`1.0`)
      rather than integers (`1`); and `datetimes`, which marks TOML datetimes, read as strings. For
-     an array, `floats` and `datetimes` are keyed by 1-based position.
-- **Errors:** `toml: <what's wrong> at line <n>, column <n>`.
+     an array, `floats` and `datetimes` are keyed by 1-based position. With `positions`, a table's
+     entry also has `positions`: for each key written as `key = value` (not inside an inline
+     table) or first named by a header, `{ key, value, valueEnd }`, 1-based byte offsets of the
+     key and of its value as written, quotes included (for a header, its `[`). It's what a tool
+     needs to put an error of its own on the right line.
+- **Errors:** `toml: <what's wrong> at line <n>, column <n>`; a duplicate key is placed at the
+  repeated key.
+
+```luau
+--!strict
+local toml = require('@jess/data/toml')
+local text = 'name = "Fargoth"\n'
+local document, layout = toml.decode(text, { positions = true })
+local where = layout[document].positions.name
+print(where.key, string.sub(text, where.value, where.valueEnd)) -- 1	"Fargoth"
+```
 
 ```luau
 --!strict

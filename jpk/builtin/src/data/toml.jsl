@@ -8,6 +8,8 @@ export type Value = Decode.Value
 export type Table = Decode.Table
 export type Layout = Decode.Layout
 export type Kind = Decode.Kind
+export type Position = Decode.Position
+export type Options = Decode.Options
 
 --- A value built with `@jess/data/value` as a TOML document, as the toml crate's pretty writer
 --- lays it out. The value is a map; an absent field is left out, and raises inside a list, where

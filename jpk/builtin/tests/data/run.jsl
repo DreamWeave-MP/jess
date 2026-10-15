@@ -106,6 +106,25 @@ color = "gray"
       expect(function() toml.decode(source) end).toThrow 'toml:'
     end
   end)
+
+  suite.it('places a duplicate key at the key, inline or not', function()
+    expect(function() toml.decode 'a = 1\na = 22\n' end).toThrow "duplicate key 'a' at line 2, column 1"
+    expect(function() toml.decode 't = { a = 1, a = 2 }' end).toThrow "duplicate key 'a' at line 1, column 14"
+  end)
+
+  suite.it('records where keys and values are, when asked', function()
+    local text = 'name = "Fargoth"\n[owner]\nage = 3\n'
+    local document, layout = toml.decode(text, { positions = true })
+    local positions = assert(layout[document].positions)
+    local name = positions.name
+    expect(name.key).toBe(1)
+    expect(string.sub(text, name.value, name.valueEnd)).toBe '"Fargoth"'
+    expect(positions.owner.key).toBe(19)
+    expect(assert(layout[document.owner].positions).age.value).toBe(32)
+
+    local again, plain = toml.decode(text)
+    expect(plain[again].positions).toBeNil()
+  end)
 end)
 
 suite.describe('yaml', function()
