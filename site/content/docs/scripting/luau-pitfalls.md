@@ -96,18 +96,18 @@ Upstream: read-only fields from `table.freeze` are deliberate. Refusing a table 
 
 ```luau
 --!strict
-type Regex = { source: string }
+type InputGraph = { source: string }
 
-local function wants(regex: Regex): string
-  return regex.source
+local function wants(graph: InputGraph): string
+  return graph.source
 end
 
-print(wants(jess.regex.new 'a'))
+print(wants(jess.input.graph { actions = {}, sets = {} }))
 ```
 
-jess's definitions declare `Regex` (and `Plugin`, `Record`, and the rest) as global types. Declare a local one with the same name and the error reads `Expected this to be 'Regex' from 'main.jsl', but got 'Regex' from '@jess'`. Older Luau printed both as plain `Regex`, which is where "Regex is not Regex" came from. Today's message tells you which is which, but the clash is still there.
+jess's definitions declare `InputGraph` (and `ShaderExpr`, `Worker`, and the rest) as global types. Declare a local one with the same name and the error reads `Expected this to be 'InputGraph' from 'main.jsl', but got 'InputGraph' from '@jess'`. Older Luau printed both as plain `InputGraph`, which is where "X is not X" came from. Today's message tells you which is which, but the clash is still there.
 
-Fix: don't reuse the global type names for your own types. Call yours `Pattern`, or whatever it actually is.
+Fix: don't reuse the global type names for your own types. Call yours `Graph`, or whatever it actually is.
 
 Upstream: the confusing message is fixed in the Luau jess uses. There's nothing to file.
 

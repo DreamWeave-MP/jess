@@ -1,12 +1,12 @@
 ---
 title: 'Files, TOML, and Regex'
-description: 'The standard-library gaps jess fills: @dream/fs, @jess/data/toml, jess.regex.'
+description: 'The standard-library gaps jess fills: @dream/fs, @jess/data/toml, bytes.regex.'
 weight: 90
 extra:
   kind: guide
 ---
 
-Luau on its own can't open a file, read a config, or match a regex. Scripts that write logs, read settings, or match record ids need all three, so jess has them: `@dream/fs`, `@jess/data/toml`, and `jess.regex`. This page is recipes; the [fs](@/docs/api/fs.md), [toml](@/docs/api/toml.md), and [regex](@/docs/api/regex.md) references have every function.
+Luau on its own can't open a file, read a config, or match a regex. Scripts that write logs, read settings, or match record ids need all three, so jess has them: `@dream/fs`, `@jess/data/toml`, and `bytes.regex`. This page is recipes; the [fs](@/docs/api/fs.md), [toml](@/docs/api/toml.md), and [regex](@/docs/api/regex.md) references have every function.
 
 ## Files
 
@@ -186,57 +186,62 @@ write the same values.
 
 ## Regular expressions
 
-Luau patterns aren't regexes: no alternation, no groups you can name, no `{2,3}`. `jess.regex.new(pattern, options)` compiles a real one, in Rust's [`regex` syntax](https://docs.rs/regex/latest/regex/#syntax). It's the same engine and syntax as selection specs and S3LightFixes' patterns.
+Luau patterns aren't regexes: no alternation, no groups you can name, no `{2,3}`. `bytes.regex(pattern, options)`, from l3i's [`@dream/bytes`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#regular-expressions-bytes-regex), compiles a real one, in Rust's [`regex` syntax](https://docs.rs/regex/latest/regex/#syntax).
 
 ```luau
 --!strict
-local torch = jess.regex.new('^light_(?P<color>[a-z]+)_(\\d+)$', { caseInsensitive = true })
+local bytes = require('@dream/bytes')
+local torch = bytes.regex([[^light_(?<color>[a-z]+)_(\d+)$]], { caseInsensitive = true })
 
 print(torch:isMatch 'Light_Red_128')
 local groups = torch:captures 'Light_Red_128'
 if groups then print(groups[0], groups.color, groups[2]) end
 print(torch:find 'light_blue_64')
 print(torch:replace('light_red_64', 'light_${color}_256'))
+
 ```
 
 ```
 true
 Light_Red_128	Red	128
-1	13	light_blue_64
+0	13
 light_red_256	1
 ```
 
-- Backslashes are doubled inside Luau strings: `"\\d+"` is the regex `\d+`. Luau's raw strings, `[[\d+]]`, avoid that.
-- Positions are 1-based with inclusive ends, like `string.find`'s. Text is matched as bytes.
-- `captures` returns the first match's groups: `[0]` is the whole match, `[1]` and on the numbered groups, and named groups (`(?P<name>...)`) by name as well. Groups that didn't take part are missing.
+- Luau's raw strings, `[[\d+]]`, keep backslashes as they are; in a quoted string, `"\\d+"` is the regex `\d+`.
+- Positions are 0-based with the end exclusive, as `buffer` offsets are: `find` answers where the match starts and the offset just past it. Text is matched as bytes.
+- `captures` returns the first match's groups: `[0]` is the whole match, `[1]` and on the numbered groups, and named groups (`(?<name>...)`) by name as well. Groups that didn't take part are missing.
 - `replace` and `replaceAll` return the new text and how many matches they replaced. A string replacement expands `$1`, `${name}`, and `$$`.
 
-The options are `caseInsensitive`, `multiLine` (`^` and `$` match at every line), and `dotAll` (`.` matches newlines too).
+The options are `caseInsensitive`, `multiLine` (`^` and `$` match at every line), `dotAll` (`.` matches newlines too), and `unicode = false`, for text in another encoding.
 
 ### Every match
 
 ```luau
 --!strict
-local number = jess.regex.new '\\d+'
+local bytes = require('@dream/bytes')
+local number = bytes.regex [[\d+]]
 
 for text, start, finish in number:matches 'a1 b22 c333' do
   print(text, start, finish)
 end
 
--- A function replacement gets the captures and returns the new text.
-local doubled, count = number:replaceAll(
-  'radius 64, 128',
-  function(captures: RegexCaptures): string? return tostring(tonumber(captures[0]) :: number * 2) end
-)
+-- A function replacement gets the groups and returns the new text.
+local function double(groups: { [number | string]: string }): string?
+  return tostring(tonumber(groups[0]) :: number * 2)
+end
+
+local doubled, count = number:replaceAll('radius 64, 128', double)
 print(doubled, count)
 
-print(table.concat(jess.regex.new('\\s*[,;]\\s*'):split 'a, b;c ,d', '|'))
+print(table.concat(bytes.regex([[\s*[,;]\s*]]):split 'a, b;c ,d', '|'))
+
 ```
 
 ```
-1	2	2
-22	5	6
-333	9	11
+1	1	2
+22	4	6
+333	8	11
 radius 128, 256	2
 a|b|c|d
 ```
@@ -247,16 +252,18 @@ A replacement function that returns `nil` or `false` keeps that match as it was,
 
 ```luau
 --!strict
-local content = jess.regex.new('^content=(.+)$', { multiLine = true })
+local bytes = require('@dream/bytes')
+local content = bytes.regex([[^content=(.+)$]], { multiLine = true })
 local cfg = 'data=foo\ncontent=Morrowind.esm\ncontent=Tribunal.esm\n'
 
 for line in content:matches(cfg) do
   print(line)
 end
 
--- escape: match text exactly, dots and brackets included.
-local literal = jess.regex.new(jess.regex.escape 'a.b (c)')
+-- regexEscape: match text exactly, dots and brackets included.
+local literal = bytes.regex(bytes.regexEscape 'a.b (c)')
 print(literal:isMatch 'a.b (c)', literal:isMatch 'axb (c)')
+
 ```
 
 ```
@@ -265,7 +272,7 @@ content=Tribunal.esm
 true	false
 ```
 
-`matches` yields each whole match; call `captures(text, start)` on a match's start position for its groups. `jess.regex.escape` quotes text so it matches literally, which is what you want when building a pattern out of a record id or a file name.
+`matches` yields each whole match and where it is; call `captures(text, start)` with a match's start for its groups. `bytes.regexEscape` quotes text so it matches literally, which is what you want when building a pattern out of a record id or a file name.
 
 ## Related
 

@@ -27,7 +27,7 @@ print(plugin:select({ type = 'CELL', instance = 'teleport_enabler' }):delete().r
 
 A table of filters; a record must pass every one given. An empty spec (or `nil`) picks every record. Unknown keys are errors, so a typo never silently matches everything.
 
-Every pattern is a regex in Rust's `regex` syntax, matched case-insensitively, except `exactId`. See [jess.regex](@/docs/api/regex.md) for the syntax.
+Every pattern is a regex in Rust's `regex` syntax, matched case-insensitively, except `exactId`. See [Regular expressions](@/docs/api/regex.md) for the syntax.
 
 | Key | Takes | Picks records that |
 | --- | --- | --- |

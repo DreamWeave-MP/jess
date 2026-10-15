@@ -1,5 +1,5 @@
-//! TOML through `@jess/data/toml`, `jess.regex`, and running files: what load-order scripts use
-//! besides records.
+//! TOML through `@jess/data/toml`, and running files: what load-order scripts use besides
+//! records.
 
 use jess::lua::l3i::Runtime;
 
@@ -37,80 +37,6 @@ fn toml_decodes_with_its_layout_through_the_one_codec() {
         assert(not pcall(toml.decode, "key = "))
         assert(jess.toml == nil and not pcall(require, "@jess/toml"))
         "#,
-    );
-}
-
-#[test]
-fn regexes_match_like_rust() {
-    run(
-        &lua(),
-        r#"
-        local sensitive = jess.regex.new("^torch_\\d+$")
-        assert(sensitive:isMatch("torch_01") and not sensitive:isMatch("Torch_01"))
-        local insensitive = jess.regex.new("purple", { caseInsensitive = true })
-        assert(insensitive:isMatch("A PURPLE light") and tostring(insensitive) == "purple")
-        local ok, problem = pcall(jess.regex.new, "[")
-        assert(not ok and tostring(problem):find("unclosed"), tostring(problem))
-        "#,
-    );
-}
-
-#[test]
-fn regexes_find_capture_replace_split_and_iterate() {
-    run(
-        &lua(),
-        r##"
-        local number = jess.regex.new("(?P<whole>\\d+)(?:\\.(\\d+))?")
-        assert(number.pattern == "(?P<whole>\\d+)(?:\\.(\\d+))?")
-
-        local start, finish, text = number:find("light 12.5 and 7")
-        assert(start == 7 and finish == 10 and text == "12.5")
-        assert(number:find("no digits") == nil)
-        local again = { number:find("light 12.5 and 7", 11) }
-        assert(again[1] == 16 and again[2] == 16 and again[3] == "7")
-        assert(number:find("light 12.5 and 7", -1) == 16)
-        assert(number:match("x 42 y") == "42")
-
-        local groups = number:captures("light 12.5")
-        assert(groups[0] == "12.5" and groups[1] == "12" and groups[2] == "5" and groups.whole == "12")
-        local partial = number:captures("light 7")
-        assert(partial[1] == "7" and partial[2] == nil)
-        assert(number:captures("none") == nil)
-
-        local found = {}
-        for match, first, last in number:matches("1 22 333") do
-            table.insert(found, `{match}@{first}-{last}`)
-        end
-        assert(table.concat(found, ",") == "1@1-1,22@3-4,333@6-8", table.concat(found, ","))
-        local empties = 0
-        for _ in jess.regex.new("x*"):matches("ab") do empties += 1 end
-        assert(empties == 3, `{empties}`)
-
-        local once, count = number:replace("1 and 2", "<$whole>")
-        assert(once == "<1> and 2" and count == 1)
-        local all, total = number:replaceAll("1 and 2 and 3", "#")
-        assert(all == "# and # and #" and total == 3)
-        local limited = number:replaceAll("1 2 3", "#", 2)
-        assert(limited == "# # 3")
-        local doubled = number:replaceAll("1 and 20", function(groups)
-            return tostring(tonumber(groups[1]) * 2)
-        end)
-        assert(doubled == "2 and 40")
-        local kept, replaced = number:replaceAll("1 and 2", function(groups) return groups[1] == "1" and "one" or nil end)
-        assert(kept == "one and 2" and replaced == 1, `{replaced}`)
-        local skipped, two = number:replaceAll("1 2 3 4", function(groups) return groups[1] ~= "1" and "#" or nil end, 2)
-        assert(skipped == "1 # # 4" and two == 2, skipped)
-        local untouched, none = number:replace("1 and 2", function() return false end)
-        assert(untouched == "1 and 2" and none == 0)
-
-        local parts = jess.regex.new("\\s*,\\s*"):split("a , b,c")
-        assert(#parts == 3 and parts[1] == "a" and parts[3] == "c")
-        assert(#jess.regex.new(","):split("a,b,c", 2) == 2)
-
-        assert(jess.regex.new(jess.regex.escape("a.b*")):isMatch("xa.b*") and not jess.regex.new(jess.regex.escape("a.b")):isMatch("axb"))
-        assert(jess.regex.new("^b", { multiLine = true }):isMatch("a\nb"))
-        assert(jess.regex.new("a.b", { dotAll = true }):isMatch("a\nb"))
-        "##,
     );
 }
 

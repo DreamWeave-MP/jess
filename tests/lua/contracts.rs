@@ -13,7 +13,7 @@ fn only_generic_members_are_installed() {
             assert(not pcall(require, '@jess/' .. name), name)
         end
         assert(vfstool == nil and openmwConfig == nil and dreamPath == nil)
-        for _, name in { 'regex', 'shader', 'context', 'worker', 'input', 'bench' } do
+        for _, name in { 'shader', 'context', 'worker', 'input', 'bench' } do
             assert(require('@jess/' .. name) == jess[name], name)
         end
     ",
@@ -60,7 +60,7 @@ fn definitions_and_stubs_have_no_native_format_surface() {
 #[test]
 fn generic_contract_fixtures_keep_their_answers() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/lua/contracts");
-    for fixture in ["regex/regex", "input/acceptance", "shader/program", "shader/errors"] {
+    for fixture in ["input/acceptance", "shader/program", "shader/errors"] {
         // The input fixture configures a headless runtime, as a host script may.
         let runtime =
             jess::lua::runtime_with_capabilities(jess::lua::Options::default(), &jess::lua::host_script_grant(&[])).unwrap();

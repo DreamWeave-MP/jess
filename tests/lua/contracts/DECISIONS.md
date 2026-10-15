@@ -324,3 +324,11 @@ A fixture never pins a bug. Where current behavior is a bug, the fixture pins on
 - **What:** jess had a second file API next to l3i's, with its own errors (raising where `@dream/fs` answers `nil, message, kind`), its own list order (the filesystem's, where `@dream/fs` sorts), and its own backups. `jess.fs` and `src/lua/fs.rs` are gone; the built-in package, the tools, and the site use `@dream/fs`. 16 and 41 describe the removed API.
 - **Class:** removal. `jess` lost the `fs` member, and the orphaned `fs/fs` fixture went with it.
 - **Decision:** the member list in `contracts.rs` dropped `fs`. A backup before writing is a tool's policy, not a file API's.
+
+## Regular expressions
+
+### 49. `jess.regex` left the native API for l3i's `bytes.regex`
+
+- **What:** jess and l3i each bound the `regex` crate, with different position conventions (jess's 1-based and inclusive, l3i's 0-based and exclusive) and different error text. `bytes.regex` gained what only `jess.regex` had (`match`, `captures`, `matches`, `replace`, `replaceAll`, `split`, `regexEscape`); `jess.regex`, `src/lua/regexp.rs`, the `Regex` types, and the `regex` dependency are gone.
+- **Class:** removal. `jess` lost the `regex` member, and the `regex/regex` fixture went with it.
+- **Decision:** the member list and the fixture list in `contracts.rs` dropped `regex`; `api/regex.md` maps every call, positions included.

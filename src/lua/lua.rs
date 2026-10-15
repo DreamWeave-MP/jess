@@ -1,10 +1,9 @@
 //! The shapes jess's bindings share: option tables, coerced text, and pushing tables and values
 //! onto a call's stack.
 
-use l3i::bind::Binding;
 use l3i::convert::{FromView, Integer};
 use l3i::stack::{Frame, Scope, TableView, Type, ValueView};
-use l3i::value::{Function, Table, Value};
+use l3i::value::Table;
 
 use crate::lua::error;
 
@@ -134,119 +133,6 @@ impl<'c> l3i::bind::ParamItem<'c> for Bytes {
     }
 }
 
-/// An option table argument, or none.
-pub struct Opts(Option<Table>);
-
-impl<'v> FromView<'v> for Opts {
-    const EXPECTED: &'static str = "table";
-
-    fn from_view(view: ValueView<'v>) -> l3i::Result<Self> {
-        if view.is_nil() {
-            return Ok(Self(None));
-        }
-        Table::from_value(Value::store(view)?).map(|table| Self(Some(table)))
-    }
-
-    fn matches(view: ValueView<'v>) -> bool {
-        view.is_nil() || view.is_table()
-    }
-}
-
-impl l3i::bind::Param for Opts {
-    type Item<'c> = Opts;
-}
-
-/// An option table is optional: left out, or `nil`, it's no options.
-impl<'c> l3i::bind::ParamItem<'c> for Opts {
-    const KIND: l3i::bind::ParamKind = l3i::bind::ParamKind::Optional;
-    const EXPECTED: &'static str = <Opts as FromView<'c>>::EXPECTED;
-
-    fn read_slot(view: ValueView<'c>) -> l3i::Result<Self> {
-        <Opts as FromView<'c>>::from_view(view)
-    }
-
-    fn matches(view: ValueView<'c>) -> bool {
-        <Opts as FromView<'c>>::matches(view)
-    }
-
-    fn probe(call: &'c l3i::bind::Call<'c>, cursor: &mut std::ffi::c_int, top: std::ffi::c_int, _: bool) -> bool {
-        if *cursor > top {
-            return true;
-        }
-        if !<Self as FromView<'c>>::matches(call.arg(*cursor)) {
-            return false;
-        }
-        *cursor += 1;
-        true
-    }
-
-    fn materialize(
-        call: &'c l3i::bind::Call<'c>,
-        cursor: &mut std::ffi::c_int,
-        top: std::ffi::c_int,
-        position: &mut std::ffi::c_int,
-        debug_name: &str,
-        _: bool,
-    ) -> l3i::Result<Self> {
-        if *cursor > top {
-            return Ok(Self(None));
-        }
-        *position += 1;
-        let value = call.arg(*cursor);
-        let options = <Self as FromView<'c>>::from_view(value)
-            .map_err(|cause| error(format!("{debug_name}: bad argument #{position} (expected table): {cause}")))?;
-        *cursor += 1;
-        Ok(options)
-    }
-}
-
-impl From<Table> for Opts {
-    fn from(table: Table) -> Self {
-        Self(Some(table))
-    }
-}
-
-impl Opts {
-    /// Rejects keys `function` doesn't take, naming the ones it does.
-    pub(crate) fn check(&self, scope: &impl Scope, function: &str, keys: &[&str]) -> l3i::Result<()> {
-        let Some(table) = &self.0 else {
-            return Ok(());
-        };
-        scope.with_frame(|frame| {
-            let view = table.push_to(frame)?;
-            crate::lua::check_options(frame, view.value(), function, keys)
-        })
-    }
-
-    /// Runs `body` with the option `key`'s value on a fresh frame, `nil` when the table or the key
-    /// is missing.
-    pub(crate) fn with<R>(
-        &self,
-        scope: &impl Scope,
-        key: &str,
-        body: impl FnOnce(&Frame<'_>, ValueView<'_>) -> l3i::Result<R>,
-    ) -> l3i::Result<R> {
-        scope.with_frame(|frame| match &self.0 {
-            Some(table) => {
-                let view = table.push_to(frame)?;
-                let value = view.raw_get(frame, key)?;
-                body(frame, value)
-            }
-            None => body(frame, frame.push_nil()?),
-        })
-    }
-
-    /// The option `key` converted to `T`, `None` when it's missing.
-    pub(crate) fn get<T: for<'a> FromView<'a>>(&self, scope: &impl Scope, key: &str) -> l3i::Result<Option<T>> {
-        self.with(scope, key, |_, value| {
-            if value.is_nil() {
-                return Ok(None);
-            }
-            value.read::<T>().map(Some)
-        })
-    }
-}
-
 /// Runs `build`, which leaves one value on top of a fresh frame, and keeps that value on `scope`:
 /// a bound function's result, or the next value of a table under construction.
 pub fn keep_top(scope: &impl Scope, build: impl FnOnce(&Frame<'_>) -> l3i::Result<()>) -> l3i::Result<()> {
@@ -287,12 +173,6 @@ pub fn push_list<T>(
 /// A table `build` pushed onto a frame, pinned.
 pub fn stored_table(scope: &impl Scope, build: impl FnOnce(&Frame<'_>) -> l3i::Result<()>) -> l3i::Result<Table> {
     Table::from_value(crate::lua::stored(scope, build)?)
-}
-
-/// A Lua function made inside a call, for iterators: `next` is called by `for` with the state and
-/// control it ignores.
-pub fn function<F: Binding<M>, M>(scope: &impl Scope, name: &str, callable: F) -> l3i::Result<Function> {
-    l3i::bind::function(scope, &["jess"], name, callable)
 }
 
 /// Sets `metatable` (on top of `frame`, popped) as the metatable of the table at `table`.

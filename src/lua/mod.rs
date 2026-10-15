@@ -33,7 +33,6 @@ mod lua;
 pub mod namespaces;
 pub mod package;
 pub mod plan;
-mod regexp;
 mod require;
 pub mod scripts;
 pub mod shader;
@@ -42,7 +41,7 @@ pub mod testing;
 pub mod types;
 pub mod workspace;
 
-pub(crate) use lua::{Bytes, Opts, Text, kind, push_table};
+pub(crate) use lua::{Bytes, Text, kind, push_table};
 
 /// Luau type definitions for the generic runtime services and installed modules.
 ///

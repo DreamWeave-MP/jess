@@ -6,7 +6,7 @@ extra:
   kind: api
 ---
 
-{{ api_signature(value="jess: { version, null, meta, plugin, select, save, nif, openmw, luadata, compare, fs, regex, shader, context, worker, input }") }}
+{{ api_signature(value="jess: { version, null, meta, plugin, select, save, nif, openmw, luadata, compare, fs, shader, context, worker, input }") }}
 
 `jess` is the global table every script gets, however it was started: `jess run`, `jess test`, `jess plugin modify --script`, or `jess nif modify --script`. It holds one table per module, plus the few values that belong to no module and had to live somewhere.
 
@@ -33,7 +33,7 @@ extra:
 | `jess.compare` | Byte comparisons, common records, diffs, overlapping topics | [jess.compare](@/docs/api/compare.md) |
 | `@dream/fs` | Files and folders | [Files](@/docs/api/fs.md) |
 | `@jess/data/toml` | TOML documents as tables, and back | [@jess/data/toml](@/docs/api/toml.md) |
-| `jess.regex` | Rust regular expressions | [jess.regex](@/docs/api/regex.md) |
+| `bytes.regex` | Rust regular expressions | [Regular expressions](@/docs/api/regex.md) |
 | `jess.shader` | Typed shader programs from Luau modules | [jess.shader](@/docs/api/shader.md) |
 | `jess.input` | Action graphs and a headless input runtime | [jess.input](@/docs/api/input.md) |
 | `jess.context` | Handlers for the phases a ScriptDomain schedules | [jess.context](@/docs/api/context.md) |

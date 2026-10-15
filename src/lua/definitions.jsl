@@ -2,35 +2,6 @@
 
 declare extern type JessNull with end
 
---- A compiled regular expression, with Rust `regex` syntax. Text is matched as bytes; positions
---- are 1-based with inclusive ends, like `string.find`'s, and `init` (negative counts from the end)
---- is where to start looking.
-export type Regex = {
-  pattern: string,
-  isMatch: (self: Regex, text: string) -> boolean,
-  --- The first match's start and end positions and text, or nil.
-  find: (self: Regex, text: string, init: number?) -> (number?, number?, string?),
-  --- The first match's text, or nil.
-  match: (self: Regex, text: string, init: number?) -> string?,
-  --- The first match's groups, or nil: `[0]` is the whole match, `[n]` group n, and named groups
-  --- are under their names. Groups that didn't take part are missing.
-  captures: (self: Regex, text: string, init: number?) -> RegexCaptures?,
-  --- An iterator over every match: `for text, start, finish in regex:matches(s) do`.
-  matches: (self: Regex, text: string) -> () -> (string?, number?, number?),
-  --- The text with the first match replaced, and how many were (0 or 1). A string replacement
-  --- expands `$1`, `${name}`, and `$$`; a function gets the captures and returns the replacement
-  --- (nil or false keeps the match, which isn't counted).
-  replace: (self: Regex, text: string, replacement: string | (RegexCaptures) -> (string | false)?) -> (string, number),
-  --- Like `replace` for every match, or until `limit` are replaced.
-  replaceAll: (self: Regex, text: string, replacement: string | (RegexCaptures) -> (string | false)?, limit: number?) -> (string, number),
-  --- The text split around matches, into at most `limit` parts when given.
-  split: (self: Regex, text: string, limit: number?) -> { string },
-}
-
-export type RegexCaptures = { [number | string]: string }
-
-export type RegexOptions = { caseInsensitive: boolean?, multiLine: boolean?, dotAll: boolean? }
-
 --- The handlers `jess.context.bind` takes, by phase name. Each gets the phase's payload: seconds
 --- for `update`, `fixedUpdate`, and `lateUpdate`, the event for `event`, nothing for `startup` and
 --- `shutdown`.
@@ -326,14 +297,6 @@ declare jess: {
   --- A missing value inside an array (such as an empty link in a node's children), where `nil`
   --- would shift everything after it.
   null: JessNull,
-  --- Rust regular expressions (Luau patterns aren't regexes).
-  regex: {
-    --- Compiles a pattern; `multiLine` makes `^`/`$` match at lines, `dotAll` lets `.` match `\n`.
-    new: (pattern: string, options: RegexOptions?) -> Regex,
-    --- `text` with every regex metacharacter escaped, to match it literally.
-    escape: (text: string) -> string,
-  },
-
   --- Typed shader construction; `require("@jess/shader")` is the same table.
   shader: ShaderModule,
 

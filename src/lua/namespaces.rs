@@ -5,7 +5,7 @@ use l3i::extension::MemberKind;
 /// The getters and methods one handle type registers, besides metamethods.
 #[derive(Debug, Default)]
 pub struct Namespace {
-    /// The type's name in the Luau definitions: `Regex`, `ShaderExpr`, ...
+    /// The type's name in the Luau definitions: `ShaderExpr`, `InputGraph`, ...
     pub name: &'static str,
     /// Names read through a getter or a plain field.
     pub fields: Vec<String>,
@@ -16,8 +16,7 @@ pub struct Namespace {
 }
 
 /// Every jess userdata type, by its `Userdata::NAME` and the name the definitions use.
-const TYPES: [(&str, &str); 7] = [
-    ("jess.Regex", "Regex"),
+const TYPES: [(&str, &str); 6] = [
     ("jess.shader.Type", "ShaderType"),
     ("jess.shader.Expr", "ShaderExpr"),
     ("jess.shader.Input", "ShaderInput"),

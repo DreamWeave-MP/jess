@@ -180,7 +180,6 @@ fn the_contract_names_whatever_came_back() {
         ("return {}", "a table"),
         ("return true", "a boolean"),
         ("return print", "a function"),
-        ("return jess.regex.new('x')", "a jess.Regex"),
         ("return jess.shader.vec4", "a jess.shader.Type"),
     ];
     for (index, (source, came_back)) in cases.into_iter().enumerate() {
@@ -221,8 +220,5 @@ fn the_corpus_type_checks_against_the_definitions() {
 #[test]
 fn the_module_is_the_same_table_by_either_name() {
     let runtime = common::runtime();
-    common::run(
-        &runtime,
-        "assert(require('@jess/shader') == jess.shader)\nassert(require('@jess/regex') == jess.regex)",
-    );
+    common::run(&runtime, "assert(require('@jess/shader') == jess.shader)");
 }

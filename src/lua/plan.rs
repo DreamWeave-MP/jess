@@ -120,7 +120,7 @@ fn builder(capabilities: &[String], profiling: bool) -> RuntimePlanBuilder {
 
 /// The members of `@jess`, installed per runtime. Each table among them is also the module
 /// `@jess/<name>` (`require("@jess/shader")`).
-pub(crate) const MEMBERS: [&str; 8] = ["version", "null", "regex", "shader", "context", "worker", "input", "bench"];
+pub(crate) const MEMBERS: [&str; 7] = ["version", "null", "shader", "context", "worker", "input", "bench"];
 
 /// The capabilities `jess.input` checks.
 const INPUT_CAPABILITIES: [&str; 3] = [
@@ -141,7 +141,6 @@ impl Extension for JessExtension {
     fn describe(&self, d: &mut ExtensionDescriptor) -> l3i::Result<()> {
         // `jess.context` and `jess.worker` are the runtime's `@jess/context` and `@jess/worker`.
         d.requires(crate::runtime::luau::EXTENSION_ID);
-        crate::lua::regexp::describe(d);
         crate::lua::shader::describe(d);
         crate::lua::input::describe(d);
         // `jess.input` checks these against the plan outside a domain, and the broker inside one.
@@ -170,7 +169,6 @@ impl Extension for JessExtension {
         module.set("version", env!("CARGO_PKG_VERSION"))?;
         module.set("null", &crate::lua::convert::NULL)?;
         module.set("bench", &crate::lua::bench::module(runtime)?)?;
-        module.set("regex", &crate::lua::regexp::module(runtime, &jess)?)?;
         module.set("shader", &crate::lua::shader::module(runtime, &jess)?)?;
         let modules = cx
             .state_of::<crate::runtime::luau::Modules>(crate::runtime::luau::EXTENSION_ID)?
