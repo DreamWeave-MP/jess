@@ -11,7 +11,7 @@
 //!
 //! jess reads TOML with one codec, the package's Luau `@jess/data/toml`, and that includes its own
 //! manifest. The decoder needs nothing but `./common`, so a runtime loads it under
-//! [`BOOTSTRAP_PREFIX`], where relative requires resolve against the embedded files with no
+//! `BOOTSTRAP_PREFIX`, where relative requires resolve against the embedded files with no
 //! manifest read yet, and decodes the manifest with it the first time anything asks.
 
 use std::cell::RefCell;
