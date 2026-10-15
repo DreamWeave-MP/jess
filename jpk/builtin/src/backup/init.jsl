@@ -1,0 +1,65 @@
+--!strict
+--!native
+-- @jess/backup: a file written the way jess's tools overwrite one. What was there is copied to the
+-- next free `.bak`, `.bak1`, `.bak2`, ... beside it first, never over an earlier backup, and the
+-- new bytes replace the old atomically, keeping the old file's permissions. @dream/fs writes
+-- without backups; keeping one is a tool's policy, and this is the one tools share.
+local fs = require '@dream/fs'
+
+export type Written = {
+  --- The file written.
+  path: string,
+  --- Where the file that was there went, or nil when nothing was there or `backup = false`.
+  backup: string?,
+}
+
+export type Options = {
+  --- Whether to copy what is there aside first; true unless false.
+  backup: boolean?,
+}
+
+local Name = 'jess.backup.write'
+
+--- Copies the file at `path` to the first of `path.bak`, `path.bak1`, ... that isn't there, and
+--- answers it, or nil when there is no file to copy. The name is taken by creating it exclusively,
+--- so two writers never pick the same one and an earlier backup is never overwritten.
+local function keep(path: string): string?
+  local there, message, kind = fs.stat(path)
+  if not there then
+    if kind == 'notFound' or not kind then return nil end
+
+    error(`{Name}: {message}`, 0)
+  end
+
+  local index = 0
+  while true do
+    local candidate = if index == 0 then `{path}.bak` else `{path}.bak{index}`
+    local reserved, problem, problemKind = fs.writeFile(candidate, '', { exclusive = true })
+    if reserved then
+      local copied, copyProblem = fs.copy(path, candidate)
+      if copied then return candidate end
+
+      fs.remove(candidate)
+      error(`{Name}: {copyProblem}`, 0)
+    end
+
+    if problemKind ~= 'alreadyExists' then error(`{Name}: {problem}`, 0) end
+
+    index += 1
+  end
+end
+
+--- Writes `data` to `path`, making the folders it goes in, after copying what was there to its
+--- next free backup unless `options.backup` is false. Raises when the backup or the write fails;
+--- a failed backup leaves the old file as it was.
+local function write(path: string, data: string | buffer, options: Options?): Written
+  local backup = if options and options.backup == false then nil else keep(path)
+  local written, message = fs.writeFile(path, data, { atomic = true, createParents = true })
+  if not written then error(`{Name}: {message}`, 0) end
+
+  return { path = path, backup = backup }
+end
+
+return table.freeze {
+  write = write,
+}

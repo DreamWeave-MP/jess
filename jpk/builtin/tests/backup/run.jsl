@@ -1,0 +1,93 @@
+--!strict
+--!native
+-- @jess/backup's contract: what was there is kept under the next free name and never overwritten,
+-- and the new file is written whole.
+local fs = require '@dream/fs'
+local backup = require '@jess/backup'
+local test = require '@jess/test'
+local expect = test.expect
+local suite = test.new()
+
+--- A folder of its own under the host's scratch root for one case.
+local function folder(name: string): string
+  local scratch = assert(rawget(_G, 'scratchRoot') :: string?, 'the case needs a scratchRoot')
+  local path = fs.join(scratch, 'backup', name)
+  if fs.exists(path) then
+    local removed, problem = fs.remove(path, { recursive = true })
+    assert(removed, problem)
+  end
+
+  return path
+end
+
+local function read(path: string): string?
+  local text = fs.readFileString(path)
+  return text
+end
+
+local function there(path: string): boolean return fs.exists(path) == true end
+
+suite.describe('@jess/backup', function()
+  suite.it('writes a new file, making its folders, and keeps no backup of nothing', function()
+    local path = fs.join(folder('new'), 'nested', 'file.bin')
+    local written = backup.write(path, 'first')
+
+    expect(written.path).toBe(path)
+    expect(written.backup).toBe(nil)
+    expect(read(path)).toBe 'first'
+    expect(there(`{path}.bak`)).toBe(false)
+  end)
+
+  suite.it('keeps every earlier version under the next free name', function()
+    local path = fs.join(folder('versions'), 'file.bin')
+    backup.write(path, 'first')
+    local second = backup.write(path, 'second')
+    local third = backup.write(path, buffer.fromstring 'third')
+
+    expect(second.backup).toBe(`{path}.bak`)
+    expect(third.backup).toBe(`{path}.bak1`)
+    expect(read(`{path}.bak`)).toBe 'first'
+    expect(read(`{path}.bak1`)).toBe 'second'
+    expect(read(path)).toBe 'third'
+  end)
+
+  suite.it('never overwrites a backup that is already there', function()
+    local root = folder('taken')
+    local path = fs.join(root, 'file.bin')
+    local current, currentProblem = fs.writeFile(path, 'current', { createParents = true })
+    assert(current, currentProblem)
+
+    local older, olderProblem = fs.writeFile(`{path}.bak`, 'an older backup')
+    assert(older, olderProblem)
+
+    local written = backup.write(path, 'next')
+
+    expect(written.backup).toBe(`{path}.bak1`)
+    expect(read(`{path}.bak`)).toBe 'an older backup'
+    expect(read(`{path}.bak1`)).toBe 'current'
+    expect(read(path)).toBe 'next'
+  end)
+
+  suite.it('writes without a backup when asked not to keep one', function()
+    local path = fs.join(folder('none'), 'file.bin')
+    backup.write(path, 'first')
+    local written = backup.write(path, 'second', { backup = false })
+
+    expect(written.backup).toBe(nil)
+    expect(there(`{path}.bak`)).toBe(false)
+    expect(read(path)).toBe 'second'
+  end)
+
+  suite.it('raises when what is there cannot be copied aside, and leaves no backup behind', function()
+    local root = folder('directory')
+    local path = fs.join(root, 'taken')
+    local made, problem = fs.mkdir(path, { recursive = true })
+    assert(made, problem)
+
+    expect(function() backup.write(path, 'bytes') end).toThrow 'jess.backup.write:'
+    expect(fs.isDir(path)).toBe(true)
+    expect(there(`{path}.bak`)).toBe(false)
+  end)
+end)
+
+return suite
