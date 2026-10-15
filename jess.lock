@@ -5,6 +5,6 @@ lock_version = 1
 [[package]]
 id = "org.dreamweave.site"
 version = "0.1.0"
-digest = "139ce53b21dfa57c2a21c050ffeb16ac707d14e171779ee3ae285951751a12ad"
+digest = "e0adfb9c62d2e68da07feedabf91809b4ea31b2455e6ce5f4bfe05c6a8f33331"
 source = "local"
 dependencies = []
