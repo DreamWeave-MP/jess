@@ -198,7 +198,7 @@ jess: greeter.jpk: tests run from a Package Source; run `jess package test` on i
 | `--trusted` | Grant everything the target declares. |
 | `ARGS...` | Arguments for the target, which gets them as `...` and in the global `arg` table. |
 
-Runs one of a package's `command` targets: its package resolves with its dependencies, every layer it declares is activated, and the target's entry runs as a script in a fresh runtime holding exactly the capabilities the target declares. Not one more, and not one fewer: a capability it declares and you don't grant stops the run before anything is activated.
+Runs one of a package's `command` targets: its package resolves with its dependencies, every layer it declares is activated, and the target's entry runs as a script in a fresh runtime holding exactly the capabilities the target declares. Not one more, and not one fewer: a capability it declares and you don't grant stops the run before anything is activated. The exceptions are what you already have when you run a tool, as with [`jess run`](@/docs/cli/run.md): your terminal (`process.stdio`) and the input devices in front of you (`input.actions`, `input.observe`, `input.configure`). A target that declares one gets it without asking; one that doesn't declare it still doesn't get it.
 
 ```text
 $ jess package run tools/greeter --package-path .. -- one
