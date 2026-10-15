@@ -325,6 +325,12 @@ fn relative_candidates(name: &str, caller: &str, path: &str, package: &str) -> l
 }
 
 /// Resolves a file import relative to its calling script.
+///
+/// It reads the host's files without `filesystem.read`, on purpose: a loose script's sibling
+/// modules are its own code, which the host chose to run when it ran the script, and reading them
+/// is loading code, not reading data. Only a loose script gets here: a package module's relative
+/// imports resolve inside its payload (`package_relative`), and a chunk can't pass for a loose
+/// script's (`scripts::chunk_name`).
 fn find_relative(name: &str, caller: Option<&str>) -> l3i::Result<Module> {
     let not_found = || error(format!("module not found: {name}"));
     let Some(caller) = caller.and_then(|caller| caller.strip_prefix('@')) else {

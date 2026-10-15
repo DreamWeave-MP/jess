@@ -1,8 +1,9 @@
-# The verified toolchain (TOOLCHAIN.md): clang compiles Luau, the Rust side emits bitcode, and
-# lld runs one thin LTO over both languages. build.rs refuses anything else unless
-# L3I_UNVERIFIED_TOOLCHAIN is set (docs.rs is exempt). Environment variables override every
-# entry here. Linux is the measured configuration; the Windows entries follow the same shape
-# (clang-cl plus lld-link) and are what CI runs. Apple targets are the vetted exception below.
+# The verified toolchain, as l3i's guide gives it (https://DreamWeave-MP.github.io/l3i/docs/building/):
+# clang compiles Luau, the Rust side emits bitcode, and lld runs one thin LTO over both languages.
+# l3i's build.rs refuses anything else unless L3I_UNVERIFIED_TOOLCHAIN is set (docs.rs is exempt).
+# Environment variables override every entry here. Linux is the measured configuration; the
+# Windows entries follow the same shape (clang-cl plus lld-link) and are what CI runs. Apple
+# targets are the vetted exception below.
 [env]
 CXX = "clang++"
 CXX_x86_64-pc-windows-msvc = "clang-cl"
