@@ -39,7 +39,8 @@ Parses a TOML document, returning its tables and a layout table for what Luau ta
 local toml = require('@jess/data/toml')
 local text = 'name = "Fargoth"\n'
 local document, layout = toml.decode(text, { positions = true })
-local where = layout[document].positions.name
+local positions = layout[document].positions or error 'decoded without positions'
+local where = positions.name
 print(where.key, string.sub(text, where.value, where.valueEnd)) -- 1	"Fargoth"
 ```
 
@@ -82,20 +83,21 @@ raises inside a list, where TOML has nothing to write for it.
 | Array | An array table, with its own layout entry (`floats` and `datetimes`). |
 | Table, inline table, array of tables | Tables, each with its own layout entry. |
 
-Decoded values could be any TOML type, so narrow them before use in `--!strict` code:
+A decoded value is `unknown`: it's someone else's file, and it could be any TOML type. In `--!strict` code, cast a document to the shape your program expects, and check with `typeof` what it can't count on. A cast is a claim the checker takes on trust, so check anything you can't afford to be wrong about:
 
 ```luau
 --!strict
 local toml = require('@jess/data/toml')
-local settings, layout = toml.decode '[owner]\nname = "Tom"\nscores = [1, 2.5]\n'
-local owner = settings.owner
-if typeof(owner) == 'table' then
-  print(owner.name) -- Tom
-  local scores = owner.scores
-  if typeof(scores) == 'table' then
-    print(layout[scores].floats[2]) -- true
-  end
-end
+
+type Settings = { owner: { name: string, scores: { number } } }
+
+local document, layout = toml.decode '[owner]\nname = "Tom"\nscores = [1, 2.5]\n'
+local settings = document :: Settings
+print(settings.owner.name) -- Tom
+print(layout[settings.owner.scores].floats[2]) -- true
+
+local version = document.version
+if typeof(version) == 'string' then print(`version {version}`) end
 ```
 
 Related: [Files, TOML, and Regex](@/docs/scripting/files-toml-regex.md).
