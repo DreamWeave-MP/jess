@@ -1,0 +1,846 @@
+--!strict
+-- @jess/l10n: localized text from bundles of ICU MessageFormat messages, resolved through a
+-- locale fallback chain, from providers with a fixed precedence.
+--
+-- The model is OpenMW's (components/l10n): a bundle (OpenMW's context) is a named group of
+-- messages; each locale's messages live in `<bundle>/<locale>.toml`; a message is looked up in the
+-- preferred locales, each followed by its less specific parents, then in the bundle's fallback
+-- locale. What jess adds:
+--
+-- - Providers. A provider lists and reads bundle files: a folder (`directory`, read through
+--   @dream/fs, so it needs `filesystem.read`), files held in a table (`files`), or anything with the
+--   same two functions. Providers added later override earlier ones, message by message, and every
+--   message remembers the provider, file, line and column it came from.
+-- - Compile once. `reload` parses every file and compiles every pattern of every locale, so a
+--   malformed message is a load diagnostic, not a surprise at the first render.
+-- - Generations. A bundle with any error isn't swapped in; its last good generation stays live.
+--   Locale changes and reloads raise the generation, the one number to watch for stale text.
+-- - Loud failures. A missing message is an error naming the locales tried, never an empty string
+--   and never the id dressed up as text.
+--
+-- The module's functions work on the runtime's own registry; `new` makes another.
+
+local Fs = require '@dream/fs'
+local File = require '@self/file'
+local Format = require '@self/format'
+local Locale = require '@self/locale'
+local Pattern = require '@self/pattern'
+
+--- The fallback locale of a bundle nobody declared one for; OpenMW's default too
+--- (`Manager::getContext`, components/l10n/manager.hpp).
+local DefaultFallback = 'en'
+
+export type Value = Format.Value
+
+--- The values a message takes, by the names its pattern uses.
+export type Values = { [string]: Value }
+
+export type Severity = 'info' | 'warning' | 'error'
+
+--- One problem, with every field that applies.
+export type Diagnostic = {
+  severity: Severity,
+  kind: string,
+  detail: string,
+  generation: number,
+  provider: string?,
+  path: string?,
+  line: number?,
+  column: number?,
+  bundle: string?,
+  locale: string?,
+  message: string?,
+}
+
+--- One bundle file a provider offers: the bundle (its folder), the locale as the file spells it,
+--- and the path, as diagnostics show it and as the provider reads it back.
+export type Resource = { bundle: string, locale: string, path: string }
+
+--- A source of bundle files. `resources` lists what it offers, or answers nil, why and the path that
+--- failed; `read` reads one, or answers nil and why. It must not offer one bundle and locale twice.
+export type Provider = {
+  read name: string,
+  read resources: () -> ({ Resource }?, string?, string?),
+  read read: (resource: Resource) -> (string?, string?),
+}
+
+--- What a reload did: the generation after it, and the bundles swapped in and kept.
+export type Report = { generation: number, updated: { string }, kept: { string } }
+
+--- Where a message's text came from and what it needs.
+export type MessageInfo = {
+  locale: string,
+  fallback: boolean,
+  provider: string,
+  path: string,
+  line: number,
+  column: number,
+  arguments: { Pattern.Argument },
+}
+
+type Source = { provider: string, path: string, line: number, column: number }
+
+type Entry = { locale: string, pattern: Pattern.Pattern, source: Source }
+
+type Loaded = { locales: { [string]: { [string]: Entry } }, order: { string } }
+
+type BundleState = {
+  name: string,
+  fallback: string,
+  names: { [string]: boolean },
+  loaded: Loaded,
+  hasLoaded: boolean,
+  resolved: { [string]: Entry },
+  generation: number,
+}
+
+type RegistryState = {
+  sources: { Provider },
+  rules: { [string]: Format.Rules },
+  states: { BundleState },
+  byName: { [string]: BundleState },
+  preferred: { string },
+  chain: { string },
+  current: number,
+}
+
+local RegistryMethods = {}
+RegistryMethods.__index = RegistryMethods
+RegistryMethods.__metatable = false
+
+local BundleMethods = {}
+BundleMethods.__index = BundleMethods
+BundleMethods.__metatable = false
+
+type BundleData = { name: string, registry: RegistryState, state: BundleState }
+
+local DiagnosticMetatable = {}
+
+function DiagnosticMetatable.__tostring(diagnostic: Diagnostic): string
+  local text = `{diagnostic.severity}[{diagnostic.kind}]`
+  if diagnostic.path then
+    text ..= ` {diagnostic.path}`
+    if diagnostic.line and diagnostic.column then text ..= `:{diagnostic.line}:{diagnostic.column}` end
+  end
+
+  if diagnostic.provider then text ..= ` (provider {diagnostic.provider})` end
+
+  text ..= ':'
+  if diagnostic.bundle then
+    text ..= ` {diagnostic.bundle}`
+    if diagnostic.locale then text ..= `/{diagnostic.locale}` end
+  end
+
+  if diagnostic.message then
+    text ..= ` '{diagnostic.message}':`
+  elseif diagnostic.bundle then
+    text ..= ':'
+  end
+
+  return `{text} {diagnostic.detail}`
+end
+
+DiagnosticMetatable.__metatable = false
+table.freeze(DiagnosticMetatable)
+
+local function diagnostic(severity: Severity, kind: string, generation: number, detail: string, fields: { [string]: unknown }?): Diagnostic
+  local made: Diagnostic = {
+    severity = severity,
+    kind = kind,
+    detail = detail,
+    generation = generation,
+  }
+
+  if fields then
+    for key, value in fields do
+      (made :: { [string]: unknown })[key] = value
+    end
+  end
+
+  return setmetatable(made, DiagnosticMetatable) :: Diagnostic
+end
+
+-- Names and tags.
+
+local function escape(text: string): string
+  local escaped = string.gsub(text, '[%c\\]', function(character: string): string
+    if character == '\\' then return '\\\\' end
+    if character == '\t' then return '\\t' end
+    if character == '\n' then return '\\n' end
+    if character == '\r' then return '\\r' end
+
+    return string.format('\\u{%x}', string.byte(character))
+  end)
+  return escaped
+end
+
+--- Why `name` can't be a bundle's, or nil when it can: non-empty segments of ASCII letters, digits,
+--- `_` and `-`, joined by `.`. OpenMW allows letters, digits and `_` (`Manager::getContext`,
+--- components/l10n/manager.cpp); jess adds `.` and `-` so a package can namespace its bundles.
+local function invalidBundleName(name: string): string?
+  for _, segment in string.split(name, '.') do
+    if segment ~= '' and not string.find(segment, '[^%w_%-]') then continue end
+
+    return `'{escape(name)}' isn't a bundle name: use letters, digits, '_', and '-', in segments separated by '.'`
+  end
+
+  return nil
+end
+
+local function locale(text: string): Locale.Locale
+  local parsed, problem = Locale.parse(text)
+  if not parsed then error(problem, 0) end
+
+  return parsed
+end
+
+-- Providers.
+
+--- `<bundle>/<locale>.toml` split into its bundle and locale, or nil.
+local function splitResource(relative: string): (string?, string?)
+  local bundle, file = string.match(relative, '^([^/]+)/([^/]+)$')
+  if not bundle or not file then return nil, nil end
+
+  local tag = string.match(file, '^(.+)%.toml$')
+  if not tag then return nil, nil end
+
+  return bundle, tag
+end
+
+local function byPath(left: Resource, right: Resource): boolean
+  return left.path < right.path
+end
+
+--- A folder of bundles on the host: `<root>/<bundle>/<locale>.toml`, read through @dream/fs, so
+--- the runtime needs `filesystem.read`. It reads only under `root`.
+local function directory(root: string, name: string?): Provider
+  local function resources(): ({ Resource }?, string?, string?)
+    local bundles, problem = Fs.list(root)
+    if not bundles then return nil, problem, root end
+
+    local found: { Resource } = {}
+    for _, bundle in bundles do
+      local folder = Fs.join(root, bundle)
+      if not Fs.isDir(folder) then continue end
+
+      local files, failure = Fs.list(folder)
+      if not files then return nil, failure, folder end
+
+      for _, file in files do
+        local _, tag = splitResource(`{bundle}/{file}`)
+        local path = Fs.join(folder, file)
+        if tag and Fs.isFile(path) then table.insert(found, { bundle = bundle, locale = tag, path = path }) end
+      end
+    end
+
+    table.sort(found, byPath)
+    return found, nil, nil
+  end
+
+  local function read(resource: Resource): (string?, string?)
+    local text, problem = Fs.readFileString(resource.path)
+    return text, problem
+  end
+
+  return table.freeze { name = name or root, resources = resources, read = read }
+end
+
+--- Bundles held in a table of `/`-separated paths to text, under `prefix` (`l10n`, say; empty for
+--- the top): the shape of a virtual filesystem. The table is read at every reload, so changing it
+--- and reloading takes the change.
+local function files(name: string, contents: { [string]: string }, prefix: string?): Provider
+  local trimmed = string.gsub(prefix or '', '^/*(.-)/*$', '%1')
+  local base = if trimmed == '' then '' else `{trimmed}/`
+
+  local function resources(): ({ Resource }?, string?, string?)
+    local found: { Resource } = {}
+    for path in contents do
+      if string.sub(path, 1, #base) ~= base then continue end
+
+      local bundle, tag = splitResource(string.sub(path, #base + 1))
+      if bundle and tag then table.insert(found, { bundle = bundle, locale = tag, path = path }) end
+    end
+
+    table.sort(found, byPath)
+    return found, nil, nil
+  end
+
+  local function read(resource: Resource): (string?, string?)
+    local text = contents[resource.path]
+    if text == nil then return nil, 'no such file' end
+
+    return text, nil
+  end
+
+  return table.freeze { name = name, resources = resources, read = read }
+end
+
+-- The registry.
+
+local function rulesFor(registry: RegistryState, tag: string): Format.Rules
+  local found = registry.rules[tag]
+  if found then return found end
+
+  local created = Format.rules(tag)
+  registry.rules[tag] = created
+  return created
+end
+
+--- Rebuilds a bundle's resolution: for each message, the first locale of the chain, then the
+--- fallback, that defines it (`MessageBundles::formatMessage`, components/l10n/messagebundles.cpp,
+--- done once per generation instead of once per call).
+local function resolve(registry: RegistryState, bundle: BundleState)
+  local resolved: { [string]: Entry } = {}
+  local order = table.clone(registry.chain)
+  table.insert(order, bundle.fallback)
+
+  for _, tag in order do
+    local messages = bundle.loaded.locales[tag]
+    if not messages then continue end
+
+    for id, entry in messages do
+      if resolved[id] == nil then resolved[id] = entry end
+    end
+  end
+
+  bundle.resolved = resolved
+end
+
+local function declare(registry: RegistryState, name: string): BundleState
+  local found = registry.byName[name]
+  if found then return found end
+
+  local created: BundleState = {
+    name = name,
+    fallback = DefaultFallback,
+    names = {},
+    loaded = { locales = {}, order = {} },
+    hasLoaded = false,
+    resolved = {},
+    generation = registry.current,
+  }
+  table.insert(registry.states, created)
+  registry.byName[name] = created
+  return created
+end
+
+local function tried(registry: RegistryState, bundle: BundleState): { string }
+  local tags = table.clone(registry.chain)
+  if not table.find(tags, bundle.fallback) then table.insert(tags, bundle.fallback) end
+
+  return tags
+end
+
+local function info(registry: RegistryState, entry: Entry): MessageInfo
+  return {
+    locale = entry.locale,
+    fallback = registry.preferred[1] ~= nil and registry.preferred[1] ~= entry.locale,
+    provider = entry.source.provider,
+    path = entry.source.path,
+    line = entry.source.line,
+    column = entry.source.column,
+    arguments = entry.pattern.arguments,
+  }
+end
+
+--- The variables table a script passed, checked: string keys, and string, number or boolean values.
+local function variables(bundle: string, id: string, given: unknown): { [string]: Value }
+  if given == nil then return {} end
+
+  if type(given) ~= 'table' then
+    error(`variables for message '{id}' of bundle '{bundle}' must be a table, not {typeof(given)}`, 0)
+  end
+
+  local values: { [string]: Value } = {}
+  for key, value in given :: { [unknown]: unknown } do
+    if type(key) ~= 'string' then
+      error(`variables for message '{id}' of bundle '{bundle}' are named by strings, not {typeof(key)}`, 0)
+    end
+
+    if typeof(value) == 'integer' then
+      values[key] = integer.tonumber(value :: integer)
+    elseif type(value) == 'string' or type(value) == 'number' or type(value) == 'boolean' then
+      values[key] = value :: Value
+    else
+      error(
+        `variable '{key}' of message '{id}' in bundle '{bundle}' must be a string, number, or boolean, not {typeof(value)}`,
+        0
+      )
+    end
+  end
+
+  return values
+end
+
+--- A message formatted, or nil and the diagnostic for why not.
+local function tryFormat(registry: RegistryState, bundle: BundleState, id: string, values: { [string]: Value }): (string?, Diagnostic?)
+  bundle.names[id] = true
+  local entry = bundle.resolved[id]
+  if not entry then
+    local locales = tried(registry, bundle)
+    local detail = `bundle '{bundle.name}' has no message '{id}' in {if #locales > 0 then table.concat(locales, ', ') else 'any locale'}`
+    return nil, diagnostic('error', 'missing-message', registry.current, detail, { bundle = bundle.name, message = id })
+  end
+
+  local text, problem = Format.format(entry.pattern, rulesFor(registry, entry.locale), values)
+  if text then return text, nil end
+
+  local failure = problem :: Format.ArgumentError
+  local kind = if failure.kind == 'missing' then 'missing-argument' else 'unsupported-argument-type'
+  local detail = `bundle '{bundle.name}', message '{id}' ({entry.locale}): {failure.detail}`
+  return nil,
+    diagnostic('error', kind, registry.current, detail, { bundle = bundle.name, message = id, locale = entry.locale })
+end
+
+local function state(handle: BundleData): BundleState
+  return handle.state
+end
+
+--- The message `id` in the first locale of the chain that defines it, with `values` filled in,
+--- formatted with the plural and number rules of the locale the text came from (as OpenMW builds
+--- each MessageFormat with its file's locale, `loadLocaleYaml`). Raises when no locale defines it
+--- or an argument is missing or of the wrong type.
+function BundleMethods.format(handle: BundleData, id: string, values: unknown?): string
+  local bundle = state(handle)
+  local text, problem = tryFormat(handle.registry, bundle, id, variables(bundle.name, id, values))
+  if text then return text end
+
+  error((problem :: Diagnostic).detail, 0)
+end
+
+--- As `format`, answering nil and the diagnostic instead of raising.
+function BundleMethods.tryFormat(handle: BundleData, id: string, values: unknown?): (string?, Diagnostic?)
+  local bundle = state(handle)
+  return tryFormat(handle.registry, bundle, id, variables(bundle.name, id, values))
+end
+
+--- Whether the chain resolves `id` to text.
+function BundleMethods.has(handle: BundleData, id: string): boolean
+  return state(handle).resolved[id] ~= nil
+end
+
+--- Where `id`'s text comes from: through the chain, or in exactly `locale` with no fallback. Nil when
+--- nothing defines it there.
+function BundleMethods.lookup(handle: BundleData, id: string, tag: string?): MessageInfo?
+  local bundle = state(handle)
+  if tag then
+    local messages = bundle.loaded.locales[locale(tag).tag]
+    local entry = messages and messages[id]
+    return if entry then info(handle.registry, entry) else nil
+  end
+
+  local entry = bundle.resolved[id]
+  return if entry then info(handle.registry, entry) else nil
+end
+
+--- The text of `id` when the chain resolves it to a pattern with no arguments, which needs no
+--- formatting; nil otherwise.
+function BundleMethods.literal(handle: BundleData, id: string): string?
+  local entry = state(handle).resolved[id]
+  return if entry then Pattern.literal(entry.pattern) else nil
+end
+
+--- What to show in place of `id` when it can't be formatted: `[[bundle:id]]`, loud on purpose.
+function BundleMethods.placeholder(handle: BundleData, id: string): string
+  return `[[{handle.name}:{id}]]`
+end
+
+--- The locales the bundle has files for, in tag order.
+function BundleMethods.locales(handle: BundleData): { string }
+  return table.clone(state(handle).loaded.order)
+end
+
+--- Every message name the bundle knows: the ones its files define and the ones asked for, sorted.
+function BundleMethods.messages(handle: BundleData): { string }
+  local names = {}
+  for name in state(handle).names do
+    table.insert(names, name)
+  end
+
+  table.sort(names)
+  return names
+end
+
+--- The locales a message is looked up in, in order: the chain, then the bundle's fallback.
+function BundleMethods.chain(handle: BundleData): { string }
+  return tried(handle.registry, state(handle))
+end
+
+--- The bundle's fallback locale.
+function BundleMethods.fallback(handle: BundleData): string
+  return state(handle).fallback
+end
+
+--- The generation the bundle's messages were last swapped in at.
+function BundleMethods.generation(handle: BundleData): number
+  return state(handle).generation
+end
+
+function BundleMethods.__tostring(handle: BundleData): string
+  return `L10nBundle({handle.name})`
+end
+
+BundleMethods.__call = BundleMethods.format
+
+local BundleMetatable = table.freeze(BundleMethods)
+
+--- A bundle: call it, or its `format`, with a message id and the message's values.
+export type Bundle = typeof(setmetatable({} :: BundleData, BundleMetatable))
+
+local function new(): RegistryState
+  return {
+    sources = {},
+    rules = {},
+    states = {},
+    byName = {},
+    preferred = {},
+    chain = {},
+    current = 0,
+  }
+end
+
+--- The bundle named `name`, declared now if no provider offered it. `fallback` (default `en`) is
+--- the locale tried after every preferred one; giving it again changes it.
+function RegistryMethods.bundle(registry: RegistryState, name: string, fallback: string?): Bundle
+  local invalid = invalidBundleName(name)
+  if invalid then error(invalid, 0) end
+
+  local fallbackTag = if fallback then locale(fallback).tag else nil
+  local bundle = declare(registry, name)
+  if fallbackTag and fallbackTag ~= bundle.fallback then
+    bundle.fallback = fallbackTag
+    resolve(registry, bundle)
+    registry.current += 1
+  end
+
+  return setmetatable({ name = name, registry = registry, state = bundle }, BundleMetatable)
+end
+
+--- Every bundle: the ones providers offered at the last reload and the ones asked for.
+function RegistryMethods.bundles(registry: RegistryState): { string }
+  local names = {}
+  for _, bundle in registry.states do
+    table.insert(names, bundle.name)
+  end
+
+  return names
+end
+
+--- The preferred locales, canonically spelled, as they were set.
+function RegistryMethods.locales(registry: RegistryState): { string }
+  return table.clone(registry.preferred)
+end
+
+--- Sets the preferred locales, most wanted first, and returns the new generation. Each is tried,
+--- then its parents, before the next; a bundle's fallback comes after all of them. Nothing
+--- recompiles.
+function RegistryMethods.setLocales(registry: RegistryState, locales: string | { string }): number
+  local tags: { string } = if type(locales) == 'string' then { locales } else locales
+  if type(tags) ~= 'table' then error(`locales must be a list of strings, not {typeof(locales)}`, 0) end
+
+  local preferred, chain = {}, {}
+  for _, tag in tags do
+    if type(tag) ~= 'string' then error(`locales must be a list of strings, not a list holding {typeof(tag)}`, 0) end
+
+    local parsed = locale(tag)
+    if not table.find(preferred, parsed.tag) then table.insert(preferred, parsed.tag) end
+
+    for _, link in Locale.chain(parsed) do
+      if not table.find(chain, link.tag) then table.insert(chain, link.tag) end
+    end
+  end
+
+  registry.preferred, registry.chain = preferred, chain
+  for _, bundle in registry.states do
+    resolve(registry, bundle)
+  end
+
+  registry.current += 1
+  return registry.current
+end
+
+--- Adds a provider. Providers added later take precedence: where two define the same message of
+--- the same bundle and locale, the later one's text wins. Nothing is read until `reload`.
+function RegistryMethods.addProvider(registry: RegistryState, provider: Provider)
+  table.insert(registry.sources, provider)
+end
+
+--- Adds a folder of `<bundle>/<locale>.toml` files as a provider, named `name` (default: the path).
+function RegistryMethods.addDirectory(registry: RegistryState, path: string, name: string?)
+  RegistryMethods.addProvider(registry, directory(path, name))
+end
+
+--- The providers' names, lowest precedence first.
+function RegistryMethods.providers(registry: RegistryState): { string }
+  local names = {}
+  for _, provider in registry.sources do
+    table.insert(names, provider.name)
+  end
+
+  return names
+end
+
+--- The generation: it rises whenever a reload swaps a bundle in, the preferred locales change, or a
+--- bundle's fallback does.
+function RegistryMethods.generation(registry: RegistryState): number
+  return registry.current
+end
+
+--- Compiles and formats a pattern that isn't in any bundle, with a locale's rules: for tools and
+--- text that arrives at runtime. It compiles on every call.
+function RegistryMethods.formatPattern(registry: RegistryState, tag: string, source: string, values: unknown?): string
+  local compiled, problem = Pattern.compile(source)
+  if not compiled then
+    local failure = problem :: Pattern.PatternError
+    error(`the pattern doesn't compile: at offset {failure.offset}: {failure.detail}`, 0)
+  end
+
+  local text, failure = Format.format(compiled, rulesFor(registry, locale(tag).tag), variables('(pattern)', 'pattern', values))
+  if text then return text end
+
+  error((failure :: Format.ArgumentError).detail, 0)
+end
+
+type Group = { failed: boolean, locales: { [string]: { { provider: number, resource: Resource } } } }
+
+--- Parses one file into `merged`, replacing what earlier files defined. Returns whether anything
+--- failed.
+local function compileFile(
+  bundle: BundleState,
+  text: string,
+  source: { provider: string, path: string },
+  context: { [string]: unknown },
+  generation: number,
+  diagnostics: { Diagnostic },
+  merged: { [string]: Entry },
+  tag: string
+): boolean
+  local failed = false
+  local messages, errors = File.parse(text)
+  local index = File.lines(text)
+
+  for _, problem in errors do
+    failed = true
+    local fields = table.clone(context)
+    fields.line, fields.column, fields.message = problem.line, problem.column, problem.message
+    local kind = if problem.duplicate then 'duplicate-message' else 'bundle-parse-failure'
+    table.insert(diagnostics, diagnostic('error', kind, generation, problem.reason, fields))
+  end
+
+  for _, message in messages do
+    local compiled, problem = Pattern.compile(message.pattern)
+    if compiled then
+      bundle.names[message.id] = true
+      merged[message.id] = {
+        locale = tag,
+        pattern = compiled,
+        source = { provider = source.provider, path = source.path, line = message.line, column = message.column },
+      }
+      continue
+    end
+
+    failed = true
+    local failure = problem :: Pattern.PatternError
+    local line, column = message.line, message.column
+    if message.patternAt then line, column = File.position(index, message.patternAt + failure.offset) end
+
+    local fields = table.clone(context)
+    fields.line, fields.column, fields.message = line, column, message.id
+    local detail = `at offset {failure.offset}: {failure.detail}`
+    table.insert(diagnostics, diagnostic('error', 'pattern-parse-failure', generation, detail, fields))
+  end
+
+  return failed
+end
+
+--- Reads and compiles one bundle's files. Returns what loaded and whether anything failed.
+local function loadBundle(
+  registry: RegistryState,
+  bundle: BundleState,
+  group: Group,
+  generation: number,
+  diagnostics: { Diagnostic }
+): (Loaded, boolean)
+  local failed = group.failed
+  local loaded: Loaded = { locales = {}, order = {} }
+  local tags = {}
+  for tag in group.locales do
+    table.insert(tags, tag)
+  end
+
+  table.sort(tags)
+  if #tags == 0 and not failed then
+    local detail = 'no provider has a file for this bundle; every message in it is missing'
+    table.insert(diagnostics, diagnostic('warning', 'empty-bundle', generation, detail, { bundle = bundle.name }))
+  end
+
+  for _, tag in tags do
+    local sources = group.locales[tag]
+    local merged: { [string]: Entry } = {}
+
+    for position, source in sources do
+      local provider = registry.sources[source.provider]
+      local context: { [string]: unknown } =
+        { provider = provider.name, path = source.resource.path, bundle = bundle.name, locale = tag }
+
+      -- Two files of one provider for one locale (`en.toml` and `EN.toml`) sit at one precedence;
+      -- neither may win.
+      local collision: Resource? = nil
+      for other, candidate in sources do
+        if other ~= position and candidate.provider == source.provider then
+          collision = candidate.resource
+          break
+        end
+      end
+
+      if collision then
+        failed = true
+        local detail = `the provider also offers {collision.path} for the same bundle and locale; neither was loaded`
+        table.insert(diagnostics, diagnostic('error', 'provider-collision', generation, detail, context))
+        continue
+      end
+
+      local text, problem = provider.read(source.resource)
+      if not text then
+        failed = true
+        local detail = `couldn't read the file: {problem}`
+        table.insert(diagnostics, diagnostic('error', 'provider-failure', generation, detail, context))
+        continue
+      end
+
+      local origin = { provider = provider.name, path = source.resource.path }
+      if compileFile(bundle, text, origin, context, generation, diagnostics, merged, tag) then failed = true end
+    end
+
+    loaded.locales[tag] = merged
+    table.insert(loaded.order, tag)
+  end
+
+  return loaded, failed
+end
+
+--- Reads every provider again, compiles every pattern of every locale, and swaps in each bundle
+--- that loaded without an error. A bundle with an error keeps its last good generation; one with
+--- none yet takes what did load. A provider that can't list its files stops the reload. Returns
+--- the diagnostics, then what changed.
+function RegistryMethods.reload(registry: RegistryState): ({ Diagnostic }, Report)
+  local next = registry.current + 1
+  local diagnostics: { Diagnostic } = {}
+  local listed: { { provider: number, resource: Resource } } = {}
+  local listingFailed = false
+
+  for index, provider in registry.sources do
+    local resources, problem, path = provider.resources()
+    if resources then
+      for _, resource in resources do
+        table.insert(listed, { provider = index, resource = resource })
+      end
+
+      continue
+    end
+
+    listingFailed = true
+    local detail = `couldn't list bundles, so nothing was reloaded: {problem}`
+    table.insert(
+      diagnostics,
+      diagnostic('error', 'provider-failure', registry.current, detail, { provider = provider.name, path = path })
+    )
+  end
+
+  if listingFailed then
+    return diagnostics, { generation = registry.current, updated = {}, kept = RegistryMethods.bundles(registry) }
+  end
+
+  local groups: { [string]: Group } = {}
+  for _, bundle in registry.states do
+    groups[bundle.name] = { failed = false, locales = {} }
+  end
+
+  for _, item in listed do
+    local resource = item.resource
+    local providerName = registry.sources[item.provider].name
+    local invalid = invalidBundleName(resource.bundle)
+    if invalid then
+      local fields = { provider = providerName, path = resource.path }
+      table.insert(diagnostics, diagnostic('error', 'invalid-bundle-name', next, invalid, fields))
+      continue
+    end
+
+    local group = groups[resource.bundle] or { failed = false, locales = {} }
+    groups[resource.bundle] = group
+    local parsed, problem = Locale.parse(resource.locale)
+    if not parsed then
+      group.failed = true
+      local fields = { provider = providerName, path = resource.path, bundle = resource.bundle }
+      table.insert(diagnostics, diagnostic('error', 'invalid-locale', next, problem :: string, fields))
+      continue
+    end
+
+    local sources = group.locales[parsed.tag] or {}
+    group.locales[parsed.tag] = sources
+    table.insert(sources, item)
+  end
+
+  local names = {}
+  for name in groups do
+    table.insert(names, name)
+  end
+
+  table.sort(names)
+  local updated, kept = {}, {}
+  for _, name in names do
+    local bundle = declare(registry, name)
+    local loaded, failed = loadBundle(registry, bundle, groups[name], next, diagnostics)
+    if failed and bundle.hasLoaded then
+      table.insert(kept, name)
+      continue
+    end
+
+    bundle.loaded, bundle.hasLoaded, bundle.generation = loaded, true, next
+    resolve(registry, bundle)
+    table.insert(updated, name)
+  end
+
+  if #updated > 0 then registry.current = next end
+
+  return diagnostics, { generation = registry.current, updated = updated, kept = kept }
+end
+
+local RegistryMetatable = table.freeze(RegistryMethods)
+
+--- A registry: providers, the preferred locales, and the bundles they resolve.
+export type Registry = typeof(setmetatable({} :: RegistryState, RegistryMetatable))
+
+local function registry(): Registry
+  return setmetatable(new(), RegistryMetatable)
+end
+
+--- The arguments a pattern names and how it uses each, or nil and why it doesn't compile.
+local function checkPattern(source: string): ({ Pattern.Argument }?, string?)
+  local compiled, problem = Pattern.compile(source)
+  if compiled then return compiled.arguments, nil end
+
+  local failure = problem :: Pattern.PatternError
+  return nil, `at offset {failure.offset}: {failure.detail}`
+end
+
+local own = registry()
+
+return table.freeze {
+  new = registry,
+  directory = directory,
+  files = files,
+  checkPattern = checkPattern,
+  bundle = function(name: string, fallback: string?): Bundle return RegistryMethods.bundle(own, name, fallback) end,
+  bundles = function(): { string } return RegistryMethods.bundles(own) end,
+  locales = function(): { string } return RegistryMethods.locales(own) end,
+  setLocales = function(locales: string | { string }): number return RegistryMethods.setLocales(own, locales) end,
+  addProvider = function(provider: Provider) RegistryMethods.addProvider(own, provider) end,
+  addDirectory = function(path: string, name: string?) RegistryMethods.addDirectory(own, path, name) end,
+  providers = function(): { string } return RegistryMethods.providers(own) end,
+  reload = function(): ({ Diagnostic }, Report) return RegistryMethods.reload(own) end,
+  generation = function(): number return RegistryMethods.generation(own) end,
+  formatPattern = function(tag: string, source: string, values: unknown?): string
+    return RegistryMethods.formatPattern(own, tag, source, values)
+  end,
+}

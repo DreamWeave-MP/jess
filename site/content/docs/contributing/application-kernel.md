@@ -1,12 +1,12 @@
 ---
 title: 'Application Kernel'
-description: 'What jess-host is: a script domain with its live input and localization services, the frame a host runs, how the input phase and locale events arrive, and what a capability denial looks like.'
+description: 'What jess-host is: a script domain with its live input service, the frame a host runs, how the input phase arrives, and what a capability denial looks like.'
 weight: 102
 extra:
   kind: guide
 ---
 
-The substrates exist on their own terms. [Script Domains](@/docs/contributing/script-domains.md) run code and know nothing about devices or text. [Input](@/docs/contributing/input-runtime.md) knows devices and action graphs and has never heard of a domain. [Localization](@/docs/contributing/localization.md) formats messages and does not care who asks. Something has to put one application together out of them, and it should be small, because the GUI, the render executor, and every application above them will stand on it.
+The substrates exist on their own terms. [Script Domains](@/docs/contributing/script-domains.md) run code and know nothing about devices or text. [Input](@/docs/contributing/input-runtime.md) knows devices and action graphs and has never heard of a domain. [Localization](@/docs/contributing/localization.md) is a Luau module with a registry in every runtime, so it isn't a host's business at all. Something has to put one application together out of them, and it should be small, because the GUI, the render executor, and every application above them will stand on it.
 
 `jess-host` (`libs/host`) is that something: one `ScriptDomain`, the services it carries, and a frame.
 
@@ -16,18 +16,16 @@ A `Host` owns:
 
 - a `ScriptDomain` built from any `RuntimeFactory` (`jess_lua::runtime` is the one jess uses);
 - the domain's **input service**, a `Mutex<jess_input::InputService>`: the live `InputRuntime`, its intent routes by name, and a synthetic side;
-- the domain's **localization**, a `RwLock<jess_l10n::Registry>`;
 - the clock the input ticks on: the monotonic clock behind a platform backend, or the synthetic side's when there is none.
 
 It declares no contexts, reserves no action names, formats nothing itself, and draws nothing. The application registers contexts on `host.domain()`, loads its code, starts it, and then calls `host.frame(delta)` until it is done. `Host::create` leaves the domain `Created`, like `ScriptDomain::create` does.
 
 ```rust
-let grant = RootAuthority::new().grant(CapabilitySet::from_names(["input.actions", "input.configure", "l10n.read"])?);
+let grant = RootAuthority::new().grant(CapabilitySet::from_names(["input.actions", "input.configure"])?);
 let mut host = Host::create(
     Arc::new(|| jess_lua::runtime(Options::default())),
     HostSpec::new(DomainSpec::new("editor", grant))
-        .input(InputSource::platform()?)
-        .localization(registry),
+        .input(InputSource::platform()?),
 )?;
 host.domain().register_context(ContextSpec::new("main").schedule([Phase::Startup, Phase::Update, Phase::Event, Phase::Shutdown]))?;
 host.domain().register_context(ContextSpec::new("input").schedule([Phase::Input]).capabilities(CapabilitySet::from_names(["input.actions"])?))?;
@@ -41,21 +39,11 @@ The runtime gained one piece of mechanism for this: a typed service slot. `Domai
 
 Services are the host's, not the script generation's. A `restart` keeps them; what a generation configured in one (the graph it installed) is the host's to reset, and `Host::restart` does. A worker sees only what its spawner shares: `WorkerSpec::share::<T>()` by type, `share_all()` for everything, or from Luau `worker.spawn { shareServices = true }`, since a script cannot name a Rust type. A worker not given a service has none, and the jess modules fall back to state of the worker's own.
 
-`jess.input.runtime()` and `jess.l10n` follow the same rule. Under a domain that carries the service, they bind to it; anywhere else (a plain `jess run`, a domain without the service, a worker not given it) each runtime keeps a headless input runtime and a registry of its own, and the API is the same. The contract fixtures run outside any domain and did not change.
+`jess.input.runtime()` follows the same rule. Under a domain that carries the service, it binds to it; anywhere else (a plain `jess run`, a domain without the service, a worker not given it) each runtime keeps a headless input runtime of its own, and the API is the same. The contract fixtures run outside any domain and did not change.
 
 ## The Frame
 
-`Host::frame(delta)` is three steps, always in this order. `pump_input()` and `pump_localization()` are the first two on their own, for a host with its own loop shape, and `FrameReport` carries the input `PhaseReport`, the localization generation broadcast, and the `TickReport`.
-
-### Localization
-
-If the registry's generation moved since the last frame (a locale change, a reload that swapped a bundle in, whoever made it: a script through `jess.l10n.setLocales`, or the host through `host.localization()`), the host posts one event to every context through the domain's mailbox:
-
-```luau
-local payload = { event = 'l10n.changed', generation = 2, locales = { 'pl-PL', 'en' } }
-```
-
-`generation` is the number `jess.l10n.generation()` returns; `locales` are the preferred locales as set. It arrives in this frame's event drain, stamped with the domain generation at posting, so it never crosses a restart. A context that cached formatted text formats again on it. The host does not intercept writes to the registry; it watches the one number the registry already keeps for exactly this.
+`Host::frame(delta)` is two steps, always in this order. `pump_input()` is the first on its own, for a host with its own loop shape, and `FrameReport` carries the input `PhaseReport` and the `TickReport`.
 
 ### Input
 
@@ -74,7 +62,7 @@ The rows are exactly what `InputRuntime:tick()` and `InputRuntime:intents()` ret
 
 ### Advance
 
-`ScriptDomain::advance(delta)`: fixed steps, update, late update, and the event drain that delivers the localization event.
+`ScriptDomain::advance(delta)`: fixed steps, update, late update, and the event drain.
 
 ## Input Sources
 
@@ -101,15 +89,13 @@ let spec = DomainSpec::new("editor", grant).diagnostics(diagnostics).logs(logs.c
 
 ## Capabilities: Who May Do What
 
-The capabilities the input and localization crates named are now checked, at the script boundary, by `jess.input` and `jess.l10n`, through `jess_runtime::require_capability`:
+The capabilities the input crate named are checked, at the script boundary, by `jess.input`, through `jess_runtime::require_capability`:
 
-| Capability | `jess.input` | `jess.l10n` |
-| --- | --- | --- |
-| `input.actions` | `action`, `intents`, `stats`, `now`, `tick` | |
-| `input.observe` | `devices` | |
-| `input.configure` | `install`, `uninstall`, `restoreDefaults`, `setActive`, `pushLayer`, `popLayer`, `route`, `connect`, `disconnect`, `press`, `release`, `axis`, `focus`, `advance` | |
-| `l10n.read` | | `bundle`, `bundles`, `locales`, `generation`, calling a bundle, `format`, `has` |
-| `l10n.configure` | | `setLocales`, `addDirectory`, `reload` |
+| Capability | `jess.input` |
+| --- | --- |
+| `input.actions` | `action`, `intents`, `stats`, `now`, `tick` |
+| `input.observe` | `devices` |
+| `input.configure` | `install`, `uninstall`, `restoreDefaults`, `setActive`, `pushLayer`, `popLayer`, `route`, `connect`, `disconnect`, `press`, `release`, `axis`, `focus`, `advance` |
 
 The rule for the boundary: **no authority, no check.** Under a domain, the check is the broker's, and a context or worker without the capability gets the broker's permission error, attributed:
 
@@ -121,7 +107,7 @@ The denial is also counted (`DomainStats::capability_denials`) and reported as a
 
 ### What Is Not Checked Yet
 
-Input, localization, and `worker.spawn` are the whole list. Everything older than the broker runs under a domain exactly as it runs in `jess run`: with the process's own file permissions. The capability model is not a security boundary for third-party packages until every surface below checks something:
+Input and `worker.spawn` are the whole list. Everything older than the broker runs under a domain exactly as it runs in `jess run`: with the process's own file permissions. The capability model is not a security boundary for third-party packages until every surface below checks something:
 
 | Surface | Reaches |
 | --- | --- |
@@ -141,7 +127,7 @@ The vocabulary for closing this (`filesystem.profile`, `filesystem.user-selected
 
 ## Restart
 
-`Host::restart(load)` is `ScriptDomain::restart` with one thing in front of it: the input service forgets the graph and the intent routes the old code installed, and keeps the devices and the queue, because the devices did not restart. The registry stays as it is, locale included. Events queued for the old generation are discarded by the domain and counted; an action event from an older graph generation is dropped by the intent router; a key held across the restart is invisible to the new code's graph until it is released, the same going-live rule a set change applies.
+`Host::restart(load)` is `ScriptDomain::restart` with one thing in front of it: the input service forgets the graph and the intent routes the old code installed, and keeps the devices and the queue, because the devices did not restart. Events queued for the old generation are discarded by the domain and counted; an action event from an older graph generation is dropped by the intent router; a key held across the restart is invisible to the new code's graph until it is released, the same going-live rule a set change applies.
 
 It is as destructive as the domain's restart: the graph is forgotten and the old generation ends before the new code loads, and a load that fails leaves nothing running. A reload that keeps the last good generation alive is not this; see [Generations and Restart](@/docs/contributing/script-domains.md#generations-and-restart).
 
@@ -149,15 +135,14 @@ It is as destructive as the domain's restart: the graph is forgotten and the old
 
 Two fixtures, both headless:
 
-- `libs/host/tests/kernel.rs` drives a host with the runtime's own modules and a journal: the quiet frame, the press that becomes an input phase with its intent and generation, the locale change that becomes an event, the restart that keeps the keyboard and drops the graph and the stale event, the stub backend's poll loop.
-- `libs/lua/tests/kernel.rs` is the substrate handoff's integration fixture over jess's real plan: one host domain with a registry and a live input runtime; a `main` context and an `input` context holding `input.actions` alone; a script that installs the graph and formats a message at startup; a worker spawned with `shareServices = true` and `l10n.read` that formats from the shared registry and is denied input; keys pressed on the host's synthetic side and from the script, arriving as action events and intents; a locale switch that arrives as `l10n.changed` and formats in Polish; two denials with the input context's attribution; a restart to a second generation with the held key, the graph, and a queued event gone and the registry kept; and a teardown that owns nothing.
+- `libs/host/tests/kernel.rs` drives a host with the runtime's own modules and a journal: the quiet frame, the press that becomes an input phase with its intent and generation, the restart that keeps the keyboard and drops the graph and the stale event, the stub backend's poll loop.
+- `libs/lua/tests/kernel.rs` is the substrate handoff's integration fixture over jess's real plan: one host domain with a live input runtime; a `main` context and an `input` context holding `input.actions` alone; a script that installs the graph and formats a message from its own `@jess/l10n` registry at startup; a worker spawned with `shareServices = true` and no capabilities that formats from a registry of its own and is denied input; keys pressed on the host's synthetic side and from the script, arriving as action events and intents; a locale switch that formats in Polish at once; the input context's denial in every input phase; a restart to a second generation with the held key, the graph, and a queued event gone; and a teardown that owns nothing.
 
 ## Where It Lives
 
-- `libs/host/src/lib.rs`: `Host`, `HostSpec`, `FrameReport`, `SharedInput`, `SharedRegistry`.
+- `libs/host/src/lib.rs`: `Host`, `HostSpec`, `FrameReport`, `SharedInput`.
 - `libs/host/src/input.rs`: `InputSource`, the driver, `payload`.
-- `libs/host/src/l10n.rs`: `CHANGED`, the watch, `changed`.
 - `libs/runtime/src/service.rs`: `Services`; `DomainSpec::service`, `ScriptDomain::service`, `jess_runtime::service`, `WorkerSpec::share`.
 - `libs/input/src/service.rs`: `InputService`.
-- `libs/lua/src/input.rs` and `l10n.rs`: the modules that bind to the services and check the capabilities.
+- `libs/lua/src/input.rs`: the module that binds to the service and checks the capabilities.
 - `libs/runtime/README.md`: the contract, call by call, services and events included.

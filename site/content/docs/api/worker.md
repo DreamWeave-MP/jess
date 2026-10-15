@@ -19,7 +19,7 @@ Spawns a worker and returns its handle. Needs the `worker.spawn` capability.
 - `source`: the worker module's Luau source. It is a chunk that returns the message handler, `function(message) ... return reply end`; the handler is called once per message, and the value it returns is the reply (`nil` is no reply).
 - `name`: for diagnostics and profiles; by default, where `spawn` was called.
 - `capabilities`: the names the worker holds, a subset of the calling context's. By default it inherits them all.
-- `shareServices`: `true` gives the worker the domain's services (under a host, its live input and its localization registry), so `jess.l10n` in the worker formats from the application's registry. Off by default: a worker exists to run apart from the domain's state, and its capabilities still say what it may do with what it sees.
+- `shareServices`: `true` gives the worker the domain's services (under a host, its live input). Off by default: a worker exists to run apart from the domain's state, and its capabilities still say what it may do with what it sees.
 
 The worker's runtime comes from the same plan as the domain's, so a worker under jess has the whole jess API: it can open plugins, read the VFS, and check NIFs, with its own state.
 

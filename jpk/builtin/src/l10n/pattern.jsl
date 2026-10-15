@@ -1,0 +1,560 @@
+--!strict
+-- ICU MessageFormat patterns, compiled once into a tree of parts that formats without parsing.
+--
+-- The grammar is ICU's MessagePattern in its default apostrophe mode (DOUBLE_OPTIONAL): literal
+-- text, `{name}`, `{name, number, style}`, `{name, plural, offset:n =n {...} one {...} other
+-- {...}}`, `{name, selectordinal, ...}`, `{name, select, key {...} other {...}}`, and `#` for the
+-- offset number inside a plural case. Quoting follows ICU: `''` is one apostrophe; an apostrophe
+-- before `{`, `}`, or (in a plural case) `#` starts literal text that the next single apostrophe
+-- ends; any other apostrophe is literal.
+--
+-- Date, time, spellout, ordinal, duration and choice arguments are refused when a pattern
+-- compiles: nothing formats them yet.
+
+--- The deepest a plural or select may nest. ICU has no limit; this keeps formatting's recursion
+--- bounded by the pattern, not by whoever wrote it.
+local MaxDepth = 16
+
+--- How a pattern uses an argument, which decides the values it takes: `any` for `{name}` alone
+--- (a string, number or boolean), `number` for a number, plural or selectordinal, `select` for a
+--- select (a string or boolean).
+export type ArgumentKind = 'any' | 'number' | 'select'
+
+export type Argument = { name: string, kind: ArgumentKind }
+
+--- How a number is written: grouping (`auto`, `never` or `min2`, as @dream/intl spells them), the
+--- fewest and most fraction digits (rounded half to even), the power of ten the number is scaled
+--- by first, and whether a percent sign follows.
+export type Grouping = 'auto' | 'never' | 'min2'
+
+export type NumberStyle = {
+  read grouping: Grouping,
+  read minFraction: number,
+  read maxFraction: number,
+  read scale: number,
+  read percent: boolean,
+  --- The style's identity, for sharing a formatter between the patterns that use it.
+  read key: string,
+}
+
+export type Selector =
+  { kind: 'exact', value: number }
+  | { kind: 'category', category: string }
+  | { kind: 'keyword', keyword: string }
+  | { kind: 'other' }
+
+export type Case = { selector: Selector, parts: { Part } }
+
+export type Part =
+  { kind: 'text', text: string }
+  | { kind: 'simple', slot: number }
+  | { kind: 'number', slot: number, style: NumberStyle }
+  | { kind: 'plural', slot: number, ordinal: boolean, offset: number, cases: { Case } }
+  | { kind: 'select', slot: number, cases: { Case } }
+  | { kind: 'pound', slot: number, offset: number }
+
+--- A compiled pattern: its parts and the arguments it names, by slot.
+export type Pattern = { parts: { Part }, arguments: { Argument } }
+
+--- A pattern that doesn't compile: where (a 0-based byte offset into the pattern) and why.
+export type PatternError = { offset: number, detail: string }
+
+local function style(
+  grouping: Grouping,
+  minFraction: number,
+  maxFraction: number,
+  scale: number,
+  percent: boolean
+): NumberStyle
+  return table.freeze {
+    grouping = grouping,
+    minFraction = minFraction,
+    maxFraction = maxFraction,
+    scale = scale,
+    percent = percent,
+    key = `{grouping}/{minFraction}/{maxFraction}/{scale}/{percent}`,
+  }
+end
+
+--- ICU's default number format, which `{name}`, `{name, number}` and `#` use: up to three
+--- fraction digits (DecimalFormat's default).
+local DefaultStyle = style('auto', 0, 3, 0, false)
+
+local Categories: { [string]: boolean } = { zero = true, one = true, two = true, few = true, many = true }
+table.freeze(Categories)
+
+local Unsupported: { [string]: boolean } =
+  { date = true, time = true, spellout = true, ordinal = true, duration = true, choice = true }
+table.freeze(Unsupported)
+
+local UnsupportedStyle = "isn't supported; use integer, percent, or a skeleton of :: group-off, "
+  .. 'group-min2, percent, scale/100, precision-integer, or .00 (fraction digits: 0 required, # optional)'
+
+local function isSpace(byte: number?): boolean
+  return byte == 32 or byte == 9 or byte == 10 or byte == 13 or byte == 11 or byte == 12
+end
+
+-- Letters, digits and bytes of a multibyte character: what an argument or type name holds.
+local function isWordByte(byte: number?): boolean
+  if not byte then return false end
+  if byte >= 128 then return true end
+
+  return (byte >= 48 and byte <= 57) or (byte >= 65 and byte <= 90) or (byte >= 97 and byte <= 122)
+end
+
+--- The exponent of a `scale/` that is a power of ten (`100` is 2, `0.01` is -2), or nil.
+local function powerOfTen(scale: string): number?
+  local fraction = string.match(scale, '^0%.(0*)1$')
+  if fraction then
+    local exponent = #fraction + 1
+    if exponent <= 20 then return -exponent end
+
+    return nil
+  end
+
+  local zeros = string.match(scale, '^1(0*)$')
+  if zeros and #zeros <= 20 then return #zeros end
+
+  return nil
+end
+
+--- A number style: empty, `integer`, `percent`, or a `::` number skeleton. The keywords are
+--- DecimalFormat's styles: `integer` rounds to a whole number, `percent` multiplies by 100, rounds
+--- to a whole number and adds the sign. A skeleton is ICU's NumberFormatter syntax, where
+--- `percent` only adds the sign and `scale/100` multiplies; it starts from six fraction digits.
+local function numberStyle(text: string): NumberStyle?
+  if text == '' then return DefaultStyle end
+  if text == 'integer' then return style('auto', 0, 0, 0, false) end
+  if text == 'percent' then return style('auto', 0, 0, 2, true) end
+
+  local skeleton = string.match(text, '^::(.*)$')
+  if not skeleton then return nil end
+
+  local grouping: Grouping, minFraction, maxFraction, scale, percent = 'auto', 0, 6, 0, false
+  for token in string.gmatch(skeleton, '%S+') do
+    if token == 'group-off' or token == ',_' then
+      grouping = 'never'
+    elseif token == 'group-min2' or token == ',?' then
+      grouping = 'min2'
+    elseif token == 'group-auto' then
+      grouping = 'auto'
+    elseif token == 'percent' or token == '%' then
+      percent = true
+    elseif token == '%x100' then
+      percent, scale = true, 2
+    elseif token == 'precision-integer' then
+      minFraction, maxFraction = 0, 0
+    elseif string.sub(token, 1, 6) == 'scale/' then
+      local exponent = powerOfTen(string.sub(token, 7))
+      if not exponent then return nil end
+
+      scale = exponent
+    else
+      local required, optional = string.match(token, '^%.(0*)(#*)$')
+      if not required or not optional or #required + #optional > 20 then return nil end
+
+      minFraction, maxFraction = #required, #required + #optional
+    end
+  end
+
+  return style(grouping, minFraction, maxFraction, scale, percent)
+end
+
+type Parser = {
+  source: string,
+  at: number,
+  arguments: { Argument },
+}
+
+-- Raised inside the parser and caught by `compile`, which is the only caller.
+type Failure = { failure: PatternError }
+
+local function fail(at: number, detail: string): never
+  local failure: Failure = { failure = { offset = at - 1, detail = detail } }
+  error(failure, 0)
+end
+
+local function push(parts: { Part }, part: Part)
+  table.insert(parts, part)
+end
+
+local function skipSpace(parser: Parser)
+  while isSpace(string.byte(parser.source, parser.at)) do
+    parser.at += 1
+  end
+end
+
+--- The slot of argument `name`, recording the strictest use made of it.
+local function slot(parser: Parser, name: string, kind: ArgumentKind, at: number): number
+  for index, known in parser.arguments do
+    if known.name ~= name then continue end
+
+    if (known.kind == 'number' and kind == 'select') or (known.kind == 'select' and kind == 'number') then
+      fail(at, `'{name}' is used both as a number and as a select key; one argument has one type`)
+    end
+
+    if known.kind == 'any' then known.kind = kind end
+
+    return index
+  end
+
+  table.insert(parser.arguments, { name = name, kind = kind })
+  return #parser.arguments
+end
+
+local parseMessage: (parser: Parser, depth: number, enclosing: { slot: number, offset: number }?) -> { Part }
+
+--- The text up to an argument's `}`, which ends a simple style. Braces may nest, as ICU allows in
+--- styles, and apostrophes quote as in text.
+local function styleText(parser: Parser): string
+  local source = parser.source
+  local start, depth = parser.at, 0
+
+  while true do
+    local byte = string.byte(source, parser.at)
+    if not byte then fail(parser.at, "the pattern ends inside an argument; a '}' is missing") end
+
+    parser.at += 1
+    if byte == 123 then
+      depth += 1
+    elseif byte == 125 and depth == 0 then
+      return string.sub(source, start, parser.at - 2)
+    elseif byte == 125 then
+      depth -= 1
+    elseif byte == 39 then
+      local next = string.byte(source, parser.at)
+      if next == 39 then
+        parser.at += 1
+      elseif next == 123 or next == 125 then
+        while true do
+          local quoted = string.byte(source, parser.at)
+          if not quoted then break end
+
+          parser.at += 1
+          if quoted == 39 and string.byte(source, parser.at) ~= 39 then break end
+        end
+      end
+    end
+  end
+end
+
+--- An optional `offset:n` at the start of a plural's cases.
+local function offset(parser: Parser): number
+  skipSpace(parser)
+  if string.sub(parser.source, parser.at, parser.at + 6) ~= 'offset:' then return 0 end
+
+  parser.at += 7
+  skipSpace(parser)
+  local start = parser.at
+  local digits = string.match(parser.source, '^[%d%+%-]*', start) or ''
+  parser.at += #digits
+  local value = tonumber(digits)
+  if not value or value ~= math.floor(value) or string.find(digits, '[%+%-]', 2) then
+    fail(start, `'offset:{digits}' isn't an integer offset`)
+  end
+
+  return value :: number
+end
+
+local function pluralSelector(text: string): Selector?
+  local exact = string.match(text, '^=(.+)$')
+  if exact then
+    local value = tonumber(exact)
+    if value then return { kind = 'exact', value = value } end
+
+    return nil
+  end
+
+  if Categories[text] then return { kind = 'category', category = text } end
+
+  return nil
+end
+
+local function sameSelector(left: Selector, right: Selector): boolean
+  if left.kind ~= right.kind then return false end
+  if left.kind == 'exact' and right.kind == 'exact' then return left.value == right.value end
+  if left.kind == 'category' and right.kind == 'category' then return left.category == right.category end
+  if left.kind == 'keyword' and right.kind == 'keyword' then return left.keyword == right.keyword end
+
+  return true
+end
+
+--- The cases of a plural or select up to and including the closing `}`.
+local function cases(
+  parser: Parser,
+  depth: number,
+  enclosing: { slot: number, offset: number }?,
+  plural: boolean
+): { Case }
+  local source = parser.source
+  local found: { Case } = {}
+  local hasOther = false
+
+  while true do
+    skipSpace(parser)
+    local selectorStart = parser.at
+    local byte = string.byte(source, parser.at)
+    if not byte then fail(parser.at, "the pattern ends inside an argument; a '}' is missing") end
+
+    if byte == 125 then
+      parser.at += 1
+      break
+    end
+
+    while true do
+      local next = string.byte(source, parser.at)
+      if not next or isSpace(next) or next == 123 or next == 125 then break end
+
+      parser.at += 1
+    end
+
+    local selectorText = string.sub(source, selectorStart, parser.at - 1)
+    skipSpace(parser)
+    if selectorText == '' or string.byte(source, parser.at) ~= 123 then
+      local nearby = string.gsub(string.sub(source, selectorStart, selectorStart + 19), '%s+$', '')
+      fail(selectorStart, `expected a case like other \{...}, found '{nearby}'`)
+    end
+
+    parser.at += 1
+    local selector: Selector
+    if selectorText == 'other' then
+      hasOther = true
+      selector = { kind = 'other' }
+    elseif plural then
+      local chosen = pluralSelector(selectorText)
+      if not chosen then
+        return fail(selectorStart, `'{selectorText}' isn't a plural case; use =n, zero, one, two, few, many, or other`)
+      end
+
+      selector = chosen
+    else
+      selector = { kind = 'keyword', keyword = selectorText :: string }
+    end
+
+    for _, known in found do
+      if sameSelector(known.selector, selector) then fail(selectorStart, `case '{selectorText}' appears twice`) end
+    end
+
+    local parts = parseMessage(parser, depth + 1, enclosing)
+    if string.byte(source, parser.at) ~= 125 then
+      fail(parser.at, "the pattern ends inside an argument; a '}' is missing")
+    end
+
+    parser.at += 1
+    table.insert(found, { selector = selector, parts = parts })
+  end
+
+  if #found == 0 then fail(parser.at, 'a plural or select needs at least an other {...} case') end
+  if not hasOther then fail(parser.at, 'a plural or select needs an other {...} case') end
+
+  return found
+end
+
+--- The `{name,` was consumed.
+local function typedArgument(parser: Parser, depth: number, name: string, nameAt: number, parts: { Part })
+  local source = parser.source
+  skipSpace(parser)
+  local typeStart = parser.at
+  while isWordByte(string.byte(source, parser.at)) do
+    parser.at += 1
+  end
+
+  local kind = string.sub(source, typeStart, parser.at - 1)
+  skipSpace(parser)
+  local after = string.byte(source, parser.at)
+  if not after then fail(parser.at, "the pattern ends inside an argument; a '}' is missing") end
+
+  parser.at += 1
+  if after ~= 44 and after ~= 125 then
+    fail(typeStart, `'{kind}' isn't an argument type; use number, plural, selectordinal, or select`)
+  end
+
+  local hasStyle = after == 44
+  if kind == 'number' then
+    local text = if hasStyle then styleText(parser) else ''
+    local trimmed = string.match(text, '^%s*(.-)%s*$') or ''
+    local chosen = numberStyle(trimmed) or fail(typeStart, `number style '{trimmed}' {UnsupportedStyle}`)
+
+    push(parts, { kind = 'number', slot = slot(parser, name, 'number', nameAt), style = chosen })
+    return
+  end
+
+  if kind == 'plural' or kind == 'selectordinal' or kind == 'select' then
+    if not hasStyle then fail(parser.at, 'a plural or select needs at least an other {...} case') end
+    if depth >= MaxDepth then fail(parser.at, `plurals and selects nest deeper than {MaxDepth}`) end
+
+    if kind == 'select' then
+      local index = slot(parser, name, 'select', nameAt)
+      push(parts, { kind = 'select', slot = index, cases = cases(parser, depth, nil, false) })
+      return
+    end
+
+    local index = slot(parser, name, 'number', nameAt)
+    local shift = offset(parser)
+    local found = cases(parser, depth, { slot = index, offset = shift }, true)
+    push(parts, {
+      kind = 'plural',
+      slot = index,
+      ordinal = kind == 'selectordinal',
+      offset = shift,
+      cases = found,
+    })
+    return
+  end
+
+  if Unsupported[kind] then
+    fail(typeStart, `'{kind}' arguments aren't formatted by jess yet; use number, plural, selectordinal, or select`)
+  end
+
+  fail(typeStart, `'{kind}' isn't an argument type; use number, plural, selectordinal, or select`)
+end
+
+--- An argument; the `{` was consumed.
+local function argument(parser: Parser, depth: number, parts: { Part })
+  local source = parser.source
+  skipSpace(parser)
+  local nameStart = parser.at
+  while true do
+    local byte = string.byte(source, parser.at)
+    if not isWordByte(byte) and byte ~= 95 then break end
+
+    parser.at += 1
+  end
+
+  local name = string.sub(source, nameStart, parser.at - 1)
+  if name == '' then
+    local bad = string.match(string.match(source, '^[^,}]*', parser.at) or '', '^%s*(.-)%s*$') or ''
+    if bad == '' then fail(parser.at, 'an argument needs a name between the braces') end
+
+    fail(parser.at, `'{bad}' isn't an argument name (letters, digits, and '_' only)`)
+  end
+
+  skipSpace(parser)
+  local byte = string.byte(source, parser.at)
+  if not byte then fail(parser.at, "the pattern ends inside an argument; a '}' is missing") end
+
+  if byte == 125 then
+    parser.at += 1
+    push(parts, { kind = 'simple', slot = slot(parser, name, 'any', nameStart) })
+    return
+  end
+
+  if byte == 44 then
+    parser.at += 1
+    typedArgument(parser, depth, name, nameStart, parts)
+    return
+  end
+
+  local rest = string.match(string.match(source, '^[^,}]*', parser.at) or '', '^(.-)%s*$') or ''
+  fail(parser.at, `'{name}{rest}' isn't an argument name (letters, digits, and '_' only)`)
+end
+
+--- The apostrophe at `parser.at` was consumed; appends what it quotes to `text`, per ICU's
+--- DOUBLE_OPTIONAL mode.
+local function apostrophe(parser: Parser, inPlural: boolean, text: { string })
+  local source = parser.source
+  local next = string.byte(source, parser.at)
+  if next == 39 then
+    parser.at += 1
+    table.insert(text, "'")
+    return
+  end
+
+  if next ~= 123 and next ~= 125 and not (next == 35 and inPlural) then
+    table.insert(text, "'")
+    return
+  end
+
+  -- Quoted literal text: everything to the next single apostrophe; a doubled apostrophe inside is
+  -- one apostrophe and quoting goes on. Quoting left open runs to the end, as in ICU.
+  while true do
+    local byte = string.byte(source, parser.at)
+    if not byte then return end
+
+    parser.at += 1
+    if byte ~= 39 then
+      table.insert(text, string.char(byte))
+      continue
+    end
+
+    if string.byte(source, parser.at) ~= 39 then return end
+
+    parser.at += 1
+    table.insert(text, "'")
+  end
+end
+
+--- Message text up to an unmatched `}` (a case body's end) or the end of the pattern.
+--- `enclosing` is the plural whose case this is, if any: where `#` is special.
+parseMessage = function(parser: Parser, depth: number, enclosing: { slot: number, offset: number }?): { Part }
+  local source = parser.source
+  local parts: { Part } = {}
+  local text: { string } = {}
+
+  local function flush()
+    if #text == 0 then return end
+
+    push(parts, { kind = 'text', text = table.concat(text) })
+    table.clear(text)
+  end
+
+  while true do
+    local byte = string.byte(source, parser.at)
+    if not byte or byte == 125 then break end
+
+    if byte == 123 then
+      flush()
+      parser.at += 1
+      argument(parser, depth, parts)
+    elseif byte == 35 and enclosing then
+      flush()
+      parser.at += 1
+      push(parts, { kind = 'pound', slot = enclosing.slot, offset = enclosing.offset })
+    elseif byte == 39 then
+      parser.at += 1
+      apostrophe(parser, enclosing ~= nil, text)
+    else
+      local run = string.match(source, "^[^{}#']+", parser.at) or string.char(byte)
+      parser.at += #run
+      table.insert(text, run)
+    end
+  end
+
+  flush()
+  return parts
+end
+
+--- `source` compiled, or nil and why it doesn't compile.
+local function compile(source: string): (Pattern?, PatternError?)
+  local parser: Parser = { source = source, at = 1, arguments = {} }
+  -- The parser raises its failures as tables; anything else is a bug and propagates.
+  local ok, result = pcall(function(): Pattern
+    local parts = parseMessage(parser, 0, nil)
+    if parser.at <= #source then fail(parser.at, "'}' without a matching '{' (quote it as '}' with apostrophes)") end
+
+    return { parts = parts, arguments = parser.arguments }
+  end)
+
+  if ok then return result :: Pattern, nil end
+
+  if type(result) == 'table' and (result :: Failure).failure then return nil, (result :: Failure).failure end
+
+  error(result, 0)
+end
+
+--- The text of a pattern that is nothing but text, or nil if it has arguments.
+local function literal(pattern: Pattern): string?
+  local parts = pattern.parts
+  if #parts == 0 then return '' end
+
+  local only = parts[1]
+  if #parts == 1 and only.kind == 'text' then return only.text end
+
+  return nil
+end
+
+return table.freeze {
+  compile = compile,
+  literal = literal,
+  defaultStyle = DefaultStyle,
+}

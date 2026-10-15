@@ -120,8 +120,8 @@ fn builder(capabilities: &[String], profiling: bool) -> RuntimePlanBuilder {
 
 /// The members of `@jess`, installed per runtime. Each table among them is also the module
 /// `@jess/<name>` (`require("@jess/shader")`).
-pub(crate) const MEMBERS: [&str; 10] = [
-    "version", "null", "fs", "regex", "shader", "context", "worker", "l10n", "input", "bench",
+pub(crate) const MEMBERS: [&str; 9] = [
+    "version", "null", "fs", "regex", "shader", "context", "worker", "input", "bench",
 ];
 
 /// jess's Luau API: the `@jess` module and every jess userdata type.
@@ -138,7 +138,6 @@ impl Extension for JessExtension {
         d.requires(crate::runtime::luau::EXTENSION_ID);
         crate::lua::regexp::describe(d);
         crate::lua::shader::describe(d);
-        crate::lua::l10n::describe(d);
         crate::lua::input::describe(d);
         // `jess.fs` reaches the host's files only as far as the runtime's policy lets it.
         d.optional_capability(l3i::fs::READ_CAPABILITY);
@@ -157,7 +156,6 @@ impl Extension for JessExtension {
         let runtime = cx.runtime();
         let module = cx.module(MODULE)?.table().clone();
         let jess = cx.insert_state(Jess::new(runtime, module)?);
-        let l10n = crate::lua::l10n::install(cx)?;
         let module = cx.module(MODULE)?;
         module.set("version", env!("CARGO_PKG_VERSION"))?;
         module.set("null", &crate::lua::convert::NULL)?;
@@ -171,7 +169,6 @@ impl Extension for JessExtension {
         let module = cx.module(MODULE)?;
         module.set("context", &modules.context)?;
         module.set("worker", &modules.worker)?;
-        module.set("l10n", &l10n)?;
         module.set("input", &crate::lua::input::module(runtime, &jess)?)?;
         Ok(())
     }

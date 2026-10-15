@@ -1,25 +1,21 @@
 //! The jess application kernel: one [`ScriptDomain`] with its live services, ticked by a host.
 //!
 //! `jess::runtime` runs script code and knows nothing about what an application is made of.
-//! `jess::input` knows devices and action graphs, `jess::l10n` bundles and locales, and neither
-//! knows about domains. This module is where they meet: a [`Host`] creates a domain from any
-//! [`RuntimeFactory`] (`jess::lua::plan` is one), attaches the application's input and
-//! localization as services the domain carries ([`DomainSpec::service`]), and drives one frame
-//! at a time:
+//! `jess::input` knows devices and action graphs and nothing about domains. This module is where
+//! they meet: a [`Host`] creates a domain from any [`RuntimeFactory`] (`jess::lua::plan` is one),
+//! attaches the application's input as a service the domain carries ([`DomainSpec::service`]),
+//! and drives one frame at a time:
 //!
-//! 1. **Localization.** If the registry's generation moved since the last frame (a locale change,
-//!    a reload that swapped a bundle in), the host posts the [`l10n::CHANGED`] event to every
-//!    context through the domain's mailbox.
-//! 2. **Input.** The host polls the platform backend into the domain's [`InputService`], ticks
+//! 1. **Input.** The host polls the platform backend into the domain's [`InputService`], ticks
 //!    it once at the host's clock, and, if the tick produced action events, runs the domain's
 //!    [`Phase::Input`](crate::runtime::Phase::Input) with them and the intents routed from them as the payload
 //!    ([`input::payload`]). A quiet tick enters no Luau.
-//! 3. **Advance.** [`ScriptDomain::advance`]: fixed steps, update, late update, and the event
-//!    drain that delivers step 1.
+//! 2. **Advance.** [`ScriptDomain::advance`]: fixed steps, update, late update, and the event
+//!    drain.
 //!
 //! The host declares no contexts and reserves no action names: the application registers its
 //! contexts on [`Host::domain`] and its scripts bind them. What the host owns is what outlives a
-//! script generation: the devices, the registry, the clock. At a [`Host::restart`] the input
+//! script generation: the devices and the clock. At a [`Host::restart`] the input
 //! service forgets the graph and routes the old code installed, keeps its devices, and the new
 //! code installs its own.
 //!
@@ -35,20 +31,18 @@
 //! assert_send::<jess::host::Host>();
 //! ```
 //!
-//! Its services are shared: `Arc<Mutex<InputService>>` and `Arc<RwLock<Registry>>` cross to a
-//! backend's poll thread or a worker lane.
+//! Its input service is shared: `Arc<Mutex<InputService>>` crosses to a backend's poll thread or
+//! a worker lane. Localization is not a host service: `@jess/l10n` keeps a registry per runtime.
 
 #![warn(missing_docs)]
 
 pub mod input;
-pub mod l10n;
 
 use std::fmt;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::input::{BackendError, InputService};
-use crate::l10n::Registry;
 use crate::runtime::l3i::Runtime;
 use crate::runtime::{
     DomainSpec, Generation, PhaseReport, RuntimeError, RuntimeFactory, ScriptDomain, TeardownReport, TickReport,
@@ -93,15 +87,10 @@ impl From<BackendError> for Error {
 /// `jess::runtime::service::<SharedInput>()`.
 pub type SharedInput = Mutex<InputService>;
 
-/// The service type a domain carries for its localization: what [`Host`] watches and `jess.l10n`
-/// binds to. A worker reads it when its `WorkerSpec` shares `SharedRegistry`.
-pub type SharedRegistry = RwLock<Registry>;
-
 /// What a host is made of: the domain's spec and the services it will carry.
 pub struct HostSpec {
     domain: DomainSpec,
     input: Option<InputSource>,
-    localization: Option<Registry>,
 }
 
 impl fmt::Debug for HostSpec {
@@ -109,7 +98,6 @@ impl fmt::Debug for HostSpec {
         f.debug_struct("HostSpec")
             .field("domain", &self.domain)
             .field("input", &self.input)
-            .field("localization", &self.localization.is_some())
             .finish()
     }
 }
@@ -118,11 +106,7 @@ impl HostSpec {
     /// A host around a domain built from `domain`, with no services until the builder adds them.
     #[must_use]
     pub fn new(domain: DomainSpec) -> HostSpec {
-        HostSpec {
-            domain,
-            input: None,
-            localization: None,
-        }
+        HostSpec { domain, input: None }
     }
 
     /// Gives the domain a live input service fed from `source`.
@@ -131,20 +115,11 @@ impl HostSpec {
         self.input = Some(source);
         self
     }
-
-    /// Gives the domain `registry` as its localization, providers and locales as configured.
-    #[must_use]
-    pub fn localization(mut self, registry: Registry) -> HostSpec {
-        self.localization = Some(registry);
-        self
-    }
 }
 
 /// What one [`Host::frame`] did.
 #[derive(Debug)]
 pub struct FrameReport {
-    /// The localization generation the frame broadcast, if the registry changed since the last.
-    pub localization_changed: Option<crate::l10n::Generation>,
     /// The input phase, if the tick produced action events.
     pub input: Option<PhaseReport>,
     /// The domain's advance.
@@ -167,7 +142,6 @@ impl FrameReport {
 pub struct Host {
     domain: ScriptDomain,
     input: Option<input::Driver>,
-    localization: Option<l10n::Watch>,
 }
 
 impl fmt::Debug for Host {
@@ -175,7 +149,6 @@ impl fmt::Debug for Host {
         f.debug_struct("Host")
             .field("domain", &self.domain)
             .field("input", &self.input.as_ref().map(input::Driver::source_name))
-            .field("localization", &self.localization.is_some())
             .finish()
     }
 }
@@ -194,16 +167,8 @@ impl Host {
         if let Some(driver) = &input {
             domain_spec = domain_spec.service(Arc::clone(driver.service()));
         }
-        let localization = spec.localization.map(l10n::Watch::new);
-        if let Some(watch) = &localization {
-            domain_spec = domain_spec.service(Arc::clone(watch.registry()));
-        }
         let domain = ScriptDomain::create(factory, domain_spec)?;
-        Ok(Host {
-            domain,
-            input,
-            localization,
-        })
+        Ok(Host { domain, input })
     }
 
     /// The domain: register contexts, load, start, spawn workers, and inspect through it.
@@ -219,14 +184,7 @@ impl Host {
         self.input.as_ref().map(input::Driver::service)
     }
 
-    /// The domain's localization registry, if the host has one. A change made through it is
-    /// broadcast at the next frame like one a script made.
-    #[must_use]
-    pub fn localization(&self) -> Option<&Arc<SharedRegistry>> {
-        self.localization.as_ref().map(l10n::Watch::registry)
-    }
-
-    /// One frame: the localization check, the input tick and phase, then the domain's advance by
+    /// One frame: the input tick and phase, then the domain's advance by
     /// `delta`.
     ///
     /// `delta` is the domain's time only. With [`InputSource::Synthetic`] the input ticks at the
@@ -238,14 +196,9 @@ impl Host {
     /// or a handler of it is), or the backend failed to poll. Handler failures are in the
     /// report, not here.
     pub fn frame(&mut self, delta: Duration) -> Result<FrameReport, Error> {
-        let localization_changed = self.pump_localization()?;
         let input = self.pump_input()?;
         let tick = self.domain.advance(delta)?;
-        Ok(FrameReport {
-            localization_changed,
-            input,
-            tick,
-        })
+        Ok(FrameReport { input, tick })
     }
 
     /// The input step alone: polls the backend, ticks the service, and runs the input phase if
@@ -264,22 +217,9 @@ impl Host {
         Ok(Some(self.domain.run_phase(crate::runtime::Phase::Input, &payload)?))
     }
 
-    /// The localization step alone: posts [`l10n::CHANGED`] to every context if the registry's
-    /// generation moved since the last check. Returns the generation broadcast.
-    ///
-    /// # Errors
-    ///
-    /// [`RuntimeError::Lifecycle`] once the domain has stopped.
-    pub fn pump_localization(&mut self) -> Result<Option<crate::l10n::Generation>, RuntimeError> {
-        let Some(watch) = &mut self.localization else {
-            return Ok(None);
-        };
-        watch.broadcast(&self.domain)
-    }
-
     /// Restarts the domain as a new generation ([`ScriptDomain::restart`]). Before it, the input
-    /// service forgets the graph and the routes the old code installed; devices, the queue, and
-    /// the registry stay, since none of them restarted.
+    /// service forgets the graph and the routes the old code installed; devices and the queue stay,
+    /// since neither restarted.
     ///
     /// Destructive, like the domain's: the old generation and its input configuration are gone
     /// before the new code loads, and a failed load leaves nothing running. Not a last-known-good

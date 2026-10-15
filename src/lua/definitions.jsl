@@ -46,41 +46,6 @@ export type WorkerOptions = { source: string, name: string?, capabilities: { str
 --- waits for it to end.
 export type Worker = jess_runtime_Worker
 
---- The variables a message takes, by the names its pattern uses: strings for text and `select`
---- keys, numbers for `plural` and `number`, booleans for either.
-export type L10nVariables = { [string]: string | number | boolean }
-
---- A bundle of localized messages (`jess.l10n.bundle`). Call it with a message id and its
---- variables: `common("file_count", { count = 3 })`. The text comes from the first preferred
---- locale that defines the message, then its parents, then the bundle's fallback locale; an id
---- no locale defines, a missing variable, or one of the wrong type is an error naming the bundle,
---- the message, and the locale.
-declare extern type L10nBundle with
-  --- The bundle's name.
-  name: string
-  --- The same as calling the bundle.
-  format: (self: L10nBundle, id: string, variables: L10nVariables?) -> string
-  --- Whether some locale in the chain defines the message.
-  has: (self: L10nBundle, id: string) -> boolean
-  __call: (self: L10nBundle, id: string, variables: L10nVariables?) -> string
-end
-
---- What a reload found wrong: where (`provider`, `path`, `line`, `column`), what (`bundle`,
---- `locale`, `message`), and why (`detail`). `kind` is a code like `pattern-parse-failure`.
-export type L10nDiagnostic = {
-  severity: "info" | "warning" | "error",
-  kind: string,
-  detail: string,
-  generation: number,
-  provider: string?,
-  path: string?,
-  line: number?,
-  column: number?,
-  bundle: string?,
-  locale: string?,
-  message: string?,
-}
-
 --- One node of a binding, as `jess.input`'s authoring functions return it: a table tagged by
 --- `type` (`sourceButton`, `chord`, `tap`, ...), with its inputs nested. Durations inside are
 --- milliseconds (`withinMs`, `durationMs`); the functions take seconds.
@@ -429,36 +394,10 @@ declare jess: {
   worker: {
     --- Spawns a worker from its module source, a chunk returning the message handler; needs the
     --- `worker.spawn` capability, and the worker holds `capabilities` (the spawner's, by default).
-    --- With `shareServices`, it sees the domain's services too (its live input, its localization).
+    --- With `shareServices`, it sees the domain's services too (its live input).
     spawn: (options: WorkerOptions) -> Worker,
     --- From inside a worker: sends a message to the domain, besides what the handler returns.
     send: (message: unknown) -> (),
-  },
-
-  --- Localization: bundles of ICU MessageFormat messages in `<bundle>/<locale>.toml` files,
-  --- resolved through the preferred locales and their parents, then the bundle's fallback.
-  --- Also `require("@jess/l10n")`. Under a host every call reaches the application's registry;
-  --- anywhere else the runtime has one of its own. Reading needs `l10n.read`; `setLocales`,
-  --- `addDirectory`, and `reload` need `l10n.configure`.
-  l10n: {
-    --- The bundle named `name`, with `fallbackLocale` (default `en`) as the locale tried after
-    --- every preferred one. Ask once, call many times.
-    bundle: (name: string, fallbackLocale: string?) -> L10nBundle,
-    --- Every bundle the providers offered at the last reload or a script asked for.
-    bundles: () -> { string },
-    --- The preferred locales, as set.
-    locales: () -> { string },
-    --- Sets the preferred locales, most wanted first, and returns the new generation. Every
-    --- bundle resolves again; nothing recompiles.
-    setLocales: (locales: string | { string }) -> number,
-    --- Adds a folder of `<bundle>/<locale>.toml` files as a provider; later providers override
-    --- earlier ones message by message. Takes effect at the next `reload`.
-    addDirectory: (path: string, name: string?) -> (),
-    --- Reads every provider again and returns what was wrong. A bundle with an error keeps its
-    --- last good text.
-    reload: () -> { L10nDiagnostic },
-    --- The generation: it rises whenever a reload or a locale change may have changed some text.
-    generation: () -> number,
   },
 
   --- Action graphs and a headless input runtime. Authoring functions return node tables; `graph`

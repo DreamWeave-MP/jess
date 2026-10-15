@@ -251,11 +251,15 @@ A fixture never pins a bug. Where current behavior is a bug, the fixture pins on
 
 ### 39. `jess.input` and `jess.l10n` bind to the domain's services, and check capabilities only there
 
+- **Superseded for `jess.l10n`** by 47: localization left the native API; what follows holds for `jess.input`.
+
 - **What:** under a `ScriptDomain` that carries a `Mutex<jess_input::InputService>` or a `RwLock<jess_l10n::Registry>` service (jess-host attaches both), `jess.input.runtime()` is the application's live input (the host ticks it; `tick` and `advance` are refused) and every `jess.l10n` call reaches the application's registry; anywhere else each runtime keeps a headless runtime and a registry of its own, which is what the fixtures drive. Every runtime method and every l10n call checks its capability (`input.actions`, `input.observe`, `input.configure`, `l10n.read`, `l10n.configure`) through the broker when the script runs under a domain; outside any domain nothing holds authority and nothing is checked, since the process's own user is running the script.
 - **Class:** addition. No fixture changed: the fixtures run outside any domain, where the API is what it was.
 - **Decision:** pinned in `lua_api` (`input_and_l10n_calls_are_denied_without_their_capabilities_under_a_domain`, `a_domain_registry_is_shared_with_the_workers_the_host_shares_it_with`, `a_domain_input_service_is_the_live_runtime_and_the_host_ticks_it`) and in the kernel fixture; the denial is the broker's, `capability 'input.actions' denied to domain#1 gen#1 context#2`, as `pcall` reads it.
 
 ### 40. A worker shares the domain's services only when its spawner says `shareServices = true`
+
+- **Since 47** no service carries localization: a worker's `@jess/l10n` is always its own.
 
 - **What:** `worker.spawn` takes `shareServices`, a boolean: `true` gives the worker every service its domain carries (`WorkerSpec::share_all`), so `jess.l10n` in it formats from the application's registry; absent or `false`, the worker has none and its `jess.input.runtime()` and `jess.l10n` are its own. A script can't name a Rust type, so the choice is all or nothing; the worker's capabilities still say what it may do with what it sees.
 - **Class:** addition. The unknown-option message names the new option.
@@ -304,3 +308,11 @@ A fixture never pins a bug. Where current behavior is a bug, the fixture pins on
 - **What:** `jess.nif.sceneBytes` returns jess-nif's scene of a Morrowind NIF as a table (`e8b3eab`), and `jess.nif.dumpBytes` takes `reader = 'gamebryo'` to read any version with the reader OpenMW uses (`cf48a1d`); both landed without their inventory entries.
 - **Class:** addition.
 - **Decision:** `sceneBytes` joins `[modules."jess.nif"]`, and `reader` joins `[options."jess.nif.dumpBytes"]`'s keys.
+
+## Localization
+
+### 47. `jess.l10n` left the native API for `@jess/l10n`, the built-in package's Luau
+
+- **What:** the ICU MessageFormat registry is Luau now (`jpk/builtin/src/l10n`), over `@dream/intl`'s CLDR plural rules and decimal formatting. `jess.l10n` and the `L10nBundle` userdata are gone. Each runtime has its own registry, so the host no longer attaches one or posts `l10n.changed`. `l10n.read` and `l10n.configure` are gone too: a folder is read through `@dream/fs`, so `filesystem.read` gates it.
+- **Class:** removal. `jess` lost the `l10n` member; `@jess/l10n` is still the require path, with the same functions plus `new`, `files`, `directory`, `addProvider`, `providers`, `formatPattern`, and `checkPattern`.
+- **Decision:** the `@jess` member list in `contracts.rs` dropped `l10n`. The acceptance cases are `jpk/builtin/tests/l10n/run.jsl`, and the kernel fixture's script and worker each configure their own registry.

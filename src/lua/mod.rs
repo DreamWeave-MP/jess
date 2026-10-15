@@ -25,7 +25,6 @@ mod files;
 mod fs;
 pub mod init;
 mod input;
-mod l10n;
 #[expect(
     clippy::module_inception,
     reason = "the binding shapes keep the name they had as the jess-lua crate's `lua` module"

@@ -22,7 +22,6 @@ jess is layers. Bytes at the bottom, Luau at the top, and each crate only knows 
 | `jess-render` | `libs/render` | none (render graph IR) |
 | `jess-shader` | `libs/shader` | none (shader IR and WGSL lowering; `jess-lua` binds it as `jess.shader`) |
 | `jess-runtime` | `libs/runtime` | none (script domains, contexts, capabilities, and workers over l3i; `jess-lua` binds it as `jess.context` and `jess.worker`) |
-| `jess-l10n` | `libs/l10n` | none (localization: bundles, ICU MessageFormat, locale fallback; `jess-lua` binds it as `jess.l10n`) |
 | `jess-input` | `libs/input` | none (device truth, action graph, intents; `jess-lua` binds it as `jess.input`) |
 | `jess-lua` | `libs/lua` | all of the above except `jess-render` |
 | `jess-cli` | `libs/cli` | all of the above |

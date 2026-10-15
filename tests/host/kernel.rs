@@ -1,5 +1,4 @@
-//! The host, headless: a domain with a live input service and a localization registry, driven a
-//! frame at a time from a synthetic source. The plan is the runtime's own modules plus a journal,
+//! The host, headless: a domain with a live input service, driven a frame at a time from a synthetic source. The plan is the runtime's own modules plus a journal,
 //! so what is proven here is the host's plumbing, not any script API over it.
 
 use std::cell::RefCell;
@@ -9,7 +8,6 @@ use std::time::Duration;
 
 use jess::host::{Host, HostSpec, InputSource};
 use jess::input::{ActionEventKind, Control, GraphSpec, Key, NodeSpec, Owner, ValueType};
-use jess::l10n::{Locale, MemoryFiles, Registry, VfsProvider};
 use jess::runtime::l3i;
 use jess::runtime::l3i::extension::{Extension, ExtensionDescriptor, RuntimePlan, RuntimePolicy};
 use jess::runtime::luau::RuntimeExtension;
@@ -72,17 +70,6 @@ fn accept() -> GraphSpec {
     spec
 }
 
-/// A registry with a `common` bundle in English and Polish, from memory.
-fn registry() -> Registry {
-    let files = MemoryFiles::new();
-    files.insert("l10n/common/en.toml", "hello = 'Hello, {name}!'");
-    files.insert("l10n/common/pl.toml", "hello = 'Cześć, {name}!'");
-    let mut registry = Registry::new();
-    registry.add_provider(VfsProvider::new("test", "l10n", files));
-    assert!(registry.reload().is_clean());
-    registry
-}
-
 const MAIN: &str = r"
 local context = require('@jess/context')
 local journal = require('@test/journal')
@@ -103,7 +90,7 @@ context.bind('main', {
   end,
 
   event = function(payload)
-    journal.write(`event {payload.event} gen {payload.generation} locales {table.concat(payload.locales, ',')}`)
+    journal.write(`event {payload.event}`)
   end,
 
   shutdown = function()
@@ -116,11 +103,7 @@ fn host(diagnostics: &Arc<CollectedDiagnostics>) -> Host {
     let grant = RootAuthority::new().grant(CapabilitySet::empty());
     let sink: Arc<dyn jess::runtime::DiagnosticSink> = diagnostics.clone();
     let spec = DomainSpec::new("kernel", grant).diagnostics(sink);
-    let host = Host::create(
-        factory(),
-        HostSpec::new(spec).input(InputSource::Synthetic).localization(registry()),
-    )
-    .unwrap();
+    let host = Host::create(factory(), HostSpec::new(spec).input(InputSource::Synthetic)).unwrap();
     host.domain()
         .register_context(ContextSpec::new("main").schedule([Phase::Input, Phase::Update, Phase::Event, Phase::Shutdown]))
         .unwrap();
@@ -155,11 +138,10 @@ fn a_synthetic_host_leaves_the_input_clock_to_whoever_drives_it() {
 }
 
 #[test]
-fn a_frame_ticks_input_into_the_input_phase_and_broadcasts_locale_changes() {
+fn a_frame_ticks_input_into_the_input_phase() {
     let diagnostics = Arc::new(CollectedDiagnostics::new());
     let mut host = host(&diagnostics);
     assert!(host.domain().service::<jess::host::SharedInput>().is_some());
-    assert!(host.domain().service::<jess::host::SharedRegistry>().is_some());
 
     // The host configures input here; under jess::lua's plan the script would, through the same service.
     let keyboard = {
@@ -172,7 +154,7 @@ fn a_frame_ticks_input_into_the_input_phase_and_broadcasts_locale_changes() {
 
     // A quiet frame: the connect applies to device state, no action event, no input phase.
     let report = host.frame(Duration::from_millis(16)).unwrap();
-    assert!(report.input.is_none() && report.localization_changed.is_none());
+    assert!(report.input.is_none());
     assert_eq!(journal(), ["update 0.016"]);
 
     // A key press: one input phase with the event, its intent, and the graph generation.
@@ -193,27 +175,9 @@ fn a_frame_ticks_input_into_the_input_phase_and_broadcasts_locale_changes() {
         ]
     );
 
-    // A locale change through the host's handle is broadcast at the next frame and delivered in
-    // its drain; the frame after that is quiet again.
-    let generation = host
-        .localization()
-        .unwrap()
-        .write()
-        .unwrap()
-        .set_preferred_locales(&[Locale::parse("pl-PL").unwrap()])
-        .unwrap();
+    // The key is still held: no edge, no phase.
     let report = host.frame(Duration::from_millis(16)).unwrap();
-    assert_eq!(report.localization_changed, Some(generation));
-    assert!(report.input.is_none(), "the key is still held: no edge, no phase");
-    assert_eq!(
-        journal(),
-        [
-            "update 0.016".to_owned(),
-            format!("event l10n.changed gen {} locales pl-PL", generation.get()),
-        ]
-    );
-    let report = host.frame(Duration::from_millis(16)).unwrap();
-    assert!(report.input.is_none() && report.localization_changed.is_none());
+    assert!(report.input.is_none());
     assert_eq!(journal(), ["update 0.016"]);
 
     let teardown = host.stop().unwrap();
@@ -319,12 +283,12 @@ fn the_stub_backend_is_a_real_poll_loop_over_nothing() {
 fn a_host_without_services_is_a_domain_with_none() {
     let grant = RootAuthority::new().grant(CapabilitySet::empty());
     let mut host = Host::create(factory(), HostSpec::new(DomainSpec::new("bare", grant))).unwrap();
-    assert!(host.input().is_none() && host.localization().is_none());
+    assert!(host.input().is_none());
     assert!(host.domain().services().is_empty());
     host.domain().load_source("=main", "").unwrap();
     host.domain().start().unwrap();
     let report = host.frame(Duration::from_millis(16)).unwrap();
-    assert!(report.input.is_none() && report.localization_changed.is_none());
+    assert!(report.input.is_none());
     assert_eq!(report.failures(), Vec::<&jess::runtime::RuntimeError>::new());
     host.stop().unwrap();
 }

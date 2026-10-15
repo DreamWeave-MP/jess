@@ -247,26 +247,6 @@ impl Opts {
     }
 }
 
-/// The strings of a list argument, each a string or a number as its text; `what` names the list
-/// in errors.
-pub fn string_list(frame: &Frame<'_>, list: ValueView<'_>, what: &str) -> l3i::Result<Vec<String>> {
-    if !list.is_table() {
-        return Err(error(format!("{what} must be a list of strings, not {}", kind(list))));
-    }
-    let mut strings = Vec::new();
-    list.as_table()?.for_each_array(frame, |_, _, item| {
-        if !Text::matches(item) {
-            return Err(error(format!(
-                "{what} must be a list of strings, not a list with a {}",
-                kind(item)
-            )));
-        }
-        strings.push(Text::from_view(item)?.0);
-        Ok(())
-    })?;
-    Ok(strings)
-}
-
 /// Runs `build`, which leaves one value on top of a fresh frame, and keeps that value on `scope`:
 /// a bound function's result, or the next value of a table under construction.
 pub fn keep_top(scope: &impl Scope, build: impl FnOnce(&Frame<'_>) -> l3i::Result<()>) -> l3i::Result<()> {
