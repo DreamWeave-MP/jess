@@ -258,6 +258,13 @@ suite.describe('encode', function()
     expect(json.encode(values.array { json.decode 'null', yaml.decode 'null' })).toBe '[null,null]'
   end)
 
+  suite.it('has one null, jess.null, everywhere', function()
+    expect(json.null).toBe(jess.null)
+    expect(yaml.decode 'null').toBe(jess.null)
+    expect(values.Null).toBe(jess.null)
+    expect(json.encode(jess.null)).toBe 'null'
+  end)
+
   suite.it('refuses a table it would have to guess about, and a format it doesn\'t write', function()
     expect(function() json.encode { 1, 2 } end).toThrow 'a bare table is neither a list nor a map'
     expect(function() yaml.encode { name = 'Jess' } end).toThrow 'a bare table is neither a list nor a map'

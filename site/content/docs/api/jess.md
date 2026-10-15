@@ -64,6 +64,7 @@ The value that fills an empty slot in an array, where `nil` would end the array 
 Luau arrays can't hold `nil` in the middle: `{ a, nil, b }` has length 1 or 3 depending on how it was built, and `ipairs` stops at the gap. jess uses `jess.null` wherever a list keeps its positions, most often an empty link in a NIF record's `children`, `properties`, or `effects`. You'll find it in tables from `decode()` and `toTable()`, and you can write it wherever an empty link is allowed.
 
 - **Type:** `JessNull`, an opaque userdata. `typeof(jess.null)` is `"userdata"`.
+- **One null:** it is also the null the built-in codecs read and write: `require('@jess/json').null`, `require('@jess/yaml').null`, and `@jess/data/value`'s `Null` are `jess.null`, so a null decoded from JSON is the one any jess API takes.
 - **Comparing:** `value == jess.null` works. A live list view reads an empty link as `nil`, and a copied table holds `jess.null` in that slot, so the types spell such a table's items as `number | JessNull`.
 
 ```luau

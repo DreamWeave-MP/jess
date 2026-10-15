@@ -20,11 +20,10 @@ export type Value = unknown
 
 local Common = require './common'
 
-local Null = table.freeze { kind = 'null' }
+-- A null is jess's one null, the value the decoders give for one they read, so a decoded null can
+-- be written back. None is not a null but an absent option.
+local Null = Common.null
 local None = table.freeze { kind = 'none' }
-
--- What the decoders give for a null they read, so a decoded null can be written back.
-local Decoded = Common.null
 
 --- What each array, map, variant and forced float of the model is, by identity.
 local kinds = (setmetatable({}, { __mode = 'k' }) :: unknown) :: { [unknown]: string }
@@ -86,7 +85,7 @@ local function kindOf(value: Value): string
 
   if typeof(value) == 'integer' then return 'int' end
 
-  if value == Null or value == Decoded then return 'null' end
+  if value == Null then return 'null' end
 
   if value == None then return 'none' end
 
