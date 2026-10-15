@@ -22,7 +22,7 @@ Everything below is how they do it.
 
 ## Measure first
 
-`os.clock()` is CPU time with sub-millisecond resolution. Wrap the part you care about:
+`os.clock()` is a monotonic wall clock with sub-millisecond resolution, so time spent waiting on a file or a child process counts too. Wrap the part you care about:
 
 ```luau
 --!strict
@@ -133,7 +133,7 @@ Edits are held as values and turned back into bytes when something needs the byt
 
 ## Native code
 
-`--!native` on the line after `--!strict` asks Luau to compile the script to native code. It pays off for scripts that spend their time in Luau: tight loops over numbers and strings, like `@dreamwind/tools/s3lightfixes`'s color math. For scripts that spend their time in jess (opening, selecting, saving), it changes little. It never hurts correctness, so the bundled scripts turn it on.
+`--!native` on the line after `--!strict` asks Luau to compile the module to native code, and `@native` before one function compiles just that function. It pays off for code that spends its time in Luau: tight loops over numbers and strings, like s3lightfixes' color math. For code that spends its time in jess's bindings (reading, hashing, decompressing), it changes little. It never changes what code does, but it isn't free: a marked module is compiled to machine code every time it loads, which for a large module costs more than the module will ever save if it runs once. So mark what a measurement shows is hot and nothing else; the [Luau style page](@/docs/contributing/luau-style.md#types) has the rule jess's own Luau and its packages follow.
 
 jess also marks the global environment safe, the way Luau's own sandbox does, so builtins like `math.floor` and `buffer.readi32` are looked up once, when the script loads, and called on Luau's fast path. Without that, every call is a table lookup and a full function call, many times slower in a loop over a LAND record's 4,225 heights; the harness's `safeenv` canary fails the test suite if that ever comes back. The price is that a builtin replaced after a script loaded (`math.floor = myFloor`) doesn't reach the code already loaded. Don't monkey-patch builtins.
 

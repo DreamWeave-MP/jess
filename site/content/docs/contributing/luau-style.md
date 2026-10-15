@@ -85,6 +85,8 @@ A `pcall` without that comment is a bug report waiting to happen, and the checke
 
 Every module starts with `--!strict`. `--!native` is a claim, not a default: a module carries it only when its package's bench shows a workload that runs faster with it, and the package's `BENCHMARKS.md` names that workload. Jess compiles natively only what is marked (`NativeCodeMode::Annotated`), so an unmarked module costs its bytecode compile at load and nothing more. A module that parses arguments, reads a config, or builds tables once is never marked. The same goes for one function: `@native` before a function in an unmarked module compiles that function and nothing else, which is the cheaper claim when one loop in a large module is the hot one.
 
+Jess's own Luau follows the same rule. The package bootstrap, `@jess/package`, `@jess/jpk`, the workspace, and `@jess/log` load as bytecode: a run spends no time in them, and compiling them natively cost every start 9 to 28 ms. `@jess/test` is native, since every suite runs through it, and the style checker and the analysis carry `@native` on the functions a check spends its time in. The formats are the exception: every module under the built-in package's `src/data/` (`@jess/json`, `@jess/yaml`, `@jess/data/toml`, `@jess/data/value`) is native whole, because a codec can't know whether its caller hands it a manifest of a few hundred bytes or a document of megabytes, and execution time wins: native code decodes block YAML three times as fast, TOML 2.3 times, and JSON 1.6 to 1.8 times.
+
 Everything is typed, and nothing is `any`. `unknown` is fine where the API really hands you an unknown (a `jess run` script's `state` table), and nowhere else. The test suite type-checks the built-in package and the shader corpus against the generated definitions; nothing type-checks the bundled scripts under `src/lua/stdlib` or the `jess init` template yet, so when you change one, check it with `common::type_check` from `tests/lua/common/mod.rs` in a test you don't commit.
 
 ## The l3i dialect
@@ -142,14 +144,14 @@ print(`{errors} errors, {warnings} warnings`)
 | `locals.mixed` | warning | No local starting `nil` in a statement that initializes others. A call, `...`, or a buffer sink (the buffer and the count it wrote) may fill more than one. |
 | `guard.else` | warning | No `else` after a branch that returns, breaks, continues, or errors. |
 | `guard.nested` | warning | A function or loop body that's one condition wrapped around three or more statements becomes a guard clause and the work. |
-| `directives.strict`, `directives.native` | error | `--!strict` and `--!native` at the top, where the caller requires them: jess's own Luau under `src/` and `tools/` is held to both, packages to `strict` only. |
+| `directives.strict`, `directives.native` | error | `--!strict` and `--!native` at the top, where the caller requires them. The repository holds its own Luau and every package to `strict` only; `native` is earned, never required. |
 | `types.any` | error | No `any`, where the caller requires it. |
 
 It costs more than the line-based check it replaced, and checks more. Over the repo's Luau (535 sources, the site's blocks included, 48,455 lines) on a verified release build, counted in retired instructions: the old Rust check took 5,627 per line (32 ms), parsing alone 17,990 per line (100 ms), and the whole check 28,151 per line (153 ms). Two thirds of it is Luau's parser building the tree as tables; the rules are the other third.
 
 There's no comment that turns a rule off, for a line or a file. The style says to fix the code, not to quiet the checker; when the checker is wrong, fix the checker.
 
-Options choose what a file is held to. `directives = { 'strict', 'native' }` and `noAny = true` are for the bundled scripts; `only = { ... }` limits a check to some rules; `declarations` says whether a file is a definitions file, which the checker otherwise works out; and `profile = 'lua'` is s3stash's Lua, where hoisting globals into PascalCase locals (`local Next, Type = next, type`) is the style rather than a mistake and LuaLS `---@param` types feed the truthiness rule.
+Options choose what a file is held to. `directives = { 'strict' }` and `noAny = true` are for the bundled scripts; `only = { ... }` limits a check to some rules; `declarations` says whether a file is a definitions file, which the checker otherwise works out; and `profile = 'lua'` is s3stash's Lua, where hoisting globals into PascalCase locals (`local Next, Type = next, type`) is the style rather than a mistake and LuaLS `---@param` types feed the truthiness rule.
 
 ## The style test
 
@@ -157,6 +159,6 @@ Options choose what a file is held to. `directives = { 'strict', 'native' }` and
 cargo test --test lua_luau_style
 ```
 
-`tests/lua/luau_style.rs` activates the built-in package from its source, which also checks that it's the copy the binary embeds, and runs `@jess/style` over every repository-owned `.jsl` file under `src/` and `tools/`, over every ```` ```luau ```` block on this site, and over `jess luau-types`' definitions. Any finding, error or warning, fails it. The bundled scripts and built-in modules are held to `--!strict`, `--!native`, and no `any`; the `jess init` template to `--!strict`.
+`tests/lua/luau_style.rs` activates the built-in package from its source, which also checks that it's the copy the binary embeds, and runs `@jess/style` over every repository-owned `.jsl` file under `src/` and `tools/`, over every ```` ```luau ```` block on this site, and over `jess luau-types`' definitions. Any finding, error or warning, fails it. The bundled scripts and built-in modules are held to `--!strict` and no `any`; the `jess init` template to `--!strict`.
 
 The same test runs the checker's own suite (`jess package test jpk/builtin`, from the source and packed) and type-checks the package against the types folder. Canonical formatting will join this gate once Jess's built-in Luau formatter owns it.
