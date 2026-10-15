@@ -118,7 +118,7 @@ pub(crate) fn host_table(runtime: &Runtime, read: bool, write: bool) -> l3i::Res
         let mut entries = Vec::new();
         walk(Path::new(&root.0), "", &mut entries)?;
         entries.sort_by(|a, b| a.0.cmp(&b.0));
-        crate::lua::lua::push_list(call, entries.into_iter(), |frame, (path, kind)| {
+        l3i::stack::push_list(call, entries.into_iter(), |frame, (path, kind)| {
             crate::lua::push_table(frame, 0, 2, |frame, row| {
                 row.raw_set_value(frame, "path", &path)?;
                 row.raw_set_value(frame, "kind", &kind)
@@ -157,7 +157,7 @@ pub(crate) fn host_table(runtime: &Runtime, read: bool, write: bool) -> l3i::Res
     let list_dir = runtime.bind_function("jess.package.listDir", |call: &Call<'_>, root: Text| {
         let mut entries = children(Path::new(&root.0))?;
         entries.sort_by(|a, b| a.0.cmp(&b.0));
-        crate::lua::lua::push_list(call, entries.into_iter(), |frame, (name, kind)| {
+        l3i::stack::push_list(call, entries.into_iter(), |frame, (name, kind)| {
             crate::lua::push_table(frame, 0, 2, |frame, row| {
                 row.raw_set_value(frame, "name", &name)?;
                 row.raw_set_value(frame, "kind", &kind)
@@ -215,12 +215,10 @@ fn gated_table(runtime: &Runtime, functions: impl Iterator<Item = HostFunction>)
     let mut gated = Vec::new();
     for (name, function, needs) in functions {
         let function = match needs {
-            Some((false, capability)) => {
-                let message = crate::lua::plan::denied("@jess/package", capability);
-                runtime.bind_function(&format!("jess.package.{name}"), move |_: ArgView<'_>| -> l3i::Result<()> {
-                    Err(l3i::Error::permission(message.clone()))
-                })?
-            }
+            Some((false, capability)) => runtime
+                .bind_function(&format!("jess.package.{name}"), move |_: ArgView<'_>| -> l3i::Result<()> {
+                    Err(l3i::Error::denied("@jess/package", capability))
+                })?,
             _ => function,
         };
         gated.push((name, function));

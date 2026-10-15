@@ -155,21 +155,6 @@ pub fn push_table(
     })
 }
 
-/// Pushes a list of `items` onto `scope`, each pushed by `push`.
-pub fn push_list<T>(
-    scope: &impl Scope,
-    items: impl ExactSizeIterator<Item = T>,
-    mut push: impl FnMut(&Frame<'_>, T) -> l3i::Result<()>,
-) -> l3i::Result<()> {
-    push_table(scope, items.len(), 0, |frame, table| {
-        for (index, item) in items.enumerate() {
-            push(frame, item)?;
-            table.raw_set_index(frame, index as i64 + 1)?;
-        }
-        Ok(())
-    })
-}
-
 /// A table `build` pushed onto a frame, pinned.
 pub fn stored_table(scope: &impl Scope, build: impl FnOnce(&Frame<'_>) -> l3i::Result<()>) -> l3i::Result<Table> {
     Table::from_value(crate::lua::stored(scope, build)?)

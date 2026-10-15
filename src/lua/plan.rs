@@ -205,11 +205,6 @@ impl Jess {
     }
 }
 
-/// What `function` raises in a runtime whose policy doesn't grant `capability`.
-pub(crate) fn denied(function: &str, capability: &str) -> String {
-    format!("{function}: needs the '{capability}' capability, which this runtime does not grant")
-}
-
 /// A generic sub-module bound under `jess.<name>`, frozen once filled.
 pub(crate) struct Functions<'r> {
     runtime: &'r Runtime,

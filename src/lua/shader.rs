@@ -30,7 +30,7 @@ use l3i::userdata::{Owned, Userdata};
 use l3i::value::{Function, Table};
 
 use crate::lua::plan::Functions;
-use crate::lua::{Jess, error, kind, lua, push_table};
+use crate::lua::{Jess, error, kind, push_table};
 
 /// What `shader.program` takes.
 const PROGRAM_KEYS: &[&str] = &["fragment", "parameters", "textures", "vertex"];
@@ -818,7 +818,7 @@ fn program(shader: &Rc<Shader>, call: &Call<'_>, spec: ValueView<'_>) -> l3i::Re
 
 /// Pushes `{ name, type }` for each declaration.
 fn push_declarations(call: &Call<'_>, declarations: &[crate::shader::Declaration]) -> l3i::Result<StackResults> {
-    lua::push_list(call, declarations.iter(), |frame, declaration| {
+    l3i::stack::push_list(call, declarations.iter(), |frame, declaration| {
         push_table(frame, 0, 2, |frame, table| {
             table.raw_set_value(frame, "name", &declaration.name)?;
             table.raw_set_value(frame, "type", declaration.ty.name())
@@ -960,7 +960,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .getter(
             "textures",
             |this: &LuaShaderProgram, call: &Call<'_>| -> l3i::Result<StackResults> {
-                lua::push_list(call, this.0.textures.iter(), |frame, name| {
+                l3i::stack::push_list(call, this.0.textures.iter(), |frame, name| {
                     frame.push_string(name)?;
                     Ok(())
                 })?;

@@ -43,7 +43,7 @@ use serde_json::{Value as Json, json};
 
 use crate::lua::convert;
 use crate::lua::plan::Functions;
-use crate::lua::{Jess, Text, error, guard, kind, lua, push_table};
+use crate::lua::{Jess, Text, error, guard, kind, push_table};
 
 /// A compiled, validated action graph.
 #[derive(Clone)]
@@ -501,7 +501,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .method(
             "actions",
             |this: &LuaInputGraph, call: &Call<'_>| -> l3i::Result<StackResults> {
-                lua::push_list(call, this.graph.actions().iter(), |frame, action| {
+                l3i::stack::push_list(call, this.graph.actions().iter(), |frame, action| {
                     push_table(frame, 0, 2, |frame, row| {
                         row.raw_set_value(frame, "name", action.name())?;
                         row.raw_set_value(frame, "valueType", action.value_type().name())
@@ -780,7 +780,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
                     .devices()
                     .map(|device| (device.id(), device.descriptor().clone(), device.is_connected()))
                     .collect();
-                lua::push_list(call, devices.iter(), |frame, (id, descriptor, connected)| {
+                l3i::stack::push_list(call, devices.iter(), |frame, (id, descriptor, connected)| {
                     push_table(frame, 0, 5, |frame, row| {
                         row.raw_set_value(frame, "id", &f64::from(id.index()))?;
                         row.raw_set_value(frame, "kind", descriptor.kind.name())?;
@@ -846,7 +846,7 @@ fn tick_rows(service: &mut InputService) -> Vec<Row> {
 }
 
 fn push_rows(scope: &impl Scope, rows: &[Row]) -> l3i::Result<()> {
-    lua::push_list(scope, rows.iter(), |frame, row| {
+    l3i::stack::push_list(scope, rows.iter(), |frame, row| {
         push_table(frame, 0, 6, |frame, table| {
             if let Some(intent) = &row.intent {
                 table.raw_set_value(frame, "intent", intent.as_str())?;
