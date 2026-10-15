@@ -111,7 +111,7 @@ impl Mounted {
 ///
 /// `read` and `write` say whether whoever holds the table may read and write the host's files.
 /// The module scripts require gets what the runtime's policy grants, so a script can't open or
-/// pack a package it couldn't have read or written through `jess.fs`; the host's own package
+/// pack a package it couldn't have read or written through `@dream/fs`; the host's own package
 /// operations get both, since inspecting and activating packages is the host acting.
 pub(crate) fn host_table(runtime: &Runtime, read: bool, write: bool) -> l3i::Result<Table> {
     let list_tree = runtime.bind_function("jess.package.listTree", |call: &Call<'_>, root: Text| {

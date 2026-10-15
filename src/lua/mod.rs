@@ -22,7 +22,6 @@ pub mod bench;
 pub mod builtin;
 mod convert;
 mod files;
-mod fs;
 pub mod init;
 mod input;
 #[expect(

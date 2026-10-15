@@ -31,7 +31,7 @@ extra:
 | `jess.openmw` | Config contexts, active content, VFS reads | [jess.openmw and OpenMwContext](@/docs/api/openmw.md) |
 | `jess.luadata` | OpenMW's serialized Lua data | [jess.luadata](@/docs/api/luadata.md) |
 | `jess.compare` | Byte comparisons, common records, diffs, overlapping topics | [jess.compare](@/docs/api/compare.md) |
-| `jess.fs` | Files and folders | [jess.fs](@/docs/api/fs.md) |
+| `@dream/fs` | Files and folders | [Files](@/docs/api/fs.md) |
 | `@jess/data/toml` | TOML documents as tables, and back | [@jess/data/toml](@/docs/api/toml.md) |
 | `jess.regex` | Rust regular expressions | [jess.regex](@/docs/api/regex.md) |
 | `jess.shader` | Typed shader programs from Luau modules | [jess.shader](@/docs/api/shader.md) |

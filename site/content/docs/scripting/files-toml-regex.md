@@ -1,70 +1,74 @@
 ---
 title: 'Files, TOML, and Regex'
-description: 'The standard-library gaps jess fills: jess.fs, @jess/data/toml, jess.regex.'
+description: 'The standard-library gaps jess fills: @dream/fs, @jess/data/toml, jess.regex.'
 weight: 90
 extra:
   kind: guide
 ---
 
-Luau on its own can't open a file, read a config, or match a regex. Scripts that write logs, read settings, or match record ids need all three, so jess has them: `jess.fs`, `@jess/data/toml`, and `jess.regex`. This page is recipes; the [fs](@/docs/api/fs.md), [toml](@/docs/api/toml.md), and [regex](@/docs/api/regex.md) references have every function.
+Luau on its own can't open a file, read a config, or match a regex. Scripts that write logs, read settings, or match record ids need all three, so jess has them: `@dream/fs`, `@jess/data/toml`, and `jess.regex`. This page is recipes; the [fs](@/docs/api/fs.md), [toml](@/docs/api/toml.md), and [regex](@/docs/api/regex.md) references have every function.
 
 ## Files
 
-`jess.fs` is plain file access with host paths: the paths your operating system uses, not VFS paths. (For files the game sees, use [`openmw:readFile`](@/docs/scripting/openmw-and-vfs.md#content-and-files).)
+[`@dream/fs`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-fs) is file
+access with host paths: the paths your operating system uses, not VFS paths. Reading needs
+`filesystem.read` and changing the disk `filesystem.write`, both a `--capability` away for
+[`jess run`](@/docs/cli/run.md#capabilities); taking paths apart and joining them needs neither.
 
 ### Walk a folder
 
-There's no recursive listing built in, but it's six lines:
-
 ```luau
 --!strict
--- Every file under a folder, recursively, as paths.
-local function walk(folder: string, found: { string }?): { string }
-  local files = found or {}
-  for _, name in jess.fs.list(folder) do
-    local path = jess.fs.join(folder, name)
-    if jess.fs.isDir(path) then
-      walk(path, files)
-    else
-      table.insert(files, path)
-    end
-  end
-  return files
-end
+local fs = require('@dream/fs')
 
 local root = ... or '.'
-local files = walk(root)
+local walk = assert(fs.walk(root, { include = 'files', metadata = true, sort = true }))
 
 local total = 0
-for _, path in files do
-  total += jess.fs.size(path) or 0
+for index in walk.paths do
+  total += (walk.sizes :: { number })[index]
 end
-print(`{#files} files, {total} bytes under {root}`)
+print(`{#walk.paths} files, {total} bytes under {root}`)
 ```
 
-`list` returns entry names in whatever order the filesystem gives them; sort them if order matters. `join` puts paths together with the right separator.
+```text
+$ jess run --capability filesystem.read walk.jsl data
+2 files, 8 bytes under data
+```
+
+`walk` returns parallel arrays (`paths`, relative to the root and `/`-separated everywhere,
+`kinds`, and with `metadata` the `sizes`), so a walk of a hundred thousand files makes a handful
+of tables. `list(folder)` is one folder's names, sorted.
 
 ### Write a log
 
 ```luau
 --!strict
-local logs = jess.fs.join(jess.fs.cwd(), 'logs')
-jess.fs.createDir(logs)
+local fs = require('@dream/fs')
 
-local log = jess.fs.join(logs, 'run.txt')
-jess.fs.write(log, `ran at {os.date '!%Y-%m-%dT%H:%M:%SZ'}\n`)
+local logs = fs.join(assert(fs.cwd()), 'logs')
+assert(fs.mkdir(logs, { recursive = true }))
 
-print(jess.fs.fileName(log), jess.fs.exists(log))
+local log = fs.join(logs, 'run.txt')
+assert(fs.writeFile(log, `ran at {os.date '!%Y-%m-%dT%H:%M:%SZ'}\n`, { atomic = true }))
+
+print(fs.fileName(log), fs.exists(log))
 ```
 
-- `read(path)` returns a file's contents as a string, or `nil` when there's no such file. That makes "use the config if it's there" a one-liner: `jess.fs.read(path) or ""`.
-- `write(path, data)` writes a string or a `buffer`, replacing the file. There's no append: read, concatenate, write.
-- `createDir` creates missing parents too, and doesn't mind if the folder exists.
-- `remove(path)` returns whether there was a file to remove; `copy(from, to)` copies one.
-- `exists`, `isDir`, `isFile`, and `size` ask about a path; `size` is `nil` for a missing file.
-- `cwd()`, `join(...)`, `fileName(path)`, and `parent(path)` handle paths.
+```text
+$ jess run --capability filesystem.read --capability filesystem.write log.jsl
+run.txt	true
+```
 
-Errors name the path, so a failed write tells you which one.
+- A function that fails answers `nil`, a message naming the path, and a kind (`notFound`,
+  `alreadyExists`, ...) instead of raising, so `assert` is how a script says a failure is fatal,
+  and `fs.readFileString(path) or ''` is "use the config if it's there".
+- `writeFile(path, data, options)` writes a string or a `buffer`; `atomic` writes beside the file
+  and renames it over, `createParents` makes the folders, `append` appends.
+- `mkdir` with `recursive` makes missing parents and doesn't mind a folder that exists; `remove`
+  takes `recursive` for a folder; `copy`, `rename`, and `stat` do what they say.
+- `join(...)`, `parent(path)`, `fileName(path)`, and `extension(path)` handle paths and touch no
+  disk.
 
 ## TOML
 
@@ -81,7 +85,7 @@ type Settings = { radius: number, verbose: boolean, skip: { string }, folder: st
 
 local function loadSettings(path: string): Settings
   local settings: Settings = { radius = 1.5, verbose = false, skip = {}, folder = '.' }
-  local text = jess.fs.read(path)
+  local text = require('@dream/fs').readFileString(path)
   if not text then return settings end
 
   local raw = toml.decode(text)
@@ -127,7 +131,7 @@ A Luau table forgets what a TOML file says about the order of its keys, whether 
 ```luau
 --!strict
 local toml = require('@jess/data/toml')
-local settings, layout = toml.decode(jess.fs.read 'settings.toml' or '')
+local settings, layout = toml.decode(require('@dream/fs').readFileString 'settings.toml' or '')
 
 for _, key in layout[settings].keys or {} do
   print(key, layout[settings].floats[key] == true)
@@ -161,7 +165,7 @@ local settings = values.struct {
   { 'output', values.struct { { 'folder', 'out' } } },
 }
 
-jess.fs.write('settings.toml', toml.encode(settings))
+assert(require('@dream/fs').writeFile('settings.toml', toml.encode(settings), { atomic = true }))
 ```
 
 ```toml

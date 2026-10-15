@@ -111,7 +111,6 @@ Input and `worker.spawn` are the whole list. Everything older than the broker ru
 
 | Surface | Reaches |
 | --- | --- |
-| `jess.fs` (`write`, `replace`, `copy`, `remove`, `createDir`; `read`, `list`, `stat`, `cwd`, ...) | any path the process can, both ways |
 | `Plugin:save`, `jess.plugin.convert`, `jess.save.strip`, `jess.nif.fix`, `Nif:save` | writes at any path, or in place |
 | `jess.plugin.open`, `jess.save.open`, `jess.nif.open`, `jess.compare.bytes`, `jess.openmw.load` | reads at any path, or through the config's data folders |
 | `OpenMwContext:save`, `openmwConfig` `saveUser`/`saveToPath`/`saveSubconfig`/`saveResolvedToPath` | writes the user's `openmw.cfg` |

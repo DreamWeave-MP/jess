@@ -59,7 +59,7 @@ end
 print(vfstool.serialize({ files = vfs:keys() }, 'json'))
 ```
 
-`vfstool.serialize` takes views as well as tables. The `host` table (`vfstool.host.readFile`, `writeFile`, `list`, `stat`, ...) is files and directories on host paths with no VFS in between; jess's runtime grants the capability it needs, the same as [jess.fs](@/docs/api/fs.md).
+`vfstool.serialize` takes views as well as tables. The `host` table (`vfstool.host.readFile`, `writeFile`, `list`, `stat`, ...) is files and directories on host paths with no VFS in between; jess's runtime grants the capability it needs, the same as [`@dream/fs`](@/docs/api/fs.md).
 
 Beyond lookups: `explain`, `duplicates`, `providersFor`, and `sourceContributions` say why a path resolves the way it does; `pushDirectory`, `pushArchive`, `setWinnerFile`, and `removeWinner` change the stack; `dumpToDirectory`, `collapseInto`, and `materializationPlan` write a merged folder; `LayerIndex` and `ConflictIndex` are provenance and conflict reports; `runSetup` and `runFinalize` are the dump-run-collect workflow for a child tool. Every one is on [vfstool's Luau pages](https://dreamweave-mp.github.io/vfstool/docs/luau/).
 

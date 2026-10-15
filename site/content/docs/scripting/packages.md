@@ -229,13 +229,13 @@ jpk/dreamwind/
     golden/                what the dream-ini library answered to every case
 ```
 
-The importer itself is Luau. It reads INI and plugin-header bytes through `@dream/fs`, uses `jess.fs` for the remaining metadata and path helpers, decodes codepages through `@dream/bytes`, normalizes configs through `openmwConfig`, logs through `@jess/log`, tests through `@jess/test`, and writes files through [`jess.fs.replace`](@/docs/api/fs.md#jess-fs-replace).
+The importer itself is Luau. It reads INI and plugin-header bytes, metadata, and paths through `@dream/fs`, decodes codepages through `@dream/bytes`, normalizes configs through `openmwConfig`, logs through `@jess/log`, tests through `@jess/test`, and writes files through [`@dream/fs`](@/docs/api/fs.md)'s atomic `writeFile`.
 
 ### Importing
 
 `parseIni`, `parseCfg`, `serializeCfg`, `importMaps`, `importPaths`, and `version` are the members `dreamIni` had, with the same option tables (`gameFiles`, `fonts`, `archives`, `verbose`, `encoding`, `dataDirs`, `dataLocal`, `resources`, `userData`, `cfgDir`, and `importMaps`' `iniPath`), the same `{ cfg, text, warnings, events }` result, the same warning kinds (`ignoredEmptyValue`, `malformedIniLine`, `missingGameFile`) and event kinds (`contentFileResolved`, `dataDirAddedForContent`, `archiveResolved`, `dataDirAddedForArchive`), and the same messages. The result also carries `changedKeys`, the cfg keys the import set, which the native binding never returned and the writers below need. `readPluginHeader(path, encoding?)` reads a plugin's name and masters, as the content ordering does.
 
-INI and plugin-header reads use L3i's `@dream/fs`, not the native VFS host. Grant `filesystem.read` when running these jobs. An unreadable input throws `dream.ini: <path>: <OS reason>`; the importer doesn't catch its own API errors or turn them into a second result interface. Configuration loading and the writers below still use the native configuration and `jess.fs` seams pending their extraction.
+INI and plugin-header reads use L3i's `@dream/fs`, not the native VFS host. Grant `filesystem.read` when running these jobs. An unreadable input throws `dream.ini: <path>: <OS reason>`; the importer doesn't catch its own API errors or turn them into a second result interface. Configuration loading and the writers below still use the native configuration seam pending its extraction.
 
 ```luau
 --!strict
@@ -254,7 +254,7 @@ print(`wrote {outputPath}`)
 
 ### Writing
 
-dream-ini's Rust crate could write what it imported, and update an `openmw.cfg` in place without flattening it; its Luau binding exposed neither. The package has both, over `openmwConfig` and `jess.fs.replace`, held to the crate's functions byte for byte (below).
+dream-ini's Rust crate could write what it imported, and update an `openmw.cfg` in place without flattening it; its Luau binding exposed neither. The package has both, over `openmwConfig` and `@dream/fs`'s atomic `writeFile`, held to the crate's functions byte for byte (below).
 
 - `saveCfg(cfg, path)` writes a multimap as a new `openmw.cfg`, every value spelled as given, keys in order, ending in openmw-config's serializer stamp (`save_cfg_output_to_path`).
 - `saveResolvedCfg(cfg, path)` writes it with its folders resolved against the file's folder, for an output that lives somewhere else (`save_resolved_cfg_to_path`).
@@ -334,7 +334,7 @@ dream-ini's Rust library was the executable specification, called side by side w
 
 The port beats the Rust library on both merges: the merge is table work, and a Luau table that stays in Luau costs less than a Rust map that has to be built from Luau tables and pushed back. It trails on the fallback-key parse by a tenth and on the disk import by a fifth. The port as first written was 1.5x to 2x slower everywhere; what closed the gap was translating the fallback keys once at load instead of once per value, walking the INI by position with plain `string.find` (memchr) instead of a substring per line, trimming ASCII byte by byte with the Unicode walk kept for the one value in a million that needs it, and not asking the host to canonicalize folders that aren't there.
 
-Two workloads stay behind, and the reason is measured, not guessed. Parsing the large INI creates three interned strings per key line (the name, the `Section:Name` key, the value) and grows a 2000-key table; in the release VM that is about 300 µs of substrings, 370 µs of key interning, and 600 µs of table growth against 250 µs of finds, a floor of roughly 1.3 ms for any pure-Luau parser of this shape, while the Rust parser does the same string work in 500 µs. The disk import is the same work plus 386 `stat` calls both sides make, two `openmwConfig` round trips both sides make, and 129 `jess.fs.isFileName` checks; the port's remaining 800 µs is Luau doing the bookkeeping dream-ini does in Rust. The primitive that would close the parse gap is a native line tokenizer: one host call over a string or buffer that returns the `(name, value)` string pairs of every `key=value` line, cut at a comment byte, so the strings are created once by the host instead of three times by the script. l3i has `string.split` (one string per line, then a match per line, measured slower) and `@dream/bytes`' `find` (what the port uses), but not that. Nothing in the port is native, and nothing here argues for making part of it native: the numbers are the case for a general tokenizer, if one is ever wanted.
+Two workloads stay behind, and the reason is measured, not guessed. Parsing the large INI creates three interned strings per key line (the name, the `Section:Name` key, the value) and grows a 2000-key table; in the release VM that is about 300 µs of substrings, 370 µs of key interning, and 600 µs of table growth against 250 µs of finds, a floor of roughly 1.3 ms for any pure-Luau parser of this shape, while the Rust parser does the same string work in 500 µs. The disk import is the same work plus 386 `stat` calls both sides make, two `openmwConfig` round trips both sides make, and 129 `isFileName` checks; the port's remaining 800 µs is Luau doing the bookkeeping dream-ini does in Rust. The primitive that would close the parse gap is a native line tokenizer: one host call over a string or buffer that returns the `(name, value)` string pairs of every `key=value` line, cut at a comment byte, so the strings are created once by the host instead of three times by the script. l3i has `string.split` (one string per line, then a match per line, measured slower) and `@dream/bytes`' `find` (what the port uses), but not that. Nothing in the port is native, and nothing here argues for making part of it native: the numbers are the case for a general tokenizer, if one is ever wanted.
 
 ## TES3 plugins and saves
 
@@ -354,7 +354,7 @@ Lint (the 27 checks, presets, and master-dependent checks through a master sourc
 local tes3 = require '@dreamwind/tes3'
 local tes3cmd = require '@dreamwind/tes3cmd'
 local path: string = ...
-local plugin = tes3.open(jess.fs.read(path) :: string)
+local plugin = tes3.open(assert(require('@dream/fs').readFileString(path)))
 
 for _, finding in tes3cmd.lint(plugin, tes3cmd.preset 'all', tes3cmd.masters.none()) do
   print(`{finding.severity} {finding.check}: {finding.message}`)

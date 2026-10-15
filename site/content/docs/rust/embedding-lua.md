@@ -75,7 +75,7 @@ jess-lua is an l3i extension (`jess_lua::plan::JessExtension`), composed into on
 
 Your host has to be on the same l3i. Use the re-export, `jess_lua::l3i`, and never name l3i yourself, or depend on `l3i = "1"` so Cargo unifies them. `jess_lua::runtime` returns l3i's `Runtime`, so nothing from another binder type-checks against it.
 
-jess-lua turns on l3i's `jit` feature, so `--!native` scripts compile to machine code, and the vfstool `lua-write` and `lua-host` features with their capabilities granted, so scripts reach the host filesystem through `vfstool.host` as well as `jess.fs`.
+jess-lua turns on l3i's `jit` feature, so `--!native` scripts compile to machine code, and the vfstool `lua-write` and `lua-host` features with their capabilities granted, so scripts reach the host filesystem through `vfstool.host` as well as `@dream/fs`.
 
 ## Load-order scripts and modify scripts
 
@@ -127,4 +127,4 @@ It writes `types/`, a strict `.jessrc` with the aliases, a `main.jsl` that runs,
 
 ## Sandboxing
 
-The globals are read-only and that's all. Scripts read and write files like any program, through `jess.fs`, `vfstool.host`, and every `save` method. If you run scripts you didn't write, that's on you, same as running a binary you didn't write.
+The globals are read-only and that's all. Scripts read and write files like any program, through `@dream/fs`, `vfstool.host`, and every `save` method. If you run scripts you didn't write, that's on you, same as running a binary you didn't write.

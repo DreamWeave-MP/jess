@@ -79,14 +79,14 @@ fn scripts_touch_files_only_with_the_capability_for_it() {
     let script = module(
         &root,
         "script.jsl",
-        "local path = ...\nprint(jess.fs.read(path) or 'nothing')\njess.fs.write(path, 'written')\n",
+        "local fs = require('@dream/fs')\nlocal path = ...\nprint(fs.readFileString(path) or 'nothing')\nassert(fs.writeFile(path, 'written'))\n",
     );
     let stderr = |output: &std::process::Output| String::from_utf8_lossy(&output.stderr).into_owned();
 
     let ungranted = jess().arg("run").arg(&script).arg(&note).output().unwrap();
     assert!(!ungranted.status.success());
     assert!(
-        stderr(&ungranted).contains("jess.fs.read: needs the 'filesystem.read' capability"),
+        stderr(&ungranted).contains("dream.fs.readFileString: needs the 'filesystem.read' capability"),
         "{}",
         stderr(&ungranted)
     );
@@ -99,7 +99,7 @@ fn scripts_touch_files_only_with_the_capability_for_it() {
     assert!(!reading.status.success());
     assert_eq!(String::from_utf8_lossy(&reading.stdout), "nothing\n");
     assert!(
-        stderr(&reading).contains("jess.fs.write: needs the 'filesystem.write' capability"),
+        stderr(&reading).contains("dream.fs.writeFile: needs the 'filesystem.write' capability"),
         "{}",
         stderr(&reading)
     );
@@ -118,7 +118,7 @@ fn scripts_touch_files_only_with_the_capability_for_it() {
         "suite.jsl",
         &format!(
             "local test = require('@jess/test')\nlocal suite = test.new()\n\
-             suite.it('reads', function() test.expect(jess.fs.read({:?})).toBe 'written' end)\nreturn suite\n",
+             suite.it('reads', function() test.expect(require('@dream/fs').readFileString({:?})).toBe 'written' end)\nreturn suite\n",
             note.display().to_string()
         ),
     );
@@ -149,7 +149,11 @@ fn scripts_touch_files_only_with_the_capability_for_it() {
          [targets.reader]\nkind = \"command\"\nentry = \"src/main.jsl\"\ncapabilities = [\"filesystem.read\"]\n",
     )
     .unwrap();
-    fs::write(root.join("tool/src/main.jsl"), "print(jess.fs.read((...)))\n").unwrap();
+    fs::write(
+        root.join("tool/src/main.jsl"),
+        "print(require('@dream/fs').readFileString((...)))\n",
+    )
+    .unwrap();
     let target = |name: &str| {
         jess()
             .args(["package", "run"])
@@ -162,7 +166,7 @@ fn scripts_touch_files_only_with_the_capability_for_it() {
     let quiet = target("quiet");
     assert!(!quiet.status.success());
     assert!(
-        stderr(&quiet).contains("jess.fs.read: needs the 'filesystem.read' capability"),
+        stderr(&quiet).contains("dream.fs.readFileString: needs the 'filesystem.read' capability"),
         "{}",
         stderr(&quiet)
     );

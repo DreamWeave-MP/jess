@@ -1,141 +1,14 @@
-//! `jess.fs`, TOML through `@jess/data/toml`, and `jess.regex`: what load-order scripts use besides
-//! records.
+//! TOML through `@jess/data/toml`, `jess.regex`, and running files: what load-order scripts use
+//! besides records.
 
 use jess::lua::l3i::Runtime;
 
 mod common;
 
-use common::{run, set_global};
+use common::run;
 
 fn lua() -> Runtime {
     common::runtime()
-}
-
-/// A runtime granted exactly `capabilities`.
-fn granted(capabilities: &[&str]) -> Runtime {
-    let capabilities = capabilities.iter().map(ToString::to_string).collect::<Vec<_>>();
-    jess::lua::runtime_with_capabilities(jess::lua::Options::default(), &capabilities)
-        .unwrap_or_else(|error| panic!("{error}"))
-}
-
-/// `jess.fs` reaches the host's files only as far as the runtime's policy grants: nothing without
-/// a capability, reads with `filesystem.read`, changes with `filesystem.write`. Taking a path
-/// apart or joining one touches nothing and needs neither.
-#[test]
-fn files_need_the_capability_that_covers_them() {
-    let directory = tempfile::tempdir().unwrap();
-    let existing = directory.path().join("existing.txt");
-    std::fs::write(&existing, "kept").unwrap();
-    let reads = [
-        "read",
-        "readBuffer",
-        "exists",
-        "isDir",
-        "isFile",
-        "size",
-        "stat",
-        "modified",
-        "list",
-        "cwd",
-    ];
-    let writes = ["write", "replace", "copy", "remove", "createDir"];
-    for (capabilities, may_read, may_write) in [
-        (&[][..], false, false),
-        (&["filesystem.read"][..], true, false),
-        (&["filesystem.write"][..], false, true),
-        (&["filesystem.read", "filesystem.write"][..], true, true),
-    ] {
-        let lua = granted(capabilities);
-        set_global(&lua, "dir", &directory.path().display().to_string());
-        set_global(&lua, "existing", &existing.display().to_string());
-        for (names, capability, allowed) in [
-            (&reads[..], "filesystem.read", may_read),
-            (&writes[..], "filesystem.write", may_write),
-        ] {
-            for name in names {
-                set_global(&lua, "name", *name);
-                set_global(&lua, "capability", capability);
-                set_global(&lua, "allowed", &allowed);
-                run(
-                    &lua,
-                    r#"
-                    local scratch = jess.fs.join(dir, "made-by-" .. name)
-                    local arguments = {
-                        write = { scratch, "x" }, replace = { scratch, "x" }, copy = { existing, scratch },
-                        remove = { scratch }, createDir = { scratch }, cwd = {}, list = { dir },
-                    }
-                    local ok, problem = pcall(jess.fs[name], table.unpack(arguments[name] or { existing }))
-                    if allowed then
-                        assert(ok, `{name} with {capability}: {problem}`)
-                    else
-                        local expected = `jess.fs.{name}: needs the '{capability}' capability, which this runtime does not grant`
-                        assert(not ok and string.find(tostring(problem), expected, 1, true), `{name}: {problem}`)
-                    end
-                    "#,
-                );
-            }
-        }
-        run(
-            &lua,
-            r#"
-            assert(jess.fs.join("a", "b") ~= nil and jess.fs.fileName("a/b.txt") == "b.txt")
-            assert(jess.fs.parent("a/b.txt") == "a" and jess.fs.isFileName("b.txt"))
-            "#,
-        );
-        if !may_write {
-            let made = std::fs::read_dir(directory.path()).unwrap().count();
-            assert_eq!(made, 1, "a runtime without filesystem.write changed the folder");
-            assert_eq!(std::fs::read_to_string(&existing).unwrap(), "kept");
-        }
-        // What a granted run made, cleared for the next policy.
-        for entry in std::fs::read_dir(directory.path()).unwrap().flatten() {
-            if entry.path() != existing {
-                if entry.path().is_dir() {
-                    std::fs::remove_dir_all(entry.path()).unwrap();
-                } else {
-                    std::fs::remove_file(entry.path()).unwrap();
-                }
-            }
-        }
-        std::fs::write(&existing, "kept").unwrap();
-    }
-}
-
-#[test]
-fn files_read_write_and_list() {
-    let directory = tempfile::tempdir().unwrap();
-    let lua = common::filesystem_runtime();
-    set_global(&lua, "dir", &directory.path().display().to_string());
-    run(
-        &lua,
-        r#"
-        local nested = jess.fs.join(dir, "a", "b")
-        jess.fs.createDir(nested)
-        assert(jess.fs.isDir(nested) and not jess.fs.isFile(nested))
-        local file = jess.fs.join(nested, "Notes.TXT")
-        assert(jess.fs.read(file) == nil and jess.fs.size(file) == nil and not jess.fs.exists(file))
-        jess.fs.write(file, "hello")
-        assert(jess.fs.read(file) == "hello" and jess.fs.size(file) == 5 and jess.fs.isFile(file))
-        jess.fs.write(file, buffer.fromstring("bytes\0!"))
-        assert(jess.fs.read(file) == "bytes\0!")
-        local written = jess.fs.write(file, "again", { backup = true })
-        assert(written.path == file and written.backup == file .. ".bak", tostring(written.backup))
-        assert(jess.fs.read(written.backup) == "bytes\0!" and jess.fs.read(file) == "again")
-        assert(jess.fs.write(file, "last").backup == nil, "no backup unless asked")
-        jess.fs.remove(written.backup)
-        local deeper = jess.fs.join(dir, "new", "folder", "made.txt")
-        assert(jess.fs.write(deeper, "x").backup == nil and jess.fs.read(deeper) == "x")
-        jess.fs.remove(deeper)
-        assert(jess.fs.fileName(file) == "Notes.TXT" and jess.fs.parent(file) == nested)
-        local copy = jess.fs.join(nested, "copy.txt")
-        jess.fs.copy(file, copy)
-        local names = jess.fs.list(nested)
-        table.sort(names)
-        assert(#names == 2 and names[1] == "Notes.TXT" and names[2] == "copy.txt")
-        assert(jess.fs.remove(copy) and not jess.fs.remove(copy))
-        assert(type(jess.fs.cwd()) == "string")
-        "#,
-    );
 }
 
 #[test]

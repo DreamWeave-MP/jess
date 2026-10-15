@@ -588,11 +588,11 @@ fn a_jpk_holds_only_its_payload() {
         &runtime,
         "local jpk = require '@jess/jpk'\n\
          local manifest = 'manifest_version = 1\\n[package]\\nid = \"org.example.extra\"\\nversion = \"1.0.0\"\\njess_api = \"1\"\\ninclude = [\"src\"]\\n'\n\
-         jess.fs.replace(output, jpk.write {\n\
+         assert(require('@dream/fs').writeFile(output, jpk.write {\n\
            { path = 'jess.toml', data = buffer.fromstring(manifest) },\n\
            { path = 'src/a.jsl', data = buffer.fromstring('return 1') },\n\
            { path = 'smuggled.jsl', data = buffer.fromstring('return 2') },\n\
-         })",
+         }, { atomic = true }))",
     );
     let problem = package::inspect(&runtime, &jpk.display().to_string())
         .unwrap_err()

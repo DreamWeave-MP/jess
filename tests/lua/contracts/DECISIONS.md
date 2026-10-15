@@ -316,3 +316,11 @@ A fixture never pins a bug. Where current behavior is a bug, the fixture pins on
 - **What:** the ICU MessageFormat registry is Luau now (`jpk/builtin/src/l10n`), over `@dream/intl`'s CLDR plural rules and decimal formatting. `jess.l10n` and the `L10nBundle` userdata are gone. Each runtime has its own registry, so the host no longer attaches one or posts `l10n.changed`. `l10n.read` and `l10n.configure` are gone too: a folder is read through `@dream/fs`, so `filesystem.read` gates it.
 - **Class:** removal. `jess` lost the `l10n` member; `@jess/l10n` is still the require path, with the same functions plus `new`, `files`, `directory`, `addProvider`, `providers`, `formatPattern`, and `checkPattern`.
 - **Decision:** the `@jess` member list in `contracts.rs` dropped `l10n`. The acceptance cases are `jpk/builtin/tests/l10n/run.jsl`, and the kernel fixture's script and worker each configure their own registry.
+
+## Files
+
+### 48. `jess.fs` left the native API for l3i's `@dream/fs`
+
+- **What:** jess had a second file API next to l3i's, with its own errors (raising where `@dream/fs` answers `nil, message, kind`), its own list order (the filesystem's, where `@dream/fs` sorts), and its own backups. `jess.fs` and `src/lua/fs.rs` are gone; the built-in package, the tools, and the site use `@dream/fs`. 16 and 41 describe the removed API.
+- **Class:** removal. `jess` lost the `fs` member, and the orphaned `fs/fs` fixture went with it.
+- **Decision:** the member list in `contracts.rs` dropped `fs`. A backup before writing is a tool's policy, not a file API's.
