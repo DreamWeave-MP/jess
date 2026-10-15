@@ -1140,10 +1140,15 @@ pub fn run_target(options: &crate::lua::Options, request: &TargetRequest) -> l3i
         )));
     }
     if let Some(grant) = &request.grant {
+        // What a person running the tool already has (their terminal, their input devices) is
+        // granted by running it, as `jess run` grants it; the target still holds only what it
+        // declares.
         let denied = target
             .capabilities
             .iter()
-            .filter(|capability| !grant.contains(capability))
+            .filter(|capability| {
+                !grant.contains(capability) && !crate::lua::HOST_SCRIPT_CAPABILITIES.contains(&capability.as_str())
+            })
             .map(|capability| format!("    {capability}"))
             .collect::<Vec<_>>();
         if !denied.is_empty() {

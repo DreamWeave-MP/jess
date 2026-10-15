@@ -157,7 +157,9 @@ fn a_target_holds_what_it_declares_and_nothing_a_request_adds() {
     drop(fs::remove_dir_all(&root));
     narrow_tool(&root, false);
 
+    // The terminal is the person's: a target that declares process.stdio prints without asking.
     for extra in [
+        &[][..],
         &["--trusted"][..],
         &["--capability", "process.stdio", "--capability", "input.configure"][..],
     ] {
