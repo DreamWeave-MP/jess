@@ -47,6 +47,16 @@ local function isSeparation(byte: number?): boolean
   return byte == nil or byte == 32 or byte == 9 or byte == 10 or byte == 13
 end
 
+--- Whether a quote or a bracket at `index` opens a node: only where one can start, at the start
+--- of the text, after separation white space or a flow indicator, or after a JSON-like key's `:`
+--- inside a flow collection. Anywhere else it is a plain scalar's own byte (`it's`, `k[1]`).
+local function opensNode(text: string, index: number, depth: number): boolean
+  if index == 1 then return true end
+
+  local before = string.byte(text, index - 1)
+  return isSeparation(before) or before == 44 or before == 91 or before == 123 or (depth > 0 and before == 58)
+end
+
 local function isFlowDelimiter(byte: number?): boolean
   return byte == nil or byte == 44 or byte == 91 or byte == 93 or byte == 123 or byte == 125
 end
@@ -131,9 +141,9 @@ local function stripComment(text: string): string
         quote = nil
       end
     else
-      if byte == 39 or byte == 34 then
+      if (byte == 39 or byte == 34) and opensNode(text, index, depth) then
         quote = byte
-      elseif byte == 91 or byte == 123 then
+      elseif (byte == 91 or byte == 123) and (depth > 0 or opensNode(text, index, depth)) then
         depth += 1
       elseif byte == 93 or byte == 125 then
         if depth > 0 then depth -= 1 end
@@ -184,9 +194,9 @@ local function mapColon(text: string): number?
 
       if byte == 34 then quote = nil end
     else
-      if byte == 39 or byte == 34 then
+      if (byte == 39 or byte == 34) and opensNode(text, index, depth) then
         quote = byte
-      elseif byte == 91 or byte == 123 then
+      elseif (byte == 91 or byte == 123) and (depth > 0 or opensNode(text, index, depth)) then
         depth += 1
       elseif byte == 93 or byte == 125 then
         if depth > 0 then depth -= 1 end

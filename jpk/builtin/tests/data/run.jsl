@@ -189,6 +189,19 @@ custom: !<tag:example.com,2026:thing> hello
     expect(value.items[1]).toBe 'x'
     expect(value.items[2]).toEqual { 3 }
   end)
+
+  -- OpenMW l10n files name places in their keys: `UI_Blurb_Suran, Desele's House: "..."`.
+  suite.it('reads a quote or a bracket inside a plain scalar as its own byte', function()
+    local value = yaml.decode(
+      'Desele\'s House: "v"\nplain: it\'s fine # c\nsaid: say "hi" # c\nindexed: k[1] # c\n'
+        .. 'list:\n  - it\'s # c\n'
+    )
+    expect(value["Desele's House"]).toBe 'v'
+    expect(value.plain).toBe "it's fine"
+    expect(value.said).toBe 'say "hi"'
+    expect(value.indexed).toBe 'k[1]'
+    expect(value.list).toEqual { "it's" }
+  end)
 end)
 
 suite.describe('encode', function()
