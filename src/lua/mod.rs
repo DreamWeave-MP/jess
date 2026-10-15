@@ -21,6 +21,7 @@ pub use l3i;
 pub mod bench;
 pub mod builtin;
 mod convert;
+pub mod document;
 mod files;
 pub mod init;
 mod input;

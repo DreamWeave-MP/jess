@@ -43,9 +43,7 @@ l3i = { git = "https://github.com/DreamWeave-MP/l3i", branch = "main", features 
 serde = { version = "^1.0", features = ["derive"] }
 serde-value = "^0.7"
 serde_json = { version = "^1.0", features = ["preserve_order"] }
-serde_yaml = "^0.9"
 tempfile = "^3.23"
-toml = { version = "^1.1", features = ["preserve_order"] }
 
 [target.'cfg(unix)'.dependencies]
 # Only for restoring SIGPIPE, which Windows lacks.
@@ -62,6 +60,8 @@ gilrs = { version = "^0.11", optional = true }
 l3i = { git = "https://github.com/DreamWeave-MP/l3i", branch = "main", features = ["analysis"] }
 naga = { version = "30.0.1", features = ["wgsl-in"] }
 pollster = "0.4.0"
+serde_yaml = "^0.9"
+toml = { version = "^1.1", features = ["preserve_order"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "vulkan", "gles", "metal", "dx12"] }
 
 [[bin]]
