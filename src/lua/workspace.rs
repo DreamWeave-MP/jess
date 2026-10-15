@@ -371,9 +371,10 @@ pub struct Synced {
 /// Each package id needed gets one version, which every requirement on it must accept. A package
 /// offered outright is the one for its id; otherwise what the lock already pins, while it still
 /// meets every requirement and is kept or offered; otherwise the one package offered that does.
-/// Two that would each do are an error, never a choice. Package Sources are packed into
-/// `.jess/packages`, and JPKs copied there, each checked against its digest, and `jess.lock` is
-/// written last. Nothing is fetched: what isn't offered or kept isn't there.
+/// Two that would each do are an error, never a choice. A choice that a package chosen later
+/// rules out is made again with its requirements, until nothing changes. Package Sources are
+/// packed into `.jess/packages`, and JPKs copied there, each checked against its digest, and
+/// `jess.lock` is written last. Nothing is fetched: what isn't offered or kept isn't there.
 ///
 /// # Errors
 ///

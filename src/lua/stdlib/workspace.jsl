@@ -808,8 +808,9 @@ end
 
 type Wanted = { by: string, requirement: string }
 
---- A package sync selected, and whether `.jess/packages` already holds it.
-type Choice = { package: Package, stored: boolean }
+--- A package sync selected, whether `.jess/packages` already holds it, and whether it was named
+--- outright, which no requirement overrides.
+type Choice = { package: Package, stored: boolean, named: boolean }
 
 --- `location` opened, or nil when it can't be.
 local function opened(location: string): Package?
@@ -825,11 +826,13 @@ end
 --- outright, and the Package Sources and JPKs directly inside the package path folders `paths`,
 --- with the packages the lock already pins.
 ---
---- Each package id needed gets one version, which every requirement on it must accept; ids are
---- settled in order, so the outcome never depends on how a folder lists. For each, a package named
---- outright is the one; otherwise what the lock pins, when it still meets every requirement and is
---- in `.jess/packages` or offered; otherwise the one offered that meets every requirement. Two
---- different packages that would each do are an error naming them, never a choice. A Package
+--- Each package id needed gets one version, which every requirement on it must accept. For each, a
+--- package named outright is the one; otherwise what the lock pins, when it still meets every
+--- requirement and is in `.jess/packages` or offered; otherwise the one offered that meets every
+--- requirement. Two different packages that would each do are an error naming them, never a
+--- choice. Ids are settled in order, so the outcome never depends on how a folder lists, and
+--- settled again whenever a package chosen later requires something an earlier choice doesn't
+--- meet, until nothing changes. A choice that still meets every requirement stays. A Package
 --- Source is packed into `.jess/packages`, and a JPK copied there; each is checked against the
 --- digest it was selected by before `jess.lock` is written, last. With `locked`, a lock that would
 --- change is an error and nothing is written to it.
@@ -898,10 +901,34 @@ local function sync(
     end
   end
 
-  for _, found in workspace.members do
-    local manifest = found.manifest
-    need(`{manifest.id} {manifest.version}`, manifest.dependencies)
-    need(`{manifest.id} {manifest.version} (for its tests)`, manifest.devDependencies)
+  local chosen: { [string]: Choice } = {}
+
+  --- Every requirement on an id outside the workspace: the members', then, through the packages
+  --- chosen so far, theirs. A chosen package nothing reaches any more requires nothing.
+  local function gather()
+    requirements = {}
+
+    for _, found in workspace.members do
+      local manifest = found.manifest
+      need(`{manifest.id} {manifest.version}`, manifest.dependencies)
+      need(`{manifest.id} {manifest.version} (for its tests)`, manifest.devDependencies)
+    end
+
+    local walked: { [string]: boolean } = {}
+    local more = true
+
+    while more do
+      more = false
+
+      for _, id in sortedKeys(requirements) do
+        local choice = chosen[id]
+
+        if walked[id] or not choice then continue end
+
+        walked[id], more = true, true
+        need(`{choice.package.id} {choice.package.version}`, choice.package.manifest.dependencies)
+      end
+    end
   end
 
   local function wantedBy(id: string): string
@@ -955,7 +982,7 @@ local function sync(
   local function pick(id: string): Choice
     local outright = named[id]
 
-    if outright then return { package = single(id, outright), stored = false } end
+    if outright then return { package = single(id, outright), stored = false, named = true } end
 
     local pin, available = pins[id], offered[id] or {} :: { Offer }
 
@@ -963,7 +990,7 @@ local function sync(
       local stored = opened(`{root}/{storeName(pin)}`)
 
       if stored and stored.id == id and stored.version == pin.version and stored.digest == pin.digest then
-        return { package = stored, stored = true }
+        return { package = stored, stored = true, named = false }
       end
 
       for _, candidate in available do
@@ -971,7 +998,7 @@ local function sync(
 
         local same = package.open(candidate.location)
 
-        if same.digest == pin.digest then return { package = same, stored = false } end
+        if same.digest == pin.digest then return { package = same, stored = false, named = false } end
       end
     end
 
@@ -989,23 +1016,52 @@ local function sync(
       )
     end
 
-    return { package = single(id, fitting), stored = false }
+    return { package = single(id, fitting), stored = false, named = false }
   end
 
-  local chosen: { [string]: Choice } = {}
+  -- Each round settles every id required, with what the members and the packages chosen so far
+  -- require, and keeps any choice that still meets it; the next round sees what the new choices
+  -- require. It stops at the round that changes nothing. A selection that keeps trading one
+  -- version for another is cut off after as many rounds as there are packages to choose between.
+  local budget = #workspace.lock.packages + 2
 
-  while true do
-    local nextId: string?
+  for _, offers in named do
+    budget += #offers
+  end
 
-    for id in requirements do
-      if not chosen[id] and (not nextId or id < nextId) then nextId = id end
+  for _, offers in offered do
+    budget += #offers
+  end
+
+  local rounds, changed = 0, true
+  local moved: { string } = {}
+
+  while changed do
+    rounds += 1
+
+    if rounds > budget then
+      fail(
+        `choosing what to pin never settled: {table.concat(moved, ', ')} kept changing; name the versions to pin with jess workspace sync <file>`
+      )
     end
 
-    if not nextId then break end
+    gather()
+    changed, moved = false, {}
 
-    local choice = pick(nextId)
-    chosen[nextId] = choice
-    need(`{choice.package.id} {choice.package.version}`, choice.package.manifest.dependencies)
+    for _, id in sortedKeys(chosen) do
+      if requirements[id] then continue end
+
+      chosen[id], changed = nil, true
+    end
+
+    for _, id in sortedKeys(requirements) do
+      local choice = chosen[id]
+
+      if choice and (choice.named or fits(id, choice.package.version)) then continue end
+
+      chosen[id], changed = pick(id), true
+      table.insert(moved, id)
+    end
   end
 
   for id, outright in named do

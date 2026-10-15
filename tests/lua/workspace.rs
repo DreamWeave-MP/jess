@@ -745,37 +745,52 @@ fn sync_meets_every_requirement_or_says_whose_it_cannot() {
         "{conflict}"
     );
 
-    // A requirement found only after its id was settled is checked against what was settled.
-    std::fs::write(
-        &manifest,
-        text_of.replace(
-            "\"org.example.words\" = \"1\"",
-            "\"org.example.base\" = \"1\"\n\"org.example.zed\" = \"1\"",
-        ),
-    )
-    .unwrap();
-    member(&vendor.join("base"), "base", "1.0.0", "");
+    // A requirement found only after its id was settled settles it again. Here nothing offered
+    // meets it, and the error says who asked for what.
+    let requiring = |zed: bool| {
+        let needs = if zed {
+            "\"org.example.base\" = \"1\"\n\"org.example.zed\" = \"1\""
+        } else {
+            "\"org.example.base\" = \"1\""
+        };
+        std::fs::write(&manifest, text_of.replace("\"org.example.words\" = \"1\"", needs)).unwrap();
+    };
+    requiring(true);
+    member(&vendor.join("base-1.0.0"), "base", "1.0.0", "");
     member(
         &vendor.join("zed"),
         "zed",
         "1.0.0",
         "[dependencies]\n\"org.example.base\" = \"^1.5\"\n",
     );
-    member(
-        &vendor.join("style"),
-        "style",
-        "1.0.0",
-        "[dependencies]\n\"org.example.words\" = \"^1.3\"\n",
-    );
-    let late = sync(&root, &[&vendor.join("words-1.3.0")], &[&vendor], false).unwrap_err();
+    let late = sync(&root, &[], &[&vendor], false).unwrap_err();
     assert!(
-        late.contains("no one org.example.base meets every requirement on it; 1.0.0 is the one selected"),
+        late.contains("nothing offered for org.example.base is one the workspace can use"),
         "{late}"
     );
+    assert!(late.contains("org.example.app 0.1.0 requires org.example.base 1"), "{late}");
     assert!(
         late.contains("org.example.zed 1.0.0 requires org.example.base ^1.5"),
         "{late}"
     );
+
+    // With base 1.0.0 pinned, a zed that needs a newer base moves the pin to one that does, though
+    // base sorts first and 1.0.0 met everything known when it was settled.
+    let base = |synced: &workspace::Synced| -> String {
+        synced
+            .packages
+            .iter()
+            .find(|package| package.id == "org.example.base")
+            .map(|package| package.version.clone())
+            .unwrap_or_default()
+    };
+    requiring(false);
+    assert_eq!(base(&sync(&root, &[], &[&vendor], false).unwrap()), "1.0.0");
+    requiring(true);
+    member(&vendor.join("base-1.6.0"), "base", "1.6.0", "");
+    let moved = sync(&root, &[], &[&vendor], false).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(base(&moved), "1.6.0");
+    assert_eq!(from(&root).lock.state, "fresh");
 
     // A member a requirement names is the member, whatever is offered.
     let (_temp, both) = scratch();

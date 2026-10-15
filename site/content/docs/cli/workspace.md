@@ -215,7 +215,7 @@ How a package is chosen for each id:
 4. Otherwise, what `jess.lock` already pins, as long as it still meets every requirement and is kept or offered. A newer version turning up on a package path moves nothing.
 5. Otherwise, the one package offered that meets every requirement. Two that would each do are an error naming both; name the one you mean.
 
-Ids are settled in order, so nothing depends on how a folder happens to list. There is no backtracking and no "pick the highest": when no one version can satisfy everyone, the error says who wanted what.
+Ids are settled in order, so nothing depends on how a folder happens to list, and settled again whenever a package chosen later requires something an earlier choice doesn't meet: a pinned `words` 1.2.0 gives way to an offered 1.3.0 as soon as a new `style` asks for `^1.3`. A choice that still meets everything stays put. That is the whole search: no trying every combination, and no "pick the highest". When no one version can satisfy everyone, the error says who wanted what.
 
 With the showcase pinned to exactly `words` 1.2.0, and a `style` that wants at least 1.3:
 
