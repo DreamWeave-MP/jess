@@ -1,0 +1,6 @@
+--!strict
+local words = require '@words'
+
+return {
+  shout = function(text: string): string return `{string.upper(text)}! ({words.hello})` end,
+}

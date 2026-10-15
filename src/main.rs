@@ -18,6 +18,8 @@ mod run;
 mod test;
 #[path = "cli/types.rs"]
 mod types;
+#[path = "cli/workspace.rs"]
+mod workspace;
 
 /// Where `jess --help` sends people new to jess.
 const START_HERE: &str = "Start here:
@@ -65,6 +67,8 @@ enum Command {
     Pack(Box<package::PackArgs>),
     /// Inspect, resolve, and test packages: Package Source folders and JPKs.
     Package(Box<package::PackageArgs>),
+    /// Work in a workspace: the Package Sources a jess-workspace.toml lists, developed together.
+    Workspace(Box<workspace::WorkspaceArgs>),
     /// Set up a folder for Luau scripts: jess's types, an example, and editor settings.
     Init(Box<init::InitArgs>),
     /// Write jess's Luau types into a folder: jess.d.jsl and one stub module per require name.
@@ -178,6 +182,7 @@ fn run(cli: Cli) -> Result<u8, String> {
         Command::Test(args) => test::run(&args, cli.format.unwrap_or(output::Format::Yaml)).map(|()| 0),
         Command::Pack(args) => package::pack(&args, cli.format.unwrap_or(output::Format::Yaml)).map(|()| 0),
         Command::Package(args) => package::run(&args, cli.format.unwrap_or(output::Format::Yaml)),
+        Command::Workspace(args) => workspace::run(&args, cli.format.unwrap_or(output::Format::Yaml)),
         Command::Init(args) => init::run(&args, cli.format.unwrap_or(output::Format::Yaml)).map(|()| 0),
     }
 }

@@ -1,7 +1,8 @@
 ignore/
 target/
+.jess/
 /AGENTS.md
-jess.d.luau
+jess.d.jsl
 
 # JPK archives are build artifacts. Package repositories under jpk/ are independent checkouts;
 # only Jess's built-in package source belongs to this repository.

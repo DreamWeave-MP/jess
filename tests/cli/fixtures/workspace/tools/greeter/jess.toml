@@ -1,0 +1,18 @@
+manifest_version = 1
+
+[package]
+id = "org.example.greeter"
+version = "0.1.0"
+jess_api = "1"
+default_target = "greet"
+include = ["src"]
+
+[dependencies]
+"org.example.showcase" = "0.1"
+"org.example.style" = "1"
+
+[targets.greet]
+kind = "command"
+command = "greet"
+entry = "src/main.jsl"
+capabilities = ["process.environment"]

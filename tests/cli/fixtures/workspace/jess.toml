@@ -1,0 +1,23 @@
+manifest_version = 1
+
+[package]
+id = "org.example.showcase"
+version = "0.1.0"
+jess_api = "1"
+default_target = "showcase"
+include = ["src"]
+
+[dependencies]
+"org.example.words" = "1"
+
+[modules]
+"@showcase" = "src/init.jsl"
+
+[[layer]]
+id = "example.showcase"
+exports = ["@showcase"]
+
+[targets.showcase]
+kind = "command"
+entry = "src/main.jsl"
+capabilities = []

@@ -1,0 +1,9 @@
+# Jess's own packages, developed together: the built-in package jess carries, and the commands
+# that build the site. What they depend on beyond each other (the site generator,
+# org.dreamweave.site) is pinned in jess.lock; sync it from a checkout of jpk/dreamweave-site:
+#
+#   jess workspace sync jpk/dreamweave-site
+manifest_version = 1
+
+[workspace]
+members = ["jpk/builtin", "tools/site"]

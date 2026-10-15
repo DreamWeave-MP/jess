@@ -43,6 +43,7 @@ pub mod stdlib;
 pub mod testing;
 mod toml;
 pub mod types;
+pub mod workspace;
 
 pub(crate) use lua::{Bytes, Opts, Text, kind, push_table};
 

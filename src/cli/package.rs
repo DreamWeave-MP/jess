@@ -82,6 +82,16 @@ pub struct RunTargetArgs {
     /// reads one.
     #[arg(long = "package-path", value_name = "FOLDER")]
     package_paths: Vec<PathBuf>,
+    #[command(flatten)]
+    grant: GrantArgs,
+    /// Arguments for the target, which gets them as ... and in the global arg table.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    args: Vec<String>,
+}
+
+/// What a command target is granted: what it declares, by name or all of it.
+#[derive(Debug, Args)]
+pub struct GrantArgs {
     /// Grant a capability the target declares (repeatable). One it declares and isn't granted
     /// stops the run before anything is activated.
     #[arg(long = "capability", value_name = "NAME", conflicts_with = "trusted")]
@@ -89,9 +99,13 @@ pub struct RunTargetArgs {
     /// Grant everything the target declares; package inspect shows what that is.
     #[arg(long)]
     trusted: bool,
-    /// Arguments for the target, which gets them as ... and in the global arg table.
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    args: Vec<String>,
+}
+
+impl GrantArgs {
+    /// The grant a target request carries: `None`, the trusted policy, or the capabilities named.
+    pub fn grant(&self) -> Option<Vec<String>> {
+        (!self.trusted).then(|| self.capabilities.clone())
+    }
 }
 
 #[derive(Serialize)]
@@ -167,8 +181,9 @@ fn run_target(args: &RunTargetArgs) -> Result<u8, String> {
         target: args.target.clone(),
         packages: texts(&args.packages),
         paths: texts(&args.package_paths),
-        grant: (!args.trusted).then(|| args.capabilities.clone()),
+        grant: args.grant.grant(),
         args: args.args.clone(),
+        ..Default::default()
     };
     let ran = jess::lua::package::run_target(&jess::lua::Options::default(), &request).map_err(|error| error.to_string())?;
     let status = crate::run::script_status(&ran.runtime, &ran.values);
@@ -224,7 +239,10 @@ pub fn run(args: &PackageArgs, format: Format) -> Result<u8, String> {
                 package,
                 &scratch,
                 &texts(packages),
-                &texts(package_paths),
+                &jess::lua::package::Search {
+                    paths: texts(package_paths),
+                    ..Default::default()
+                },
             );
             drop(std::fs::remove_dir_all(&scratch));
             let report = report.map_err(|error| error.to_string())?;

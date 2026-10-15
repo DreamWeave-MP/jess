@@ -86,7 +86,7 @@ fn activate(lua: &Runtime, args: &RunArgs) -> Result<(), String> {
     let search = jess::lua::package::Search {
         paths: text(&args.package_paths),
         roots,
-        dev: Vec::new(),
+        ..Default::default()
     };
     jess::lua::package::activate_with(lua, &locations, &layers, Some(&args.capabilities), &search)
         .map(|_| ())

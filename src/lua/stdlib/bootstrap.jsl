@@ -48,21 +48,45 @@ type Plan = {
 
 type Offer = { read id: string }
 
+type WorkspaceModule = {
+  read open: (folder: string) -> unknown,
+  read discover: (start: string) -> unknown,
+  read describe: (workspace: unknown) -> { [string]: unknown },
+  read verify: (workspace: unknown) -> unknown,
+  read target: (workspace: unknown, name: string?, cwd: string) -> { [string]: unknown },
+  read tests: (workspace: unknown, names: { string }) -> { { [string]: unknown } },
+  read sync: (
+    workspace: unknown,
+    artifacts: { string },
+    paths: { string },
+    locked: boolean
+  ) -> { [string]: unknown },
+}
+
 type PackageModule = {
   read open: (location: string) -> Package,
+  read peek: (location: string) -> Offer,
   read candidates: (folder: string) -> { Offer },
   read pack: (source: string, output: string) -> { [string]: unknown },
   read resolve: (packages: { Package }, request: { [string]: unknown }) -> (Plan, { Package }),
 }
 
 --- Where a resolution looks beyond the packages it is handed, and what it selects besides the
---- layers' providers: package path folders, root package ids, and the ids whose
---- `[dev-dependencies]` come along.
-type Search = { paths: { string }?, roots: { string }?, dev: { string }? }
+--- layers' providers: package path folders, packages offered as candidates by location, root
+--- package ids, the ids whose `[dev-dependencies]` come along, and the digests packages are pinned
+--- to.
+type Search = {
+  paths: { string }?,
+  candidates: { string }?,
+  roots: { string }?,
+  dev: { string }?,
+  pins: { [string]: string }?,
+}
 
--- The host's own @jess/package, handed in: the one scripts require reads and writes only what the
--- runtime's policy grants them, and these entries are the host acting.
-local package: PackageModule = ...
+-- The host's own @jess/package and workspaces, handed in: the @jess/package scripts require
+-- reads and writes only what the runtime's policy grants them, and these entries are the host
+-- acting.
+local package: PackageModule, workspaces: WorkspaceModule = ...
 
 type Mounted = {
   id: string,
@@ -186,7 +210,7 @@ local function inspect(location: string)
 end
 
 --- The request `resolve` takes for `layers` under `search`: every package path's candidates, in
---- the order the paths were given.
+--- the order the paths were given, then the candidates offered by location.
 local function request(
   layers: { string },
   hostModules: { string },
@@ -201,6 +225,10 @@ local function request(
     end
   end
 
+  for _, location in (search and search.candidates) or {} do
+    table.insert(offers, package.peek(location))
+  end
+
   return {
     layers = layers,
     hostModules = hostModules,
@@ -208,6 +236,7 @@ local function request(
     candidates = offers,
     roots = search and search.roots,
     dev = search and search.dev,
+    pins = search and search.pins,
   }
 end
 
@@ -247,9 +276,53 @@ local function activate(
   return plan
 end
 
+--- The workspace at `start`: the one whose root it is when `explicit`, or else the one it is in.
+local function located(start: string, explicit: boolean): unknown
+  return if explicit then workspaces.open(start) else workspaces.discover(start)
+end
+
+local function workspace(start: string, explicit: boolean): { [string]: unknown }
+  return workspaces.describe(workspaces.verify(located(start, explicit)))
+end
+
+--- The target of the workspace at `start` that `name` picks, run from `cwd`, and what its
+--- package resolves over.
+local function workspaceTarget(
+  start: string,
+  explicit: boolean,
+  name: string?,
+  cwd: string
+): { [string]: unknown }
+  return workspaces.target(located(start, explicit), name, cwd)
+end
+
+--- The members of the workspace at `start` whose tests run, and what each resolves over.
+local function workspaceTests(
+  start: string,
+  explicit: boolean,
+  names: { string }
+): { { [string]: unknown } }
+  return workspaces.tests(located(start, explicit), names)
+end
+
+--- Syncs the workspace at `start`'s lock and `.jess/packages` from the packages offered.
+local function workspaceSync(
+  start: string,
+  explicit: boolean,
+  artifacts: { string },
+  paths: { string },
+  locked: boolean
+): { [string]: unknown }
+  return workspaces.sync(located(start, explicit), artifacts, paths, locked)
+end
+
 return table.freeze {
   inspect = inspect,
   pack = package.pack,
   graph = graph,
   activate = activate,
+  workspace = workspace,
+  workspaceTarget = workspaceTarget,
+  workspaceTests = workspaceTests,
+  workspaceSync = workspaceSync,
 }

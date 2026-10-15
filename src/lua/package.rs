@@ -10,7 +10,7 @@
 //! identity is its package's id and content digest and its path, so two generations of one package
 //! version never share a cached module.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -175,8 +175,7 @@ pub(crate) fn host_table(runtime: &Runtime, read: bool, write: bool) -> l3i::Res
         })?;
         Ok::<_, l3i::Error>(l3i::bind::StackResults)
     })?;
-    let mut functions = Vec::new();
-    for (name, function, needs) in [
+    let functions = [
         ("listTree", list_tree, Some((read, l3i::fs::READ_CAPABILITY))),
         ("listDir", list_dir, Some((read, l3i::fs::READ_CAPABILITY))),
         ("readFile", read_file, Some((read, l3i::fs::READ_CAPABILITY))),
@@ -186,7 +185,22 @@ pub(crate) fn host_table(runtime: &Runtime, read: bool, write: bool) -> l3i::Res
         ("replace", replace, Some((write, l3i::fs::WRITE_CAPABILITY))),
         ("decodeToml", decode_toml, None),
         ("builtin", builtin, None),
-    ] {
+    ];
+    gated_table(
+        runtime,
+        functions.into_iter().chain(workspace_functions(runtime, read, write)?),
+    )
+}
+
+/// A host function by name, and the capability it needs with whether the table's holder has it:
+/// `None` for one that needs nothing.
+type HostFunction = (&'static str, Function, Option<(bool, &'static str)>);
+
+/// `functions` as a read-only table, each one whose holder lacks the capability it needs replaced
+/// by one that raises the permission error for it.
+fn gated_table(runtime: &Runtime, functions: impl Iterator<Item = HostFunction>) -> l3i::Result<Table> {
+    let mut gated = Vec::new();
+    for (name, function, needs) in functions {
         let function = match needs {
             Some((false, capability)) => {
                 let message = crate::lua::plan::denied("@jess/package", capability);
@@ -196,18 +210,91 @@ pub(crate) fn host_table(runtime: &Runtime, read: bool, write: bool) -> l3i::Res
             }
             _ => function,
         };
-        functions.push((name, function));
+        gated.push((name, function));
     }
     let table = {
         let stack = runtime.stack();
-        let table = Table::new(&stack, 0, functions.len())?;
-        for (name, function) in &functions {
+        let table = Table::new(&stack, 0, gated.len())?;
+        for (name, function) in &gated {
             table.set(&stack, name, function)?;
         }
         table
     };
     l3i::readonly::make_read_only(runtime, &table)?;
     Ok(table)
+}
+
+/// The functions workspaces find folders and keep packages with.
+///
+/// `canonical` is a path with every link and `..` resolved (nil when nothing is there); `parent`
+/// the folder holding a path (nil at the top); `relative` a path below a base as `/`-joined names
+/// (nil when it isn't below it); `createDir` makes a folder and those it is in; and `remove`
+/// removes a file if it is there. `parent` and `relative` only work on paths, and need nothing.
+fn workspace_functions(runtime: &Runtime, read: bool, write: bool) -> l3i::Result<[HostFunction; 5]> {
+    let canonical = runtime.bind_function("jess.package.canonical", |path: Text| -> l3i::Result<Option<String>> {
+        match std::fs::canonicalize(&path.0) {
+            Ok(canonical) => plain(&canonical).map(Some),
+            Err(source)
+                if matches!(
+                    source.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                Ok(None)
+            }
+            Err(source) => Err(error(format!("failed to resolve '{}': {source}", path.0))),
+        }
+    })?;
+    let parent = runtime.bind_function("jess.package.parent", |path: Text| {
+        Path::new(&path.0)
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .map(plain)
+            .transpose()
+    })?;
+    let relative = runtime.bind_function("jess.package.relative", |base: Text, path: Text| {
+        let Ok(rest) = Path::new(&path.0).strip_prefix(&base.0) else {
+            return Ok(None);
+        };
+        rest.components()
+            .map(|component| plain(Path::new(component.as_os_str())))
+            .collect::<l3i::Result<Vec<_>>>()
+            .map(|names| Some(names.join("/")))
+    })?;
+    let create_dir = runtime.bind_function("jess.package.createDir", |path: Text| {
+        std::fs::create_dir_all(&path.0).map_err(|source| error(format!("failed to create '{}': {source}", path.0)))
+    })?;
+    let remove = runtime.bind_function("jess.package.remove", |path: Text| match std::fs::remove_file(&path.0) {
+        Err(source) if source.kind() != std::io::ErrorKind::NotFound => {
+            Err(error(format!("failed to remove '{}': {source}", path.0)))
+        }
+        _ => Ok(()),
+    })?;
+    Ok([
+        ("canonical", canonical, Some((read, l3i::fs::READ_CAPABILITY))),
+        ("parent", parent, None),
+        ("relative", relative, None),
+        ("createDir", create_dir, Some((write, l3i::fs::WRITE_CAPABILITY))),
+        ("remove", remove, Some((write, l3i::fs::WRITE_CAPABILITY))),
+    ])
+}
+
+/// `path` as text, without the `\\?\` Windows puts in front of a canonical path where the plain
+/// form names the same place: Luau joins paths with `/`, which a `\\?\` path doesn't take.
+fn plain(path: &Path) -> l3i::Result<String> {
+    let text = path
+        .to_str()
+        .ok_or_else(|| error(format!("'{}' has a name that isn't UTF-8", path.display())))?;
+    #[cfg(windows)]
+    if let Some(rest) = text.strip_prefix(r"\\?\") {
+        if let Some(share) = rest.strip_prefix(r"UNC\") {
+            return Ok(format!(r"\\{share}"));
+        }
+        if rest.as_bytes().get(1) == Some(&b':') {
+            return Ok(rest.to_owned());
+        }
+    }
+    Ok(text.to_owned())
 }
 
 /// Every entry under `folder`, as `/`-joined paths below the walk's root and what each is: `file`,
@@ -470,19 +557,36 @@ pub struct Search {
     /// candidate, opened only when a layer or a dependency needs it, and never in place of a
     /// package handed over outright. Two candidates for one need are an error, not a choice.
     pub paths: Vec<String>,
+    /// Packages offered as candidates by location, Package Source folders or `.jpk` files, as a
+    /// package path's are: opened only when needed, never in place of a package handed over
+    /// outright, and never chosen between.
+    pub candidates: Vec<String>,
     /// Package ids selected, with their dependencies, whether or not a requested layer is theirs.
     pub roots: Vec<String>,
     /// Package ids whose `[dev-dependencies]` are selected with them: packages whose tests run.
     pub dev: Vec<String>,
+    /// Content digests by package id: a package with one of these ids, handed over outright or a
+    /// candidate, is refused unless it has that digest.
+    pub pins: BTreeMap<String, String>,
 }
 
 impl Search {
     /// This search as the table the bootstrap reads.
     fn table(&self, scope: &impl Scope) -> l3i::Result<Table> {
-        let table = Table::new(scope, 0, 3)?;
-        for (key, items) in [("paths", &self.paths), ("roots", &self.roots), ("dev", &self.dev)] {
+        let table = Table::new(scope, 0, 5)?;
+        for (key, items) in [
+            ("paths", &self.paths),
+            ("candidates", &self.candidates),
+            ("roots", &self.roots),
+            ("dev", &self.dev),
+        ] {
             table.set(scope, key, &string_list(scope, items)?)?;
         }
+        let pins = Table::new(scope, 0, self.pins.len())?;
+        for (id, digest) in &self.pins {
+            pins.set(scope, id.as_str(), digest.as_str())?;
+        }
+        table.set(scope, "pins", &pins)?;
         Ok(table)
     }
 }
@@ -519,18 +623,20 @@ fn plan_shape() -> serde_json::Value {
 }
 
 /// Runs one bootstrap entry with `args` and reads what it returns as `T`.
-fn bootstrap<T: serde::de::DeserializeOwned + Serialize>(
+pub(crate) fn bootstrap<T: serde::de::DeserializeOwned + Serialize>(
     runtime: &Runtime,
     entry: &str,
     shape: &serde_json::Value,
     args: impl l3i::call::PushArgs,
 ) -> l3i::Result<T> {
     let jess = crate::lua::state(runtime)?;
-    // The bootstrap is the host's own code, so it works over the host's `@jess/package`.
+    // The bootstrap is the host's own code, so it works over the host's `@jess/package` and
+    // workspaces.
     let packages = crate::lua::stdlib::host_packages(runtime)?;
+    let workspaces = crate::lua::stdlib::host_workspaces(runtime)?;
     let stack = runtime.stack();
     let chunk = jess.load(&stack, BOOTSTRAP_CHUNK, BOOTSTRAP.as_bytes())?;
-    let entries: Table = chunk.invoke(&stack, (&packages,))?;
+    let entries: Table = chunk.invoke(&stack, (&packages, &workspaces))?;
     let function: Function = entries.get(&stack, entry)?;
     function
         .invoke_with(&stack, args, |frame, value| {
@@ -771,7 +877,7 @@ fn run_entrypoints(runtime: &Runtime) -> l3i::Result<()> {
 }
 
 /// `items` as a Luau list of strings.
-fn string_list(scope: &impl Scope, items: &[String]) -> l3i::Result<Table> {
+pub(crate) fn string_list(scope: &impl Scope, items: &[String]) -> l3i::Result<Table> {
     crate::lua::lua::stored_table(scope, |frame| {
         let table = frame.push_table(items.len(), 0)?;
         for (index, item) in items.iter().enumerate() {
@@ -835,7 +941,7 @@ pub struct PackageTest {
 ///
 /// As [`test_with`].
 pub fn test(options: &crate::lua::Options, location: &Path, scratch: &Path) -> l3i::Result<PackageTest> {
-    test_with(options, location, scratch, &[], &[])
+    test_with(options, location, scratch, &[], &Search::default())
 }
 
 /// Runs the tests the manifest of the Package Source at `location` names, against the source and
@@ -844,8 +950,10 @@ pub fn test(options: &crate::lua::Options, location: &Path, scratch: &Path) -> l
 /// The JPK is written to `scratch` and removed afterwards. Each run activates every layer the
 /// package declares, under the trusted policy, in a fresh runtime made with `options`, and selects
 /// the package with its `[dependencies]` and `[dev-dependencies]`, which resolve over `packages`
-/// (handed over outright) and the package paths `paths`. The tests are the host's scripts, so
-/// they hold the whole plan's namespace. A JPK carries no tests, so for one this reports none.
+/// (handed over outright) and the package paths and candidates of `search`; whatever its roots
+/// and dev say, the package is the root, its dev-dependencies selected with it. The tests are the
+/// host's scripts, so they hold the whole plan's namespace. A JPK carries no tests, so for one
+/// this reports none.
 ///
 /// # Errors
 ///
@@ -855,7 +963,7 @@ pub fn test_with(
     location: &Path,
     scratch: &Path,
     packages: &[String],
-    paths: &[String],
+    search: &Search,
 ) -> l3i::Result<PackageTest> {
     // Package tests are an explicit host action over a caller-chosen package, so their test code
     // gets scratch filesystem access and terminal/environment reporting. Process spawning remains
@@ -886,9 +994,9 @@ pub fn test_with(
         .collect::<Vec<PathBuf>>();
     let layers = inspection.layers.iter().map(|layer| layer.id.clone()).collect::<Vec<_>>();
     let search = Search {
-        paths: paths.to_vec(),
         roots: vec![inspection.id.clone()],
         dev: vec![inspection.id.clone()],
+        ..search.clone()
     };
     std::fs::create_dir_all(scratch)
         .map_err(|source| error(format!("failed to create '{}': {source}", scratch.display())))?;
@@ -940,6 +1048,10 @@ pub struct TargetRequest {
     pub packages: Vec<String>,
     /// Package path folders its dependencies resolve over.
     pub paths: Vec<String>,
+    /// Packages its dependencies resolve over, offered as candidates: opened only when needed.
+    pub candidates: Vec<String>,
+    /// The content digest each package with an id here must have.
+    pub pins: BTreeMap<String, String>,
     /// The capabilities the host grants. `None` is the trusted policy: what the target declares is
     /// granted. Either way the target runs with what it declares and nothing more.
     pub grant: Option<Vec<String>>,
@@ -1034,6 +1146,8 @@ pub fn run_target(options: &crate::lua::Options, request: &TargetRequest) -> l3i
     locations.extend_from_slice(&request.packages);
     let search = Search {
         paths: request.paths.clone(),
+        candidates: request.candidates.clone(),
+        pins: request.pins.clone(),
         roots: vec![package.clone()],
         dev: Vec::new(),
     };

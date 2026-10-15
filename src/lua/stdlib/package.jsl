@@ -125,6 +125,9 @@ export type Request = {
   roots: { string }?,
   --- Package ids whose `[dev-dependencies]` are selected with them.
   dev: { string }?,
+  --- Content digests by package id: a package with one of these ids, handed over or a
+  --- candidate, is refused unless it has that digest.
+  pins: { [string]: string }?,
 }
 
 export type PlanLayer = {
@@ -1046,8 +1049,9 @@ end
 --- `request.candidates` are opened only when a layer or a dependency needs one, and never in
 --- place of a package handed over outright; two candidates that could each fill the same need
 --- are an error, not a choice. `request.roots` are selected with their dependencies whatever the
---- layers, and `request.dev` adds their `[dev-dependencies]`. The second result is the selected
---- packages, opened, in the plan's order.
+--- layers, and `request.dev` adds their `[dev-dependencies]`. A package whose id `request.pins`
+--- names must have the digest it pins. The second result is the selected packages, opened, in
+--- the plan's order.
 local function resolve(packages: { Package }, request: Request): (Plan, { Package })
   local byId, layerProvider =
     {} :: { [string]: Package }, {} :: { [string]: { package: Package, layer: Layer } }
@@ -1058,6 +1062,14 @@ local function resolve(packages: { Package }, request: Request): (Plan, { Packag
     if other then
       fail(
         `{candidate.id} is offered twice ({other.kind} {other.location} and {candidate.kind} {candidate.location}); choose one`
+      )
+    end
+
+    local pinned = request.pins and request.pins[candidate.id]
+
+    if pinned and candidate.digest ~= pinned then
+      fail(
+        `{candidate.id} {candidate.version} ({candidate.kind} {candidate.location}) has digest {candidate.digest}, not the {pinned} it is pinned to`
       )
     end
 

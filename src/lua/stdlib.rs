@@ -215,6 +215,15 @@ const PACKAGE: BuiltIn = BuiltIn {
     ],
 };
 
+/// Workspaces, as the host opens them, built on the host's `@jess/package`. Not a module: nothing
+/// a script requires reaches it.
+const WORKSPACE: BuiltIn = BuiltIn {
+    path: "jess.workspace",
+    doc: "",
+    source: include_str!("stdlib/workspace.jsl"),
+    members: &[],
+};
+
 /// Every built-in module, in installation order: `@jess/test` is built on `@jess/log`, and
 /// `@jess/package` on `@jess/jpk`.
 const BUILT_INS: [&BuiltIn; 4] = [&LOG, &TEST, &JPK, &PACKAGE];
@@ -283,8 +292,9 @@ const PACKAGE_TYPES: &str = "\
          export type JessPackResult = { path: string, digest: string, files: number, size: number }\n\n\
          --- What to resolve: the layers, the module names the host already provides, the capabilities it\n\
          --- grants, candidates opened only when a layer or a dependency needs one, package ids selected\n\
-         --- whatever the layers (`roots`), and the ids whose `[dev-dependencies]` come with them (`dev`).\n\
-         export type JessPackageRequest = { layers: { string }, hostModules: { string }?, grant: { string }?, candidates: { JessPackageOffer }?, roots: { string }?, dev: { string }? }\n\n\
+         --- whatever the layers (`roots`), the ids whose `[dev-dependencies]` come with them (`dev`), and\n\
+         --- the content digest a package with a given id must have (`pins`).\n\
+         export type JessPackageRequest = { layers: { string }, hostModules: { string }?, grant: { string }?, candidates: { JessPackageOffer }?, roots: { string }?, dev: { string }?, pins: { [string]: string }? }\n\n\
          --- An activation plan: requested layers resolved over packages, with nothing run.\n\
          export type JessActivationPlan = {\n  \
            requested: { string },\n  \
@@ -407,6 +417,7 @@ impl Extension for StdlibExtension {
         cx.insert_state(HostPackages {
             jpk,
             module: RefCell::new(None),
+            workspace: RefCell::new(None),
         });
         Ok(())
     }
@@ -423,10 +434,11 @@ fn package_dependencies(runtime: &Runtime, jpk: &Table, read: bool, write: bool)
     Ok(dependencies)
 }
 
-/// The host's own `@jess/package`, made when it is first needed.
+/// The host's own `@jess/package` and workspaces, each made when it is first needed.
 struct HostPackages {
     jpk: Table,
     module: RefCell<Option<Table>>,
+    workspace: RefCell<Option<Table>>,
 }
 
 /// `@jess/package` as the host uses it for its own package operations: the same module over file
@@ -442,6 +454,30 @@ pub(crate) fn host_packages(runtime: &Runtime) -> l3i::Result<Table> {
     let module = exports(runtime, &PACKAGE, (&dependencies,))?;
     l3i::readonly::make_read_only(runtime, &module)?;
     *state.module.borrow_mut() = Some(module.clone());
+    Ok(module)
+}
+
+/// The host's workspaces (`stdlib/workspace.jsl`), over the host's own `@jess/package` and file
+/// access.
+pub(crate) fn host_workspaces(runtime: &Runtime) -> l3i::Result<Table> {
+    let packages = host_packages(runtime)?;
+    let state = runtime
+        .state_of::<HostPackages>(EXTENSION_ID)
+        .ok_or_else(|| l3i::Error::logic("jess.stdlib isn't installed in this Luau runtime"))?;
+    if let Some(module) = state.workspace.borrow().clone() {
+        return Ok(module);
+    }
+    let host = crate::lua::package::host_table(runtime, true, true)?;
+    let dependencies = {
+        let stack = runtime.stack();
+        let dependencies = Table::new(&stack, 0, 2)?;
+        dependencies.set(&stack, "host", &host)?;
+        dependencies.set(&stack, "package", &packages)?;
+        dependencies
+    };
+    let module = exports(runtime, &WORKSPACE, (&dependencies,))?;
+    l3i::readonly::make_read_only(runtime, &module)?;
+    *state.workspace.borrow_mut() = Some(module.clone());
     Ok(module)
 }
 

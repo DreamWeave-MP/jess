@@ -1,0 +1,17 @@
+manifest_version = 1
+
+[package]
+id = "org.example.style"
+version = "1.0.0"
+jess_api = "1"
+include = ["src"]
+
+[dependencies]
+"org.example.words" = "^1.1"
+
+[modules]
+"@style" = "src/init.jsl"
+
+[[layer]]
+id = "example.style"
+exports = ["@style"]

@@ -140,14 +140,20 @@ Don't run the ignored tests in `libs/nif/src/types/nistream.rs` for fun: they're
 
 ## The docs site
 
-The docs are a Jess workload, end to end. The generator is a separate package, `org.dreamweave.site` (the `jpk/dreamweave-site` checkout), and `tools/site` is a small package of two command targets that drive it over `site/`. Each target declares the capabilities it needs and nothing more, so `--trusted` grants exactly those. From the repository root:
+The docs are a Jess workload, end to end. The generator is a separate package, `org.dreamweave.site` (the `jpk/dreamweave-site` checkout), and `tools/site` is a small package of two command targets that drive it over `site/`. Each target declares the capabilities it needs and nothing more, so `--trusted` grants exactly those.
+
+The repository is a [workspace](@/docs/cli/workspace.md): `jess-workspace.toml` lists `jpk/builtin` and `tools/site`, and `jess.lock` pins the generator they depend on. Sync it once from your checkout, and again whenever you want its changes; until then the site builds with the generator the lock pins, kept in `.jess/packages`. From the repository root (`run` and `test` work from anywhere inside it):
 
 ```sh
-jess package run --trusted --package-path jpk tools/site                      # production build into site/public
-jess package run --trusted --package-path jpk tools/site -- target/site        # another output folder
-jess package run --trusted --target serve --package-path jpk tools/site        # dev build, http://127.0.0.1:63333/, rebuild on edits
-jess package run --trusted --target serve --package-path jpk tools/site -- 0.0.0.0 8080
+jess workspace sync jpk/dreamweave-site                    # pin and keep the generator from its checkout
+jess workspace run --trusted jess-site-build               # production build into site/public
+jess workspace run --trusted jess-site-build -- target/site # another output folder
+jess workspace run --trusted jess-site-serve               # dev build, http://127.0.0.1:63333/, rebuild on edits
+jess workspace run --trusted jess-site-serve -- 0.0.0.0 8080
+jess workspace test org.dreamweave.jess                    # the built-in package's tests, from source and packed
 ```
+
+`jess package run --trusted --package jpk/dreamweave-site tools/site` still works, and builds with whatever `jpk/dreamweave-site` holds right now. (`--package-path jpk` would too, but it reads every manifest under `jpk/`, and one checkout that doesn't parse fails it.)
 
 The generator renders Markdown through its Tera-shaped template layer, compiles Sass, copies static assets, and writes the search index and sitemap. No Zola, Node, or Python is in the path.
 

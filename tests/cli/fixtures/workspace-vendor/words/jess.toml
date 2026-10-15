@@ -1,0 +1,14 @@
+manifest_version = 1
+
+[package]
+id = "org.example.words"
+version = "1.2.0"
+jess_api = "1"
+include = ["src"]
+
+[modules]
+"@words" = "src/init.jsl"
+
+[[layer]]
+id = "example.words"
+exports = ["@words"]

@@ -1,17 +1,23 @@
 --!strict
 --!native
--- Where the repository's site is, from where this package sits: tools/site/ is two folders below
--- the root, and `site/` is beside `tools/`. Run from somewhere else, the scripts still find it.
-local fs = require '@dream/fs'
-
+-- Where the repository's site is: the nearest folder, from the one the command runs in up, that
+-- holds `site/config.toml`. A package's target has no folder of its own to start from (a JPK has
+-- none), so the repository is found from wherever inside it the command runs.
 local function repositoryRoot(): string
-  local script = arg[0]
-  local here = script and jess.fs.parent(script)
-  local tools = here and jess.fs.parent(here)
-  local root = tools and jess.fs.parent(tools)
-  if root and root ~= '' then return root end
+  local start = jess.fs.cwd()
+  local folder: string? = start
 
-  return fs.cwd() or '.'
+  while folder and folder ~= '' do
+    if jess.fs.isFile(jess.fs.join(folder, 'site', 'config.toml')) then return folder end
+
+    local above = jess.fs.parent(folder)
+
+    if above == folder then break end
+
+    folder = above
+  end
+
+  return start
 end
 
 local Root = repositoryRoot()

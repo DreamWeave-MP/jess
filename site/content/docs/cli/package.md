@@ -8,9 +8,9 @@ extra:
 
 {{ api_signature(value="jess pack <SOURCE> -o <FILE>") }}
 
-{{ api_signature(value="jess package inspect <PACKAGE> | graph <PACKAGES>... [--layer ID]... | test <PACKAGE>") }}
+{{ api_signature(value="jess package inspect <PACKAGE> | graph <PACKAGES>... [--layer ID]... | test <PACKAGE> | run <PACKAGE> [--target ID] [-- ARGS...]") }}
 
-Packages are covered in [Packages](@/docs/scripting/packages.md); these are the commands. `PACKAGE` is a Package Source folder (the one holding `jess.toml`) or a `.jpk` file, and every command except `test` treats the two the same. None of them runs package code except `test`, which runs the package's own tests and nothing else. To run a package's modules, activate it with [`jess run --package`](@/docs/cli/run.md#running-with-packages).
+Packages are covered in [Packages](@/docs/scripting/packages.md); these are the commands. `PACKAGE` is a Package Source folder (the one holding `jess.toml`) or a `.jpk` file, and every command except `test` treats the two the same. None of them runs package code except `test`, which runs the package's own tests and nothing else, and `run`, which runs one of its targets. To run a package's modules from a script, activate it with [`jess run --package`](@/docs/cli/run.md#running-with-packages). Several packages developed together are a [workspace](@/docs/cli/workspace.md), which assembles all of this for you.
 
 Each prints one document in the [`--format`](@/docs/cli/global-options.md) you ask for, YAML by default.
 
@@ -67,7 +67,7 @@ Three files: `tests/run.jsl` isn't in `include`, so it stayed home.
 
 ## jess package inspect
 
-Reads one package and prints what it is: id, version, [content digest](@/docs/api/package.md#the-content-digest), which kind of provider opened it, the package API generation it expects, how many files its payload holds, its named modules, its layers with their exports and entrypoints, its package dependencies, every capability its entrypoints require, and the tests its manifest names. It runs nothing, and checks everything [`package.open`](@/docs/api/package.md#package-open) checks.
+Reads one package and prints what it is: id, version, [content digest](@/docs/api/package.md#the-content-digest), which kind of provider opened it, the package API generation it expects, how many files its payload holds, its named modules, its layers with their exports and entrypoints, its managed implementations, its targets and which one is the default, its package dependencies and the ones only its tests need, every capability its entrypoints require, and the tests its manifest names. It runs nothing, and checks everything [`package.open`](@/docs/api/package.md#package-open) checks.
 
 ```text
 $ jess package inspect greeter.jpk
@@ -78,6 +78,7 @@ digest: dab090658ab19adbb8fc0f6e125269cde47027ce918173b1bd9c9fad313c5971
 kind: jpk
 location: greeter.jpk
 jess_api: '1'
+default_target: null
 files: 3
 modules:
 - name: '@greeter'
@@ -88,7 +89,10 @@ layers:
   exports:
   - '@greeter'
   entrypoints: []
+managed: []
+targets: []
 dependencies: []
+dev_dependencies: []
 capabilities: []
 tests:
 - tests/run.jsl
@@ -181,3 +185,31 @@ Tests are source-only: they and their fixtures stay out of the JPK, so a shipped
 ```text
 jess: greeter.jpk carries no tests; run `jess package test` on its Package Source
 ```
+
+## jess package run
+
+| Argument / option | Does |
+| --- | --- |
+| `<PACKAGE>` | The package whose target runs. |
+| `--target <ID>` | The target to run. Without one, the package's `default_target`. |
+| `--package <PACKAGE>` | A package its dependencies resolve over (repeatable), handed over outright. |
+| `--package-path <FOLDER>` | A folder of packages its dependencies resolve over (repeatable), each opened only when needed. |
+| `--capability <NAME>` | Grant a capability the target declares (repeatable). |
+| `--trusted` | Grant everything the target declares. |
+| `ARGS...` | Arguments for the target, which gets them as `...` and in the global `arg` table. |
+
+Runs one of a package's `command` targets: its package resolves with its dependencies, every layer it declares is activated, and the target's entry runs as a script in a fresh runtime holding exactly the capabilities the target declares. Not one more, and not one fewer: a capability it declares and you don't grant stops the run before anything is activated.
+
+```text
+$ jess package run tools/greeter --package-path .. -- one
+error: cannot run target greet
+
+required capability denied:
+    process.environment
+
+requested by:
+    org.example.greeter 0.1.0
+    target greet
+```
+
+`--trusted` grants what the target declares, which `package inspect` shows. The entry's first returned number is the exit status. Application targets need a host of their own and don't run here. In a [workspace](@/docs/cli/workspace.md), `jess workspace run` does the resolving part for you.
