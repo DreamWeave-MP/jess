@@ -205,18 +205,27 @@ pub struct WorkerLink {
 }
 
 impl WorkerLink {
-    /// Sends `message` to the domain. A domain that stopped listening is not the worker's
-    /// problem: the message is dropped with the channel.
-    pub(crate) fn send(&self, message: Message) {
+    /// Sends `message` to the domain without waiting. A full queue is the worker's to handle, as
+    /// the domain's own sends report one: waiting would hold the handler inside a native call,
+    /// past its watchdog. A domain that stopped listening is not the worker's problem: the
+    /// message is dropped with the channel.
+    pub(crate) fn send(&self, message: Message) -> Result<(), String> {
         let bytes = message.size_hint();
-        if self.outbox.send(Output::Message(message)).is_ok() {
-            Counters::add(&self.counters.messages_from_workers, 1);
-            Counters::add(&self.counters.bytes_from_workers, bytes as u64);
-            self.profiler.record(ProfileEvent::WorkerMessage {
-                attribution: self.attribution,
-                direction: Direction::FromWorker,
-                bytes,
-            });
+        match self.outbox.try_send(Output::Message(message)) {
+            Ok(()) => {
+                Counters::add(&self.counters.messages_from_workers, 1);
+                Counters::add(&self.counters.bytes_from_workers, bytes as u64);
+                self.profiler.record(ProfileEvent::WorkerMessage {
+                    attribution: self.attribution,
+                    direction: Direction::FromWorker,
+                    bytes,
+                });
+                Ok(())
+            }
+            Err(TrySendError::Full(_)) => Err(format!(
+                "the domain's queue is full: {WORKER_QUEUE} messages wait for it to receive them; send fewer, or reply less often"
+            )),
+            Err(TrySendError::Disconnected(_)) => Ok(()),
         }
     }
 }

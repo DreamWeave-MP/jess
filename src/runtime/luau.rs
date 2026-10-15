@@ -423,8 +423,8 @@ impl Extension for RuntimeExtension {
         let state = Rc::clone(&bindings);
         worker.function("send", move |call: &Call<'_>, message: ValueView<'_>| -> l3i::Result<()> {
             let link = state.worker("worker.send")?;
-            link.send(read_message(call, message, None)?);
-            Ok(())
+            link.send(read_message(call, message, None)?)
+                .map_err(|problem| l3i::Error::runtime(format!("jess.worker.send: {problem}")))
         })?;
         let worker = worker.table().clone();
 

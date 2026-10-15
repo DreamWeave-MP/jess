@@ -492,3 +492,47 @@ fn a_wait_on_a_worker_is_bounded_by_the_execution_time_limit() {
     assert!(message.contains("execution time limit"), "{message}");
     domain.stop().unwrap();
 }
+
+/// A worker's sends to its domain never wait: a full queue fails the send in the worker, as the
+/// domain's own sends report one, since a send that waited would hold the handler inside a native
+/// call, past its watchdog.
+#[test]
+fn a_worker_sending_to_a_full_domain_queue_is_told_instead_of_waiting() {
+    // The domain receives nothing until the handler has sent all it will: it meets the handler
+    // after the sends, so a send that waited for room would never get there.
+    let rendezvous = Rendezvous::new(2);
+    let harness = support::domain_from(support::factory_with(Arc::clone(&rendezvous)), "flooding", &[]);
+    let domain = &harness.domain;
+    let source = r"
+local rendezvous = require('@test/rendezvous')
+local worker = require('@jess/worker')
+
+return function(count)
+  local outcome = 'all sent'
+  for index = 1, count do
+    local sent, problem = pcall(worker.send, index)
+    if not sent then
+      outcome = problem
+      break
+    end
+  end
+
+  rendezvous.meet()
+  return outcome
+end
+";
+    let flooding = domain.spawn_worker(WorkerSpec::new("flooding", source)).unwrap();
+    let count = 2 * jess::runtime::WORKER_QUEUE;
+    domain.send_to_worker(flooding, Message::Number(count as f64)).unwrap();
+    assert!(rendezvous.meet(), "the handler finished sending");
+    let mut numbers = 0;
+    let last = loop {
+        match domain.receive_from_worker(flooding, WAIT).unwrap().expect("a reply") {
+            Message::Number(_) => numbers += 1,
+            other => break other,
+        }
+    };
+    let problem = last.as_text().unwrap_or_else(|| panic!("{last:?}")).to_owned();
+    assert!(problem.contains("the domain's queue is full"), "{problem}");
+    assert!(numbers < count, "{numbers}");
+}
