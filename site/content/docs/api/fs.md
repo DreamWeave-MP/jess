@@ -22,7 +22,7 @@ A `@dream/fs` function that fails answers `nil`, a message naming the path, and 
 | `read(path)` | `readFileString(path)` |
 | `readBuffer(path)` | `readFile(path)` |
 | `write(path, data)` | `writeFile(path, data, { atomic = true, createParents = true })` |
-| `write(path, data, { backup = true })` | copy the file aside first: backups are a tool's policy |
+| `write(path, data, { backup = true })` | [`@jess/backup`](@/docs/api/backup.md)'s `write(path, data)`, which keeps the old file as `.bak`, `.bak1`, ... first |
 | `replace(path, data)` | `writeFile(path, data, { atomic = true })` |
 | `copy(from, to)`, `remove(path)` | `copy(from, to)`, `remove(path)` (which also takes `{ recursive = true }`) |
 | `createDir(path)` | `mkdir(path, { recursive = true })` |

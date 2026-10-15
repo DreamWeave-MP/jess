@@ -32,6 +32,7 @@ extra:
 | `jess.luadata` | OpenMW's serialized Lua data | [jess.luadata](@/docs/api/luadata.md) |
 | `jess.compare` | Byte comparisons, common records, diffs, overlapping topics | [jess.compare](@/docs/api/compare.md) |
 | `@dream/fs` | Files and folders | [Files](@/docs/api/fs.md) |
+| `@jess/backup` | Overwrite a file, keeping what was there as `.bak` | [@jess/backup](@/docs/api/backup.md) |
 | `@jess/data/toml` | TOML documents as tables, and back | [@jess/data/toml](@/docs/api/toml.md) |
 | `bytes.regex` | Rust regular expressions | [Regular expressions](@/docs/api/regex.md) |
 | `jess.shader` | Typed shader programs from Luau modules | [jess.shader](@/docs/api/shader.md) |
