@@ -1,8 +1,7 @@
 --!strict
---!native
 
 -- Run from the repository root: jess run --capability filesystem.read --capability process.spawn packJpks.jsl
-local fs = require '@jess/fs'
+local fs = require '@dream/fs'
 local process = require '@dream/process'
 
 local Excluded: { [string]: boolean } = {
@@ -12,8 +11,11 @@ local Excluded: { [string]: boolean } = {
   ['r3versal-vagrant-story'] = true,
 }
 
-local folders = fs.list 'jpk'
-table.sort(folders)
+local folders, problem = fs.list 'jpk'
+if not folders then error(problem, 0) end
+
+local here, unknown = fs.cwd()
+if not here then error(unknown, 0) end
 
 local packed, failed = 0, 0
 for _, name in folders do
@@ -22,7 +24,7 @@ for _, name in folders do
   local source = fs.join('jpk', name)
   if not fs.isDir(source) or not fs.isFile(fs.join(source, 'jess.toml')) then continue end
 
-  local output = fs.join(fs.cwd(), `{name}.jpk`)
+  local output = fs.join(here, `{name}.jpk`)
   print(`Packing {source} -> {output}`)
   local result, failure = process.run('jess', { 'pack', source, '--output', output })
   if not result then
