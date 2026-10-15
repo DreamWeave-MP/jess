@@ -92,7 +92,7 @@ fn check_file(runtime: &Runtime, path: &str) -> Vec<String> {
 fn luau_sources_follow_the_style() {
     let runtime = checker();
     let mut findings = Vec::new();
-    for path in files(&["src", "tools"], &["luau"]) {
+    for path in files(&["src", "tools"], &["jsl"]) {
         findings.extend(check_file(&runtime, &path));
     }
     assert!(findings.is_empty(), "{}", findings.join("\n"));
