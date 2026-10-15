@@ -11,6 +11,8 @@
   format(finding, path?)        one finding as `path:line:column: severity[rule]: message`
   run(paths, options?)          checks every file under paths, prints each finding, and returns
                                 the number of errors and of warnings
+  checkPackage(root, payload?)  every finding under a package's folder as formatted lines, its
+                                payload (src/) held to `payload` (strict, no `any`, by default)
   rules                         every rule by id: { severity, summary }
 
 Options are { profile, directives, noAny, declarations, only, fragment }; see rules.jsl.
@@ -130,12 +132,34 @@ local function run(paths: { string }, options: Options?): (number, number)
   return errors, warnings
 end
 
+--- What a package's payload is held to unless it says otherwise: strict, and never `any`.
+local Payload: Options = { directives = { 'strict' }, noAny = true }
+
+--- Every finding under the package folder `root`, each formatted with its path, for a package's
+--- own style test: `expect(table.concat(style.checkPackage(root), '\n')).toBe ''`. Files in the
+--- payload, `<root>/src/`, are held to `payload` as well as the style every file follows.
+local function checkPackage(root: string, payload: Options?): { string }
+  local folder = `{string.gsub(root, '/+$', '')}/src/`
+  local findings: { string } = {}
+
+  for _, path in files { root } do
+    local options = if string.sub(path, 1, #folder) == folder then payload or Payload else nil
+
+    for _, finding in checkFile(path, options) do
+      table.insert(findings, format(finding, path))
+    end
+  end
+
+  return findings
+end
+
 return table.freeze {
   analysis = analysis,
   analyze = analysis.analyze,
   workspace = analysis.workspace,
   check = check,
   checkFile = checkFile,
+  checkPackage = checkPackage,
   files = files,
   format = format,
   markdownBlocks = markdownBlocks,
