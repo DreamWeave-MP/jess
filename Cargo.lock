@@ -1005,17 +1005,11 @@ dependencies = [
  "clap_complete",
  "clap_mangen",
  "evdev",
- "fixed_decimal",
  "gilrs",
- "icu_decimal",
- "icu_locale_core",
- "icu_plurals",
- "icu_provider",
  "l3i",
  "libc",
  "naga",
  "pollster",
- "regex",
  "serde",
  "serde-value",
  "serde_json",
@@ -1023,7 +1017,6 @@ dependencies = [
  "tempfile",
  "toml",
  "wgpu",
- "writeable",
 ]
 
 [[package]]
@@ -1124,8 +1117,9 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "l3i"
-version = "2.0.3"
-source = "git+https://github.com/DreamWeave-MP/l3i?branch=main#8c0144d1ca060978b864b1d62e08433f873d9182"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8cca3d3535f26fb266995be7de041be19e50ef75b08169f73313e7ad8af60ec4"
 dependencies = [
  "adler2",
  "blake3",
