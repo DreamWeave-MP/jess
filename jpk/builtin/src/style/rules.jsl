@@ -1,5 +1,4 @@
 --!strict
---!native
 -- The rules, by id: what each enforces and how loud it is. There is no suppression comment: the
 -- style says to fix the code, not to quiet the checker.
 

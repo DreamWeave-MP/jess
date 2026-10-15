@@ -1,5 +1,4 @@
 --!strict
---!native
 -- @jess/backup: a file written the way jess's tools overwrite one. What was there is copied to the
 -- next free `.bak`, `.bak1`, `.bak2`, ... beside it first, never over an earlier backup, and the
 -- new bytes replace the old atomically, keeping the old file's permissions. @dream/fs writes

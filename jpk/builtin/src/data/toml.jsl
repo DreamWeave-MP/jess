@@ -1,4 +1,5 @@
 --!strict
+--!native
 -- TOML 1.1.0: the decoder in ./tomldecode, and an encoder over @jess/data/value. jess's one TOML
 -- codec; package manifests, lockfiles and workspaces are read with the same decoder.
 local Decode = require './tomldecode'

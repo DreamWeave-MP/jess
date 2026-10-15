@@ -1,5 +1,4 @@
 --!strict
---!native
 -- The style checker: one parse through @dream/luau with the token stream, one pass over the tokens
 -- for the layout of every line, and one walk over the tree for everything else. The rules are the
 -- ones site/content/docs/contributing/luau-style.md describes, s3stash's lua-code-style skill and
@@ -330,6 +329,7 @@ end
 
 -- The line facts the tokens give: which lines hold a token, which continue a long string or
 -- comment, and where each line's first token starts.
+@native
 local function scanLines()
   lineCount = #lineStarts
   lineFlags = buffer.create(lineCount)
@@ -358,6 +358,7 @@ local function scanLines()
   end
 end
 
+@native
 local function checkIndentation()
   for line = 1, lineCount do
     local flags = buffer.readu8(lineFlags, line - 1)
@@ -809,7 +810,7 @@ local function walkComprehension(expr: Comprehension, tested: boolean)
   walkExpr(expr.projection)
 end
 
-walkExpr = function(expr: Expr)
+walkExpr = @native function(expr: Expr)
   local test = testing
   testing = false
 
@@ -1318,7 +1319,7 @@ local function walkStat(stat: Stat, isModule: boolean)
   end
 end
 
-walkBlock = function(block: Block)
+walkBlock = @native function(block: Block)
   local isModule = depth == 0 or block == moduleBody
   local previous: Stat? = nil
   local previousCompound, previousMultiLine, previousProtected = false, false, false

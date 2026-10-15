@@ -1,5 +1,4 @@
 --!strict
---!native
 --[[
 @jess/style: jess's Luau style checker, over Luau's own parser (@dream/luau).
 

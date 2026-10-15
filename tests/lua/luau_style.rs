@@ -61,10 +61,11 @@ fn checker() -> Runtime {
 
 /// What a file is held to beyond the style every file follows, as a Luau options table.
 fn options(path: &str) -> &'static str {
-    // The bundled scripts and jess's own Luau: strict, native, and never `any`.
+    // The bundled scripts and jess's own Luau: strict and never `any`, and native only where a
+    // measurement earned it, as the Luau style page says.
     let bundled = ["jpk/builtin/src/", "src/lua/stdlib/"];
     if bundled.iter().any(|prefix| path.starts_with(prefix)) {
-        return "{ directives = { 'strict', 'native' }, noAny = true }";
+        return "{ directives = { 'strict' }, noAny = true }";
     }
     if path.starts_with("src/lua/templates/") {
         return "{ directives = { 'strict' } }";

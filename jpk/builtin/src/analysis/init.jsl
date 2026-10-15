@@ -1,5 +1,4 @@
 --!strict
---!native
 -- @jess/analysis: reusable semantic facts over Luau source for Jess scripts and packages.
 --
 -- This module deliberately knows Luau and Jess, not OpenMW. Domain packages consume its stable
@@ -157,6 +156,7 @@ local function originPath(origin: Origin): (string, string?, string?)
   return origin.name, nil, nil
 end
 
+@native
 local function qualifiedPath(expr: Expr, origins: { [Local]: Origin }): (string?, string?, string?)
   if expr.kind == 'ExprGlobal' then return expr.name, nil, nil end
 
@@ -257,6 +257,7 @@ local function analyze(source: string, options: ParseOptions?): Source
   local walkStat: (Stat) -> ()
   local walkBlock: (Block) -> ()
 
+  @native
   local function rememberCall(expr: dream_luau_ExprCall)
     local target, module, member = qualifiedPath(expr.func, origins)
     local fact: CallFact = withSpan({
@@ -341,7 +342,7 @@ local function analyze(source: string, options: ParseOptions?): Source
     conditionalDepth -= conditions
   end
 
-  walkExpr = function(expr: Expr)
+  walkExpr = @native function(expr: Expr)
     if expr.kind == 'ExprGlobal' then
       globals[expr.name] = (globals[expr.name] or 0) + 1
       return
@@ -480,7 +481,7 @@ local function analyze(source: string, options: ParseOptions?): Source
     table.insert(assignments, fact)
   end
 
-  walkStat = function(stat: Stat)
+  walkStat = @native function(stat: Stat)
     if stat.kind == 'StatLocalPattern' then
       if stat.value then walkExpr(stat.value) end
 
@@ -639,7 +640,7 @@ local function analyze(source: string, options: ParseOptions?): Source
     end
   end
 
-  walkBlock = function(block: Block)
+  walkBlock = @native function(block: Block)
     for _, stat in block.body do walkStat(stat) end
   end
 
