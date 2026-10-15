@@ -1,4 +1,5 @@
-//! Runtime fast-path integration checks that belong to Jess itself.
+//! Runtime fast-path integration checks that belong to Jess itself. Whether the fast path is fast
+//! is the safeenv canary's to measure, on a verified build; a test checks what it computes.
 
 use crate::common;
 
@@ -26,6 +27,6 @@ fn run_canary(script: &Path, data: &Path) {
 }
 
 #[test]
-fn builtins_run_on_the_fast_path() {
+fn builtins_compute_alike_in_the_safe_environment_and_an_unsafe_copy() {
     run_canary(&fixtures().join("safeenv.jsl"), Path::new("."));
 }
