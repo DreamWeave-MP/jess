@@ -20,6 +20,7 @@ export type Expectation = {
   read toBeFalsy: () -> (),
   read toBeNil: () -> (),
   read toContain: (item: unknown) -> (),
+  read toBeCloseTo: (expected: number, tolerance: number?) -> (),
   read toThrow: (contains: string?) -> (),
 }
 
@@ -141,6 +142,11 @@ local function expect(actual: unknown): Expectation
     toBeTruthy = function() check(actual and true or false, 'to be truthy', true) end,
     toBeFalsy = function() check(not actual, 'to be falsy', false) end,
     toBeNil = function() check(actual == nil, 'to be', nil) end,
+    toBeCloseTo = function(expected: number, tolerance: number?)
+      local within = tolerance or 1e-9
+      local close = type(actual) == 'number' and math.abs(actual :: number - expected) <= within
+      check(close, `to be within {within} of`, expected)
+    end,
     toContain = function(item: unknown)
       if type(actual) == 'string' then
         check(

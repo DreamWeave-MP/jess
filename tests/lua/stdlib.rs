@@ -149,3 +149,21 @@ fn every_module_is_typed_through_require() {
     let wrong = common::type_check("local jpk = require '@jess/jpk'\nlocal size: number = jpk.write {}\n");
     assert!(wrong.contains("buffer"), "{wrong}");
 }
+
+#[test]
+fn numbers_are_compared_within_a_tolerance() {
+    common::run(
+        &common::runtime(),
+        r"
+        local test = require('@jess/test')
+        test.expect(0.1 + 0.2).toBeCloseTo(0.3)
+        test.expect(1.004).toBeCloseTo(1, 0.01)
+        -- The expectation raises on purpose; its message is what's compared.
+        local ok, problem = pcall(function() test.expect(1).toBeCloseTo(1.1, 0.01) end)
+        assert(not ok and string.find(problem, 'to be within 0.01 of 1.1', 1, true), problem)
+        -- Not a number at all.
+        ok = pcall(function() test.expect('1').toBeCloseTo(1) end)
+        assert(not ok)
+        ",
+    );
+}
