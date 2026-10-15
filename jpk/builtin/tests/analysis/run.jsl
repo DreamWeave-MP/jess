@@ -1,5 +1,6 @@
 --!strict
 --!native
+local Fs = require '@dream/fs'
 local analysis = require '@jess/analysis'
 local test = require '@jess/test'
 local expect = test.expect
@@ -145,9 +146,10 @@ return { engineHandlers = handlers }
 
   suite.it('raises for a root that is not there, instead of finding nothing in it', function()
     local scratch = assert(rawget(_G, 'scratchRoot') :: string?, 'the case needs a scratchRoot')
-    local root = jess.fs.join(scratch, 'analysis-roots')
-    local absent = jess.fs.join(root, 'absent')
-    jess.fs.write(jess.fs.join(root, 'present.jsl'), 'return 1\n')
+    local root = Fs.join(scratch, 'analysis-roots')
+    local absent = Fs.join(root, 'absent')
+    local written, problem = Fs.writeFile(Fs.join(root, 'present.jsl'), 'return 1\n', { createParents = true })
+    assert(written, problem)
 
     local function findAbsent() return analysis.files({ absent }, {}) end
     local function openAbsent() return analysis.workspace({ root, absent }, {}) end

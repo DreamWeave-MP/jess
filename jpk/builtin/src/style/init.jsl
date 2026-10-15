@@ -15,6 +15,7 @@
 
 Options are { profile, directives, noAny, declarations, only, fragment }; see rules.jsl.
 ]]
+local Fs = require '@dream/fs'
 local check = require '@self/check'
 local rules = require '@self/rules'
 local analysis = require '@jess/analysis'
@@ -53,8 +54,8 @@ local function markdownBlocks(text: string): { Block }
 end
 
 local function checkFile(path: string, options: Options?): { Finding }
-  local text = jess.fs.read(path)
-  if not text then error(`{path}: no such file`) end
+  local text, problem = Fs.readFileString(path)
+  if not text then error(`{path}: {problem}`, 0) end
 
   if string.sub(path, -3) ~= '.md' then return check(text, options) end
 
@@ -77,15 +78,18 @@ local function files(paths: { string }): { string }
   local found: { string } = {}
 
   local function visit(path: string)
-    if not jess.fs.isDir(path) then
+    if not Fs.isDir(path) then
       table.insert(found, path)
       return
     end
 
-    for _, name in jess.fs.list(path) do
+    local names, problem = Fs.list(path)
+    if not names then error(`{path}: {problem}`, 0) end
+
+    for _, name in names do
       local child = `{path}/{name}`
 
-      if jess.fs.isDir(child) then
+      if Fs.isDir(child) then
         if name ~= 'target' and string.sub(name, 1, 1) ~= '.' then visit(child) end
       elseif string.find(name, '%.jsl$') or string.find(name, '%.lua$') then
         table.insert(found, child)

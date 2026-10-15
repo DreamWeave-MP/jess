@@ -30,7 +30,7 @@ if not runs or runs < 1 or runs % 1 ~= 0 then error('site bench: runs must be a 
 
 local Time = '/usr/bin/time'
 local Root = fs.cwd() or '.'
-local Work = jess.fs.join(Root, 'target', 'bench', 'site')
+local Work = fs.join(Root, 'target', 'bench', 'site')
 local Jess = process.env 'JESS_BINARY' or 'jess'
 
 type Sample = { wall: number, cpu: number, rss: number }
@@ -54,7 +54,7 @@ end
 
 local function measure(side: Side): Sample
   removeTree(side.output)
-  local timing = jess.fs.join(Work, `{side.name}.time`)
+  local timing = fs.join(Work, `{side.name}.time`)
   local arguments = { '-f', '%e %U %S %M', '-o', timing }
   for _, part in side.command do table.insert(arguments, part) end
 
@@ -62,7 +62,7 @@ local function measure(side: Side): Sample
   if not result then error(`site bench: {side.name}: {message}`, 0) end
   if not result.success then error(`site bench: {side.name} failed:\n{result.stderr or ''}`, 0) end
 
-  local line = jess.fs.read(timing) or ''
+  local line = fs.readFileString(timing) or ''
   local wall, user, system, rss = string.match(line, '([%d.]+) ([%d.]+) ([%d.]+) (%d+)')
   if not wall then error(`site bench: {side.name}: cannot read {timing}: "{line}"`, 0) end
 
@@ -78,18 +78,18 @@ local function fileCount(root: string): number
   return if walk then #walk.paths else 0
 end
 
-jess.fs.createDir(Work)
+assert(fs.mkdir(Work, { recursive = true }))
 local sides: { Side } = {
   {
     name = 'jess',
-    command = { Jess, 'package', 'run', '--trusted', '--package-path', 'jpk', 'tools/site', '--', jess.fs.join(Work, 'jess') },
-    output = jess.fs.join(Work, 'jess'),
+    command = { Jess, 'package', 'run', '--trusted', '--package-path', 'jpk', 'tools/site', '--', fs.join(Work, 'jess') },
+    output = fs.join(Work, 'jess'),
     samples = {},
   },
   {
     name = 'zola',
-    command = { zola, '--root', 'site', 'build', '--force', '-o', jess.fs.join(Work, 'zola') },
-    output = jess.fs.join(Work, 'zola'),
+    command = { zola, '--root', 'site', 'build', '--force', '-o', fs.join(Work, 'zola') },
+    output = fs.join(Work, 'zola'),
     samples = {},
   },
 }
@@ -100,7 +100,7 @@ for _, side in sides do
   versions[side.name] = if result and result.stdout then string.gsub(result.stdout, '%s+$', '') else '?'
 end
 
-local load = string.match(jess.fs.read '/proc/loadavg' or '', '^[%d.]+') or '?'
+local load = string.match(fs.readFileString '/proc/loadavg' or '', '^[%d.]+') or '?'
 print(`# {versions.jess}; {versions.zola}; load {load}; {runs} runs after one warm-up, alternating`)
 
 for round = 0, runs do
