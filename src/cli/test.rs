@@ -25,7 +25,7 @@ pub struct TestArgs {
 pub fn run(args: &TestArgs, format: Format) -> Result<(), String> {
     let report = jess::lua::testing::run_with(
         &jess::lua::Options::default(),
-        &args.capabilities,
+        &jess::lua::host_script_grant(&args.capabilities),
         &args.modules,
         !args.shared,
     )

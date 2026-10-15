@@ -97,13 +97,13 @@ The capabilities the input crate named are checked, at the script boundary, by `
 | `input.observe` | `devices` |
 | `input.configure` | `install`, `uninstall`, `restoreDefaults`, `setActive`, `pushLayer`, `popLayer`, `route`, `connect`, `disconnect`, `press`, `release`, `axis`, `focus`, `advance` |
 
-The rule for the boundary: **no authority, no check.** Under a domain, the check is the broker's, and a context or worker without the capability gets the broker's permission error, attributed:
+The rule for the boundary: **someone always decides.** Under a domain, the check is the broker's, and a context or worker without the capability gets the broker's permission error, attributed:
 
 ```text
 capability 'input.actions' denied to domain#1 gen#1 context#2
 ```
 
-The denial is also counted (`DomainStats::capability_denials`) and reported as a `DiagnosticKind::CapabilityDenied` carrying the capability and the attribution. Outside any domain (a plain `jess run`, a CLI command, a test evaluating a runtime directly) nothing holds authority and every call succeeds: the process's own user is running the script, and they already have the keyboard. The authoring functions (`jess.input.key`, `chord`, `graph`, `fromJson`, and the graph methods) check nothing, because they touch no device and no runtime: they are data.
+The denial is also counted (`DomainStats::capability_denials`) and reported as a `DiagnosticKind::CapabilityDenied` carrying the capability and the attribution. Outside any domain the runtime's own grant decides, the same set its l3i plan was built from: the CLI grants `input.*` to the scripts a person runs, since they already have the keyboard; a package target holds what it declares; and a library caller grants what it means to (`jess::lua::host_script_grant`), or gets `jess.input: needs the 'input.configure' capability, which this runtime does not grant`. The authoring functions (`jess.input.key`, `chord`, `graph`, `fromJson`, and the graph methods) check nothing, because they touch no device and no runtime: they are data.
 
 ### What Is Not Checked Yet
 

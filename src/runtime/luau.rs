@@ -96,7 +96,9 @@ impl Bindings {
 }
 
 fn detached(function: &str) -> l3i::Error {
-    l3i::Error::runtime(format!("{function}: no ScriptDomain owns this runtime"))
+    l3i::Error::permission(format!(
+        "{function}: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and package targets run scripts outside one"
+    ))
 }
 
 fn attach(runtime: &Runtime, owner: Owner) {

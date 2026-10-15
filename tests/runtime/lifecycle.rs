@@ -245,11 +245,20 @@ fn a_script_cannot_widen_its_own_authority() {
 fn a_runtime_no_domain_owns_has_the_modules_and_refuses_to_use_them() {
     let runtime = Runtime::from_plan(&support::plan().unwrap()).unwrap();
     let bind = runtime.exec("require('@jess/context').bind('main', {})").unwrap_err();
-    assert_eq!(bind.to_string(), "context.bind: no ScriptDomain owns this runtime");
+    assert_eq!(
+        bind.to_string(),
+        "context.bind: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and package targets run scripts outside one"
+    );
     let spawn = runtime.exec("require('@jess/worker').spawn { source = '' }").unwrap_err();
-    assert_eq!(spawn.to_string(), "worker.spawn: no ScriptDomain owns this runtime");
+    assert_eq!(
+        spawn.to_string(),
+        "worker.spawn: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and package targets run scripts outside one"
+    );
     let send = runtime.exec("require('@jess/worker').send(1)").unwrap_err();
-    assert_eq!(send.to_string(), "worker.send: no ScriptDomain owns this runtime");
+    assert_eq!(
+        send.to_string(),
+        "worker.send: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and package targets run scripts outside one"
+    );
 }
 
 #[test]

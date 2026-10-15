@@ -84,6 +84,64 @@ pub fn runtime(options: Options) -> l3i::Result<Runtime> {
     runtime_with_capabilities(options, &[])
 }
 
+/// What a script a person runs holds without asking.
+///
+/// Its terminal and the input devices in front of it, which that person already has. `jess run`,
+/// `jess test`, and a package's tests grant these; a package target holds only what it declares.
+pub const HOST_SCRIPT_CAPABILITIES: [&str; 4] = [
+    l3i::process::STDIO_CAPABILITY,
+    crate::input::capability::ACTIONS,
+    crate::input::capability::OBSERVE,
+    crate::input::capability::CONFIGURE,
+];
+
+/// What a host script runs with: [`HOST_SCRIPT_CAPABILITIES`] and `granted`, each once.
+#[must_use]
+pub fn host_script_grant(granted: &[String]) -> Vec<String> {
+    let mut capabilities: Vec<String> = HOST_SCRIPT_CAPABILITIES.iter().map(|name| (*name).to_owned()).collect();
+    for name in granted {
+        if !capabilities.contains(name) {
+            capabilities.push(name.clone());
+        }
+    }
+    capabilities
+}
+
+/// Every capability a jess runtime can be granted: the ones the plan's extensions declare, and
+/// `worker.spawn`, which a domain's broker checks.
+///
+/// # Errors
+///
+/// Returns an error if the plan doesn't finalize.
+pub fn known_capabilities() -> l3i::Result<Vec<String>> {
+    let mut known = vec![crate::runtime::WORKER_SPAWN.to_owned()];
+    for descriptor in plan::plan()?.descriptors() {
+        for name in descriptor.capabilities().chain(descriptor.optional_capabilities()) {
+            if !known.iter().any(|known| known == name) {
+                known.push(name.to_owned());
+            }
+        }
+    }
+    known.sort();
+    Ok(known)
+}
+
+/// Refuses a capability no extension declares: a misspelled grant would otherwise grant nothing,
+/// silently.
+fn check_capabilities(capabilities: &[String]) -> l3i::Result<()> {
+    if capabilities.is_empty() {
+        return Ok(());
+    }
+    let known = known_capabilities()?;
+    let Some(unknown) = capabilities.iter().find(|name| !known.contains(name)) else {
+        return Ok(());
+    };
+    Err(error(format!(
+        "unknown capability '{unknown}'; a jess runtime can be granted {}",
+        known.join(", ")
+    )))
+}
+
 /// Makes a runtime granting only the optional capabilities explicitly approved by its host.
 /// The ordinary [`runtime`] constructor grants none; a plan's grants cannot change after code starts.
 ///
@@ -101,6 +159,7 @@ pub fn runtime_with_capabilities(options: Options, capabilities: &[String]) -> l
 ///
 /// Returns an error if the runtime plan doesn't finalize or the VM can't be set up.
 pub fn runtime_with_profile(_options: Options, capabilities: &[String], profiling: bool) -> l3i::Result<Runtime> {
+    check_capabilities(capabilities)?;
     let runtime_plan = if profiling {
         plan::plan_with_profiling(capabilities)?
     } else {
@@ -155,6 +214,8 @@ pub(crate) struct Jess {
     pub(crate) builtin: RefCell<Option<Rc<builtin::Manifest>>>,
     /// The runtime's TOML decoder, the built-in package's, loaded the first time it is asked for.
     pub(crate) toml_decode: RefCell<Option<Function>>,
+    /// The jess capabilities the runtime's plan grants: what [`guard`] allows outside a domain.
+    pub(crate) granted: Vec<&'static str>,
 }
 
 impl Jess {
@@ -286,17 +347,21 @@ pub(crate) fn error(message: impl Display) -> l3i::Error {
     l3i::Error::runtime(message.to_string())
 }
 
-/// Checks that the calling script holds `capability`, when it runs under a `ScriptDomain`.
+/// Checks that the calling script holds `capability`, as `function` needs it.
 ///
-/// Outside any domain nothing holds authority: a plain `jess run`, a CLI command, or a test
-/// evaluating a runtime directly is the process's own user acting, and every call succeeds.
-/// Under a domain the check is the broker's, and a denial is its permission error, attributed
-/// to the domain, generation, and context or worker that asked.
-pub(crate) fn guard(capability: &str) -> l3i::Result<()> {
-    if crate::runtime::current_authority().is_none() {
+/// Under a `ScriptDomain` the check is the broker's, and a denial is its permission error,
+/// attributed to the domain, generation, and context or worker that asked. Outside any domain the
+/// runtime's own plan decides: a capability it wasn't granted is denied, so a library caller
+/// states its authority by the capabilities it builds the runtime with ([`host_script_grant`] is
+/// what the CLI gives the scripts a person runs).
+pub(crate) fn guard(jess: &Jess, function: &str, capability: &str) -> l3i::Result<()> {
+    if crate::runtime::current_authority().is_some() {
+        return crate::runtime::require_capability(capability).map_err(l3i::Error::from);
+    }
+    if jess.granted.contains(&capability) {
         return Ok(());
     }
-    crate::runtime::require_capability(capability).map_err(l3i::Error::from)
+    Err(l3i::Error::denied(function, capability))
 }
 
 /// The `Value` on top of `scope` after `build` pushed it, pinned.

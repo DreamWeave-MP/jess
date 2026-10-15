@@ -561,7 +561,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .method(
             "install",
             |this: &LuaInputRuntime, call: &Call<'_>, graph: ValueView<'_>| -> l3i::Result<f64> {
-                guard(capability::CONFIGURE)?;
+                guard(&this.jess, "jess.input", capability::CONFIGURE)?;
                 let spec = match l3i::userdata::receiver::<LuaInputGraph>(graph) {
                     Some(graph) => graph.graph.spec().clone(),
                     None => call.with_frame(|frame| spec_from_table(frame, &this.jess, graph, "InputRuntime:install"))?,
@@ -574,14 +574,14 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .untyped();
     runtime
         .method("uninstall", |this: &LuaInputRuntime| -> l3i::Result<()> {
-            guard(capability::CONFIGURE)?;
+            guard(&this.jess, "jess.input", capability::CONFIGURE)?;
             this.lock().uninstall();
             Ok(())
         })
         .untyped();
     runtime
         .method("restoreDefaults", |this: &LuaInputRuntime| -> l3i::Result<()> {
-            guard(capability::CONFIGURE)?;
+            guard(&this.jess, "jess.input", capability::CONFIGURE)?;
             this.lock().restore_defaults().map_err(error)?;
             Ok(())
         })
@@ -590,26 +590,26 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .method(
             "setActive",
             |this: &LuaInputRuntime, set: Text, active: Option<bool>| -> l3i::Result<()> {
-                guard(capability::CONFIGURE)?;
+                guard(&this.jess, "jess.input", capability::CONFIGURE)?;
                 this.lock().set_active(&set.0, active.unwrap_or(true)).map_err(error)
             },
         )
         .untyped();
     runtime
         .method("pushLayer", |this: &LuaInputRuntime, layer: Text| -> l3i::Result<()> {
-            guard(capability::CONFIGURE)?;
+            guard(&this.jess, "jess.input", capability::CONFIGURE)?;
             this.lock().push_layer(&layer.0).map_err(error)
         })
         .untyped();
     runtime
         .method("popLayer", |this: &LuaInputRuntime, layer: Text| -> l3i::Result<bool> {
-            guard(capability::CONFIGURE)?;
+            guard(&this.jess, "jess.input", capability::CONFIGURE)?;
             this.lock().pop_layer(&layer.0).map_err(error)
         })
         .untyped();
     runtime
         .method("connect", |this: &LuaInputRuntime, kind: Text| -> l3i::Result<f64> {
-            guard(capability::CONFIGURE)?;
+            guard(&this.jess, "jess.input", capability::CONFIGURE)?;
             let mut service = this.lock();
             let source = service.synthetic();
             let device = match kind.0.as_str() {
@@ -629,7 +629,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .untyped();
     runtime
         .method("disconnect", |this: &LuaInputRuntime, number: f64| -> l3i::Result<()> {
-            guard(capability::CONFIGURE)?;
+            guard(&this.jess, "jess.input", capability::CONFIGURE)?;
             let mut service = this.lock();
             let device = device(&service, number)?;
             service.synthetic().disconnect(device);
@@ -641,7 +641,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .method(
             "press",
             |this: &LuaInputRuntime, number: f64, control_text: Text| -> l3i::Result<()> {
-                guard(capability::CONFIGURE)?;
+                guard(&this.jess, "jess.input", capability::CONFIGURE)?;
                 let mut service = this.lock();
                 let (device, control) = (device(&service, number)?, control(&control_text)?);
                 service.synthetic().press(device, control);
@@ -654,7 +654,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .method(
             "release",
             |this: &LuaInputRuntime, number: f64, control_text: Text| -> l3i::Result<()> {
-                guard(capability::CONFIGURE)?;
+                guard(&this.jess, "jess.input", capability::CONFIGURE)?;
                 let mut service = this.lock();
                 let (device, control) = (device(&service, number)?, control(&control_text)?);
                 service.synthetic().release(device, control);
@@ -667,7 +667,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .method(
             "axis",
             |this: &LuaInputRuntime, number: f64, control_text: Text, value: f64| -> l3i::Result<()> {
-                guard(capability::CONFIGURE)?;
+                guard(&this.jess, "jess.input", capability::CONFIGURE)?;
                 let mut service = this.lock();
                 let (device, control) = (device(&service, number)?, control(&control_text)?);
                 #[allow(clippy::cast_possible_truncation)] // Axis values are normalized.
@@ -679,14 +679,14 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .untyped();
     runtime
         .method("focus", |this: &LuaInputRuntime, focused: bool| -> l3i::Result<()> {
-            guard(capability::CONFIGURE)?;
+            guard(&this.jess, "jess.input", capability::CONFIGURE)?;
             this.lock().synthetic().focus(focused);
             Ok(())
         })
         .untyped();
     runtime
         .method("advance", |this: &LuaInputRuntime, seconds: f64| -> l3i::Result<()> {
-            guard(capability::CONFIGURE)?;
+            guard(&this.jess, "jess.input", capability::CONFIGURE)?;
             this.host_owned("advance")?;
             if !(seconds.is_finite() && seconds >= 0.0) {
                 return Err(error(format!(
@@ -699,7 +699,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .untyped();
     runtime
         .method("now", |this: &LuaInputRuntime| -> l3i::Result<f64> {
-            guard(capability::ACTIONS)?;
+            guard(&this.jess, "jess.input", capability::ACTIONS)?;
             Ok(seconds(this.lock().now()))
         })
         .untyped();
@@ -707,7 +707,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .method(
             "tick",
             |this: &LuaInputRuntime, call: &Call<'_>| -> l3i::Result<StackResults> {
-                guard(capability::ACTIONS)?;
+                guard(&this.jess, "jess.input", capability::ACTIONS)?;
                 this.host_owned("tick")?;
                 let rows = tick_rows(&mut this.lock());
                 push_rows(call, &rows)?;
@@ -719,7 +719,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .method(
             "action",
             |this: &LuaInputRuntime, call: &Call<'_>, name: Text| -> l3i::Result<StackResults> {
-                guard(capability::ACTIONS)?;
+                guard(&this.jess, "jess.input", capability::ACTIONS)?;
                 let action = this.lock().runtime().action(&name.0).copied();
                 match action {
                     Some(action) => push_action_state(call, &action)?,
@@ -735,7 +735,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .method(
             "route",
             |this: &LuaInputRuntime, action: Text, kind: Text, intent: Text| -> l3i::Result<()> {
-                guard(capability::CONFIGURE)?;
+                guard(&this.jess, "jess.input", capability::CONFIGURE)?;
                 let kind = parse_event_kind(&kind)?;
                 this.lock().route(&action.0, kind, &intent.0);
                 Ok(())
@@ -746,7 +746,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .method(
             "intents",
             |this: &LuaInputRuntime, call: &Call<'_>| -> l3i::Result<StackResults> {
-                guard(capability::ACTIONS)?;
+                guard(&this.jess, "jess.input", capability::ACTIONS)?;
                 let rows = {
                     let service = this.lock();
                     let names = action_names(&service);
@@ -772,7 +772,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .method(
             "devices",
             |this: &LuaInputRuntime, call: &Call<'_>| -> l3i::Result<StackResults> {
-                guard(capability::OBSERVE)?;
+                guard(&this.jess, "jess.input", capability::OBSERVE)?;
                 let devices: Vec<(DeviceId, DeviceDescriptor, bool)> = this
                     .lock()
                     .runtime()
@@ -797,7 +797,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .method(
             "stats",
             |this: &LuaInputRuntime, call: &Call<'_>| -> l3i::Result<StackResults> {
-                guard(capability::ACTIONS)?;
+                guard(&this.jess, "jess.input", capability::ACTIONS)?;
                 let stats = this.lock().runtime().stats();
                 push_table(call, 0, 8, |frame, table| {
                     table.raw_set_value(frame, "deviceEvents", &f64::from(stats.device_events))?;

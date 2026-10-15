@@ -161,7 +161,7 @@ The runtime enforces none, because a native caller holding an `InputRuntime` alr
 | `input.actions` | Action state and events, intent dispatches, binding presentation |
 | `input.configure` | Installing, remapping, activating sets, pushing layers, routing, synthetic events |
 
-`jess.input` checks them through `jess_runtime::require_capability` on every runtime method, whenever the script runs under a `ScriptDomain`; a denial is the broker's, `capability 'input.actions' denied to domain#1 gen#1 context#2`, attributed and diagnosed. Outside any domain (a plain `jess run`, a test) nothing holds authority and every call succeeds. The table of which method needs which is on [jess.input](@/docs/api/input.md).
+`jess.input` checks them through `jess_runtime::require_capability` on every runtime method, whenever the script runs under a `ScriptDomain`; a denial is the broker's, `capability 'input.actions' denied to domain#1 gen#1 context#2`, attributed and diagnosed. Outside any domain the runtime's own grant decides: the CLI grants them to the scripts a person runs, a package target holds what it declares, and a library caller grants them when it builds the runtime (`jess::lua::host_script_grant`). The table of which method needs which is on [jess.input](@/docs/api/input.md).
 
 ## Tests
 

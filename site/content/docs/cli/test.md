@@ -6,7 +6,7 @@ extra:
   kind: reference
 ---
 
-{{ api_signature(value="jess test [--shared] <MODULES>...") }}
+{{ api_signature(value="jess test [--shared] [--capability NAME]... <MODULES>...") }}
 
 Runs Luau test modules. Each is a file that returns a suite made with [`@jess/test`](@/docs/api/test.md); jess loads it with the whole API, runs the suite, and prints every case. The exit status is non-zero when any case failed or any module didn't run.
 
@@ -14,6 +14,7 @@ Runs Luau test modules. Each is a file that returns a suite made with [`@jess/te
 | --- | --- |
 | `<MODULES>...` | The test modules, as filesystem paths. Each gets a fresh VM. |
 | `--shared` | One VM for every module, so they share the module cache and whatever state a module keeps. Faster for many small modules; isolation is the default because a test that depends on another module having run first is a bug. |
+| `--capability NAME` | Grant the modules a capability they don't hold by default (repeatable), as [`jess run`](@/docs/cli/run.md#capabilities) does: test modules hold the terminal and the input devices, and everything else, such as `filesystem.read` for a suite that reads files, is a flag away. |
 
 Plus the [global options](@/docs/cli/global-options.md). Like `jess run`, tests start with no OpenMW config; one that needs a load order loads it with `jess.openmw.load`.
 

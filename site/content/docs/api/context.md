@@ -8,7 +8,7 @@ extra:
 
 {{ api_signature(value="jess.context: { bind }") }}
 
-Also `require('@jess/context')`. This is the script side of a [ScriptDomain](@/docs/contributing/script-domains.md): a host that embeds jess declares contexts, each with the phases it may run in, and a script binds its handlers to them. Under `jess run` there is no domain, so `bind` errors with `context.bind: no ScriptDomain owns this runtime`; the examples here are a domain's main script.
+Also `require('@jess/context')`. This is the script side of a [ScriptDomain](@/docs/contributing/script-domains.md): a host that embeds jess declares contexts, each with the phases it may run in, and a script binds its handlers to them. Under `jess run` there is no domain, so `bind` errors with `context.bind: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and package targets run scripts outside one`; the examples here are a domain's main script.
 
 ## jess.context.bind
 

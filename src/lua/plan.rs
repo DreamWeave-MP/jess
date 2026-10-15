@@ -124,6 +124,13 @@ pub(crate) const MEMBERS: [&str; 9] = [
     "version", "null", "fs", "regex", "shader", "context", "worker", "input", "bench",
 ];
 
+/// The capabilities `jess.input` checks.
+const INPUT_CAPABILITIES: [&str; 3] = [
+    crate::input::capability::ACTIONS,
+    crate::input::capability::OBSERVE,
+    crate::input::capability::CONFIGURE,
+];
+
 /// jess's Luau API: the `@jess` module and every jess userdata type.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct JessExtension;
@@ -142,6 +149,10 @@ impl Extension for JessExtension {
         // `jess.fs` reaches the host's files only as far as the runtime's policy lets it.
         d.optional_capability(l3i::fs::READ_CAPABILITY);
         d.optional_capability(l3i::fs::WRITE_CAPABILITY);
+        // `jess.input` checks these against the plan outside a domain, and the broker inside one.
+        for capability in INPUT_CAPABILITIES {
+            d.optional_capability(capability);
+        }
         let module = d.module(MODULE);
         module.doc("Generic native services for Luau applications.");
         for name in MEMBERS {
@@ -153,9 +164,15 @@ impl Extension for JessExtension {
     fn install(&self, cx: &mut InstallContext<'_>) -> l3i::Result<()> {
         let read = cx.has_capability(l3i::fs::READ_CAPABILITY)?;
         let write = cx.has_capability(l3i::fs::WRITE_CAPABILITY)?;
+        let mut granted = Vec::new();
+        for capability in INPUT_CAPABILITIES {
+            if cx.has_capability(capability)? {
+                granted.push(capability);
+            }
+        }
         let runtime = cx.runtime();
         let module = cx.module(MODULE)?.table().clone();
-        let jess = cx.insert_state(Jess::new(runtime, module)?);
+        let jess = cx.insert_state(Jess::new(runtime, module, granted)?);
         let module = cx.module(MODULE)?;
         module.set("version", env!("CARGO_PKG_VERSION"))?;
         module.set("null", &crate::lua::convert::NULL)?;
@@ -175,7 +192,7 @@ impl Extension for JessExtension {
 }
 
 impl Jess {
-    fn new(runtime: &Runtime, module: Table) -> l3i::Result<Self> {
+    fn new(runtime: &Runtime, module: Table, granted: Vec<&'static str>) -> l3i::Result<Self> {
         let tostring = Function::from_value(runtime.global("tostring")?)?;
         let (array_marker, loaded) = {
             let stack = runtime.stack();
@@ -193,6 +210,7 @@ impl Jess {
             tostring,
             builtin: RefCell::new(None),
             toml_decode: RefCell::new(None),
+            granted,
         })
     }
 }

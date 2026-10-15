@@ -9,6 +9,11 @@
 //! A package module's chunk name is `@<id>@<version>/<path>`, which diagnostics show; its cache
 //! identity is its package's id and content digest and its path, so two generations of one package
 //! version never share a cached module.
+//!
+//! An activation plan is one trust zone: every package it mounts runs in the one runtime, with the
+//! capabilities that runtime was granted. Admission refuses an entrypoint that requires more than
+//! the grant, but nothing separates one admitted package from another; per-package isolation
+//! (contexts or VMs of their own) is not built yet.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Seek, SeekFrom};
@@ -977,11 +982,11 @@ pub fn test_with(
     // Package tests are an explicit host action over a caller-chosen package, so their test code
     // gets scratch filesystem access and terminal/environment reporting. Process spawning remains
     // denied unless a host separately approves it.
-    let test_capabilities = [
+    let test_capabilities = crate::lua::host_script_grant(&[
         l3i::fs::READ_CAPABILITY.to_owned(),
         l3i::fs::WRITE_CAPABILITY.to_owned(),
         l3i::process::ENVIRONMENT_CAPABILITY.to_owned(),
-    ];
+    ]);
     let runtime = crate::lua::runtime_with_capabilities(options.clone(), &test_capabilities)?;
     let display = location.display().to_string();
     let inspection = inspect(&runtime, &display)?;
@@ -1160,7 +1165,9 @@ pub fn run_target(options: &crate::lua::Options, request: &TargetRequest) -> l3i
         roots: vec![package.clone()],
         dev: Vec::new(),
     };
-    activate_with(&runtime, &locations, &layers, request.grant.as_deref(), &search)?;
+    // The runtime holds what the target declares, so its entrypoints are admitted against exactly
+    // that, whatever the request granted beyond it.
+    activate_with(&runtime, &locations, &layers, Some(&target.capabilities), &search)?;
     let jess = crate::lua::state(&runtime)?;
     let (chunk, function) = {
         let mounted = jess.packages.borrow();

@@ -58,8 +58,9 @@ pub fn lua_default() -> Result<Runtime, String> {
     lua(&[])
 }
 
-/// Activates the packages `args` names in `lua`, if any.
-fn activate(lua: &Runtime, args: &RunArgs) -> Result<(), String> {
+/// Activates the packages `args` names in `lua`, if any, admitting entrypoints against
+/// `capabilities`, what the runtime was granted.
+fn activate(lua: &Runtime, args: &RunArgs, capabilities: &[String]) -> Result<(), String> {
     if args.packages.is_empty() && args.package_paths.is_empty() {
         return if args.layers.is_empty() {
             Ok(())
@@ -88,7 +89,7 @@ fn activate(lua: &Runtime, args: &RunArgs) -> Result<(), String> {
         roots,
         ..Default::default()
     };
-    jess::lua::package::activate_with(lua, &locations, &layers, Some(&args.capabilities), &search)
+    jess::lua::package::activate_with(lua, &locations, &layers, Some(capabilities), &search)
         .map(|_| ())
         .map_err(|error| error.to_string())
 }
@@ -100,11 +101,11 @@ pub fn run(args: &RunArgs) -> Result<u8, String> {
     if (args.emit_asm.is_some() || args.disassemble.is_some()) && !args.args.is_empty() {
         return Err("script inspection modes don't execute the script and take no script arguments".to_owned());
     }
-    // A script run from the command line writes to the terminal it was run from, as `print` does.
-    let mut capabilities = vec![l3i::process::STDIO_CAPABILITY.to_owned()];
-    capabilities.extend(args.capabilities.iter().cloned());
+    // A script run from the command line is its user's: it holds their terminal and their input
+    // devices, and what they grant.
+    let capabilities = jess::lua::host_script_grant(&args.capabilities);
     let lua = lua_with_profile(&capabilities, args.profile)?;
-    activate(&lua, args)?;
+    activate(&lua, args, &capabilities)?;
     let result = match (&args.emit_asm, &args.disassemble) {
         (Some(output), _) => emit_assembly(&lua, &args.script, output).map(|()| 0),
         (_, Some(output)) => disassemble(&lua, &args.script, output).map(|()| 0),
