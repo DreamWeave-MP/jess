@@ -15,7 +15,7 @@ The substrates exist on their own terms. [Script Domains](@/docs/contributing/sc
 A `Host` owns:
 
 - a `ScriptDomain` built from any `RuntimeFactory` (`jess_lua::runtime` is the one jess uses);
-- the domain's **input service**, a `Mutex<jess_input::InputService>`: the live `InputRuntime`, its intent routes by name, and a synthetic side;
+- the domain's **input service**, a `Mutex<jess::input::InputService>`: the live `InputRuntime` and a synthetic side;
 - the clock the input ticks on: the monotonic clock behind a platform backend, or the synthetic side's when there is none.
 
 It declares no contexts, reserves no action names, formats nothing itself, and draws nothing. The application registers contexts on `host.domain()`, loads its code, starts it, and then calls `host.frame(delta)` until it is done. `Host::create` leaves the domain `Created`, like `ScriptDomain::create` does.
@@ -54,11 +54,10 @@ local payload = {
   time = 0.016, -- the tick's time on the host's clock, in seconds
   generation = 1, -- the graph generation the events came from
   events = { { action = 'ui.accept', kind = 'pressed', value = true, time = 0.016, device = 0 } },
-  intents = { { intent = 'ui.activate', action = 'ui.accept', kind = 'pressed', value = true, time = 0.016, device = 0 } },
 }
 ```
 
-The rows are exactly what `InputRuntime:tick()` and `InputRuntime:intents()` return to a script, so reading a phase payload and reading a headless tick are the same code. `Phase::Input` is the runtime's existing generic phase for this; nothing was added. A quiet tick enters no Luau at all, which is the no-hidden-per-frame-Luau rule applied to input: a stable frame with nobody touching a key runs no handler.
+The rows are exactly what `InputRuntime:tick()` returns to a script, so reading a phase payload and reading a headless tick are the same code, and a script's `@jess/input` router makes intents of either with one `router:dispatch(payload.events)`. `Phase::Input` is the runtime's existing generic phase for this; nothing was added. A quiet tick enters no Luau at all, which is the no-hidden-per-frame-Luau rule applied to input: a stable frame with nobody touching a key runs no handler.
 
 ### Advance
 
@@ -93,9 +92,9 @@ The capabilities the input crate named are checked, at the script boundary, by `
 
 | Capability | `jess.input` |
 | --- | --- |
-| `input.actions` | `action`, `intents`, `stats`, `now`, `tick` |
+| `input.actions` | `action`, `stats`, `now`, `tick` |
 | `input.observe` | `devices` |
-| `input.configure` | `install`, `uninstall`, `restoreDefaults`, `setActive`, `pushLayer`, `popLayer`, `route`, `connect`, `disconnect`, `press`, `release`, `axis`, `focus`, `advance` |
+| `input.configure` | `install`, `uninstall`, `restoreDefaults`, `setActive`, `pushLayer`, `popLayer`, `connect`, `disconnect`, `press`, `release`, `axis`, `focus`, `advance` |
 
 The rule for the boundary: **someone always decides.** Under a domain, the check is the broker's, and a context or worker without the capability gets the broker's permission error, attributed:
 
@@ -103,7 +102,7 @@ The rule for the boundary: **someone always decides.** Under a domain, the check
 capability 'input.actions' denied to domain#1 gen#1 context#2
 ```
 
-The denial is also counted (`DomainStats::capability_denials`) and reported as a `DiagnosticKind::CapabilityDenied` carrying the capability and the attribution. Outside any domain the runtime's own grant decides, the same set its l3i plan was built from: the CLI grants `input.*` to the scripts a person runs, since they already have the keyboard; a package target holds what it declares; and a library caller grants what it means to (`jess::lua::host_script_grant`), or gets `jess.input: needs the 'input.configure' capability, which this runtime does not grant`. The authoring functions (`jess.input.key`, `chord`, `graph`, `fromJson`, and the graph methods) check nothing, because they touch no device and no runtime: they are data.
+The denial is also counted (`DomainStats::capability_denials`) and reported as a `DiagnosticKind::CapabilityDenied` carrying the capability and the attribution. Outside any domain the runtime's own grant decides, the same set its l3i plan was built from: the CLI grants `input.*` to the scripts a person runs, since they already have the keyboard; a package target holds what it declares; and a library caller grants what it means to (`jess::lua::host_script_grant`), or gets `jess.input: needs the 'input.configure' capability, which this runtime does not grant`. Everything else in `@jess/input` (the builders, `graph`, `fromJson`, labels, presentation, conflicts, and the router) checks nothing, because it touches no device and no runtime: it is data.
 
 ### What Is Not Checked Yet
 
@@ -126,7 +125,7 @@ The vocabulary for closing this (`filesystem.profile`, `filesystem.user-selected
 
 ## Restart
 
-`Host::restart(load)` is `ScriptDomain::restart` with one thing in front of it: the input service forgets the graph and the intent routes the old code installed, and keeps the devices and the queue, because the devices did not restart. Events queued for the old generation are discarded by the domain and counted; an action event from an older graph generation is dropped by the intent router; a key held across the restart is invisible to the new code's graph until it is released, the same going-live rule a set change applies.
+`Host::restart(load)` is `ScriptDomain::restart` with one thing in front of it: the input service forgets the graph the old code installed, and keeps the devices and the queue, because the devices did not restart. Events queued for the old generation are discarded by the domain and counted; the old code's routers went with its Luau state; a key held across the restart is invisible to the new code's graph until it is released, the same going-live rule a set change applies.
 
 It is as destructive as the domain's restart: the graph is forgotten and the old generation ends before the new code loads, and a load that fails leaves nothing running. A reload that keeps the last good generation alive is not this; see [Generations and Restart](@/docs/contributing/script-domains.md#generations-and-restart).
 
@@ -134,8 +133,8 @@ It is as destructive as the domain's restart: the graph is forgotten and the old
 
 Two fixtures, both headless:
 
-- `libs/host/tests/kernel.rs` drives a host with the runtime's own modules and a journal: the quiet frame, the press that becomes an input phase with its intent and generation, the restart that keeps the keyboard and drops the graph and the stale event, the stub backend's poll loop.
-- `libs/lua/tests/kernel.rs` is the substrate handoff's integration fixture over jess's real plan: one host domain with a live input runtime; a `main` context and an `input` context holding `input.actions` alone; a script that installs the graph and formats a message from its own `@jess/l10n` registry at startup; a worker spawned with `shareServices = true` and no capabilities that formats from a registry of its own and is denied input; keys pressed on the host's synthetic side and from the script, arriving as action events and intents; a locale switch that formats in Polish at once; the input context's denial in every input phase; a restart to a second generation with the held key, the graph, and a queued event gone; and a teardown that owns nothing.
+- `tests/host/kernel.rs` drives a host with the runtime's own modules and a journal: the quiet frame, the press that becomes an input phase with its generation, the restart that keeps the keyboard and drops the graph and the stale event, the stub backend's poll loop.
+- `tests/lua/kernel.rs` is the substrate handoff's integration fixture over jess's real plan: one host domain with a live input runtime; a `main` context and an `input` context holding `input.actions` alone; a script that installs the graph and formats a message from its own `@jess/l10n` registry at startup; a worker spawned with `shareServices = true` and no capabilities that formats from a registry of its own and is denied input; keys pressed on the host's synthetic side and from the script, arriving as action events and, through the script's router, intents; a locale switch that formats in Polish at once; the input context's denial in every input phase; a restart to a second generation with the held key, the graph, and a queued event gone; and a teardown that owns nothing.
 
 ## Where It Lives
 

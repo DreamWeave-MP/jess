@@ -1,37 +1,38 @@
-//! `jess.input`: the action graph and an input runtime, for scripts.
+//! `jess.input`: the native half of input for scripts, under `@jess/input`.
 //!
-//! Luau writes the binding document and the native side owns it: the authoring functions
-//! (`key`, `chord`, `tap`, `vector2`, ...) return plain node tables, `graph` compiles a document
-//! of them into an `InputGraph` the crate has validated, and a `runtime` installs a graph, takes
-//! synthetic events, and reports action state. Nothing here is a callback: a script asks for the
-//! state after the tick, and no device event ever calls into Luau.
+//! Luau writes the binding document (`@jess/input`'s builders, in the built-in package) and hands
+//! it over as JSON; `graph` compiles it into an `InputGraph` the crate has validated, and a
+//! `runtime` installs a graph, takes synthetic events, and reports action state. Labels, binding
+//! presentation, conflict checks, and intent routing are Luau too, over the document and the
+//! action events. Nothing here is a callback: a script asks for the state after the tick, and no
+//! device event ever calls into Luau.
 //!
 //! Which runtime `jess.input.runtime()` hands out depends on where the script runs. Under a
 //! `ScriptDomain` that carries a `Mutex<jess::input::InputService>` service (`jess::host` attaches
 //! one), it is the application's live input: a platform backend feeds it, the host ticks it in
-//! the input phase and delivers that tick's action events and intents as the phase payload, and
-//! the script configures it (installs the graph, activates sets, routes intents) and reads it
-//! after the tick. `tick` and `advance` are the host's there, and refused. Anywhere else (a plain
-//! `jess run`, a domain without the service, a worker not given it) the runtime is a fresh
-//! headless one with a synthetic source, ticked by the script: what tests and replays need.
+//! the input phase and delivers that tick's action events as the phase payload, and the script
+//! configures it (installs the graph, activates sets) and reads it after the tick. `tick` and
+//! `advance` are the host's there, and refused. Anywhere else (a plain `jess run`, a domain
+//! without the service, a worker not given it) the runtime is a fresh headless one with a
+//! synthetic source, ticked by the script: what tests and replays need.
 //!
-//! Every runtime method checks a capability under a domain (`jess::input::capability`): reading
-//! action state, events, and intents is `input.actions`; device descriptors are `input.observe`;
-//! installing, activating, routing, and synthetic events are `input.configure`. Outside any
-//! domain nothing holds authority and the calls succeed ([`crate::lua::guard`]).
+//! Every runtime method checks a capability (`jess::input::capability`): reading action state and
+//! events is `input.actions`; device descriptors are `input.observe`; installing, activating,
+//! and synthetic events are `input.configure` ([`crate::lua::guard`]).
 //!
-//! Durations are seconds in every function and millisecond fields in the document, which is what
-//! `jess::input` stores. Action values are booleans, numbers, and `vector`s with a zero `z`.
+//! Durations are seconds in every function. Action values are booleans, numbers, and `vector`s
+//! with a zero `z`.
 
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use crate::input::{
-    ActionEventKind, ActionGraph, ActionState, BindingLocation, Conflict, Control, DeviceDescriptor, DeviceId, GraphSpec,
-    InputService, IntentScope, NodeSpec, Owner, Presentation, PresentationFamily, Timestamp, Value, capability, conflicts,
-    presentations,
+    ActionEventKind, ActionGraph, ActionState, Control, DeviceDescriptor, DeviceId, FORMAT_VERSION, GraphSpec, InputService,
+    Timestamp, Value, capability,
 };
+use crate::lua::plan::Functions;
+use crate::lua::{Jess, Text, error, guard, push_table};
 use l3i::Runtime;
 use l3i::bind::{Call, StackResults};
 use l3i::convert::Vector3;
@@ -39,17 +40,11 @@ use l3i::extension::{ExtensionDescriptor, TagPolicy};
 use l3i::stack::{Frame, Scope, TableView, ValueView};
 use l3i::userdata::{Owned, Userdata};
 use l3i::value::Table;
-use serde_json::{Value as Json, json};
-
-use crate::lua::convert;
-use crate::lua::plan::Functions;
-use crate::lua::{Jess, Text, error, guard, kind, push_table};
 
 /// A compiled, validated action graph.
 #[derive(Clone)]
 pub struct LuaInputGraph {
     graph: Rc<ActionGraph>,
-    jess: Rc<Jess>,
 }
 
 // SAFETY: shared Rust state; the destructor never touches the Lua API.
@@ -107,62 +102,12 @@ fn device(service: &InputService, number: f64) -> l3i::Result<DeviceId> {
         .ok_or_else(|| error(format!("no device {number} is known to this runtime")))
 }
 
-/// A document as a script writes it: `version` may be left out.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct SpecInput {
-    #[serde(default = "current_version")]
-    version: u32,
-    actions: Vec<crate::input::ActionSpec>,
-    #[serde(default)]
-    sets: Vec<crate::input::SetSpec>,
-    #[serde(default)]
-    layers: Vec<crate::input::LayerSpec>,
-}
-
-const fn current_version() -> u32 {
-    crate::input::FORMAT_VERSION
-}
-
 fn control(text: &Text) -> l3i::Result<Control> {
     text.0.parse().map_err(error)
 }
 
-/// A class of control by its bare name: `input.key('KeyA')` is `key:KeyA`.
-fn named_control(class: &str, name: &Text) -> l3i::Result<Control> {
-    format!("{class}:{}", name.0).parse().map_err(error)
-}
-
-fn millis(function: &str, seconds: f64) -> l3i::Result<u32> {
-    if !(seconds.is_finite() && seconds >= 0.0) {
-        return Err(error(format!("{function} takes a duration in seconds, not {seconds}")));
-    }
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Checked finite and positive; clamped.
-    Ok((seconds * 1000.0).round().min(f64::from(u32::MAX)) as u32)
-}
-
 fn seconds(timestamp: Timestamp) -> f64 {
     Duration::from_nanos(timestamp.nanos()).as_secs_f64()
-}
-
-/// Reads a node table a script passed, naming the argument in errors.
-fn node(frame: &Frame<'_>, jess: &Jess, value: ValueView<'_>, what: &str) -> l3i::Result<NodeSpec> {
-    if !value.is_table() {
-        return Err(error(format!("{what} must be a node table, not {}", kind(value))));
-    }
-    convert::from_lua::<NodeSpec>(frame, jess, value, None)
-        .map_err(|problem| error(format!("{what} isn't a node: {}", crate::lua::error_message(&problem))))
-}
-
-fn nodes(frame: &Frame<'_>, jess: &Jess, list: ValueView<'_>, what: &str) -> l3i::Result<Vec<NodeSpec>> {
-    if !list.is_table() {
-        return Err(error(format!("{what} must be a list of node tables, not {}", kind(list))));
-    }
-    let mut members = Vec::new();
-    list.as_table()?.for_each_array(frame, |frame, index, item| {
-        members.push(node(frame, jess, item, &format!("{what}[{index}]"))?);
-        Ok(())
-    })?;
-    Ok(members)
 }
 
 /// Every compile error, one per line, as one Luau error.
@@ -175,41 +120,9 @@ fn compile_error(errors: Vec<crate::input::GraphError>) -> l3i::Error {
     error(message)
 }
 
-fn compile(jess: &Rc<Jess>, spec: GraphSpec) -> l3i::Result<Owned<LuaInputGraph>> {
+fn compile(spec: GraphSpec) -> l3i::Result<Owned<LuaInputGraph>> {
     let graph = ActionGraph::compile(spec).map_err(compile_error)?;
-    Ok(Owned(LuaInputGraph {
-        graph: Rc::new(graph),
-        jess: jess.clone(),
-    }))
-}
-
-/// A document from a script's table, `version` filled in when left out.
-fn spec_from_table(frame: &Frame<'_>, jess: &Jess, value: ValueView<'_>, function: &str) -> l3i::Result<GraphSpec> {
-    if !value.is_table() {
-        return Err(error(format!(
-            "{function} takes a document table with actions and sets, not {}",
-            kind(value)
-        )));
-    }
-    let input: SpecInput = convert::from_lua(frame, jess, value, None)
-        .map_err(|problem| error(format!("{function}: {}", crate::lua::error_message(&problem))))?;
-    Ok(GraphSpec {
-        version: input.version,
-        actions: input.actions,
-        sets: input.sets,
-        layers: input.layers,
-    })
-}
-
-fn parse_event_kind(text: &Text) -> l3i::Result<ActionEventKind> {
-    match text.0.as_str() {
-        "pressed" => Ok(ActionEventKind::Pressed),
-        "released" => Ok(ActionEventKind::Released),
-        "changed" => Ok(ActionEventKind::Changed),
-        other => Err(error(format!(
-            "an action event kind is pressed, released, or changed, not {other:?}"
-        ))),
-    }
+    Ok(Owned(LuaInputGraph { graph: Rc::new(graph) }))
 }
 
 const fn event_kind_name(kind: ActionEventKind) -> &'static str {
@@ -218,17 +131,6 @@ const fn event_kind_name(kind: ActionEventKind) -> &'static str {
         ActionEventKind::Released => "released",
         ActionEventKind::Changed => "changed",
     }
-}
-
-fn parse_family(text: &Text) -> l3i::Result<PresentationFamily> {
-    PresentationFamily::from_name(&text.0).ok_or_else(|| {
-        let names: Vec<&str> = PresentationFamily::ALL.iter().map(|family| family.name()).collect();
-        error(format!(
-            "a presentation family is one of {}, not {:?}",
-            names.join(", "),
-            text.0
-        ))
-    })
 }
 
 fn push_value(frame: &Frame<'_>, value: Value) -> l3i::Result<()> {
@@ -263,208 +165,17 @@ fn push_action_state(scope: &impl Scope, state: &ActionState) -> l3i::Result<()>
     })
 }
 
-fn location_json(location: &BindingLocation) -> Json {
-    match &location.owner {
-        Owner::Set(name) => json!({ "set": name, "index": location.index }),
-        Owner::Layer(name) => json!({ "layer": name, "index": location.index }),
-    }
-}
-
-fn presentation_json(shape: &Presentation) -> Json {
-    let part = |input: &Presentation| presentation_json(input);
-    match shape {
-        Presentation::Control(control) => json!({
-            "kind": "control",
-            "control": control.control.to_string(),
-            "family": control.family.name(),
-            "label": control.label,
-        }),
-        Presentation::Chord(parts) => json!({ "kind": "chord", "parts": parts.iter().map(part).collect::<Vec<_>>() }),
-        Presentation::AnyOf(parts) => json!({ "kind": "anyOf", "parts": parts.iter().map(part).collect::<Vec<_>>() }),
-        Presentation::Tap { input, within_ms } => {
-            json!({ "kind": "tap", "input": part(input), "within": f64::from(*within_ms) / 1000.0 })
-        }
-        Presentation::Hold { input, duration_ms } => {
-            json!({ "kind": "hold", "input": part(input), "duration": f64::from(*duration_ms) / 1000.0 })
-        }
-        Presentation::Axis { negative, positive } => {
-            json!({ "kind": "axis", "negative": part(negative), "positive": part(positive) })
-        }
-        Presentation::Vector2 { x, y } => json!({ "kind": "vector2", "x": part(x), "y": part(y) }),
-        Presentation::While { input, condition } => {
-            json!({ "kind": "while", "input": part(input), "condition": part(condition) })
-        }
-        Presentation::Action(name) => json!({ "kind": "action", "action": name }),
-        Presentation::Constant => json!({ "kind": "constant" }),
-    }
-}
-
-fn conflict_json(conflict: &Conflict) -> Json {
-    let kind = match conflict.kind {
-        crate::input::ConflictKind::Press => "press",
-        crate::input::ConflictKind::Tap => "tap",
-        crate::input::ConflictKind::Hold => "hold",
-        crate::input::ConflictKind::Axis => "axis",
-    };
-    json!({
-        "owner": location_json(&BindingLocation { owner: conflict.owner.clone(), index: 0 })
-            .as_object()
-            .map(|owner| owner.iter().filter(|(key, _)| *key != "index").map(|(key, value)| (key.clone(), value.clone())).collect::<serde_json::Map<_, _>>()),
-        "kind": kind,
-        "controls": conflict.controls.iter().map(ToString::to_string).collect::<Vec<_>>(),
-        "actions": conflict.actions,
-        "bindings": conflict.bindings.iter().map(location_json).collect::<Vec<_>>(),
-    })
-}
-
-/// The module's authoring functions, each returning a node table.
-#[allow(clippy::too_many_lines)] // one function per node type
-fn authoring(module: &Functions<'_>, jess_state: &Rc<Jess>) -> l3i::Result<()> {
-    // Each function gets the call, the runtime's state as `$jess`, and its arguments, and its
-    // body is the node it makes.
-    macro_rules! node_function {
-        ($name:literal, |$call:ident, $jess:ident $(, $arg:ident : $ty:ty)*| $body:block) => {{
-            let state = jess_state.clone();
-            module.function($name, move |$call: &Call<'_>, $($arg: $ty),*| -> l3i::Result<StackResults> {
-                let $jess: &Jess = &state;
-                let spec: NodeSpec = $body;
-                convert::to_lua($call, &state, &spec)?;
-                Ok(StackResults)
-            })?;
-        }};
-    }
-    node_function!("key", |_call, _jess, name: Text| {
-        NodeSpec::button(named_control("key", &name)?)
-    });
-    node_function!("pointerButton", |_call, _jess, name: Text| {
-        NodeSpec::button(named_control("pointerButton", &name)?)
-    });
-    node_function!("gamepadButton", |_call, _jess, name: Text| {
-        NodeSpec::button(named_control("gamepadButton", &name)?)
-    });
-    node_function!("button", |_call, _jess, text: Text| {
-        let control = control(&text)?;
-        if !control.is_digital() {
-            return Err(error(format!(
-                "input.button reads a button, and {control} is an axis; use input.axis"
-            )));
-        }
-        NodeSpec::button(control)
-    });
-    node_function!("axis", |_call, _jess, text: Text| {
-        let control = control(&text)?;
-        if control.is_digital() {
-            return Err(error(format!(
-                "input.axis reads an axis, and {control} is a button; use input.button"
-            )));
-        }
-        NodeSpec::axis(control)
-    });
-    node_function!("gamepadAxis", |_call, _jess, name: Text| {
-        NodeSpec::axis(named_control("gamepadAxis", &name)?)
-    });
-    node_function!("pointerAxis", |_call, _jess, name: Text| {
-        NodeSpec::axis(named_control("pointerAxis", &name)?)
-    });
-    node_function!("constant", |_call, _jess, value: f64| {
-        #[allow(clippy::cast_possible_truncation)] // A binding constant is a small number.
-        NodeSpec::Constant { value: value as f32 }
-    });
-    node_function!("invert", |call, jess, input: ValueView<'_>| {
-        call.with_frame(|frame| Ok(NodeSpec::invert(node(frame, jess, input, "input.invert's input")?)))?
-    });
-    node_function!("scale", |call, jess, input: ValueView<'_>, factor: f64| {
-        #[allow(clippy::cast_possible_truncation)] // A scale factor is a small number.
-        call.with_frame(|frame| {
-            Ok(NodeSpec::scale(
-                node(frame, jess, input, "input.scale's input")?,
-                factor as f32,
-            ))
-        })?
-    });
-    node_function!("deadzone", |call, jess, input: ValueView<'_>, inner: f64, outer: f64| {
-        #[allow(clippy::cast_possible_truncation)] // Deadzone edges are in 0..1.
-        call.with_frame(|frame| {
-            Ok(NodeSpec::deadzone(
-                node(frame, jess, input, "input.deadzone's input")?,
-                inner as f32,
-                outer as f32,
-            ))
-        })?
-    });
-    node_function!("threshold", |call, jess, input: ValueView<'_>, level: f64| {
-        #[allow(clippy::cast_possible_truncation)] // A threshold level is in 0..1.
-        call.with_frame(|frame| {
-            Ok(NodeSpec::threshold(
-                node(frame, jess, input, "input.threshold's input")?,
-                level as f32,
-            ))
-        })?
-    });
-    node_function!("chord", |call, jess, members: ValueView<'_>| {
-        call.with_frame(|frame| Ok(NodeSpec::chord(nodes(frame, jess, members, "input.chord's members")?)))?
-    });
-    node_function!("any", |call, jess, members: ValueView<'_>| {
-        call.with_frame(|frame| Ok(NodeSpec::any(nodes(frame, jess, members, "input.any's members")?)))?
-    });
-    node_function!("gate", |call, jess, input: ValueView<'_>, condition: ValueView<'_>| {
-        call.with_frame(|frame| {
-            Ok(NodeSpec::gate(
-                node(frame, jess, input, "input.gate's input")?,
-                node(frame, jess, condition, "input.gate's condition")?,
-            ))
-        })?
-    });
-    node_function!("tap", |call, jess, input: ValueView<'_>, within: f64| {
-        let within = millis("input.tap", within)?;
-        call.with_frame(|frame| Ok(NodeSpec::tap(node(frame, jess, input, "input.tap's input")?, within)))?
-    });
-    node_function!("hold", |call, jess, input: ValueView<'_>, duration: f64| {
-        let duration = millis("input.hold", duration)?;
-        call.with_frame(|frame| Ok(NodeSpec::hold(node(frame, jess, input, "input.hold's input")?, duration)))?
-    });
-    node_function!(
-        "axisFromButtons",
-        |call, jess, negative: ValueView<'_>, positive: ValueView<'_>| {
-            call.with_frame(|frame| {
-                Ok(NodeSpec::axis_from_buttons(
-                    node(frame, jess, negative, "input.axisFromButtons' negative")?,
-                    node(frame, jess, positive, "input.axisFromButtons' positive")?,
-                ))
-            })?
-        }
-    );
-    node_function!("vector2", |call, jess, x: ValueView<'_>, y: ValueView<'_>| {
-        call.with_frame(|frame| {
-            Ok(NodeSpec::vector2(
-                node(frame, jess, x, "input.vector2's x")?,
-                node(frame, jess, y, "input.vector2's y")?,
-            ))
-        })?
-    });
-    node_function!("actionActive", |_call, _jess, action: Text| {
-        NodeSpec::action_active(action.0)
-    });
-    node_function!("actionValue", |_call, _jess, action: Text| {
-        NodeSpec::ActionValue { action: action.0 }
-    });
-    Ok(())
-}
-
 pub fn module(runtime: &Runtime, jess: &Rc<Jess>) -> l3i::Result<Table> {
     let module = Functions::module(runtime, "input")?;
-    authoring(&module, jess)?;
-    let state = jess.clone();
-    module.function(
-        "graph",
-        move |call: &Call<'_>, spec: ValueView<'_>| -> l3i::Result<Owned<LuaInputGraph>> {
-            let spec = call.with_frame(|frame| spec_from_table(frame, &state, spec, "input.graph"))?;
-            compile(&state, spec)
-        },
-    )?;
-    let state = jess.clone();
-    module.function("fromJson", move |text: Text| -> l3i::Result<Owned<LuaInputGraph>> {
-        compile(&state, GraphSpec::from_json(&text.0).map_err(error)?)
+    // The document arrives as JSON: `@jess/input` encodes a Luau document, and a saved one is
+    // already text.
+    module.function("graph", |text: Text| -> l3i::Result<Owned<LuaInputGraph>> {
+        compile(GraphSpec::from_json(&text.0).map_err(error)?)
+    })?;
+    module.set("formatVersion", &f64::from(FORMAT_VERSION))?;
+    // The control vocabulary is device truth: a script names a control, and this checks it.
+    module.function("control", |text: Text| -> l3i::Result<String> {
+        Ok(control(&text)?.to_string())
     })?;
     let state = jess.clone();
     module.function("runtime", move || {
@@ -492,12 +203,6 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .method("toJson", |this: &LuaInputGraph| this.graph.spec().to_json())
         .untyped();
     graph
-        .method("spec", |this: &LuaInputGraph, call: &Call<'_>| -> l3i::Result<StackResults> {
-            convert::to_lua(call, &this.jess, this.graph.spec())?;
-            Ok(StackResults)
-        })
-        .untyped();
-    graph
         .method(
             "actions",
             |this: &LuaInputGraph, call: &Call<'_>| -> l3i::Result<StackResults> {
@@ -511,48 +216,6 @@ pub fn describe(d: &mut ExtensionDescriptor) {
             },
         )
         .untyped();
-    graph
-        .method(
-            "bindings",
-            |this: &LuaInputGraph, call: &Call<'_>, action: Text| -> l3i::Result<StackResults> {
-                let locations: Vec<Json> = this.graph.spec().bindings_for(&action.0).iter().map(location_json).collect();
-                convert::display_to_lua(call, &Json::Array(locations))?;
-                Ok(StackResults)
-            },
-        )
-        .untyped();
-    graph
-        .method(
-            "presentations",
-            |this: &LuaInputGraph, call: &Call<'_>, action: Text, family: Text| -> l3i::Result<StackResults> {
-                let family = parse_family(&family)?;
-                let shapes: Vec<Json> = presentations(this.graph.spec(), &action.0, family)
-                    .iter()
-                    .map(|binding| {
-                        json!({
-                            "action": binding.action,
-                            "location": location_json(&binding.location),
-                            "family": binding.family.name(),
-                            "shape": presentation_json(&binding.shape),
-                        })
-                    })
-                    .collect();
-                convert::display_to_lua(call, &Json::Array(shapes))?;
-                Ok(StackResults)
-            },
-        )
-        .untyped();
-    graph
-        .method(
-            "conflicts",
-            |this: &LuaInputGraph, call: &Call<'_>| -> l3i::Result<StackResults> {
-                let found: Vec<Json> = conflicts(this.graph.spec()).iter().map(conflict_json).collect();
-                convert::display_to_lua(call, &Json::Array(found))?;
-                Ok(StackResults)
-            },
-        )
-        .untyped();
-
     let mut runtime = d.userdata::<LuaInputRuntime>(LuaInputRuntime::NAME);
     runtime.tag(TagPolicy::Never).doc(
         "An input runtime: the application's live one under a host, or a headless one with synthetic devices, ticked by the script.",
@@ -560,12 +223,14 @@ pub fn describe(d: &mut ExtensionDescriptor) {
     runtime
         .method(
             "install",
-            |this: &LuaInputRuntime, call: &Call<'_>, graph: ValueView<'_>| -> l3i::Result<f64> {
+            |this: &LuaInputRuntime, graph: ValueView<'_>| -> l3i::Result<f64> {
                 guard(&this.jess, "jess.input", capability::CONFIGURE)?;
-                let spec = match l3i::userdata::receiver::<LuaInputGraph>(graph) {
-                    Some(graph) => graph.graph.spec().clone(),
-                    None => call.with_frame(|frame| spec_from_table(frame, &this.jess, graph, "InputRuntime:install"))?,
+                let Some(graph) = l3i::userdata::receiver::<LuaInputGraph>(graph) else {
+                    return Err(error(
+                        "InputRuntime:install takes an InputGraph: compile the document with @jess/input's graph",
+                    ));
                 };
+                let spec = graph.graph.spec().clone();
                 let generation = this.lock().install(spec).map_err(compile_error)?;
                 #[allow(clippy::cast_precision_loss)] // Generations are counted in small numbers.
                 Ok(generation.value() as f64)
@@ -733,43 +398,6 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .untyped();
     runtime
         .method(
-            "route",
-            |this: &LuaInputRuntime, action: Text, kind: Text, intent: Text| -> l3i::Result<()> {
-                guard(&this.jess, "jess.input", capability::CONFIGURE)?;
-                let kind = parse_event_kind(&kind)?;
-                this.lock().route(&action.0, kind, &intent.0);
-                Ok(())
-            },
-        )
-        .untyped();
-    runtime
-        .method(
-            "intents",
-            |this: &LuaInputRuntime, call: &Call<'_>| -> l3i::Result<StackResults> {
-                guard(&this.jess, "jess.input", capability::ACTIONS)?;
-                let rows = {
-                    let service = this.lock();
-                    let names = action_names(&service);
-                    service
-                        .dispatches()
-                        .iter()
-                        .map(|dispatch| Row {
-                            intent: Some(service.intents().name(dispatch.intent).unwrap_or_default().to_owned()),
-                            action: names[dispatch.action.index() as usize].clone(),
-                            kind: dispatch.kind,
-                            value: dispatch.value,
-                            time: dispatch.timestamp,
-                            device: dispatch.device,
-                        })
-                        .collect::<Vec<Row>>()
-                };
-                push_rows(call, &rows)?;
-                Ok(StackResults)
-            },
-        )
-        .untyped();
-    runtime
-        .method(
             "devices",
             |this: &LuaInputRuntime, call: &Call<'_>| -> l3i::Result<StackResults> {
                 guard(&this.jess, "jess.input", capability::OBSERVE)?;
@@ -816,10 +444,9 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .untyped();
 }
 
-/// One action event or intent dispatch as a script sees it: `{ intent?, action, kind, value,
-/// time, device }`, the same row the host puts in the input phase's payload.
+/// One action event as a script sees it: `{ action, kind, value, time, device }`, the same row
+/// the host puts in the input phase's payload.
 struct Row {
-    intent: Option<String>,
     action: String,
     kind: ActionEventKind,
     value: Value,
@@ -831,11 +458,10 @@ struct Row {
 fn tick_rows(service: &mut InputService) -> Vec<Row> {
     let names = action_names(service);
     let now = service.now();
-    let tick = service.tick(now, IntentScope::default());
+    let tick = service.tick(now);
     tick.events
         .iter()
         .map(|event| Row {
-            intent: None,
             action: names[event.action.index() as usize].clone(),
             kind: event.kind,
             value: event.value,
@@ -847,10 +473,7 @@ fn tick_rows(service: &mut InputService) -> Vec<Row> {
 
 fn push_rows(scope: &impl Scope, rows: &[Row]) -> l3i::Result<()> {
     l3i::stack::push_list(scope, rows.iter(), |frame, row| {
-        push_table(frame, 0, 6, |frame, table| {
-            if let Some(intent) = &row.intent {
-                table.raw_set_value(frame, "intent", intent.as_str())?;
-            }
+        push_table(frame, 0, 5, |frame, table| {
             table.raw_set_value(frame, "action", row.action.as_str())?;
             table.raw_set_value(frame, "kind", event_kind_name(row.kind))?;
             set_value(frame, table, "value", row.value)?;

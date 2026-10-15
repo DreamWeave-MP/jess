@@ -13,9 +13,11 @@ fn only_generic_members_are_installed() {
             assert(not pcall(require, '@jess/' .. name), name)
         end
         assert(vfstool == nil and openmwConfig == nil and dreamPath == nil)
-        for _, name in { 'shader', 'context', 'worker', 'input', 'bench' } do
+        for _, name in { 'shader', 'context', 'worker', 'bench' } do
             assert(require('@jess/' .. name) == jess[name], name)
         end
+        -- @jess/input is the built-in package's Luau, over jess.input.
+        assert(require('@jess/input') ~= jess.input and require('@jess/input').runtime == jess.input.runtime)
     ",
     );
 }

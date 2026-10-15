@@ -332,3 +332,11 @@ A fixture never pins a bug. Where current behavior is a bug, the fixture pins on
 - **What:** jess and l3i each bound the `regex` crate, with different position conventions (jess's 1-based and inclusive, l3i's 0-based and exclusive) and different error text. `bytes.regex` gained what only `jess.regex` had (`match`, `captures`, `matches`, `replace`, `replaceAll`, `split`, `regexEscape`); `jess.regex`, `src/lua/regexp.rs`, the `Regex` types, and the `regex` dependency are gone.
 - **Class:** removal. `jess` lost the `regex` member, and the `regex/regex` fixture went with it.
 - **Decision:** the member list and the fixture list in `contracts.rs` dropped `regex`; `api/regex.md` maps every call, positions included.
+
+## Input
+
+### 50. Input policy left the native API for `@jess/input`, the built-in package's Luau
+
+- **What:** the binding builders (`key`, `chord`, `tap`, ...), labels, binding presentation, conflict checks, and intent routing are Luau now (`jpk/builtin/src/input`), over the document and the action events. `jess.input` keeps what is native: `graph(json)`, which compiles a document encoded as JSON, `control(text)`, the control vocabulary, `formatVersion`, and `runtime`. The graph's `spec`, `bindings`, `presentations`, and `conflicts` methods, `fromJson`, and the runtime's `route` and `intents` are gone, `runtime:install` takes only a compiled graph, and the host's input phase payload has no `intents`: a script's `input.router()` makes them with `router:dispatch(payload.events)`. The binding document is camelCase (`valueType`, `withinMs`, `durationMs`), leaves absent optional fields out instead of writing `null`, and names a `vector2`'s scalars `horizontal` and `vertical`. Binding locations count from 1.
+- **Class:** removal and break. `require('@jess/input')` is the built-in package's module, no longer `jess.input`.
+- **Decision:** the `@jess` member list in `contracts.rs` dropped `input` for a check that `@jess/input` wraps it; the input acceptance fixture runs through `@jess/input` (its binding and conflict indexes now from 1, conflict controls sorted by name), and the kernel fixture routes its intent with a router. `jpk/builtin/tests/input/run.jsl` holds the labels, presentation, conflicts, and routes.

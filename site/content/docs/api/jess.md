@@ -35,7 +35,7 @@ extra:
 | `@jess/data/toml` | TOML documents as tables, and back | [@jess/data/toml](@/docs/api/toml.md) |
 | `bytes.regex` | Rust regular expressions | [Regular expressions](@/docs/api/regex.md) |
 | `jess.shader` | Typed shader programs from Luau modules | [jess.shader](@/docs/api/shader.md) |
-| `jess.input` | Action graphs and a headless input runtime | [jess.input](@/docs/api/input.md) |
+| `@jess/input` | Action graphs, labels, conflicts, intents, and the input runtime | [@jess/input](@/docs/api/input.md) |
 | `jess.context` | Handlers for the phases a ScriptDomain schedules | [jess.context](@/docs/api/context.md) |
 | `jess.worker` | Isolated Luau workers and their messages | [jess.worker](@/docs/api/worker.md) |
 | `@jess/l10n` | Localized text from message bundles | [@jess/l10n](@/docs/api/l10n.md) |

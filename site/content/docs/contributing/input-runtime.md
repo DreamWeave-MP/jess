@@ -1,6 +1,6 @@
 ---
 title: 'Input Runtime'
-description: 'What jess-input is, what it deliberately is not, and how devices, the action graph, sets and layers, ticks, intents, presentation, and backends work.'
+description: 'What jess::input is, what it deliberately is not, and how devices, the action graph, sets and layers, ticks, backends, and the Luau that labels and routes them work.'
 weight: 75
 extra:
   kind: guide
@@ -8,7 +8,7 @@ extra:
 
 A GUI needs a key to mean "accept". A game needs the same key to mean "jump", a menu open on top of it needs it to mean "accept" again, and the settings screen needs to show which key that is on this keyboard and which button on that pad. Write the key-to-callback table that seems obvious on day one and every one of those needs turns into a special case in the GUI.
 
-`jess-input` (`libs/input`) exists so input is decided before any of that exists. It knows what devices report. It knows how to turn that into named actions through a graph an author writes and a user can remap. It does not know what an action means, and it draws nothing.
+`jess::input` (`src/input`) exists so input is decided before any of that exists. It knows what devices report. It knows how to turn that into named actions through a graph an author writes and a user can remap. It does not know what an action means, and it draws nothing: what an action means to a person is Luau, in [`@jess/input`](@/docs/api/input.md).
 
 ## What It Is
 
@@ -25,7 +25,7 @@ sets and layers            Evaluator                              (allocation-fr
     v
 semantic actions           ActionState, ActionEvent
     v
-intents                    IntentRouter, IntentDispatch           (a consumer supplies scope)
+intents                    @jess/input's router, in Luau          (names in, names out)
 ```
 
 `InputRuntime` ties the top four together for one application: a queue backends push to, the device state those events add up to, the installed graph, and one `tick` that drains, applies, evaluates, and returns the tick's action events. The default build has no platform dependencies; it's headless, and the tests drive it with a `SyntheticSource` whose clock moves only when told to.
@@ -34,11 +34,11 @@ intents                    IntentRouter, IntentDispatch           (a consumer su
 
 - **Not a keybinding table.** A binding is a tree of nodes with types, not a key and a closure. That is the whole point, and it is why remapping, conflict detection, and binding display are functions over data instead of features.
 - **Not an application.** No action name is reserved. `ui.accept`, `game.move`, and `editor.save` are conventions of whoever declares them. The crate has no idea what jumping is.
-- **Not a GUI.** `presentations` says what a binding is made of and what each control is called in a glyph family. Turning `A` into an Xbox glyph is a theme's problem.
+- **Not a GUI.** A device reports its `PresentationFamily`, and that is all the native side says about how anything looks. What a binding is made of, what each control is called in a glyph family, and which bindings conflict are Luau over the document (`@jess/input`). Turning `A` into an Xbox glyph is a theme's problem.
 - **Not a backend.** No public type names evdev, gilrs, SDL, or a window toolkit. Backends translate into Jess's vocabulary behind a trait and a feature, and the stub compiles everywhere.
 - **Not haptics.** `DeviceDescriptor` lists `OutputChannel`s and nothing drives them. The shape is reserved so haptics later attaches to the device model instead of growing a second one.
 - **Not text input.** IME and text entry belong to the GUI and the platform.
-- **Not an application.** `InputService` bundles one application's runtime, its intent routes by name, and a synthetic side into the unit a host ticks and a script configures; [jess-host](@/docs/contributing/application-kernel.md) ticks it in the input phase.
+- **Not a host.** `InputService` bundles one application's runtime and a synthetic side into the unit a host ticks and a script configures; [jess-host](@/docs/contributing/application-kernel.md) ticks it in the input phase.
 
 ## Device Truth
 
@@ -70,14 +70,14 @@ A `GraphSpec` declares actions, each with a `ValueType` (`digital`, `scalar`, `v
 | `chord` | 2+ digital | digital | Every member held |
 | `any` | 1+ digital | digital | Any member held |
 | `gate` | any, digital | input's | The input while the condition is on, else the type's zero |
-| `tap` | digital | digital | On for one tick when released within `within_ms` |
-| `hold` | digital | digital | On once held for `duration_ms`, until released |
+| `tap` | digital | digital | On for one tick when released within `withinMs` |
+| `hold` | digital | digital | On once held for `durationMs`, until released |
 | `axisFromButtons` | digital, digital | scalar | `-1`, `0`, or `1` |
-| `vector2` | scalar, scalar | vector2 | |
+| `vector2` | scalar, scalar | vector2 | `horizontal` is x, `vertical` is y |
 | `actionActive` | | digital | Whether another action is active, this tick |
 | `actionValue` | | the action's | Another action's value, this tick |
 
-Every input is checked against what the node takes and nothing is coerced. A binding must produce its action's type. Thresholds are whole milliseconds on the monotonic clock. The document serializes as JSON, fields in declaration order and lists in author order, so the same document is the same text; an unknown node type or field is an error naming it, never a binding dropped:
+Every input is checked against what the node takes and nothing is coerced. A binding must produce its action's type. Thresholds are whole milliseconds on the monotonic clock. The document serializes as JSON, camelCase, fields in declaration order and lists in author order, so the same document is the same text; an unknown node type or field is an error naming it, never a binding dropped:
 
 ```json
 {
@@ -85,8 +85,8 @@ Every input is checked against what the node takes and nothing is coerced. A bin
   "input": {
     "type": "chord",
     "members": [
-      { "type": "sourceButton", "control": "key:ControlLeft", "device": null },
-      { "type": "sourceButton", "control": "key:KeyS", "device": null }
+      { "type": "sourceButton", "control": "key:ControlLeft" },
+      { "type": "sourceButton", "control": "key:KeyS" }
     ]
   }
 }
@@ -105,7 +105,7 @@ The error is data too (`GraphError` has the owner, package, action, binding inde
 
 **Chords** turn on when the last member goes down and off when any member comes up, whatever order the members were pressed in. Members are not consumed: a plain binding to `S` still fires under `Ctrl+S`. Chord precedence is a later decision, made deliberately, not a default.
 
-**Tap and hold** measure from the device's own event timestamps where a source has them, so a hold threshold doesn't drift with the tick rate. A tap is a release within `within_ms` of the press, on for exactly one tick. A hold turns on when the threshold is crossed, on a tick, and stays on until release; a release after the tap window is not a tap. Tap 200 ms and hold 350 ms on one button tell themselves apart with nothing else.
+**Tap and hold** measure from the device's own event timestamps where a source has them, so a hold threshold doesn't drift with the tick rate. A tap is a release within `withinMs` of the press, on for exactly one tick. A hold turns on when the threshold is crossed, on a tick, and stays on until release; a release after the tap window is not a tap. Tap 200 ms and hold 350 ms on one button tell themselves apart with nothing else.
 
 **Gates** make dependency structural: `sprint` is `gate(ShiftLeft, actionActive(move))`. Actions are evaluated after the actions they read, so a gate sees this tick's value; a cycle of `actionActive`/`actionValue` is a compile error naming the cycle.
 
@@ -125,19 +125,19 @@ An `Evaluator` is the per-graph state that changes: every node's value and when 
 
 ## Generations and Remapping
 
-Every install, remap, restore, and uninstall replaces the graph whole and bumps the runtime's `Generation`. Ids belong to one generation's graph; hold names across a replacement, and drop events stamped with an older generation, which the intent router does for you. A document that doesn't compile replaces nothing: the last good graph keeps running.
+Every install, remap, restore, and uninstall replaces the graph whole and bumps the runtime's `Generation`. Ids belong to one generation's graph; hold names across a replacement, and drop events stamped with an older generation. A document that doesn't compile replaces nothing: the last good graph keeps running.
 
 Remapping is editing the document: `bindings_for`, `add_binding`, `replace_binding`, `remove_binding` on `GraphSpec`, then `InputRuntime::remap` compiles the result and keeps the package's defaults for `restore_defaults`. A user's saved document goes through `apply_bindings`, which refuses one that declares different actions than the installed defaults. The future settings screen is a consumer of exactly these calls.
 
-## Intents
+## Intents, Presentation, and Conflicts
 
-An action is interpreted input; an intent is what it means to a target; a command is an application operation a menu or a script may invoke just as well. `IntentRouter` is the middle step and nothing more: routes from `(action, edge)` to an `IntentId` from an `IntentRegistry`, and a dispatch list with the action's provenance (action, binding, device, value, timestamp, generation) and an `IntentScope` of opaque tokens the consumer supplied. No focus, no bubbling, no command table. The GUI pass will pressure this; it was kept small on purpose.
+These are policy, so they are Luau, in [`@jess/input`](@/docs/api/input.md), over the binding document and the action events; none of them touches a device or runs per frame unless a script asks.
 
-## Presentation and Conflicts
+An action is interpreted input; an intent is what it means to a target; a command is an application operation a menu or a script may invoke just as well. A router is the middle step and nothing more: routes from `(action, edge)` to an intent name, and `dispatch` turning a tick's events into intents with the action's provenance (action, value, time, device). Routes are by name, so a graph replacement can't make one stale. No focus, no bubbling, no command table.
 
-`presentations(spec, action, family)` returns each binding a person using that family can press, as a `Presentation` tree: controls with the family's semantic label (`A`, `Cross`, `LB`, `L1`, `KeyW`), chords, taps and holds with their thresholds, axes, vectors, gates as `While`. Transforms that don't change what to press are left out; the presentation of a deadzoned stick is the stick. The GUI decides what any of it looks like.
+`presentations(document, action, family)` returns each binding a person using that family can press, as a shape: controls with the family's label (`A`, `Cross`, `LB`, `L1`, `KeyW`), chords, taps and holds with their thresholds, axes, vectors, gates as `while`. Transforms that don't change what to press are left out; the presentation of a deadzoned stick is the stick.
 
-`conflicts(spec)` finds the check that is always a mistake: two bindings in one set or layer firing different actions from the same press, chord, tap, hold, or axis. It deliberately says nothing about `Ctrl+S` beside `S`, a tap beside a hold, or the same button in two sets, because whether those are conflicts depends on which sets and layers an application activates together. The document exposes the structure a tool needs to judge that itself.
+`conflicts(document)` finds the check that is always a mistake: two bindings in one set or layer firing different actions from the same press, chord, tap, hold, or axis. It deliberately says nothing about `Ctrl+S` beside `S`, a tap beside a hold, or the same button in two sets, because whether those are conflicts depends on which sets and layers an application activates together.
 
 ## Backends
 
@@ -158,11 +158,11 @@ The runtime enforces none, because a native caller holding an `InputRuntime` alr
 | Capability | Grants |
 | --- | --- |
 | `input.observe` | Raw device truth: `InputState`, descriptors, device events |
-| `input.actions` | Action state and events, intent dispatches, binding presentation |
-| `input.configure` | Installing, remapping, activating sets, pushing layers, routing, synthetic events |
+| `input.actions` | Action state and events |
+| `input.configure` | Installing, remapping, activating sets, pushing layers, synthetic events |
 
-`jess.input` checks them through `jess_runtime::require_capability` on every runtime method, whenever the script runs under a `ScriptDomain`; a denial is the broker's, `capability 'input.actions' denied to domain#1 gen#1 context#2`, attributed and diagnosed. Outside any domain the runtime's own grant decides: the CLI grants them to the scripts a person runs, a package target holds what it declares, and a library caller grants them when it builds the runtime (`jess::lua::host_script_grant`). The table of which method needs which is on [jess.input](@/docs/api/input.md).
+`jess.input` checks them through `jess_runtime::require_capability` on every runtime method, whenever the script runs under a `ScriptDomain`; a denial is the broker's, `capability 'input.actions' denied to domain#1 gen#1 context#2`, attributed and diagnosed. Outside any domain the runtime's own grant decides: the CLI grants them to the scripts a person runs, a package target holds what it declares, and a library caller grants them when it builds the runtime (`jess::lua::host_script_grant`). The table of which method needs which is on [@jess/input](@/docs/api/input.md); labels, presentation, conflicts, and routing need nothing, since they read only the document and the events a script already has.
 
 ## Tests
 
-The acceptance fixture (`libs/input/tests/gameplay.rs`) is the handoff's: a `gameplay` set with WASD movement, `Ctrl+S`, a tap and a 350 ms hold on one button, a gated sprint, and an `inventory` layer that rebinds one action and masks another, driven entirely by synthetic events on a test clock. It checks the vector, the chord's edges, tap against hold, timing that ignores wall time, the gate, deactivating the set, the layer, the going-live rule, the disconnect release, that nothing allocates per tick, and that the document round-trips to a golden (`tests/golden/gameplay.json`, `JESS_BLESS=1`). `tests/intents.rs` routes `ui.accept` to `ui.activate` with provenance intact and drops a stale generation. `tests/graph.rs` pins every compile error's message. The same fixture runs from Luau in `libs/lua/tests/contracts/input/acceptance.jsl`; see [jess.input](@/docs/api/input.md).
+The acceptance fixture (`tests/input/gameplay.rs`) is the handoff's: a `gameplay` set with WASD movement, `Ctrl+S`, a tap and a 350 ms hold on one button, a gated sprint, and an `inventory` layer that rebinds one action and masks another, driven entirely by synthetic events on a test clock. It checks the vector, the chord's edges, tap against hold, timing that ignores wall time, the gate, deactivating the set, the layer, the going-live rule, the disconnect release, that nothing allocates per tick, and that the document round-trips to a golden (`tests/input/golden/gameplay.json`, `JESS_BLESS=1`). `tests/input/graph.rs` pins every compile error's message. The same fixture runs from Luau in `tests/lua/contracts/input/acceptance.jsl`, through `@jess/input`'s router, presentation, and conflicts, and the built-in package's `tests/input/run.jsl` covers labels and routes; see [@jess/input](@/docs/api/input.md).

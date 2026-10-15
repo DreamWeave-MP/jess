@@ -8,7 +8,7 @@
 //!
 //! 1. **Input.** The host polls the platform backend into the domain's [`InputService`], ticks
 //!    it once at the host's clock, and, if the tick produced action events, runs the domain's
-//!    [`Phase::Input`](crate::runtime::Phase::Input) with them and the intents routed from them as the payload
+//!    [`Phase::Input`](crate::runtime::Phase::Input) with them as the payload
 //!    ([`input::payload`]). A quiet tick enters no Luau.
 //! 2. **Advance.** [`ScriptDomain::advance`]: fixed steps, update, late update, and the event
 //!    drain.
@@ -211,7 +211,7 @@ impl Host {
         let Some(driver) = &mut self.input else {
             return Ok(None);
         };
-        let Some(payload) = driver.tick(&self.domain)? else {
+        let Some(payload) = driver.tick()? else {
             return Ok(None);
         };
         Ok(Some(self.domain.run_phase(crate::runtime::Phase::Input, &payload)?))

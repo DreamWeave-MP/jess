@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use jess::host::{Host, HostSpec, InputSource};
-use jess::input::{ActionEventKind, Control, GraphSpec, Key, NodeSpec, Owner, ValueType};
+use jess::input::{Control, GraphSpec, Key, NodeSpec, Owner, ValueType};
 use jess::runtime::l3i;
 use jess::runtime::l3i::extension::{Extension, ExtensionDescriptor, RuntimePlan, RuntimePolicy};
 use jess::runtime::luau::RuntimeExtension;
@@ -79,10 +79,6 @@ context.bind('main', {
     for _, event in payload.events do
       journal.write(`input {event.action} {event.kind} {tostring(event.value)} device {event.device} at {event.time} gen {payload.generation}`)
     end
-
-    for _, intent in payload.intents do
-      journal.write(`intent {intent.intent} from {intent.action} {intent.kind}`)
-    end
   end,
 
   update = function(delta)
@@ -148,7 +144,6 @@ fn a_frame_ticks_input_into_the_input_phase() {
         let mut input = host.input().unwrap().lock().unwrap();
         input.install(accept()).unwrap();
         input.set_active("ui", true).unwrap();
-        input.route("ui.accept", ActionEventKind::Pressed, "ui.activate");
         input.synthetic().connect_keyboard()
     };
 
@@ -157,7 +152,7 @@ fn a_frame_ticks_input_into_the_input_phase() {
     assert!(report.input.is_none());
     assert_eq!(journal(), ["update 0.016"]);
 
-    // A key press: one input phase with the event, its intent, and the graph generation.
+    // A key press: one input phase with the event and the graph generation.
     {
         let mut input = host.input().unwrap().lock().unwrap();
         input.advance(Duration::from_millis(16));
@@ -168,11 +163,7 @@ fn a_frame_ticks_input_into_the_input_phase() {
     assert_eq!((phase.ran, phase.failures.len()), (1, 0));
     assert_eq!(
         journal(),
-        [
-            "input ui.accept pressed true device 0 at 0.016 gen 1",
-            "intent ui.activate from ui.accept pressed",
-            "update 0.016",
-        ]
+        ["input ui.accept pressed true device 0 at 0.016 gen 1", "update 0.016",]
     );
 
     // The key is still held: no edge, no phase.
@@ -217,7 +208,6 @@ fn a_restart_keeps_the_devices_and_drops_what_the_old_generation_configured_or_q
     {
         let input = host.input().unwrap().lock().unwrap();
         assert!(input.runtime().graph().is_none(), "the old code's graph is gone");
-        assert_eq!(input.routes(), []);
         assert_eq!(input.device(keyboard.index()), Some(keyboard), "the keyboard is still there");
     }
 

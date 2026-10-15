@@ -2,8 +2,7 @@
 //!
 //! Every id is a plain integer allocated by its owning registry, never a pointer: a device id by
 //! the device registry behind a queue, action, set, layer, binding, and node ids by the compiled
-//! graph that declared them, an intent id by an intent registry. Ids from one owner mean nothing
-//! to another; the `Display` forms are for diagnostics, not for persistence.
+//! graph that declared them. Ids from one owner mean nothing to another; the `Display` forms are for diagnostics, not for persistence.
 
 use std::fmt;
 
@@ -74,15 +73,10 @@ id_type! {
     BindingId, "binding"
 }
 
-id_type! {
-    /// A semantic intent, allocated by an [`crate::input::IntentRegistry`].
-    IntentId, "intent"
-}
-
 /// A monotonic generation counter, bumped by its owner every time it replaces what it holds.
 ///
 /// The input runtime bumps its generation on every graph install and uninstall, and everything
-/// a graph produces (action events, intent dispatches) carries the generation it was produced
+/// a graph produces (its action events) carries the generation it was produced
 /// under, so a consumer can drop what an earlier graph produced instead of acting on it.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
 #[derive(serde::Serialize, serde::Deserialize)]

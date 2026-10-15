@@ -17,63 +17,13 @@ export type WorkerOptions = { source: string, name: string?, capabilities: { str
 --- waits for it to end.
 export type Worker = jess_runtime_Worker
 
---- One node of a binding, as `jess.input`'s authoring functions return it: a table tagged by
---- `type` (`sourceButton`, `chord`, `tap`, ...), with its inputs nested. Durations inside are
---- milliseconds (`withinMs`, `durationMs`); the functions take seconds.
-export type InputNode = { type: string, [string]: any }
-
 --- What an action's value is shaped like: `digital` (boolean), `scalar` (number), or `vector2`
 --- (a `vector` with `z` 0).
 export type InputValueType = 'digital' | 'scalar' | 'vector2'
 
---- An action's declaration.
-export type InputAction = { name: string, valueType: InputValueType, origin: InputOrigin? }
-
---- Where something was declared, for diagnostics.
-export type InputOrigin = { file: string, line: number, column: number }
-
---- One binding: the action, by name, and the node tree that produces its value.
-export type InputBinding = { action: string, input: InputNode }
-
---- An action set: the bindings of one mode. Any number of sets can be active at once.
-export type InputSet = { name: string, owner: string, bindings: { InputBinding }, origin: InputOrigin? }
-
---- An action layer over the active sets: its bindings replace lower ones for the actions it
---- names, and `masks` silences actions. The layer pushed last decides first.
-export type InputLayer = { name: string, owner: string, bindings: { InputBinding }, masks: { string }?, origin: InputOrigin? }
-
---- A binding document. `version` is filled in when left out.
-export type InputDocument = { version: number?, actions: { InputAction }, sets: { InputSet }?, layers: { InputLayer }? }
-
---- Where a binding is in a document: its set or layer, and its 0-based position there.
-export type InputBindingLocation = { set: string?, layer: string?, index: number }
-
---- A binding's shape, for a GUI to draw: `control` (with `control`, `family`, `label`), `chord`
---- and `anyOf` (with `parts`), `tap` and `hold` (with `input` and a threshold in seconds),
---- `axis` (with `negative` and `positive`), `vector2` (with `x` and `y`), `while` (with `input`
---- and `condition`), `action` (with `action`), or `constant`.
-export type InputPresentation = { kind: string, [string]: any }
-
---- A glyph family for labels: `keyboardMouse`, `xbox`, `playstation`, `nintendo`,
---- `genericGamepad`, or `touch`.
+--- A device's glyph family, for labels (`@jess/input`'s `label`): `keyboardMouse`, `xbox`,
+--- `playstation`, `nintendo`, `genericGamepad`, or `touch`.
 export type InputFamily = 'keyboardMouse' | 'xbox' | 'playstation' | 'nintendo' | 'genericGamepad' | 'touch'
-
---- One binding of an action as presentation data.
-export type InputBindingPresentation = {
-  action: string,
-  location: InputBindingLocation,
-  family: InputFamily,
-  shape: InputPresentation,
-}
-
---- Two bindings in one set or layer that fire different actions from the same input.
-export type InputConflict = {
-  owner: { set: string?, layer: string? },
-  kind: 'press' | 'tap' | 'hold' | 'axis',
-  controls: { string },
-  actions: { string },
-  bindings: { InputBindingLocation },
-}
 
 --- An action's value: a boolean for digital, a number for scalar, a `vector` (z 0) for vector2.
 export type InputValue = boolean | number | vector
@@ -92,16 +42,6 @@ export type InputActionState = {
 
 --- One action edge from a tick.
 export type InputActionEvent = {
-  action: string,
-  kind: 'pressed' | 'released' | 'changed',
-  value: InputValue,
-  time: number,
-  device: number?,
-}
-
---- An intent a routed action edge dispatched.
-export type InputIntent = {
-  intent: string,
   action: string,
   kind: 'pressed' | 'released' | 'changed',
   value: InputValue,
@@ -128,16 +68,8 @@ export type InputStats = {
 export type InputGraph = {
   --- The document as JSON, the same text for the same document.
   toJson: (self: InputGraph) -> string,
-  --- The document as a table, which `jess.input.graph` accepts back.
-  spec: (self: InputGraph) -> InputDocument,
   --- The actions, in declaration order.
   actions: (self: InputGraph) -> { { name: string, valueType: InputValueType } },
-  --- Where an action's bindings are, sets first.
-  bindings: (self: InputGraph, action: string) -> { InputBindingLocation },
-  --- An action's bindings a person using `family` can press, as presentation data.
-  presentations: (self: InputGraph, action: string, family: InputFamily) -> { InputBindingPresentation },
-  --- The plain conflicts: two bindings in one set or layer firing different actions from one input.
-  conflicts: (self: InputGraph) -> { InputConflict },
 }
 
 --- An input runtime. Under a host it is the application's live input: the host ticks it in the
@@ -145,8 +77,8 @@ export type InputGraph = {
 --- synthetic devices, and a clock that moves when told to. Reading state needs `input.actions`,
 --- `devices` needs `input.observe`, and everything that changes it needs `input.configure`.
 export type InputRuntime = {
-  --- Installs a graph (or a document table), replacing the last one. Returns the new generation.
-  install: (self: InputRuntime, graph: InputGraph | InputDocument) -> number,
+  --- Installs a graph, replacing the last one. Returns the new generation.
+  install: (self: InputRuntime, graph: InputGraph) -> number,
   uninstall: (self: InputRuntime) -> (),
   --- Puts the installed package's bindings back, dropping remaps.
   restoreDefaults: (self: InputRuntime) -> (),
@@ -171,10 +103,6 @@ export type InputRuntime = {
   tick: (self: InputRuntime) -> { InputActionEvent },
   --- An action's state after the last tick, or nil for a name the graph doesn't declare.
   action: (self: InputRuntime, name: string) -> InputActionState?,
-  --- Dispatches `intent` on `kind` edges of `action`, from the next tick.
-  route: (self: InputRuntime, action: string, kind: 'pressed' | 'released' | 'changed', intent: string) -> (),
-  --- The last tick's intents, in order.
-  intents: (self: InputRuntime) -> { InputIntent },
   devices: (self: InputRuntime) -> { InputDevice },
   stats: (self: InputRuntime) -> InputStats,
 }
@@ -318,46 +246,15 @@ declare jess: {
     send: (message: unknown) -> (),
   },
 
-  --- Action graphs and a headless input runtime. Authoring functions return node tables; `graph`
-  --- compiles a document of them and validates it. See `jess::input`.
+  --- The native half of `@jess/input`, which wraps it: compiling a binding document and the
+  --- input runtime. See `jess::input`.
   input: {
-    --- A key by its W3C position name (`KeyA`, `ControlLeft`, `Numpad7`).
-    key: (name: string) -> InputNode,
-    pointerButton: (name: string) -> InputNode,
-    --- A gamepad button by position (`South`, `LeftBumper`, `DPadUp`).
-    gamepadButton: (name: string) -> InputNode,
-    --- Any button, as `class:Name`.
-    button: (control: string) -> InputNode,
-    --- Any axis, as `class:Name` (`gamepadAxis:LeftStickX`, `pointerAxis:DeltaY`).
-    axis: (control: string) -> InputNode,
-    gamepadAxis: (name: string) -> InputNode,
-    pointerAxis: (name: string) -> InputNode,
-    constant: (value: number) -> InputNode,
-    invert: (input: InputNode) -> InputNode,
-    scale: (input: InputNode, factor: number) -> InputNode,
-    --- Zero at or below `inner`, one at or above `outer`, rescaled between; radial on a vector.
-    deadzone: (input: InputNode, inner: number, outer: number) -> InputNode,
-    --- A scalar as a button, on at or above `level`.
-    threshold: (input: InputNode, level: number) -> InputNode,
-    --- Every member held; on when the last lands, off when any lifts.
-    chord: (members: { InputNode }) -> InputNode,
-    any: (members: { InputNode }) -> InputNode,
-    --- `input` while `condition` is on, the type's zero otherwise.
-    gate: (input: InputNode, condition: InputNode) -> InputNode,
-    --- On for one tick when `input` is released within `within` seconds of its press.
-    tap: (input: InputNode, within: number) -> InputNode,
-    --- On once `input` has been held for `duration` seconds, until it is released.
-    hold: (input: InputNode, duration: number) -> InputNode,
-    --- `-1`, `0`, or `1` from two buttons.
-    axisFromButtons: (negative: InputNode, positive: InputNode) -> InputNode,
-    vector2: (x: InputNode, y: InputNode) -> InputNode,
-    --- Whether another action is active this tick.
-    actionActive: (action: string) -> InputNode,
-    --- Another action's value this tick.
-    actionValue: (action: string) -> InputNode,
-    --- Compiles and validates a document; every problem is reported at once, by place.
-    graph: (document: InputDocument) -> InputGraph,
-    fromJson: (text: string) -> InputGraph,
+    --- Compiles and validates a binding document, as JSON; every problem is reported at once.
+    graph: (json: string) -> InputGraph,
+    --- The binding document format version this jess reads and writes.
+    formatVersion: number,
+    --- A control's canonical `class:Name` form, or an error naming what is wrong with it.
+    control: (control: string) -> string,
     --- The domain's live input runtime under a host; a headless one of the script's own otherwise.
     runtime: () -> InputRuntime,
   },

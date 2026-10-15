@@ -102,7 +102,7 @@ local function wants(graph: InputGraph): string
   return graph.source
 end
 
-print(wants(jess.input.graph { actions = {}, sets = {} }))
+print(wants(jess.input.graph '{"version": 1, "actions": [], "sets": []}'))
 ```
 
 jess's definitions declare `InputGraph` (and `ShaderExpr`, `Worker`, and the rest) as global types. Declare a local one with the same name and the error reads `Expected this to be 'InputGraph' from 'main.jsl', but got 'InputGraph' from '@jess'`. Older Luau printed both as plain `InputGraph`, which is where "X is not X" came from. Today's message tells you which is which, but the clash is still there.

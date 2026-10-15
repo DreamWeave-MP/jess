@@ -184,14 +184,9 @@ impl Extension for JessExtension {
 impl Jess {
     fn new(runtime: &Runtime, module: Table, granted: Vec<&'static str>) -> l3i::Result<Self> {
         let tostring = Function::from_value(runtime.global("tostring")?)?;
-        let (array_marker, loaded) = {
-            let stack = runtime.stack();
-            (Table::new(&stack, 0, 0)?, Table::new(&stack, 0, 32)?)
-        };
-        l3i::readonly::make_read_only(runtime, &array_marker)?;
+        let loaded = Table::new(&runtime.stack(), 0, 32)?;
         Ok(Self {
             module,
-            array_marker,
             compile_options: RefCell::new(None),
             bytecode: RefCell::new(HashMap::new()),
             loaded,

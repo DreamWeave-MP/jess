@@ -13,6 +13,10 @@ use crate::lua::{Jess, error};
 /// Standard libraries available by name.
 const PRELOADED: [&str; 6] = ["coroutine", "math", "string", "table", "utf8", "os"];
 
+/// The members the built-in package wraps in a Luau module of the same `@jess/` name: `jess.input`
+/// is the native half of `@jess/input`.
+const WRAPPED: [&str; 1] = ["input"];
+
 /// Fills `require`'s cache with what it hands out by name: the preloaded standard libraries, and
 /// the installed modules by their global names, with and without a leading `@`. Luau's own
 /// `require`, which the plan installed, is kept for the `@` module paths it knows.
@@ -32,9 +36,10 @@ pub fn seed_require(runtime: &Runtime, jess: &Jess) -> l3i::Result<()> {
             module.push_to(frame)?;
             loaded.raw_set(frame, name)?;
         }
-        // Each of jess's own modules is `@jess/<name>` too: `require("@jess/shader")`.
+        // Each of jess's own modules is `@jess/<name>` too: `require("@jess/shader")`, except the
+        // ones the built-in package wraps, whose `@jess/` name is its Luau module.
         let jess_module = jess.module.push_to(frame)?;
-        for name in crate::lua::plan::MEMBERS {
+        for name in crate::lua::plan::MEMBERS.into_iter().filter(|name| !WRAPPED.contains(name)) {
             frame.with_frame(|frame| {
                 let member = jess_module.raw_get(frame, name)?;
                 if member.is_table() {

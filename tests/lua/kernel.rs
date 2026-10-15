@@ -35,7 +35,7 @@ const MAIN: &str = r"
 local context = require('@jess/context')
 local worker = require('@jess/worker')
 local l10n = require('@jess/l10n')
-local input = jess.input
+local input = require('@jess/input')
 
 local log = {}
 
@@ -52,6 +52,7 @@ assert(#l10n.reload() == 0)
 
 local common = l10n.bundle 'common'
 local runtime = input.runtime()
+local router = input.router()
 local greeter
 
 local calls = {}
@@ -59,7 +60,7 @@ local calls = {}
 context.bind('main', {
   startup = function()
     -- The live runtime: the host ticks it, the script configures it.
-    runtime:install {
+    runtime:install(input.graph {
       actions = {
         { name = 'ui.accept', valueType = 'digital' },
         { name = 'quickSave', valueType = 'digital' },
@@ -74,9 +75,9 @@ context.bind('main', {
           },
         },
       },
-    }
+    })
     runtime:setActive 'ui'
-    runtime:route('ui.accept', 'pressed', 'ui.activate')
+    router:route('ui.accept', 'pressed', 'ui.activate')
     note(`startup {common('hello', { name = 'Fargoth' })} gen {l10n.generation()}`)
 
     -- A worker that localizes with a registry of its own and has no say over input: it sees
@@ -121,7 +122,7 @@ context.bind('input', {
       note(`input {event.action} {event.kind} device {event.device} gen {payload.generation}`)
     end
 
-    for _, intent in payload.intents do
+    for _, intent in router:dispatch(payload.events) do
       note(`intent {intent.intent} <- {intent.action} {intent.kind} value {tostring(intent.value)}`)
     end
 
@@ -288,9 +289,9 @@ fn the_application_kernel_end_to_end() {
         )
     );
 
-    // 5. Keys pressed on the host's synthetic side become action events and intents in the input
-    //    phase, with provenance and the graph generation; the input context's own capability
-    //    checks hold.
+    // 5. Keys pressed on the host's synthetic side become action events in the input phase,
+    //    with provenance and the graph generation, and the script's router makes intents of
+    //    them; the input context's own capability checks hold.
     let keyboard = {
         let mut service = host.input().unwrap().lock().unwrap();
         let keyboard = service.synthetic().connect_keyboard();

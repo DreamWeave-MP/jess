@@ -120,7 +120,7 @@ fn every_kind_of_mistake_is_reported_at_once() {
         "sourceButton reads a button, and gamepadAxis:LeftTrigger is an axis; read it with sourceAxis, and make a button of it with threshold",
         "sourceAxis reads an axis, and key:KeyA is a button; read it with sourceButton",
         "chord needs at least 2 members, and has 1",
-        "tap's within_ms is 0 ms; a threshold must be at least 1 ms",
+        "tap's withinMs is 0 ms; a threshold must be at least 1 ms",
         "deadzone edges must be 0 <= inner < outer <= 1, and they are inner 0.9, outer 0.2",
         "threshold's level must be above 0, and it is 0",
         "scale's factor isn't a finite number",
@@ -155,7 +155,7 @@ fn the_errors_are_data_too() {
         error.kind,
         GraphErrorKind::ZeroDuration {
             node: "hold",
-            field: "duration_ms"
+            field: "durationMs"
         }
     );
     assert_eq!(error.owner, Some(set()));
@@ -176,7 +176,7 @@ fn unknown_nodes_and_fields_are_refused_loudly() {
     assert!(message.contains("unknown variant `doubleTap`"), "{message}");
     assert!(message.contains("line "), "{message}");
 
-    let text = gameplay().to_json().replace("\"within_ms\"", "\"within\"");
+    let text = gameplay().to_json().replace("\"withinMs\"", "\"within\"");
     let error = GraphSpec::from_json(&text).unwrap_err().to_string();
     assert!(error.contains("unknown field `within`"), "{error}");
 

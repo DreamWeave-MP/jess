@@ -588,7 +588,7 @@ impl Compiler<'_> {
                 }
             }
             NodeSpec::Tap { within_ms, .. } => {
-                let within = millis(self, "within_ms", *within_ms);
+                let within = millis(self, "withinMs", *within_ms);
                 self.expect(place, path, name, ("input", inputs[0]), DIGITAL);
                 Node {
                     op: Op::Tap {
@@ -599,7 +599,7 @@ impl Compiler<'_> {
                 }
             }
             NodeSpec::Hold { duration_ms, .. } => {
-                let duration = millis(self, "duration_ms", *duration_ms);
+                let duration = millis(self, "durationMs", *duration_ms);
                 self.expect(place, path, name, ("input", inputs[0]), DIGITAL);
                 Node {
                     op: Op::Hold {

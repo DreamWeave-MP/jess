@@ -36,11 +36,11 @@
     ],
     "bindings": [
       {
-        "index": 2,
+        "index": 3,
         "set": "gameplay"
       },
       {
-        "index": 0,
+        "index": 1,
         "layer": "inventory"
       }
     ],
@@ -60,17 +60,17 @@
         ],
         "bindings": [
           {
-            "index": 0,
+            "index": 1,
             "set": "s"
           },
           {
-            "index": 1,
+            "index": 2,
             "set": "s"
           }
         ],
         "controls": [
-          "key:KeyS",
-          "key:ControlLeft"
+          "key:ControlLeft",
+          "key:KeyS"
         ],
         "kind": "press",
         "owner": {
@@ -145,7 +145,7 @@
         "action": "contextMenu",
         "family": "xbox",
         "location": {
-          "index": 3,
+          "index": 4,
           "set": "gameplay"
         },
         "shape": {

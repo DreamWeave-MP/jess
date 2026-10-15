@@ -51,6 +51,7 @@ pub const FILES: &[(&str, &str)] = &[
     ),
     ("src/data/value.jsl", include_str!("../../jpk/builtin/src/data/value.jsl")),
     ("src/data/yaml.jsl", include_str!("../../jpk/builtin/src/data/yaml.jsl")),
+    ("src/input/init.jsl", include_str!("../../jpk/builtin/src/input/init.jsl")),
     ("src/l10n/file.jsl", include_str!("../../jpk/builtin/src/l10n/file.jsl")),
     ("src/l10n/format.jsl", include_str!("../../jpk/builtin/src/l10n/format.jsl")),
     ("src/l10n/init.jsl", include_str!("../../jpk/builtin/src/l10n/init.jsl")),
@@ -64,6 +65,7 @@ pub const FILES: &[(&str, &str)] = &[
         include_str!("../../jpk/builtin/tests/analysis/run.jsl"),
     ),
     ("tests/data/run.jsl", include_str!("../../jpk/builtin/tests/data/run.jsl")),
+    ("tests/input/run.jsl", include_str!("../../jpk/builtin/tests/input/run.jsl")),
     (
         "tests/l10n/fixtures.jsl",
         include_str!("../../jpk/builtin/tests/l10n/fixtures.jsl"),

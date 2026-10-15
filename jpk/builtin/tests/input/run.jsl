@@ -1,0 +1,223 @@
+--!strict
+-- @jess/input's cases: the builders against the document format, labels, presentation,
+-- conflicts, and routes, over headless runtimes.
+local input = require '@jess/input'
+local test = require '@jess/test'
+local expect = test.expect
+local suite = test.new()
+
+type Document = input.Document
+
+local function gameplay(): Document
+  return {
+    actions = {
+      { name = 'jump', valueType = 'digital' },
+      { name = 'dash', valueType = 'digital' },
+      { name = 'save', valueType = 'digital' },
+      { name = 'move', valueType = 'vector2' },
+    },
+    sets = {
+      {
+        name = 'gameplay',
+        owner = '@jess/test',
+        bindings = {
+          { action = 'jump', input = input.key 'Space' },
+          { action = 'jump', input = input.gamepadButton 'South' },
+          { action = 'dash', input = input.key 'Space' },
+          { action = 'save', input = input.chord { input.key 'ControlLeft', input.key 'KeyS' } },
+          { action = 'dash', input = input.tap(input.key 'ShiftLeft', 0.25) },
+          {
+            action = 'move',
+            input = input.vector2(
+              input.axisFromButtons(input.key 'KeyA', input.key 'KeyD'),
+              input.axisFromButtons(input.key 'KeyS', input.key 'KeyW')
+            ),
+          },
+        },
+      },
+    },
+    layers = {
+      {
+        name = 'menu',
+        owner = '@jess/test',
+        bindings = {
+          { action = 'save', input = input.chord { input.key 'KeyS', input.key 'ControlLeft' } },
+          { action = 'jump', input = input.chord { input.key 'ControlLeft', input.key 'KeyS' } },
+        },
+      },
+    },
+  }
+end
+
+suite.describe('the builders', function()
+  suite.it('write the nodes the document format names, with durations in milliseconds', function()
+    expect(input.key 'KeyA').toEqual { type = 'sourceButton', control = 'key:KeyA' }
+    expect(input.gamepadAxis 'LeftStickX').toEqual { type = 'sourceAxis', control = 'gamepadAxis:LeftStickX' }
+    expect(input.tap(input.key 'KeyA', 0.25)).toEqual {
+      type = 'tap',
+      input = { type = 'sourceButton', control = 'key:KeyA' },
+      withinMs = 250,
+    }
+
+    expect(input.hold(input.gamepadButton 'South', 0.5)).toEqual {
+      type = 'hold',
+      input = { type = 'sourceButton', control = 'gamepadButton:South' },
+      durationMs = 500,
+    }
+    expect(input.constant(0.5)).toEqual { type = 'constant', value = 0.5 }
+  end)
+
+  suite.it('refuse controls that are not in the vocabulary, or not of the kind asked for', function()
+    expect(function() input.key 'Keyboard' end).toThrow 'no key of that name'
+    expect(function() input.button 'gamepadAxis:LeftStickX' end).toThrow 'is an axis; use input.axis'
+    expect(function() input.axis 'key:KeyA' end).toThrow 'is a button; use input.button'
+    expect(function() input.tap(input.key 'KeyA', -1) end).toThrow 'takes a duration in seconds'
+    expect(input.button 'touch:0').toEqual { type = 'sourceButton', control = 'touch:0' }
+  end)
+end)
+
+suite.describe('compiling', function()
+  suite.it('fills in what a document leaves out and round-trips through JSON', function()
+    local graph = input.graph { actions = { { name = 'jump', valueType = 'digital' } } }
+    local document = input.document(graph)
+    expect(document.version).toBe(input.formatVersion)
+    expect(document.sets).toEqual {}
+    expect(document.layers).toEqual {}
+    expect(input.fromJson(graph:toJson()):toJson()).toBe(graph:toJson())
+    expect(input.document(input.graph(gameplay()))).toEqual(input.document(input.graph(input.document(input.graph(gameplay())))))
+  end)
+
+  suite.it('reports every problem at once', function()
+    local broken = gameplay()
+    table.insert((broken.sets :: { input.Set })[1].bindings, { action = 'fly', input = input.key 'KeyF' })
+    expect(function() input.graph(broken) end).toThrow "the action graph doesn't compile"
+    expect(function() input.graph(broken) end).toThrow 'fly'
+  end)
+end)
+
+suite.describe('labels', function()
+  suite.it('name gamepad buttons the way each family prints them', function()
+    expect(input.label('xbox', 'gamepadButton:South')).toBe 'A'
+    expect(input.label('playstation', 'gamepadButton:South')).toBe 'Cross'
+    expect(input.label('nintendo', 'gamepadButton:South')).toBe 'B'
+    expect(input.label('nintendo', 'gamepadButton:East')).toBe 'A'
+    expect(input.label('playstation', 'gamepadButton:LeftTrigger')).toBe 'L2'
+    expect(input.label('genericGamepad', 'gamepadButton:South')).toBe 'South'
+    expect(input.label('xbox', 'gamepadButton:DPadUp')).toBe 'DPadUp'
+  end)
+
+  suite.it('keep key, pointer, and axis names, and number touch contacts', function()
+    expect(input.label('keyboardMouse', 'key:KeyA')).toBe 'KeyA'
+    expect(input.label('keyboardMouse', 'pointerButton:Primary')).toBe 'Primary'
+    expect(input.label('touch', 'touch:0')).toBe 'Contact0'
+    expect(input.label('touch', 'touchAxis:1:X')).toBe 'Contact1X'
+    expect(function() input.label('sega' :: input.Family, 'key:KeyA') end).toThrow 'not sega'
+  end)
+end)
+
+suite.describe('presentation', function()
+  suite.it('finds bindings sets first, by position from 1', function()
+    expect(input.bindings(gameplay(), 'jump')).toEqual {
+      { set = 'gameplay', index = 1 },
+      { set = 'gameplay', index = 2 },
+      { layer = 'menu', index = 2 },
+    }
+    expect(input.bindings(gameplay(), 'nothing')).toEqual {}
+  end)
+
+  suite.it("shows only the bindings a family's devices can press", function()
+    local pad = input.presentations(gameplay(), 'jump', 'xbox')
+    expect(#pad).toBe(1)
+    expect(pad[1].shape).toEqual { kind = 'control', control = 'gamepadButton:South', family = 'xbox', label = 'A' }
+
+    local keyboard = input.presentations(gameplay(), 'dash', 'keyboardMouse')
+    expect(#keyboard).toBe(2)
+    expect(keyboard[2]).toEqual {
+      action = 'dash',
+      location = { set = 'gameplay', index = 5 },
+      family = 'keyboardMouse',
+      shape = {
+        kind = 'tap',
+        input = { kind = 'control', control = 'key:ShiftLeft', family = 'keyboardMouse', label = 'ShiftLeft' },
+        within = 0.25,
+      },
+    }
+
+    local move = input.presentations(gameplay(), 'move', 'keyboardMouse')[1].shape
+    if move.kind ~= 'vector2' then error 'move is a vector2' end
+    expect(move.horizontal.kind).toBe 'axis'
+  end)
+end)
+
+suite.describe('conflicts', function()
+  suite.it('pair bindings in one set or layer that fire different actions from one input', function()
+    expect(input.conflicts(gameplay())).toEqual {
+      {
+        owner = { set = 'gameplay' },
+        kind = 'press',
+        controls = { 'key:Space' },
+        actions = { 'jump', 'dash' },
+        bindings = { { set = 'gameplay', index = 1 }, { set = 'gameplay', index = 3 } },
+      },
+      {
+        owner = { layer = 'menu' },
+        kind = 'press',
+        controls = { 'key:ControlLeft', 'key:KeyS' },
+        actions = { 'save', 'jump' },
+        bindings = { { layer = 'menu', index = 1 }, { layer = 'menu', index = 2 } },
+      },
+    }
+  end)
+
+  suite.it('leave out taps against presses, devices of their own, and one action twice', function()
+    local document: Document = {
+      actions = { { name = 'a', valueType = 'digital' }, { name = 'b', valueType = 'digital' } },
+      sets = {
+        {
+          name = 'one',
+          owner = '@jess/test',
+          bindings = {
+            { action = 'a', input = input.key 'KeyQ' },
+            { action = 'b', input = input.tap(input.key 'KeyQ', 0.2) },
+            { action = 'a', input = input.key 'KeyQ' },
+            { action = 'b', input = { type = 'sourceButton', control = 'key:KeyQ', device = 0 } },
+          },
+        },
+      },
+    }
+    expect(input.conflicts(document)).toEqual {}
+  end)
+end)
+
+suite.describe('routes', function()
+  suite.it('turn action edges into intents, in route order, by name across graphs', function()
+    local router = input.router()
+    router:route('jump', 'pressed', 'player.jump')
+    router:route('jump', 'pressed', 'audio.cue')
+    router:route('jump', 'released', 'player.land')
+    expect(function() router:route('jump', 'held' :: input.EventKind, 'x') end).toThrow 'not held'
+
+    local runtime = input.runtime()
+    runtime:install(input.graph(gameplay()))
+    runtime:setActive 'gameplay'
+    local keyboard = runtime:connect 'keyboard'
+    runtime:press(keyboard, 'key:Space')
+    local events = runtime:tick()
+    local intents = router:dispatch(events)
+    expect(#intents).toBe(2)
+    expect(intents[1].intent).toBe 'player.jump'
+    expect(intents[2].intent).toBe 'audio.cue'
+    expect(intents[1].action).toBe 'jump'
+    expect(intents[1].device).toBe(keyboard)
+
+    runtime:install(input.graph(gameplay()))
+    runtime:release(keyboard, 'key:Space')
+    runtime:advance(0.016)
+    expect(router:dispatch(runtime:tick())).toEqual {}
+
+    router:clear()
+    expect(router:routes()).toEqual {}
+  end)
+end)
+
+return suite

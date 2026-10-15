@@ -1,12 +1,12 @@
 --!strict
 -- The input acceptance fixture (the input handoff's sections 39 and 40), driven from Luau: a
 -- gameplay set with WASD movement, a Ctrl+S chord, a tap and a hold on one button, a gated sprint,
--- an inventory layer over it, and ui.accept routed to an intent. Every timestamp comes from the
+-- an inventory layer over it, and ui.accept routed to an intent by @jess/input's router. Every timestamp comes from the
 -- runtime's own clock, which moves only when the script says so.
 local oracle, env = ...
-local input = jess.input
+local input = require('@jess/input')
 
-local function key(name: string): InputNode return input.key(name) end
+local function key(name: string): input.Node return input.key(name) end
 
 local south = input.gamepadButton 'South'
 local graph = input.graph {
@@ -58,7 +58,8 @@ local graph = input.graph {
 local runtime = input.runtime()
 runtime:install(graph)
 runtime:setActive 'gameplay'
-runtime:route('ui.accept', 'pressed', 'ui.activate')
+local router = input.router()
+router:route('ui.accept', 'pressed', 'ui.activate')
 local keyboard, pad = runtime:connect 'keyboard', runtime:connect 'gamepad'
 runtime:tick()
 
@@ -155,18 +156,25 @@ runtime:setActive 'ui'
 runtime:press(keyboard, 'key:KeyW')
 runtime:press(pad, 'gamepadButton:South')
 local silenced = step(0.016)
-local intents = runtime:intents()
+local intents = router:dispatch(silenced)
 runtime:release(pad, 'gamepadButton:South')
-step(0.016)
-local noIntentOnRelease = #runtime:intents()
+local noIntentOnRelease = #router:dispatch(step(0.016))
 
--- The document round-trips through JSON and through the spec table.
+-- The document round-trips through JSON and through its table.
 local json = graph:toJson()
+local document = input.document(graph)
 local roundTrip = input.fromJson(json):toJson() == json
-local respec = input.graph(graph:spec()):toJson() == json
+local respec = input.graph(document):toJson() == json
 
-local xbox = graph:presentations('contextMenu', 'xbox')
-local playstation = graph:presentations('contextMenu', 'playstation')
+local xbox = input.presentations(document, 'contextMenu', 'xbox')
+local playstation = input.presentations(document, 'contextMenu', 'playstation')
+-- The label a hold of one control shows.
+local function label(shape: input.Presentation): string?
+  if shape.kind ~= 'hold' or shape.input.kind ~= 'control' then return nil end
+
+  return shape.input.label
+end
+
 local conflicting = input.graph {
   actions = {
     { name = 'a', valueType = 'digital' },
@@ -213,12 +221,12 @@ return {
   roundTrip = roundTrip,
   respec = respec,
   actions = graph:actions(),
-  bindings = graph:bindings 'interact',
+  bindings = input.bindings(document, 'interact'),
   xbox = xbox,
-  playstationLabel = playstation[1].shape.input.label,
-  keyboardSees = #graph:presentations('contextMenu', 'keyboardMouse'),
-  conflicts = conflicting:conflicts(),
-  noConflicts = #graph:conflicts(),
+  playstationLabel = label(playstation[1].shape),
+  keyboardSees = #input.presentations(document, 'contextMenu', 'keyboardMouse'),
+  conflicts = input.conflicts(input.document(conflicting)),
+  noConflicts = #input.conflicts(document),
   devices = #runtime:devices(),
   now = runtime:now(),
   stats = runtime:stats().ticks,

@@ -195,9 +195,6 @@ type Compiled = (u64, Rc<Vec<u8>>);
 pub(crate) struct Jess {
     /// The `jess` module table, the global of the same name.
     pub(crate) module: Table,
-    /// The metatable every list `to_lua` writes gets, so a script can tell an empty list from an
-    /// empty struct (`getmetatable(value) ~= nil`), and jess can when it reads one back.
-    pub(crate) array_marker: Table,
     /// The plan's compile options, for the chunks jess loads; set with the runtime.
     compile_options: RefCell<Option<l3i::source::CompileOptions>>,
     /// Each chunk's bytecode by its key, with a hash of the source it was compiled from, compiled

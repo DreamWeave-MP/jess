@@ -22,7 +22,7 @@ jess is layers. Bytes at the bottom, Luau at the top, and each crate only knows 
 | `jess-render` | `libs/render` | none (render graph IR) |
 | `jess-shader` | `libs/shader` | none (shader IR and WGSL lowering; `jess-lua` binds it as `jess.shader`) |
 | `jess-runtime` | `libs/runtime` | none (script domains, contexts, capabilities, and workers over l3i; `jess-lua` binds it as `jess.context` and `jess.worker`) |
-| `jess-input` | `libs/input` | none (device truth, action graph, intents; `jess-lua` binds it as `jess.input`) |
+| `jess-input` | `libs/input` | none (device truth, action graph; `jess-lua` binds it as `jess.input`, under `@jess/input`) |
 | `jess-lua` | `libs/lua` | all of the above except `jess-render` |
 | `jess-cli` | `libs/cli` | all of the above |
 | `jess` | repository root | re-exports the library crates |
@@ -84,7 +84,7 @@ Save check, strip, info, and readable save records, over the raw spine. Strippin
 
 ### `jess-input` (`libs/input`)
 
-Input for applications, before there is a GUI to want it. `Control` is Jess's device vocabulary (positional keys, positional gamepad buttons, normalized axes); `InputQueue` and `InputState` are events and current state; `GraphSpec` is the serializable binding document (sources, chords, gates, tap and hold, deadzones, composite vectors, sets, layers) that `ActionGraph::compile` validates and an allocation-free `Evaluator` ticks into `ActionState` and `ActionEvent`s; `IntentRouter` turns action edges into intents with provenance; `presentations` and `conflicts` are data for a future settings screen. Backends (evdev on Linux, gilrs on macOS and Windows) sit behind a trait and features; the default build is headless. [Input Runtime](@/docs/contributing/input-runtime.md) has the model.
+Input for applications, before there is a GUI to want it. `Control` is Jess's device vocabulary (positional keys, positional gamepad buttons, normalized axes); `InputQueue` and `InputState` are events and current state; `GraphSpec` is the serializable binding document (sources, chords, gates, tap and hold, deadzones, composite vectors, sets, layers) that `ActionGraph::compile` validates and an allocation-free `Evaluator` ticks into `ActionState` and `ActionEvent`s; Labels, binding presentation, conflict checks, and intents are Luau over the document and the action events, in `@jess/input`. Backends (evdev on Linux, gilrs on macOS and Windows) sit behind a trait and features; the default build is headless. [Input Runtime](@/docs/contributing/input-runtime.md) has the model.
 
 ### `jess-lua` (`libs/lua`)
 
@@ -93,7 +93,7 @@ The Luau API, an [l3i](https://DreamWeave-MP.github.io/l3i/) extension. `plan.rs
 - `convert.rs` moves values between Rust and Luau through a `serde_value` tree, renaming snake_case to camelCase, keeping NaN and `-0`, and using `jess.null` to hold array slots.
 - `plugin.rs` gives plugins handles with stable record handles (slot ids that survive inserts and deletes); `view.rs` gives live field views that read and write in place.
 - `nif_edit.rs` is `jess.nif.new/open/openBytes`: Morrowind NIFs as handles.
-- `input.rs` is `jess.input`: node authoring functions, compiled graphs, and a headless runtime over `jess-input`.
+- `input.rs` is `jess.input`, the native half of `@jess/input`: compiling a JSON document, the control vocabulary, and the runtime.
 - `scripts.rs` runs `jess-script=` load-order scripts for Rust hosts (`load_order_scripts`, `run_scripts`, `list_load_order_scripts`; the CLI doesn't use them), script files the way `jess run` does (`run_file`, which also takes a bundled script's name when no file has it), and modify scripts; `BUNDLED` holds the `@jess/...` scripts, all embedded from the Dreamwind package's tool sources (`jpk/dreamwind/src/tools`). A load-order script that returns a function is called as a module.
 - `package.rs` is the host side of packages. The format and the model are Luau (`stdlib/jpk.jsl`, `stdlib/package.jsl`); Rust hands `@jess/package` its file reads, runs `stdlib/bootstrap.jsl` for `inspect`, `pack`, `graph`, `test`, and `activate`, and owns the mount: the accepted plan `require` resolves package modules through, under chunk names `@<id>@<version>/<path>` and a cache keyed by id, digest, and path.
 - `init.rs` is `jess init`: the script folder, its `.jessrc`, and the editor settings.
