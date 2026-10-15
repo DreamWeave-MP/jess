@@ -76,7 +76,7 @@ local function invalidId(id: string): string?
 end
 
 --- The TOML type a decoded value was written as, as an error names it.
-local function typeName(value: unknown, key: string, floats: { [any]: boolean }, layout: Toml.Layout): string
+local function typeName(value: unknown, key: string, floats: { [unknown]: boolean }, layout: Toml.Layout): string
   local kind = typeof(value)
   if kind == 'integer' then return 'integer' end
   if kind == 'boolean' then return 'boolean' end

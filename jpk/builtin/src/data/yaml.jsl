@@ -14,10 +14,14 @@ export type Options = {
 
 export type Tagged = {
   tag: string,
-  value: any,
+  value: Value,
 }
 
-export type Value = any
+export type Value = unknown
+
+-- One line of the normalized source: its text, its first and last byte, its indentation, and
+-- whether a newline ended it.
+type Line = { text: string, start: number, finish: number, indent: number, ended: boolean }
 
 local Null = Common.null
 local Huge = math.huge
@@ -28,8 +32,8 @@ local source = ''
 local length = 0
 local maxDepth = 512
 
-local Lines: { any } = {}
-local Anchors: { [string]: any } = {}
+local Lines: { Line } = {}
+local Anchors: { [string]: Value } = {}
 local TagHandles: { [string]: string } = {}
 
 local function failAt(at: number, message: string): never
@@ -269,14 +273,14 @@ local function foldLines(lines: { string }): string
   return table.concat(out)
 end
 
-local function parseSignedInteger(text: string, base: number, position: number): any
+local function parseSignedInteger(text: string, base: number, position: number): Value
   local value = integer.fromstring(text, base)
   if value == nil then failAt(position, 'integer is outside the signed 64-bit Luau range') end
   if integer.ge(value, SafeIntegerMin) and integer.le(value, SafeIntegerMax) then return integer.tonumber(value) end
   return value
 end
 
-local function resolvePlain(text: string, position: number): any
+local function resolvePlain(text: string, position: number): Value
   if text == '' or text == '~' or text == 'null' or text == 'Null' or text == 'NULL' then return Null end
   if text == 'true' or text == 'True' or text == 'TRUE' then return true end
   if text == 'false' or text == 'False' or text == 'FALSE' then return false end
@@ -312,9 +316,9 @@ local function resolvePlain(text: string, position: number): any
   return text
 end
 
-local function constructTagged(tag: string?, value: any, plain: boolean, position: number): any
+local function constructTagged(tag: string?, value: Value, plain: boolean, position: number): Value
   if not tag or tag == '?' then
-    if plain then return resolvePlain(value, position) end
+    if plain then return resolvePlain(value :: string, position) end
     return value
   end
 
@@ -580,9 +584,9 @@ local function parseSingleQuoted(): string
   error('unreachable', 0)
 end
 
-local parseFlowNode: (boolean, number) -> any
+local parseFlowNode: (boolean, number) -> Value
 
-local function setMappingPair(map: { [any]: any }, key: any, value: any, position: number)
+local function setMappingPair(map: { [Value]: Value }, key: Value, value: Value, position: number)
   if key == nil then key = Null end
   if type(key) == 'number' and key ~= key then failAt(position, 'NaN cannot be represented as a Luau table key') end
   if map[key] ~= nil then failAt(position, 'duplicate mapping key') end
@@ -630,15 +634,15 @@ local function parseFlowPlain(stopColon: boolean): (string, number)
   return value, start
 end
 
-local function registerAnchor(anchor: string?, value: any, position: number)
+local function registerAnchor(anchor: string?, value: Value, position: number)
   if not anchor then return end
   if Anchors[anchor] ~= nil then failAt(position, `anchor &{anchor} is already defined`) end
   Anchors[anchor] = value
 end
 
-local function parseFlowSequence(tag: string?, anchor: string?, depth: number, position: number): any
+local function parseFlowSequence(tag: string?, anchor: string?, depth: number, position: number): Value
   if depth > maxDepth then failAt(position, 'maximum nesting depth exceeded') end
-  local list: { any } = {}
+  local list: { Value } = {}
   registerAnchor(anchor, list, position)
   flowCollections += 1
   flowAt += 1
@@ -658,7 +662,7 @@ local function parseFlowSequence(tag: string?, anchor: string?, depth: number, p
     if string.byte(source, flowAt) == 58 then
       flowAt += 1
       skipFlowSpace()
-      local map: { [any]: any } = {}
+      local map: { [Value]: Value } = {}
       local value
       local nextByte = string.byte(source, flowAt)
       if nextByte == 44 or nextByte == 93 then value = Null else value = parseFlowNode(false, depth + 1) end
@@ -687,9 +691,9 @@ local function parseFlowSequence(tag: string?, anchor: string?, depth: number, p
   return constructTagged(tag, list, false, position)
 end
 
-local function parseFlowMapping(tag: string?, anchor: string?, depth: number, position: number): any
+local function parseFlowMapping(tag: string?, anchor: string?, depth: number, position: number): Value
   if depth > maxDepth then failAt(position, 'maximum nesting depth exceeded') end
-  local map: { [any]: any } = {}
+  local map: { [Value]: Value } = {}
   registerAnchor(anchor, map, position)
   flowCollections += 1
   flowAt += 1
@@ -709,12 +713,12 @@ local function parseFlowMapping(tag: string?, anchor: string?, depth: number, po
       skipFlowSpace()
     end
 
-    local key: any = Null
+    local key: Value = Null
     local byte = string.byte(source, flowAt)
     if byte ~= 58 and byte ~= 44 and byte ~= 125 then key = parseFlowNode(true, depth + 1) end
     skipFlowSpace()
 
-    local value: any = Null
+    local value: Value = Null
     if string.byte(source, flowAt) == 58 then
       flowAt += 1
       skipFlowSpace()
@@ -745,7 +749,7 @@ local function parseFlowMapping(tag: string?, anchor: string?, depth: number, po
   return constructTagged(tag, map, false, position)
 end
 
-parseFlowNode = function(stopColon: boolean, depth: number): any
+parseFlowNode = function(stopColon: boolean, depth: number): Value
   if depth > maxDepth then failAt(flowAt, 'maximum nesting depth exceeded') end
   skipFlowSpace()
   local position = flowAt
@@ -765,7 +769,7 @@ parseFlowNode = function(stopColon: boolean, depth: number): any
   if byte == 91 then return parseFlowSequence(tag, anchor, depth, position) end
   if byte == 123 then return parseFlowMapping(tag, anchor, depth, position) end
 
-  local value: any
+  local value: Value
   local plain = false
   if byte == 34 then
     value = parseDoubleQuoted()
@@ -794,9 +798,9 @@ end
 
 -- Block parser ----------------------------------------------------------------
 
-type BlockNodeParser = (number, number, number, string?, string?) -> (any, number)
-local parseBlockNodeImpl: BlockNodeParser = nil :: any
-local function parseBlockNode(index: number, indent: number, depth: number, tag: string?, anchor: string?): (any, number)
+type BlockNodeParser = (number, number, number, string?, string?) -> (Value, number)
+local parseBlockNodeImpl: BlockNodeParser
+local function parseBlockNode(index: number, indent: number, depth: number, tag: string?, anchor: string?): (Value, number)
   return parseBlockNodeImpl(index, indent, depth, tag, anchor)
 end
 
@@ -825,22 +829,20 @@ local function parseBlockScalar(index: number, indicatorColumn: number, token: s
   end
 
   local parentIndent = line.indent
-  local contentIndent = explicit and parentIndent + explicit or nil
+  local contentIndent = parentIndent + 1
   local scan = index + 1
-  if not contentIndent then
+  if explicit then
+    contentIndent = parentIndent + explicit
+  else
+    -- Without an indicator, the first line with content sets the indentation, when it is deeper.
     while scan <= #Lines do
       local candidate = Lines[scan]
       if candidate.text ~= '' and Bytes.trim(candidate.text, ' \t') ~= '' then
-        if candidate.indent <= parentIndent then
-          contentIndent = parentIndent + 1
-        else
-          contentIndent = candidate.indent
-        end
+        if candidate.indent > parentIndent then contentIndent = candidate.indent end
         break
       end
       scan += 1
     end
-    contentIndent = contentIndent or parentIndent + 1
   end
 
   local values: { string } = {}
@@ -931,7 +933,7 @@ local function propertyOnly(text: string): (string?, string?, boolean)
   return tag, anchor, tag ~= nil or anchor ~= nil
 end
 
-local function parsePlainBlock(first: string, index: number, parentIndent: number, position: number): (any, number)
+local function parsePlainBlock(first: string, index: number, parentIndent: number, position: number): (Value, number)
   local lines = { Bytes.trim(first, ' \t') }
   local scan = index + 1
 
@@ -956,7 +958,7 @@ local function parsePlainBlock(first: string, index: number, parentIndent: numbe
   return resolvePlain(foldLines(lines), position), scan
 end
 
-local function parseInlineBlock(text: string, index: number, parentIndent: number, depth: number): (any, number)
+local function parseInlineBlock(text: string, index: number, parentIndent: number, depth: number): (Value, number)
   local line = Lines[index]
   local leading = #text - #string.gsub(text, '^[ \t]+', '')
   local clean = string.sub(text, leading + 1)
@@ -979,7 +981,7 @@ local function parseInlineBlock(text: string, index: number, parentIndent: numbe
   return value, nextIndex
 end
 
-local function parseKeyText(text: string, index: number, depth: number): any
+local function parseKeyText(text: string, index: number, depth: number): Value
   local clean = Bytes.trim(text, ' \t')
   if clean == '' then return Null end
   local line = Lines[index]
@@ -996,8 +998,8 @@ local function parseKeyText(text: string, index: number, depth: number): any
   return resolvePlain(clean, position)
 end
 
-local function parseBlockSequence(index: number, indent: number, depth: number, tag: string?, anchor: string?, firstContent: string?): (any, number)
-  local list: { any } = {}
+local function parseBlockSequence(index: number, indent: number, depth: number, tag: string?, anchor: string?, firstContent: string?): (Value, number)
+  local list: { Value } = {}
   local position = Lines[index].start + indent
   registerAnchor(anchor, list, position)
   local scan = index
@@ -1067,10 +1069,10 @@ local function parseBlockSequence(index: number, indent: number, depth: number, 
 
     local colon = mapColon(rest)
     if colon and not startsSpecialInline(Bytes.trim(rest, ' \t')) then
-      local map: { [any]: any } = {}
+      local map: { [Value]: Value } = {}
       local key = parseKeyText(string.sub(rest, 1, colon - 1), foundAt, depth + 1)
       local rhs = string.sub(rest, colon + 1)
-      local value: any
+      local value: Value
       local nextIndex: number
       if Bytes.trim(stripComment(rhs), ' \t') == '' then
         local child, childContent = significant(foundAt + 1)
@@ -1091,7 +1093,7 @@ local function parseBlockSequence(index: number, indent: number, depth: number, 
       if compactIndent then
         local moreMap, after = parseBlockNode(look :: number, compactIndent, depth + 1, nil, nil)
         if type(moreMap) ~= 'table' then failLine(look :: number, compactIndent + 1, 'compact mapping continuation must be a mapping') end
-        for otherKey, otherValue in moreMap do setMappingPair(map, otherKey, otherValue, Lines[look :: number].start) end
+        for otherKey, otherValue in moreMap :: { [Value]: Value } do setMappingPair(map, otherKey, otherValue, Lines[look :: number].start) end
         nextIndex = after
       end
       table.insert(list, map)
@@ -1106,8 +1108,8 @@ local function parseBlockSequence(index: number, indent: number, depth: number, 
   return constructTagged(tag, list, false, position), scan
 end
 
-local function parseBlockMapping(index: number, indent: number, depth: number, tag: string?, anchor: string?): (any, number)
-  local map: { [any]: any } = {}
+local function parseBlockMapping(index: number, indent: number, depth: number, tag: string?, anchor: string?): (Value, number)
+  local map: { [Value]: Value } = {}
   local position = Lines[index].start + indent
   registerAnchor(anchor, map, position)
   local scan = index
@@ -1121,7 +1123,7 @@ local function parseBlockMapping(index: number, indent: number, depth: number, t
     local line = Lines[found]
     if line.indent ~= indent or looksSequence(content) or documentMarker(content) then break end
 
-    local key: any
+    local key: Value
     local rhs: string
     local pairAt = line.start + indent
 
@@ -1146,7 +1148,7 @@ local function parseBlockMapping(index: number, indent: number, depth: number, t
     end
 
     local cleanRhs = stripComment(rhs)
-    local value: any
+    local value: Value
     local nextIndex: number
     local propertyTag, propertyAnchor, onlyProperties = propertyOnly(cleanRhs)
     if onlyProperties then
@@ -1189,7 +1191,7 @@ local function parsePropertyPrefix(text: string, index: number): (string?, strin
   return tag, anchor, Bytes.trim(string.sub(text, consumed + 1), ' \t')
 end
 
-parseBlockNodeImpl = function(index: number, indent: number, depth: number, inheritedTag: string?, inheritedAnchor: string?): (any, number)
+parseBlockNodeImpl = function(index: number, indent: number, depth: number, inheritedTag: string?, inheritedAnchor: string?): (Value, number)
   if depth > maxDepth then failLine(index, indent + 1, 'maximum nesting depth exceeded') end
   local line = Lines[index]
   local content = stripComment(string.sub(line.text, indent + 1))
@@ -1253,7 +1255,7 @@ local function parseDirective(index: number, content: string): number
   return index + 1
 end
 
-local function parseDocuments(text: string, options: Options?): { any }
+local function parseDocuments(text: string, options: Options?): { Value }
   source = normalize(text)
   length = #source
   maxDepth = options and options.maxDepth or 512
@@ -1261,7 +1263,7 @@ local function parseDocuments(text: string, options: Options?): { any }
   if maxDepth < 1 or maxDepth ~= math.floor(maxDepth) then error('YAML: maxDepth must be a positive integer', 2) end
   buildLines()
 
-  local documents: { any } = {}
+  local documents: { Value } = {}
   local index = 1
 
   while true do
@@ -1328,11 +1330,11 @@ local function parseDocuments(text: string, options: Options?): { any }
   end
 end
 
-local function decodeAll(text: string, options: Options?): { any }
+local function decodeAll(text: string, options: Options?): { Value }
   return parseDocuments(text, options)
 end
 
-local function decode(text: string, options: Options?): any
+local function decode(text: string, options: Options?): Value
   local documents = parseDocuments(text, options)
   if #documents == 0 then return Null end
   if #documents ~= 1 then error(`YAML: expected one document, got {#documents}; use decodeAll`, 2) end

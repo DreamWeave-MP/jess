@@ -10,7 +10,7 @@ export type Options = {
   maxDepth: number?,
 }
 
-export type Value = any
+export type Value = unknown
 
 local Null = Common.null
 local source = ''

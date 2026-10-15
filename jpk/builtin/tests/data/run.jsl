@@ -10,9 +10,18 @@ local test = require '@jess/test'
 local expect = test.expect
 local suite = test.new()
 
+-- What each test expects a document to hold. A decoder answers `unknown`: the shape is the
+-- test's claim, and its expectations check it.
+type Escapes = { text: string, values: { unknown } }
+type Fruits = { fruit: { apple: { smooth: boolean }, name: string }, products: { { name: string, detail: { color: string } } } }
+type CoreSchema = { nulls: { unknown }, booleans: { boolean }, integers: { number }, floats: { number }, strings: { string } }
+type Nodes = { first: { folded: string, literal: string, flow: { unknown } }, second: unknown, custom: yaml.Tagged }
+type Trailing = { quoted: string, single: string, flow: { number }, map: { a: number }, tagged: string, items: { unknown } }
+type Quotes = { ["Desele's House"]: string, plain: string, said: string, indexed: string, list: { string } }
+
 suite.describe('json', function()
   suite.it('decodes RFC 8259 values and UTF-16 escapes', function()
-    local value = json.decode '{"text":"\\uD83D\\uDE03","values":[1,-2.5e2,true,false,null]}'
+    local value = json.decode '{"text":"\\uD83D\\uDE03","values":[1,-2.5e2,true,false,null]}' :: Escapes
     expect(value.text).toBe '😃'
     expect(value.values[1]).toBe(1)
     expect(value.values[2]).toBe(-250)
@@ -83,7 +92,7 @@ name = "Hammer"
 name = "Nail"
 [products.detail]
 color = "gray"
-]=]
+]=] :: Fruits
     expect(value.fruit.apple.smooth).toBe(true)
     expect(value.fruit.name).toBe 'apple'
     expect(value.products[1].name).toBe 'Hammer'
@@ -135,7 +144,7 @@ booleans: [true, True, FALSE]
 integers: [12, -19, 0o17, 0x3A]
 floats: [.5, +12e03, -.Inf, .NAN]
 strings: [yes, no, on, off]
-]]
+]] :: CoreSchema
     for _, item in value.nulls do expect(item).toBe(yaml.null) end
     expect(value.booleans).toEqual { true, true, false }
     expect(value.integers).toEqual { 12, -19, 15, 58 }
@@ -159,11 +168,11 @@ first: &base
     b
 second: *base
 custom: !<tag:example.com,2026:thing> hello
-]]
+]] :: Nodes
     expect(value.second == value.first).toBe(true)
     expect(value.first.folded).toBe 'one two'
     expect(value.first.literal).toBe 'a\nb\n'
-    expect(value.first.flow[2].two).toBe(2)
+    expect((value.first.flow[2] :: { two: number }).two).toBe(2)
     expect(value.custom.tag).toBe 'tag:example.com,2026:thing'
     expect(value.custom.value).toBe 'hello'
   end)
@@ -180,7 +189,7 @@ custom: !<tag:example.com,2026:thing> hello
     local value = yaml.decode(
       'quoted: "hello world"   \r\nsingle: \'it\'\'s\' \nflow: [1, 2] # two\nmap: {a: 1} \n'
         .. 'tagged: !!str "5" \nitems:\n  - "x" # first\n  - [3] \n'
-    )
+    ) :: Trailing
     expect(value.quoted).toBe 'hello world'
     expect(value.single).toBe "it's"
     expect(value.flow).toEqual { 1, 2 }
@@ -195,7 +204,7 @@ custom: !<tag:example.com,2026:thing> hello
     local value = yaml.decode(
       'Desele\'s House: "v"\nplain: it\'s fine # c\nsaid: say "hi" # c\nindexed: k[1] # c\n'
         .. 'list:\n  - it\'s # c\n'
-    )
+    ) :: Quotes
     expect(value["Desele's House"]).toBe 'v'
     expect(value.plain).toBe "it's fine"
     expect(value.said).toBe 'say "hi"'
@@ -265,8 +274,8 @@ suite.describe('encode', function()
   end)
 
   suite.it('writes what each decoder reads back as the same values', function()
-    local fromJson = json.decode(json.encode(document(true)))
-    local fromYaml = yaml.decode(yaml.encode(document(true)))
+    local fromJson = json.decode(json.encode(document(true))) :: toml.Table
+    local fromYaml = yaml.decode(yaml.encode(document(true))) :: toml.Table
     local fromToml = toml.decode(toml.encode(document(false)))
 
     local documents: { toml.Table } = { fromJson, fromYaml, fromToml }

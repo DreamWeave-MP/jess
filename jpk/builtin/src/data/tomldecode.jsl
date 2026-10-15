@@ -12,7 +12,7 @@ local Common = require './common'
 local SafeIntegerMax = integer.fromstring('9007199254740991')
 local SafeIntegerMin = integer.fromstring('-9007199254740991')
 
-export type Value = any
+export type Value = unknown
 export type Table = { [string]: Value }
 export type Kind = 'float' | 'datetime'
 --- Where a key and its value are in the text, as 1-based byte offsets: the key's first byte, and the
@@ -23,18 +23,18 @@ export type Options = { positions: boolean? }
 
 type LayoutEntry = {
   keys: { string }?,
-  floats: { [any]: boolean },
-  datetimes: { [any]: boolean },
+  floats: { [Value]: boolean },
+  datetimes: { [Value]: boolean },
   positions: { [string]: Position }?,
 }
-export type Layout = { [any]: LayoutEntry }
+export type Layout = { [Value]: LayoutEntry }
 
 local source = ''
 local length = 0
 local at = 1
 local layout: Layout = {}
-local kinds: { [any]: string } = {}
-local arraysOfTables: { [any]: boolean } = {}
+local kinds: { [Value]: string } = {}
+local arraysOfTables: { [Value]: boolean } = {}
 -- Byte positions of each key and its value, kept only when a caller asks (`positions = true`).
 local positions: { [Table]: { [string]: Position } }? = nil
 local root: Table, current: Table = {}, {}
@@ -55,7 +55,7 @@ local function fail(message: string): never
   error('unreachable', 0)
 end
 
-local function entry(container: any): LayoutEntry
+local function entry(container: Value): LayoutEntry
   local found = layout[container]
   if found then return found end
 
@@ -66,17 +66,17 @@ end
 
 type TableEntry = {
   keys: { string },
-  floats: { [any]: boolean },
-  datetimes: { [any]: boolean },
+  floats: { [Value]: boolean },
+  datetimes: { [Value]: boolean },
   positions: { [string]: Position }?,
 }
 
 local function tableEntry(container: Table): TableEntry
   local found = layout[container]
-  if found then return found :: any end
+  if found then return (found :: unknown) :: TableEntry end
 
   local created: TableEntry = { keys = {}, floats = {}, datetimes = {} }
-  layout[container] = created :: any
+  layout[container] = (created :: unknown) :: LayoutEntry
   return created
 end
 
@@ -98,7 +98,7 @@ local function rememberKey(container: Table, key: string)
   table.insert(keys, key)
 end
 
-local function mark(found: LayoutEntry | TableEntry, key: any, kind: Kind?)
+local function mark(found: LayoutEntry | TableEntry, key: Value, kind: Kind?)
   if kind == 'float' then found.floats[key] = true end
   if kind == 'datetime' then found.datetimes[key] = true end
 end
@@ -422,7 +422,7 @@ local function cleanNumber(text: string): string
   return (string.gsub(text, '_', ''))
 end
 
-local function decimalInteger(text: string): any
+local function decimalInteger(text: string): Value
   local clean = cleanNumber(text)
   local position = 1
   local first = string.byte(clean, position)
@@ -450,7 +450,7 @@ local function radixDigit(byte: number?, prefix: number): boolean
   return byte == 48 or byte == 49
 end
 
-local function radixInteger(text: string): any
+local function radixInteger(text: string): Value
   if string.byte(text, 1) == 43 or string.byte(text, 1) == 45 then return nil end
   if string.byte(text, 1) ~= 48 then return nil end
 
@@ -747,9 +747,11 @@ parseValue = function(context: string?): (Value, Kind?)
   return parseBare(context)
 end
 
-local function lastArrayTable(value: any, key: string): Table
-  if type(value) ~= 'table' or not arraysOfTables[value] or #value == 0 then fail(`'{key}' is not a defined array of tables`) end
-  return value[#value] :: Table
+local function lastArrayTable(value: Value, key: string): Table
+  local list = if type(value) == 'table' and arraysOfTables[value] then value :: { Table } else nil
+  if not list or #list == 0 then return fail(`'{key}' is not a defined array of tables`) end
+
+  return list[#list]
 end
 
 local function descendHeader(path: { string }): (Table, string)
