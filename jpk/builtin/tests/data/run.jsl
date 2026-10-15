@@ -64,6 +64,11 @@ inline = {
     expect(value.inline).toEqual { one = 1, two = 2 }
     expect(layout[value].keys).toEqual { 'name', 'max', 'small', 'float', 'when', 'mixed', 'inline' }
     expect(layout[value].floats.float).toBe(true)
+    expect(layout[value].datetimes.when).toBe(true)
+    expect(layout[value].datetimes.name).toBe(nil)
+
+    local times, timesLayout = toml.decode 'times = [1979-05-27, 2, 07:32:00]'
+    expect(timesLayout[times.times].datetimes).toEqual { [1] = true, [3] = true }
   end)
 
   suite.it('implements dotted tables and arrays of tables', function()

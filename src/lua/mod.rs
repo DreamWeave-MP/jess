@@ -41,7 +41,6 @@ pub mod scripts;
 pub mod shader;
 pub mod stdlib;
 pub mod testing;
-mod toml;
 pub mod types;
 pub mod workspace;
 
@@ -153,6 +152,10 @@ pub(crate) struct Jess {
     pub(crate) packages: RefCell<Option<package::Mounted>>,
     /// `tostring`, for `print`.
     pub(crate) tostring: Function,
+    /// The built-in package's manifest, decoded the first time `require` needs it.
+    pub(crate) builtin: RefCell<Option<Rc<builtin::Manifest>>>,
+    /// The runtime's TOML decoder, the built-in package's, loaded the first time it is asked for.
+    pub(crate) toml_decode: RefCell<Option<Function>>,
 }
 
 impl Jess {

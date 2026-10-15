@@ -120,8 +120,8 @@ fn builder(capabilities: &[String], profiling: bool) -> RuntimePlanBuilder {
 
 /// The members of `@jess`, installed per runtime. Each table among them is also the module
 /// `@jess/<name>` (`require("@jess/shader")`).
-pub(crate) const MEMBERS: [&str; 11] = [
-    "version", "null", "fs", "toml", "regex", "shader", "context", "worker", "l10n", "input", "bench",
+pub(crate) const MEMBERS: [&str; 10] = [
+    "version", "null", "fs", "regex", "shader", "context", "worker", "l10n", "input", "bench",
 ];
 
 /// jess's Luau API: the `@jess` module and every jess userdata type.
@@ -163,7 +163,6 @@ impl Extension for JessExtension {
         module.set("null", &crate::lua::convert::NULL)?;
         module.set("fs", &crate::lua::fs::module(runtime, read, write)?)?;
         module.set("bench", &crate::lua::bench::module(runtime)?)?;
-        module.set("toml", &crate::lua::toml::module(runtime, &jess)?)?;
         module.set("regex", &crate::lua::regexp::module(runtime, &jess)?)?;
         module.set("shader", &crate::lua::shader::module(runtime, &jess)?)?;
         let modules = cx
@@ -195,6 +194,8 @@ impl Jess {
             luau_require: RefCell::new(None),
             packages: RefCell::new(None),
             tostring,
+            builtin: RefCell::new(None),
+            toml_decode: RefCell::new(None),
         })
     }
 }

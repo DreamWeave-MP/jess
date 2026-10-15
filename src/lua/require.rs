@@ -74,11 +74,11 @@ pub fn require(call: &Call<'_>, jess: &Jess, name: &str) -> l3i::Result<StackRes
     let mut export = if relative { None } else { package_export(call, jess, name)? };
     // The built-in package's exports resolve in every runtime; a copy of it activated from disk
     // is byte for byte the same package, and was found first.
-    if export.is_none()
-        && !relative
-        && let Some(path) = crate::lua::builtin::export(name)
-    {
-        export = crate::lua::builtin::module(path).map(Module::from);
+    if export.is_none() && !relative && name.starts_with("@jess/") {
+        let manifest = crate::lua::builtin::manifest(call, jess)?;
+        if let Some(path) = manifest.export(name) {
+            export = manifest.module(path).map(Module::from);
+        }
     }
     // `@jess/` is jess's own namespace: its built-in modules, its members, and the exports of its
     // built-in package, never a file.
@@ -253,14 +253,26 @@ fn package_relative(call: &Call<'_>, jess: &Jess, name: &str, caller: Option<&st
         }
         return Err(error(format!("module not found: {name} (required by {caller})")));
     }
-    // The built-in package, when it wasn't activated from disk.
-    if let Some(path) = caller.strip_prefix(crate::lua::builtin::prefix()) {
+    // The modules the bootstrap loaded to read TOML, before any manifest was read.
+    if let Some(path) = caller.strip_prefix(crate::lua::builtin::BOOTSTRAP_PREFIX) {
         for candidate in relative_candidates(name, caller, path, crate::lua::builtin::ID)? {
-            if let Some(module) = crate::lua::builtin::module(&candidate) {
+            if let Some(module) = crate::lua::builtin::bootstrap_module(&candidate) {
                 return Ok(Some(module.into()));
             }
         }
         return Err(error(format!("module not found: {name} (required by {caller})")));
+    }
+    // The built-in package, when it wasn't activated from disk.
+    if caller.starts_with(&format!("@{}@", crate::lua::builtin::ID)) {
+        let manifest = crate::lua::builtin::manifest(call, jess)?;
+        if let Some(path) = caller.strip_prefix(manifest.prefix()) {
+            for candidate in relative_candidates(name, caller, path, crate::lua::builtin::ID)? {
+                if let Some(module) = manifest.module(&candidate) {
+                    return Ok(Some(module.into()));
+                }
+            }
+            return Err(error(format!("module not found: {name} (required by {caller})")));
+        }
     }
     Ok(None)
 }

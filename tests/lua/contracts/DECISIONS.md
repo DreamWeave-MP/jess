@@ -113,9 +113,9 @@ A fixture never pins a bug. Where current behavior is a bug, the fixture pins on
 
 ### 17. TOML integers past 2^53 lose precision
 
-- **What:** `jess.toml.decode` reads integers as Luau numbers, so `9007199254740993` reads as `2^53`.
-- **Class:** compatibility (documented in `toml.rs`).
-- **Decision:** pinned (`toml/toml`, `bigRounded`).
+- **What:** `jess.toml.decode` read integers as Luau numbers, so `9007199254740993` read as `2^53`.
+- **Decision:** fixed by removal. jess reads TOML with the built-in package's `@jess/data/toml`, which
+  keeps an integer past 2^53 exact as an l3i `integer`; `jess.toml` and its fixture are gone.
 
 ### 18. `__tostring` formats
 

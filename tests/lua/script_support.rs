@@ -1,4 +1,5 @@
-//! `jess.fs`, `jess.toml`, and `jess.regex`: what load-order scripts use besides records.
+//! `jess.fs`, TOML through `@jess/data/toml`, and `jess.regex`: what load-order scripts use besides
+//! records.
 
 use jess::lua::l3i::Runtime;
 
@@ -138,11 +139,12 @@ fn files_read_write_and_list() {
 }
 
 #[test]
-fn toml_decodes_with_its_layout() {
+fn toml_decodes_with_its_layout_through_the_one_codec() {
     run(
         &lua(),
         r#"
-        local value, layout = jess.toml.decode([[
+        local toml = require("@jess/data/toml")
+        local value, layout = toml.decode([[
             zeta = 1
             alpha = 2.5
             flag = true
@@ -158,7 +160,9 @@ fn toml_decodes_with_its_layout() {
         assert(layout[value].floats.alpha and not layout[value].floats.zeta)
         assert(layout[value.list].floats[2] and not layout[value.list].floats[1])
         assert(value.table.inner.name == "x" and value.table.inner.when == "1979-05-27")
-        assert(not pcall(jess.toml.decode, "key = "))
+        assert(layout[value.table.inner].datetimes.when and not layout[value.table.inner].datetimes.name)
+        assert(not pcall(toml.decode, "key = "))
+        assert(jess.toml == nil and not pcall(require, "@jess/toml"))
         "#,
     );
 }

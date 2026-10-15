@@ -163,8 +163,16 @@ pub(crate) fn host_table(runtime: &Runtime, read: bool, write: bool) -> l3i::Res
     let replace = runtime.bind_function("jess.package.replace", |path: Text, data: Bytes| {
         crate::lua::files::replace_file(Path::new(&path.0), &data.0).map_err(error)
     })?;
-    let decode_toml = runtime.bind_function("jess.package.decodeToml", |call: &Call<'_>, text: Text| {
-        crate::lua::toml::decode(call, &text.0).map(|(value, _)| value)
+    // jess reads TOML with one codec, the built-in package's, loaded the first time a manifest, lock
+    // or workspace file is read.
+    let decoder = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let decode_toml = runtime.bind_function("jess.package.decodeToml", move |call: &Call<'_>, text: Text| {
+        let decode = crate::lua::builtin::decoder(call, &decoder)?;
+        let document = decode
+            .invoke_with(call, (text.0.as_str(),), |_, document| Value::store(document))
+            .map_err(crate::lua::callback_error)?;
+        document.push_to_scope(call)?;
+        Ok::<_, l3i::Error>(l3i::bind::StackResults)
     })?;
     let builtin = runtime.bind_function("jess.package.builtin", |call: &Call<'_>| {
         crate::lua::lua::push_table(call, 0, crate::lua::builtin::FILES.len(), |frame, files| {
@@ -666,7 +674,8 @@ pub(crate) fn host_modules(runtime: &Runtime) -> l3i::Result<Vec<String>> {
     names.push("@jess".to_owned());
     // The built-in package's exports stay open to the one package that may hold them, a copy of
     // the built-in package itself; `@jess/package` refuses any other.
-    names.retain(|name| crate::lua::builtin::export(name).is_none());
+    let manifest = crate::lua::builtin::manifest(&stack, &jess)?;
+    names.retain(|name| manifest.export(name).is_none());
     names.sort();
     names.dedup();
     Ok(names)

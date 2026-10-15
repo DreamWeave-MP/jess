@@ -1,12 +1,12 @@
 ---
 title: 'Files, TOML, and Regex'
-description: 'The standard-library gaps jess fills: jess.fs, jess.toml, jess.regex.'
+description: 'The standard-library gaps jess fills: jess.fs, @jess/data/toml, jess.regex.'
 weight: 90
 extra:
   kind: guide
 ---
 
-Luau on its own can't open a file, read a config, or match a regex. Scripts that write logs, read settings, or match record ids need all three, so jess has them: `jess.fs`, `jess.toml`, and `jess.regex`. This page is recipes; the [fs](@/docs/api/fs.md), [toml](@/docs/api/toml.md), and [regex](@/docs/api/regex.md) references have every function.
+Luau on its own can't open a file, read a config, or match a regex. Scripts that write logs, read settings, or match record ids need all three, so jess has them: `jess.fs`, `@jess/data/toml`, and `jess.regex`. This page is recipes; the [fs](@/docs/api/fs.md), [toml](@/docs/api/toml.md), and [regex](@/docs/api/regex.md) references have every function.
 
 ## Files
 
@@ -70,10 +70,13 @@ Errors name the path, so a failed write tells you which one.
 
 ### Read a settings file
 
-`jess.toml.decode(text)` turns a TOML document into tables. A settings loader with defaults, typed all the way:
+`toml.decode(text)`, from the built-in `@jess/data/toml`, turns a TOML document into tables. A settings
+loader with defaults, typed all the way:
 
 ```luau
 --!strict
+local toml = require('@jess/data/toml')
+
 type Settings = { radius: number, verbose: boolean, skip: { string }, folder: string }
 
 local function loadSettings(path: string): Settings
@@ -81,19 +84,17 @@ local function loadSettings(path: string): Settings
   local text = jess.fs.read(path)
   if not text then return settings end
 
-  local raw = jess.toml.decode(text)
+  local raw = toml.decode(text)
   if type(raw.radius) == 'number' then settings.radius = raw.radius end
   if type(raw.verbose) == 'boolean' then settings.verbose = raw.verbose end
 
   if type(raw.skip) == 'table' then
-    for _, pattern in raw.skip :: { TomlValue } do
+    for _, pattern in raw.skip do
       if type(pattern) == 'string' then table.insert(settings.skip, pattern) end
     end
   end
   local output = raw.output
-  if type(output) == 'table' and type((output :: TomlTable).folder) == 'string' then
-    settings.folder = (output :: TomlTable).folder :: string
-  end
+  if type(output) == 'table' and type(output.folder) == 'string' then settings.folder = output.folder end
 
   return settings
 end
@@ -117,15 +118,16 @@ folder = "out"
 1	true	2	out
 ```
 
-Decoded values are `TomlValue`s, which could be any TOML type, so check each with `type(...)` before using it. That's also your validation: a value of the wrong type falls back to the default instead of blowing up three functions later. Dates come back as strings, and integers past 2^53 lose precision, like any Luau number.
+Decoded values could be any TOML type, so check each with `type(...)` before using it. That's also your validation: a value of the wrong type falls back to the default instead of blowing up three functions later. Dates come back as strings, and integers past 2^53 as exact `integer`s.
 
 ### Key order and floats
 
-A Luau table forgets two things a TOML file says: the order of its keys, and whether `1.0` was written as a float. `decode` returns a second value, the **layout**, that remembers them. For each decoded table (looked up by the table itself), `keys` lists its keys in document order and `floats` marks the values written as floats:
+A Luau table forgets what a TOML file says about the order of its keys, whether `1.0` was written as a float, and which strings were datetimes. `decode` returns a second value, the **layout**, that remembers them. For each decoded table (looked up by the table itself), `keys` lists its keys in document order, `floats` marks the values written as floats and `datetimes` the datetimes:
 
 ```luau
 --!strict
-local settings, layout = jess.toml.decode(jess.fs.read 'settings.toml' or '')
+local toml = require('@jess/data/toml')
+local settings, layout = toml.decode(jess.fs.read 'settings.toml' or '')
 
 for _, key in layout[settings].keys or {} do
   print(key, layout[settings].floats[key] == true)
@@ -143,33 +145,40 @@ This is how `@dreamwind/tools/s3lightfixes` applies light overrides in the order
 
 ### Write TOML
 
-`jess.toml` only decodes. To write a document, hand plain data to `vfstool.serialize`, one of the [downstream libraries](@/docs/scripting/downstream-libraries.md):
+`toml.encode` writes a value built with `@jess/data/value`: a `struct` keeps its fields in the order
+given, `array` makes a list, and `float` keeps a whole number a float.
 
 ```luau
 --!strict
-local settings = {
-  radius = 1.5,
-  verbose = false,
-  skip = { '^T_', '_unique$' },
-  output = { folder = 'out' },
+local toml = require('@jess/data/toml')
+local values = require('@jess/data/value')
+
+local settings = values.struct {
+  { 'radius', 1.5 },
+  { 'scale', values.float(2) },
+  { 'verbose', false },
+  { 'skip', values.array { '^T_', '_unique$' } },
+  { 'output', values.struct { { 'folder', 'out' } } },
 }
 
-jess.fs.write('settings.toml', vfstool.serialize(settings, 'toml'))
+jess.fs.write('settings.toml', toml.encode(settings))
 ```
 
 ```toml
+radius = 1.5
+scale = 2.0
+verbose = false
 skip = [
     "^T_",
     "_unique$",
 ]
-radius = 1.5
-verbose = false
 
 [output]
 folder = "out"
 ```
 
-It picks the key order, not you, and writes whole numbers as integers (`1`, not `1.0`). When the exact output matters, as it does for a file people edit by hand, build the text yourself. The same function writes `"json"` and `"yaml"`.
+Values come before tables, as Rust's `toml` crate lays a document out. `@jess/json` and `@jess/yaml`
+write the same values.
 
 ## Regular expressions
 
