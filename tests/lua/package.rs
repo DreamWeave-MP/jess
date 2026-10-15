@@ -1331,3 +1331,46 @@ fn a_source_whose_tests_are_outside_its_payload_is_refused() {
         "{error}"
     );
 }
+
+/// A module that is both a layer's export and its entrypoint is loaded by the activation, and
+/// `require` hands that same value out afterwards, so it is frozen there as an export would be.
+#[test]
+fn an_export_its_entrypoint_loaded_first_is_frozen_too() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("beta");
+    write(
+        &root,
+        &[
+            (
+                "jess.toml",
+                r#"manifest_version = 1
+
+[package]
+id = "org.example.beta"
+version = "0.1.0"
+jess_api = "1"
+include = ["src"]
+
+[modules]
+"@beta/api" = "src/api.jsl"
+
+[[layer]]
+id = "beta.api"
+exports = ["@beta/api"]
+
+[[layer.entrypoint]]
+module = "@beta/api"
+"#,
+            ),
+            ("src/api.jsl", "return { version = 1 }\n"),
+        ],
+    );
+    let runtime = common::runtime();
+    plan_of(&runtime, &root, &["beta.api"]);
+    common::run(
+        &runtime,
+        "local api = require '@beta/api'\n\
+         assert(table.isfrozen(api), 'the export is frozen')\n\
+         assert(not pcall(function() api.version = 2 end), 'and refuses a write')",
+    );
+}

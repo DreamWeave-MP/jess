@@ -137,16 +137,7 @@ pub fn require(call: &Call<'_>, jess: &Jess, name: &str) -> l3i::Result<StackRes
             let value = chunk
                 .invoke_with(frame, (name,), |_, value| Value::store(value))
                 .map_err(crate::lua::callback_error)?;
-            let pushed = value.push_to(frame)?;
-            // A package module's export is shared by every module that requires it, so it is
-            // frozen once returned: one package can't patch another's API for the whole plan. A
-            // loose script's own files (keyed by their chunk name, not `\0...`) stay its business.
-            if module.key.starts_with('\0') && pushed.is_table() {
-                let table = pushed.as_table()?;
-                if !table.is_read_only() {
-                    table.set_read_only(true)?;
-                }
-            }
+            freeze_export(&module.key, value.push_to(frame)?)?;
             loaded.raw_set(frame, &module.key)?;
             value
         } else {
@@ -160,6 +151,21 @@ pub fn require(call: &Call<'_>, jess: &Jess, name: &str) -> l3i::Result<StackRes
     })?;
     value.push_to_scope(call)?;
     Ok(StackResults)
+}
+
+/// Freezes `value`, what the module cached under `key` returned, when it is a package module's
+/// table. A package module's value is shared by every module that requires it, whether `require`
+/// or a layer's entrypoint loaded it first, so it is frozen once returned: one package can't
+/// patch another's API for the whole plan. A loose script's own files (keyed by their chunk name,
+/// not `\0...`) stay its business.
+pub(crate) fn freeze_export(key: &str, value: l3i::stack::ValueView<'_>) -> l3i::Result<()> {
+    if key.starts_with('\0') && value.is_table() {
+        let table = value.as_table()?;
+        if !table.is_read_only() {
+            table.set_read_only(true)?;
+        }
+    }
+    Ok(())
 }
 
 /// Fails when a mounted package's module requires another mounted package's export without

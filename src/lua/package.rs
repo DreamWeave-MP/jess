@@ -882,7 +882,7 @@ fn run_entrypoints(runtime: &Runtime) -> l3i::Result<()> {
             let value = chunk
                 .invoke_with(frame, (name.as_str(),), |_, value| Value::store(value))
                 .map_err(failed)?;
-            value.push_to(frame)?;
+            crate::lua::require::freeze_export(&module.key, value.push_to(frame)?)?;
             loaded.raw_set(frame, &module.key)
         })?;
     }
