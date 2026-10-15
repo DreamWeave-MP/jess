@@ -105,7 +105,8 @@ export type Workspace = {
 }
 
 local WorkspaceFile, ManifestFile, LockFile = 'jess-workspace.toml', 'jess.toml', 'jess.lock'
-local Store, LockVersion = '.jess/packages', 1
+local Generated, LockVersion = '.jess', 1
+local Store = `{Generated}/packages`
 
 local host: Host, package: PackageModule
 
@@ -232,9 +233,9 @@ local function sortedKeys<T>(map: { [string]: T }): { string }
 end
 
 --- The file a pinned package is kept in, below the workspace's root: named by its id, its
---- version, and the start of its digest, so two builds of one version are two files.
+--- version, and its whole digest, so two builds of one version are two files.
 local function storeName(entry: { read id: string, read version: string, read digest: string }): string
-  return `{Store}/{entry.id}-{entry.version}-{string.sub(entry.digest, 1, 16)}.jpk`
+  return `{Store}/{entry.id}-{entry.version}-{entry.digest}.jpk`
 end
 
 --- Whether `text` can name a package in a file name: no separators, nothing that climbs.
@@ -841,6 +842,26 @@ end
 
 type Wanted = { by: string, requirement: string }
 
+--- Makes `.jess/packages` in the workspace at `root`, refusing it, before and after, when it or
+--- `.jess` resolves to somewhere outside the workspace: a link there would have sync write
+--- wherever it points.
+local function storeFolder(root: string)
+  local generated, store = `{root}/{Generated}`, `{root}/{Store}`
+
+  local function inside(path: string)
+    local resolved = host.canonical(path)
+
+    if resolved and not host.relative(root, resolved) then
+      fail(`'{path}' is '{resolved}', outside the workspace; sync writes only inside it`)
+    end
+  end
+
+  inside(generated)
+  inside(store)
+  host.createDir(store)
+  inside(store)
+end
+
 --- A package sync selected, whether `.jess/packages` already holds it, and whether it was named
 --- outright, which no requirement overrides.
 type Choice = { package: Package, stored: boolean, named: boolean }
@@ -1146,7 +1167,7 @@ local function sync(
     fail(`{root}/{LockFile} isn't what syncing would write, and --locked leaves it as it is{why}`)
   end
 
-  if #installs > 0 then host.createDir(`{root}/{Store}`) end
+  if #installs > 0 then storeFolder(root) end
 
   for _, selected in installs do
     local path = `{root}/{storeName(selected)}`

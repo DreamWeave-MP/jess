@@ -166,8 +166,8 @@ target:
   command: greet
 candidates:
 - /home/you/showcase
-- /home/you/showcase/.jess/packages/org.example.style-1.0.0-62007be02fd65254.jpk
-- /home/you/showcase/.jess/packages/org.example.words-1.2.0-d8ca63ad4cbe712e.jpk
+- /home/you/showcase/.jess/packages/org.example.style-1.0.0-62007be02fd652547216376101f43846676d99ccc8e4ee30abc989d6bafbe391.jpk
+- /home/you/showcase/.jess/packages/org.example.words-1.2.0-d8ca63ad4cbe712ed9142e5550a53df3f37b1460a8ed73f04857a0b65be4363f.jpk
 pins:
 - id: org.example.style
   digest: 62007be02fd652547216376101f43846676d99ccc8e4ee30abc989d6bafbe391
@@ -253,7 +253,7 @@ dependencies = []
 
 One canonical form: sorted, no timestamps, no paths. The same pins write the same bytes on every machine, and a workspace moved or copied somewhere else is the same workspace. Members aren't in it: they are loose source you edit, and pinning every edit would be a lock that changes every time you save. The requirements aren't in it either, since those are the manifests'; the lock records what was chosen for them.
 
-Each pinned package is kept as `.jess/packages/<id>-<version>-<first 16 hex digits of its digest>.jpk`, so two builds of one version are two files, and the lock says which one runs.
+Each pinned package is kept as `.jess/packages/<id>-<version>-<digest>.jpk`, so two builds of one version are two files, and the lock says which one runs. `sync` writes only inside the workspace: a `.jess` or `.jess/packages` that links somewhere outside it is refused before anything is written.
 
 Every command checks the lock against the members' manifests:
 

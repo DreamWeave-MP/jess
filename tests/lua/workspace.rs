@@ -590,9 +590,9 @@ fn sync_pins_what_the_members_need_and_runs_without_it() {
     // Nothing in it depends on where the workspace or the packages it came from are.
     assert!(!lock.contains(&text(temp.path())), "{lock}");
     for package in &synced.packages {
-        let kept =
-            root.join(".jess/packages")
-                .join(format!("{}-{}-{}.jpk", package.id, package.version, &package.digest[..16]));
+        let kept = root
+            .join(".jess/packages")
+            .join(format!("{}-{}-{}.jpk", package.id, package.version, package.digest));
         assert!(kept.is_file(), "{}", kept.display());
     }
 
@@ -1000,4 +1000,35 @@ fn the_lock_chooses_between_kept_versions() {
         .unwrap_err()
         .to_string();
     assert!(ambiguous.contains("has more than one candidate"), "{ambiguous}");
+}
+
+/// `sync` writes only inside the workspace: a `.jess` or `.jess/packages` that links somewhere
+/// outside it is refused before anything is written there.
+#[cfg(unix)]
+#[test]
+fn sync_keeps_packages_only_inside_the_workspace() {
+    let (temp, root) = scratch();
+    let (vendor, jpks) = (temp.path().join("vendor"), temp.path().join("jpks"));
+    dependents(&root, &vendor, &["1.2.0"]);
+    pack_all(&vendor, &jpks);
+    let elsewhere = temp.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+
+    for (link, made) in [(root.join(".jess"), false), (root.join(".jess/packages"), true)] {
+        drop(std::fs::remove_dir_all(root.join(".jess")));
+        if made {
+            std::fs::create_dir_all(root.join(".jess")).unwrap();
+        }
+        std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
+        let refused = sync(&root, &[], &[&jpks], false).unwrap_err();
+        assert!(
+            refused.contains("outside the workspace; sync writes only inside it"),
+            "{refused}"
+        );
+        assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0, "{}", link.display());
+        assert!(!root.join("jess.lock").exists());
+        std::fs::remove_file(&link).unwrap();
+    }
+
+    sync(&root, &[], &[&jpks], false).unwrap();
 }
