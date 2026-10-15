@@ -100,7 +100,10 @@ pub fn run(args: &RunArgs) -> Result<u8, String> {
     if (args.emit_asm.is_some() || args.disassemble.is_some()) && !args.args.is_empty() {
         return Err("script inspection modes don't execute the script and take no script arguments".to_owned());
     }
-    let lua = lua_with_profile(&args.capabilities, args.profile)?;
+    // A script run from the command line writes to the terminal it was run from, as `print` does.
+    let mut capabilities = vec![l3i::process::STDIO_CAPABILITY.to_owned()];
+    capabilities.extend(args.capabilities.iter().cloned());
+    let lua = lua_with_profile(&capabilities, args.profile)?;
     activate(&lua, args)?;
     let result = match (&args.emit_asm, &args.disassemble) {
         (Some(output), _) => emit_assembly(&lua, &args.script, output).map(|()| 0),

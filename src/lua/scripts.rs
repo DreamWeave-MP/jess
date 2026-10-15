@@ -54,10 +54,10 @@ pub(crate) fn run_loaded(runtime: &Runtime, name: &str, function: &Function, arg
         let arg = Table::new(&stack, args.len(), 1)?;
         stack.with_frame(|frame| {
             let table = arg.push_to(frame)?;
-            frame.push_string(name);
+            frame.push_string(name)?;
             table.raw_set_index(frame, 0)?;
             for (index, value) in args.iter().enumerate() {
-                frame.push_string(value);
+                frame.push_string(value)?;
                 table.raw_set_index(frame, index as i64 + 1)?;
             }
             Ok(())
@@ -66,7 +66,7 @@ pub(crate) fn run_loaded(runtime: &Runtime, name: &str, function: &Function, arg
             .iter()
             .map(|value| {
                 crate::lua::stored(&stack, |frame| {
-                    frame.push_string(value);
+                    frame.push_string(value)?;
                     Ok(())
                 })
             })

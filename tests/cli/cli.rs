@@ -87,6 +87,22 @@ fn run_executes_jsl_scripts_with_arguments() {
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     assert_eq!(String::from_utf8(output.stdout).unwrap(), "hi jess\tgeneric argument\ttrue\n");
 
+    fs::write(
+        root.join("write.jsl"),
+        "local process = require('@dream/process')\nprocess.write('stdout', 'raw')\nprocess.write('stderr', 'err')\n",
+    )
+    .unwrap();
+    let written = Command::new(env!("CARGO_BIN_EXE_jess"))
+        .arg("run")
+        .arg(root.join("write.jsl"))
+        .output()
+        .unwrap();
+    assert!(written.status.success(), "{}", String::from_utf8_lossy(&written.stderr));
+    assert_eq!(
+        (written.stdout.as_slice(), written.stderr.as_slice()),
+        (&b"raw"[..], &b"err"[..])
+    );
+
     fs::write(root.join("failing.jsl"), "error('nope')").unwrap();
     let failed = Command::new(env!("CARGO_BIN_EXE_jess"))
         .args(["run"])

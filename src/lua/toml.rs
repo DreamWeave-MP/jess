@@ -46,7 +46,7 @@ fn push_table(frame: &Frame<'_>, document: &toml::Table, layout: &Table) -> l3i:
         let entry = frame.push_table(0, 3)?;
         let keys = frame.push_table(document.len(), 0)?;
         for (index, key) in document.keys().enumerate() {
-            frame.push_string(key);
+            frame.push_string(key)?;
             keys.raw_set_index(frame, index as i64 + 1)?;
         }
         entry.raw_set(frame, "keys")?;
@@ -76,21 +76,21 @@ fn push_table(frame: &Frame<'_>, document: &toml::Table, layout: &Table) -> l3i:
 fn push_value(frame: &Frame<'_>, value: &toml::Value, layout: &Table) -> l3i::Result<()> {
     match value {
         toml::Value::String(text) => {
-            frame.push_string(text);
+            frame.push_string(text)?;
         }
         // Luau numbers are floats; integers past 2^53 lose precision.
         #[allow(clippy::cast_precision_loss)]
         toml::Value::Integer(number) => {
-            frame.push_number(*number as f64);
+            frame.push_number(*number as f64)?;
         }
         toml::Value::Float(number) => {
-            frame.push_number(*number);
+            frame.push_number(*number)?;
         }
         toml::Value::Boolean(flag) => {
-            frame.push_boolean(*flag);
+            frame.push_boolean(*flag)?;
         }
         toml::Value::Datetime(datetime) => {
-            frame.push_string(&datetime.to_string());
+            frame.push_string(&datetime.to_string())?;
         }
         toml::Value::Array(items) => {
             let array = frame.push_table(items.len(), 0)?;
@@ -99,7 +99,7 @@ fn push_value(frame: &Frame<'_>, value: &toml::Value, layout: &Table) -> l3i::Re
                 let floats = frame.push_table(0, 0)?;
                 for (index, item) in items.iter().enumerate() {
                     if matches!(item, toml::Value::Float(_)) {
-                        frame.push_boolean(true);
+                        frame.push_boolean(true)?;
                         floats.raw_set_index(frame, index as i64 + 1)?;
                     }
                 }
@@ -107,7 +107,7 @@ fn push_value(frame: &Frame<'_>, value: &toml::Value, layout: &Table) -> l3i::Re
                 let datetimes = frame.push_table(0, 0)?;
                 for (index, item) in items.iter().enumerate() {
                     if matches!(item, toml::Value::Datetime(_)) {
-                        frame.push_boolean(true);
+                        frame.push_boolean(true)?;
                         datetimes.raw_set_index(frame, index as i64 + 1)?;
                     }
                 }

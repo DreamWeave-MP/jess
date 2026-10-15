@@ -232,7 +232,7 @@ impl Opts {
                 let value = view.raw_get(frame, key)?;
                 body(frame, value)
             }
-            None => body(frame, frame.push_nil()),
+            None => body(frame, frame.push_nil()?),
         })
     }
 

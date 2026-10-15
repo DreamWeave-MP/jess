@@ -125,7 +125,7 @@ pub fn runtime_with_profile(_options: Options, capabilities: &[String], profilin
     // on its fast path, in an environment marked safe. Without it every call is a table lookup
     // and a full call, which is most of the time a numeric script spends. What jess replaces
     // (`print`, `require`) is replaced above, before any script loads.
-    runtime.sandbox_globals();
+    runtime.sandbox_globals()?;
     if profiling {
         runtime.set_sampled_context(Some(1));
     }

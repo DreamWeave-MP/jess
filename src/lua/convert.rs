@@ -83,6 +83,12 @@ impl serde::ser::Error for NotLeaf {
     }
 }
 
+impl From<l3i::Error> for NotLeaf {
+    fn from(problem: l3i::Error) -> Self {
+        Self::Failed(problem.to_string())
+    }
+}
+
 /// A serializer that pushes one scalar onto a frame and refuses every compound value before
 /// pushing anything, so a refusal leaves the frame as it was.
 struct LeafPusher<'f, 'p> {
@@ -102,7 +108,7 @@ impl serde::Serializer for LeafPusher<'_, '_> {
     type SerializeStructVariant = serde::ser::Impossible<(), NotLeaf>;
 
     fn serialize_bool(self, value: bool) -> Result<(), NotLeaf> {
-        self.frame.push_boolean(value);
+        self.frame.push_boolean(value)?;
         Ok(())
     }
 
@@ -143,17 +149,17 @@ impl serde::Serializer for LeafPusher<'_, '_> {
     }
 
     fn serialize_f64(self, value: f64) -> Result<(), NotLeaf> {
-        self.frame.push_number(value);
+        self.frame.push_number(value)?;
         Ok(())
     }
 
     fn serialize_char(self, value: char) -> Result<(), NotLeaf> {
-        self.frame.push_string(&value.to_string());
+        self.frame.push_string(&value.to_string())?;
         Ok(())
     }
 
     fn serialize_str(self, value: &str) -> Result<(), NotLeaf> {
-        self.frame.push_string(value);
+        self.frame.push_string(value)?;
         Ok(())
     }
 
@@ -258,43 +264,43 @@ fn rename(key: &str, case: fn(&str) -> String) -> String {
 pub fn push_tree(frame: &Frame<'_>, jess: &Jess, tree: &Tree) -> l3i::Result<()> {
     match tree {
         Tree::Bool(value) => {
-            frame.push_boolean(*value);
+            frame.push_boolean(*value)?;
         }
         Tree::U8(value) => {
-            frame.push_number(f64::from(*value));
+            frame.push_number(f64::from(*value))?;
         }
         Tree::U16(value) => {
-            frame.push_number(f64::from(*value));
+            frame.push_number(f64::from(*value))?;
         }
         Tree::U32(value) => {
-            frame.push_number(f64::from(*value));
+            frame.push_number(f64::from(*value))?;
         }
         Tree::U64(value) => {
-            frame.push_number(*value as f64);
+            frame.push_number(*value as f64)?;
         }
         Tree::I8(value) => {
-            frame.push_number(f64::from(*value));
+            frame.push_number(f64::from(*value))?;
         }
         Tree::I16(value) => {
-            frame.push_number(f64::from(*value));
+            frame.push_number(f64::from(*value))?;
         }
         Tree::I32(value) => {
-            frame.push_number(f64::from(*value));
+            frame.push_number(f64::from(*value))?;
         }
         Tree::I64(value) => {
-            frame.push_number(*value as f64);
+            frame.push_number(*value as f64)?;
         }
         Tree::F32(value) => {
-            frame.push_number(f64::from(*value));
+            frame.push_number(f64::from(*value))?;
         }
         Tree::F64(value) => {
-            frame.push_number(*value);
+            frame.push_number(*value)?;
         }
         Tree::Char(value) => {
-            frame.push_string(&value.to_string());
+            frame.push_string(&value.to_string())?;
         }
         Tree::String(value) => {
-            frame.push_string(value);
+            frame.push_string(value)?;
         }
         Tree::Bytes(bytes) => {
             frame.push(bytes.as_slice())?;
@@ -346,16 +352,16 @@ pub fn display_to_lua(scope: &impl Scope, json: &Json) -> l3i::Result<()> {
 fn push_json(frame: &Frame<'_>, json: &Json, rename_keys: bool) -> l3i::Result<()> {
     match json {
         Json::Null => {
-            frame.push_nil();
+            frame.push_nil()?;
         }
         Json::Bool(value) => {
-            frame.push_boolean(*value);
+            frame.push_boolean(*value)?;
         }
         Json::Number(number) => {
-            frame.push_number(number.as_f64().unwrap_or(f64::NAN));
+            frame.push_number(number.as_f64().unwrap_or(f64::NAN))?;
         }
         Json::String(text) => {
-            frame.push_string(text);
+            frame.push_string(text)?;
         }
         Json::Array(items) => {
             let table = frame.push_table(items.len(), 0)?;

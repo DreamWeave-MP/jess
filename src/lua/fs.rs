@@ -152,7 +152,7 @@ pub fn module(runtime: &Runtime, read: bool, write: bool) -> l3i::Result<Table> 
                 .map(|entry| entry.file_name().to_string_lossy().into_owned())
                 .collect::<Vec<_>>();
             lua::push_list(call, names.into_iter(), |frame, name| {
-                frame.push_string(&name);
+                frame.push_string(&name)?;
                 Ok(())
             })?;
             Ok(StackResults)

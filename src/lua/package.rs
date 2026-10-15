@@ -881,7 +881,7 @@ pub(crate) fn string_list(scope: &impl Scope, items: &[String]) -> l3i::Result<T
     crate::lua::lua::stored_table(scope, |frame| {
         let table = frame.push_table(items.len(), 0)?;
         for (index, item) in items.iter().enumerate() {
-            frame.push_string(item);
+            frame.push_string(item)?;
             table.raw_set_index(frame, index as i64 + 1)?;
         }
         Ok(())

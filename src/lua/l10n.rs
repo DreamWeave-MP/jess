@@ -375,7 +375,7 @@ fn push_diagnostic(frame: &Frame<'_>, diagnostic: &Diagnostic) -> l3i::Result<()
         text(frame, "severity", diagnostic.severity.as_str())?;
         text(frame, "kind", diagnostic.kind.code())?;
         text(frame, "detail", &diagnostic.detail)?;
-        frame.push_number(generation_number(diagnostic.generation));
+        frame.push_number(generation_number(diagnostic.generation))?;
         table.raw_set(frame, "generation")?;
         for (key, value) in [
             ("provider", &diagnostic.provider),
@@ -390,7 +390,7 @@ fn push_diagnostic(frame: &Frame<'_>, diagnostic: &Diagnostic) -> l3i::Result<()
         }
         for (key, value) in [("line", diagnostic.line), ("column", diagnostic.column)] {
             if let Some(value) = value {
-                frame.push_number(f64::from(value));
+                frame.push_number(f64::from(value))?;
                 table.raw_set(frame, key)?;
             }
         }

@@ -234,10 +234,10 @@ fn parse_family(text: &Text) -> l3i::Result<PresentationFamily> {
 fn push_value(frame: &Frame<'_>, value: Value) -> l3i::Result<()> {
     match value {
         Value::Digital(on) => {
-            frame.push_boolean(on);
+            frame.push_boolean(on)?;
         }
         Value::Scalar(number) => {
-            frame.push_number(f64::from(number));
+            frame.push_number(f64::from(number))?;
         }
         Value::Vector2([x, y]) => {
             frame.push(&Vector3 { x, y, z: 0.0 })?;

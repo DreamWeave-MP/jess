@@ -961,7 +961,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
             "textures",
             |this: &LuaShaderProgram, call: &Call<'_>| -> l3i::Result<StackResults> {
                 lua::push_list(call, this.0.textures.iter(), |frame, name| {
-                    frame.push_string(name);
+                    frame.push_string(name)?;
                     Ok(())
                 })?;
                 Ok(StackResults)
