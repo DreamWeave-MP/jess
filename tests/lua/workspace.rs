@@ -870,7 +870,19 @@ fn a_lock_runs_only_the_packages_it_pins() {
         &[("src/init.jsl", "error('a forged package ran')\n")],
     );
     pack(&temp.path().join("forged"), &kept);
-    assert_eq!(from(&root).lock.state, "fresh");
+    // Opening the workspace says so, though its id and version are right; a run, which doesn't
+    // open what it doesn't need, refuses it by digest before any of it runs.
+    let opened = from(&root);
+    assert_eq!(opened.lock.state, "missing");
+    let kept_name = kept.file_name().unwrap().to_string_lossy();
+    assert!(
+        opened.lock.problems.iter().any(|problem| problem.contains(&format!(
+            "'.jess/packages/{kept_name}' is org.example.words 1.2.0, but not the one jess.lock pins: its digest isn't {}",
+            words.digest
+        ))),
+        "{:#?}",
+        opened.lock.problems
+    );
     let forged = run(&root, "org.example.app:main").unwrap_err();
     assert!(
         forged.contains(&format!("not the {} it is pinned to", words.digest)),

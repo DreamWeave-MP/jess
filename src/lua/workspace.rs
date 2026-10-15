@@ -139,7 +139,8 @@ fn workspace_shape() -> serde_json::Value {
     })
 }
 
-/// Opens the workspace `at` names, reading its file, its members' manifests, and its lock.
+/// Opens the workspace `at` names, reading its file, its members' manifests, and its lock, and
+/// opening every package the lock keeps to check it has the digest the lock pins.
 ///
 /// # Errors
 ///

@@ -52,6 +52,7 @@ type WorkspaceModule = {
   read open: (folder: string) -> unknown,
   read discover: (start: string) -> unknown,
   read describe: (workspace: unknown) -> { [string]: unknown },
+  read verify: (workspace: unknown) -> unknown,
   read target: (workspace: unknown, name: string?, cwd: string) -> { [string]: unknown },
   read tests: (workspace: unknown, names: { string }) -> { { [string]: unknown } },
   read sync: (
@@ -281,7 +282,7 @@ local function located(start: string, explicit: boolean): unknown
 end
 
 local function workspace(start: string, explicit: boolean): { [string]: unknown }
-  return workspaces.describe(located(start, explicit))
+  return workspaces.describe(workspaces.verify(located(start, explicit)))
 end
 
 --- The target of the workspace at `start` that `name` picks, run from `cwd`, and what its

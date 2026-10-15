@@ -324,6 +324,15 @@ local function readLock(root: string): { Locked }?
   return locked
 end
 
+--- `location` opened, or nil when it can't be.
+local function opened(location: string): Package?
+  -- The container throws on a damaged JPK, and a damaged copy in `.jess/packages` is one to
+  -- report or replace, not a reason to stop.
+  local ok, result = pcall(package.open, location)
+
+  return if ok then result else nil
+end
+
 --- Why the member `found` doesn't meet the requirement `by` makes of it, or nil when it does. A
 --- member is always the package its id names, so nothing pinned or offered can stand in for it.
 local function unmet(by: string, found: Member, requirement: string): string?
@@ -337,8 +346,9 @@ end
 --- What the members require beyond each other, transitively through what `jess.lock` pins, and
 --- whether the lock pins exactly that: every requirement met by the member its id names or by the
 --- one version pinned, nothing pinned that a member is or nothing requires, and every pinned
---- package in `.jess/packages` as the lock says it is. Reads manifests; opens nothing.
-local function lockState(root: string, members: { Member }): Lock
+--- package in `.jess/packages` as the lock says it is. Reads manifests; with `deep`, also opens
+--- every kept package and holds it to the digest the lock pins.
+local function lockState(root: string, members: { Member }, deep: boolean?): Lock
   local entries = readLock(root)
   local packages: { Locked } = entries or {}
   local stale, missing = {} :: { string }, {} :: { string }
@@ -372,6 +382,16 @@ local function lockState(root: string, members: { Member }): Lock
 
     if not ok or offer.id ~= entry.id or offer.version ~= entry.version then
       table.insert(missing, `'{name}' is not the {entry.id} {entry.version} it is named for`)
+      continue
+    end
+
+    local stored = deep and opened(`{root}/{name}`)
+
+    if deep and (not stored or stored.digest ~= entry.digest) then
+      table.insert(
+        missing,
+        `'{name}' is {entry.id} {entry.version}, but not the one jess.lock pins: its digest isn't {entry.digest}`
+      )
       continue
     end
 
@@ -600,6 +620,19 @@ local function discover(start: string): Workspace
   return implicit(found, note)
 end
 
+--- `workspace` with every package its lock pins opened and held to its digest, not only named
+--- for it: what `info` shows. That hashes every kept package, so a run leaves it to resolution,
+--- which holds each package it opens to its pin before anything runs.
+local function verify(workspace: Workspace): Workspace
+  return table.freeze {
+    root = workspace.root,
+    kind = workspace.kind,
+    members = workspace.members,
+    lock = lockState(workspace.root, workspace.members, true),
+    note = workspace.note,
+  }
+end
+
 --- Every member's targets, `<package id>:<target id>`, for messages.
 local function qualified(workspace: Workspace): string
   local names = {}
@@ -811,15 +844,6 @@ type Wanted = { by: string, requirement: string }
 --- A package sync selected, whether `.jess/packages` already holds it, and whether it was named
 --- outright, which no requirement overrides.
 type Choice = { package: Package, stored: boolean, named: boolean }
-
---- `location` opened, or nil when it can't be.
-local function opened(location: string): Package?
-  -- The container throws on a damaged JPK, and a damaged copy in `.jess/packages` is one to
-  -- replace rather than a reason to stop.
-  local ok, result = pcall(package.open, location)
-
-  return if ok then result else nil
-end
 
 --- Brings `jess.lock` and `.jess/packages` into line with what the members need beyond each
 --- other, from the packages offered: `artifacts`, Package Source folders and `.jpk` files named
@@ -1229,6 +1253,7 @@ return function(dependencies: { host: Host, package: PackageModule })
     open = open,
     discover = discover,
     describe = describe,
+    verify = verify,
     target = target,
     tests = tests,
     sync = sync,
