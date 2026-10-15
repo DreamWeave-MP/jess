@@ -1,5 +1,4 @@
 --!strict
---!native
 -- @jess/jpk: the JPK container, a narrow ZIP subset, read and written over @dream/bytes.
 --
 -- The container knows entries, never packages: manifests, digests, and layers are @jess/package's.

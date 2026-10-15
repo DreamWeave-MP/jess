@@ -1,5 +1,4 @@
 --!strict
---!native
 -- @jess/log: structured logging for scripts and packages, over one native sink the host owns.
 
 export type Fields = { [string]: string | number | boolean }

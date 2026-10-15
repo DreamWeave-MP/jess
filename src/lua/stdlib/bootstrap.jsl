@@ -1,5 +1,4 @@
 --!strict
---!native
 -- jess's package bootstrap: what the host runs to inspect, pack, resolve, and activate packages.
 -- It is not a module and nothing can require it. Every entry opens packages and resolves them
 -- through @jess/package, which runs no package code; `activate` then hands the accepted plan to

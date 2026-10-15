@@ -1,5 +1,4 @@
 --!strict
---!native
 -- jess's workspaces: Package Sources developed together, named by a `jess-workspace.toml` and
 -- found from any folder inside one. What the members depend on beyond each other is pinned in the
 -- workspace's `jess.lock` and kept as JPKs under its `.jess/packages`.

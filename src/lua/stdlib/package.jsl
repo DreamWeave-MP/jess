@@ -1,5 +1,4 @@
 --!strict
---!native
 -- @jess/package: packages, from a Package Source folder or a JPK, their manifests and content
 -- digests, and the code-free resolution of requested layers into an activation plan.
 --
