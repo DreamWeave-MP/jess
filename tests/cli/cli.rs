@@ -496,3 +496,27 @@ fn packages_resolve_over_a_package_path_and_run_their_targets() {
     assert_eq!(String::from_utf8(granted.stdout).unwrap(), "hello from base\n");
     fs::remove_dir_all(root).unwrap();
 }
+
+/// `jess run` leaves the runtime for the process's exit to reclaim, but closes what buffers first:
+/// a writer the script never closed still leaves the whole file.
+#[test]
+fn run_finishes_a_writer_the_script_never_closed() {
+    let root = temp_dir_path("run-unclosed-writer");
+    drop(fs::remove_dir_all(&root));
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("write.jsl"),
+        "local fs = require('@dream/fs')\nlocal out = fs.openWrite(...)\nout:write(string.rep('x', 100))\n",
+    )
+    .unwrap();
+
+    let output = jess()
+        .args(["run", "--capability", "filesystem.write"])
+        .arg(root.join("write.jsl"))
+        .arg(root.join("out.txt"))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(fs::read(root.join("out.txt")).unwrap(), vec![b'x'; 100]);
+    fs::remove_dir_all(root).unwrap();
+}

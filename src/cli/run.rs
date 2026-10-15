@@ -116,8 +116,7 @@ pub fn run(args: &RunArgs) -> Result<u8, String> {
     if args.profile {
         print_profile(&lua);
     }
-    // Nothing in the state needs dropping to finish its work: scripts write files as they go.
-    crate::leave(lua);
+    crate::leave(lua, ());
     result
 }
 

@@ -105,10 +105,13 @@ fn main() -> ExitCode {
     }
 }
 
-/// Leaves `value` for the process's exit to reclaim, for what a command holds when it's done:
-/// the exit comes right after, and freeing a whole load order piece by piece only delays it.
-pub fn leave<T>(value: T) {
-    std::mem::forget(value);
+/// Leaves `runtime` and what came out of it for the process's exit to reclaim.
+///
+/// The exit comes right after, and freeing a whole load order piece by piece only delays it. What
+/// buffers and needs closing to finish (a writer a script never closed) is closed first.
+pub fn leave<T>(runtime: l3i::Runtime, values: T) {
+    runtime.shutdown();
+    std::mem::forget((runtime, values));
 }
 
 fn command() -> clap::Command {

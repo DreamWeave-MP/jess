@@ -127,7 +127,7 @@ fn run_target(at: Locate, args: &RunArgs) -> Result<u8, String> {
     };
     let ran = workspace::run_target(&jess::lua::Options::default(), &request).map_err(|error| error.to_string())?;
     let status = crate::run::script_status(&ran.runtime, &ran.values);
-    crate::leave(ran);
+    crate::leave(ran.runtime, ran.values);
     status
 }
 

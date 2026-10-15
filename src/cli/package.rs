@@ -187,8 +187,7 @@ fn run_target(args: &RunTargetArgs) -> Result<u8, String> {
     };
     let ran = jess::lua::package::run_target(&jess::lua::Options::default(), &request).map_err(|error| error.to_string())?;
     let status = crate::run::script_status(&ran.runtime, &ran.values);
-    // Nothing in the state needs dropping to finish its work: targets write files as they go.
-    crate::leave(ran);
+    crate::leave(ran.runtime, ran.values);
     status
 }
 
