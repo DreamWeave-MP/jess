@@ -158,7 +158,7 @@ pub fn require(call: &Call<'_>, jess: &Jess, name: &str) -> l3i::Result<StackRes
 /// or a layer's entrypoint loaded it first, so it is frozen once returned: one package can't
 /// patch another's API for the whole plan. A loose script's own files (keyed by their chunk name,
 /// not `\0...`) stay its business.
-pub(crate) fn freeze_export(key: &str, value: l3i::stack::ValueView<'_>) -> l3i::Result<()> {
+pub fn freeze_export(key: &str, value: l3i::stack::ValueView<'_>) -> l3i::Result<()> {
     if key.starts_with('\0') && value.is_table() {
         let table = value.as_table()?;
         if !table.is_read_only() {

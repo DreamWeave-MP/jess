@@ -522,8 +522,8 @@ return function(count)
 end
 ";
     let flooding = domain.spawn_worker(WorkerSpec::new("flooding", source)).unwrap();
-    let count = 2 * jess::runtime::WORKER_QUEUE;
-    domain.send_to_worker(flooding, Message::Number(count as f64)).unwrap();
+    let count = 2 * u32::try_from(jess::runtime::WORKER_QUEUE).unwrap();
+    domain.send_to_worker(flooding, Message::Number(f64::from(count))).unwrap();
     assert!(rendezvous.meet(), "the handler finished sending");
     let mut numbers = 0;
     let last = loop {
