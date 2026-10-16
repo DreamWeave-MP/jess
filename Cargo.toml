@@ -38,7 +38,7 @@ gilrs = ["dep:gilrs"]
 clap = { version = "^4.5", features = ["derive", "env", "wrap_help"] }
 clap_complete = "^4.5"
 clap_mangen = "^0.2"
-l3i = { version = "2.1.1", features = ["jit", "bytes-text", "bytes-codecs", "bytes-digests", "bytes-regex", "data", "dns", "fs", "intern", "intl", "process", "syntax", "tcp", "tls"] }
+l3i = { version = "2.1.1", features = ["analysis", "jit", "bytes-text", "bytes-codecs", "bytes-digests", "bytes-regex", "data", "dns", "fs", "intern", "intl", "process", "syntax", "tcp", "tls"] }
 serde = { version = "^1.0", features = ["derive"] }
 serde-value = "^0.7"
 serde_json = { version = "^1.0", features = ["preserve_order"] }

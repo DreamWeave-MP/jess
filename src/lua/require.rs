@@ -299,7 +299,7 @@ fn package_relative(call: &Call<'_>, jess: &Jess, name: &str, caller: Option<&st
 
 /// The package paths a relative `name` required from the module at `path` may be, in the order
 /// [`find_relative`] tries files: a path that leaves the package's root is an error.
-fn relative_candidates(name: &str, caller: &str, path: &str, package: &str) -> l3i::Result<Vec<String>> {
+pub fn relative_candidates(name: &str, caller: &str, path: &str, package: &str) -> l3i::Result<Vec<String>> {
     let init = std::path::Path::new(path)
         .file_stem()
         .is_some_and(|stem| stem.eq_ignore_ascii_case("init"));

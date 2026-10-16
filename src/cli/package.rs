@@ -63,6 +63,20 @@ enum PackageCommand {
         #[arg(long = "package-path", value_name = "FOLDER")]
         package_paths: Vec<PathBuf>,
     },
+    /// Type-check a Package Source's Luau in strict mode, every .jsl file under it, with each
+    /// require resolved as the runtime resolves it under the package's plan, its [dependencies]
+    /// and [dev-dependencies] selected with it. Runs nothing.
+    Check {
+        /// A Package Source folder.
+        package: PathBuf,
+        /// A package its dependencies resolve over (repeatable): a Package Source folder or a .jpk.
+        #[arg(long = "package", value_name = "PACKAGE")]
+        packages: Vec<PathBuf>,
+        /// A folder of packages its dependencies resolve over (repeatable), read as
+        /// package graph reads one.
+        #[arg(long = "package-path", value_name = "FOLDER")]
+        package_paths: Vec<PathBuf>,
+    },
     /// Run one of a package's command targets: its entry, as a script, with the package's layers
     /// activated and exactly the capabilities the target declares.
     Run(RunTargetArgs),
@@ -254,6 +268,28 @@ pub fn run(args: &PackageArgs, format: Format) -> Result<u8, String> {
             }
             if report.failed > 0 {
                 return Err(format!("{} failed", report.failed));
+            }
+            Ok(())
+        }
+        PackageCommand::Check {
+            package,
+            packages,
+            package_paths,
+        } => {
+            let report = jess::lua::check::check_with(
+                &jess::lua::Options::default(),
+                package,
+                &texts(packages),
+                &jess::lua::package::Search {
+                    paths: texts(package_paths),
+                    ..Default::default()
+                },
+            )
+            .map_err(|error| error.to_string())?;
+            output::print(&report, format)?;
+            if !report.errors.is_empty() {
+                let count = report.errors.len();
+                return Err(format!("{count} type error{}", if count == 1 { "" } else { "s" }));
             }
             Ok(())
         }

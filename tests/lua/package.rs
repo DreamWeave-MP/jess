@@ -1374,3 +1374,79 @@ module = "@beta/api"
          assert(not pcall(function() api.version = 2 end), 'and refuses a write')",
     );
 }
+
+/// A library whose module has a type error of its own, and an app that requires it, a relative
+/// module, and a built-in export, with one type error in its tests.
+fn checked(root: &Path) {
+    write(
+        &root.join("lib"),
+        &[
+            (
+                "jess.toml",
+                "manifest_version = 1\n[package]\nid = \"org.example.lib\"\nversion = \"0.1.0\"\njess_api = \"1\"\ninclude = [\"src\"]\n\
+                 [modules]\n\"@lib\" = \"src/init.jsl\"\n[[layer]]\nid = \"lib.core\"\nexports = [\"@lib\"]\n",
+            ),
+            (
+                "src/init.jsl",
+                "--!strict\nlocal wrong: number = 'not a number'\nlocal function double(value: number): number return value * 2 end\nreturn { double = double, wrong = wrong }\n",
+            ),
+        ],
+    );
+    write(
+        &root.join("app"),
+        &[
+            (
+                "jess.toml",
+                "manifest_version = 1\n[package]\nid = \"org.example.app\"\nversion = \"0.1.0\"\njess_api = \"1\"\ninclude = [\"src\", \"tests\"]\n\
+                 tests = [\"tests/run.jsl\"]\n[dependencies]\n\"org.example.lib\" = \"0.1\"\n[modules]\n\"@app\" = \"src/init.jsl\"\n\
+                 [[layer]]\nid = \"app.core\"\nrequires = [\"lib.core\"]\nexports = [\"@app\"]\n",
+            ),
+            (
+                "src/init.jsl",
+                "--!strict\nlocal lib = require '@lib'\nlocal helper = require '@self/helper'\nlocal json = require '@jess/json'\n\
+                 return { twice = function(value: number): number return helper.add(lib.double(value), 0) end, encode = json.encodeTable }\n",
+            ),
+            (
+                "src/helper.jsl",
+                "--!strict\nreturn { add = function(left: number, right: number): number return left + right end }\n",
+            ),
+            (
+                "tests/run.jsl",
+                "--!strict\nlocal app = require '@app'\nlocal text: string = app.twice(2)\nreturn require('@jess/test').new()\n",
+            ),
+        ],
+    );
+}
+
+/// `jess package check` reports the package's own type errors, in its tests too, with requires
+/// resolved as the runtime resolves them: the dependency's errors are the dependency's, and a
+/// dependency packed into a JPK checks the same as its source.
+#[test]
+fn a_check_reports_a_package_s_own_type_errors_with_its_requires_resolved() {
+    let temp = tempfile::tempdir().unwrap();
+    checked(temp.path());
+    let options = jess::lua::Options::default();
+    let packed = temp.path().join("lib.jpk");
+    package::pack(
+        &common::runtime(),
+        &temp.path().join("lib").display().to_string(),
+        &packed.display().to_string(),
+    )
+    .unwrap();
+    for dependency in [temp.path().join("lib"), packed] {
+        let report = jess::lua::check::check_with(
+            &options,
+            &temp.path().join("app"),
+            &[dependency.display().to_string()],
+            &package::Search::default(),
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!((report.id.as_str(), report.files), ("org.example.app", 3), "{report:#?}");
+        let errors = report
+            .errors
+            .iter()
+            .map(|error| (error.file.as_str(), error.line))
+            .collect::<Vec<_>>();
+        assert_eq!(errors, [("tests/run.jsl", 3)], "{report:#?}");
+    }
+}

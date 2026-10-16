@@ -20,6 +20,7 @@ pub use l3i;
 
 pub mod bench;
 pub mod builtin;
+pub mod check;
 mod convert;
 pub mod document;
 mod files;

@@ -769,6 +769,20 @@ pub fn activate_with(
     grant: Option<&[String]>,
     search: &Search,
 ) -> l3i::Result<Plan> {
+    let plan = mount_with(runtime, locations, layers, grant, search)?;
+    run_entrypoints(runtime)?;
+    Ok(plan)
+}
+
+/// Resolves and mounts a plan as [`activate_with`] does, and runs none of its entrypoints: its
+/// modules can be read and required, and nothing a package holds has run.
+pub(crate) fn mount_with(
+    runtime: &Runtime,
+    locations: &[String],
+    layers: &[String],
+    grant: Option<&[String]>,
+    search: &Search,
+) -> l3i::Result<Plan> {
     let state = crate::lua::state(runtime)?;
     if state.packages.borrow().is_some() {
         return Err(error("this runtime already has packages activated; one plan per runtime"));
@@ -847,9 +861,7 @@ pub fn activate_with(
         search.table(&stack)?,
     );
     drop(stack);
-    let plan = bootstrap(runtime, "activate", &plan_shape(), args)?;
-    run_entrypoints(runtime)?;
-    Ok(plan)
+    bootstrap(runtime, "activate", &plan_shape(), args)
 }
 
 /// Runs the mounted plan's entrypoints in order, each once, as `require` would load it: called

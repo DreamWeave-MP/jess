@@ -547,3 +547,53 @@ fn a_package_export_is_frozen() {
     assert!(printed.ends_with("base\n"), "{printed}");
     fs::remove_dir_all(root).unwrap();
 }
+
+/// `jess package check` prints the package's type errors and fails on any, and passes a package
+/// that checks.
+#[test]
+fn package_check_fails_on_a_type_error_and_passes_without_one() {
+    let root = temp_dir_path("package-check");
+    drop(fs::remove_dir_all(&root));
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(
+        root.join("jess.toml"),
+        "manifest_version = 1\n[package]\nid = \"org.example.checked\"\nversion = \"0.1.0\"\njess_api = \"1\"\ninclude = [\"src\"]\n\
+         [modules]\n\"@checked\" = \"src/init.jsl\"\n[[layer]]\nid = \"checked.core\"\nexports = [\"@checked\"]\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/init.jsl"),
+        "--!strict\nlocal count: number = 'three'\nreturn { count = count }\n",
+    )
+    .unwrap();
+    let failed = jess()
+        .args(["--format", "json", "package", "check"])
+        .arg(&root)
+        .output()
+        .unwrap();
+    assert!(!failed.status.success());
+    assert!(
+        String::from_utf8_lossy(&failed.stderr).contains("1 type error\n"),
+        "{}",
+        String::from_utf8_lossy(&failed.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&failed.stdout).unwrap();
+    assert_eq!(
+        (report["files"].as_u64(), report["errors"][0]["file"].as_str()),
+        (Some(1), Some("src/init.jsl"))
+    );
+    assert_eq!(report["errors"][0]["line"].as_u64(), Some(2));
+
+    fs::write(
+        root.join("src/init.jsl"),
+        "--!strict\nlocal count: number = 3\nreturn { count = count }\n",
+    )
+    .unwrap();
+    let passed = jess()
+        .args(["--format", "json", "package", "check"])
+        .arg(&root)
+        .output()
+        .unwrap();
+    assert!(passed.status.success(), "{}", String::from_utf8_lossy(&passed.stderr));
+    fs::remove_dir_all(root).unwrap();
+}
