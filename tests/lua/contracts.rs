@@ -41,6 +41,27 @@ fn bench_names_the_build_and_collects() {
     );
 }
 
+/// `jess.granted` answers from the runtime's grant, and a name no jess runtime can be granted is
+/// an error, not a quiet `false`.
+#[test]
+fn granted_answers_from_the_runtime_s_grant() {
+    let runtime = common::runtime();
+    common::run(
+        &runtime,
+        r"
+        assert(jess.granted('process.environment') == false)
+        local ok, problem = pcall(jess.granted, 'proces.environment')
+        assert(not ok and string.find(problem, 'unknown capability', 1, true), problem)
+    ",
+    );
+    let granted =
+        jess::lua::runtime_with_capabilities(jess::lua::Options::default(), &["process.environment".to_owned()]).unwrap();
+    common::run(
+        &granted,
+        "assert(jess.granted('process.environment') and not jess.granted('process.spawn'))",
+    );
+}
+
 #[test]
 fn definitions_and_stubs_have_no_native_format_surface() {
     let types = jess::lua::types::types().unwrap();

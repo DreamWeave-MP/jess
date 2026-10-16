@@ -216,8 +216,9 @@ pub(crate) struct Jess {
     pub(crate) builtin: RefCell<Option<Rc<builtin::Manifest>>>,
     /// The runtime's TOML decoder, the built-in package's, loaded the first time it is asked for.
     pub(crate) toml_decode: RefCell<Option<Function>>,
-    /// The jess capabilities the runtime's plan grants: what [`guard`] allows outside a domain.
-    pub(crate) granted: Vec<&'static str>,
+    /// Every capability the runtime's plan grants: what [`guard`] allows, and `jess.granted`
+    /// answers, outside a domain.
+    pub(crate) granted: Vec<String>,
 }
 
 impl Jess {
@@ -373,7 +374,7 @@ pub(crate) fn guard(jess: &Jess, function: &str, capability: &str) -> l3i::Resul
     if crate::runtime::current_authority().is_some() {
         return crate::runtime::require_capability(capability).map_err(l3i::Error::from);
     }
-    if jess.granted.contains(&capability) {
+    if jess.granted.iter().any(|held| held == capability) {
         return Ok(());
     }
     Err(l3i::Error::denied(function, capability))

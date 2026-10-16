@@ -491,3 +491,25 @@ context.bind('main', {
     );
     domain.stop().unwrap();
 }
+
+/// Under a domain `jess.granted` answers from the broker, whatever the runtime's own plan grants,
+/// and asking is no denial.
+#[test]
+fn granted_asks_the_broker_under_a_domain() {
+    let logs = Arc::new(jess::runtime::CollectedLogs::new());
+    let factory: Arc<dyn RuntimeFactory> = Arc::new(|| jess::lua::runtime(Options::default()));
+    let grant = RootAuthority::new().grant(CapabilitySet::from_names(["process.environment"]).unwrap());
+    let domain = jess::runtime::ScriptDomain::create(factory, DomainSpec::new("asking", grant).logs(logs.clone())).unwrap();
+    domain
+        .register_context(ContextSpec::new("main").schedule([Phase::Startup]))
+        .unwrap();
+    domain
+        .load_source(
+            "@test/kernel/granted.jsl",
+            "require('@jess/log').new('asking').info(`{jess.granted('process.environment')} {jess.granted('process.spawn')}`)",
+        )
+        .unwrap();
+    let messages = logs.drain().into_iter().map(|record| record.message).collect::<Vec<_>>();
+    assert_eq!(messages, ["true false"]);
+    assert_eq!(domain.stats().capability_denials, 0);
+}

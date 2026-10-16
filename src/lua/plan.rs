@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
 use l3i::Runtime;
-use l3i::bind::Binding;
+use l3i::bind::{Binding, Call};
 use l3i::extension::{
     Extension, ExtensionDescriptor, InstallContext, NativeCodePolicy, RuntimePlan, RuntimePlanBuilder, RuntimePolicy,
     UserdataBuilder,
@@ -120,7 +120,7 @@ fn builder(capabilities: &[String], profiling: bool) -> RuntimePlanBuilder {
 
 /// The members of `@jess`, installed per runtime. Each table among them is also the module
 /// `@jess/<name>` (`require("@jess/shader")`).
-pub(crate) const MEMBERS: [&str; 7] = ["version", "null", "shader", "context", "worker", "input", "bench"];
+pub(crate) const MEMBERS: [&str; 8] = ["version", "null", "granted", "shader", "context", "worker", "input", "bench"];
 
 /// The capabilities `jess.input` checks.
 const INPUT_CAPABILITIES: [&str; 3] = [
@@ -156,18 +156,45 @@ impl Extension for JessExtension {
     }
 
     fn install(&self, cx: &mut InstallContext<'_>) -> l3i::Result<()> {
-        let mut granted = Vec::new();
-        for capability in INPUT_CAPABILITIES {
-            if cx.has_capability(capability)? {
-                granted.push(capability);
+        // Every capability an extension of the plan declares, and the broker's `worker.spawn`; and
+        // which of them the policy grants.
+        let mut known = vec![crate::runtime::WORKER_SPAWN.to_owned()];
+        for descriptor in cx.plan().descriptors() {
+            for name in descriptor.capabilities().chain(descriptor.optional_capabilities()) {
+                if !known.iter().any(|seen| seen == name) {
+                    known.push(name.to_owned());
+                }
             }
         }
+        known.sort();
+        let granted = known
+            .iter()
+            .filter(|name| cx.plan().policy().grants(name))
+            .cloned()
+            .collect::<Vec<_>>();
         let runtime = cx.runtime();
+        let held = granted.clone();
+        let asked = runtime.bind_function("jess.granted", move |_: &Call<'_>, name: String| -> l3i::Result<bool> {
+            if !known.contains(&name) {
+                return Err(crate::lua::error(format!(
+                    "jess.granted: unknown capability '{name}'; a jess runtime can be granted {}",
+                    known.join(", ")
+                )));
+            }
+            // Inside a domain the broker holds the grant, as `guard` asks it; a question isn't a
+            // denial, so nothing is reported.
+            if let Some(authority) = crate::runtime::current_authority() {
+                let capability = crate::runtime::CapabilityId::intern(&name).map_err(l3i::Error::from)?;
+                return Ok(authority.has(capability));
+            }
+            Ok(held.contains(&name))
+        })?;
         let module = cx.module(MODULE)?.table().clone();
         let jess = cx.insert_state(Jess::new(runtime, module, granted)?);
         let module = cx.module(MODULE)?;
         module.set("version", env!("CARGO_PKG_VERSION"))?;
         module.set("null", &crate::lua::convert::NULL)?;
+        module.set("granted", &asked)?;
         module.set("bench", &crate::lua::bench::module(runtime)?)?;
         module.set("shader", &crate::lua::shader::module(runtime, &jess)?)?;
         let modules = cx
@@ -182,7 +209,7 @@ impl Extension for JessExtension {
 }
 
 impl Jess {
-    fn new(runtime: &Runtime, module: Table, granted: Vec<&'static str>) -> l3i::Result<Self> {
+    fn new(runtime: &Runtime, module: Table, granted: Vec<String>) -> l3i::Result<Self> {
         let tostring = Function::from_value(runtime.global("tostring")?)?;
         let loaded = Table::new(&runtime.stack(), 0, 32)?;
         Ok(Self {
