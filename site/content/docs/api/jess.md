@@ -81,6 +81,26 @@ print(copy[1] == jess.null) -- true (tables keep the slot)
 
 Related: [NIF record views](@/docs/api/nif.md#nifrecord), [Record and NIF Types](@/docs/api/record-types.md).
 
+## jess.granted
+
+{{ api_signature(value="jess.granted(capability: string) -> boolean") }}
+
+Whether the running code holds `capability`: `'process.environment'`, `'network.transport'`, `'filesystem.read'`, and so on. Outside a ScriptDomain the answer is the runtime's grant, what `--capability`, `--trusted`, or a target's declared capabilities gave it; under a domain it is the broker's, for the context or worker asking. Asking is not a denial, so nothing is reported for a `false`.
+
+Ask before reaching for something optional instead of calling it and catching the refusal:
+
+```luau
+--!strict
+local process = require('@dream/process')
+if jess.granted('process.environment') then
+  print(`home is {process.env('HOME') or 'unset'}`)
+else
+  print('run with --capability process.environment to read the environment')
+end
+```
+
+- **Errors:** `jess.granted: unknown capability '<name>'; a jess runtime can be granted ...` for a name no jess runtime can hold, so a misspelling isn't quietly `false`.
+
 ## jess.meta
 
 {{ api_signature(value="jess.meta(record: Record) -> RecordMeta; jess.meta(record: NifRecord) -> NifRecordMeta") }}
