@@ -186,6 +186,35 @@ Tests ship in the payload: a Package Source refuses to open when its manifest na
 jess: greeter.jpk: tests run from a Package Source; run `jess package test` on its source
 ```
 
+## jess package check
+
+```text
+jess package check <PACKAGE> [--package <PACKAGE>]... [--package-path <FOLDER>]...
+```
+
+| Option | Meaning |
+| --- | --- |
+| `PACKAGE` | A Package Source folder. |
+| `--package <PACKAGE>` | A package its dependencies resolve over (repeatable), handed over outright. |
+| `--package-path <FOLDER>` | A folder of packages its dependencies resolve over (repeatable), each opened only when needed. |
+
+Type-checks every `.jsl` file under a Package Source in strict mode, tests and benches included, the way an editor checks a folder [`jess init`](@/docs/cli/init.md) set up. Each `require` resolves the way the runtime would resolve it under the package's plan: its own modules, the exports of its `[dependencies]` and `[dev-dependencies]` (from a folder or a JPK alike), the built-in package's exports, and jess's own modules as `jess luau-types` declares them. The plan is resolved and mounted, and nothing in it runs. Only the package's own files are reported, since a dependency's errors are the dependency's to fix. Any error fails the command.
+
+```text
+$ jess package check greeter
+id: com.example.greeter
+version: 1.0.0
+files: 2
+errors:
+- file: tests/run.jsl
+  line: 7
+  column: 29
+  message: Expected this to be 'string', but got 'number'
+error: 1 type error
+```
+
+A package's gates are `jess package test` and `jess package check`, and `@jess/style` over its sources: tests say it works, the check says it's typed the way `--!strict` claims.
+
 ## jess package run
 
 | Argument / option | Does |
