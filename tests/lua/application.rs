@@ -1110,3 +1110,39 @@ fn a_restart_declares_contexts_in_the_new_load_order() {
     assert_eq!(lines[lines.len() - 2..], ["early update", "director update 1 (number)"]);
     application.stop().unwrap();
 }
+
+/// However a run ends, it stops the application and passes on what teardown reports: here the
+/// run itself fails (the application was already started, so it can't start again), and the
+/// failing shutdown handler is still heard from.
+#[test]
+fn a_run_that_fails_still_stops_and_reports_its_teardown() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("teardown");
+    single(
+        &root,
+        &[(
+            "closing",
+            "return { on = { host = { shutdown = function() error('shutdown broke') end } } }\n",
+            None,
+        )],
+        "return nil\n",
+        &[],
+    );
+    let application = launch(&request(&root, "app", &[]));
+    application.start().unwrap();
+    let mut lines = Vec::new();
+    let failed = application
+        .run(Some(1), &std::sync::atomic::AtomicBool::new(false), |line| {
+            lines.push(line.to_owned());
+        })
+        .unwrap_err()
+        .to_string();
+    assert!(failed.contains("cannot start"), "{failed}");
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("error in org.example.single/closing during shutdown")
+                && line.contains("shutdown broke")),
+        "{lines:?}"
+    );
+}

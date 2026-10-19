@@ -684,30 +684,45 @@ impl Application {
     /// passing each diagnostic line to `report` as it comes. The status is the one the code asked
     /// for, 0 when it ran out of frames, and 130 when interrupted.
     ///
+    /// However it ends, it ends the same way: the application is stopped, shutdown handlers and
+    /// all, and what they report is passed on before the run returns.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the domain refuses a frame (it isn't running), or input fails to poll.
+    /// Returns an error if the domain refuses to start or to advance a frame (it isn't in a state
+    /// to), or input fails to poll; that failure, not one teardown met after it.
     pub fn run(mut self, frames: Option<u64>, interrupt: &AtomicBool, mut report: impl FnMut(&str)) -> l3i::Result<u8> {
-        let flush = |application: &Application, report: &mut dyn FnMut(&str)| {
-            for line in application.diagnostics() {
-                report(&line);
-            }
-        };
+        let outcome = self.drive(frames, interrupt, &mut report);
+        let diagnostics = Arc::clone(&self.diagnostics);
+        let names = std::mem::take(&mut self.names);
+        let setup = Rc::clone(&self.setup);
+        // Teardown removes the contexts, so the names its diagnostics need are kept apart.
+        let stopped = self.stop();
+        for diagnostic in diagnostics.drain() {
+            report(&describe(&setup, &names, &diagnostic));
+        }
+        let status = outcome?;
+        stopped.map_err(l3i::Error::from)?;
+        Ok(status)
+    }
+
+    /// [`Application::run`] up to teardown: startup, then frames until something says stop.
+    fn drive(&mut self, frames: Option<u64>, interrupt: &AtomicBool, report: &mut impl FnMut(&str)) -> l3i::Result<u8> {
         let started = self.start();
-        flush(&self, &mut report);
+        self.flush(report);
         started.map_err(l3i::Error::from)?;
         let mut ran = 0u64;
         let mut next = Instant::now();
         let mut last = Instant::now();
-        let status = loop {
+        loop {
             if let Some(status) = self.exit_requested() {
-                break status;
+                return Ok(status);
             }
             if frames.is_some_and(|frames| ran >= frames) {
-                break 0;
+                return Ok(0);
             }
             if interrupt.load(Ordering::Acquire) {
-                break 130;
+                return Ok(130);
             }
             next += FRAME;
             if let Some(wait) = next.checked_duration_since(Instant::now()) {
@@ -719,20 +734,16 @@ impl Application {
             let now = Instant::now();
             let outcome = self.frame(now - last);
             last = now;
-            flush(&self, &mut report);
+            self.flush(report);
             outcome.map_err(|problem| error(problem.to_string()))?;
             ran += 1;
-        };
-        let diagnostics = Arc::clone(&self.diagnostics);
-        let names = std::mem::take(&mut self.names);
-        let setup = Rc::clone(&self.setup);
-        // Teardown removes the contexts, so the names its diagnostics need are kept apart.
-        let stopped = self.stop();
-        for diagnostic in diagnostics.drain() {
-            report(&describe(&setup, &names, &diagnostic));
         }
-        stopped.map_err(l3i::Error::from)?;
-        Ok(status)
+    }
+
+    fn flush(&self, report: &mut impl FnMut(&str)) {
+        for line in self.diagnostics() {
+            report(&line);
+        }
     }
 }
 
