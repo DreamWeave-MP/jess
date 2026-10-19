@@ -58,7 +58,8 @@ type WorkspaceModule = {
     workspace: unknown,
     artifacts: { string },
     paths: { string },
-    locked: boolean
+    locked: boolean,
+    remote: { offline: boolean, indexes: { string }, feeds: { string } }
   ) -> { [string]: unknown },
 }
 
@@ -313,15 +314,25 @@ local function workspaceTests(
   return workspaces.tests(located(start, explicit), names)
 end
 
---- Syncs the workspace at `start`'s lock and `.jess/packages` from the packages offered.
+--- Syncs the workspace at `start`'s lock and `.jess/packages` from the packages offered, and,
+--- unless `offline`, from the publishers the feeds and indexes name.
 local function workspaceSync(
   start: string,
   explicit: boolean,
   artifacts: { string },
   paths: { string },
-  locked: boolean
+  locked: boolean,
+  offline: boolean,
+  indexes: { string },
+  feeds: { string }
 ): { [string]: unknown }
-  return workspaces.sync(located(start, explicit), artifacts, paths, locked)
+  return workspaces.sync(
+    located(start, explicit),
+    artifacts,
+    paths,
+    locked,
+    { offline = offline, indexes = indexes, feeds = feeds }
+  )
 end
 
 return table.freeze {

@@ -9,6 +9,11 @@ use serde::Serialize;
 
 use crate::output::{self, Format};
 
+/// The package index asked when no `--index` or `JESS_REGISTRY_URL` names one: the `AsHyAmS`
+/// index's listing of every Jess package the sites it reads publish, which only says who publishes
+/// an id.
+pub const DEFAULT_INDEX: &str = "https://dreamweave-mp.github.io/AsHyAmS/network-data/jess-packages-v1.json";
+
 #[derive(Debug, Args)]
 pub struct WorkspaceArgs {
     /// The workspace's root: the folder holding its jess-workspace.toml, or a package's folder for
@@ -35,8 +40,9 @@ enum WorkspaceCommand {
     /// workspace and exactly the capabilities the target declares, once granted.
     Run(RunArgs),
     /// Pin what the members depend on beyond each other in jess.lock, and keep those packages,
-    /// as JPKs, in .jess/packages: from the packages offered here, and those already kept.
-    /// Nothing is fetched.
+    /// as JPKs, in .jess/packages: from the packages offered here, those already kept, and, for
+    /// what neither holds, the publisher's package feed that an index or --feed names. Every
+    /// download is checked against the feed's SHA-256 and the content digest before it is kept.
     Sync {
         /// A package to offer outright (repeatable): a Package Source folder or a .jpk, the one
         /// for its id.
@@ -45,9 +51,21 @@ enum WorkspaceCommand {
         /// inside it. Two that would each do for one id are an error; name one outright.
         #[arg(long = "package-path", value_name = "FOLDER")]
         package_paths: Vec<PathBuf>,
-        /// Fail rather than change jess.lock: packages it pins may still be put in .jess/packages.
+        /// Fail rather than change jess.lock: packages it pins may still be put in .jess/packages,
+        /// from their publishers or from what is offered.
         #[arg(long)]
         locked: bool,
+        /// Ask no publisher: only what is offered and kept. JESS_OFFLINE=1 says the same.
+        #[arg(long, env = "JESS_OFFLINE", value_parser = clap::builder::FalseyValueParser::new())]
+        offline: bool,
+        /// A publisher's jess-packages.json to take packages from (repeatable). It is the
+        /// authority for what it lists, and the way to pick one publisher when an index knows two.
+        #[arg(long, value_name = "URL")]
+        feed: Vec<String>,
+        /// A package index that says who publishes an id (repeatable). Replaces the default,
+        /// AsHyAmS's; JESS_REGISTRY_URL does the same.
+        #[arg(long, value_name = "URL", env = "JESS_REGISTRY_URL", value_delimiter = ',')]
+        index: Vec<String>,
     },
     /// Run members' tests, each from its source and then packed, with its dependencies and
     /// dev-dependencies resolved over the workspace.
@@ -171,13 +189,30 @@ pub fn run(args: &WorkspaceArgs, format: Format) -> Result<u8, String> {
             artifacts,
             package_paths,
             locked,
+            offline,
+            feed,
+            index,
         } => {
-            let lua = crate::run::lua_default()?;
+            // Syncing is the host acting, in a runtime that runs no package code; reaching
+            // publishers is its own grant and never a package's. Offline, there is none.
+            let lua = if *offline {
+                crate::run::lua_default()?
+            } else {
+                crate::run::lua(&["network.dns.resolve".to_owned(), "network.tcp.connect".to_owned()])?
+            };
+            let indexes = if index.is_empty() {
+                vec![DEFAULT_INDEX.to_owned()]
+            } else {
+                index.clone()
+            };
             let request = workspace::SyncRequest {
                 at,
                 artifacts: texts(artifacts),
                 paths: texts(package_paths),
                 locked: *locked,
+                offline: *offline,
+                indexes,
+                feeds: feed.clone(),
             };
             let synced = workspace::sync(&lua, &request).map_err(|error| error.to_string())?;
             output::print(&synced, format)?;

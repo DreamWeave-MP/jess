@@ -475,6 +475,9 @@ fn sync(root: &Path, artifacts: &[&Path], paths: &[&Path], locked: bool) -> Resu
         artifacts: artifacts.iter().map(|path| text(path)).collect(),
         paths: paths.iter().map(|path| text(path)).collect(),
         locked,
+        offline: true,
+        indexes: Vec::new(),
+        feeds: Vec::new(),
     };
     workspace::sync(&common::runtime(), &request).map_err(|error| error.to_string())
 }
@@ -948,9 +951,9 @@ fn a_lock_is_held_to_what_the_members_need() {
     // A lock this jess can't read, or that names a file outside the store, opens nothing.
     for (from_text, to_text, expected) in [
         (
-            "lock_version = 1",
             "lock_version = 2",
-            "is lock_version 2, and this jess reads lock_version 1",
+            "lock_version = 3",
+            "is lock_version 3, and this jess reads lock_version 2",
         ),
         (
             "id = \"org.example.words\"",

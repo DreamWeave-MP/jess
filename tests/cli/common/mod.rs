@@ -1,5 +1,7 @@
 //! Fixture builders shared by the CLI integration tests.
 
+pub mod http;
+
 pub use std::fs;
 pub use std::path::{Path, PathBuf};
 pub use std::process::Command;

@@ -1,0 +1,8 @@
+--!strict
+-- Prints the SHA-256 of the file named, for tests that publish a fixture archive.
+local fs = require '@dream/fs'
+local bytes = require '@dream/bytes'
+
+local data = fs.readFile(arg[1])
+assert(data, `no file at {arg[1]}`)
+print(bytes.sha256(data :: buffer))

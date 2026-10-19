@@ -81,8 +81,13 @@ pub struct Locked {
     pub version: String,
     /// Its content digest.
     pub digest: String,
-    /// Where it came from: `local`, a package offered to `sync`.
+    /// Where it came from: `local`, a package offered to `sync`, or `feed`, a publisher's package
+    /// feed.
     pub source: String,
+    /// For a `feed` source, the publisher's `jess-packages.json`.
+    pub feed: Option<String>,
+    /// For a `feed` source, the SHA-256 of the archive the feed served.
+    pub artifact_sha256: Option<String>,
     /// The package ids it depends on.
     pub dependencies: Vec<String>,
     /// Where the workspace keeps it: a JPK under `.jess/packages`.
@@ -133,7 +138,8 @@ fn workspace_shape() -> serde_json::Value {
         "lock": {
             "file": false, "state": "", "problems": [""],
             "packages": [{
-                "id": "", "version": "", "digest": "", "source": "", "dependencies": [""], "location": "",
+                "id": "", "version": "", "digest": "", "source": "", "feed": null, "artifactSha256": null,
+                "dependencies": [""], "location": "",
             }],
         },
     })
@@ -355,6 +361,14 @@ pub struct SyncRequest {
     pub paths: Vec<String>,
     /// Fail rather than change `jess.lock`.
     pub locked: bool,
+    /// Ask no publisher: only what is offered and kept.
+    pub offline: bool,
+    /// Package indexes, such as the `jess-packages-v1.json` the `AsHyAmS` index publishes, which
+    /// say who publishes an id.
+    pub indexes: Vec<String>,
+    /// Publishers' `jess-packages.json` feeds named outright, which are authorities for what they
+    /// list.
+    pub feeds: Vec<String>,
 }
 
 /// A package a sync pinned.
@@ -366,6 +380,10 @@ pub struct SyncedPackage {
     pub version: String,
     /// Its content digest.
     pub digest: String,
+    /// `local` or `feed`.
+    pub source: String,
+    /// For a `feed` source, the publisher's feed.
+    pub feed: Option<String>,
     /// Whether this sync put it in `.jess/packages`, rather than finding it there.
     pub installed: bool,
 }
@@ -384,34 +402,49 @@ pub struct Synced {
 ///
 /// Each package id needed gets one version, which every requirement on it must accept. A package
 /// offered outright is the one for its id; otherwise what the lock already pins, while it still
-/// meets every requirement and is kept or offered; otherwise the one package offered that does.
-/// Two that would each do are an error, never a choice. A choice that a package chosen later
-/// rules out is made again with its requirements, until nothing changes. Package Sources are
-/// packed into `.jess/packages`, and JPKs copied there, each checked against its digest, and
-/// `jess.lock` is written last. Nothing is fetched: what isn't offered or kept isn't there.
+/// meets every requirement and is kept, offered, or, for a feed source, still served by its
+/// publisher with the pinned digests; otherwise the one package offered that does; otherwise,
+/// unless offline, the newest version the one publisher the feeds or indexes name offers. Two
+/// that would each do are an error, never a choice, and so are two publishers of one id. A choice
+/// that a package chosen later rules out is made again with its requirements, until nothing
+/// changes. Package Sources are packed into `.jess/packages`, JPKs copied there and archives
+/// downloaded there, each checked against its digests before it is kept, and `jess.lock` is
+/// written last. The runtime needs `network.dns.resolve` and `network.tcp.connect` for anything
+/// to be fetched; offline, nothing is.
 ///
 /// # Errors
 ///
 /// Returns an error if the workspace doesn't open, a requirement can't be met by exactly one
-/// package offered, a package changes while it is installed, or `request.locked` and the lock
-/// would change.
+/// package offered or published, a download isn't the bytes its feed describes, a package changes
+/// while it is installed, or `request.locked` and the lock would change.
 pub fn sync(runtime: &Runtime, request: &SyncRequest) -> l3i::Result<Synced> {
     let shape = serde_json::json!({
         "lock": "",
-        "packages": [{ "id": "", "version": "", "digest": "", "installed": false }],
+        "packages": [{ "id": "", "version": "", "digest": "", "source": "", "feed": null, "installed": false }],
     });
     let (start, explicit) = request.at.args();
-    let (artifacts, paths) = {
+    let (artifacts, paths, indexes, feeds) = {
         let stack = runtime.stack();
         (
             package::string_list(&stack, &request.artifacts)?,
             package::string_list(&stack, &request.paths)?,
+            package::string_list(&stack, &request.indexes)?,
+            package::string_list(&stack, &request.feeds)?,
         )
     };
     package::bootstrap(
         runtime,
         "workspaceSync",
         &shape,
-        (start, explicit, artifacts, paths, request.locked),
+        (
+            start,
+            explicit,
+            artifacts,
+            paths,
+            request.locked,
+            request.offline,
+            indexes,
+            feeds,
+        ),
     )
 }
