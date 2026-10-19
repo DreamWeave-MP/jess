@@ -723,6 +723,8 @@ fn a_failing_override_leaves_nothing_published_and_names_its_provider() {
         )],
     );
     let message = launch_error(&request(&root, "app", &[]));
+    // Reported once, by the load that failed, not again by the call that raised.
+    assert_eq!(message.lines().count(), 2, "{message}");
     assert!(
         message.contains(
             "managed 'breaks' of org.example.single (org.example.single@1.0.0/src/breaks.jsl): on.host.interfaceOverride of 'game.inventory' failed: "

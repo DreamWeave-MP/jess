@@ -625,9 +625,10 @@ impl DomainCore {
     }
 
     /// Calls `function` as a handler of `context` would be called in `phase`: under the context's
-    /// authority and budget, timed, counted, and with a failure attributed to it and reported.
-    /// For a host's own call into code a context owns, outside any phase broadcast: `invoke`
-    /// makes the call with whatever arguments the host has.
+    /// authority and budget, timed, counted, and with a failure attributed to it. For a host's own
+    /// call into code a context owns, outside any phase broadcast: `invoke` makes the call with
+    /// whatever arguments the host has. A failure is returned, not reported: the host makes it
+    /// part of a failure of its own, with what it knows about the call, and reports that.
     pub(crate) fn call_in_context(
         &self,
         runtime: &Runtime,
@@ -657,7 +658,7 @@ impl DomainCore {
             capabilities,
             budget,
         };
-        self.call(runtime, &target, phase, Duration::ZERO, invoke)
+        self.call(runtime, &target, phase, Duration::ZERO, false, invoke)
     }
 
     /// Binds `handlers` to named events of the context named `name`: each an event name, its
@@ -1345,7 +1346,7 @@ impl ScriptDomain {
         payload: &Message,
         queue_delay: Duration,
     ) -> Result<(), RuntimeError> {
-        self.core.call(runtime, target, phase, queue_delay, |handler| {
+        self.core.call(runtime, target, phase, queue_delay, true, |handler| {
             handler.invoke::<(), _>(&runtime.stack(), (payload,))
         })
     }
@@ -1393,13 +1394,16 @@ impl ScriptDomain {
 impl DomainCore {
     /// One handler call, with everything the scheduler owes it: the context's authority, its
     /// budget, an l3i call scope carrying its id, timing, and attribution of any failure.
-    /// `invoke` makes the call itself, with whatever arguments the caller has.
+    /// `invoke` makes the call itself, with whatever arguments the caller has. A failure is
+    /// reported as a diagnostic when `report` says so; a caller that folds it into a failure of
+    /// its own, which it reports, says not, so nothing is reported twice.
     fn call(
         &self,
         runtime: &Runtime,
         target: &Dispatch,
         phase: Phase,
         queue_delay: Duration,
+        report: bool,
         invoke: impl FnOnce(&Function) -> l3i::Result<()>,
     ) -> Result<(), RuntimeError> {
         let core = self;
@@ -1443,12 +1447,14 @@ impl DomainCore {
         outcome.map_err(|error| {
             Counters::add(&core.counters.context_failures, 1);
             let message = script_message(&error);
-            core.report(
-                Diagnostic::new(attribution, Severity::Error, DiagnosticKind::HandlerFailed, message.clone())
-                    .phase(phase)
-                    .event(target.event.clone())
-                    .source(target.source.clone()),
-            );
+            if report {
+                core.report(
+                    Diagnostic::new(attribution, Severity::Error, DiagnosticKind::HandlerFailed, message.clone())
+                        .phase(phase)
+                        .event(target.event.clone())
+                        .source(target.source.clone()),
+                );
+            }
             RuntimeError::Script {
                 attribution,
                 phase: Some(phase),
