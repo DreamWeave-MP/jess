@@ -1,0 +1,27 @@
+--!strict
+-- What the example application's packages did, in order. Each domain that requires it has its
+-- own, since each domain is its own runtime.
+
+local lines: { string } = {}
+local echoing = false
+
+local function write(line: string)
+  table.insert(lines, line)
+
+  if echoing then print(line) end
+end
+
+return table.freeze {
+  write = write,
+
+  lines = function(): { string } return table.clone(lines) end,
+
+  --- Prints every line so far, and each one written from now on.
+  echo = function()
+    echoing = true
+
+    for _, line in lines do
+      print(line)
+    end
+  end,
+}

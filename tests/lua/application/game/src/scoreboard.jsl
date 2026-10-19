@@ -1,0 +1,20 @@
+--!strict
+-- Counts deaths, and calls the game over the moment one happens.
+
+local events = require('@jess/events')
+local journal = require('@example/journal')
+
+local deaths = 0
+
+return {
+  on = {
+    event = {
+      playerDied = function(payload: { player: string, frame: number })
+        deaths += 1
+        journal.write(`scoreboard: death {deaths}, {payload.player} on frame {payload.frame}`)
+        -- Emitted while the queue drains, so it is delivered at the next drain, not this one.
+        events.emit('gameOver', { reason = `{payload.player} died` })
+      end,
+    },
+  },
+}

@@ -1,0 +1,14 @@
+--!strict
+-- The application's entry. It runs once, inside the application's domain, after every managed
+-- module has loaded and the interfaces are composed, and before any load handler.
+
+local interfaces = require('@jess/interfaces')
+local journal = require('@example/journal')
+
+if select('#', ...) > 0 and select(1, ...) == 'print' then journal.echo() end
+
+local inventory = interfaces.get('game.inventory')
+journal.write(`entry: {inventory.getArmorType('helm')} helm, weighs {inventory.getWeight('helm')}`)
+
+-- Nothing reads what an application's entry returns; its status comes from application.exit.
+return 7

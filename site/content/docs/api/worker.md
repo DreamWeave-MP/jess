@@ -8,7 +8,7 @@ extra:
 
 {{ api_signature(value="jess.worker: { spawn, send }") }}
 
-Also `require('@jess/worker')`. A worker is a second Luau state the [ScriptDomain](@/docs/contributing/script-domains.md) owns, with its own globals, its own modules, and its own garbage collector, able to run while the domain's own code does. It sees nothing of the domain but the messages it is sent. Under `jess run` there is no domain, so `spawn` errors with `worker.spawn: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and package targets run scripts outside one`.
+Also `require('@jess/worker')`. A worker is a second Luau state the [ScriptDomain](@/docs/contributing/script-domains.md) owns, with its own globals, its own modules, and its own garbage collector, able to run while the domain's own code does. It sees nothing of the domain but the messages it is sent. Under `jess run` there is no domain, so `spawn` errors with `worker.spawn: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and command targets run scripts outside one`.
 
 ## jess.worker.spawn
 

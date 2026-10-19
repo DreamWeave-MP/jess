@@ -95,7 +95,7 @@ error: dream.fs.readFileString: needs the 'filesystem.read' capability, which th
 $ jess run --capability filesystem.read read.jsl
 ```
 
-There's no script domain under `jess run`, so `@jess/worker`'s `spawn` and `@jess/context`'s `bind` refuse: `worker.spawn: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and package targets run scripts outside one`.
+There's no script domain under `jess run`, so `@jess/worker`'s `spawn` and `@jess/context`'s `bind` refuse: `worker.spawn: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and command targets run scripts outside one`.
 
 ## Output
 

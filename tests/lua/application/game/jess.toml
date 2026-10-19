@@ -1,0 +1,23 @@
+manifest_version = 1
+
+[package]
+id = "org.example.game"
+version = "1.0.0"
+jess_api = "1"
+default_target = "game"
+include = ["src"]
+
+[dependencies]
+"org.example.armor" = "^1.0"
+"org.example.inventory" = "^1.0"
+"org.example.journal" = "^1.0"
+
+[managed.director]
+module = "src/director.jsl"
+
+[managed.scoreboard]
+module = "src/scoreboard.jsl"
+
+[targets.game]
+kind = "application"
+entry = "src/main.jsl"

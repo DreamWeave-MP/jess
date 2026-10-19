@@ -1,0 +1,15 @@
+manifest_version = 1
+
+[package]
+id = "org.example.armor"
+version = "1.0.0"
+jess_api = "1"
+include = ["src"]
+
+[dependencies]
+"org.example.inventory" = "^1.0"
+"org.example.journal" = "^1.0"
+
+[managed.armor]
+module = "src/armor.jsl"
+interface = "game.inventory"

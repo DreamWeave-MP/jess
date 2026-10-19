@@ -1,0 +1,42 @@
+--!strict
+-- Drives the example: looks the inventory up once everything is composed, ticks a few frames,
+-- reports a death, and stops.
+
+local application = require('@jess/application')
+local events = require('@jess/events')
+local interfaces = require('@jess/interfaces')
+local journal = require('@example/journal')
+
+local frames = 0
+
+return {
+  on = {
+    host = {
+      load = function() journal.write('director load') end,
+
+      startup = function()
+        local inventory = interfaces.get('game.inventory')
+        journal.write(
+          `director startup: {inventory.getArmorType('cuirass')} cuirass, weighs {inventory.getWeight('cuirass')}`
+        )
+      end,
+
+      update = function(deltaSeconds: number)
+        frames += 1
+        journal.write(`director update {frames} ({typeof(deltaSeconds)})`)
+
+        if frames == 2 then events.emit('playerDied', { player = 'Caius', frame = frames }) end
+
+        if frames == 4 then application.exit(0) end
+      end,
+
+      shutdown = function() journal.write('director shutdown') end,
+    },
+
+    event = {
+      gameOver = function(payload: { reason: string })
+        journal.write(`director game over: {payload.reason}`)
+      end,
+    },
+  },
+}

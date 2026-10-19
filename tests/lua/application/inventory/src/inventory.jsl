@@ -1,0 +1,28 @@
+--!strict
+-- The base inventory: every item is light armor, and weighs what the table below says.
+
+local journal = require('@example/journal')
+
+local Weights: { [string]: number } = { cuirass = 30, helm = 5 }
+
+local inventory = {
+  getArmorType = function(item: string): string return 'light' end,
+
+  getWeight = function(item: string): number return Weights[item] or 1 end,
+}
+
+return {
+  on = {
+    host = {
+      startup = function() journal.write('inventory startup') end,
+    },
+
+    event = {
+      playerDied = function(payload: { player: string })
+        journal.write(`inventory drops {payload.player}'s loot`)
+      end,
+    },
+  },
+
+  interface = inventory,
+}

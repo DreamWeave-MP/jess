@@ -7,6 +7,31 @@ declare extern type JessNull with end
 --- `shutdown`.
 export type ContextHandlers = { [string]: (payload: any) -> () }
 
+--- The host callbacks a managed module returns under `on.host`, each called in its own context:
+--- `load` and `startup` once, `fixedUpdate` with the step and `update`/`lateUpdate` with the
+--- frame's seconds, `input`/`renderPrepare`/`onDemand` with what the host passes, `shutdown`
+--- once at the end. `interfaceOverride` is the loader's, called once with the implementation the
+--- module's interface replaces.
+export type HostHandlers = {
+  load: (() -> ())?,
+  startup: (() -> ())?,
+  fixedUpdate: ((stepSeconds: number) -> ())?,
+  update: ((deltaSeconds: number) -> ())?,
+  lateUpdate: ((deltaSeconds: number) -> ())?,
+  input: ((payload: any) -> ())?,
+  renderPrepare: ((payload: any) -> ())?,
+  onDemand: ((payload: any) -> ())?,
+  shutdown: (() -> ())?,
+  interfaceOverride: ((previous: any) -> ())?,
+}
+
+--- What a package's `[managed]` module returns: host callbacks, named-event handlers by event
+--- name, and the table its manifest's `interface` names, if it declares one.
+export type ManagedModule = {
+  on: { host: HostHandlers?, event: { [string]: (payload: any) -> () }? }?,
+  interface: { [string]: any }?,
+}
+
 --- What `jess.worker.spawn` takes: the worker module's source (a chunk returning the message
 --- handler), a name for diagnostics, and the capabilities the worker holds, a subset of the
 --- spawner's.
@@ -257,6 +282,17 @@ declare jess: {
     --- userdata, or tables nested past 32 deep). Nothing runs now: every handler bound to the
     --- name gets it at the domain's next event drain, in the order events were emitted.
     emit: (name: string, payload: unknown?) -> (),
+  },
+
+  --- The domain's interfaces (`@jess/interfaces`): plain tables the application's packages
+  --- provide through `[managed]` modules, composed before the application's entry runs. They are
+  --- this domain's alone; a worker, another domain, or a runtime outside one has none.
+  interfaces: {
+    --- The effective implementation of the interface `id`, the table the last provider in load
+    --- order returned; an error naming the ids the domain has when no package provides it.
+    get: (id: string) -> any,
+    --- The same, or nil when no package provides `id`: for an interface that is optional.
+    tryGet: (id: string) -> any?,
   },
 
   --- What a script asks of the host running it (`@jess/application`). Only a domain's own code

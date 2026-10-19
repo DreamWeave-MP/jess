@@ -45,6 +45,8 @@ struct MountedPackage {
     id: String,
     /// The mounted packages whose exports its modules may require: its declared dependencies.
     dependencies: Vec<usize>,
+    /// Its `[managed]` declarations, sorted by id.
+    managed: Vec<Managed>,
     digest: String,
     /// `@<id>@<version>/`, the start of every chunk name this package's modules load with.
     prefix: String,
@@ -96,6 +98,37 @@ impl Mounted {
     /// Where the package with `id` is mounted.
     pub(crate) fn index_of(&self, id: &str) -> Option<usize> {
         self.packages.iter().position(|package| package.id == id)
+    }
+
+    /// Package `index`'s `[managed]` declarations, sorted by id.
+    pub(crate) fn managed(&self, index: usize) -> &[Managed] {
+        &self.packages[index].managed
+    }
+
+    /// The mounted packages in dependency order: each after every package it depends on, and
+    /// among packages free to go next, the smallest id first. The order is the plan's, never the
+    /// order packages were offered or found in. A dependency cycle, which nothing orders, is
+    /// broken at the smallest id still waiting.
+    pub(crate) fn dependency_order(&self) -> Vec<usize> {
+        let mut placed = vec![false; self.packages.len()];
+        let mut order = Vec::with_capacity(self.packages.len());
+        while order.len() < self.packages.len() {
+            let waiting = || (0..self.packages.len()).filter(|index| !placed[*index]);
+            let ready = waiting()
+                .filter(|index| {
+                    self.packages[*index]
+                        .dependencies
+                        .iter()
+                        .all(|dependency| placed[*dependency])
+                })
+                .min_by(|left, right| self.packages[*left].id.cmp(&self.packages[*right].id));
+            let next =
+                ready.or_else(|| waiting().min_by(|left, right| self.packages[*left].id.cmp(&self.packages[*right].id)));
+            let Some(next) = next else { break };
+            placed[next] = true;
+            order.push(next);
+        }
+        order
     }
 
     /// Whether a module of package `caller` may require an export of package `owner`: its own,
@@ -810,10 +843,28 @@ pub(crate) fn mount_with(
                             Ok(())
                         })?;
                     dependencies.push(declared);
+                    let mut managed = Vec::new();
+                    row.raw_get(frame, "managed")?
+                        .as_table()?
+                        .for_each_array(frame, |frame, _, declaration| {
+                            let declaration = declaration.as_table()?;
+                            let interface = declaration.raw_get(frame, "interface")?;
+                            managed.push(Managed {
+                                id: declaration.raw_get(frame, "id")?.read::<String>()?,
+                                module: declaration.raw_get(frame, "module")?.read::<String>()?,
+                                interface: if interface.is_nil() {
+                                    None
+                                } else {
+                                    Some(interface.read::<String>()?)
+                                },
+                            });
+                            Ok(())
+                        })?;
                     mounted.packages.push(MountedPackage {
                         prefix: format!("@{id}@{version}/"),
                         id,
                         dependencies: Vec::new(),
+                        managed,
                         digest,
                         read,
                     });
@@ -867,7 +918,7 @@ pub(crate) fn mount_with(
 /// Runs the mounted plan's entrypoints in order, each once, as `require` would load it: called
 /// with its module name and cached by its package identity, so a module that is also exported is
 /// one instance either way. An entrypoint's error fails the activation; what ran before it stays.
-fn run_entrypoints(runtime: &Runtime) -> l3i::Result<()> {
+pub(crate) fn run_entrypoints(runtime: &Runtime) -> l3i::Result<()> {
     let jess = crate::lua::state(runtime)?;
     let mounted = jess.packages.borrow();
     let Some(mounted) = mounted.as_ref() else {
@@ -1126,6 +1177,62 @@ pub fn target<'i>(inspection: &'i Inspection, name: Option<&str>) -> l3i::Result
         .ok_or_else(|| error(format!("{package} has no target '{name}'; {}", has())))
 }
 
+/// Refuses a target `grant` withholds a capability from: `None` is the trusted policy, which
+/// grants whatever the target declares.
+fn check_grant(inspection: &Inspection, target: &Target, grant: Option<&[String]>) -> l3i::Result<()> {
+    let Some(grant) = grant else {
+        return Ok(());
+    };
+    let (package, version, id) = (&inspection.id, &inspection.version, &target.id);
+    // What a person running the tool already has (their terminal, their input devices) is
+    // granted by running it, as `jess run` grants it; the target still holds only what it
+    // declares.
+    let denied = target
+        .capabilities
+        .iter()
+        .filter(|capability| {
+            !grant.contains(capability) && !crate::lua::HOST_SCRIPT_CAPABILITIES.contains(&capability.as_str())
+        })
+        .map(|capability| format!("    {capability}"))
+        .collect::<Vec<_>>();
+    if denied.is_empty() {
+        return Ok(());
+    }
+    Err(error(format!(
+        "cannot run target {id}\n\nrequired capability denied:\n{}\n\nrequested by:\n    {package} {version}\n    target {id}",
+        denied.join("\n")
+    )))
+}
+
+/// What [`launch`] started.
+#[derive(Debug)]
+pub enum Launched {
+    /// A command target, which ran to the end.
+    Command(TargetRun),
+    /// An application target, loaded into a host of its own and ready to start.
+    Application(crate::lua::application::Application),
+}
+
+/// Launches the target of the package `request` names, whatever its kind.
+///
+/// A command target runs as [`run_target`] runs it, and an application target is loaded into a
+/// host of its own (see [`crate::lua::application`]), for the caller to start and drive. Either holds exactly the
+/// capabilities the target declares, and a capability `request.grant` withholds fails the launch
+/// before anything is activated.
+///
+/// # Errors
+///
+/// As [`run_target`], and for an application target, whatever loading it fails with.
+pub fn launch(options: &crate::lua::Options, request: &TargetRequest) -> l3i::Result<Launched> {
+    let inspection = inspect(&crate::lua::runtime(options.clone())?, &request.package)?;
+    let target = target(&inspection, request.target.as_deref())?;
+    check_grant(&inspection, target, request.grant.as_deref())?;
+    if target.kind == "application" {
+        return crate::lua::application::launch(options, request, &inspection, target).map(Launched::Application);
+    }
+    run_command(options, request, &inspection, target).map(Launched::Command)
+}
+
 /// Runs a command target of the package `request` names.
 ///
 /// The package resolves with its dependencies, every layer it declares is activated, and the
@@ -1135,41 +1242,28 @@ pub fn target<'i>(inspection: &'i Inspection, name: Option<&str>) -> l3i::Result
 ///
 /// # Errors
 ///
-/// Returns an error if the package or target can't be read, a capability is denied, the plan
-/// doesn't resolve, or the entry fails.
+/// Returns an error if the package or target can't be read, the target is an application target
+/// (which [`launch`] runs), a capability is denied, the plan doesn't resolve, or the entry fails.
 pub fn run_target(options: &crate::lua::Options, request: &TargetRequest) -> l3i::Result<TargetRun> {
     let inspection = inspect(&crate::lua::runtime(options.clone())?, &request.package)?;
     let target = target(&inspection, request.target.as_deref())?;
-    let (package, version, id) = (&inspection.id, &inspection.version, &target.id);
     if target.kind != "command" {
         return Err(error(format!(
-            "target '{id}' of {package} is {} target, which needs a host of its own; only command targets run here",
-            if target.kind == "application" {
-                "an application"
-            } else {
-                "not a command"
-            }
+            "target '{}' of {} is an application target, which runs in a host of its own; launch it",
+            target.id, inspection.id
         )));
     }
-    if let Some(grant) = &request.grant {
-        // What a person running the tool already has (their terminal, their input devices) is
-        // granted by running it, as `jess run` grants it; the target still holds only what it
-        // declares.
-        let denied = target
-            .capabilities
-            .iter()
-            .filter(|capability| {
-                !grant.contains(capability) && !crate::lua::HOST_SCRIPT_CAPABILITIES.contains(&capability.as_str())
-            })
-            .map(|capability| format!("    {capability}"))
-            .collect::<Vec<_>>();
-        if !denied.is_empty() {
-            return Err(error(format!(
-                "cannot run target {id}\n\nrequired capability denied:\n{}\n\nrequested by:\n    {package} {version}\n    target {id}",
-                denied.join("\n")
-            )));
-        }
-    }
+    check_grant(&inspection, target, request.grant.as_deref())?;
+    run_command(options, request, &inspection, target)
+}
+
+fn run_command(
+    options: &crate::lua::Options,
+    request: &TargetRequest,
+    inspection: &Inspection,
+    target: &Target,
+) -> l3i::Result<TargetRun> {
+    let (package, id) = (&inspection.id, &target.id);
     let runtime = crate::lua::runtime_with_capabilities(options.clone(), &target.capabilities)?;
     let layers = inspection.layers.iter().map(|layer| layer.id.clone()).collect::<Vec<_>>();
     let mut locations = vec![request.package.clone()];

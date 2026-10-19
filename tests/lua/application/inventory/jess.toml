@@ -1,0 +1,14 @@
+manifest_version = 1
+
+[package]
+id = "org.example.inventory"
+version = "1.0.0"
+jess_api = "1"
+include = ["src"]
+
+[dependencies]
+"org.example.journal" = "^1.0"
+
+[managed.inventory]
+module = "src/inventory.jsl"
+interface = "game.inventory"

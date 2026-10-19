@@ -7,6 +7,7 @@ use jess::lua::l3i::Runtime;
 use jess::lua::l3i::value::Table;
 use jess::lua::package::{self, Plan};
 
+mod application;
 mod common;
 mod workspace;
 

@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use l3i::Runtime;
 use serde::{Deserialize, Serialize};
 
-use crate::lua::package::{self, Dependency, Plan, Search, Target, TargetRun};
+use crate::lua::package::{self, Dependency, Launched, Plan, Search, Target, TargetRun};
 
 /// Where a workspace is.
 #[derive(Clone, Debug)]
@@ -259,24 +259,37 @@ pub struct RunRequest {
 ///
 /// As [`choose`] and [`package::run_target`].
 pub fn run_target(options: &crate::lua::Options, request: &RunRequest) -> l3i::Result<TargetRun> {
+    package::run_target(options, &target_request(options, request)?)
+}
+
+/// Launches a workspace target of either kind, as [`package::launch`] launches a package's: an
+/// application target resolves over the workspace exactly as a command target does.
+///
+/// # Errors
+///
+/// As [`choose`] and [`package::launch`].
+pub fn launch(options: &crate::lua::Options, request: &RunRequest) -> l3i::Result<Launched> {
+    package::launch(options, &target_request(options, request)?)
+}
+
+/// The package request a workspace target resolves to: its package, the workspace's members and
+/// kept packages as candidates, and the lock's pins.
+fn target_request(options: &crate::lua::Options, request: &RunRequest) -> l3i::Result<package::TargetRequest> {
     let chosen = choose(
         &crate::lua::runtime(options.clone())?,
         &request.at,
         request.target.as_deref(),
         &request.cwd,
     )?;
-    package::run_target(
-        options,
-        &package::TargetRequest {
-            package: chosen.location,
-            target: Some(chosen.target),
-            candidates: chosen.candidates,
-            pins: pin_map(&chosen.pins),
-            grant: request.grant.clone(),
-            args: request.args.clone(),
-            ..package::TargetRequest::default()
-        },
-    )
+    Ok(package::TargetRequest {
+        package: chosen.location,
+        target: Some(chosen.target),
+        candidates: chosen.candidates,
+        pins: pin_map(&chosen.pins),
+        grant: request.grant.clone(),
+        args: request.args.clone(),
+        ..package::TargetRequest::default()
+    })
 }
 
 /// What a workspace member's tests resolve over.

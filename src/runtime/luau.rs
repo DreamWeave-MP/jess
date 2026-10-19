@@ -1,4 +1,5 @@
-//! The Luau surface: `@jess/context`, `@jess/worker`, and `@jess/events`, as an l3i extension.
+//! The Luau surface: `@jess/context`, `@jess/worker`, `@jess/events`, and `@jess/interfaces`, as an
+//! l3i extension.
 //!
 //! [`RuntimeExtension`] goes into the plan every runtime of a domain is made from. It declares
 //! the modules and the handle types, and stores one slot per runtime that the domain or the
@@ -8,11 +9,16 @@
 //!
 //! The surface is what a script inside an existing domain needs and nothing more. A script
 //! binds handlers to contexts the host declared, emits named events for the domain's own
-//! handlers, and spawns workers when it holds `worker.spawn`, sharing the domain's services with
-//! one only by saying so (`shareServices = true`). It cannot create a domain, declare a context,
-//! enter a phase, or name a capability it was not granted.
+//! handlers, looks up the interfaces the host composed in this domain, and spawns workers when
+//! it holds `worker.spawn`, sharing the domain's services with one only by saying so
+//! (`shareServices = true`). It cannot create a domain, declare a context, enter a phase,
+//! publish an interface, or name a capability it was not granted.
+//!
+//! Interfaces are plain tables in this runtime, so they are this domain's alone: a worker or
+//! another domain never sees them, and a restart, which builds a new runtime, starts without.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -45,7 +51,11 @@ pub const WORKER_MODULE: &str = "@jess/worker";
 /// The `require` path of the named-event module.
 pub const EVENTS_MODULE: &str = "@jess/events";
 
-/// The `@jess/context`, `@jess/worker`, and `@jess/events` modules and their handle types.
+/// The `require` path of the interface module.
+pub const INTERFACES_MODULE: &str = "@jess/interfaces";
+
+/// The `@jess/context`, `@jess/worker`, `@jess/events`, and `@jess/interfaces` modules and their
+/// handle types.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RuntimeExtension;
 
@@ -59,6 +69,8 @@ pub struct Modules {
     pub worker: Table,
     /// The `@jess/events` table.
     pub events: Table,
+    /// The `@jess/interfaces` table.
+    pub interfaces: Table,
 }
 
 /// Who owns the runtime a binding runs in.
@@ -71,9 +83,22 @@ enum Owner {
     Worker(WorkerLink),
 }
 
+/// Where a domain's interface registry is in its generation.
+enum Interfaces {
+    /// Nothing composes interfaces in this runtime: no application host loaded it.
+    Absent,
+    /// The host is loading the modules that provide them; none is published yet.
+    Composing,
+    /// Composed, by id: the effective table of each, as the host published it.
+    Published(BTreeMap<String, Table>),
+}
+
 /// The per-runtime slot the module functions read their owner from.
 struct Bindings {
     owner: RefCell<Owner>,
+    /// The domain's interfaces. They live with the runtime, so a restart, which builds a new
+    /// runtime, starts with none, and nothing can reach an old generation's.
+    interfaces: RefCell<Interfaces>,
 }
 
 impl Bindings {
@@ -102,7 +127,7 @@ impl Bindings {
 
 fn detached(function: &str) -> l3i::Error {
     l3i::Error::permission(format!(
-        "{function}: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and package targets run scripts outside one"
+        "{function}: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and command targets run scripts outside one"
     ))
 }
 
@@ -121,6 +146,76 @@ pub(crate) fn attach_domain(runtime: &Runtime, domain: DomainLink) {
 /// Makes `runtime` a worker's runtime for the module functions.
 pub(crate) fn attach_worker(runtime: &Runtime, link: WorkerLink) {
     attach(runtime, Owner::Worker(link));
+}
+
+/// The domain whose primary runtime `runtime` is, for a host loading code into it.
+pub(crate) fn domain_of(runtime: &Runtime) -> Option<Rc<DomainCore>> {
+    let bindings = runtime.state_of::<Bindings>(EXTENSION_ID)?;
+    match &*bindings.owner.borrow() {
+        Owner::Domain(domain) => domain.upgrade(),
+        Owner::Worker(_) | Owner::Detached => None,
+    }
+}
+
+/// Starts composing `runtime`'s interfaces: from now until [`publish_interfaces`], a lookup says
+/// they are being composed, rather than that there are none.
+pub(crate) fn compose_interfaces(runtime: &Runtime) {
+    if let Some(bindings) = runtime.state_of::<Bindings>(EXTENSION_ID) {
+        *bindings.interfaces.borrow_mut() = Interfaces::Composing;
+    }
+}
+
+/// Publishes `runtime`'s interfaces, all at once: no lookup ever sees part of them.
+pub(crate) fn publish_interfaces(runtime: &Runtime, interfaces: BTreeMap<String, Table>) {
+    if let Some(bindings) = runtime.state_of::<Bindings>(EXTENSION_ID) {
+        *bindings.interfaces.borrow_mut() = Interfaces::Published(interfaces);
+    }
+}
+
+/// The interface `id` of the domain whose code is calling, `None` when it has no such interface;
+/// an error when the caller is not the domain's own code or the domain's interfaces aren't
+/// composed yet.
+fn interface(bindings: &Bindings, function: &str, id: &str) -> l3i::Result<Option<Table>> {
+    match &*bindings.owner.borrow() {
+        Owner::Domain(_) => {}
+        Owner::Worker(_) => {
+            return Err(l3i::Error::runtime(format!(
+                "{function}: interfaces are the domain's own code's; a worker has none, so send it what it needs in a message"
+            )));
+        }
+        Owner::Detached => return Err(detached(function)),
+    }
+    match &*bindings.interfaces.borrow() {
+        Interfaces::Absent => Err(l3i::Error::runtime(format!(
+            "{function}: this domain has no interfaces; an application target composes them from its packages' [managed] modules"
+        ))),
+        Interfaces::Composing => Err(l3i::Error::runtime(format!(
+            "{function}: interfaces are composed once every managed module has loaded; look '{id}' up in a handler or in the application's entry"
+        ))),
+        Interfaces::Published(interfaces) => Ok(interfaces.get(id).cloned()),
+    }
+}
+
+/// `interfaces.get(id)`.
+fn get_interface(bindings: &Bindings, call: &Call<'_>, id: &str) -> l3i::Result<Table> {
+    if let Some(table) = interface(bindings, "interfaces.get", id)? {
+        return Ok(table);
+    }
+    let has = match &*bindings.interfaces.borrow() {
+        Interfaces::Published(interfaces) if !interfaces.is_empty() => {
+            format!("it has {}", interfaces.keys().cloned().collect::<Vec<_>>().join(", "))
+        }
+        _ => "it has none".to_owned(),
+    };
+    let location = l3i::runtime::caller_location(call);
+    let asked = if location.is_empty() {
+        String::new()
+    } else {
+        format!(" (asked at {location})")
+    };
+    Err(l3i::Error::runtime(format!(
+        "interfaces.get: no package in this domain implements '{id}'{asked}; {has}"
+    )))
 }
 
 /// A worker as the domain's scripts hold it.
@@ -347,6 +442,14 @@ impl Extension for RuntimeExtension {
             .installed("emit")
             .signature("(name: string, payload: any?) -> ()")
             .doc("Queues the named event `name` with a transferable payload; no handler runs before the next drain.");
+        d.module(INTERFACES_MODULE)
+            .doc("The domain's interfaces: plain tables its application's packages provide, by id, in this domain only.")
+            .installed("get")
+            .signature("(id: string) -> any")
+            .doc("The effective implementation of the interface `id`; an error naming what the domain has if none.")
+            .installed("tryGet")
+            .signature("(id: string) -> any?")
+            .doc("The effective implementation of the interface `id`, or nil when no package provides it.");
 
         let mut worker = d.userdata::<WorkerHandle>(WorkerHandle::NAME);
         worker.tag(TagPolicy::Never).doc("A worker the domain spawned.");
@@ -423,6 +526,7 @@ impl Extension for RuntimeExtension {
     fn install(&self, cx: &mut InstallContext<'_>) -> l3i::Result<()> {
         let bindings = cx.insert_state(Bindings {
             owner: RefCell::new(Owner::Detached),
+            interfaces: RefCell::new(Interfaces::Absent),
         });
 
         let context = cx.module(CONTEXT_MODULE)?;
@@ -461,7 +565,23 @@ impl Extension for RuntimeExtension {
         )?;
         let events = events.table().clone();
 
-        cx.insert_state(Modules { context, worker, events });
+        let interfaces = cx.module(INTERFACES_MODULE)?;
+        let state = Rc::clone(&bindings);
+        interfaces.function("get", move |call: &Call<'_>, id: String| -> l3i::Result<Table> {
+            get_interface(&state, call, &id)
+        })?;
+        let state = Rc::clone(&bindings);
+        interfaces.function("tryGet", move |id: String| -> l3i::Result<Option<Table>> {
+            interface(&state, "interfaces.tryGet", &id)
+        })?;
+        let interfaces = interfaces.table().clone();
+
+        cx.insert_state(Modules {
+            context,
+            worker,
+            events,
+            interfaces,
+        });
         Ok(())
     }
 }

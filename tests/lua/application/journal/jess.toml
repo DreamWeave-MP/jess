@@ -1,0 +1,14 @@
+manifest_version = 1
+
+[package]
+id = "org.example.journal"
+version = "1.0.0"
+jess_api = "1"
+include = ["src"]
+
+[modules]
+"@example/journal" = "src/journal.jsl"
+
+[[layer]]
+id = "example.journal"
+exports = ["@example/journal"]

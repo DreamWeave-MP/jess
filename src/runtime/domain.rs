@@ -600,6 +600,66 @@ impl DomainCore {
         Ok(())
     }
 
+    /// Declares a context for a host that declares contexts as its code loads, once it has seen
+    /// what the code asks for: registers it, or, for a name the host declared in an earlier
+    /// generation, gives that context this declaration, keeping its id, order, and counters.
+    pub(crate) fn declare_context(&self, spec: ContextSpec) -> Result<ContextId, RuntimeError> {
+        let existing = self
+            .contexts
+            .borrow()
+            .iter()
+            .find(|context| context.name == spec.name)
+            .map(|context| context.id);
+        let Some(id) = existing else {
+            return self.register_context(spec);
+        };
+        let capabilities = self.grant.subset(self.id, spec.capabilities)?;
+        let mut contexts = self.contexts.borrow_mut();
+        if let Some(context) = contexts.iter_mut().find(|context| context.id == id) {
+            context.schedule = spec.schedule;
+            context.priority = spec.priority;
+            context.capabilities = capabilities;
+            context.budget = spec.budget;
+        }
+        Ok(id)
+    }
+
+    /// Calls `function` as a handler of `context` would be called in `phase`: under the context's
+    /// authority and budget, timed, counted, and with a failure attributed to it and reported.
+    /// For a host's own call into code a context owns, outside any phase broadcast: `invoke`
+    /// makes the call with whatever arguments the host has.
+    pub(crate) fn call_in_context(
+        &self,
+        runtime: &Runtime,
+        context: ContextId,
+        phase: Phase,
+        source: Option<String>,
+        function: Function,
+        invoke: impl FnOnce(&Function) -> l3i::Result<()>,
+    ) -> Result<(), RuntimeError> {
+        let (capabilities, budget) = {
+            let contexts = self.contexts.borrow();
+            let record =
+                contexts
+                    .iter()
+                    .find(|record| record.id == context)
+                    .ok_or_else(|| RuntimeError::UnknownContext {
+                        domain: self.id,
+                        name: context.to_string(),
+                    })?;
+            (Arc::clone(&record.capabilities), record.budget)
+        };
+        let target = Dispatch {
+            context,
+            handler: function,
+            source,
+            event: None,
+            capabilities,
+            budget,
+        };
+        self.call(runtime, &target, phase, Duration::ZERO, invoke)
+    }
+
     /// Binds `handlers` to named events of the context named `name`: each an event name, its
     /// handler, and where the handler came from. The context must schedule [`Phase::Event`], the
     /// phase named events are delivered in. All of them or none.

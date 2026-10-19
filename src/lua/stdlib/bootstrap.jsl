@@ -92,6 +92,7 @@ type Mounted = {
   version: string,
   digest: string,
   dependencies: { string },
+  managed: { Managed },
   read: (path: string) -> buffer?,
 }
 
@@ -111,13 +112,29 @@ local function openAll(locations: { string }): { Package }
   return packages
 end
 
+--- A package's `[managed]` declarations, sorted by id: the order an application supervisor loads
+--- one package's managed modules in.
+local function sortedManaged(declared: { [string]: Managed }): { Managed }
+  local managed: { Managed } = {}
+
+  for _, declaration in declared do
+    table.insert(managed, declaration)
+  end
+
+  table.sort(
+    managed,
+    function(left: Managed, right: Managed): boolean return left.id < right.id end
+  )
+
+  return managed
+end
+
 local function inspect(location: string)
   local opened = package.open(location)
   local manifest = opened.manifest
   local modules: { { name: string, path: string } } = {}
   local dependencies: { Requirement }, devDependencies: { Requirement } = {}, {}
   local capabilities: { { capability: string, layer: string, entrypoint: string } } = {}
-  local managed: { Managed } = {}
   local targets: { Target } = {}
 
   for name, path in manifest.modules do
@@ -162,15 +179,6 @@ local function inspect(location: string)
     end
   )
 
-  for _, declaration in manifest.managed do
-    table.insert(managed, declaration)
-  end
-
-  table.sort(
-    managed,
-    function(left: Managed, right: Managed): boolean return left.id < right.id end
-  )
-
   for _, target in manifest.targets do
     table.insert(targets, target)
   end
@@ -199,7 +207,7 @@ local function inspect(location: string)
     files = #opened.files,
     modules = modules,
     layers = manifest.layers,
-    managed = managed,
+    managed = sortedManaged(manifest.managed),
     targets = targets,
     dependencies = dependencies,
     devDependencies = devDependencies,
@@ -266,6 +274,7 @@ local function activate(
       version = opened.version,
       digest = opened.digest,
       dependencies = plan.packages[index].dependencies,
+      managed = sortedManaged(opened.manifest.managed),
       read = opened.read,
     })
   end

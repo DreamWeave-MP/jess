@@ -1,0 +1,35 @@
+--!strict
+-- Heavy armor: replaces the inventory's armor type, and keeps the weights it already had. It
+-- depends on org.example.inventory, so it loads after it and its interface replaces that one.
+
+local journal = require('@example/journal')
+
+type Inventory = {
+  getArmorType: (item: string) -> string,
+  getWeight: (item: string) -> number,
+}
+
+local armor: { getArmorType: (item: string) -> string, getWeight: ((item: string) -> number)? } = {
+  getArmorType = function(item: string): string return 'heavy' end,
+}
+
+return {
+  on = {
+    host = {
+      -- Called once, before armor's table is published, with the one it replaces. Nothing is
+      -- merged for us: what isn't copied here is gone.
+      interfaceOverride = function(previous: Inventory)
+        armor.getWeight = previous.getWeight
+        journal.write(`armor replaces {previous.getArmorType('cuirass')} armor, keeping its weights`)
+      end,
+    },
+
+    event = {
+      playerDied = function(payload: { player: string })
+        journal.write(`armor dents for {payload.player}`)
+      end,
+    },
+  },
+
+  interface = armor,
+}
