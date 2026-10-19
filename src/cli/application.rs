@@ -43,15 +43,16 @@ fn drive(application: Application, frames: Option<u64>) -> Result<u8, String> {
 }
 
 /// The first SIGINT or SIGTERM asks the application to stop, so its shutdown handlers run; the
-/// handler is reset as it runs, so a second one ends the process at once.
+/// handler is reset as it runs, so a second one ends the process at once. A signal the process
+/// inherited as ignored (a background job's SIGINT) stays ignored.
 #[cfg(unix)]
 fn catch_interrupts() {
     extern "C" fn interrupted(_: libc::c_int) {
         INTERRUPTED.store(true, Ordering::Release);
     }
 
-    // SAFETY: the handler only stores to an atomic, which is async-signal-safe, and the
-    // sigaction is fully initialized before it is installed.
+    // SAFETY: the handler only stores to an atomic, which is async-signal-safe; both sigaction
+    // structs are fully initialized before the kernel reads them, and the query installs nothing.
     unsafe {
         let mut action: libc::sigaction = std::mem::zeroed();
         let handler: extern "C" fn(libc::c_int) = interrupted;
@@ -59,6 +60,11 @@ fn catch_interrupts() {
         action.sa_flags = libc::SA_RESETHAND;
         libc::sigemptyset(&raw mut action.sa_mask);
         for signal in [libc::SIGINT, libc::SIGTERM] {
+            let mut inherited: libc::sigaction = std::mem::zeroed();
+            if libc::sigaction(signal, std::ptr::null(), &raw mut inherited) != 0 || inherited.sa_sigaction == libc::SIG_IGN
+            {
+                continue;
+            }
             libc::sigaction(signal, &raw const action, std::ptr::null_mut());
         }
     }

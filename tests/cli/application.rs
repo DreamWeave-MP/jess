@@ -254,3 +254,47 @@ fn an_interrupt_stops_an_application_gracefully() {
     assert_eq!(rest, "shut down\n");
     assert_eq!(status.code(), Some(130));
 }
+
+/// A SIGINT the process inherited as ignored, as a background job's is, stays ignored: only the
+/// SIGTERM that follows stops the application.
+#[cfg(unix)]
+#[test]
+fn an_inherited_ignored_interrupt_stays_ignored() {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+
+    let scratch = Scratch::new("application-ignored");
+    let root = app(
+        &scratch.0,
+        "local frames = 0\nreturn { on = { host = {\n  startup = function() print('running') end,\n  update = function() frames += 1 end,\n  shutdown = function() print(`shut down after more frames: {tostring(frames > 1)}`) end,\n} } }\n",
+        "return nil\n",
+    );
+    let mut command = jess();
+    command.args(["package", "run"]).arg(&root).stdout(Stdio::piped());
+    // SAFETY: the closure runs in the forked child before exec, and only calls signal, which is
+    // async-signal-safe.
+    unsafe {
+        command.pre_exec(|| {
+            libc::signal(libc::SIGINT, libc::SIG_IGN);
+            Ok(())
+        });
+    }
+    let mut child = Reaped(command.spawn().unwrap());
+    let mut stdout = BufReader::new(child.0.stdout.take().unwrap());
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    assert_eq!(line, "running\n");
+    let pid = libc::pid_t::try_from(child.0.id()).unwrap();
+    // SAFETY: kill only sends signals to the child this test spawned and hasn't reaped.
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGINT) }, 0);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(child.0.try_wait().unwrap().is_none(), "the ignored SIGINT stopped it");
+    // SAFETY: as above.
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
+    let status = child.0.wait().unwrap();
+    let mut rest = String::new();
+    std::io::Read::read_to_string(&mut stdout, &mut rest).unwrap();
+    assert_eq!(rest, "shut down after more frames: true\n");
+    assert_eq!(status.code(), Some(130));
+}
