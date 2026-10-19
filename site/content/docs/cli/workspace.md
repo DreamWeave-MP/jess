@@ -264,7 +264,7 @@ id = "org.dreamweave.site"
 version = "0.1.0"
 digest = "778b9e0e53f146dac8b5669ee93edcc692140851bed6cf7e018032c784e9bbc8"
 source = "feed"
-feed = "https://dreamweave-mp.github.io/jess-packages/jess-packages.json"
+feed = "https://publisher.example/jess-packages.json"
 artifact_sha256 = "9fa73580fbe00766413be59765a5f8bd8d18ec0af87005c86975b31adea78742"
 dependencies = []
 ```
