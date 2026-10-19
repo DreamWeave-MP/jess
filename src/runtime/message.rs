@@ -154,8 +154,10 @@ impl Message {
     ///
     /// [`TransferError`] naming the path to the first value that cannot cross.
     pub fn read(frame: &Frame<'_>, view: ValueView<'_>, root: &str) -> Result<Message, TransferError> {
-        let mut path = String::from(root);
-        read_at(frame, view, &mut path, 0)
+        read_at(frame, view, 0).map_err(|mut error| {
+            error.path.insert_str(0, root);
+            error
+        })
     }
 }
 
@@ -185,18 +187,20 @@ impl fmt::Display for TransferError {
 
 impl std::error::Error for TransferError {}
 
-fn unsupported(path: &str, found: impl Into<String>) -> TransferError {
+/// An error at the value being read; each table it is inside puts its key in front of the path
+/// as the error comes back up, so a read that succeeds never formats one.
+fn unsupported(found: impl Into<String>) -> TransferError {
     TransferError {
-        path: path.to_owned(),
+        path: String::new(),
         found: found.into(),
     }
 }
 
-fn read_at(frame: &Frame<'_>, view: ValueView<'_>, path: &mut String, depth: usize) -> Result<Message, TransferError> {
+fn read_at(frame: &Frame<'_>, view: ValueView<'_>, depth: usize) -> Result<Message, TransferError> {
     if depth > MAX_DEPTH {
-        return Err(unsupported(path, format!("a table nested more than {MAX_DEPTH} deep")));
+        return Err(unsupported(format!("a table nested more than {MAX_DEPTH} deep")));
     }
-    let read_failed = |error: l3i::Error| unsupported(path, format!("a value l3i couldn't read ({error})"));
+    let read_failed = |error: l3i::Error| unsupported(format!("a value l3i couldn't read ({error})"));
     match view.type_of() {
         Type::None | Type::Nil => Ok(Message::Nil),
         Type::Boolean => Ok(Message::Boolean(view.read::<bool>().map_err(read_failed)?)),
@@ -210,26 +214,33 @@ fn read_at(frame: &Frame<'_>, view: ValueView<'_>, path: &mut String, depth: usi
         Type::Buffer => Ok(Message::Bytes(Arc::from(
             view.read::<BufferView<'_>>().map_err(read_failed)?.to_vec(),
         ))),
-        Type::Table => read_table(frame, view, path, depth),
+        Type::Table => read_table(frame, view, depth),
         Type::Userdata => l3i::userdata::receiver::<ResourceHandle>(view).map_or_else(
-            || Err(unsupported(path, format!("a {}", l3i::diagnostics::object_type_name(view)))),
+            || Err(unsupported(format!("a {}", l3i::diagnostics::object_type_name(view)))),
             |handle| Ok(Message::Handle(handle.clone())),
         ),
-        Type::Function => Err(unsupported(path, "a function")),
-        Type::Thread => Err(unsupported(path, "a thread")),
-        Type::LightUserdata => Err(unsupported(path, "a light userdata")),
+        Type::Function => Err(unsupported("a function")),
+        Type::Thread => Err(unsupported("a thread")),
+        Type::LightUserdata => Err(unsupported("a light userdata")),
     }
 }
 
-fn read_table(frame: &Frame<'_>, view: ValueView<'_>, path: &mut String, depth: usize) -> Result<Message, TransferError> {
+/// The path segment of `key`: `.name` or `[3]`.
+fn segment(key: &MessageKey) -> String {
+    match key {
+        MessageKey::String(bytes) => format!(".{}", String::from_utf8_lossy(bytes)),
+        MessageKey::Number(number) => format!("[{}]", format_number(*number)),
+    }
+}
+
+fn read_table(frame: &Frame<'_>, view: ValueView<'_>, depth: usize) -> Result<Message, TransferError> {
     let table = view
         .as_table()
-        .map_err(|error| unsupported(path, format!("a table l3i couldn't view ({error})")))?;
+        .map_err(|error| unsupported(format!("a table l3i couldn't view ({error})")))?;
     let length = table.raw_len();
-    let mut entries: Vec<(MessageKey, Message)> = Vec::new();
+    let mut entries: Vec<(MessageKey, Message)> = Vec::with_capacity(length);
     let mut array_keys = 0usize;
     let mut failure: Option<TransferError> = None;
-    let base = path.len();
     table
         .for_each(frame, |frame, key, value| {
             if failure.is_some() {
@@ -239,19 +250,19 @@ fn read_table(frame: &Frame<'_>, view: ValueView<'_>, path: &mut String, depth: 
                 Type::String => match key.read::<&[u8]>() {
                     Ok(bytes) => MessageKey::String(bytes.to_vec()),
                     Err(error) => {
-                        failure = Some(unsupported(path, format!("a key l3i couldn't read ({error})")));
+                        failure = Some(unsupported(format!("a key l3i couldn't read ({error})")));
                         return Ok(());
                     }
                 },
                 Type::Number => match key.read::<f64>() {
                     Ok(number) => MessageKey::Number(number),
                     Err(error) => {
-                        failure = Some(unsupported(path, format!("a key l3i couldn't read ({error})")));
+                        failure = Some(unsupported(format!("a key l3i couldn't read ({error})")));
                         return Ok(());
                     }
                 },
                 other => {
-                    failure = Some(unsupported(path, format!("a table with a {} key", other.name())));
+                    failure = Some(unsupported(format!("a table with a {} key", other.name())));
                     return Ok(());
                 }
             };
@@ -263,26 +274,16 @@ fn read_table(frame: &Frame<'_>, view: ValueView<'_>, path: &mut String, depth: 
             {
                 array_keys += 1;
             }
-            path.truncate(base);
-            match &key {
-                MessageKey::String(bytes) => {
-                    path.push('.');
-                    path.push_str(&String::from_utf8_lossy(bytes));
-                }
-                MessageKey::Number(number) => {
-                    path.push('[');
-                    path.push_str(&format_number(*number));
-                    path.push(']');
-                }
-            }
-            match read_at(frame, value, path, depth + 1) {
+            match read_at(frame, value, depth + 1) {
                 Ok(value) => entries.push((key, value)),
-                Err(error) => failure = Some(error),
+                Err(mut error) => {
+                    error.path.insert_str(0, &segment(&key));
+                    failure = Some(error);
+                }
             }
             Ok(())
         })
-        .map_err(|error| unsupported(path, format!("a table l3i couldn't walk ({error})")))?;
-    path.truncate(base);
+        .map_err(|error| unsupported(format!("a table l3i couldn't walk ({error})")))?;
     if let Some(error) = failure {
         return Err(error);
     }
