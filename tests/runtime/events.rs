@@ -232,23 +232,15 @@ fn named_events_need_a_domain_a_name_and_a_transferable_payload() {
     let worker = domain
         .spawn_worker(jess::runtime::WorkerSpec::new(
             "emitter",
-            r"
-            return function()
-              local ok, problem = pcall(require('@jess/events').emit, 'hit')
-              return if ok then 'emitted' else problem
-            end
-            ",
+            "return function() require('@jess/events').emit('hit') end",
         ))
         .unwrap();
     domain.send_to_worker(worker, Message::Nil).unwrap();
-    let reply = domain
+    let failed = domain
         .receive_from_worker(worker, Some(Duration::from_secs(20)))
-        .unwrap()
-        .unwrap();
-    assert!(
-        reply.as_text().unwrap().contains("events.emit is for a domain's own code"),
-        "{reply:?}"
-    );
+        .unwrap_err()
+        .to_string();
+    assert!(failed.contains("events.emit is for a domain's own code"), "{failed}");
 }
 
 #[test]

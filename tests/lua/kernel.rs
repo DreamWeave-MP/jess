@@ -544,15 +544,11 @@ fn a_script_asks_its_host_to_stop() {
 
                 local asker = worker.spawn {
                   shareServices = true,
-                  source = [[
-                    return function()
-                      local ok, problem = pcall(require('@jess/application').exit, 1)
-                      return problem
-                    end
-                  ]],
+                  source = [[return function() require('@jess/application').exit(1) end]],
                 }
                 asker:send(true)
-                error(asker:receive(20))
+                -- The worker's refusal comes back here, and fails this handler with it.
+                asker:receive(20)
               end,
             })
             ",
