@@ -225,9 +225,10 @@ A package's gates are `jess package test` and `jess package check`, and `@jess/s
 | `--package-path <FOLDER>` | A folder of packages its dependencies resolve over (repeatable), each opened only when needed. |
 | `--capability <NAME>` | Grant a capability the target declares (repeatable). |
 | `--trusted` | Grant everything the target declares. |
+| `--frames <N>` | For an application target: stop after N frames, shutdown handlers and all, unless it stops itself first. Refused for a command target. |
 | `ARGS...` | Arguments for the target, which gets them as `...` and in the global `arg` table. |
 
-Runs one of a package's `command` targets: its package resolves with its dependencies, every layer it declares is activated, and the target's entry runs as a script in a fresh runtime holding exactly the capabilities the target declares. Not one more, and not one fewer: a capability it declares and you don't grant stops the run before anything is activated. The exceptions are what you already have when you run a tool, as with [`jess run`](@/docs/cli/run.md): your terminal (`process.stdio`) and the input devices in front of you (`input.actions`, `input.observe`, `input.configure`). A target that declares one gets it without asking; one that doesn't declare it still doesn't get it.
+Runs one of a package's targets. A `command` target's package resolves with its dependencies, every layer it declares is activated, and the target's entry runs as a script in a fresh runtime holding exactly the capabilities the target declares. Not one more, and not one fewer: a capability it declares and you don't grant stops the run before anything is activated. The exceptions are what you already have when you run a tool, as with [`jess run`](@/docs/cli/run.md): your terminal (`process.stdio`) and the input devices in front of you (`input.actions`, `input.observe`, `input.configure`). A target that declares one gets it without asking; one that doesn't declare it still doesn't get it.
 
 ```text
 $ jess package run tools/greeter --package-path .. -- one
@@ -241,4 +242,17 @@ requested by:
     target greet
 ```
 
-`--trusted` grants what the target declares, which `package inspect` shows. The entry's first returned number is the exit status. Application targets need a host of their own and don't run here. In a [workspace](@/docs/cli/workspace.md), `jess workspace run` does the resolving part for you.
+`--trusted` grants what the target declares, which `package inspect` shows. A command target's first returned number is the exit status.
+
+An `application` target resolves and is granted the same way, then runs in a host of its own: every selected package's [managed modules](@/docs/scripting/applications.md) load into one domain, the interfaces are composed, the entry runs, and frames run at 60 a second until the application calls [`application.exit`](@/docs/api/application.md), `--frames` runs out (status 0), or you press Ctrl+C (status 130, Unix; shutdown handlers still run). Its diagnostics go to stderr as they happen, and its exit status is the one it asked for.
+
+An application whose `update` raises on its second frame and calls `application.exit(3)` on its third:
+
+```text
+$ jess package run app
+jess: error in org.example.app/main during update (org.example.app@1.0.0/src/main.jsl:7): org.example.app@1.0.0/src/main.jsl:9: frame two broke
+$ echo $?
+3
+```
+
+In a [workspace](@/docs/cli/workspace.md), `jess workspace run` does the resolving part for you.

@@ -59,4 +59,6 @@ context.bind('game', {
 
 A handler that raises is reported to the host with the domain, generation, context, and phase it ran in, and where it was bound; the phase goes on to the next context, and the domain keeps running.
 
+An [application target](@/docs/scripting/applications.md) needs none of this by hand: each of its managed modules returns its handlers in `on.host`, and the loader declares a context for it, `<package>/<managed id>`, and binds them. `bind` still works on those contexts, under the same rules. The `event` phase here takes raw events a host posted to a context; a managed module's `on.event` handlers take [named events](@/docs/api/events.md), and the two never reach each other.
+
 Related: [jess.worker](@/docs/api/worker.md), [Script Domains](@/docs/contributing/script-domains.md).

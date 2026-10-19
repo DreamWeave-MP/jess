@@ -81,6 +81,8 @@ Dreamwind's own is [`jpk/dreamwind/jess.toml`](https://github.com/DreamWeave-MP/
 | `modules` | The package's named modules, each mapped to a `.jsl` file in the payload. Every name is some layer's export or entrypoint; a name nothing uses is an error. Everything else in the payload is private, reachable only by relative `require`. |
 | `[[layer]]` | Each layer: its `id`, the layers it `requires`, and the module names it `exports`. |
 | `[[layer.entrypoint]]` | Each of the layer's entrypoints: its `module`, and the `capabilities` it needs. |
+| `[managed.<id>]` | A managed module an [application](@/docs/scripting/applications.md) loads into its domain: its private `module` file, and the `interface` id it provides, if any. |
+| `[targets.<id>]` | Something runnable: its `kind`, `command` (a script run to its end) or `application` (a host of its own, see [Applications](@/docs/scripting/applications.md)), its private `entry`, the `capabilities` it declares, and for a command an optional `command` name. `package.default_target` picks one. |
 
 Paths are canonical: forward slashes, relative, no `..`. A Package Source can't hold symlinks, or two files whose names differ only in case.
 

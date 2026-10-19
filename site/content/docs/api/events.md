@@ -1,0 +1,39 @@
+---
+title: 'jess.events'
+description: 'Emit named application events for the handlers a domain bound to a name, delivered at its next event drain.'
+weight: 152
+extra:
+  kind: api
+---
+
+{{ api_signature(value="jess.events: { emit }") }}
+
+Also `require('@jess/events')`. Named events are how a domain's code tells the rest of the domain something happened, and, when a host routes them, how one domain tells another. Their handlers are the `on.event` tables of an [application's](@/docs/scripting/applications.md) managed modules. Only a domain's own code emits: under `jess run`, a command target, or in a worker there is no queue to emit into, and `emit` errors.
+
+## jess.events.emit
+
+{{ api_signature(value="jess.events.emit(name: string, payload: unknown?) -> ()") }}
+
+Queues the event `name` with `payload` and returns. No handler runs inside `emit`. At the domain's next event drain, the end of the current frame, every handler bound to `name` gets the payload, in context order; events are delivered in the order they were emitted, and one emitted during a drain waits for the next. A handler that raises is reported with its context and event name, and the rest still run. An event nothing handles is counted as unhandled and dropped.
+
+`payload` must be transferable: nil, booleans, numbers, strings, vectors, buffers, and tables of those, nested at most 32 deep. It arrives as a copy, so a handler's changes to it are its own. If the host routed `name` to another domain, a copy is posted there too, stamped with that domain's generation.
+
+A name that is also a host callback is still just an event: `emit('update')` reaches `on.event.update` handlers, never `on.host.update`.
+
+- **Errors:** `events.emit: an event needs a name`; `payload.<path>: a function can't cross a worker or event boundary` (or a thread, a userdata, a table nested more than 32 deep), also reported as a diagnostic; outside a domain, `events.emit: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and command targets run scripts outside one`; in a worker, `events.emit is for a domain's own code; a worker handles messages and answers them`.
+
+```luau
+--!strict
+local events = require('@jess/events')
+
+local deaths = 0
+
+local function died(player: string)
+  deaths += 1
+  events.emit('playerDied', { player = player, deaths = deaths })
+end
+
+died('Caius')
+```
+
+Related: [Applications](@/docs/scripting/applications.md#named-events), [jess.interfaces](@/docs/api/interfaces.md), [jess.context](@/docs/api/context.md).

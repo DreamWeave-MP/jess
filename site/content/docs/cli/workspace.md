@@ -112,11 +112,12 @@ $ jess workspace targets
 | `[TARGET]` | The target to run. Without one, the default target of the member the current folder is in. |
 | `--capability <NAME>` | Grant a capability the target declares (repeatable). |
 | `--trusted` | Grant everything the target declares. |
+| `--frames <N>` | For an application target: stop after N frames, unless it stops itself first. Refused for a command target. |
 | `-- ARGS...` | Arguments for the target, which gets them as `...` and in the global `arg` table. |
 
 A target is named `<package id>:<target id>`; by a target id or a `command` name that only one target in the workspace has; or by a member's package id, for its `default_target`. A name two targets answer to is an error listing both.
 
-The target runs as [`jess package run`](@/docs/cli/package.md#jess-package-run) runs one: its package resolves over the other members and the packages `jess.lock` pins, each opened only when something needs it, and it runs with exactly the capabilities it declares, once you grant them. Being in a workspace grants nothing, and a member's modules still reach only the packages its own manifest declares. Its first returned number is the exit status.
+The target runs as [`jess package run`](@/docs/cli/package.md#jess-package-run) runs one, command or [application](@/docs/scripting/applications.md): its package resolves over the other members and the packages `jess.lock` pins, each opened only when something needs it, and it runs with exactly the capabilities it declares, once you grant them. Being in a workspace grants nothing, and a member's modules still reach only the packages its own manifest declares. A command target's first returned number is the exit status; an application's is the status it asked to stop with.
 
 ```text
 $ cd tools/greeter/src
@@ -146,7 +147,25 @@ error: workspace: /home/you/showcase/jess.lock is out of date:
 run jess workspace sync
 ```
 
-Only command targets run here. An application target needs a host of its own.
+The example application in jess's own repository is a workspace of four packages, so it runs this way too:
+
+```text
+$ jess workspace --workspace tests/lua/application run org.example.game:game --frames 2 -- print
+armor replaces light armor, keeping its weights
+entry: heavy helm, weighs 5
+director load
+inventory startup
+director startup: heavy cuirass, weighs 30
+director update 1 (number)
+director update 2 (number)
+inventory drops Caius's loot
+armor dents for Caius
+scoreboard: death 1, Caius on frame 2
+director shutdown
+jess: info in org.example.game:game: 1 queued events were dropped at teardown
+```
+
+The scoreboard's `gameOver`, emitted during the second frame's drain, never got a third frame to be delivered in, and teardown says so.
 
 ## jess workspace graph
 

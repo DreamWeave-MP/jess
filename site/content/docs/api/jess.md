@@ -6,7 +6,7 @@ extra:
   kind: api
 ---
 
-{{ api_signature(value="jess: { version, null, meta, plugin, select, save, nif, openmw, luadata, compare, fs, shader, context, worker, input }") }}
+{{ api_signature(value="jess: { version, null, meta, plugin, select, save, nif, openmw, luadata, compare, fs, shader, context, worker, events, interfaces, application, input }") }}
 
 `jess` is the global table every script gets, however it was started: `jess run`, `jess test`, `jess plugin modify --script`, or `jess nif modify --script`. It holds one table per module, plus the few values that belong to no module and had to live somewhere.
 
@@ -39,6 +39,9 @@ extra:
 | `@jess/input` | Action graphs, labels, conflicts, intents, and the input runtime | [@jess/input](@/docs/api/input.md) |
 | `jess.context` | Handlers for the phases a ScriptDomain schedules | [jess.context](@/docs/api/context.md) |
 | `jess.worker` | Isolated Luau workers and their messages | [jess.worker](@/docs/api/worker.md) |
+| `jess.events` | Named application events, queued for the next drain | [jess.events](@/docs/api/events.md) |
+| `jess.interfaces` | The tables an application's packages provide, by id, in one domain | [jess.interfaces](@/docs/api/interfaces.md) |
+| `jess.application` | Ask the host running an application to stop | [jess.application](@/docs/api/application.md) |
 | `@jess/l10n` | Localized text from message bundles | [@jess/l10n](@/docs/api/l10n.md) |
 | `LightRecord`, `NiNodeRecord`, ... | Generated record and NIF types | [Record and NIF Types](@/docs/api/record-types.md) |
 | `vfstool`, `openmwConfig`, `dreamPath` | The libraries jess is built on | [Downstream Globals](@/docs/api/downstream-globals.md) |

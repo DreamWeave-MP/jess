@@ -70,6 +70,14 @@ Every entry into script code goes through the scheduler: `run_phase` broadcasts 
 
 Each handler call runs under the context's authority, inside its budget (l3i's watchdog), inside an l3i call scope carrying its `ContextId`, and timed. A Luau error in it becomes a `Diagnostic` and a `RuntimeError::Script` in the phase report; the phase goes on, and so does the domain.
 
+## Events: Raw and Named
+
+The queue carries two kinds of event, structurally apart. A **raw** event (`DomainMailbox::post(EventTarget, Message)`) goes to one context's `event` handler, or to every context's. A **named** event goes to every handler bound to its name, in scheduler order: script code queues one with [`@jess/events`](@/docs/api/events.md)'s `emit`, a native host with `DomainMailbox::post_named`, and a host binds a handler with `ScriptDomain::bind_event_handler` (an application's loader binds a managed module's `on.event` table this way). A name is not a target and a raw event has no name, so neither can pass for the other, and neither ever runs a phase handler. `emit('startup')` reaches handlers named `startup`, never the `startup` phase.
+
+Both kinds share one FIFO queue and one drain: emission order is delivery order, an event queued during a drain waits for the next one, every envelope is stamped with its generation, and an event nothing handles is counted in `EventReport::unhandled` and dropped. Payloads are `Message`s either way, so an event that works inside a domain works across one. Crossing is the host's call: `ScriptDomain::route(name, mailbox)` posts a copy of every `name` the domain emits to another domain's mailbox. Nothing is broadcast, and a stopped recipient is a warning diagnostic, not the emitter's error.
+
+Interfaces, [`@jess/interfaces`](@/docs/api/interfaces.md), are the other half of an application, and the half that never crosses: the effective tables an application's packages composed, kept with the runtime, so they are one domain's and one generation's, and a restart starts without them.
+
 ## Capabilities: What Code May Do
 
 A capability is a dotted lowercase name: `input.observe`, `render.scene`, `worker.spawn`. The host holds `RootAuthority` and grants a `CapabilitySet` to a domain. From there the math only shrinks: a child domain (`delegate`), a context (`ContextSpec::capabilities`), a worker (`WorkerSpec::capabilities`) each hold a subset of whoever made them, and asking for more fails with `RuntimeError::OverDelegation` naming what is missing. A script cannot grant itself anything, and a script spawning a worker cannot give it more than the calling context holds.
@@ -137,7 +145,7 @@ Anything native a service creates for a domain is registered with `domain.own(ki
 
 ## Diagnostics and Profiling
 
-Everything the runtime reports carries an `Attribution`: domain, generation, and the context or worker if there was one. Failures go to a `DiagnosticSink` as `Diagnostic { attribution, severity, kind, message, phase, capability, source }`, where `source` is `chunk:line` when the runtime knows it (where a handler was bound, where a bad message was sent). Costs go to a `ProfileSink` as `ProfileEvent`s: domain creation and startup, every context call with its queue delay and duration, every worker spawn, call, and message, every stale event and denial, and the teardown. `domain.stats()` is the counters at any moment.
+Everything the runtime reports carries an `Attribution`: domain, generation, and the context or worker if there was one. Failures go to a `DiagnosticSink` as `Diagnostic { attribution, severity, kind, message, phase, event, capability, source }`, where `event` names the named event being delivered and `source` is `chunk:line` when the runtime knows it (where a handler was bound, where a bad message was sent). Costs go to a `ProfileSink` as `ProfileEvent`s: domain creation and startup, every context call with its queue delay and duration, every worker spawn, call, and message, every stale event and denial, and the teardown. `domain.stats()` is the counters at any moment.
 
 What scripts log is a third stream. `DomainSpec::logs` gives a domain a `LogSink`, and every `@jess/log` record its contexts and workers write goes there as a `LogRecord { attribution, level, target, message, fields, source }`, attributed by the runtime, not by the script. A worker's logs are the application's whether or not it shares a service. A domain without a stream leaves `@jess/log` writing where its runtime's own sink points.
 
@@ -145,12 +153,12 @@ Every handler call also runs inside an l3i `CallScope` whose id is the `ContextI
 
 ## Where It Lives
 
-- `libs/runtime/src/domain.rs`: `ScriptDomain`, `DomainSpec`, the scheduler, the mailbox, restart, and teardown.
-- `libs/runtime/src/context.rs`: `Phase`, `ContextSpec`, `Budget`, `FixedStep`.
-- `libs/runtime/src/capability.rs`: `CapabilityId`, `CapabilitySet`, `Grant`, `RootAuthority`, `Authority`, `require_capability`.
-- `libs/runtime/src/worker.rs` and `message.rs`: lanes, `WorkerSpec`, `Message`, `TransferError`.
-- `libs/runtime/src/service.rs`: `Services`, the typed slot a host attaches its input and localization to; `jess_runtime::service::<T>()` reads it from a binding.
-- `libs/runtime/src/luau.rs`: the `@jess/context` and `@jess/worker` extension.
-- `libs/runtime/README.md`: the integration contract the input, localization, GUI, and render work builds on, call by call.
+- `src/runtime/domain.rs`: `ScriptDomain`, `DomainSpec`, the scheduler, the mailbox, raw and named events, routes, restart, and teardown.
+- `src/runtime/context.rs`: `Phase`, `ContextSpec`, `Budget`, `FixedStep`.
+- `src/runtime/capability.rs`: `CapabilityId`, `CapabilitySet`, `Grant`, `RootAuthority`, `Authority`, `require_capability`.
+- `src/runtime/worker.rs` and `message.rs`: lanes, `WorkerSpec`, `Message`, `TransferError`.
+- `src/runtime/service.rs`: `Services`, the typed slot a host attaches its input and localization to; `jess::runtime::service::<T>()` reads it from a binding.
+- `src/runtime/luau.rs`: the `@jess/context`, `@jess/worker`, `@jess/events`, and `@jess/interfaces` extension.
+- `src/lua/application.rs`: the application supervisor that loads managed modules into a domain, and `@jess/application`.
 
-The tests are one binary, `libs/runtime/tests/runtime.rs`, because every test binary pays l3i's link-time codegen: the fixture, the lifecycle and authority math, the scheduler, the workers, the threading proof (two workers meeting at a rendezvous inside their handlers), and a create-spawn-message-stop stress loop that checks no lane outlives its domain.
+The tests are one binary, `tests/runtime/main.rs`, because every test binary pays l3i's link-time codegen: the fixture, the lifecycle and authority math, the scheduler, named events and routes, the workers, the threading proof (two workers meeting at a rendezvous inside their handlers), and a create-spawn-message-stop stress loop that checks no lane outlives its domain. Applications, end to end, are `tests/lua/application.rs` in `lua_package` and `tests/cli/application.rs`.
