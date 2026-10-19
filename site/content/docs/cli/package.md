@@ -244,7 +244,7 @@ requested by:
 
 `--trusted` grants what the target declares, which `package inspect` shows. A command target's first returned number is the exit status.
 
-An `application` target resolves and is granted the same way, then runs in a host of its own: every selected package's [managed modules](@/docs/scripting/applications.md) load into one domain, the interfaces are composed, the entry runs, and frames run at 60 a second until the application calls [`application.exit`](@/docs/api/application.md), `--frames` runs out (status 0), or you press Ctrl+C (status 130; shutdown handlers still run). Its diagnostics go to stderr as they happen, and its exit status is the one it asked for.
+An `application` target resolves and is granted the same way, then runs in a host of its own: every selected package's [managed modules](@/docs/scripting/applications.md) load into one domain, the interfaces are composed, the entry runs, and frames run at 60 a second until the application calls [`application.exit`](@/docs/api/application.md), `--frames` runs out (status 0), or you press Ctrl+C (status 130; shutdown handlers still run). It runs headless, with no input source, so its `input` handlers don't run here; a host that embeds jess attaches one (see [Applications](@/docs/scripting/applications.md#embedding-it)). Its diagnostics go to stderr as they happen, and its exit status is the one it asked for.
 
 An application whose `update` raises on its second frame and calls `application.exit(3)` on its third:
 

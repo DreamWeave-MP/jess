@@ -34,7 +34,7 @@ use l3i::debug::DebugScope;
 use l3i::stack::{Frame, ValueView};
 use l3i::value::{Function, Table, Value};
 
-use crate::host::{ExitRequest, FrameReport, Host, HostSpec};
+use crate::host::{ExitRequest, FrameReport, Host, HostSpec, InputSource};
 use crate::lua::package::{self, Inspection, Managed, Search, Target, TargetRequest};
 use crate::lua::{error, kind, state};
 use crate::runtime::{
@@ -497,7 +497,8 @@ impl std::fmt::Debug for Application {
 
 /// Loads the application target `target` of the package `inspection` describes, as `request`
 /// asks, into a host of its own: the package's plan is checked against the target's capabilities
-/// before anything is built, and nothing a package holds runs until the domain loads.
+/// before anything is built, and nothing a package holds runs until the domain loads. With `input`
+/// the host polls it every frame and runs the `input` handlers on what it produces.
 ///
 /// # Errors
 ///
@@ -509,6 +510,7 @@ pub(crate) fn launch(
     request: &TargetRequest,
     inspection: &Inspection,
     target: &Target,
+    input: Option<InputSource>,
 ) -> l3i::Result<Application> {
     let layers = inspection.layers.iter().map(|layer| layer.id.clone()).collect::<Vec<_>>();
     let mut locations = vec![request.package.clone()];
@@ -552,7 +554,11 @@ pub(crate) fn launch(
             step: FRAME,
             max_catch_up: MAX_CATCH_UP,
         });
-    let host = Host::create(factory, HostSpec::new(spec)).map_err(l3i::Error::from)?;
+    let host_spec = match input {
+        Some(source) => HostSpec::new(spec).input(source),
+        None => HostSpec::new(spec),
+    };
+    let host = Host::create(factory, host_spec).map_err(l3i::Error::from)?;
     let loading = Rc::clone(&setup);
     if let Err(problem) = host.domain().load(|runtime| loading.load(runtime)) {
         // Every failure the load reported, each attributed to the context it happened in (a

@@ -271,11 +271,13 @@ while game.exit_requested().is_none() {
 game.stop()?;
 ```
 
+`package::launch_with` takes `LaunchOptions`; its `input` is the application's input source (`InputSource::Synthetic` for tests and replays, a platform backend for devices). With one, every frame polls it first and runs the `input` handlers on the action events it produced; `application.host().input()` is the service, for the host to configure.
+
 `Application::restart` loads everything again in a new generation: a new runtime, new module tables, new handlers, new interfaces, and queued events for the old generation dropped. Two applications are two domains; they share nothing, not even an interface id.
 
 ## Not yet
 
-- The command-line host has no input source, so `input` handlers don't run under `jess package run`. A host that attaches one gets them.
+- The command line runs applications headless, on purpose for now: no input source, so `input` handlers don't run under `jess package run`. A host that launches with `package::launch_with` and an input source in its `LaunchOptions` gets them, every frame, before update.
 - Interfaces are composed once, at load. No hot override.
 - Every managed context holds the target's whole grant; per-module capability subsets need manifest syntax nobody has designed.
 - Routing between domains is a host decision with a Rust API. There is no script API for it, on purpose, until there is a host that runs several application domains from one command.

@@ -1146,3 +1146,77 @@ fn a_run_that_fails_still_stops_and_reports_its_teardown() {
         "{lines:?}"
     );
 }
+
+/// An application launched with an input source gets its action events in its managed modules'
+/// `on.host.input`; launched without one, as the command line launches it, it is headless.
+#[test]
+fn an_application_with_input_runs_its_input_handlers() {
+    use jess::host::InputSource;
+    use jess::input::{Control, GraphSpec, Key, NodeSpec, Owner, ValueType};
+
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("input");
+    single(
+        &root,
+        &[(
+            "controls",
+            r"local journal = require('@example/journal')
+return {
+  on = {
+    host = {
+      input = function(payload)
+        for _, event in payload.events do
+          journal.write(`input {event.action} {event.kind}`)
+        end
+      end,
+    },
+  },
+}
+",
+            None,
+        )],
+        "return nil\n",
+        &[],
+    );
+    let launched = package::launch_with(
+        &Options::default(),
+        &request(&root, "app", &[]),
+        package::LaunchOptions {
+            input: Some(InputSource::Synthetic),
+        },
+    )
+    .unwrap();
+    let Launched::Application(mut application) = launched else {
+        panic!("an application target launches an application");
+    };
+    application.start().unwrap();
+    let keyboard = {
+        let mut input = application.host().input().unwrap().lock().unwrap();
+        let mut graph = GraphSpec::new();
+        graph.action("ui.accept", ValueType::Digital).set("ui", "@test/application");
+        graph
+            .add_binding(
+                &Owner::Set("ui".to_owned()),
+                "ui.accept",
+                NodeSpec::button(Control::Key(Key::Enter)),
+            )
+            .unwrap();
+        input.install(graph).unwrap();
+        input.set_active("ui", true).unwrap();
+        input.synthetic().connect_keyboard()
+    };
+    frame(&mut application);
+    {
+        let mut input = application.host().input().unwrap().lock().unwrap();
+        input.advance(Duration::from_millis(16));
+        input.synthetic().press(keyboard, Control::Key(Key::Enter));
+    }
+    let report = frame(&mut application);
+    assert_eq!(report.input.map(|phase| phase.ran), Some(1));
+    assert_eq!(journal(&application), ["input ui.accept pressed"]);
+    application.stop().unwrap();
+
+    let headless = launch(&request(&root, "app", &[]));
+    assert!(headless.host().input().is_none());
+    headless.stop().unwrap();
+}
