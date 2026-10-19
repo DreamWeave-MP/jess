@@ -330,8 +330,12 @@ fn emit(bindings: &Bindings, call: &Call<'_>, name: &str, payload: Option<ValueV
         Some(payload) => read_message(call, payload, Some(&domain), "payload")?,
         None => Message::Nil,
     };
-    domain.emit(name, payload).map_err(l3i::Error::from)
+    domain.emit(name, payload).map_err(|problem| match problem {
+        RuntimeError::QueueFull(full) => l3i::Error::runtime(format!("events.emit: '{name}' wasn't queued: {full}")),
+        other => l3i::Error::from(other),
+    })
 }
+
 const SPAWN_OPTIONS: [&str; 4] = ["capabilities", "name", "shareServices", "source"];
 
 /// `worker.spawn(options)`. The options are checked before the owner is, so a misspelled key

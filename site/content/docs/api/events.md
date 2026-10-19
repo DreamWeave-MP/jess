@@ -20,7 +20,9 @@ Queues the event `name` with `payload` and returns. No handler runs inside `emit
 
 A name that is also a host callback is still just an event: `emit('update')` reaches `on.event.update` handlers, never `on.host.update`.
 
-- **Errors:** `events.emit: an event needs a name`; `payload.<path>: a function can't cross a worker or event boundary` (or a thread, a userdata, a table nested more than 32 deep), also reported as a diagnostic; outside a domain, `events.emit: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and command targets run scripts outside one`; in a worker, `events.emit is for a domain's own code; a worker handles messages and answers them`.
+The queue is bounded. By default a domain holds at most 65,536 waiting events and 64 MiB of payload, and one drain delivers at most 4,096 of them, leaving the rest, in order, for the next frame. An event that doesn't fit isn't queued, quietly or otherwise: `emit` raises, the refusal is reported as a diagnostic, and nothing is routed. A handler that answers each event with two more fills the queue and then fails, instead of eating the machine.
+
+- **Errors:** `events.emit: an event needs a name`; `events.emit: '<name>' wasn't queued: <domain>'s event queue is full: 65536 events are waiting, the most it holds` (or holds at most so many bytes of payload); `payload.<path>: a function can't cross a worker or event boundary` (or a thread, a userdata, a table nested more than 32 deep), also reported as a diagnostic; outside a domain, `events.emit: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and command targets run scripts outside one`; in a worker, `events.emit is for a domain's own code; a worker handles messages and answers them`.
 
 ```luau
 --!strict

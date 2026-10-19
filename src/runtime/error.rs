@@ -6,7 +6,7 @@ use std::fmt;
 use crate::runtime::capability::{CapabilityDenied, Grantor};
 use crate::runtime::context::Phase;
 use crate::runtime::diagnostics::Attribution;
-use crate::runtime::domain::DomainState;
+use crate::runtime::domain::{DomainState, QueueFull};
 use crate::runtime::ids::{CapabilityId, ContextId, DomainId, WorkerId};
 use crate::runtime::message::TransferError;
 
@@ -89,6 +89,8 @@ pub enum RuntimeError {
     },
     /// A value that cannot cross a boundary.
     Transfer(TransferError),
+    /// A named event didn't fit in its domain's event queue.
+    QueueFull(QueueFull),
     /// A worker failed.
     Worker(WorkerError),
     /// A worker did not answer within the time given.
@@ -193,6 +195,7 @@ impl fmt::Display for RuntimeError {
             }
             RuntimeError::UnknownWorker { domain, worker } => write!(f, "{domain} has no {worker}"),
             RuntimeError::Transfer(error) => error.fmt(f),
+            RuntimeError::QueueFull(full) => full.fmt(f),
             RuntimeError::Worker(error) => error.fmt(f),
             RuntimeError::Timeout { worker } => write!(f, "{worker} did not answer in time"),
             RuntimeError::Native(error) => write!(f, "l3i: {error}"),

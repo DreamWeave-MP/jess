@@ -85,8 +85,8 @@ pub use diagnostics::{
     Attribution, CollectedDiagnostics, Diagnostic, DiagnosticKind, DiagnosticSink, DiscardDiagnostics, Severity,
 };
 pub use domain::{
-    DomainMailbox, DomainSpec, DomainState, EventReport, EventTarget, FromPlan, MailboxClosed, PhaseReport, RuntimeFactory,
-    ScriptDomain, SetupHook, TeardownReport, TickReport,
+    DomainMailbox, DomainSpec, DomainState, EventLimits, EventReport, EventTarget, FromPlan, MailboxClosed, PhaseReport,
+    PostRefused, QueueFull, RuntimeFactory, ScriptDomain, SetupHook, TeardownReport, TickReport,
 };
 pub use error::{RuntimeError, WorkerError, WorkerStage};
 pub use ids::{CapabilityId, ContextId, DomainId, Generation, ResourceId, WorkerId};

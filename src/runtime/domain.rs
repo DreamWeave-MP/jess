@@ -20,7 +20,7 @@ use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
@@ -29,7 +29,9 @@ use l3i::extension::RuntimePlan;
 use l3i::runtime::{CallContext, CallKind, MemoryCategory};
 use l3i::value::Function;
 
-use crate::runtime::capability::{Authority, AuthorityGuard, CapabilitySet, Grant, Observer, WORKER_SPAWN};
+use crate::runtime::capability::{
+    Authority, AuthorityGuard, CapabilitySet, Grant, Observer, WORKER_SPAWN, current_authority,
+};
 use crate::runtime::context::{Budget, ContextInfo, ContextRecord, ContextSpec, FixedStep, Phase};
 use crate::runtime::diagnostics::{Attribution, Diagnostic, DiagnosticKind, DiagnosticSink, DiscardDiagnostics, Severity};
 use crate::runtime::error::{RuntimeError, script_message};
@@ -129,6 +131,7 @@ pub struct DomainSpec {
     logs: Option<Arc<dyn LogSink>>,
     fixed_step: Option<FixedStep>,
     budget: Option<Budget>,
+    event_limits: EventLimits,
     setup: Option<SetupHook>,
     services: Services,
 }
@@ -141,6 +144,7 @@ impl fmt::Debug for DomainSpec {
             .field("parent", &self.parent)
             .field("fixed_step", &self.fixed_step)
             .field("budget", &self.budget)
+            .field("event_limits", &self.event_limits)
             .field("services", &self.services)
             .field("logs", &self.logs.is_some())
             .finish_non_exhaustive()
@@ -162,6 +166,7 @@ impl DomainSpec {
             logs: None,
             fixed_step: None,
             budget: None,
+            event_limits: EventLimits::default(),
             setup: None,
             services: Services::new(),
         }
@@ -210,6 +215,14 @@ impl DomainSpec {
         self
     }
 
+    /// How much the domain's event queue holds and one drain delivers; [`EventLimits::default`]
+    /// until the builder says otherwise.
+    #[must_use]
+    pub const fn event_limits(mut self, limits: EventLimits) -> DomainSpec {
+        self.event_limits = limits;
+        self
+    }
+
     /// Host setup for every runtime the domain creates.
     #[must_use]
     pub fn setup(mut self, setup: impl Fn(&Runtime) -> l3i::Result<()> + Send + Sync + 'static) -> DomainSpec {
@@ -250,7 +263,141 @@ struct Envelope {
     delivery: Delivery,
     generation: Generation,
     payload: Message,
+    /// The payload's size as the backlog counted it.
+    bytes: usize,
     posted: Instant,
+}
+
+/// How much a domain's event queue may hold, and how much of it one drain delivers.
+///
+/// The limits refuse named events, the ones script code can emit: an emit or a named post
+/// that doesn't fit fails, observably, and queues nothing. Raw events a host posts are counted
+/// against them, but always queued: a host's own posts are its business. A drain delivers at
+/// most `per_drain` events and leaves the rest, in order, for the next one, so a storm of
+/// events costs a bounded slice of each frame.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct EventLimits {
+    /// The most events waiting at once.
+    pub pending: usize,
+    /// The most payload bytes waiting at once, as [`Message::size_hint`] counts them.
+    pub bytes: usize,
+    /// The most events one drain delivers. Zero is treated as one.
+    pub per_drain: usize,
+}
+
+impl Default for EventLimits {
+    /// 65,536 events, 64 MiB of payload, and 4,096 events a drain.
+    fn default() -> Self {
+        EventLimits {
+            pending: 65_536,
+            bytes: 64 << 20,
+            per_drain: 4_096,
+        }
+    }
+}
+
+/// A named event that didn't fit in its domain's queue, and so wasn't queued.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct QueueFull {
+    /// The domain whose queue is full.
+    pub domain: DomainId,
+    /// The events waiting when it was refused.
+    pub waiting: usize,
+    /// The payload bytes waiting when it was refused.
+    pub bytes: usize,
+    /// Its own payload's size.
+    pub payload: usize,
+    /// The limits it was refused under.
+    pub limits: EventLimits,
+}
+
+impl fmt::Display for QueueFull {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.payload > self.limits.bytes {
+            write!(
+                f,
+                "{}'s event queue holds at most {} bytes of payload, and this event's is {}",
+                self.domain, self.limits.bytes, self.payload
+            )
+        } else if self.waiting >= self.limits.pending {
+            write!(
+                f,
+                "{}'s event queue is full: {} events are waiting, the most it holds",
+                self.domain, self.waiting
+            )
+        } else {
+            write!(
+                f,
+                "{}'s event queue is full: {} bytes of payload are waiting, and {} more don't fit under {}",
+                self.domain, self.bytes, self.payload, self.limits.bytes
+            )
+        }
+    }
+}
+
+impl std::error::Error for QueueFull {}
+
+/// Why a named event wasn't queued.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum PostRefused {
+    /// The domain has stopped.
+    Closed(MailboxClosed),
+    /// The domain's queue is full.
+    Full(Box<QueueFull>),
+}
+
+impl fmt::Display for PostRefused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PostRefused::Closed(closed) => closed.fmt(f),
+            PostRefused::Full(full) => full.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for PostRefused {}
+
+/// What waits in a domain's queue, shared by the domain and every mailbox of it.
+#[derive(Debug)]
+struct Backlog {
+    events: AtomicUsize,
+    bytes: AtomicUsize,
+    limits: EventLimits,
+}
+
+impl Backlog {
+    /// Counts an event of `bytes` in, whatever the limits say, returning the events and bytes
+    /// waiting with it.
+    fn count(&self, bytes: usize) -> (usize, usize) {
+        let events = self.events.fetch_add(1, Ordering::AcqRel) + 1;
+        (events, self.bytes.fetch_add(bytes, Ordering::AcqRel) + bytes)
+    }
+
+    /// Counts an event of `bytes` in, or refuses it, counting nothing, when it doesn't fit.
+    fn admit(&self, domain: DomainId, bytes: usize) -> Result<(), QueueFull> {
+        let (events, total) = self.count(bytes);
+        if events > self.limits.pending || total > self.limits.bytes {
+            self.release(bytes);
+            return Err(QueueFull {
+                domain,
+                waiting: events - 1,
+                bytes: total - bytes,
+                payload: bytes,
+                limits: self.limits,
+            });
+        }
+        Ok(())
+    }
+
+    /// Counts an event of `bytes` out.
+    fn release(&self, bytes: usize) {
+        self.events.fetch_sub(1, Ordering::AcqRel);
+        self.bytes.fetch_sub(bytes, Ordering::AcqRel);
+    }
+
+    fn waiting(&self) -> usize {
+        self.events.load(Ordering::Acquire)
+    }
 }
 
 /// The domain a [`DomainMailbox`] posted to has stopped; the event was not queued.
@@ -274,6 +421,7 @@ impl std::error::Error for MailboxClosed {}
 pub struct DomainMailbox {
     domain: DomainId,
     generation: Arc<AtomicU64>,
+    backlog: Arc<Backlog>,
     sender: Sender<Envelope>,
 }
 
@@ -284,7 +432,8 @@ impl DomainMailbox {
         self.domain
     }
 
-    /// Queues `payload` for `target`, stamped with the domain's current generation.
+    /// Queues `payload` for `target`, stamped with the domain's current generation. It counts
+    /// against the domain's [`EventLimits`] but is never refused for them.
     ///
     /// # Errors
     ///
@@ -300,7 +449,9 @@ impl DomainMailbox {
     ///
     /// [`MailboxClosed`] once the domain has stopped.
     pub fn post_for(&self, target: EventTarget, generation: Generation, payload: Message) -> Result<(), MailboxClosed> {
-        self.send(Delivery::Raw(target), generation, payload)
+        let bytes = payload.size_hint();
+        self.backlog.count(bytes);
+        self.enqueue(Delivery::Raw(target), generation, payload, bytes)
     }
 
     /// Queues the named event `event` with `payload`, stamped with the domain's current
@@ -313,8 +464,9 @@ impl DomainMailbox {
     ///
     /// # Errors
     ///
-    /// [`MailboxClosed`] once the domain has stopped.
-    pub fn post_named(&self, event: &str, payload: Message) -> Result<(), MailboxClosed> {
+    /// [`PostRefused::Closed`] once the domain has stopped; [`PostRefused::Full`] when the event
+    /// doesn't fit in its queue under the domain's [`EventLimits`].
+    pub fn post_named(&self, event: &str, payload: Message) -> Result<(), PostRefused> {
         self.post_named_for(event, Generation::from_raw(self.generation.load(Ordering::Acquire)), payload)
     }
 
@@ -322,20 +474,36 @@ impl DomainMailbox {
     ///
     /// # Errors
     ///
-    /// [`MailboxClosed`] once the domain has stopped.
-    pub fn post_named_for(&self, event: &str, generation: Generation, payload: Message) -> Result<(), MailboxClosed> {
-        self.send(Delivery::Named(event.to_owned()), generation, payload)
+    /// As [`DomainMailbox::post_named`].
+    pub fn post_named_for(&self, event: &str, generation: Generation, payload: Message) -> Result<(), PostRefused> {
+        let bytes = payload.size_hint();
+        self.backlog
+            .admit(self.domain, bytes)
+            .map_err(|full| PostRefused::Full(Box::new(full)))?;
+        self.enqueue(Delivery::Named(event.to_owned()), generation, payload, bytes)
+            .map_err(PostRefused::Closed)
     }
 
-    fn send(&self, delivery: Delivery, generation: Generation, payload: Message) -> Result<(), MailboxClosed> {
+    /// Queues an envelope the backlog already counted, counting it out again if it can't be.
+    fn enqueue(
+        &self,
+        delivery: Delivery,
+        generation: Generation,
+        payload: Message,
+        bytes: usize,
+    ) -> Result<(), MailboxClosed> {
         self.sender
             .send(Envelope {
                 delivery,
                 generation,
                 payload,
+                bytes,
                 posted: Instant::now(),
             })
-            .map_err(|_| MailboxClosed(self.domain))
+            .map_err(|_| {
+                self.backlog.release(bytes);
+                MailboxClosed(self.domain)
+            })
     }
 }
 
@@ -361,6 +529,9 @@ pub struct EventReport {
     pub unhandled: usize,
     /// The handlers that raised.
     pub failures: Vec<RuntimeError>,
+    /// Events still waiting after the drain: what was past its [`EventLimits::per_drain`], and
+    /// what handlers emitted while it ran.
+    pub pending: usize,
 }
 
 /// What one [`ScriptDomain::advance`] did.
@@ -442,6 +613,8 @@ pub struct DomainCore {
     workers: RefCell<Vec<WorkerRecord>>,
     resources: RefCell<ResourceRegistry>,
     queue: RefCell<Option<(Sender<Envelope>, Receiver<Envelope>)>>,
+    /// What waits in the queue, and what it may hold; every mailbox shares it.
+    backlog: Arc<Backlog>,
     /// Where the host routes named events its code emits, besides this domain's own handlers.
     routes: RefCell<Vec<(String, DomainMailbox)>>,
     /// The phase being dispatched, if the scheduler is inside script code.
@@ -743,35 +916,63 @@ impl DomainCore {
             .collect()
     }
 
+    /// A mailbox of this domain, until it stops.
+    fn mailbox(&self) -> Option<DomainMailbox> {
+        let queue = self.queue.borrow();
+        let (sender, _) = queue.as_ref()?;
+        Some(DomainMailbox {
+            domain: self.id,
+            generation: Arc::clone(&self.shared_generation),
+            backlog: Arc::clone(&self.backlog),
+            sender: sender.clone(),
+        })
+    }
+
     /// Queues the named event `event` from the domain's own code: stamped with the current
-    /// generation, delivered at the next drain, never synchronously. Then the host's routes for
-    /// the name forward a copy to each mailbox it named; a stopped recipient is reported, not
-    /// raised, since it isn't the emitter's doing.
+    /// generation, delivered at the next drain, never synchronously. An event that doesn't fit in
+    /// the queue is refused, reported, and not routed anywhere. Then the host's routes for the
+    /// name forward a copy to each mailbox it named; a recipient that stopped or is full is
+    /// reported, not raised, since it isn't the emitter's doing.
     pub(crate) fn emit(&self, event: &str, payload: Message) -> Result<(), RuntimeError> {
-        {
-            let queue = self.queue.borrow();
-            let Some((sender, _)) = queue.as_ref() else {
-                return Err(self.lifecycle("emit an event in"));
-            };
-            for (name, mailbox) in self.routes.borrow().iter() {
-                if name == event
-                    && let Err(closed) = mailbox.post_named(event, payload.clone())
-                {
-                    self.report(Diagnostic::new(
-                        self.attribution(),
-                        Severity::Warning,
-                        DiagnosticKind::TeardownDiscarded,
-                        format!("the event '{event}' routed to {} was dropped: {closed}", closed.0),
-                    ));
-                }
+        let Some(mailbox) = self.mailbox() else {
+            return Err(self.lifecycle("emit an event in"));
+        };
+        let routed = self
+            .routes
+            .borrow()
+            .iter()
+            .filter(|(name, _)| name == event)
+            .map(|(_, to)| to.clone())
+            .collect::<Vec<_>>();
+        let copy = (!routed.is_empty()).then(|| payload.clone());
+        let attribution = current_authority().map_or_else(|| self.attribution(), |authority| authority.attribution());
+        match mailbox.post_named(event, payload) {
+            Ok(()) => {}
+            Err(PostRefused::Full(full)) => {
+                self.report(Diagnostic::new(
+                    attribution,
+                    Severity::Error,
+                    DiagnosticKind::QueueFull,
+                    format!("the event '{event}' wasn't queued: {full}"),
+                ));
+                return Err(RuntimeError::QueueFull(*full));
             }
-            // The receiver lives as long as the sender, in the same slot.
-            drop(sender.send(Envelope {
-                delivery: Delivery::Named(event.to_owned()),
-                generation: self.generation.get(),
-                payload,
-                posted: Instant::now(),
-            }));
+            Err(PostRefused::Closed(_)) => return Err(self.lifecycle("emit an event in")),
+        }
+        let Some(copy) = copy else { return Ok(()) };
+        for to in routed {
+            if let Err(refused) = to.post_named(event, copy.clone()) {
+                let kind = match refused {
+                    PostRefused::Closed(_) => DiagnosticKind::TeardownDiscarded,
+                    PostRefused::Full(_) => DiagnosticKind::QueueFull,
+                };
+                self.report(Diagnostic::new(
+                    attribution,
+                    Severity::Warning,
+                    kind,
+                    format!("the event '{event}' routed to {} was dropped: {refused}", to.domain),
+                ));
+            }
         }
         Ok(())
     }
@@ -1048,6 +1249,11 @@ impl ScriptDomain {
             workers: RefCell::new(Vec::new()),
             resources: RefCell::new(ResourceRegistry::default()),
             queue: RefCell::new(Some(channel())),
+            backlog: Arc::new(Backlog {
+                events: AtomicUsize::new(0),
+                bytes: AtomicUsize::new(0),
+                limits: spec.event_limits,
+            }),
             routes: RefCell::new(Vec::new()),
             dispatching: Cell::new(None),
         });
@@ -1137,15 +1343,7 @@ impl ScriptDomain {
     ///
     /// [`RuntimeError::Lifecycle`] once the domain has stopped.
     pub fn mailbox(&self) -> Result<DomainMailbox, RuntimeError> {
-        let queue = self.core.queue.borrow();
-        let Some((sender, _)) = queue.as_ref() else {
-            return Err(self.core.lifecycle("open a mailbox of"));
-        };
-        Ok(DomainMailbox {
-            domain: self.core.id,
-            generation: Arc::clone(&self.core.shared_generation),
-            sender: sender.clone(),
-        })
+        self.core.mailbox().ok_or_else(|| self.core.lifecycle("open a mailbox of"))
     }
 
     /// Runs `body` with the primary runtime at host level: no authority ticket, no budget, no
@@ -1499,19 +1697,26 @@ impl ScriptDomain {
         self.drain()
     }
 
-    fn queued(&self) -> Vec<Envelope> {
+    /// Takes up to `limit` envelopes off the queue, oldest first, and counts them out of the
+    /// backlog.
+    fn queued(&self, limit: usize) -> Vec<Envelope> {
         let queue = self.core.queue.borrow();
-        queue
+        let envelopes: Vec<Envelope> = queue
             .as_ref()
-            .map(|(_, receiver)| receiver.try_iter().collect())
-            .unwrap_or_default()
+            .map(|(_, receiver)| receiver.try_iter().take(limit).collect())
+            .unwrap_or_default();
+        for envelope in &envelopes {
+            self.core.backlog.release(envelope.bytes);
+        }
+        envelopes
     }
 
     fn drain(&self) -> Result<EventReport, RuntimeError> {
         let core = &self.core;
-        let envelopes = self.queued();
+        let envelopes = self.queued(core.backlog.limits.per_drain.max(1));
         let mut report = EventReport::default();
         if envelopes.is_empty() {
+            report.pending = core.backlog.waiting();
             return Ok(report);
         }
         let _dispatch = core.enter_dispatch(Phase::Event, "drain the events of")?;
@@ -1567,6 +1772,7 @@ impl ScriptDomain {
                 }
             }
         }
+        report.pending = core.backlog.waiting();
         Ok(report)
     }
 
@@ -1739,7 +1945,7 @@ impl ScriptDomain {
         let was_running = self.core.state.get() == DomainState::Running;
         self.core.state.set(DomainState::Stopping);
         let (shutdown_failures, workers_stopped, resources_released) = self.end_generation(was_running);
-        let events_discarded = self.queued().len();
+        let events_discarded = self.queued(usize::MAX).len();
         self.core.queue.borrow_mut().take();
         if events_discarded > 0 {
             self.core.report(Diagnostic::new(

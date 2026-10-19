@@ -107,6 +107,8 @@ pub enum DiagnosticKind {
     SpawnRefused,
     /// Work left in a queue at teardown was dropped.
     TeardownDiscarded,
+    /// A named event didn't fit in its domain's event queue, and wasn't queued.
+    QueueFull,
 }
 
 impl fmt::Display for DiagnosticKind {
@@ -120,6 +122,7 @@ impl fmt::Display for DiagnosticKind {
             DiagnosticKind::TransferUnsupported => "transfer type unsupported",
             DiagnosticKind::SpawnRefused => "worker spawn refused",
             DiagnosticKind::TeardownDiscarded => "queued work discarded at teardown",
+            DiagnosticKind::QueueFull => "event queue full",
         })
     }
 }

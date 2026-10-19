@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use jess::runtime::l3i::Runtime;
 use jess::runtime::l3i::value::{Function, Table};
-use jess::runtime::{ContextSpec, DiagnosticKind, EventTarget, Message, Phase, ScriptDomain};
+use jess::runtime::{ContextSpec, DiagnosticKind, EventLimits, EventTarget, Message, Phase, PostRefused, ScriptDomain};
 
 use crate::support;
 
@@ -355,4 +355,137 @@ fn named_handlers_need_a_context_that_schedules_events() {
         .unwrap();
     let refused = domain.bind_event_handler("main", "hit", function.unwrap()).unwrap_err();
     assert!(refused.to_string().contains("does not schedule the event phase"), "{refused}");
+}
+
+/// A domain with `limits`, one context `main` scheduling events, and `source`'s chunk's
+/// functions bound as named handlers per `bindings` (event, key).
+fn limited(limits: EventLimits, source: &str, bindings: &[(&str, &str)]) -> support::Harness {
+    let (spec, diagnostics, profile) = support::spec("limited", &[]);
+    let domain = ScriptDomain::create(support::factory(), spec.event_limits(limits)).unwrap();
+    domain
+        .register_context(ContextSpec::new("main").schedule([Phase::Event]))
+        .unwrap();
+    let bindings = bindings.iter().map(|(event, key)| ("main", *event, *key)).collect::<Vec<_>>();
+    load_handlers(&domain, source, &bindings);
+    domain.start().unwrap();
+    support::Harness {
+        domain,
+        diagnostics,
+        profile,
+    }
+}
+
+fn emit_error(domain: &ScriptDomain, source: &str) -> String {
+    domain
+        .with_runtime(|runtime| runtime.eval::<()>(source))
+        .unwrap()
+        .unwrap_err()
+        .to_string()
+}
+
+#[test]
+fn a_full_queue_refuses_named_events_observably_and_counts_raw_ones() {
+    let limits = EventLimits {
+        pending: 3,
+        bytes: 1 << 20,
+        per_drain: 2,
+    };
+    let harness = limited(
+        limits,
+        "return { hit = function(payload) require('@test/journal').write(`hit {payload}`) end }",
+        &[("hit", "hit")],
+    );
+    let domain = &harness.domain;
+    support::eval::<()>(domain, "for n = 1, 3 do require('@jess/events').emit('hit', n) end");
+    let full = emit_error(domain, "require('@jess/events').emit('hit', 4)");
+    assert!(
+        full.contains("events.emit: 'hit' wasn't queued: ") && full.contains("event queue is full: 3 events are waiting"),
+        "{full}"
+    );
+    let reported = harness.diagnostics.of_kind(DiagnosticKind::QueueFull);
+    assert_eq!(reported.len(), 1);
+    assert!(
+        reported[0].message.starts_with("the event 'hit' wasn't queued"),
+        "{}",
+        reported[0]
+    );
+    let mailbox = domain.mailbox().unwrap();
+    assert!(matches!(
+        mailbox.post_named("hit", Message::Number(5.0)),
+        Err(PostRefused::Full(_))
+    ));
+    // A host's raw post is counted, and never refused.
+    mailbox.post(EventTarget::All, Message::Nil).unwrap();
+
+    // A drain delivers two and leaves the rest, in order, for the next.
+    let report = domain.drain_events().unwrap();
+    assert_eq!((report.delivered, report.pending), (2, 2));
+    assert_eq!(support::journal(), ["hit 1", "hit 2"]);
+    let report = domain.drain_events().unwrap();
+    assert_eq!((report.delivered, report.unhandled, report.pending), (1, 1, 0));
+    assert_eq!(support::journal(), ["hit 3"]);
+    support::eval::<()>(domain, "require('@jess/events').emit('hit', 6)");
+    domain.drain_events().unwrap();
+    assert_eq!(support::journal(), ["hit 6"], "room again once drained");
+}
+
+#[test]
+fn a_payload_larger_than_the_queue_holds_is_refused() {
+    let limits = EventLimits {
+        pending: 10,
+        bytes: 16,
+        per_drain: 10,
+    };
+    let harness = limited(limits, "return { hit = function() end }", &[("hit", "hit")]);
+    let refused = emit_error(&harness.domain, "require('@jess/events').emit('hit', string.rep('x', 100))");
+    assert!(
+        refused.contains("event queue holds at most 16 bytes of payload, and this event's is 100"),
+        "{refused}"
+    );
+    support::eval::<()>(&harness.domain, "require('@jess/events').emit('hit', 'small')");
+    let crowded = emit_error(&harness.domain, "require('@jess/events').emit('hit', string.rep('x', 12))");
+    assert!(
+        crowded.contains("5 bytes of payload are waiting, and 12 more don't fit under 16"),
+        "{crowded}"
+    );
+}
+
+/// A handler that answers every event with two more would double the queue each drain; the
+/// limits hold it to its size and each drain to its share, and the refusals are reported.
+#[test]
+fn an_event_storm_is_bounded_in_memory_and_in_drain_work() {
+    let limits = EventLimits {
+        pending: 50,
+        bytes: 1 << 20,
+        per_drain: 10,
+    };
+    let harness = limited(
+        limits,
+        r"
+        local events = require('@jess/events')
+        return {
+          storm = function()
+            events.emit('storm')
+            events.emit('storm')
+          end,
+        }
+        ",
+        &[("storm", "storm")],
+    );
+    let domain = &harness.domain;
+    support::eval::<()>(domain, "require('@jess/events').emit('storm')");
+    let mut refused = 0;
+    for _ in 0..40 {
+        let report = domain.drain_events().unwrap();
+        assert!(report.delivered <= 10, "{report:?}");
+        assert!(report.pending <= 50, "{report:?}");
+        refused += report.failures.len();
+    }
+    assert!(refused > 0, "the storm hit the limit");
+    assert_eq!(harness.diagnostics.of_kind(DiagnosticKind::QueueFull).len(), refused);
+    assert!(
+        harness.diagnostics.of_kind(DiagnosticKind::HandlerFailed)[0]
+            .message
+            .contains("events.emit: 'storm' wasn't queued"),
+    );
 }
