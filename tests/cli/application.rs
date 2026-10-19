@@ -204,6 +204,21 @@ fn a_malformed_managed_module_stops_the_launch() {
     assert_eq!(text(&output.stdout), "");
 }
 
+/// A child process that is killed and reaped when dropped: a test that fails before it stops an
+/// application started without `--frames` must not leave it running forever.
+#[cfg(unix)]
+struct Reaped(std::process::Child);
+
+#[cfg(unix)]
+impl Drop for Reaped {
+    fn drop(&mut self) {
+        if self.0.try_wait().ok().flatten().is_none() {
+            drop(self.0.kill());
+            drop(self.0.wait());
+        }
+    }
+}
+
 /// Ctrl+C asks the application to stop: its shutdown handlers run, and the status is 130.
 #[cfg(unix)]
 #[test]
@@ -217,21 +232,23 @@ fn an_interrupt_stops_an_application_gracefully() {
         "return { on = { host = {\n  startup = function() print('running') end,\n  shutdown = function() print('shut down') end,\n} } }\n",
         "return nil\n",
     );
-    let mut child = jess()
-        .args(["package", "run"])
-        .arg(&root)
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut child = Reaped(
+        jess()
+            .args(["package", "run"])
+            .arg(&root)
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut stdout = BufReader::new(child.0.stdout.take().unwrap());
     let mut line = String::new();
     // Not a race: the signal goes once the application says it is running.
     stdout.read_line(&mut line).unwrap();
     assert_eq!(line, "running\n");
-    let pid = libc::pid_t::try_from(child.id()).unwrap();
-    // SAFETY: kill only sends a signal to the child this test spawned.
+    let pid = libc::pid_t::try_from(child.0.id()).unwrap();
+    // SAFETY: kill only sends a signal to the child this test spawned and hasn't reaped.
     assert_eq!(unsafe { libc::kill(pid, libc::SIGINT) }, 0);
-    let status = child.wait().unwrap();
+    let status = child.0.wait().unwrap();
     let mut rest = String::new();
     std::io::Read::read_to_string(&mut stdout, &mut rest).unwrap();
     assert_eq!(rest, "shut down\n");
