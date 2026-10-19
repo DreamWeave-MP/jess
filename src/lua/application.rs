@@ -22,6 +22,7 @@
 //! asks to stop (`application.exit`) or the driver stops it; [`Application::stop`] runs the
 //! `shutdown` handlers and tears everything down.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -131,6 +132,8 @@ struct Setup {
     capabilities: Vec<String>,
     search: Search,
     args: Vec<String>,
+    /// The contexts the last load declared, so the next one can retire those its code dropped.
+    declared: RefCell<Vec<String>>,
 }
 
 /// Where a function was defined, `source:line`, for diagnostics.
@@ -327,8 +330,10 @@ impl Setup {
                 })
                 .collect::<Vec<_>>()
         };
+        let mut declaring = Vec::new();
         for (index, package, managed) in order {
             let declared = Self::run_managed(runtime, index, &package, &managed)?;
+            declaring.push(declared.context.clone());
             let context = domain
                 .declare_context(
                     ContextSpec::new(&declared.context).schedule(
@@ -363,6 +368,12 @@ impl Setup {
                     table,
                     replaces: declared.replaces,
                 });
+            }
+        }
+        // A module the code no longer has leaves no context behind.
+        for name in self.declared.replace(declaring) {
+            if !self.declared.borrow().contains(&name) {
+                domain.remove_context(&name);
             }
         }
         let mut effective: BTreeMap<String, Table> = BTreeMap::new();
@@ -525,6 +536,7 @@ pub(crate) fn launch(
         capabilities: target.capabilities.clone(),
         search,
         args: request.args.clone(),
+        declared: RefCell::new(Vec::new()),
     });
     let capabilities = target.capabilities.clone();
     let runtime_options = options.clone();

@@ -602,26 +602,36 @@ impl DomainCore {
 
     /// Declares a context for a host that declares contexts as its code loads, once it has seen
     /// what the code asks for: registers it, or, for a name the host declared in an earlier
-    /// generation, gives that context this declaration, keeping its id, order, and counters.
+    /// generation, gives that context this declaration, keeping its id and counters. Either way
+    /// it goes last in registration order, so a host that declares every context again in its
+    /// load order at each restart has them run in that order, not the first generation's.
     pub(crate) fn declare_context(&self, spec: ContextSpec) -> Result<ContextId, RuntimeError> {
-        let existing = self
-            .contexts
-            .borrow()
-            .iter()
-            .find(|context| context.name == spec.name)
-            .map(|context| context.id);
-        let Some(id) = existing else {
+        let position = self.contexts.borrow().iter().position(|context| context.name == spec.name);
+        let Some(position) = position else {
             return self.register_context(spec);
         };
         let capabilities = self.grant.subset(self.id, spec.capabilities)?;
+        let order = self.next_order.get();
+        self.next_order.set(order + 1);
         let mut contexts = self.contexts.borrow_mut();
-        if let Some(context) = contexts.iter_mut().find(|context| context.id == id) {
-            context.schedule = spec.schedule;
-            context.priority = spec.priority;
-            context.capabilities = capabilities;
-            context.budget = spec.budget;
-        }
+        let mut context = contexts.remove(position);
+        context.schedule = spec.schedule;
+        context.priority = spec.priority;
+        context.capabilities = capabilities;
+        context.budget = spec.budget;
+        context.order = order;
+        let id = context.id;
+        contexts.push(context);
         Ok(id)
+    }
+
+    /// Removes the context named `name`, with its handlers: for a host whose code no longer
+    /// declares it. False when there is none.
+    pub(crate) fn remove_context(&self, name: &str) -> bool {
+        let mut contexts = self.contexts.borrow_mut();
+        let before = contexts.len();
+        contexts.retain(|context| context.name != name);
+        contexts.len() != before
     }
 
     /// Calls `function` as a handler of `context` would be called in `phase`: under the context's

@@ -1007,3 +1007,81 @@ journal.write(`entry: same table {tostring(rawequal(required, composed))}, bumps
     );
     application.stop().unwrap();
 }
+
+/// Copies the example's packages into `to`, to edit between generations.
+fn copy_example(to: &Path) {
+    fn copy(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+    for name in ["journal", "inventory", "armor", "game"] {
+        copy(&fixtures().join(name), &to.join(name));
+    }
+}
+
+/// A restart loads the packages as they are now: contexts run in the new load order, and a
+/// module that is gone leaves no context behind.
+#[test]
+fn a_restart_declares_contexts_in_the_new_load_order() {
+    let temp = tempfile::tempdir().unwrap();
+    copy_example(temp.path());
+    let game = temp.path().join("game");
+    let request = TargetRequest {
+        package: text(&game),
+        target: Some("game".to_owned()),
+        paths: vec![text(temp.path())],
+        grant: Some(Vec::new()),
+        ..TargetRequest::default()
+    };
+    let mut application = launch(&request);
+    application.start().unwrap();
+
+    // The inventory, which everything depends on, gains a module; the game drops its scoreboard.
+    let inventory = temp.path().join("inventory");
+    let manifest = std::fs::read_to_string(inventory.join("jess.toml")).unwrap();
+    std::fs::write(
+        inventory.join("jess.toml"),
+        format!("{manifest}\n[managed.early]\nmodule = \"src/early.jsl\"\n"),
+    )
+    .unwrap();
+    std::fs::write(
+        inventory.join("src/early.jsl"),
+        "local journal = require('@example/journal')\nreturn { on = { host = { update = function() journal.write('early update') end } } }\n",
+    )
+    .unwrap();
+    let manifest = std::fs::read_to_string(game.join("jess.toml")).unwrap();
+    std::fs::write(
+        game.join("jess.toml"),
+        manifest.replace("[managed.scoreboard]\nmodule = \"src/scoreboard.jsl\"\n", ""),
+    )
+    .unwrap();
+
+    application.restart().unwrap();
+    let names = application
+        .domain()
+        .contexts()
+        .into_iter()
+        .map(|context| context.name)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        [
+            "org.example.inventory/early",
+            "org.example.inventory/inventory",
+            "org.example.armor/armor",
+            "org.example.game/director",
+        ]
+    );
+    frame(&mut application);
+    let lines = journal(&application);
+    assert_eq!(lines[lines.len() - 2..], ["early update", "director update 1 (number)"]);
+    application.stop().unwrap();
+}
