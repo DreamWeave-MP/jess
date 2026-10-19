@@ -522,7 +522,7 @@ fn a_script_asks_its_host_to_stop() {
     let grant = RootAuthority::new().grant(CapabilitySet::from_names([WORKER_SPAWN]).unwrap());
     let mut host = Host::create(factory, HostSpec::new(DomainSpec::new("stopping", grant))).unwrap();
     host.domain()
-        .register_context(ContextSpec::new("main").schedule([Phase::Update, Phase::OnDemand]))
+        .register_context(ContextSpec::new("main").schedule([Phase::Update, Phase::OnDemand, Phase::Shutdown]))
         .unwrap();
     host.domain()
         .load_source(
@@ -537,6 +537,8 @@ fn a_script_asks_its_host_to_stop() {
                 frames += 1
                 if frames == 2 then application.exit(3) end
               end,
+              -- The old generation asks on its way out; the new one must not inherit it.
+              shutdown = function() application.exit(9) end,
               onDemand = function(case)
                 if case == 'bad' then
                   application.exit(2.5)
@@ -577,7 +579,11 @@ fn a_script_asks_its_host_to_stop() {
     assert_eq!(host.exit_requested(), Some(3));
 
     host.restart(|_| Ok(())).unwrap();
-    assert_eq!(host.exit_requested(), None, "a new generation hasn't asked anything");
+    assert_eq!(
+        host.exit_requested(),
+        None,
+        "a new generation hasn't asked anything, whatever the old one asked as it shut down"
+    );
     host.stop().unwrap();
 
     let outside = jess::lua::runtime(Options::default()).unwrap();

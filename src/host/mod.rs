@@ -272,8 +272,13 @@ impl Host {
         if let Some(driver) = &self.input {
             driver.reset();
         }
-        self.exit.clear();
-        self.domain.restart(load)
+        // Forgotten as the new code loads: after the old generation's shutdown handlers, which may
+        // still ask, and never by a restart the domain refuses.
+        let exit = Arc::clone(&self.exit);
+        self.domain.restart(move |runtime| {
+            exit.clear();
+            load(runtime)
+        })
     }
 
     /// Tears the domain down ([`ScriptDomain::stop`]) and drops the services with the host.
