@@ -147,6 +147,31 @@ impl Message {
         }
     }
 
+    /// What the message weighs in a queue: the storage it holds, not only its payload. Every
+    /// value costs a [`Message`]'s size, every element of a list or map a key's too, and strings,
+    /// buffers, string keys, and handle kinds their bytes; the sum saturates. A list of a million empty tables weighs
+    /// what it takes to hold them, where [`Message::size_hint`], a payload count for profiling,
+    /// says nothing.
+    #[must_use]
+    pub fn queue_weight(&self) -> usize {
+        let held = match self {
+            Message::Nil | Message::Boolean(_) | Message::Number(_) | Message::Integer(_) | Message::Vector(_) => 0,
+            Message::String(bytes) => bytes.len(),
+            Message::Bytes(bytes) => bytes.len(),
+            Message::List(items) => items.iter().fold(0, |total: usize, item| {
+                total.saturating_add(ENTRY).saturating_add(item.queue_weight())
+            }),
+            Message::Map(entries) => entries.iter().fold(0, |total: usize, (key, value)| {
+                total
+                    .saturating_add(ENTRY)
+                    .saturating_add(key_bytes(key))
+                    .saturating_add(value.queue_weight())
+            }),
+            Message::Handle(handle) => handle.kind.len(),
+        };
+        NODE.saturating_add(held)
+    }
+
     /// Reads the Luau value `view` as a message; `root` names it in errors (`message`,
     /// `reply`).
     ///
@@ -154,7 +179,20 @@ impl Message {
     ///
     /// [`TransferError`] naming the path to the first value that cannot cross.
     pub fn read(frame: &Frame<'_>, view: ValueView<'_>, root: &str) -> Result<Message, TransferError> {
-        read_at(frame, view, 0).map_err(|mut error| {
+        Message::read_within(frame, view, root, usize::MAX)
+    }
+
+    /// [`Message::read`], refusing a value that would weigh more than `limit` in a queue as soon as
+    /// the read passes it, before the rest is copied: a table of ten million empty tables is
+    /// refused a few thousand in, not built and then measured. The read counts each value as
+    /// [`Message::queue_weight`] does, so what it admits never weighs more than `limit`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Message::read`], and [`TransferError`] at the value where the read passed `limit`.
+    pub fn read_within(frame: &Frame<'_>, view: ValueView<'_>, root: &str, limit: usize) -> Result<Message, TransferError> {
+        let mut budget = Budget { left: limit, limit };
+        read_at(frame, view, 0, &mut budget).map_err(|mut error| {
             error.path.insert_str(0, root);
             error
         })
@@ -196,28 +234,70 @@ fn unsupported(found: impl Into<String>) -> TransferError {
     }
 }
 
-fn read_at(frame: &Frame<'_>, view: ValueView<'_>, depth: usize) -> Result<Message, TransferError> {
+/// What a [`Message`] costs a queue for being there, before what it holds.
+const NODE: usize = size_of::<Message>();
+
+/// What a map entry costs a queue besides its value: its key, before the key's bytes.
+const ENTRY: usize = size_of::<MessageKey>();
+
+fn key_bytes(key: &MessageKey) -> usize {
+    match key {
+        MessageKey::String(bytes) => bytes.len(),
+        MessageKey::Number(_) => 0,
+    }
+}
+
+/// What a read may still copy, in [`Message::queue_weight`]'s units.
+struct Budget {
+    left: usize,
+    limit: usize,
+}
+
+impl Budget {
+    fn charge(&mut self, weight: usize) -> Result<(), TransferError> {
+        if weight > self.left {
+            return Err(unsupported(format!(
+                "a value past the {} bytes a queue holds of one payload",
+                self.limit
+            )));
+        }
+        self.left -= weight;
+        Ok(())
+    }
+}
+
+fn read_at(frame: &Frame<'_>, view: ValueView<'_>, depth: usize, budget: &mut Budget) -> Result<Message, TransferError> {
     if depth > MAX_DEPTH {
         return Err(unsupported(format!("a table nested more than {MAX_DEPTH} deep")));
     }
+    budget.charge(NODE)?;
     let read_failed = |error: l3i::Error| unsupported(format!("a value l3i couldn't read ({error})"));
     match view.type_of() {
         Type::None | Type::Nil => Ok(Message::Nil),
         Type::Boolean => Ok(Message::Boolean(view.read::<bool>().map_err(read_failed)?)),
         Type::Integer => Ok(Message::Integer(view.read::<Integer>().map_err(read_failed)?.0)),
         Type::Number => Ok(Message::Number(view.read::<f64>().map_err(read_failed)?)),
-        Type::String => Ok(Message::String(view.read::<&[u8]>().map_err(read_failed)?.to_vec())),
+        Type::String => {
+            let bytes = view.read::<&[u8]>().map_err(read_failed)?;
+            budget.charge(bytes.len())?;
+            Ok(Message::String(bytes.to_vec()))
+        }
         Type::Vector => {
             let vector = view.read::<Vector3>().map_err(read_failed)?;
             Ok(Message::Vector([vector.x, vector.y, vector.z]))
         }
-        Type::Buffer => Ok(Message::Bytes(Arc::from(
-            view.read::<BufferView<'_>>().map_err(read_failed)?.to_vec(),
-        ))),
-        Type::Table => read_table(frame, view, depth),
+        Type::Buffer => {
+            let bytes = view.read::<BufferView<'_>>().map_err(read_failed)?;
+            budget.charge(bytes.len())?;
+            Ok(Message::Bytes(Arc::from(bytes.to_vec())))
+        }
+        Type::Table => read_table(frame, view, depth, budget),
         Type::Userdata => l3i::userdata::receiver::<ResourceHandle>(view).map_or_else(
             || Err(unsupported(format!("a {}", l3i::diagnostics::object_type_name(view)))),
-            |handle| Ok(Message::Handle(handle.clone())),
+            |handle| {
+                budget.charge(handle.kind.len())?;
+                Ok(Message::Handle(handle.clone()))
+            },
         ),
         Type::Function => Err(unsupported("a function")),
         Type::Thread => Err(unsupported("a thread")),
@@ -233,12 +313,14 @@ fn segment(key: &MessageKey) -> String {
     }
 }
 
-fn read_table(frame: &Frame<'_>, view: ValueView<'_>, depth: usize) -> Result<Message, TransferError> {
+fn read_table(frame: &Frame<'_>, view: ValueView<'_>, depth: usize, budget: &mut Budget) -> Result<Message, TransferError> {
     let table = view
         .as_table()
         .map_err(|error| unsupported(format!("a table l3i couldn't view ({error})")))?;
     let length = table.raw_len();
-    let mut entries: Vec<(MessageKey, Message)> = Vec::with_capacity(length);
+    // No more room up front than the budget could pay for: a table's length is the script's to
+    // choose.
+    let mut entries: Vec<(MessageKey, Message)> = Vec::with_capacity(length.min(budget.left / (ENTRY + NODE)));
     let mut array_keys = 0usize;
     let mut failure: Option<TransferError> = None;
     table
@@ -274,7 +356,10 @@ fn read_table(frame: &Frame<'_>, view: ValueView<'_>, depth: usize) -> Result<Me
             {
                 array_keys += 1;
             }
-            match read_at(frame, value, depth + 1) {
+            let read = budget
+                .charge(ENTRY.saturating_add(key_bytes(&key)))
+                .and_then(|()| read_at(frame, value, depth + 1, budget));
+            match read {
                 Ok(value) => entries.push((key, value)),
                 Err(mut error) => {
                     error.path.insert_str(0, &segment(&key));
@@ -473,5 +558,45 @@ mod tests {
         assert_eq!(Message::List(vec![Message::Number(1.0); 3]).size_hint(), 24);
         assert_eq!(Message::Integer(3).as_number(), Some(3.0));
         assert_eq!(Message::text("x").as_text(), Some("x"));
+    }
+
+    /// The queue weight counts storage: containers of nothing weigh what holding them takes,
+    /// where the profiling size hint sees no payload at all.
+    #[test]
+    fn queue_weight_counts_every_value_held() {
+        let empties = Message::List(vec![Message::Map(Vec::new()); 3]);
+        assert_eq!(empties.size_hint(), 0);
+        assert_eq!(empties.queue_weight(), NODE + 3 * (ENTRY + NODE));
+        let keyed = Message::map([("name", Message::text("abc"))]);
+        assert_eq!(keyed.queue_weight(), NODE + ENTRY + 4 + NODE + 3);
+        let nils = Message::List(vec![Message::Nil; 1_000]);
+        assert!(nils.queue_weight() > 1_000 * NODE);
+    }
+
+    /// A budgeted read stops where it passes the budget, at that value's path, and what it
+    /// admits weighs what the read charged.
+    #[test]
+    fn a_budgeted_read_stops_at_its_limit() {
+        let runtime = Runtime::new().unwrap();
+        let read = |source: &str, limit: usize| {
+            let stack = runtime.stack();
+            stack
+                .with_frame(|frame| {
+                    let options = runtime.compile_options();
+                    let chunk = runtime.load(frame, "=message", &format!("return {source}"), &options)?;
+                    let value: l3i::value::Value = chunk.as_function()?.invoke(frame, ())?;
+                    value.with_value(frame, |frame, view| Ok(Message::read_within(frame, view, "payload", limit)))
+                })
+                .unwrap()
+        };
+        let source = "(function() local t = {} for n = 1, 100 do t[n] = {} end return t end)()";
+        let full = read(source, usize::MAX).unwrap();
+        let weight = full.queue_weight();
+        assert_eq!(read(source, weight).unwrap(), full);
+        let refused = read(source, weight - 1).unwrap_err();
+        assert_eq!(refused.path, "payload[100]");
+        assert!(refused.found.contains(&format!("past the {} bytes", weight - 1)), "{refused}");
+        let text = read("string.rep('x', 1000)", 500).unwrap_err();
+        assert_eq!(text.path, "payload");
     }
 }

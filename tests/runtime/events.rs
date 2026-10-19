@@ -438,22 +438,40 @@ fn a_full_queue_refuses_named_events_observably_and_counts_raw_ones() {
 
 #[test]
 fn a_payload_larger_than_the_queue_holds_is_refused() {
+    let small = Message::text("small").queue_weight();
     let limits = EventLimits {
         pending: 10,
-        bytes: 16,
+        bytes: small + small / 2,
         per_drain: 10,
     };
     let harness = limited(limits, "return { hit = function() end }", &[("hit", "hit")]);
-    let refused = emit_error(&harness.domain, "require('@jess/events').emit('hit', string.rep('x', 100))");
+    let domain = &harness.domain;
+    // A script's payload is read no further than the queue holds.
+    let refused = emit_error(domain, "require('@jess/events').emit('hit', string.rep('x', 1000))");
     assert!(
-        refused.contains("event queue holds at most 16 bytes of payload, and this event's is 100"),
+        refused.contains(&format!(
+            "payload: a value past the {} bytes a queue holds of one payload",
+            limits.bytes
+        )),
         "{refused}"
     );
-    support::eval::<()>(&harness.domain, "require('@jess/events').emit('hit', 'small')");
-    let crowded = emit_error(&harness.domain, "require('@jess/events').emit('hit', string.rep('x', 12))");
+    support::eval::<()>(domain, "require('@jess/events').emit('hit', 'small')");
+    let crowded = emit_error(domain, "require('@jess/events').emit('hit', 'small')");
     assert!(
-        crowded.contains("5 bytes of payload are waiting, and 12 more don't fit under 16"),
+        crowded.contains(&format!(
+            "{small} bytes of payload are waiting, and {small} more don't fit under {}",
+            limits.bytes
+        )),
         "{crowded}"
+    );
+    // A host's named post of a payload larger than the whole queue is refused for that.
+    let Err(PostRefused::Full(full)) = domain.mailbox().unwrap().post_named("hit", Message::text(&"x".repeat(1000))) else {
+        panic!("a payload larger than the queue is refused");
+    };
+    assert!(
+        full.to_string()
+            .contains(&format!("holds at most {} bytes of payload", limits.bytes)),
+        "{full}"
     );
 }
 
@@ -531,4 +549,37 @@ fn a_named_event_s_handlers_share_one_frozen_payload() {
     assert_eq!((report.delivered, report.failures.len()), (2, 1));
     assert!(report.failures[0].to_string().contains("readonly"), "{:?}", report.failures);
     assert_eq!(support::journal(), ["same true n 1"]);
+}
+
+/// Payloads of many tiny values weigh what they hold: two lists of 600 empty tables don't fit
+/// where one does, and a table of a hundred thousand is refused part way through the read.
+#[test]
+fn many_tiny_values_count_against_the_queue() {
+    let six_hundred = Message::List(vec![Message::Map(Vec::new()); 600]);
+    let weight = six_hundred.queue_weight();
+    let limits = EventLimits {
+        pending: 100,
+        bytes: weight + weight / 2,
+        per_drain: 100,
+    };
+    let harness = limited(limits, "return { hit = function() end }", &[("hit", "hit")]);
+    let domain = &harness.domain;
+    let emit = "local t = {} for n = 1, COUNT do t[n] = {} end require('@jess/events').emit('hit', t)";
+    support::eval::<()>(domain, &emit.replace("COUNT", "600"));
+    let full = emit_error(domain, &emit.replace("COUNT", "600"));
+    assert!(full.contains("bytes of payload are waiting"), "{full}");
+    let vast = emit_error(domain, &emit.replace("COUNT", "100000"));
+    assert!(
+        vast.contains(&format!(
+            "a value past the {} bytes a queue holds of one payload",
+            limits.bytes
+        )),
+        "{vast}"
+    );
+    assert!(vast.contains("payload["), "{vast}");
+    assert_eq!(
+        domain.drain_events().unwrap().unhandled,
+        0,
+        "one hit, delivered to its handler"
+    );
 }

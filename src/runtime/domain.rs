@@ -264,7 +264,7 @@ struct Envelope {
     delivery: Delivery,
     generation: Generation,
     payload: Message,
-    /// The payload's size as the backlog counted it.
+    /// The payload's [`Message::queue_weight`], as the backlog counted it.
     bytes: usize,
     posted: Instant,
 }
@@ -280,7 +280,8 @@ struct Envelope {
 pub struct EventLimits {
     /// The most events waiting at once.
     pub pending: usize,
-    /// The most payload bytes waiting at once, as [`Message::size_hint`] counts them.
+    /// The most bytes of payload waiting at once, as [`Message::queue_weight`] counts them: the
+    /// storage every value takes, so a payload of many tiny values weighs what it holds.
     pub bytes: usize,
     /// The most events one drain delivers. Zero is treated as one.
     pub per_drain: usize,
@@ -450,7 +451,7 @@ impl DomainMailbox {
     ///
     /// [`MailboxClosed`] once the domain has stopped.
     pub fn post_for(&self, target: EventTarget, generation: Generation, payload: Message) -> Result<(), MailboxClosed> {
-        let bytes = payload.size_hint();
+        let bytes = payload.queue_weight();
         self.backlog.count(bytes);
         self.enqueue(Delivery::Raw(target), generation, payload, bytes)
     }
@@ -477,7 +478,7 @@ impl DomainMailbox {
     ///
     /// As [`DomainMailbox::post_named`].
     pub fn post_named_for(&self, event: &str, generation: Generation, payload: Message) -> Result<(), PostRefused> {
-        let bytes = payload.size_hint();
+        let bytes = payload.queue_weight();
         self.backlog
             .admit(self.domain, bytes)
             .map_err(|full| PostRefused::Full(Box::new(full)))?;
@@ -922,6 +923,11 @@ impl DomainCore {
     }
 
     /// A mailbox of this domain, until it stops.
+    /// The domain's event limits, for code that reads a payload before it queues one.
+    pub(crate) fn event_limits(&self) -> EventLimits {
+        self.backlog.limits
+    }
+
     fn mailbox(&self) -> Option<DomainMailbox> {
         let queue = self.queue.borrow();
         let (sender, _) = queue.as_ref()?;

@@ -272,8 +272,14 @@ fn clamped(call: &Call<'_>, wait: Option<Duration>) -> (Option<Duration>, bool) 
 
 /// Reads a script's value as a message, reporting one that cannot cross to the domain's
 /// diagnostics before raising.
-fn read_message(call: &Call<'_>, value: ValueView<'_>, domain: Option<&DomainCore>, root: &str) -> l3i::Result<Message> {
-    call.with_frame(|frame| Ok(Message::read(frame, value, root)))?
+fn read_message(
+    call: &Call<'_>,
+    value: ValueView<'_>,
+    domain: Option<&DomainCore>,
+    root: &str,
+    limit: usize,
+) -> l3i::Result<Message> {
+    call.with_frame(|frame| Ok(Message::read_within(frame, value, root, limit)))?
         .map_err(|error| {
             if let Some(domain) = domain {
                 let attribution =
@@ -327,7 +333,8 @@ fn emit(bindings: &Bindings, call: &Call<'_>, name: &str, payload: Option<ValueV
     }
     let domain = bindings.domain("events.emit")?;
     let payload = match payload {
-        Some(payload) => read_message(call, payload, Some(&domain), "payload")?,
+        // Read no further than the queue could hold, so a vast table is refused part way in.
+        Some(payload) => read_message(call, payload, Some(&domain), "payload", domain.event_limits().bytes)?,
         None => Message::Nil,
     };
     domain.emit(name, payload).map_err(|problem| match problem {
@@ -462,7 +469,7 @@ impl Extension for RuntimeExtension {
                 "send",
                 |this: &WorkerHandle, call: &Call<'_>, message: ValueView<'_>| -> l3i::Result<()> {
                     let domain = this.domain()?;
-                    let message = read_message(call, message, Some(&domain), "message")?;
+                    let message = read_message(call, message, Some(&domain), "message", usize::MAX)?;
                     domain.send_to_worker(this.id, message).map_err(l3i::Error::from)
                 },
             )
@@ -554,7 +561,7 @@ impl Extension for RuntimeExtension {
         let state = Rc::clone(&bindings);
         worker.function("send", move |call: &Call<'_>, message: ValueView<'_>| -> l3i::Result<()> {
             let link = state.worker("worker.send")?;
-            link.send(read_message(call, message, None, "message")?)
+            link.send(read_message(call, message, None, "message", usize::MAX)?)
                 .map_err(|problem| l3i::Error::runtime(format!("jess.worker.send: {problem}")))
         })?;
         let worker = worker.table().clone();
