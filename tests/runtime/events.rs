@@ -303,6 +303,8 @@ fn a_host_routes_named_events_to_another_domain_explicitly() {
     );
     assert_eq!(receiver.domain.drain_events().unwrap().delivered, 0);
     sender.domain.route("playerDied", receiver.domain.mailbox().unwrap()).unwrap();
+    // Routing it again is the same route, not a second one.
+    sender.domain.route("playerDied", receiver.domain.mailbox().unwrap()).unwrap();
     support::eval::<()>(
         &sender.domain,
         r"
@@ -316,6 +318,16 @@ fn a_host_routes_named_events_to_another_domain_explicitly() {
     assert_eq!(support::journal(), ["receiver died two"]);
     // The sender's own queue still has both, for its own handlers (it has none).
     assert_eq!(sender.domain.drain_events().unwrap().unhandled, 3);
+
+    // A host that sets its routes up again after a restart still delivers each event once.
+    sender.domain.restart(|_| Ok(())).unwrap();
+    sender.domain.route("playerDied", receiver.domain.mailbox().unwrap()).unwrap();
+    support::eval::<()>(
+        &sender.domain,
+        "require('@jess/events').emit('playerDied', { player = 'three' })",
+    );
+    assert_eq!(receiver.domain.drain_events().unwrap().delivered, 1);
+    assert_eq!(support::journal(), ["receiver died three"]);
 
     let to_itself = sender.domain.route("x", sender.domain.mailbox().unwrap()).unwrap_err();
     assert!(to_itself.to_string().contains("can't route 'x' to itself"), "{to_itself}");

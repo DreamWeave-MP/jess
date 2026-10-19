@@ -1192,7 +1192,9 @@ impl ScriptDomain {
     /// Routes the named event `event` to another domain: from now on, every time this domain's
     /// code emits it, a copy is posted to `to` as well as delivered here. This is the only way a
     /// domain's events reach another; nothing is broadcast, and only the event's [`Message`]
-    /// payload crosses. Routes are the host's and survive restarts.
+    /// payload crosses. Routes are the host's and survive restarts. A route is one per event and
+    /// recipient domain: routing the same event to the same domain again replaces the mailbox it
+    /// posts through, so a host that sets its routes up again after a restart still delivers once.
     ///
     /// # Errors
     ///
@@ -1204,7 +1206,14 @@ impl ScriptDomain {
                 self.core.id
             ))));
         }
-        self.core.routes.borrow_mut().push((event.to_owned(), to));
+        let mut routes = self.core.routes.borrow_mut();
+        match routes
+            .iter_mut()
+            .find(|(name, mailbox)| name == event && mailbox.domain == to.domain)
+        {
+            Some((_, mailbox)) => *mailbox = to,
+            None => routes.push((event.to_owned(), to)),
+        }
         Ok(())
     }
 
