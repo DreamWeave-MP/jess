@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use l3i::Runtime;
 use l3i::bind::{ArgView, Call, StackResults};
 use l3i::convert::{Exact, NewBuffer};
-use l3i::stack::Scope;
+use l3i::stack::{Frame, Scope, ValueView};
 use l3i::value::{Function, Table, Value};
 use serde::{Deserialize, Serialize};
 
@@ -850,6 +850,55 @@ pub fn activate_with(
     Ok(plan)
 }
 
+/// One package of the plan the Luau side hands `jess.package.mount`, read from its row, with the
+/// ids its manifest declared as dependencies; those become indexes once every package is read.
+fn mounted_package(frame: &Frame<'_>, row: ValueView<'_>) -> l3i::Result<(MountedPackage, Vec<String>)> {
+    let row = row.as_table()?;
+    let id = row.raw_get(frame, "id")?.read::<String>()?;
+    let version = row.raw_get(frame, "version")?.read::<String>()?;
+    let digest = row.raw_get(frame, "digest")?.read::<String>()?;
+    let read = Function::from_value(Value::store(row.raw_get(frame, "read")?)?)?;
+    let mut files = Vec::new();
+    row.raw_get(frame, "files")?.as_table()?.for_each_array(frame, |_, _, path| {
+        files.push(path.read::<String>()?);
+        Ok(())
+    })?;
+    let mut declared = Vec::new();
+    row.raw_get(frame, "dependencies")?
+        .as_table()?
+        .for_each_array(frame, |_, _, dependency| {
+            declared.push(dependency.read::<String>()?);
+            Ok(())
+        })?;
+    let mut managed = Vec::new();
+    row.raw_get(frame, "managed")?
+        .as_table()?
+        .for_each_array(frame, |frame, _, declaration| {
+            let declaration = declaration.as_table()?;
+            let interface = declaration.raw_get(frame, "interface")?;
+            managed.push(Managed {
+                id: declaration.raw_get(frame, "id")?.read::<String>()?,
+                module: declaration.raw_get(frame, "module")?.read::<String>()?,
+                interface: if interface.is_nil() {
+                    None
+                } else {
+                    Some(interface.read::<String>()?)
+                },
+            });
+            Ok(())
+        })?;
+    let package = MountedPackage {
+        prefix: format!("@{id}@{version}/"),
+        id,
+        dependencies: Vec::new(),
+        managed,
+        digest,
+        files,
+        read,
+    };
+    Ok((package, declared))
+}
+
 /// Resolves and mounts a plan as [`activate_with`] does, and runs none of its entrypoints: its
 /// modules can be read and required, and nothing a package holds has run.
 pub(crate) fn mount_with(
@@ -873,50 +922,9 @@ pub(crate) fn mount_with(
             let mut dependencies = Vec::new();
             call.with_frame(|frame| {
                 packages.push_to(frame)?.for_each_array(frame, |frame, _, row| {
-                    let row = row.as_table()?;
-                    let id = row.raw_get(frame, "id")?.read::<String>()?;
-                    let version = row.raw_get(frame, "version")?.read::<String>()?;
-                    let digest = row.raw_get(frame, "digest")?.read::<String>()?;
-                    let read = Function::from_value(Value::store(row.raw_get(frame, "read")?)?)?;
-                    let mut files = Vec::new();
-                    row.raw_get(frame, "files")?.as_table()?.for_each_array(frame, |_, _, path| {
-                        files.push(path.read::<String>()?);
-                        Ok(())
-                    })?;
-                    let mut declared = Vec::new();
-                    row.raw_get(frame, "dependencies")?
-                        .as_table()?
-                        .for_each_array(frame, |_, _, dependency| {
-                            declared.push(dependency.read::<String>()?);
-                            Ok(())
-                        })?;
+                    let (package, declared) = mounted_package(frame, row)?;
+                    mounted.packages.push(package);
                     dependencies.push(declared);
-                    let mut managed = Vec::new();
-                    row.raw_get(frame, "managed")?
-                        .as_table()?
-                        .for_each_array(frame, |frame, _, declaration| {
-                            let declaration = declaration.as_table()?;
-                            let interface = declaration.raw_get(frame, "interface")?;
-                            managed.push(Managed {
-                                id: declaration.raw_get(frame, "id")?.read::<String>()?,
-                                module: declaration.raw_get(frame, "module")?.read::<String>()?,
-                                interface: if interface.is_nil() {
-                                    None
-                                } else {
-                                    Some(interface.read::<String>()?)
-                                },
-                            });
-                            Ok(())
-                        })?;
-                    mounted.packages.push(MountedPackage {
-                        prefix: format!("@{id}@{version}/"),
-                        id,
-                        dependencies: Vec::new(),
-                        managed,
-                        digest,
-                        files,
-                        read,
-                    });
                     Ok(())
                 })?;
                 for (index, declared) in dependencies.iter().enumerate() {

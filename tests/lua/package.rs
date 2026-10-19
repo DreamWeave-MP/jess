@@ -970,14 +970,8 @@ fn a_package_path_offers_what_a_plan_needs() {
 
     // The plan mounts, and its packages hold what they declared.
     let runtime = common::runtime();
-    package::activate_with(
-        &runtime,
-        &[text(&top)],
-        &strings(&["example.top"]),
-        None,
-        &package::Search::default(),
-    )
-    .unwrap_or_else(|error| panic!("{error}"));
+    package::activate_with(&runtime, &[text(&top)], &strings(&["example.top"]), None, &search(&[]))
+        .unwrap_or_else(|error| panic!("{error}"));
     common::run(&runtime, "assert(require('@top').base == 'base')");
 
     // Two candidates for one package are an error; one handed over outright is the answer.
