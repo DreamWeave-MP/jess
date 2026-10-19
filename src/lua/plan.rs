@@ -120,7 +120,9 @@ fn builder(capabilities: &[String], profiling: bool) -> RuntimePlanBuilder {
 
 /// The members of `@jess`, installed per runtime. Each table among them is also the module
 /// `@jess/<name>` (`require("@jess/shader")`).
-pub(crate) const MEMBERS: [&str; 8] = ["version", "null", "granted", "shader", "context", "worker", "input", "bench"];
+pub(crate) const MEMBERS: [&str; 9] = [
+    "version", "null", "granted", "shader", "context", "worker", "events", "input", "bench",
+];
 
 /// The capabilities `jess.input` checks.
 const INPUT_CAPABILITIES: [&str; 3] = [
@@ -139,7 +141,7 @@ impl Extension for JessExtension {
     }
 
     fn describe(&self, d: &mut ExtensionDescriptor) -> l3i::Result<()> {
-        // `jess.context` and `jess.worker` are the runtime's `@jess/context` and `@jess/worker`.
+        // `jess.context`, `jess.worker`, and `jess.events` are the runtime's `@jess/` modules.
         d.requires(crate::runtime::luau::EXTENSION_ID);
         crate::lua::shader::describe(d);
         crate::lua::input::describe(d);
@@ -203,6 +205,7 @@ impl Extension for JessExtension {
         let module = cx.module(MODULE)?;
         module.set("context", &modules.context)?;
         module.set("worker", &modules.worker)?;
+        module.set("events", &modules.events)?;
         module.set("input", &crate::lua::input::module(runtime, &jess)?)?;
         Ok(())
     }

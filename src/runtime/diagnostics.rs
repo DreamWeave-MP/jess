@@ -137,6 +137,9 @@ pub struct Diagnostic {
     pub message: String,
     /// The scheduler phase that was running, if any.
     pub phase: Option<Phase>,
+    /// The named event being delivered, when the phase is [`Phase::Event`] and the event has a
+    /// name.
+    pub event: Option<String>,
     /// The capability involved, for denials.
     pub capability: Option<CapabilityId>,
     /// `source:line` of the script code involved, when the runtime knows it.
@@ -156,6 +159,7 @@ impl Diagnostic {
             kind,
             message: message.into(),
             phase: None,
+            event: None,
             capability: None,
             source: None,
         }
@@ -163,6 +167,11 @@ impl Diagnostic {
 
     pub(crate) fn phase(mut self, phase: Phase) -> Self {
         self.phase = Some(phase);
+        self
+    }
+
+    pub(crate) fn event(mut self, event: Option<String>) -> Self {
+        self.event = event;
         self
     }
 
@@ -186,6 +195,9 @@ impl fmt::Display for Diagnostic {
         )?;
         if let Some(phase) = self.phase {
             write!(f, " during {phase}")?;
+        }
+        if let Some(event) = &self.event {
+            write!(f, " '{event}'")?;
         }
         if let Some(source) = &self.source {
             write!(f, " at {source}")?;

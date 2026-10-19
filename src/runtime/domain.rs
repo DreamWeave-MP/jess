@@ -237,8 +237,17 @@ pub enum EventTarget {
     All,
 }
 
+/// What a queued event is. A raw event goes to contexts' `event` handlers; a named one goes to
+/// the handlers bound to its name. The two never meet: a name is not a target, and a raw event
+/// has no name, so neither can be dressed up as the other.
+#[derive(Clone, Debug)]
+enum Delivery {
+    Raw(EventTarget),
+    Named(String),
+}
+
 struct Envelope {
-    target: EventTarget,
+    delivery: Delivery,
     generation: Generation,
     payload: Message,
     posted: Instant,
@@ -291,9 +300,37 @@ impl DomainMailbox {
     ///
     /// [`MailboxClosed`] once the domain has stopped.
     pub fn post_for(&self, target: EventTarget, generation: Generation, payload: Message) -> Result<(), MailboxClosed> {
+        self.send(Delivery::Raw(target), generation, payload)
+    }
+
+    /// Queues the named event `event` with `payload`, stamped with the domain's current
+    /// generation. At the next drain it goes to every handler bound to that name (a managed
+    /// module's `on.event`), in scheduler order, and to nothing else: never to a raw `event`
+    /// handler, and never to a phase handler that happens to share the name.
+    ///
+    /// This is how one domain's events reach another: a host routes them here explicitly
+    /// ([`ScriptDomain::route`]), and only [`Message`] payloads cross.
+    ///
+    /// # Errors
+    ///
+    /// [`MailboxClosed`] once the domain has stopped.
+    pub fn post_named(&self, event: &str, payload: Message) -> Result<(), MailboxClosed> {
+        self.post_named_for(event, Generation::from_raw(self.generation.load(Ordering::Acquire)), payload)
+    }
+
+    /// [`DomainMailbox::post_named`] as work of `generation`.
+    ///
+    /// # Errors
+    ///
+    /// [`MailboxClosed`] once the domain has stopped.
+    pub fn post_named_for(&self, event: &str, generation: Generation, payload: Message) -> Result<(), MailboxClosed> {
+        self.send(Delivery::Named(event.to_owned()), generation, payload)
+    }
+
+    fn send(&self, delivery: Delivery, generation: Generation, payload: Message) -> Result<(), MailboxClosed> {
         self.sender
             .send(Envelope {
-                target,
+                delivery,
                 generation,
                 payload,
                 posted: Instant::now(),
@@ -374,6 +411,8 @@ struct Dispatch {
     handler: Function,
     /// Where the handler was bound, for diagnostics.
     source: Option<String>,
+    /// The named event it handles, for diagnostics.
+    event: Option<String>,
     capabilities: Arc<CapabilitySet>,
     budget: Option<Budget>,
 }
@@ -403,6 +442,8 @@ pub struct DomainCore {
     workers: RefCell<Vec<WorkerRecord>>,
     resources: RefCell<ResourceRegistry>,
     queue: RefCell<Option<(Sender<Envelope>, Receiver<Envelope>)>>,
+    /// Where the host routes named events its code emits, besides this domain's own handlers.
+    routes: RefCell<Vec<(String, DomainMailbox)>>,
     /// The phase being dispatched, if the scheduler is inside script code.
     dispatching: Cell<Option<Phase>>,
 }
@@ -510,6 +551,8 @@ impl DomainCore {
             budget: spec.budget,
             handlers: std::collections::BTreeMap::new(),
             sources: std::collections::BTreeMap::new(),
+            events: std::collections::BTreeMap::new(),
+            event_sources: std::collections::BTreeMap::new(),
             calls: 0,
             failures: 0,
             time: Duration::ZERO,
@@ -557,14 +600,109 @@ impl DomainCore {
         Ok(())
     }
 
+    /// Binds `handlers` to named events of the context named `name`: each an event name, its
+    /// handler, and where the handler came from. The context must schedule [`Phase::Event`], the
+    /// phase named events are delivered in. All of them or none.
+    pub(crate) fn bind_event_handlers(
+        &self,
+        name: &str,
+        handlers: Vec<(String, Function, Option<String>)>,
+    ) -> Result<(), RuntimeError> {
+        self.require_state(
+            &[
+                DomainState::Created,
+                DomainState::Loading,
+                DomainState::Ready,
+                DomainState::Running,
+            ],
+            "bind handlers in",
+        )?;
+        let mut contexts = self.contexts.borrow_mut();
+        let Some(context) = contexts.iter_mut().find(|context| context.name == name) else {
+            return Err(RuntimeError::UnknownContext {
+                domain: self.id,
+                name: name.to_owned(),
+            });
+        };
+        if !handlers.is_empty() && !context.schedule.contains(&Phase::Event) {
+            return Err(RuntimeError::UnscheduledPhase {
+                context: context.id,
+                phase: Phase::Event,
+            });
+        }
+        for (event, handler, source) in handlers {
+            match source.filter(|source| !source.is_empty()) {
+                Some(source) => context.event_sources.insert(event.clone(), source),
+                None => context.event_sources.remove(&event),
+            };
+            context.events.insert(event, handler);
+        }
+        Ok(())
+    }
+
     fn dispatch_of(context: &ContextRecord, phase: Phase) -> Option<Dispatch> {
         Some(Dispatch {
             context: context.id,
             handler: context.handlers.get(&phase)?.clone(),
             source: context.sources.get(&phase).cloned(),
+            event: None,
             capabilities: Arc::clone(&context.capabilities),
             budget: context.budget,
         })
+    }
+
+    /// The handlers to call for the named event `event`: every context with a handler bound to
+    /// that name, by priority, then registration order.
+    fn named_targets(&self, event: &str) -> Vec<Dispatch> {
+        let contexts = self.contexts.borrow();
+        let mut order: Vec<&ContextRecord> = contexts.iter().filter(|context| context.events.contains_key(event)).collect();
+        order.sort_by_key(|context| (context.priority, context.order));
+        order
+            .into_iter()
+            .filter_map(|context| {
+                Some(Dispatch {
+                    context: context.id,
+                    handler: context.events.get(event)?.clone(),
+                    source: context.event_sources.get(event).cloned(),
+                    event: Some(event.to_owned()),
+                    capabilities: Arc::clone(&context.capabilities),
+                    budget: context.budget,
+                })
+            })
+            .collect()
+    }
+
+    /// Queues the named event `event` from the domain's own code: stamped with the current
+    /// generation, delivered at the next drain, never synchronously. Then the host's routes for
+    /// the name forward a copy to each mailbox it named; a stopped recipient is reported, not
+    /// raised, since it isn't the emitter's doing.
+    pub(crate) fn emit(&self, event: &str, payload: Message) -> Result<(), RuntimeError> {
+        {
+            let queue = self.queue.borrow();
+            let Some((sender, _)) = queue.as_ref() else {
+                return Err(self.lifecycle("emit an event in"));
+            };
+            for (name, mailbox) in self.routes.borrow().iter() {
+                if name == event
+                    && let Err(closed) = mailbox.post_named(event, payload.clone())
+                {
+                    self.report(Diagnostic::new(
+                        self.attribution(),
+                        Severity::Warning,
+                        DiagnosticKind::TeardownDiscarded,
+                        format!("the event '{event}' routed to {} was dropped: {closed}", closed.0),
+                    ));
+                }
+            }
+            // The receiver lives as long as the sender, in the same slot.
+            drop(sender.send(Envelope {
+                delivery: Delivery::Named(event.to_owned()),
+                generation: self.generation.get(),
+                payload,
+                posted: Instant::now(),
+            }));
+        }
+        Ok(())
     }
 
     /// The handlers to call for a broadcast of `phase`: every context that schedules it and
@@ -839,6 +977,7 @@ impl ScriptDomain {
             workers: RefCell::new(Vec::new()),
             resources: RefCell::new(ResourceRegistry::default()),
             queue: RefCell::new(Some(channel())),
+            routes: RefCell::new(Vec::new()),
             dispatching: Cell::new(None),
         });
         let runtime = build_runtime(&core)?;
@@ -965,6 +1104,37 @@ impl ScriptDomain {
     /// [`RuntimeError::UnknownContext`] or [`RuntimeError::UnscheduledPhase`].
     pub fn bind_handler(&self, context: &str, phase: Phase, handler: Function) -> Result<(), RuntimeError> {
         self.core.bind_handlers(context, vec![(phase, handler)], None)
+    }
+
+    /// Binds `handler` to the named event `event` of the context named `context`, replacing an
+    /// earlier handler for that name. Named events are delivered in [`Phase::Event`], so the
+    /// context must schedule it.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::UnknownContext`] or [`RuntimeError::UnscheduledPhase`].
+    pub fn bind_event_handler(&self, context: &str, event: &str, handler: Function) -> Result<(), RuntimeError> {
+        self.core
+            .bind_event_handlers(context, vec![(event.to_owned(), handler, None)])
+    }
+
+    /// Routes the named event `event` to another domain: from now on, every time this domain's
+    /// code emits it, a copy is posted to `to` as well as delivered here. This is the only way a
+    /// domain's events reach another; nothing is broadcast, and only the event's [`Message`]
+    /// payload crosses. Routes are the host's and survive restarts.
+    ///
+    /// # Errors
+    ///
+    /// A logic error for a route back to this domain, which would deliver every event twice.
+    pub fn route(&self, event: &str, to: DomainMailbox) -> Result<(), RuntimeError> {
+        if to.domain == self.core.id {
+            return Err(RuntimeError::Native(l3i::Error::logic(format!(
+                "{} can't route '{event}' to itself; its own handlers already get it",
+                self.core.id
+            ))));
+        }
+        self.core.routes.borrow_mut().push((event.to_owned(), to));
+        Ok(())
     }
 
     /// Every registered context, in registration order.
@@ -1107,8 +1277,6 @@ impl ScriptDomain {
         Ok(report)
     }
 
-    /// One handler call, with everything the scheduler owes it: the context's authority, its
-    /// budget, an l3i call scope carrying its id, timing, and attribution of any failure.
     fn call(
         &self,
         runtime: &Runtime,
@@ -1117,57 +1285,8 @@ impl ScriptDomain {
         payload: &Message,
         queue_delay: Duration,
     ) -> Result<(), RuntimeError> {
-        let core = &self.core;
-        let attribution = core.attribution().in_context(target.context);
-        let _authority = AuthorityGuard::enter(core.authority(attribution, Arc::clone(&target.capabilities)));
-        let inherited = runtime.limits();
-        if let Some(budget) = target.budget {
-            runtime.set_limits(budget.limits());
-        }
-        let started = Instant::now();
-        let outcome = {
-            let scope = CallContext {
-                id: u64::from(target.context.raw()),
-                category: MemoryCategory(0),
-            };
-            let _scope = runtime.call_scope(scope, CallKind::ScriptCall);
-            target.handler.invoke::<(), _>(&runtime.stack(), (payload,))
-        };
-        let duration = started.elapsed();
-        if target.budget.is_some() {
-            runtime.set_limits(inherited);
-        }
-        if let Some(context) = core
-            .contexts
-            .borrow_mut()
-            .iter_mut()
-            .find(|context| context.id == target.context)
-        {
-            context.calls += 1;
-            context.time += duration;
-            context.failures += u64::from(outcome.is_err());
-        }
-        Counters::add(&core.counters.context_calls, 1);
-        core.profiler.record(ProfileEvent::ContextCall {
-            attribution,
-            phase,
-            queue_delay,
-            duration,
-            failed: outcome.is_err(),
-        });
-        outcome.map_err(|error| {
-            Counters::add(&core.counters.context_failures, 1);
-            let message = script_message(&error);
-            core.report(
-                Diagnostic::new(attribution, Severity::Error, DiagnosticKind::HandlerFailed, message.clone())
-                    .phase(phase)
-                    .source(target.source.clone()),
-            );
-            RuntimeError::Script {
-                attribution,
-                phase: Some(phase),
-                message,
-            }
+        self.core.call(runtime, target, phase, queue_delay, |handler| {
+            handler.invoke::<(), _>(&runtime.stack(), (payload,))
         })
     }
 
@@ -1209,10 +1328,82 @@ impl ScriptDomain {
         report.events = self.drain()?;
         Ok(report)
     }
+}
 
-    /// Delivers the events queued so far, each to its target's `event` handler, in the order
-    /// they were posted. An event stamped with an earlier generation is discarded, counted, and
-    /// reported, never delivered. Events posted while draining wait for the next drain.
+impl DomainCore {
+    /// One handler call, with everything the scheduler owes it: the context's authority, its
+    /// budget, an l3i call scope carrying its id, timing, and attribution of any failure.
+    /// `invoke` makes the call itself, with whatever arguments the caller has.
+    fn call(
+        &self,
+        runtime: &Runtime,
+        target: &Dispatch,
+        phase: Phase,
+        queue_delay: Duration,
+        invoke: impl FnOnce(&Function) -> l3i::Result<()>,
+    ) -> Result<(), RuntimeError> {
+        let core = self;
+        let attribution = core.attribution().in_context(target.context);
+        let _authority = AuthorityGuard::enter(core.authority(attribution, Arc::clone(&target.capabilities)));
+        let inherited = runtime.limits();
+        if let Some(budget) = target.budget {
+            runtime.set_limits(budget.limits());
+        }
+        let started = Instant::now();
+        let outcome = {
+            let scope = CallContext {
+                id: u64::from(target.context.raw()),
+                category: MemoryCategory(0),
+            };
+            let _scope = runtime.call_scope(scope, CallKind::ScriptCall);
+            invoke(&target.handler)
+        };
+        let duration = started.elapsed();
+        if target.budget.is_some() {
+            runtime.set_limits(inherited);
+        }
+        if let Some(context) = core
+            .contexts
+            .borrow_mut()
+            .iter_mut()
+            .find(|context| context.id == target.context)
+        {
+            context.calls += 1;
+            context.time += duration;
+            context.failures += u64::from(outcome.is_err());
+        }
+        Counters::add(&core.counters.context_calls, 1);
+        core.profiler.record(ProfileEvent::ContextCall {
+            attribution,
+            phase,
+            queue_delay,
+            duration,
+            failed: outcome.is_err(),
+        });
+        outcome.map_err(|error| {
+            Counters::add(&core.counters.context_failures, 1);
+            let message = script_message(&error);
+            core.report(
+                Diagnostic::new(attribution, Severity::Error, DiagnosticKind::HandlerFailed, message.clone())
+                    .phase(phase)
+                    .event(target.event.clone())
+                    .source(target.source.clone()),
+            );
+            RuntimeError::Script {
+                attribution,
+                phase: Some(phase),
+                message,
+            }
+        })
+    }
+}
+
+impl ScriptDomain {
+    /// Delivers the events queued so far, in the order they were posted or emitted: a raw event
+    /// to its target's `event` handler, a named one to every handler bound to its name, in
+    /// scheduler order. An event stamped with an earlier generation is discarded, counted, and
+    /// reported, never delivered; one nothing handles is counted as unhandled and dropped.
+    /// Events posted or emitted while draining wait for the next drain.
     ///
     /// # Errors
     ///
@@ -1247,9 +1438,13 @@ impl ScriptDomain {
             if envelope.generation != core.generation.get() {
                 report.stale += 1;
                 Counters::add(&core.counters.stale_discarded, 1);
-                let context = match envelope.target {
-                    EventTarget::Context(context) => Some(context),
-                    EventTarget::All => None,
+                let context = match envelope.delivery {
+                    Delivery::Raw(EventTarget::Context(context)) => Some(context),
+                    Delivery::Raw(EventTarget::All) | Delivery::Named(_) => None,
+                };
+                let what = match &envelope.delivery {
+                    Delivery::Raw(_) => "an event".to_owned(),
+                    Delivery::Named(event) => format!("the event '{event}'"),
                 };
                 core.profiler.record(ProfileEvent::StaleEventDiscarded {
                     attribution: core.attribution(),
@@ -1263,16 +1458,17 @@ impl ScriptDomain {
                     Severity::Info,
                     DiagnosticKind::StaleGenerationDiscarded,
                     format!(
-                        "an event queued for {} was discarded; the domain is at {}",
+                        "{what} queued for {} was discarded; the domain is at {}",
                         envelope.generation,
                         core.generation.get()
                     ),
                 ));
                 continue;
             }
-            let targets = match envelope.target {
-                EventTarget::Context(context) => core.target(context, Phase::Event).into_iter().collect(),
-                EventTarget::All => core.targets(Phase::Event),
+            let targets = match &envelope.delivery {
+                Delivery::Raw(EventTarget::Context(context)) => core.target(*context, Phase::Event).into_iter().collect(),
+                Delivery::Raw(EventTarget::All) => core.targets(Phase::Event),
+                Delivery::Named(event) => core.named_targets(event),
             };
             if targets.is_empty() {
                 report.unhandled += 1;
@@ -1388,6 +1584,8 @@ impl ScriptDomain {
         for context in self.core.contexts.borrow_mut().iter_mut() {
             context.handlers.clear();
             context.sources.clear();
+            context.events.clear();
+            context.event_sources.clear();
         }
         (shutdown_failures, workers_stopped, resources_released)
     }

@@ -216,6 +216,11 @@ pub struct ContextRecord {
     pub(crate) handlers: BTreeMap<Phase, Function>,
     /// `source:line` of the script code that bound each handler, when it was bound from Luau.
     pub(crate) sources: BTreeMap<Phase, String>,
+    /// The named-event handlers bound in the current generation, by event name. They run in
+    /// [`Phase::Event`], apart from the phase's own handler, which takes the raw events.
+    pub(crate) events: BTreeMap<String, Function>,
+    /// Where each named-event handler was defined or bound, when known.
+    pub(crate) event_sources: BTreeMap<String, String>,
     pub(crate) calls: u64,
     pub(crate) failures: u64,
     pub(crate) time: Duration,
@@ -231,6 +236,7 @@ impl ContextRecord {
             capabilities: Arc::clone(&self.capabilities),
             budget: self.budget,
             bound: self.handlers.keys().copied().collect(),
+            events: self.events.keys().cloned().collect(),
             calls: self.calls,
             failures: self.failures,
             time: self.time,
@@ -255,6 +261,8 @@ pub struct ContextInfo {
     pub budget: Option<Budget>,
     /// The phases with a handler bound in the current generation.
     pub bound: Vec<Phase>,
+    /// The named events with a handler bound in the current generation, sorted.
+    pub events: Vec<String>,
     /// Handler calls so far.
     pub calls: u64,
     /// Handler calls that raised.

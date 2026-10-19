@@ -1,16 +1,16 @@
-//! The Luau surface: `@jess/context` and `@jess/worker`, as an l3i extension.
+//! The Luau surface: `@jess/context`, `@jess/worker`, and `@jess/events`, as an l3i extension.
 //!
 //! [`RuntimeExtension`] goes into the plan every runtime of a domain is made from. It declares
-//! the two modules and the handle types, and stores one slot per runtime that the domain or the
+//! the modules and the handle types, and stores one slot per runtime that the domain or the
 //! worker lane fills right after the runtime is built; the module functions reach their owner
 //! through that slot. A runtime nobody attached (a plain `Runtime::from_plan`) has the modules
 //! and every function raises, saying no `ScriptDomain` owns it.
 //!
 //! The surface is what a script inside an existing domain needs and nothing more. A script
-//! binds handlers to contexts the host declared, and spawns workers when it holds
-//! `worker.spawn`, sharing the domain's services with one only by saying so
-//! (`shareServices = true`). It cannot create a domain, declare a context, or name a capability
-//! it was not granted.
+//! binds handlers to contexts the host declared, emits named events for the domain's own
+//! handlers, and spawns workers when it holds `worker.spawn`, sharing the domain's services with
+//! one only by saying so (`shareServices = true`). It cannot create a domain, declare a context,
+//! enter a phase, or name a capability it was not granted.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -42,18 +42,23 @@ pub const CONTEXT_MODULE: &str = "@jess/context";
 /// The `require` path of the worker module.
 pub const WORKER_MODULE: &str = "@jess/worker";
 
-/// The `@jess/context` and `@jess/worker` modules and their handle types.
+/// The `require` path of the named-event module.
+pub const EVENTS_MODULE: &str = "@jess/events";
+
+/// The `@jess/context`, `@jess/worker`, and `@jess/events` modules and their handle types.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RuntimeExtension;
 
-/// The two module tables of one runtime, stored as the extension's state so an extension that
-/// requires this one can expose them under its own names (`jess.context`, `jess.worker`).
+/// The module tables of one runtime, stored as the extension's state so an extension that
+/// requires this one can expose them under its own names (`jess.context`, `jess.worker`, ...).
 #[derive(Debug)]
 pub struct Modules {
     /// The `@jess/context` table.
     pub context: Table,
     /// The `@jess/worker` table.
     pub worker: Table,
+    /// The `@jess/events` table.
+    pub events: Table,
 }
 
 /// Who owns the runtime a binding runs in.
@@ -172,8 +177,8 @@ fn clamped(call: &Call<'_>, wait: Option<Duration>) -> (Option<Duration>, bool) 
 
 /// Reads a script's value as a message, reporting one that cannot cross to the domain's
 /// diagnostics before raising.
-fn read_message(call: &Call<'_>, value: ValueView<'_>, domain: Option<&DomainCore>) -> l3i::Result<Message> {
-    call.with_frame(|frame| Ok(Message::read(frame, value, "message")))?
+fn read_message(call: &Call<'_>, value: ValueView<'_>, domain: Option<&DomainCore>, root: &str) -> l3i::Result<Message> {
+    call.with_frame(|frame| Ok(Message::read(frame, value, root)))?
         .map_err(|error| {
             if let Some(domain) = domain {
                 let attribution =
@@ -219,6 +224,19 @@ fn bind(bindings: &Bindings, call: &Call<'_>, name: &str, handlers: ValueView<'_
     domain.bind_handlers(name, bound, Some(&source)).map_err(l3i::Error::from)
 }
 
+/// `events.emit(name, payload)`: queues a named event for the domain's next drain. Nothing runs
+/// now, so an emit from inside a handler never reenters one.
+fn emit(bindings: &Bindings, call: &Call<'_>, name: &str, payload: Option<ValueView<'_>>) -> l3i::Result<()> {
+    if name.is_empty() {
+        return Err(l3i::Error::runtime("events.emit: an event needs a name"));
+    }
+    let domain = bindings.domain("events.emit")?;
+    let payload = match payload {
+        Some(payload) => read_message(call, payload, Some(&domain), "payload")?,
+        None => Message::Nil,
+    };
+    domain.emit(name, payload).map_err(l3i::Error::from)
+}
 const SPAWN_OPTIONS: [&str; 4] = ["capabilities", "name", "shareServices", "source"];
 
 /// `worker.spawn(options)`. The options are checked before the owner is, so a misspelled key
@@ -324,6 +342,11 @@ impl Extension for RuntimeExtension {
             .installed("send")
             .signature("(message: any) -> ()")
             .doc("From inside a worker: sends a message to the domain, besides what the handler returns.");
+        d.module(EVENTS_MODULE)
+            .doc("Named events: queued for the handlers bound to a name, delivered at the domain's next event drain.")
+            .installed("emit")
+            .signature("(name: string, payload: any?) -> ()")
+            .doc("Queues the named event `name` with a transferable payload; no handler runs before the next drain.");
 
         let mut worker = d.userdata::<WorkerHandle>(WorkerHandle::NAME);
         worker.tag(TagPolicy::Never).doc("A worker the domain spawned.");
@@ -332,7 +355,7 @@ impl Extension for RuntimeExtension {
                 "send",
                 |this: &WorkerHandle, call: &Call<'_>, message: ValueView<'_>| -> l3i::Result<()> {
                     let domain = this.domain()?;
-                    let message = read_message(call, message, Some(&domain))?;
+                    let message = read_message(call, message, Some(&domain), "message")?;
                     domain.send_to_worker(this.id, message).map_err(l3i::Error::from)
                 },
             )
@@ -423,12 +446,22 @@ impl Extension for RuntimeExtension {
         let state = Rc::clone(&bindings);
         worker.function("send", move |call: &Call<'_>, message: ValueView<'_>| -> l3i::Result<()> {
             let link = state.worker("worker.send")?;
-            link.send(read_message(call, message, None)?)
+            link.send(read_message(call, message, None, "message")?)
                 .map_err(|problem| l3i::Error::runtime(format!("jess.worker.send: {problem}")))
         })?;
         let worker = worker.table().clone();
 
-        cx.insert_state(Modules { context, worker });
+        let events = cx.module(EVENTS_MODULE)?;
+        let state = Rc::clone(&bindings);
+        events.function(
+            "emit",
+            move |call: &Call<'_>, name: String, payload: Option<ValueView<'_>>| -> l3i::Result<()> {
+                emit(&state, call, &name, payload)
+            },
+        )?;
+        let events = events.table().clone();
+
+        cx.insert_state(Modules { context, worker, events });
         Ok(())
     }
 }

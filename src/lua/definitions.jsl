@@ -250,6 +250,15 @@ declare jess: {
     send: (message: unknown) -> (),
   },
 
+  --- Named events (`@jess/events`): application-defined events for the handlers bound to a name
+  --- (a managed module's `on.event`). Only a domain's own code emits; elsewhere `emit` errors.
+  events: {
+    --- Queues the event `name` with `payload`, which must be transferable (no functions,
+    --- userdata, or tables nested past 32 deep). Nothing runs now: every handler bound to the
+    --- name gets it at the domain's next event drain, in the order events were emitted.
+    emit: (name: string, payload: unknown?) -> (),
+  },
+
   --- The native half of `@jess/input`, which wraps it: compiling a binding document and the
   --- input runtime. See `jess::input`.
   input: {
