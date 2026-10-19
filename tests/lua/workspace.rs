@@ -379,7 +379,7 @@ fn a_workspace_target_is_named_or_found_from_where_it_runs() {
         (
             Some("org.example.other:main"),
             &root,
-            "no member of the workspace is org.example.other",
+            "no member or pinned package of the workspace is org.example.other",
         ),
         (None, &root, "name a target to run"),
         (None, &root.join("tool/src"), "org.example.tool has no default_target"),

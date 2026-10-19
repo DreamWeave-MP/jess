@@ -109,13 +109,13 @@ $ jess workspace targets
 
 | Argument / option | Does |
 | --- | --- |
-| `[TARGET]` | The target to run. Without one, the default target of the member the current folder is in. |
+| `[TARGET]` | The target to run, a member's or a pinned package's. Without one, the default target of the member the current folder is in. |
 | `--capability <NAME>` | Grant a capability the target declares (repeatable). |
 | `--trusted` | Grant everything the target declares. |
 | `--frames <N>` | For an application target: stop after N frames, unless it stops itself first. Refused for a command target. |
 | `-- ARGS...` | Arguments for the target, which gets them as `...` and in the global `arg` table. |
 
-A target is named `<package id>:<target id>`; by a target id or a `command` name that only one target in the workspace has; or by a member's package id, for its `default_target`. A name two targets answer to is an error listing both.
+A target is named `<package id>:<target id>`; by a target id or a `command` name that only one target in the workspace has; or by a package id, for its `default_target`. The members' targets count, and so do the targets of the packages `jess.lock` pins: a tool a workspace depends on runs over that workspace by its command name, with nothing in the workspace wrapping it. That is how a DreamWeave site runs the Mod Template it pins: `jess workspace run --trusted dreamweave-build`. A name two targets answer to is an error listing both; `targets` lists the members' alone.
 
 The target runs as [`jess package run`](@/docs/cli/package.md#jess-package-run) runs one, command or [application](@/docs/scripting/applications.md): its package resolves over the other members and the packages `jess.lock` pins, each opened only when something needs it, and it runs with exactly the capabilities it declares, once you grant them. Being in a workspace grants nothing, and a member's modules still reach only the packages its own manifest declares. A command target's first returned number is the exit status; an application's is the status it asked to stop with.
 

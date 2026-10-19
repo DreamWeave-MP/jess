@@ -568,3 +568,95 @@ fn a_sync_refuses_bytes_feeds_and_publishers_that_do_not_add_up() {
         stderr(&changed)
     );
 }
+
+/// A tool the workspace depends on runs by its command name, resolved over the workspace and the
+/// packages the lock pins, without a wrapper in the workspace: what a site does with the
+/// DreamWeave template.
+#[test]
+fn a_pinned_package_s_target_runs_over_the_workspace() {
+    let showcase = Showcase::new("workspace-pinned-target");
+    let (workspace, jpks) = (showcase.workspace(), showcase.root.join("jpks"));
+    fs::create_dir_all(&jpks).unwrap();
+    let words = publish("words", &jpks);
+    let style = publish("style", &jpks);
+    let tool = publish("tool", &jpks);
+    // The showcase's root package takes the tool as a dependency, so the lock pins it.
+    let manifest = workspace.join("jess.toml");
+    let text = fs::read_to_string(&manifest).unwrap();
+    fs::write(
+        &manifest,
+        text.replace("[dependencies]\n", "[dependencies]\n\"org.example.tool\" = \"1\"\n"),
+    )
+    .unwrap();
+    let synced = sync(
+        &workspace,
+        &[
+            "--offline",
+            words.path.to_str().unwrap(),
+            style.path.to_str().unwrap(),
+            tool.path.to_str().unwrap(),
+        ],
+    );
+    assert!(synced.status.success(), "{}", stderr(&synced));
+
+    let listed = json(
+        &jess()
+            .args(["--format", "json", "workspace", "targets", "--workspace"])
+            .arg(&workspace)
+            .output()
+            .unwrap(),
+    );
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|target| target["target"] != "org.example.tool:hello"),
+        "targets lists the members' targets, not the pinned packages'"
+    );
+
+    let ran = jess()
+        .current_dir(&workspace)
+        .args(["workspace", "run", "--trusted", "hello", "--", "you", "me"])
+        .output()
+        .unwrap();
+    assert_eq!(ran.status.code(), Some(0), "{}", stderr(&ran));
+    assert_eq!(
+        String::from_utf8(ran.stdout).unwrap(),
+        "hello you from the tool\nhello me from the tool\n"
+    );
+
+    let by_id = jess()
+        .current_dir(&workspace)
+        .args(["workspace", "run", "--trusted", "org.example.tool:hello", "--", "x"])
+        .output()
+        .unwrap();
+    assert_eq!(by_id.status.code(), Some(0), "{}", stderr(&by_id));
+
+    let graph = json(
+        &jess()
+            .current_dir(&workspace)
+            .args(["--format", "json", "workspace", "graph", "hello"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(graph["package"], "org.example.tool");
+    assert!(
+        graph["location"]
+            .as_str()
+            .unwrap()
+            .contains(".jess/packages/org.example.tool-1.0.0-")
+    );
+
+    let nowhere = jess()
+        .current_dir(&workspace)
+        .args(["workspace", "run", "--trusted", "nothing-here"])
+        .output()
+        .unwrap();
+    assert!(!nowhere.status.success());
+    assert!(
+        stderr(&nowhere).contains("org.example.tool:hello"),
+        "the error lists pinned targets too: {}",
+        stderr(&nowhere)
+    );
+}

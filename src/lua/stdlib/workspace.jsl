@@ -735,11 +735,41 @@ local function verify(workspace: Workspace): Workspace
   }
 end
 
---- Every member's targets, `<package id>:<target id>`, for messages.
+--- A package a workspace can run a target of: a member, or a package its lock pins, opened from
+--- `.jess/packages`. A pinned package's `path` is where it is kept, for messages.
+type Runnable = Member & { read pinned: Locked? }
+
+--- The packages the lock pins, as runnables: each read from the store, which `universe` has already
+--- held to the lock. One the store lacks is left out; `universe` says so when it is run.
+local function pinnedRunnables(workspace: Workspace): { Runnable }
+  local runnables: { Runnable } = {}
+
+  for _, entry in workspace.lock.packages do
+    local location = `{workspace.root}/{storeName(entry)}`
+    -- A damaged or missing JPK is reported where it is resolved, not here.
+    local ok, offer = pcall(package.peek, location)
+
+    if not ok then continue end
+
+    table.insert(runnables, table.freeze { path = storeName(entry), location = location, manifest = offer.manifest, pinned = entry })
+  end
+
+  return runnables
+end
+
+--- The members, then the pinned packages, as what a target can be chosen from.
+local function runnables(workspace: Workspace): { Runnable }
+  local all: { Runnable } = [for found in workspace.members => table.freeze { path = found.path, location = found.location, manifest = found.manifest, pinned = nil :: Locked? }]
+  table.move(pinnedRunnables(workspace), 1, #pinnedRunnables(workspace), #all + 1, all)
+
+  return all
+end
+
+--- Every runnable's targets, `<package id>:<target id>`, for messages.
 local function qualified(workspace: Workspace): string
   local names = {}
 
-  for _, found in workspace.members do
+  for _, found in runnables(workspace) do
     for id in found.manifest.targets do
       table.insert(names, `{found.manifest.id}:{id}`)
     end
@@ -764,10 +794,12 @@ local function holding(workspace: Workspace, folder: string): Member?
   return found
 end
 
---- The member and target id `name` names: `<package id>:<target id>`; a target id or a command
---- name no other target in the workspace has; or a member's package id, for its default target.
---- Without a name, the default target of the member holding `cwd`.
-local function choose(workspace: Workspace, name: string?, cwd: string): (Member, string)
+--- The package and target id `name` names, among the members and the packages the lock pins:
+--- `<package id>:<target id>`; a target id or a command name no other target in the workspace
+--- has; or a package id, for its default target. Without a name, the default target of the member
+--- holding `cwd`. A tool a workspace depends on runs this way, with the workspace to resolve
+--- over, and nothing in the workspace has to wrap it.
+local function choose(workspace: Workspace, name: string?, cwd: string): (Runnable, string)
   local available = `the workspace has: {qualified(workspace)}`
 
   if not name then
@@ -781,14 +813,17 @@ local function choose(workspace: Workspace, name: string?, cwd: string): (Member
       fail(`{manifest.id} has no default_target; name a target to run; {available}`)
     end
 
-    return found :: Member, manifest.defaultTarget :: string
+    local member = found :: Member
+
+    return table.freeze { path = member.path, location = member.location, manifest = member.manifest, pinned = nil :: Locked? }, manifest.defaultTarget :: string
   end
 
   local text = name :: string
   local owner, wanted = string.match(text, '^([^:]+):(.+)$')
+  local candidates = runnables(workspace)
 
   if owner and wanted then
-    for _, found in workspace.members do
+    for _, found in candidates do
       if found.manifest.id ~= owner then continue end
 
       if not found.manifest.targets[wanted] then
@@ -798,13 +833,13 @@ local function choose(workspace: Workspace, name: string?, cwd: string): (Member
       return found, wanted
     end
 
-    fail(`no member of the workspace is {owner}; {available}`)
+    fail(`no member or pinned package of the workspace is {owner}; {available}`)
   end
 
-  local matches: { { member: Member, target: string } } = {}
+  local matches: { { member: Runnable, target: string } } = {}
   local undefaulted: string?
 
-  for _, found in workspace.members do
+  for _, found in candidates do
     local manifest = found.manifest
 
     if manifest.id == text then
@@ -848,7 +883,7 @@ end
 --- What `chosen`'s dependencies resolve over, each opened only when needed: the other members, and
 --- the packages `jess.lock` pins, from `.jess/packages`, each held to its pinned digest. A lock
 --- that isn't what the members need is an error here, never something resolved around.
-local function universe(workspace: Workspace, chosen: Member): { [string]: unknown }
+local function universe(workspace: Workspace, chosen: Runnable): { [string]: unknown }
   local lock = workspace.lock
 
   if lock.state ~= 'fresh' then
@@ -863,11 +898,14 @@ local function universe(workspace: Workspace, chosen: Member): { [string]: unkno
     )
   end
 
-  local candidates = [for found in workspace.members if found ~= chosen => found.location]
+  local candidates = [for found in workspace.members if found.location ~= chosen.location => found.location]
   local pins = {}
 
   for _, entry in lock.packages do
-    table.insert(candidates, `{workspace.root}/{storeName(entry)}`)
+    local location = `{workspace.root}/{storeName(entry)}`
+
+    if location ~= chosen.location then table.insert(candidates, location) end
+
     table.insert(pins, { id = entry.id, digest = entry.digest })
   end
 

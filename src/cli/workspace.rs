@@ -36,8 +36,9 @@ enum WorkspaceCommand {
         /// The target, named as for workspace run.
         target: Option<String>,
     },
-    /// Run a member's target, a command or an application, with its package resolved over the
-    /// workspace and exactly the capabilities the target declares, once granted.
+    /// Run a target, a command or an application, of a member or of a package jess.lock pins, with
+    /// its package resolved over the workspace and exactly the capabilities the target declares,
+    /// once granted.
     Run(RunArgs),
     /// Pin what the members depend on beyond each other in jess.lock, and keep those packages,
     /// as JPKs, in .jess/packages: from the packages offered here, those already kept, and, for
@@ -78,8 +79,8 @@ enum WorkspaceCommand {
 #[derive(Debug, Args)]
 struct RunArgs {
     /// The target: <package id>:<target id>; a target id or command name only one target in the
-    /// workspace has; or a member's package id, for its default target. Without one, the default
-    /// target of the member the current folder is in.
+    /// workspace has; or a package id, for its default target. Members and the packages jess.lock
+    /// pins both count. Without one, the default target of the member the current folder is in.
     target: Option<String>,
     #[command(flatten)]
     grant: crate::package::GrantArgs,

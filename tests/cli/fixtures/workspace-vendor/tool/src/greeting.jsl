@@ -1,0 +1,4 @@
+--!strict
+local words = require '@words'
+
+return function(name: string): string return `{words.hello} {name} from the tool` end
