@@ -90,9 +90,9 @@ Each managed module gets a context of its own, named `<package>/<managed id>`, s
 
 `jess package run`, `jess workspace run`, and `jess::lua::package::launch` all do this, in this order:
 
-1. **Resolve.** The target's package resolves with its dependencies (lock pins and package paths as for any target), every layer it declares is planned, and every entrypoint's capabilities are checked against what the target declares. A capability the target declares and you didn't grant stops it here too. No package code has run yet.
+1. **Check the grant.** A capability the target declares and you didn't grant stops it here, before anything is built.
 2. **Build the host.** One `Host`, one domain, holding exactly the target's capabilities.
-3. **Mount and activate.** Inside the domain's load, the plan is mounted in the domain's one primary runtime and the layers' entrypoints run, as for any activation.
+3. **Resolve, admit, mount, activate.** Inside the domain's load, the target's package resolves with its dependencies (lock pins and package paths as for any target), every layer it declares is planned, and every entrypoint's capabilities are checked against what the target declares; only then is the plan mounted in the domain's one primary runtime. Up to here no package code has run. Then the layers' entrypoints run, as for any activation.
 4. **Load the managed modules.** Packages in dependency order (a package after everything it depends on; among packages free to go next, the smallest id first), each package's modules by managed id. Each module runs, its return value is checked, its context is declared, and its handlers are bound.
 5. **Compose the interfaces**, in that same order (below), and publish them all at once.
 6. **Run the entry**, the target's private `entry`, with the target's arguments as `...` and `arg`. It runs inside the domain, after the interfaces exist, so it can look them up. What it returns is ignored: an application's status comes from `application.exit`.

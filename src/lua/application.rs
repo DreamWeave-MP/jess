@@ -5,7 +5,8 @@
 //! command target's does; then, inside [`ScriptDomain::load`], in the domain's one primary
 //! runtime:
 //!
-//! 1. the plan is mounted and its layers' entrypoints run, as for any activation;
+//! 1. the plan is resolved, every entrypoint admitted against the target's capabilities, and the
+//!    plan mounted, before anything a package holds runs; then its layers' entrypoints run;
 //! 2. every selected package's `[managed]` modules run, packages in dependency order (smallest
 //!    id first among packages free to go) and each package's modules by managed id. A module
 //!    returns `{ on = { host = ..., event = ... }, interface = ... }`; the supervisor checks the
@@ -496,8 +497,8 @@ impl std::fmt::Debug for Application {
 }
 
 /// Loads the application target `target` of the package `inspection` describes, as `request`
-/// asks, into a host of its own: the package's plan is checked against the target's capabilities
-/// before anything is built, and nothing a package holds runs until the domain loads. With `input`
+/// asks, into a host of its own. The domain's load resolves the package's plan and admits every
+/// entrypoint against the target's capabilities before anything a package holds runs. With `input`
 /// the host polls it every frame and runs the `input` handlers on what it produces.
 ///
 /// # Errors
@@ -522,15 +523,6 @@ pub(crate) fn launch(
         roots: vec![inspection.id.clone()],
         dev: Vec::new(),
     };
-    // The whole plan is resolved and admitted against the target's capabilities in a runtime of
-    // its own first, so a plan that can't run fails before any domain exists.
-    package::mount_with(
-        &crate::lua::runtime(options.clone())?,
-        &locations,
-        &layers,
-        Some(&target.capabilities),
-        &search,
-    )?;
     let setup = Rc::new(Setup {
         package: inspection.id.clone(),
         target: target.id.clone(),
