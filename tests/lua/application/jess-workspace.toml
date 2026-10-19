@@ -1,0 +1,5 @@
+# The example application and the packages it is made of, developed together.
+manifest_version = 1
+
+[workspace]
+members = ["journal", "inventory", "armor", "game"]

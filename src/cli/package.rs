@@ -1,7 +1,7 @@
 //! `jess pack` and `jess package`: packing a Package Source into a JPK, and inspecting, resolving,
 //! testing, and running packages. Opening, packing, and resolving run no package code; `test` runs
 //! the package's own tests, against its source and then against it packed, and `run` runs one of
-//! its command targets.
+//! its targets, a command or an application.
 
 use std::path::PathBuf;
 
@@ -77,8 +77,10 @@ enum PackageCommand {
         #[arg(long = "package-path", value_name = "FOLDER")]
         package_paths: Vec<PathBuf>,
     },
-    /// Run one of a package's command targets: its entry, as a script, with the package's layers
-    /// activated and exactly the capabilities the target declares.
+    /// Run one of a package's targets with exactly the capabilities it declares. A command target's
+    /// entry runs as a script, with the package's layers activated. An application target runs in
+    /// a host of its own: its packages' managed modules load into one domain, its entry runs, and
+    /// frames run until it calls application.exit, --frames runs out, or Ctrl+C.
     Run(RunTargetArgs),
 }
 
@@ -98,6 +100,10 @@ pub struct RunTargetArgs {
     package_paths: Vec<PathBuf>,
     #[command(flatten)]
     grant: GrantArgs,
+    /// For an application target: stop after N frames, shutdown handlers and all, unless it
+    /// stops itself first.
+    #[arg(long, value_name = "N")]
+    frames: Option<u64>,
     /// Arguments for the target, which gets them as ... and in the global arg table.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     args: Vec<String>,
@@ -188,7 +194,8 @@ pub fn pack(args: &PackArgs, format: Format) -> Result<(), String> {
     )
 }
 
-/// Runs a command target; its first returned number is the process's exit status.
+/// Runs a target: a command target's first returned number is the process's exit status, and an
+/// application's the status it asked to stop with.
 fn run_target(args: &RunTargetArgs) -> Result<u8, String> {
     let request = jess::lua::package::TargetRequest {
         package: text(&args.package),
@@ -199,10 +206,15 @@ fn run_target(args: &RunTargetArgs) -> Result<u8, String> {
         args: args.args.clone(),
         ..Default::default()
     };
-    let ran = jess::lua::package::run_target(&jess::lua::Options::default(), &request).map_err(|error| error.to_string())?;
-    let status = crate::run::script_status(&ran.runtime, &ran.values);
-    crate::leave(ran.runtime, ran.values);
-    status
+    if args.frames.is_some() {
+        let inspection = jess::lua::package::inspect(&runtime()?, &request.package).map_err(|error| error.to_string())?;
+        let target =
+            jess::lua::package::target(&inspection, request.target.as_deref()).map_err(|error| error.to_string())?;
+        crate::application::check_frames(args.frames, target, &inspection.id)?;
+    }
+    let launched =
+        jess::lua::package::launch(&jess::lua::Options::default(), &request).map_err(|error| error.to_string())?;
+    crate::application::finish(launched, args.frames)
 }
 
 pub fn run(args: &PackageArgs, format: Format) -> Result<u8, String> {

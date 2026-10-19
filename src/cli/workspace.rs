@@ -31,8 +31,8 @@ enum WorkspaceCommand {
         /// The target, named as for workspace run.
         target: Option<String>,
     },
-    /// Run a member's command target, with its package resolved over the workspace and exactly
-    /// the capabilities the target declares, once granted.
+    /// Run a member's target, a command or an application, with its package resolved over the
+    /// workspace and exactly the capabilities the target declares, once granted.
     Run(RunArgs),
     /// Pin what the members depend on beyond each other in jess.lock, and keep those packages,
     /// as JPKs, in .jess/packages: from the packages offered here, and those already kept.
@@ -65,6 +65,10 @@ struct RunArgs {
     target: Option<String>,
     #[command(flatten)]
     grant: crate::package::GrantArgs,
+    /// For an application target: stop after N frames, shutdown handlers and all, unless it
+    /// stops itself first.
+    #[arg(long, value_name = "N")]
+    frames: Option<u64>,
     /// Arguments for the target, after --, which gets them as ... and in the global arg table.
     #[arg(last = true)]
     args: Vec<String>,
@@ -116,7 +120,8 @@ fn info(args: &WorkspaceArgs, format: Format) -> Result<(), String> {
     output::print(&listed, format)
 }
 
-/// Runs a workspace target; its first returned number is the process's exit status.
+/// Runs a workspace target: a command target's first returned number is the process's exit
+/// status, and an application's the status it asked to stop with.
 fn run_target(at: Locate, args: &RunArgs) -> Result<u8, String> {
     let request = workspace::RunRequest {
         at,
@@ -125,10 +130,16 @@ fn run_target(at: Locate, args: &RunArgs) -> Result<u8, String> {
         grant: args.grant.grant(),
         args: args.args.clone(),
     };
-    let ran = workspace::run_target(&jess::lua::Options::default(), &request).map_err(|error| error.to_string())?;
-    let status = crate::run::script_status(&ran.runtime, &ran.values);
-    crate::leave(ran.runtime, ran.values);
-    status
+    if args.frames.is_some() {
+        let lua = crate::run::lua_default()?;
+        let chosen = workspace::choose(&lua, &request.at, request.target.as_deref(), &request.cwd)
+            .map_err(|error| error.to_string())?;
+        let inspection = jess::lua::package::inspect(&lua, &chosen.location).map_err(|error| error.to_string())?;
+        let target = jess::lua::package::target(&inspection, Some(&chosen.target)).map_err(|error| error.to_string())?;
+        crate::application::check_frames(args.frames, target, &inspection.id)?;
+    }
+    let launched = workspace::launch(&jess::lua::Options::default(), &request).map_err(|error| error.to_string())?;
+    crate::application::finish(launched, args.frames)
 }
 
 fn test(at: &Locate, members: &[String], format: Format) -> Result<(), String> {

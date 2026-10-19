@@ -6,6 +6,8 @@ use std::process::ExitCode;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use clap_complete::Shell;
 
+#[path = "cli/application.rs"]
+mod application;
 #[path = "cli/init.rs"]
 mod init;
 #[path = "cli/output.rs"]
