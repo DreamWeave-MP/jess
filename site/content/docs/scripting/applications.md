@@ -200,7 +200,7 @@ Frames run at 60 a second. The fixed step is 1/60 s, catching up at most 5 steps
 
 - its code calls [`application.exit(status)`](@/docs/api/application.md): it stops after the current frame, and `status` is the process's exit status;
 - `--frames` runs out: status 0;
-- you press Ctrl+C (or send SIGTERM) on Unix: status 130. The second Ctrl+C ends the process immediately, for an application whose shutdown handler is the problem. On Windows, Ctrl+C ends the process without the shutdown handlers; use `application.exit`.
+- you press Ctrl+C: status 130. On Unix SIGTERM does the same, and a signal the process inherited as ignored (a background job's SIGINT) stays ignored; on Windows Ctrl+Break does the same. The second one ends the process immediately, for an application whose shutdown handler is the problem.
 
 Every way out runs the `shutdown` handlers. Diagnostics go to stderr as they happen, one line each, with the context by name, the phase or event, and where the handler was defined:
 

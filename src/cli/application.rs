@@ -70,7 +70,38 @@ fn catch_interrupts() {
     }
 }
 
-/// Windows ends the process on Ctrl+C, without the application's shutdown handlers; an
-/// application that needs them stops itself with `application.exit`.
-#[cfg(not(unix))]
+/// The first Ctrl+C or Ctrl+Break asks the application to stop, so its shutdown handlers run; a
+/// second one, and every other console event, goes on to the next handler, Windows' default,
+/// which ends the process. A console that ignores Ctrl+C never calls the handler for it.
+#[cfg(windows)]
+fn catch_interrupts() {
+    /// `CTRL_C_EVENT` and `CTRL_BREAK_EVENT`; `TRUE` and `FALSE` as a handler returns them.
+    const LAST_INTERRUPT: u32 = 1;
+    const HANDLED: i32 = 1;
+    const PASSED_ON: i32 = 0;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn SetConsoleCtrlHandler(handler: Option<unsafe extern "system" fn(u32) -> i32>, add: i32) -> i32;
+    }
+
+    // It runs on a thread of its own, which Windows starts for the event.
+    extern "system" fn interrupted(event: u32) -> i32 {
+        if event > LAST_INTERRUPT || INTERRUPTED.swap(true, Ordering::AcqRel) {
+            return PASSED_ON;
+        }
+        HANDLED
+    }
+
+    let handler: unsafe extern "system" fn(u32) -> i32 = interrupted;
+    // SAFETY: the handler is a plain function that lives as long as the process and only swaps
+    // an atomic; adding it changes nothing else.
+    unsafe {
+        SetConsoleCtrlHandler(Some(handler), 1);
+    }
+}
+
+/// Elsewhere, the platform's default ends the process; an application that needs its shutdown
+/// handlers there stops itself with `application.exit`.
+#[cfg(not(any(unix, windows)))]
 fn catch_interrupts() {}
