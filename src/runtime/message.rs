@@ -147,6 +147,18 @@ impl Message {
         }
     }
 
+    /// Whether a buffer is anywhere in the message: the one value a frozen table doesn't make
+    /// immutable.
+    #[must_use]
+    pub fn holds_bytes(&self) -> bool {
+        match self {
+            Message::Bytes(_) => true,
+            Message::List(items) => items.iter().any(Message::holds_bytes),
+            Message::Map(entries) => entries.iter().any(|(_, value)| value.holds_bytes()),
+            _ => false,
+        }
+    }
+
     /// What the message weighs in a queue: the storage it holds, not only its payload. Every
     /// value costs a [`Message`]'s size, every element of a list or map a key's too, and strings,
     /// buffers, string keys, and handle kinds their bytes; the sum saturates. A list of a million empty tables weighs

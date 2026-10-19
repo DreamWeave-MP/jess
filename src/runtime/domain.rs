@@ -1776,20 +1776,29 @@ impl ScriptDomain {
                 report.unhandled += 1;
                 continue;
             }
-            // A named event's handlers share one frozen payload, built once; a raw event's each get a
-            // copy of their own, as they always have.
-            let shared = match &envelope.delivery {
-                Delivery::Named(_) => Some(runtime.stack().with_frame(|frame| {
+            // A named event's handlers read an immutable payload: frozen tables, built once and
+            // shared, unless it holds a buffer. Freezing doesn't reach into a buffer, so a payload
+            // that holds one is built for each handler, with buffers of its own, and nothing one
+            // handler writes reaches the next. A raw event's handlers each get a plain copy, as they
+            // always have.
+            let frozen = || {
+                runtime.stack().with_frame(|frame| {
                     push_frozen_message(frame, &envelope.payload)?;
                     Value::store(frame.top_value())
-                })?),
-                Delivery::Raw(_) => None,
+                })
+            };
+            let named = matches!(envelope.delivery, Delivery::Named(_));
+            let shared = if named && !envelope.payload.holds_bytes() {
+                Some(frozen()?)
+            } else {
+                None
             };
             for target in targets.iter() {
                 report.delivered += 1;
                 Counters::add(&core.counters.events_delivered, 1);
                 let delay = envelope.posted.elapsed();
-                let outcome = shared.as_ref().map_or_else(
+                let own = if named && shared.is_none() { Some(frozen()?) } else { None };
+                let outcome = shared.as_ref().or(own.as_ref()).map_or_else(
                     || self.call(runtime, target, Phase::Event, &envelope.payload, delay),
                     |payload| {
                         core.call(runtime, target, Phase::Event, delay, true, |handler| {

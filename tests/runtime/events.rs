@@ -583,3 +583,38 @@ fn many_tiny_values_count_against_the_queue() {
         "one hit, delivered to its handler"
     );
 }
+
+/// Freezing doesn't reach into a buffer, so a payload that holds one is built for each handler:
+/// what the first writes into its buffer, the second never reads, and the tables around it are
+/// frozen all the same.
+#[test]
+fn a_named_event_s_buffers_are_each_handler_s_own() {
+    let harness = support::domain("buffers", &[]);
+    let domain = &harness.domain;
+    for name in ["first", "second"] {
+        domain
+            .register_context(ContextSpec::new(name).schedule([Phase::Event]))
+            .unwrap();
+    }
+    load_handlers(
+        domain,
+        r"
+        local journal = require('@test/journal')
+        return {
+          first = function(payload)
+            buffer.writeu8(payload.data, 0, 42)
+            journal.write(`first wrote {buffer.readu8(payload.data, 0)}`)
+          end,
+          second = function(payload)
+            journal.write(`second reads {buffer.readu8(payload.data, 0)}, frozen {tostring(table.isfrozen(payload))}`)
+          end,
+        }
+        ",
+        &[("first", "hit", "first"), ("second", "hit", "second")],
+    );
+    domain.start().unwrap();
+    support::eval::<()>(domain, "require('@jess/events').emit('hit', { data = buffer.create(1) })");
+    let report = domain.drain_events().unwrap();
+    assert_eq!((report.delivered, report.failures.len()), (2, 0), "{:?}", report.failures);
+    assert_eq!(support::journal(), ["first wrote 42", "second reads 0, frozen true"]);
+}
