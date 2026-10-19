@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use l3i::Runtime;
 use l3i::extension::RuntimePlan;
 use l3i::runtime::{CallContext, CallKind, MemoryCategory};
-use l3i::value::Function;
+use l3i::value::{Function, Value};
 
 use crate::runtime::capability::{
     Authority, AuthorityGuard, CapabilitySet, Grant, Observer, WORKER_SPAWN, current_authority,
@@ -38,7 +38,7 @@ use crate::runtime::diagnostics::{Attribution, Diagnostic, DiagnosticKind, Diagn
 use crate::runtime::error::{RuntimeError, script_message};
 use crate::runtime::ids::{CapabilityId, ContextId, DomainId, Generation, ResourceId, WorkerId};
 use crate::runtime::log::LogSink;
-use crate::runtime::message::Message;
+use crate::runtime::message::{Message, push_frozen_message};
 use crate::runtime::profile::{Counters, Direction, DiscardProfile, DomainStats, ProfileEvent, ProfileSink};
 use crate::runtime::resources::{OwnedResource, ResourceRegistry};
 use crate::runtime::service::Services;
@@ -1770,10 +1770,28 @@ impl ScriptDomain {
                 report.unhandled += 1;
                 continue;
             }
+            // A named event's handlers share one frozen payload, built once; a raw event's each get a
+            // copy of their own, as they always have.
+            let shared = match &envelope.delivery {
+                Delivery::Named(_) => Some(runtime.stack().with_frame(|frame| {
+                    push_frozen_message(frame, &envelope.payload)?;
+                    Value::store(frame.top_value())
+                })?),
+                Delivery::Raw(_) => None,
+            };
             for target in targets.iter() {
                 report.delivered += 1;
                 Counters::add(&core.counters.events_delivered, 1);
-                if let Err(error) = self.call(runtime, target, Phase::Event, &envelope.payload, envelope.posted.elapsed()) {
+                let delay = envelope.posted.elapsed();
+                let outcome = shared.as_ref().map_or_else(
+                    || self.call(runtime, target, Phase::Event, &envelope.payload, delay),
+                    |payload| {
+                        core.call(runtime, target, Phase::Event, delay, true, |handler| {
+                            handler.invoke::<(), _>(&runtime.stack(), (payload,))
+                        })
+                    },
+                );
+                if let Err(error) = outcome {
                     report.failures.push(error);
                 }
             }

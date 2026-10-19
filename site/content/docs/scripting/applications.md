@@ -169,7 +169,7 @@ events.emit('playerDied', { player = 'Caius' })
 
 The queue is bounded: 65,536 waiting events and 64 MiB of payload, with at most 4,096 delivered per drain and the rest left, in order, for the next frame. An event that doesn't fit makes `emit` raise, and is reported; nothing is dropped behind your back, and a handler that answers every event with two more hits the wall in a few frames instead of taking the machine down with it.
 
-The payload has to be **transferable**: nil, booleans, numbers, strings, vectors, buffers, and tables of those, nested at most 32 deep. No functions, no userdata, no threads. The same rules hold whether the event stays in the domain or crosses to another one, so an event that works locally doesn't break the day a host routes it somewhere. A payload that can't cross raises, naming the path to the problem:
+The payload has to be **transferable**: nil, booleans, numbers, strings, vectors, buffers, and tables of those, nested at most 32 deep. No functions, no userdata, no threads. It's copied when you emit, and every handler of the event gets the same frozen table: one handler can't change what the next one reads. The same rules hold whether the event stays in the domain or crosses to another one, so an event that works locally doesn't break the day a host routes it somewhere. A payload that can't cross raises, naming the path to the problem:
 
 ```text
 payload.onDeath: a function can't cross a worker or event boundary

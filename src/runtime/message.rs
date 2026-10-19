@@ -308,6 +308,20 @@ fn format_number(number: f64) -> String {
 ///
 /// An l3i error if the VM cannot allocate the value or the handle type is not registered in it.
 pub fn push_message(frame: &Frame<'_>, message: &Message) -> l3i::Result<()> {
+    push(frame, message, false)
+}
+
+/// Pushes `message` as one Luau value on `frame`, every table in it frozen: for one payload many
+/// handlers share, so none of them can change what the next one reads.
+///
+/// # Errors
+///
+/// As [`push_message`].
+pub fn push_frozen_message(frame: &Frame<'_>, message: &Message) -> l3i::Result<()> {
+    push(frame, message, true)
+}
+
+fn push(frame: &Frame<'_>, message: &Message, frozen: bool) -> l3i::Result<()> {
     match message {
         Message::Nil => {
             frame.push_nil()?;
@@ -333,18 +347,24 @@ pub fn push_message(frame: &Frame<'_>, message: &Message) -> l3i::Result<()> {
         Message::List(items) => {
             let table = frame.push_table(items.len(), 0)?;
             for (index, item) in items.iter().enumerate() {
-                push_message(frame, item)?;
+                push(frame, item, frozen)?;
                 table.raw_set_index(frame, i64::try_from(index).unwrap_or(i64::MAX).saturating_add(1))?;
+            }
+            if frozen {
+                table.set_read_only(true)?;
             }
         }
         Message::Map(entries) => {
             let table = frame.push_table(0, entries.len())?;
             for (key, value) in entries {
-                push_message(frame, value)?;
+                push(frame, value, frozen)?;
                 match key {
                     MessageKey::String(bytes) => table.raw_set(frame, &String::from_utf8_lossy(bytes))?,
                     MessageKey::Number(number) => table.raw_set_number_key(frame, *number)?,
                 }
+            }
+            if frozen {
+                table.set_read_only(true)?;
             }
         }
         Message::Handle(handle) => {

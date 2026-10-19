@@ -496,3 +496,39 @@ fn an_event_storm_is_bounded_in_memory_and_in_drain_work() {
             .contains("events.emit: 'storm' wasn't queued"),
     );
 }
+
+/// A named event's handlers share one payload, built once and frozen through: none of them can
+/// change what the next one reads.
+#[test]
+fn a_named_event_s_handlers_share_one_frozen_payload() {
+    let harness = support::domain("shared", &[]);
+    let domain = &harness.domain;
+    for name in ["first", "second"] {
+        domain
+            .register_context(ContextSpec::new(name).schedule([Phase::Event]))
+            .unwrap();
+    }
+    load_handlers(
+        domain,
+        r"
+        local journal = require('@test/journal')
+        local seen
+        return {
+          first = function(payload)
+            seen = payload
+            payload.nested.n = 2
+          end,
+          second = function(payload)
+            journal.write(`same {tostring(rawequal(payload, seen))} n {payload.nested.n}`)
+          end,
+        }
+        ",
+        &[("first", "hit", "first"), ("second", "hit", "second")],
+    );
+    domain.start().unwrap();
+    support::eval::<()>(domain, "require('@jess/events').emit('hit', { nested = { n = 1 } })");
+    let report = domain.drain_events().unwrap();
+    assert_eq!((report.delivered, report.failures.len()), (2, 1));
+    assert!(report.failures[0].to_string().contains("readonly"), "{:?}", report.failures);
+    assert_eq!(support::journal(), ["same true n 1"]);
+}

@@ -16,7 +16,7 @@ Also `require('@jess/events')`. Named events are how a domain's code tells the r
 
 Queues the event `name` with `payload` and returns. No handler runs inside `emit`. At the domain's next event drain, the end of the current frame, every handler bound to `name` gets the payload, in context order; events are delivered in the order they were emitted, and one emitted during a drain waits for the next. A handler that raises is reported with its context and event name, and the rest still run. An event nothing handles is counted as unhandled and dropped.
 
-`payload` must be transferable: nil, booleans, numbers, strings, vectors, buffers, and tables of those, nested at most 32 deep. It arrives as a copy, so a handler's changes to it are its own. If the host routed `name` to another domain, a copy is posted there too, stamped with that domain's generation.
+`payload` must be transferable: nil, booleans, numbers, strings, vectors, buffers, and tables of those, nested at most 32 deep. It is copied out of the emitting code when you emit, so changing your table afterwards changes nothing. Every handler of the event then gets the same table, built once and frozen all the way down: read it, and copy what you want to keep changing. If the host routed `name` to another domain, a copy is posted there too, stamped with that domain's generation.
 
 A name that is also a host callback is still just an event: `emit('update')` reaches `on.event.update` handlers, never `on.host.update`.
 
