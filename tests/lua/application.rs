@@ -1220,3 +1220,55 @@ return {
     assert!(headless.host().input().is_none());
     headless.stop().unwrap();
 }
+
+/// A handler that fails the same way every frame says so once, then how many more times; and an
+/// embedder that never drains holds a bounded number, the rest counted as dropped.
+#[test]
+fn diagnostics_collapse_repeats_and_stay_bounded() {
+    let temp = tempfile::tempdir().unwrap();
+    let same = temp.path().join("same");
+    single(
+        &same,
+        &[(
+            "flaky",
+            "return { on = { host = { update = function() error('again') end } } }\n",
+            None,
+        )],
+        "return nil\n",
+        &[],
+    );
+    let mut lines = Vec::new();
+    let status = launch(&request(&same, "app", &[]))
+        .run(Some(10), &std::sync::atomic::AtomicBool::new(false), |line| {
+            lines.push(line.to_owned());
+        })
+        .unwrap();
+    assert_eq!(status, 0);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(
+        lines[0].starts_with("error in org.example.single/flaky during update"),
+        "{lines:?}"
+    );
+    assert!(lines[1].ends_with("again (repeated 9 more times)"), "{lines:?}");
+
+    let different = temp.path().join("different");
+    single(
+        &different,
+        &[(
+            "noisy",
+            "local frames = 0\nreturn { on = { host = { update = function() frames += 1; error(`frame {frames}`) end } } }\n",
+            None,
+        )],
+        "return nil\n",
+        &[],
+    );
+    let mut application = launch(&request(&different, "app", &[]));
+    application.start().unwrap();
+    for _ in 0..5_000 {
+        application.frame(Duration::from_millis(16)).unwrap();
+    }
+    let held = application.diagnostics();
+    assert_eq!(held.len(), 4_097);
+    assert_eq!(held[4_096], "904 more diagnostics were dropped: nothing read them in time");
+    application.stop().unwrap();
+}

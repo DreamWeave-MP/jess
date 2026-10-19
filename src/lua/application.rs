@@ -26,8 +26,8 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use l3i::Runtime;
@@ -39,7 +39,7 @@ use crate::host::{ExitRequest, FrameReport, Host, HostSpec, InputSource};
 use crate::lua::package::{self, Inspection, Managed, Search, Target, TargetRequest};
 use crate::lua::{error, kind, state};
 use crate::runtime::{
-    CapabilitySet, CollectedDiagnostics, ContextId, ContextSpec, Diagnostic, DomainSpec, FixedStep, Generation, Phase,
+    CapabilitySet, ContextId, ContextSpec, Diagnostic, DiagnosticSink, DomainSpec, FixedStep, Generation, Phase,
     PhaseReport, RootAuthority, RuntimeError, RuntimeFactory, ScriptDomain, TeardownReport,
 };
 
@@ -480,7 +480,7 @@ impl Setup {
 pub struct Application {
     host: Host,
     setup: Rc<Setup>,
-    diagnostics: Arc<CollectedDiagnostics>,
+    diagnostics: Arc<Diagnostics>,
     /// Context names by id, kept past teardown for the diagnostics it reports.
     names: BTreeMap<ContextId, String>,
 }
@@ -539,7 +539,7 @@ pub(crate) fn launch(
     let factory: Arc<dyn RuntimeFactory> =
         Arc::new(move || crate::lua::runtime_with_capabilities(runtime_options.clone(), &capabilities));
     let grant = RootAuthority::new().grant(CapabilitySet::from_names(&target.capabilities).map_err(l3i::Error::from)?);
-    let diagnostics = Arc::new(CollectedDiagnostics::new());
+    let diagnostics = Arc::new(Diagnostics::default());
     let spec = DomainSpec::new(format!("{}:{}", inspection.id, target.id), grant)
         .diagnostics(diagnostics.clone())
         .fixed_step(FixedStep {
@@ -562,9 +562,9 @@ pub(crate) fn launch(
             .map(|context| (context.id, context.name))
             .collect::<BTreeMap<_, _>>();
         let mut lines = diagnostics
-            .drain()
+            .drain(true)
             .iter()
-            .map(|diagnostic| describe(&setup, &names, diagnostic))
+            .map(|held| tell(&setup, &names, held))
             .collect::<Vec<_>>();
         if lines.is_empty() {
             lines.push(message_of(&problem));
@@ -646,20 +646,30 @@ impl Application {
 
     /// The diagnostics reported since the last call, each as a line for people: what failed,
     /// where (the managed module's context, by name), in which phase or named event, and the
-    /// source line its handler was defined at.
+    /// source line its handler was defined at. A run of identical diagnostics is its first and,
+    /// when the run ends (or every few thousand), how many more there were; past a few thousand
+    /// undrained, the rest are counted as dropped.
     #[must_use]
     pub fn diagnostics(&self) -> Vec<String> {
         self.diagnostics
-            .drain()
-            .into_iter()
-            .map(|diagnostic| self.describe(&diagnostic))
+            .drain(false)
+            .iter()
+            .map(|held| tell(&self.setup, &self.names, held))
             .collect()
     }
 
-    /// The diagnostics reported since the last call, as the runtime reported them.
+    /// The diagnostics reported since the last call, as the runtime reported them: each distinct
+    /// one, without the counts of its repeats or of what was dropped.
     #[must_use]
     pub fn drain_diagnostics(&self) -> Vec<Diagnostic> {
-        self.diagnostics.drain()
+        self.diagnostics
+            .drain(false)
+            .into_iter()
+            .filter_map(|held| match held {
+                Held::Reported(diagnostic) => Some(diagnostic),
+                Held::Repeated { .. } | Held::Dropped(_) => None,
+            })
+            .collect()
     }
 
     /// `diagnostic` as a line for people.
@@ -696,8 +706,8 @@ impl Application {
         let setup = Rc::clone(&self.setup);
         // Teardown removes the contexts, so the names its diagnostics need are kept apart.
         let stopped = self.stop();
-        for diagnostic in diagnostics.drain() {
-            report(&describe(&setup, &names, &diagnostic));
+        for held in diagnostics.drain(true) {
+            report(&tell(&setup, &names, &held));
         }
         let status = outcome?;
         stopped.map_err(l3i::Error::from)?;
@@ -768,4 +778,105 @@ fn describe(setup: &Setup, names: &BTreeMap<ContextId, String>, diagnostic: &Dia
         "{} in {place}{phase}{event}{source}: {}",
         diagnostic.severity, diagnostic.message
     )
+}
+
+/// How many diagnostics an application holds for its driver before it counts the rest as dropped.
+const HELD: usize = 4_096;
+
+/// How many repeats of one diagnostic go by between reports of how many there have been.
+const REPEATS_REPORTED_EVERY: u64 = 3_600;
+
+/// One thing an application reported, as its driver reads it.
+enum Held {
+    /// A diagnostic, the first of any run of identical ones.
+    Reported(Diagnostic),
+    /// The diagnostic before it, repeated `times` more times since it was last told.
+    Repeated { of: Diagnostic, times: u64 },
+    /// Diagnostics past [`HELD`] that nobody drained in time, counted and gone.
+    Dropped(u64),
+}
+
+#[derive(Default)]
+struct Holding {
+    held: Vec<Held>,
+    dropped: u64,
+    /// The last diagnostic reported, kept across drains, and how many times it has repeated
+    /// since that was last told.
+    last: Option<Diagnostic>,
+    repeats: u64,
+}
+
+impl Holding {
+    fn tell_repeats(&mut self) {
+        if self.repeats == 0 {
+            return;
+        }
+        if let Some(last) = &self.last {
+            let repeated = Held::Repeated {
+                of: last.clone(),
+                times: self.repeats,
+            };
+            self.hold(repeated);
+        }
+        self.repeats = 0;
+    }
+
+    fn hold(&mut self, held: Held) {
+        if self.held.len() < HELD {
+            self.held.push(held);
+        } else {
+            self.dropped += 1;
+        }
+    }
+}
+
+/// An application's diagnostics, held for whoever drives it: at most [`HELD`] of them, and a run
+/// of identical ones as the first and a count, so a handler that fails every frame says so once
+/// and then how often, not sixty times a second.
+#[derive(Default)]
+struct Diagnostics(Mutex<Holding>);
+
+impl DiagnosticSink for Diagnostics {
+    fn report(&self, diagnostic: Diagnostic) {
+        let mut holding = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if holding.last.as_ref() == Some(&diagnostic) {
+            holding.repeats += 1;
+            if holding.repeats >= REPEATS_REPORTED_EVERY {
+                holding.tell_repeats();
+            }
+            return;
+        }
+        holding.tell_repeats();
+        holding.last = Some(diagnostic.clone());
+        holding.hold(Held::Reported(diagnostic));
+    }
+}
+
+impl Diagnostics {
+    /// What was held since the last drain; with `ending`, the count of a run of repeats still
+    /// going, too, since nothing will end it now.
+    fn drain(&self, ending: bool) -> Vec<Held> {
+        let (mut held, dropped) = {
+            let mut holding = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            if ending {
+                holding.tell_repeats();
+            }
+            (std::mem::take(&mut holding.held), std::mem::take(&mut holding.dropped))
+        };
+        if dropped > 0 {
+            held.push(Held::Dropped(dropped));
+        }
+        held
+    }
+}
+
+/// `held` as a line for people.
+fn tell(setup: &Setup, names: &BTreeMap<ContextId, String>, held: &Held) -> String {
+    match held {
+        Held::Reported(diagnostic) => describe(setup, names, diagnostic),
+        Held::Repeated { of, times } => {
+            format!("{} (repeated {times} more times)", describe(setup, names, of))
+        }
+        Held::Dropped(count) => format!("{count} more diagnostics were dropped: nothing read them in time"),
+    }
 }

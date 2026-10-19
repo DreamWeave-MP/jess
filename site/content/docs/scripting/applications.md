@@ -204,7 +204,7 @@ Frames run at 60 a second. The fixed step is 1/60 s, catching up at most 5 steps
 - `--frames` runs out: status 0;
 - you press Ctrl+C: status 130. On Unix SIGTERM does the same, and a signal the process inherited as ignored (a background job's SIGINT) stays ignored; on Windows Ctrl+Break does the same. The second one ends the process immediately, for an application whose shutdown handler is the problem.
 
-Every way out runs the `shutdown` handlers. Diagnostics go to stderr as they happen, one line each, with the context by name, the phase or event, and where the handler was defined:
+Every way out runs the `shutdown` handlers. Diagnostics go to stderr as they happen, one line each, with the context by name, the phase or event, and where the handler was defined. A handler that fails the same way every frame is one line, then `(repeated N more times)` when it stops, at exit, or once a minute while it doesn't:
 
 ```text
 jess: error in org.example.app/main during update (org.example.app@1.0.0/src/main.jsl:7): org.example.app@1.0.0/src/main.jsl:9: frame two broke
