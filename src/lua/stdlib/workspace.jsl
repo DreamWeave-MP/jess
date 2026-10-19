@@ -1627,8 +1627,11 @@ local function sync(
   -- Each round settles every id required, with what the members and the packages chosen so far
   -- require, and keeps any choice that still meets it; the next round sees what the new choices
   -- require. It stops at the round that changes nothing. A selection that keeps trading one
-  -- version for another is cut off after as many rounds as there are packages to choose between.
+  -- version for another is cut off after as many rounds as there are packages to choose between:
+  -- those offered here, those the lock pins, and every id a publisher was asked for, since a
+  -- round that only reaches further along a feed's dependencies is discovery, not trading.
   local budget = #workspace.lock.packages + 2
+  local reached: { [string]: true } = {}
 
   for _, offers in named do
     budget += #offers
@@ -1644,7 +1647,13 @@ local function sync(
   while changed do
     rounds += 1
 
-    if rounds > budget then
+    local discovered = 0
+
+    for _ in reached do
+      discovered += 1
+    end
+
+    if rounds > budget + discovered then
       fail(
         `choosing what to pin never settled: {table.concat(moved, ', ')} kept changing; name the versions to pin with jess workspace sync <file>`
       )
@@ -1665,6 +1674,7 @@ local function sync(
       if choice and (choice.named or fits(id, choice.version)) then continue end
 
       chosen[id], changed = pick(id), true
+      reached[id] = true
       table.insert(moved, id)
     end
   end

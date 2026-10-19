@@ -390,6 +390,56 @@ fn stderr(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+/// A workspace with nothing of its own but content, the way a `DreamWeave` site is: it requires a
+/// tool from a feed, the tool requires a library the same feed lists, and nothing is offered
+/// locally. Choosing reaches along the feed one dependency at a time, as far as it goes, and the
+/// tool's target then runs over the workspace.
+#[test]
+fn a_site_like_workspace_reaches_a_feed_s_dependencies_of_dependencies() {
+    let showcase = Showcase::new("workspace-feed-chain");
+    let (site, jpks) = (showcase.root.join("site"), showcase.root.join("jpks"));
+    fs::create_dir_all(site.join("content")).unwrap();
+    fs::create_dir_all(&jpks).unwrap();
+    fs::write(site.join("content/index.md"), "# A site\n").unwrap();
+    fs::write(
+        site.join("jess.toml"),
+        concat!(
+            "manifest_version = 1\n\n[package]\nid = \"org.example.site\"\nversion = \"0.0.0\"\n",
+            "jess_api = \"1\"\ninclude = [\"content\"]\n\n[dependencies]\n\"org.example.tool\" = \"1\"\n",
+        ),
+    )
+    .unwrap();
+    let words = publish("words", &jpks);
+    let tool = publish("tool", &jpks);
+    let server = crate::common::http::Server::start();
+    let feed = publisher(&server, "/publisher/", "Fixture publisher", &[&words, &tool]);
+
+    let synced = json(&sync(&site, &["--feed", &feed]));
+    assert_eq!(synced["lock"], "written");
+    let mut ids: Vec<&str> = synced["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|package| package["id"].as_str().unwrap())
+        .collect();
+    ids.sort_unstable();
+    assert_eq!(ids, ["org.example.tool", "org.example.words"]);
+
+    let ran = jess()
+        .current_dir(&site)
+        .args(["workspace", "run", "--trusted", "hello", "--", "world"])
+        .output()
+        .unwrap();
+    assert_eq!(ran.status.code(), Some(0), "{}", stderr(&ran));
+    assert_eq!(String::from_utf8(ran.stdout).unwrap(), "hello world from the tool\n");
+
+    // A clean checkout restores both from the lock, asking the feed for nothing it doesn't pin.
+    fs::remove_dir_all(site.join(".jess")).unwrap();
+    let restored = json(&sync(&site, &["--locked", "--feed", &feed]));
+    assert_eq!(restored["lock"], "unchanged");
+    assert_eq!(restored["packages"].as_array().unwrap().len(), 2);
+}
+
 /// What the showcase needs comes from a publisher's feed found through an index: downloaded,
 /// checked, pinned with the publisher in jess.lock, and run offline from then on. A clean
 /// checkout restores the exact pins from that publisher with `--locked`, never rewriting the
@@ -571,7 +621,7 @@ fn a_sync_refuses_bytes_feeds_and_publishers_that_do_not_add_up() {
 
 /// A tool the workspace depends on runs by its command name, resolved over the workspace and the
 /// packages the lock pins, without a wrapper in the workspace: what a site does with the
-/// DreamWeave template.
+/// `DreamWeave` template.
 #[test]
 fn a_pinned_package_s_target_runs_over_the_workspace() {
     let showcase = Showcase::new("workspace-pinned-target");
