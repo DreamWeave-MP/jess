@@ -120,6 +120,8 @@ Interfaces are **domain-wide on purpose**. Any code in the domain can look up an
 
 When several managed modules provide the same id, the later one in load order wins. Load order is dependency order, so the package that depends on another is the one that overrides it, which is almost always what you meant. Two providers that don't depend on each other are ordered by package id; if that isn't what you want, make one depend on the other and say so in the manifest.
 
+Notice what that means: position in the load order is the whole of the authority to override. Any package in the graph that declares the same id and loads later replaces the earlier provider, with no say from it and no `interfaceOverride` needed. The graph is yours, and so is reading what it claims: `jess package inspect` lists every `[managed]` interface a package provides.
+
 Winning replaces the whole table. jess merges nothing. A provider that wants to keep some of what it replaces says which parts, in `interfaceOverride`:
 
 ```luau
@@ -188,7 +190,7 @@ Each domain has its own queue, and nothing is broadcast. A host that wants one d
 game.domain().route("playerDied", server.domain().mailbox()?)?;
 ```
 
-A native host can also post a named event into any domain from any thread with `DomainMailbox::post_named`. Either way it is stamped with the recipient's generation, so a restart drops what was queued for the old code. Interfaces never cross; only the event's payload does.
+A native host can also post a named event into any domain from any thread with `DomainMailbox::post_named`. Either way it is stamped with the recipient's generation, so a restart drops what was queued for the old code. Interfaces never cross; only the event's payload does. A routed copy leaves when the event is emitted, not when the emitter's frame or load finishes: one emitted during a load that later fails has already been posted.
 
 ## Running and stopping
 
@@ -281,3 +283,4 @@ game.stop()?;
 - Interfaces are composed once, at load. No hot override.
 - Every managed context holds the target's whole grant; per-module capability subsets need manifest syntax nobody has designed.
 - Routing between domains is a host decision with a Rust API. There is no script API for it, on purpose, until there is a host that runs several application domains from one command.
+- Managed contexts are labels for attribution, not walls. Code anywhere in the domain can `context.bind` another module's context by its name, `<package>/<managed>`, and replace its handlers. It gains nothing today, since every context holds the same grant; per-module grants will need context ownership checked first.
