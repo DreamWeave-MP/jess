@@ -15,6 +15,7 @@ tests = [
   "tests/l10n/run.jsl",
   "tests/input/run.jsl",
   "tests/backup/run.jsl",
+  "tests/http/run.jsl",
 ]
 
 [modules]
@@ -27,6 +28,7 @@ tests = [
 "@jess/l10n" = "src/l10n/init.jsl"
 "@jess/input" = "src/input/init.jsl"
 "@jess/backup" = "src/backup/init.jsl"
+"@jess/http" = "src/http/init.jsl"
 
 [[layer]]
 id = "jess.style"
@@ -47,3 +49,7 @@ exports = ["@jess/input"]
 [[layer]]
 id = "jess.backup"
 exports = ["@jess/backup"]
+
+[[layer]]
+id = "jess.http"
+exports = ["@jess/http"]

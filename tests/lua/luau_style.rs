@@ -151,6 +151,7 @@ fn the_checker_type_checks_against_the_definitions() {
             ("@jess/l10n", "builtin/src/l10n"),
             ("@jess/input", "builtin/src/input"),
             ("@jess/backup", "builtin/src/backup"),
+            ("@jess/http", "builtin/src/http"),
         ],
     );
     assert!(report.is_empty(), "{report}");
