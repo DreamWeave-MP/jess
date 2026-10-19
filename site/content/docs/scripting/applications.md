@@ -24,7 +24,7 @@ kind = "application"
 entry = "src/main.jsl"
 ```
 
-`[managed.<id>]` can sit in any package, not only the one with the target. Every package the target's graph selects gets its managed modules loaded. `module` is a private file: it doesn't need to be in `[modules]`, and nothing can `require` it. `interface` is optional. Leave it out and the module is handler-only.
+`[managed.<id>]` can sit in any package, not only the one with the target. Every package the target's graph selects gets its managed modules loaded. `module` is a private file: it doesn't need to be in `[modules]`, and other packages can't `require` it. Its own package's files can, relatively, and they get the instance the loader ran: a managed module loads once per domain, like any package module. `interface` is optional. Leave it out and the module is handler-only.
 
 `[targets.<id>]` with `kind = "application"` names the entry and declares capabilities, exactly like a command target.
 

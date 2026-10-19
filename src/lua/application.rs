@@ -396,7 +396,9 @@ impl Setup {
         self.run_entry(runtime)
     }
 
-    /// Runs one managed module, as `require` would load it, and checks what it returned.
+    /// Runs one managed module and checks what it returned. It loads as `require` and a layer's
+    /// entrypoints load a package module: once per runtime, cached by its package identity, so
+    /// a relative `require` of the same file, before or after, is the same instance.
     fn run_managed(runtime: &Runtime, index: usize, package: &str, managed: &Managed) -> l3i::Result<Declared> {
         let jess = state(runtime)?;
         let stack = runtime.stack();
@@ -410,17 +412,28 @@ impl Setup {
                 ))
             })?
         };
-        let chunk = jess.load_as(&stack, &module.key, &module.chunk, &module.source)?;
-        let value = chunk
-            .invoke_with(&stack, (managed.id.as_str(),), |_, value| Value::store(value))
-            .map_err(|problem| {
-                error(format!(
-                    "managed '{}' of {package} ({}) failed to load: {}",
-                    managed.id,
-                    module.chunk.trim_start_matches('@'),
-                    crate::lua::error_message(&problem)
-                ))
-            })?;
+        let value = stack.with_frame(|frame| {
+            let loaded = jess.loaded.push_to(frame)?;
+            let cached = loaded.raw_get(frame, &module.key)?;
+            if !cached.is_nil() {
+                return Value::store(cached);
+            }
+            let chunk = jess.load_as(frame, &module.key, &module.chunk, &module.source)?;
+            let value = chunk
+                .invoke_with(frame, (managed.id.as_str(),), |_, value| Value::store(value))
+                .map_err(|problem| {
+                    error(format!(
+                        "managed '{}' of {package} ({}) failed to load: {}",
+                        managed.id,
+                        module.chunk.trim_start_matches('@'),
+                        crate::lua::error_message(&problem)
+                    ))
+                })?;
+            crate::lua::require::freeze_export(&module.key, value.push_to(frame)?)?;
+            value.push_to(frame)?;
+            loaded.raw_set(frame, &module.key)?;
+            Ok(value)
+        })?;
         stack.with_frame(|frame| declared(frame, package, managed, &module.chunk, value.push_to(frame)?))
     }
 

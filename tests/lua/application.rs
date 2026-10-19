@@ -938,3 +938,51 @@ fn a_command_target_still_runs_as_a_script_and_run_target_refuses_an_application
         "{refused}"
     );
 }
+
+/// A managed module is one package module: a relative `require` of its file, from a layer's
+/// entrypoint before the loader runs it or from the entry after, gets the same instance, and
+/// its top level runs once.
+#[test]
+fn a_managed_module_and_a_require_of_its_file_are_one_instance() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("shared");
+    write(
+        &root,
+        &[
+            (
+                "jess.toml",
+                &manifest(
+                    "org.example.shared",
+                    "[dependencies]\n\"org.example.journal\" = \"^1.0\"\n\n[modules]\n\"@shared/boot\" = \"src/boot.jsl\"\n\n[[layer]]\nid = \"example.shared\"\n\n[[layer.entrypoint]]\nmodule = \"@shared/boot\"\n\n[managed.counter]\nmodule = \"src/counter.jsl\"\ninterface = \"game.counter\"\n\n[targets.app]\nkind = \"application\"\nentry = \"src/main.jsl\"\n",
+                ),
+            ),
+            (
+                "src/counter.jsl",
+                r"local journal = require('@example/journal')
+journal.write('counter loaded')
+local count = 0
+local counter = { bump = function() count += 1; return count end }
+return { interface = counter }
+",
+            ),
+            (
+                "src/boot.jsl",
+                "require('@example/journal').write(`boot bumps to {require('./counter').interface.bump()}`)\nreturn nil\n",
+            ),
+            (
+                "src/main.jsl",
+                r"local journal = require('@example/journal')
+local required = require('./counter').interface
+local composed = require('@jess/interfaces').get('game.counter')
+journal.write(`entry: same table {tostring(rawequal(required, composed))}, bumps to {composed.bump()}`)
+",
+            ),
+        ],
+    );
+    let application = launch(&request(&root, "app", &[]));
+    assert_eq!(
+        journal(&application),
+        ["counter loaded", "boot bumps to 1", "entry: same table true, bumps to 2"]
+    );
+    application.stop().unwrap();
+}
