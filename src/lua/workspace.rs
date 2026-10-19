@@ -81,12 +81,12 @@ pub struct Locked {
     pub version: String,
     /// Its content digest.
     pub digest: String,
-    /// Where it came from: `local`, a package offered to `sync`, or `feed`, a publisher's package
-    /// feed.
+    /// Where it came from: `local`, a package offered to `sync`, or `publisher`, the manifest of
+    /// the `DreamWeave` project that publishes it.
     pub source: String,
-    /// For a `feed` source, the publisher's `jess-packages.json`.
-    pub feed: Option<String>,
-    /// For a `feed` source, the SHA-256 of the archive the feed served.
+    /// For a `publisher` source, the project manifest's URL.
+    pub manifest: Option<String>,
+    /// For a `publisher` source, the SHA-256 of the archive the manifest lists.
     pub artifact_sha256: Option<String>,
     /// The package ids it depends on.
     pub dependencies: Vec<String>,
@@ -138,7 +138,7 @@ fn workspace_shape() -> serde_json::Value {
         "lock": {
             "file": false, "state": "", "problems": [""],
             "packages": [{
-                "id": "", "version": "", "digest": "", "source": "", "feed": null, "artifactSha256": null,
+                "id": "", "version": "", "digest": "", "source": "", "manifest": null, "artifactSha256": null,
                 "dependencies": [""], "location": "",
             }],
         },
@@ -366,9 +366,9 @@ pub struct SyncRequest {
     /// Package indexes, such as the `jess-packages-v1.json` the `AsHyAmS` index publishes, which
     /// say who publishes an id.
     pub indexes: Vec<String>,
-    /// Publishers' `jess-packages.json` feeds named outright, which are authorities for what they
-    /// list.
-    pub feeds: Vec<String>,
+    /// Publishers named outright, a site's `dreamweave.json` or one project manifest, which are
+    /// authorities for the packages their projects publish.
+    pub publishers: Vec<String>,
 }
 
 /// A package a sync pinned.
@@ -380,10 +380,10 @@ pub struct SyncedPackage {
     pub version: String,
     /// Its content digest.
     pub digest: String,
-    /// `local` or `feed`.
+    /// `local` or `publisher`.
     pub source: String,
-    /// For a `feed` source, the publisher's feed.
-    pub feed: Option<String>,
+    /// For a `publisher` source, the project manifest it was taken from.
+    pub manifest: Option<String>,
     /// Whether this sync put it in `.jess/packages`, rather than finding it there.
     pub installed: bool,
 }
@@ -402,9 +402,9 @@ pub struct Synced {
 ///
 /// Each package id needed gets one version, which every requirement on it must accept. A package
 /// offered outright is the one for its id; otherwise what the lock already pins, while it still
-/// meets every requirement and is kept, offered, or, for a feed source, still served by its
-/// publisher with the pinned digests; otherwise the one package offered that does; otherwise,
-/// unless offline, the newest version the one publisher the feeds or indexes name offers. Two
+/// meets every requirement and is kept, offered, or, for a publisher source, still listed by its
+/// publisher's manifest with the pinned digests; otherwise the one package offered that does;
+/// otherwise, unless offline, the newest version the one publisher named or indexed offers. Two
 /// that would each do are an error, never a choice, and so are two publishers of one id. A choice
 /// that a package chosen later rules out is made again with its requirements, until nothing
 /// changes. Package Sources are packed into `.jess/packages`, JPKs copied there and archives
@@ -415,21 +415,21 @@ pub struct Synced {
 /// # Errors
 ///
 /// Returns an error if the workspace doesn't open, a requirement can't be met by exactly one
-/// package offered or published, a download isn't the bytes its feed describes, a package changes
+/// package offered or published, a download isn't the bytes its manifest describes, a package changes
 /// while it is installed, or `request.locked` and the lock would change.
 pub fn sync(runtime: &Runtime, request: &SyncRequest) -> l3i::Result<Synced> {
     let shape = serde_json::json!({
         "lock": "",
-        "packages": [{ "id": "", "version": "", "digest": "", "source": "", "feed": null, "installed": false }],
+        "packages": [{ "id": "", "version": "", "digest": "", "source": "", "manifest": null, "installed": false }],
     });
     let (start, explicit) = request.at.args();
-    let (artifacts, paths, indexes, feeds) = {
+    let (artifacts, paths, indexes, publishers) = {
         let stack = runtime.stack();
         (
             package::string_list(&stack, &request.artifacts)?,
             package::string_list(&stack, &request.paths)?,
             package::string_list(&stack, &request.indexes)?,
-            package::string_list(&stack, &request.feeds)?,
+            package::string_list(&stack, &request.publishers)?,
         )
     };
     package::bootstrap(
@@ -444,7 +444,7 @@ pub fn sync(runtime: &Runtime, request: &SyncRequest) -> l3i::Result<Synced> {
             request.locked,
             request.offline,
             indexes,
-            feeds,
+            publishers,
         ),
     )
 }

@@ -1,6 +1,6 @@
 --!strict
 -- @jess/http: an HTTP/1.1 client for fetching one resource at a time, over @dream/dns, @dream/tcp
--- and @dream/tls. It is the client jess's own package distribution reads feeds and downloads
+-- and @dream/tls. It is the client jess's own package distribution reads manifests and downloads
 -- archives with, and it is deliberately small: GET and HEAD, one connection per request, redirects
 -- followed one hop at a time under the same rules as the first request, bodies bounded by the
 -- caller, and nothing kept between calls. It holds no authority of its own: resolving needs

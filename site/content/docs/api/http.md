@@ -8,7 +8,7 @@ extra:
 
 {{ api_signature(value="require('@jess/http'): { get, parseUrl, resolveReference }") }}
 
-The client jess's own package distribution reads feeds and downloads archives with, and the one a
+The client jess's own package distribution reads manifests and downloads archives with, and the one a
 tool reaches for when it needs a file from a URL. It is small on purpose: one connection per
 request, no cookies, no keep-alive, no pools. It is written over [`@dream/dns`](@/docs/api/_index.md),
 `@dream/tcp` and `@dream/tls`, so it holds no authority of its own: the runtime has to hold
@@ -49,7 +49,7 @@ local response, message, kind = http.get('https://dreamweave-mp.github.io/AsHyAm
 if not response then error(`{kind}: {message}`) end
 if response.status ~= 200 then error(`HTTP {response.status} from {response.url}`) end
 
-local feed = require('@jess/json').decode(buffer.tostring(response.body))
+local index = require('@jess/json').decode(buffer.tostring(response.body))
 ```
 
 Every redirect hop is checked exactly as the first request was: same scheme rules, same byte and

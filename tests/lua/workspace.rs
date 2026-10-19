@@ -477,7 +477,7 @@ fn sync(root: &Path, artifacts: &[&Path], paths: &[&Path], locked: bool) -> Resu
         locked,
         offline: true,
         indexes: Vec::new(),
-        feeds: Vec::new(),
+        publishers: Vec::new(),
     };
     workspace::sync(&common::runtime(), &request).map_err(|error| error.to_string())
 }

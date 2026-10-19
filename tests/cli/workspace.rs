@@ -261,7 +261,7 @@ fn the_showcase_syncs_its_jpks_and_runs_without_them() {
 
 // Publishers --------------------------------------------------------------------------------
 
-/// A JPK packed from a vendor fixture, with the facts a feed states about it.
+/// A JPK packed from a vendor fixture, with the facts a manifest states about it.
 struct Published {
     id: String,
     version: String,
@@ -269,7 +269,7 @@ struct Published {
     sha256: String,
     size: u64,
     path: PathBuf,
-    /// Its declared `[dependencies]`, as the feed must state them.
+    /// Its declared `[dependencies]`, as the manifest must state them.
     dependencies: serde_json::Value,
 }
 
@@ -320,49 +320,113 @@ fn publish(name: &str, into: &Path) -> Published {
     }
 }
 
-/// A publisher site on `server` under `base`: its feed lists `packages`, each downloadable there.
-fn publisher(server: &crate::common::http::Server, base: &str, name: &str, packages: &[&Published]) -> String {
-    let entries: Vec<serde_json::Value> = packages
-        .iter()
-        .map(|package| {
-            let archive = format!("{base}packages/{}-{}.jpk", package.id, package.version);
-            server.serve(&archive, "application/vnd.jess.jpk", fs::read(&package.path).unwrap());
-            serde_json::json!({
-                "id": package.id,
-                "versions": [{
-                    "version": package.version,
-                    "jess_api": "1",
-                    "status": "available",
-                    "content_digest": package.digest,
-                    "dependencies": package.dependencies,
-                    "artifact": {
-                        "filename": format!("{}-{}.jpk", package.id, package.version),
-                        "media_type": "application/vnd.jess.jpk",
-                        "size": package.size,
-                        "digests": { "sha256": package.sha256 },
-                        "sources": [{ "url": server.url(&archive), "kind": "publisher" }],
-                        "signatures": []
-                    }
-                }]
-            })
-        })
-        .collect();
-    let feed = serde_json::json!({
-        "format": "jess-packages",
-        "format_version": 1,
-        "publisher": { "name": name, "url": server.url(base) },
-        "packages": entries,
-    });
-    let path = format!("{base}jess-packages.json");
-    server.serve(&path, "application/json", serde_json::to_vec_pretty(&feed).unwrap());
-    server.url(&path)
+/// A publisher: a `DreamWeave` site whose projects are Jess packages, one project per package,
+/// each with one release that is the package's JPK (protocol `schema_version` 3).
+struct PublisherSite {
+    /// The site's `dreamweave.json`.
+    index: String,
+    /// Each package's project manifest, by package id.
+    manifests: std::collections::BTreeMap<String, String>,
 }
 
-/// An index on `server` that says which feed publishes which id, as the `AsHyAmS` file does.
+impl PublisherSite {
+    fn manifest(&self, id: &str) -> &str {
+        &self.manifests[id]
+    }
+}
+
+/// A project id for a fixture package: a UUID spelled from the package id's bytes.
+fn project_id(id: &str) -> String {
+    let hex: String = id
+        .bytes()
+        .map(|byte| format!("{byte:02x}"))
+        .chain(std::iter::repeat_n("0".to_owned(), 32))
+        .take(32)
+        .collect();
+    format!(
+        "{}-{}-4{}-8{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[13..16],
+        &hex[17..20],
+        &hex[20..32]
+    )
+}
+
+/// A publisher site on `server` under `base`: a project manifest per package, each listing the
+/// package's one release and its archive, downloadable there, and an index naming which project
+/// publishes which package.
+fn publisher(server: &crate::common::http::Server, base: &str, name: &str, packages: &[&Published]) -> PublisherSite {
+    let site = server.url(base);
+    let repository = format!("https://github.com/fixture/{}", name.replace(' ', "-").to_lowercase());
+    let mut entries = Vec::new();
+    let mut manifests = std::collections::BTreeMap::new();
+    for package in packages {
+        let archive = format!("{base}packages/{}-{}.jpk", package.id, package.version);
+        server.serve(&archive, "application/vnd.jess.jpk", fs::read(&package.path).unwrap());
+        let project = project_id(&package.id);
+        let manifest_path = format!("{base}dreamweave/projects/{project}.json");
+        let manifest_url = server.url(&manifest_path);
+        let page = format!("{site}{}/", package.id);
+        let filename = format!("{}-{}.jpk", package.id, package.version);
+        let manifest = serde_json::json!({
+            "schema_version": "3",
+            "document": "project",
+            "generator": "fixture",
+            "project": {
+                "id": project, "name": package.id, "type": "library", "status": "active", "versioning": "numeric",
+                "game": "morrowind", "tags": [], "maintainers": [],
+                "links": { "page": page, "source": repository, "issues": format!("{repository}/issues") },
+                "integrations": {}, "media": [], "credits": []
+            },
+            "channels": { "stable": { "version": package.version } },
+            "releases": [{
+                "version": package.version, "channel": "stable", "date": "2026-10-19", "status": "available",
+                "source": { "repository": repository, "tag": format!("{}-{}", package.id, package.version) },
+                "runtimes": {}, "platforms": [], "provides": [], "relationships": [], "components": [], "groups": [],
+                "extensions": {}, "critical_extensions": [],
+                "artifacts": [{
+                    "id": "jpk", "format": "jpk", "filename": filename, "media_type": "application/vnd.jess.jpk",
+                    "size": package.size, "digests": { "sha256": package.sha256 },
+                    "jess": { "package": package.id, "jess_api": "1", "content_digest": package.digest, "dependencies": package.dependencies },
+                    "sources": [{ "url": server.url(&archive), "kind": "publisher" }],
+                    "signatures": []
+                }]
+            }]
+        });
+        server.serve(
+            &manifest_path,
+            "application/json",
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        );
+        // jess reads an entry as a pointer and nothing more, so the digest here is not computed.
+        entries.push(serde_json::json!({
+            "id": project, "name": package.id, "type": "library", "jess_package": package.id, "status": "active",
+            "page": page, "manifest": manifest_url, "manifest_sha256": "0".repeat(64), "updated": "2026-10-19",
+            "channels": { "stable": package.version }
+        }));
+        manifests.insert(package.id.clone(), manifest_url);
+    }
+    let index = serde_json::json!({
+        "schema_version": "3",
+        "document": "index",
+        "generator": "fixture",
+        "site": { "name": name, "url": site },
+        "projects": entries,
+    });
+    let path = format!("{base}dreamweave.json");
+    server.serve(&path, "application/json", serde_json::to_vec_pretty(&index).unwrap());
+    PublisherSite {
+        index: server.url(&path),
+        manifests,
+    }
+}
+
+/// An index on `server` that says which manifest publishes which id, as the `AsHyAmS` file does.
 fn index(server: &crate::common::http::Server, claims: &[(&str, &str)]) -> String {
     let packages: Vec<serde_json::Value> = claims
         .iter()
-        .map(|(id, feed)| serde_json::json!({ "id": id, "origin": "fixture", "feed_url": feed }))
+        .map(|(id, manifest)| serde_json::json!({ "id": id, "origin": "fixture", "manifest_url": manifest }))
         .collect();
     let document = serde_json::json!({
         "format": "dreamweave-network-jess-packages",
@@ -391,12 +455,12 @@ fn stderr(output: &std::process::Output) -> String {
 }
 
 /// A workspace with nothing of its own but content, the way a `DreamWeave` site is: it requires a
-/// tool from a feed, the tool requires a library the same feed lists, and nothing is offered
-/// locally. Choosing reaches along the feed one dependency at a time, as far as it goes, and the
+/// tool from a publisher, the tool requires a library the same site publishes, and nothing is
+/// offered locally. Choosing reaches along the publisher one dependency at a time, as far as it goes, and the
 /// tool's target then runs over the workspace.
 #[test]
-fn a_site_like_workspace_reaches_a_feed_s_dependencies_of_dependencies() {
-    let showcase = Showcase::new("workspace-feed-chain");
+fn a_site_like_workspace_reaches_a_publisher_s_dependencies_of_dependencies() {
+    let showcase = Showcase::new("workspace-publisher-chain");
     let (site, jpks) = (showcase.root.join("site"), showcase.root.join("jpks"));
     fs::create_dir_all(site.join("content")).unwrap();
     fs::create_dir_all(&jpks).unwrap();
@@ -412,9 +476,9 @@ fn a_site_like_workspace_reaches_a_feed_s_dependencies_of_dependencies() {
     let words = publish("words", &jpks);
     let tool = publish("tool", &jpks);
     let server = crate::common::http::Server::start();
-    let feed = publisher(&server, "/publisher/", "Fixture publisher", &[&words, &tool]);
+    let published = publisher(&server, "/publisher/", "Fixture publisher", &[&words, &tool]);
 
-    let synced = json(&sync(&site, &["--feed", &feed]));
+    let synced = json(&sync(&site, &["--publisher", &published.index]));
     assert_eq!(synced["lock"], "written");
     let mut ids: Vec<&str> = synced["packages"]
         .as_array()
@@ -433,14 +497,14 @@ fn a_site_like_workspace_reaches_a_feed_s_dependencies_of_dependencies() {
     assert_eq!(ran.status.code(), Some(0), "{}", stderr(&ran));
     assert_eq!(String::from_utf8(ran.stdout).unwrap(), "hello world from the tool\n");
 
-    // A clean checkout restores both from the lock, asking the feed for nothing it doesn't pin.
+    // A clean checkout restores both from the lock, asking the publisher for nothing it doesn't pin.
     fs::remove_dir_all(site.join(".jess")).unwrap();
-    let restored = json(&sync(&site, &["--locked", "--feed", &feed]));
+    let restored = json(&sync(&site, &["--locked", "--publisher", &published.index]));
     assert_eq!(restored["lock"], "unchanged");
     assert_eq!(restored["packages"].as_array().unwrap().len(), 2);
 }
 
-/// What the showcase needs comes from a publisher's feed found through an index: downloaded,
+/// What the showcase needs comes from a publisher's manifests found through an index: downloaded,
 /// checked, pinned with the publisher in jess.lock, and run offline from then on. A clean
 /// checkout restores the exact pins from that publisher with `--locked`, never rewriting the
 /// lock; offline it restores from a vendor folder with the same bytes, or says plainly why not.
@@ -452,20 +516,29 @@ fn the_showcase_syncs_from_a_publisher_and_restores_its_pins() {
     let words = publish("words", &jpks);
     let style = publish("style", &jpks);
     let server = crate::common::http::Server::start();
-    let feed = publisher(&server, "/publisher/", "Fixture publisher", &[&words, &style]);
-    let index_url = index(&server, &[("org.example.words", &feed), ("org.example.style", &feed)]);
+    let published = publisher(&server, "/publisher/", "Fixture publisher", &[&words, &style]);
+    let index_url = index(
+        &server,
+        &[
+            ("org.example.words", published.manifest("org.example.words")),
+            ("org.example.style", published.manifest("org.example.style")),
+        ],
+    );
 
     let synced = json(&sync(&workspace, &["--index", &index_url]));
     assert_eq!(synced["lock"], "written");
     for package in synced["packages"].as_array().unwrap() {
-        assert_eq!(package["source"], "feed");
-        assert_eq!(package["feed"], feed);
+        assert_eq!(package["source"], "publisher");
+        assert_eq!(package["manifest"], published.manifest(package["id"].as_str().unwrap()));
         assert_eq!(package["installed"], true);
     }
     let lock = fs::read_to_string(workspace.join("jess.lock")).unwrap();
     assert!(lock.contains("lock_version = 2"), "{lock}");
-    assert!(lock.contains("source = \"feed\""), "{lock}");
-    assert!(lock.contains(&format!("feed = \"{feed}\"")), "{lock}");
+    assert!(lock.contains("source = \"publisher\""), "{lock}");
+    assert!(
+        lock.contains(&format!("manifest = \"{}\"", published.manifest("org.example.words"))),
+        "{lock}"
+    );
     assert!(lock.contains(&format!("artifact_sha256 = \"{}\"", words.sha256)), "{lock}");
     assert!(lock.contains(&format!("digest = \"{}\"", words.digest)), "{lock}");
     assert!(!lock.contains("127.0.0.1:0"), "{lock}");
@@ -499,7 +572,7 @@ fn the_showcase_syncs_from_a_publisher_and_restores_its_pins() {
     assert_eq!(server.requests().len(), before, "offline asks nobody");
 
     let listing = publisher(&server, "/publisher/", "Fixture publisher", &[&words, &style]);
-    assert_eq!(listing, feed);
+    assert_eq!(listing.index, published.index);
     let restored = json(&sync(&workspace, &["--locked", "--index", &index_url]));
     assert_eq!(restored["lock"], "unchanged");
     assert_eq!(
@@ -530,34 +603,37 @@ fn the_showcase_syncs_from_a_publisher_and_restores_its_pins() {
     assert_eq!(vendored["lock"], "unchanged");
     assert_eq!(fs::read_to_string(workspace.join("jess.lock")).unwrap(), lock);
     for package in vendored["packages"].as_array().unwrap() {
-        assert_eq!(package["source"], "feed", "the same content is still the publisher's package");
+        assert_eq!(
+            package["source"], "publisher",
+            "the same content is still the publisher's package"
+        );
     }
 }
 
-/// A publisher whose archive is not what its feed says, a feed that changed its story about a
-/// pinned version, and two sites claiming one id each stop a sync with a diagnostic naming the
+/// A publisher whose archive is not what its manifest says, a manifest that changed its story about
+/// a pinned version, and two sites claiming one id each stop a sync with a diagnostic naming the
 /// cause, and nothing is kept or pinned.
 #[test]
-fn a_sync_refuses_bytes_feeds_and_publishers_that_do_not_add_up() {
+fn a_sync_refuses_bytes_manifests_and_publishers_that_do_not_add_up() {
     let showcase = Showcase::new("workspace-refusals");
     let (workspace, jpks) = (showcase.workspace(), showcase.root.join("jpks"));
     fs::create_dir_all(&jpks).unwrap();
     let words = publish("words", &jpks);
     let style = publish("style", &jpks);
     let server = crate::common::http::Server::start();
-    let feed = publisher(&server, "/publisher/", "Fixture publisher", &[&words, &style]);
+    let published = publisher(&server, "/publisher/", "Fixture publisher", &[&words, &style]);
 
-    // Tampered bytes: the archive served is not the one the feed describes.
+    // Tampered bytes: the archive served is not the one the manifest describes.
     server.serve(
         "/publisher/packages/org.example.words-1.2.0.jpk",
         "application/vnd.jess.jpk",
         fs::read(&style.path).unwrap(),
     );
-    let tampered = sync(&workspace, &["--feed", &feed]);
+    let tampered = sync(&workspace, &["--publisher", &published.index]);
     assert!(!tampered.status.success());
     let text = stderr(&tampered);
     assert!(text.contains("could not be downloaded"), "{text}");
-    assert!(text.contains("the feed says") || text.contains("more than"), "{text}");
+    assert!(text.contains("the manifest says") || text.contains("more than"), "{text}");
     assert!(!workspace.join("jess.lock").exists(), "nothing is pinned");
     let kept: Vec<String> = fs::read_dir(workspace.join(".jess/packages"))
         .map(|entries| {
@@ -573,14 +649,14 @@ fn a_sync_refuses_bytes_feeds_and_publishers_that_do_not_add_up() {
         "the refused archive and no partial file is kept: {kept:?}"
     );
 
-    // Honest bytes again, from a feed that lies about the content digest.
+    // Honest bytes again, from a manifest that lies about the content digest.
     publisher(&server, "/publisher/", "Fixture publisher", &[&words, &style]);
     let lying = Published {
         digest: "0".repeat(64),
         ..publish("words", &jpks)
     };
     let liar = publisher(&server, "/liar/", "A liar", &[&lying, &style]);
-    let misdescribed = sync(&workspace, &["--feed", &liar]);
+    let misdescribed = sync(&workspace, &["--publisher", &liar.index]);
     assert!(!misdescribed.status.success());
     assert!(stderr(&misdescribed).contains("content digest"), "{}", stderr(&misdescribed));
     assert!(!workspace.join("jess.lock").exists());
@@ -590,27 +666,29 @@ fn a_sync_refuses_bytes_feeds_and_publishers_that_do_not_add_up() {
     let index_url = index(
         &server,
         &[
-            ("org.example.words", &feed),
-            ("org.example.words", &other),
-            ("org.example.style", &feed),
+            ("org.example.words", published.manifest("org.example.words")),
+            ("org.example.words", other.manifest("org.example.words")),
+            ("org.example.style", published.manifest("org.example.style")),
         ],
     );
     let ambiguous = sync(&workspace, &["--index", &index_url]);
     assert!(!ambiguous.status.success());
     let text = stderr(&ambiguous);
     assert!(
-        text.contains("more than one site") && text.contains(&other) && text.contains("--feed"),
+        text.contains("more than one site")
+            && text.contains(other.manifest("org.example.words"))
+            && text.contains("--publisher"),
         "{text}"
     );
 
     // Naming the publisher settles it.
-    let settled = json(&sync(&workspace, &["--index", &index_url, "--feed", &feed]));
+    let settled = json(&sync(&workspace, &["--index", &index_url, "--publisher", &published.index]));
     assert_eq!(settled["lock"], "written");
 
-    // A pinned publisher whose feed now describes other bytes for the pinned version is refused.
+    // A pinned publisher whose manifest now describes other bytes for the pinned version is refused.
     fs::remove_dir_all(workspace.join(".jess/packages")).unwrap();
     publisher(&server, "/publisher/", "Fixture publisher", &[&lying, &style]);
-    let changed = sync(&workspace, &["--locked", "--feed", &feed]);
+    let changed = sync(&workspace, &["--locked", "--publisher", &published.index]);
     assert!(!changed.status.success());
     assert!(
         stderr(&changed).contains("no longer describes the bytes"),

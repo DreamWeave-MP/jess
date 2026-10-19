@@ -8,12 +8,13 @@
 -- `.jess/packages`.
 --
 -- What a member needs beyond the workspace comes from packages offered by file, from what the lock
--- already pins, or, when nothing local will do, from a publisher's package feed: the
--- `jess-packages.json` a site serves beside its DreamWeave index, found through an index such as
--- AsHyAmS or named outright. The feed is the authority, the index only says who publishes an id,
--- and an archive is kept only once its bytes match the feed's SHA-256 and its content the digest
--- the lock pins. A lock that pins a feed source restores from that feed, from `.jess/packages`, or
--- from any file offered with the same content, and never quietly from anywhere else.
+-- already pins, or, when nothing local will do, from a publisher: the DreamWeave project whose
+-- releases are the package, as its manifest (protocol schema_version 3) lists them, found through
+-- an index such as AsHyAmS or named outright as a site or a manifest. The manifest is the
+-- authority, the index only says who publishes an id, and an archive is kept only once its bytes
+-- match the manifest's SHA-256 and its content the digest the lock pins. A lock that pins a
+-- publisher source restores from that manifest, from `.jess/packages`, or from any file offered
+-- with the same content, and never quietly from anywhere else.
 
 type Host = {
   read readFile: (path: string) -> buffer?,
@@ -81,29 +82,30 @@ export type Member = {
 }
 
 --- A package `jess.lock` pins: exactly which one, where it came from, and the packages it
---- depends on. A `feed` source names the publisher's `jess-packages.json` and the SHA-256 of the
---- archive it served, so a restore reads the same publisher and checks the same bytes.
+--- depends on. A `publisher` source names the manifest of the DreamWeave project that publishes
+--- the package and the SHA-256 of the archive it served, so a restore reads the same publisher
+--- and checks the same bytes.
 type Locked = {
   read id: string,
   read version: string,
   read digest: string,
-  read source: 'local' | 'feed',
-  read feed: string?,
+  read source: 'local' | 'publisher',
+  read manifest: string?,
   read artifactSha256: string?,
   read dependencies: { string },
 }
 
 --- Where `sync` may look beyond the files it is offered: nowhere when `offline`; otherwise the
---- feeds named outright, which are authorities, and the indexes, which only say who publishes
---- an id.
+--- publishers named outright, which are authorities, and the indexes, which only say who
+--- publishes an id.
 export type Remote = {
   read offline: boolean,
   read indexes: { string },
-  read feeds: { string },
+  read publishers: { string },
 }
 
---- One version of a package as its publisher's feed lists it.
-type FeedArtifact = {
+--- The archive of one release: the `jpk` artifact as the manifest lists it.
+type ReleaseArtifact = {
   read filename: string,
   read size: number,
   read sha256: string,
@@ -111,26 +113,28 @@ type FeedArtifact = {
   read sources: { string },
 }
 
-type FeedVersion = {
+--- One release of a package as the manifest of the project publishing it lists it: the release
+--- carries one `jpk` artifact, whose `jess` block says what package it is.
+type Release = {
   read version: string,
   read jessApi: string,
-  read status: 'available' | 'yanked',
+  read status: 'available' | 'yanked' | 'deprecated',
   read contentDigest: string,
   read dependencies: { [string]: string },
-  read artifact: FeedArtifact,
+  read artifact: ReleaseArtifact,
 }
 
-type FeedPackage = { read id: string, read versions: { FeedVersion } }
-
---- A publisher's `jess-packages.json`, read and checked.
-type Feed = {
+--- A DreamWeave project manifest (protocol schema_version 3) that publishes a Jess package: its
+--- URL, the project's name, the package id, and the releases that are the package, newest first.
+type Listing = {
   read url: string,
   read publisher: string,
-  read packages: { [string]: FeedPackage },
+  read id: string,
+  read versions: { Release },
 }
 
---- A version of a package a feed offers, before its archive is downloaded.
-type RemoteOffer = { read feed: Feed, read package: FeedPackage, read entry: FeedVersion }
+--- A version of a package a manifest offers, before its archive is downloaded.
+type RemoteOffer = { read listing: Listing, read entry: Release }
 
 type HttpResponse = { read status: number, read body: buffer, read url: string }
 type HttpModule = {
@@ -169,10 +173,11 @@ local Generated, LockVersion = '.jess', 2
 --- The lock versions this jess reads: 1 pinned local packages only.
 local ReadableLockVersions = { 1, LockVersion }
 local Store = `{Generated}/packages`
-local FeedFormat, FeedFormatVersion = 'jess-packages', 1
+--- The DreamWeave protocol version whose manifests publish Jess packages.
+local ProtocolVersion = '3'
 local IndexFormat, IndexFormatVersion = 'dreamweave-network-jess-packages', 1
 local ArchiveMediaType = 'application/vnd.jess.jpk'
-local MaxFeedBytes, MaxIndexBytes = 8 * 1024 * 1024, 64 * 1024 * 1024
+local MaxManifestBytes, MaxIndexBytes = 8 * 1024 * 1024, 64 * 1024 * 1024
 local FetchTimeoutMs, DownloadTimeoutMs = 30000, 300000
 
 local host: Host, package: PackageModule
@@ -359,10 +364,10 @@ local function readLock(root: string): { Locked }?
     if type(entry) ~= 'table' then fail(`{at} is not a table`) end
 
     local fields = entry :: { [string]: unknown }
-    checkKeys(fields, { 'id', 'version', 'digest', 'source', 'feed', 'artifact_sha256', 'dependencies' }, at)
+    checkKeys(fields, { 'id', 'version', 'digest', 'source', 'manifest', 'artifact_sha256', 'dependencies' }, at)
 
     local id, version, digest, source = fields.id, fields.version, fields.digest, fields.source
-    local feed, artifactSha256 = fields.feed, fields.artifact_sha256
+    local manifest, artifactSha256 = fields.manifest, fields.artifact_sha256
 
     if type(id) ~= 'string' or not plainName(id, '^[%l%d][%l%d%.%-]*$') then
       fail(`{at}: id must be a package id`)
@@ -376,20 +381,20 @@ local function readLock(root: string): { Locked }?
       fail(`{at}: digest must be a content digest, as package inspect shows one`)
     end
 
-    if source ~= 'local' and source ~= 'feed' then
-      fail(`{at}: source '{tostring(source)}' is not one this jess knows (local, feed)`)
+    if source ~= 'local' and source ~= 'publisher' then
+      fail(`{at}: source '{tostring(source)}' is not one this jess knows (local, publisher)`)
     end
 
-    if source == 'feed' then
-      if type(feed) ~= 'string' or not string.find(feed, '^https?://') then
-        fail(`{at}: a feed source needs feed, the URL of the publisher's jess-packages.json`)
+    if source == 'publisher' then
+      if type(manifest) ~= 'string' or not string.find(manifest, '^https?://') then
+        fail(`{at}: a publisher source needs manifest, the URL of the project manifest that publishes the package`)
       end
 
       if type(artifactSha256) ~= 'string' or not string.find(artifactSha256, '^%x+$') or #artifactSha256 ~= 64 then
-        fail(`{at}: a feed source needs artifact_sha256, the SHA-256 of the archive the feed serves`)
+        fail(`{at}: a publisher source needs artifact_sha256, the SHA-256 of the archive the manifest lists`)
       end
-    elseif feed ~= nil or artifactSha256 ~= nil then
-      fail(`{at}: feed and artifact_sha256 belong to a feed source, and this one is local`)
+    elseif manifest ~= nil or artifactSha256 ~= nil then
+      fail(`{at}: manifest and artifact_sha256 belong to a publisher source, and this one is local`)
     end
 
     local dependencies = fields.dependencies or {}
@@ -415,9 +420,9 @@ local function readLock(root: string): { Locked }?
         id = pinned,
         version = version :: string,
         digest = digest :: string,
-        source = if source == 'feed' then 'feed' :: 'feed' else 'local' :: 'local',
-        feed = if source == 'feed' then feed :: string else nil,
-        artifactSha256 = if source == 'feed' then artifactSha256 :: string else nil,
+        source = if source == 'publisher' then 'publisher' :: 'publisher' else 'local' :: 'local',
+        manifest = if source == 'publisher' then manifest :: string else nil,
+        artifactSha256 = if source == 'publisher' then artifactSha256 :: string else nil,
         dependencies = table.freeze(ids),
       }
     )
@@ -974,8 +979,8 @@ local function encodeLock(packages: { Locked }): string
     table.insert(lines, `digest = "{entry.digest}"`)
     table.insert(lines, `source = "{entry.source}"`)
 
-    if entry.source == 'feed' then
-      table.insert(lines, `feed = "{entry.feed}"`)
+    if entry.source == 'publisher' then
+      table.insert(lines, `manifest = "{entry.manifest}"`)
       table.insert(lines, `artifact_sha256 = "{entry.artifactSha256}"`)
     end
 
@@ -1037,58 +1042,80 @@ local function fetchJson(url: string, what: string, maxBytes: number): { [string
   return document :: { [string]: unknown }
 end
 
---- One version entry of a publisher's feed, checked field by field.
-local function feedVersion(value: unknown, at: string): FeedVersion
+--- The `jpk` artifact of a release, when it carries one: the release is then a version of the
+--- Jess package the artifact's `jess` block names. Checked field by field; a release of
+--- something else answers nothing.
+local function packageRelease(value: unknown, at: string): (Release?, string?)
   if type(value) ~= 'table' then fail(`{at} is not an object`) end
 
   local fields = value :: { [string]: unknown }
-  local version, jessApi, status = fields.version, fields.jess_api, fields.status
 
-  if type(version) ~= 'string' or not string.find(version, '^%d+%.%d+%.%d+$') then
-    fail(`{at}: version must be exact (1.2.3)`)
+  if type(fields.artifacts) ~= 'table' then fail(`{at}: artifacts must be a list`) end
+
+  local archive: { [string]: unknown }?
+
+  for _, candidate in fields.artifacts :: { unknown } do
+    if type(candidate) == 'table' and (candidate :: { [string]: unknown }).format == 'jpk' then
+      if archive then fail(`{at}: two jpk artifacts; a package's release has one`) end
+
+      archive = candidate :: { [string]: unknown }
+    end
   end
 
-  if type(jessApi) ~= 'string' then fail(`{at}: jess_api must be a string`) end
+  if not archive then return nil, nil end
 
-  if status ~= 'available' and status ~= 'yanked' then fail(`{at}: status must be available or yanked`) end
+  local artifact = archive :: { [string]: unknown }
+  local version, status = fields.version, fields.status
 
-  if not isHex64(fields.content_digest) then fail(`{at}: content_digest must be a Jess content digest`) end
+  if type(version) ~= 'string' or not string.find(version, '^%d+%.%d+%.%d+$') then
+    fail(`{at}: a package's version must be exact (1.2.3)`)
+  end
+
+  if status ~= 'available' and status ~= 'yanked' and status ~= 'deprecated' then
+    fail(`{at}: status must be available, yanked or deprecated`)
+  end
+
+  if type(artifact.jess) ~= 'table' then fail(`{at}: a jpk artifact needs a jess block`) end
+
+  local jess = artifact.jess :: { [string]: unknown }
+  local id, jessApi = jess.package, jess.jess_api
+
+  if type(id) ~= 'string' or not plainName(id, '^[%l%d][%l%d%.%-]*$') then fail(`{at}: jess.package must be a package id`) end
+
+  if type(jessApi) ~= 'string' then fail(`{at}: jess.jess_api must be a string`) end
+
+  if not isHex64(jess.content_digest) then fail(`{at}: jess.content_digest must be a Jess content digest`) end
 
   local dependencies: { [string]: string } = {}
 
-  if type(fields.dependencies) ~= 'table' then fail(`{at}: dependencies must be an object`) end
+  if type(jess.dependencies) ~= 'table' then fail(`{at}: jess.dependencies must be an object`) end
 
-  for id, requirement in fields.dependencies :: { [unknown]: unknown } do
-    if type(id) ~= 'string' or type(requirement) ~= 'string' then
-      fail(`{at}: dependencies must map package ids to requirements`)
+  for dependency, requirement in jess.dependencies :: { [unknown]: unknown } do
+    if type(dependency) ~= 'string' or type(requirement) ~= 'string' then
+      fail(`{at}: jess.dependencies must map package ids to requirements`)
     end
 
-    dependencies[id :: string] = requirement :: string
+    dependencies[dependency :: string] = requirement :: string
   end
 
-  local artifact = fields.artifact
+  local filename, size, digests = artifact.filename, artifact.size, artifact.digests
 
-  if type(artifact) ~= 'table' then fail(`{at}: artifact must be an object`) end
+  if type(filename) ~= 'string' or string.find(filename, '[/\\]') then fail(`{at}: the artifact's filename must be a file name`) end
 
-  local archive = artifact :: { [string]: unknown }
-  local filename, size, digests = archive.filename, archive.size, archive.digests
+  if artifact.media_type ~= ArchiveMediaType then fail(`{at}: a jpk artifact's media_type must be {ArchiveMediaType}`) end
 
-  if type(filename) ~= 'string' or string.find(filename, '[/\\]') then fail(`{at}: artifact.filename must be a file name`) end
-
-  if archive.media_type ~= ArchiveMediaType then fail(`{at}: artifact.media_type must be {ArchiveMediaType}`) end
-
-  if type(size) ~= 'number' or size < 1 or size ~= math.floor(size) then fail(`{at}: artifact.size must be a byte count`) end
+  if type(size) ~= 'number' or size < 1 or size ~= math.floor(size) then fail(`{at}: the artifact's size must be a byte count`) end
 
   if type(digests) ~= 'table' or not isHex64((digests :: { [string]: unknown }).sha256) then
-    fail(`{at}: artifact.digests.sha256 must be the archive's SHA-256`)
+    fail(`{at}: the artifact's digests.sha256 must be the archive's SHA-256`)
   end
 
-  if type(archive.sources) ~= 'table' then fail(`{at}: artifact.sources must be a list`) end
+  if type(artifact.sources) ~= 'table' then fail(`{at}: the artifact's sources must be a list`) end
 
   local publisherUrls, mirrorUrls = {} :: { string }, {} :: { string }
 
-  for _, source in archive.sources :: { unknown } do
-    if type(source) ~= 'table' then fail(`{at}: artifact.sources must be objects`) end
+  for _, source in artifact.sources :: { unknown } do
+    if type(source) ~= 'table' then fail(`{at}: artifact sources must be objects`) end
 
     local entry = source :: { [string]: unknown }
 
@@ -1107,11 +1134,11 @@ local function feedVersion(value: unknown, at: string): FeedVersion
 
   if #publisherUrls == 0 then fail(`{at}: the artifact has no source`) end
 
-  return table.freeze {
+  local release: Release = table.freeze {
     version = version :: string,
     jessApi = jessApi :: string,
-    status = if status == 'yanked' then 'yanked' :: 'yanked' else 'available' :: 'available',
-    contentDigest = fields.content_digest :: string,
+    status = if status == 'yanked' then 'yanked' :: 'yanked' elseif status == 'deprecated' then 'deprecated' :: 'deprecated' else 'available' :: 'available',
+    contentDigest = jess.content_digest :: string,
     dependencies = table.freeze(dependencies),
     artifact = table.freeze {
       filename = filename :: string,
@@ -1120,67 +1147,111 @@ local function feedVersion(value: unknown, at: string): FeedVersion
       sources = table.freeze(publisherUrls),
     },
   }
+
+  return release, id :: string
 end
 
---- The publisher's feed at `url`, read and held to its format: ids listed once, versions exact.
-local function readFeed(url: string): Feed
-  local document = fetchJson(url, 'the package feed', MaxFeedBytes)
-  local where = `the package feed {url}`
+--- `document`, fetched from `url`, as the project manifest it has to be: schema_version 3, one
+--- Jess package across every release that carries a jpk artifact, versions listed once.
+local function listingOf(url: string, document: { [string]: unknown }): Listing
+  local where = `the project manifest {url}`
 
-  if document.format ~= FeedFormat or document.format_version ~= FeedFormatVersion then
-    fail(`{where} is not a {FeedFormat} document of format_version {FeedFormatVersion}`)
+  if document.schema_version ~= ProtocolVersion or document.document ~= 'project' then
+    fail(`{where} is not a DreamWeave project manifest of schema_version {ProtocolVersion}`)
   end
 
-  local publisher = document.publisher
+  local project = document.project
 
-  if type(publisher) ~= 'table' or type((publisher :: { [string]: unknown }).name) ~= 'string' then
-    fail(`{where} names no publisher`)
+  if type(project) ~= 'table' or type((project :: { [string]: unknown }).name) ~= 'string' then
+    fail(`{where} names no project`)
   end
 
-  if type(document.packages) ~= 'table' then fail(`{where} has no packages list`) end
+  if type(document.releases) ~= 'table' then fail(`{where} has no releases list`) end
 
-  local packages: { [string]: FeedPackage } = {}
+  local id: string?
+  local versions: { Release } = {}
+  local seen: { [string]: boolean } = {}
 
-  for index, value in document.packages :: { unknown } do
-    local at = `{where}: packages[{index}]`
+  for index, value in document.releases :: { unknown } do
+    local release, package = packageRelease(value, `{where}: releases[{index}]`)
 
-    if type(value) ~= 'table' then fail(`{at} is not an object`) end
+    if not release then continue end
 
-    local fields = value :: { [string]: unknown }
-    local id = fields.id
+    local found = release :: Release
 
-    if type(id) ~= 'string' or not plainName(id, '^[%l%d][%l%d%.%-]*$') then fail(`{at}: id must be a package id`) end
-
-    if packages[id :: string] then fail(`{where} lists {id} twice`) end
-
-    if type(fields.versions) ~= 'table' then fail(`{at}: versions must be a list`) end
-
-    local versions: { FeedVersion } = {}
-    local seen: { [string]: boolean } = {}
-
-    for position, entry in fields.versions :: { unknown } do
-      local parsed = feedVersion(entry, `{at}.versions[{position}]`)
-
-      if seen[parsed.version] then fail(`{at} lists version {parsed.version} twice`) end
-
-      seen[parsed.version] = true
-      table.insert(versions, parsed)
+    if id and id ~= package then
+      fail(`{where} publishes more than one Jess package ({id}, {tostring(package)}); one project is one package`)
     end
 
-    if #versions == 0 then fail(`{at} lists no version`) end
+    id = package
 
-    packages[id :: string] = table.freeze { id = id :: string, versions = table.freeze(versions) }
+    if seen[found.version] then fail(`{where} lists version {found.version} twice`) end
+
+    seen[found.version] = true
+    table.insert(versions, found)
   end
+
+  if not id then fail(`{where} publishes no Jess package: no release carries a jpk artifact`) end
 
   return table.freeze {
     url = url,
-    publisher = (publisher :: { [string]: unknown }).name :: string,
-    packages = table.freeze(packages),
+    publisher = (project :: { [string]: unknown }).name :: string,
+    id = id :: string,
+    versions = table.freeze(versions),
   }
 end
 
---- The sites an index says publish each package id: id to the distinct feed URLs claiming it.
---- An index is a cache somebody else keeps; nothing in it is believed beyond who to ask.
+--- The manifest at `url`, read and held to its format.
+local function readManifest(url: string): Listing
+  return listingOf(url, fetchJson(url, 'the project manifest', MaxManifestBytes))
+end
+
+--- What a publisher URL names: a site's `dreamweave.json` (or the site, whose index is
+--- `dreamweave.json` under it), whose entries say which project publishes which package, or one
+--- project manifest. Answers package id to manifest URL, and the manifest itself when that is
+--- what was read, so it isn't fetched twice.
+local function readPublisher(url: string): ({ [string]: string }, Listing?)
+  local target = if string.sub(url, -1) == '/' then `{url}dreamweave.json` else url
+  local document = fetchJson(target, 'the publisher', MaxManifestBytes)
+
+  if document.document == 'project' then
+    local listing = listingOf(target, document)
+
+    return { [listing.id] = target }, listing
+  end
+
+  local where = `the site index {target}`
+
+  if document.schema_version ~= ProtocolVersion or document.document ~= 'index' then
+    fail(`{where} is not a DreamWeave site index of schema_version {ProtocolVersion}`)
+  end
+
+  if type(document.projects) ~= 'table' then fail(`{where} has no projects list`) end
+
+  local published: { [string]: string } = {}
+
+  for index, value in document.projects :: { unknown } do
+    if type(value) ~= 'table' then fail(`{where}: projects[{index}] is not an object`) end
+
+    local entry = value :: { [string]: unknown }
+    local package, manifest = entry.jess_package, entry.manifest
+
+    if package == nil then continue end
+
+    if type(package) ~= 'string' or not isUrl(manifest) then
+      fail(`{where}: projects[{index}] names a Jess package without a manifest URL`)
+    end
+
+    if published[package :: string] then fail(`{where} lists two projects publishing {package}`) end
+
+    published[package :: string] = manifest :: string
+  end
+
+  return published, nil
+end
+
+--- The sites an index says publish each package id: id to the distinct manifest URLs publishing
+--- it. An index is a cache somebody else keeps; nothing in it is believed beyond who to ask.
 local function readIndex(url: string): { [string]: { string } }
   local document = fetchJson(url, 'the package index', MaxIndexBytes)
   local where = `the package index {url}`
@@ -1197,27 +1268,27 @@ local function readIndex(url: string): { [string]: { string } }
     if type(value) ~= 'table' then fail(`{where}: packages[{index}] is not an object`) end
 
     local fields = value :: { [string]: unknown }
-    local id, feedUrl = fields.id, fields.feed_url
+    local id, manifestUrl = fields.id, fields.manifest_url
 
-    if type(id) ~= 'string' or not isUrl(feedUrl) then
-      fail(`{where}: packages[{index}] needs an id and a feed_url`)
+    if type(id) ~= 'string' or not isUrl(manifestUrl) then
+      fail(`{where}: packages[{index}] needs an id and a manifest_url`)
     end
 
-    local feeds = claims[id :: string] or {}
+    local manifests = claims[id :: string] or {}
 
-    if not table.find(feeds, feedUrl :: string) then table.insert(feeds, feedUrl :: string) end
+    if not table.find(manifests, manifestUrl :: string) then table.insert(manifests, manifestUrl :: string) end
 
-    claims[id :: string] = feeds
+    claims[id :: string] = manifests
   end
 
-  for _, feeds in claims do
-    table.sort(feeds)
+  for _, manifests in claims do
+    table.sort(manifests)
   end
 
   return claims
 end
 
---- The archive of `offer`, from the first source whose bytes are the ones the feed describes.
+--- The archive of `offer`, from the first source whose bytes are the ones the manifest describes.
 local function download(offer: RemoteOffer): buffer
   local artifact = offer.entry.artifact
   local attempts: { string } = {}
@@ -1239,14 +1310,14 @@ local function download(offer: RemoteOffer): buffer
     end
 
     if buffer.len(answer.body) ~= artifact.size then
-      table.insert(attempts, `{url}: served {buffer.len(answer.body)} bytes, and the feed says {artifact.size}`)
+      table.insert(attempts, `{url}: served {buffer.len(answer.body)} bytes, and the manifest says {artifact.size}`)
       continue
     end
 
     local sha256 = bytes().sha256(answer.body)
 
     if sha256 ~= artifact.sha256 then
-      table.insert(attempts, `{url}: the archive's sha256 is {sha256}, and the feed says {artifact.sha256}`)
+      table.insert(attempts, `{url}: the archive's sha256 is {sha256}, and the manifest says {artifact.sha256}`)
       continue
     end
 
@@ -1254,12 +1325,12 @@ local function download(offer: RemoteOffer): buffer
   end
 
   fail(
-    `{offer.package.id} {offer.entry.version} could not be downloaded from any source its feed names:\n  {table.concat(attempts, '\n  ')}`
+    `{offer.listing.id} {offer.entry.version} could not be downloaded from any source its manifest names:\n  {table.concat(attempts, '\n  ')}`
   )
 end
 
 --- A package sync selected: which one, what it depends on, and where it comes from. A local
---- choice is an opened package; a remote one is a feed's entry, downloaded once the choices
+--- choice is an opened package; a remote one is a manifest's release, downloaded once the choices
 --- settle. `named` is a package named outright, which no requirement overrides.
 type Choice = {
   id: string,
@@ -1270,15 +1341,15 @@ type Choice = {
   remote: RemoteOffer?,
   stored: boolean,
   named: boolean,
-  source: 'local' | 'feed',
-  feed: string?,
+  source: 'local' | 'publisher',
+  manifest: string?,
   artifactSha256: string?,
 }
 
---- A local choice. `pin` carries a feed source over: the same content from a file offered or kept
---- is still the publisher's package, and the lock keeps saying so.
+--- A local choice. `pin` carries a publisher source over: the same content from a file offered or
+--- kept is still the publisher's package, and the lock keeps saying so.
 local function localChoice(opened: Package, stored: boolean, named: boolean, pin: Locked?): Choice
-  local fromFeed = pin ~= nil and pin.source == 'feed' and pin.digest == opened.digest
+  local fromPublisher = pin ~= nil and pin.source == 'publisher' and pin.digest == opened.digest
 
   return {
     id = opened.id,
@@ -1289,15 +1360,15 @@ local function localChoice(opened: Package, stored: boolean, named: boolean, pin
     remote = nil,
     stored = stored,
     named = named,
-    source = if fromFeed then 'feed' :: 'feed' else 'local' :: 'local',
-    feed = if fromFeed then (pin :: Locked).feed else nil,
-    artifactSha256 = if fromFeed then (pin :: Locked).artifactSha256 else nil,
+    source = if fromPublisher then 'publisher' :: 'publisher' else 'local' :: 'local',
+    manifest = if fromPublisher then (pin :: Locked).manifest else nil,
+    artifactSha256 = if fromPublisher then (pin :: Locked).artifactSha256 else nil,
   }
 end
 
 local function remoteChoice(offer: RemoteOffer): Choice
   return {
-    id = offer.package.id,
+    id = offer.listing.id,
     version = offer.entry.version,
     digest = offer.entry.contentDigest,
     dependencies = offer.entry.dependencies,
@@ -1305,8 +1376,8 @@ local function remoteChoice(offer: RemoteOffer): Choice
     remote = offer,
     stored = false,
     named = false,
-    source = 'feed' :: 'feed',
-    feed = offer.feed.url,
+    source = 'publisher' :: 'publisher',
+    manifest = offer.listing.url,
     artifactSha256 = offer.entry.artifact.sha256,
   }
 end
@@ -1340,17 +1411,32 @@ local function sync(
     if not isUrl(url) then fail(`index '{url}' is not an http(s) URL`) end
   end
 
-  for _, url in remote.feeds do
-    if not isUrl(url) then fail(`feed '{url}' is not an http(s) URL`) end
+  for _, url in remote.publishers do
+    if not isUrl(url) then fail(`publisher '{url}' is not an http(s) URL`) end
   end
 
-  local feeds: { [string]: Feed } = {}
+  local listings: { [string]: Listing } = {}
 
-  --- The feed at `url`, read once per sync.
-  local function feedAt(url: string): Feed
-    if not feeds[url] then feeds[url] = readFeed(url) end
+  --- The project manifest at `url`, read once per sync.
+  local function listingAt(url: string): Listing
+    if not listings[url] then listings[url] = readManifest(url) end
 
-    return feeds[url]
+    return listings[url]
+  end
+
+  local publishers: { [string]: { [string]: string } } = {}
+
+  --- What the publisher named at `url` publishes, package id to manifest URL, read once per sync.
+  local function publishedBy(url: string): { [string]: string }
+    if not publishers[url] then
+      local published, listing = readPublisher(url)
+
+      if listing then listings[(listing :: Listing).url] = listing :: Listing end
+
+      publishers[url] = published
+    end
+
+    return publishers[url]
   end
 
   local indexes: { { [string]: { string } } }?
@@ -1496,84 +1582,88 @@ local function sync(
     return first
   end
 
-  --- The newest available version of `id` in `feed` meeting every requirement, if any.
-  local function newest(id: string, feed: Feed): RemoteOffer?
-    local listing = feed.packages[id]
-
-    if not listing then return nil end
+  --- The newest available version of `id` in `listing` meeting every requirement, if any. A
+  --- yanked or deprecated version is never chosen anew; a lock that pins one still restores it.
+  local function newest(id: string, listing: Listing): RemoteOffer?
+    if listing.id ~= id then return nil end
 
     for _, entry in listing.versions do
       if entry.status == 'available' and fits(id, entry.version) then
-        return { feed = feed, package = listing, entry = entry }
+        return { listing = listing, entry = entry }
       end
     end
 
     return nil
   end
 
-  --- The pinned version of `id` from the publisher the lock names, held to the digests it pins.
+  --- The pinned version of `id` from the manifest the lock names, held to the digests it pins.
   local function pinnedRemote(id: string, pin: Locked): RemoteOffer
-    local feed = feedAt(pin.feed :: string)
-    local listing = feed.packages[id]
-    local entry: FeedVersion?
+    local listing = listingAt(pin.manifest :: string)
+    local entry: Release?
 
-    for _, candidate in (listing and listing.versions) or {} do
-      if candidate.version == pin.version then entry = candidate end
+    if listing.id == id then
+      for _, candidate in listing.versions do
+        if candidate.version == pin.version then entry = candidate end
+      end
     end
 
     if not entry then
       fail(
-        `{id} {pin.version} is pinned to {pin.feed}, which no longer lists that version; nothing else is reached for: offer the package by file, or sync without --locked to choose again`
+        `{id} {pin.version} is pinned to {pin.manifest}, which no longer lists that version; nothing else is reached for: offer the package by file, or sync without --locked to choose again`
       )
     end
 
-    local found = entry :: FeedVersion
+    local found = entry :: Release
 
     if found.contentDigest ~= pin.digest or found.artifact.sha256 ~= pin.artifactSha256 then
       fail(
-        `{id} {pin.version} at {pin.feed} no longer describes the bytes jess.lock pins (content digest {pin.digest}, archive sha256 {pin.artifactSha256}); nothing is downloaded from a publisher whose story changed`
+        `{id} {pin.version} at {pin.manifest} no longer describes the bytes jess.lock pins (content digest {pin.digest}, archive sha256 {pin.artifactSha256}); nothing is downloaded from a publisher whose story changed`
       )
     end
 
-    return { feed = feed, package = listing :: FeedPackage, entry = found }
+    return { listing = listing, entry = found }
   end
 
-  --- The one publisher of `id` the feeds named outright or the indexes know, or nothing.
+  --- The one publisher of `id` the publishers named outright or the indexes know, or nothing.
   local function discover(id: string): RemoteOffer?
     local offers: { RemoteOffer } = {}
 
-    for _, url in remote.feeds do
-      local offer = newest(id, feedAt(url))
+    for _, url in remote.publishers do
+      local manifestUrl = publishedBy(url)[id]
 
-      if offer then table.insert(offers, offer) end
+      if manifestUrl then
+        local offer = newest(id, listingAt(manifestUrl))
+
+        if offer then table.insert(offers, offer) end
+      end
     end
 
     if #offers > 1 then
-      local urls = [for offer in offers => offer.feed.url]
-      fail(`{id} is offered by more than one feed named here: {table.concat(urls, ', ')}; name one`)
+      local urls = [for offer in offers => offer.listing.url]
+      fail(`{id} is published by more than one publisher named here: {table.concat(urls, ', ')}; name one`)
     end
 
     if #offers == 1 then return offers[1] end
 
-    local publishers: { string } = {}
+    local manifests: { string } = {}
 
     for _, claims in indexed() do
       for _, url in claims[id] or {} do
-        if not table.find(publishers, url) then table.insert(publishers, url) end
+        if not table.find(manifests, url) then table.insert(manifests, url) end
       end
     end
 
-    table.sort(publishers)
+    table.sort(manifests)
 
-    if #publishers > 1 then
+    if #manifests > 1 then
       fail(
-        `{id} is published by more than one site: {table.concat(publishers, ', ')}; this jess chooses no publisher for you: name the one you mean with --feed URL`
+        `{id} is published by more than one site: {table.concat(manifests, ', ')}; this jess chooses no publisher for you: name the one you mean with --publisher URL`
       )
     end
 
-    if #publishers == 0 then return nil end
+    if #manifests == 0 then return nil end
 
-    return newest(id, feedAt(publishers[1]))
+    return newest(id, listingAt(manifests[1]))
   end
 
   local function pick(id: string): Choice
@@ -1598,7 +1688,7 @@ local function sync(
         if same.digest == pin.digest then return localChoice(same, false, false, pin) end
       end
 
-      if pin.source == 'feed' and not remote.offline then return remoteChoice(pinnedRemote(id, pin)) end
+      if pin.source == 'publisher' and not remote.offline then return remoteChoice(pinnedRemote(id, pin)) end
     end
 
     local fitting = [for candidate in available if fits(id, candidate.version) => candidate]
@@ -1617,10 +1707,10 @@ local function sync(
       else ''
     local reach = if remote.offline
       then 'offline, so no publisher was asked'
-      elseif #remote.indexes == 0 and #remote.feeds == 0 then 'no index or feed to ask'
-      else 'no feed or index named here lists it'
+      elseif #remote.indexes == 0 and #remote.publishers == 0 then 'no index or publisher to ask'
+      else 'no publisher or index named here lists it'
     fail(
-      `nothing offered for {id} is one the workspace can use{pinned}{unfit}; {reach}\n  {wantedBy(id)}\noffer one with --package-path or by file, or name its publisher with --feed URL`
+      `nothing offered for {id} is one the workspace can use{pinned}{unfit}; {reach}\n  {wantedBy(id)}\noffer one with --package-path or by file, or name its publisher with --publisher URL`
     )
   end
 
@@ -1629,7 +1719,7 @@ local function sync(
   -- require. It stops at the round that changes nothing. A selection that keeps trading one
   -- version for another is cut off after as many rounds as there are packages to choose between:
   -- those offered here, those the lock pins, and every id a publisher was asked for, since a
-  -- round that only reaches further along a feed's dependencies is discovery, not trading.
+  -- round that only reaches further along a publisher's dependencies is discovery, not trading.
   local budget = #workspace.lock.packages + 2
   local reached: { [string]: true } = {}
 
@@ -1712,7 +1802,7 @@ local function sync(
         version = choice.version,
         digest = choice.digest,
         source = choice.source,
-        feed = choice.feed,
+        manifest = choice.manifest,
         artifactSha256 = choice.artifactSha256,
         dependencies = table.freeze(sortedKeys(choice.dependencies)),
       }
@@ -1723,7 +1813,7 @@ local function sync(
       version = choice.version,
       digest = choice.digest,
       source = choice.source,
-      feed = choice.feed,
+      manifest = choice.manifest,
       installed = not present,
     })
   end
@@ -1742,7 +1832,7 @@ local function sync(
 
   if #installs > 0 then storeFolder(root) end
 
-  --- Downloads `offer`'s archive, checks it against the feed and `choice`, and writes it to `path`
+  --- Downloads `offer`'s archive, checks it against the manifest and `choice`, and writes it to `path`
   --- only then. The bytes are checked as a file first, since the container reads files, under a
   --- name no resolution ever offers.
   local function install(choice: Choice, offer: RemoteOffer, path: string)
@@ -1754,7 +1844,7 @@ local function sync(
 
     if not written then
       host.remove(partial)
-      fail(`{choice.id} {choice.version}: the archive the feed serves is not a package jess can open`)
+      fail(`{choice.id} {choice.version}: the archive the publisher serves is not a package jess can open`)
     end
 
     local archive = written :: Package
@@ -1763,27 +1853,27 @@ local function sync(
     if archive.id ~= choice.id or archive.version ~= choice.version then
       problem = `it is {archive.id} {archive.version}`
     elseif archive.digest ~= choice.digest then
-      problem = `its content digest is {archive.digest}, not the {choice.digest} the feed declares`
+      problem = `its content digest is {archive.digest}, not the {choice.digest} the manifest declares`
     elseif archive.manifest.jessApi ~= offer.entry.jessApi then
-      problem = `its jess_api is {archive.manifest.jessApi}, not the {offer.entry.jessApi} the feed declares`
+      problem = `its jess_api is {archive.manifest.jessApi}, not the {offer.entry.jessApi} the manifest declares`
     else
       local declared = sortedKeys(archive.manifest.dependencies)
       local listed = sortedKeys(offer.entry.dependencies)
 
       if table.concat(declared, ' ') ~= table.concat(listed, ' ') then
-        problem = 'it declares dependencies the feed does not list'
+        problem = 'it declares dependencies the manifest does not list'
       end
 
       for _, dependency in declared do
         if archive.manifest.dependencies[dependency] ~= offer.entry.dependencies[dependency] then
-          problem = `it requires {dependency} {archive.manifest.dependencies[dependency]}, and the feed says {offer.entry.dependencies[dependency]}`
+          problem = `it requires {dependency} {archive.manifest.dependencies[dependency]}, and the manifest says {offer.entry.dependencies[dependency]}`
         end
       end
     end
 
     if problem then
       host.remove(partial)
-      fail(`{choice.id} {choice.version} from {offer.feed.url}: the archive is not what the feed describes: {problem}; nothing was kept`)
+      fail(`{choice.id} {choice.version} from {offer.listing.url}: the archive is not what the manifest describes: {problem}; nothing was kept`)
     end
 
     host.replace(path, data)
@@ -1875,7 +1965,7 @@ local function describe(workspace: Workspace): { [string]: unknown }
       version = entry.version,
       digest = entry.digest,
       source = entry.source,
-      feed = entry.feed,
+      manifest = entry.manifest,
       artifactSha256 = entry.artifactSha256,
       dependencies = entry.dependencies,
       location = `{workspace.root}/{storeName(entry)}`,

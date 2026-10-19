@@ -42,8 +42,9 @@ enum WorkspaceCommand {
     Run(RunArgs),
     /// Pin what the members depend on beyond each other in jess.lock, and keep those packages,
     /// as JPKs, in .jess/packages: from the packages offered here, those already kept, and, for
-    /// what neither holds, the publisher's package feed that an index or --feed names. Every
-    /// download is checked against the feed's SHA-256 and the content digest before it is kept.
+    /// what neither holds, the manifest of the DreamWeave project publishing the package, found
+    /// through an index or a publisher named with --publisher. Every download is checked against
+    /// the manifest's SHA-256 and the content digest before it is kept.
     Sync {
         /// A package to offer outright (repeatable): a Package Source folder or a .jpk, the one
         /// for its id.
@@ -59,10 +60,11 @@ enum WorkspaceCommand {
         /// Ask no publisher: only what is offered and kept. JESS_OFFLINE=1 says the same.
         #[arg(long, env = "JESS_OFFLINE", value_parser = clap::builder::FalseyValueParser::new())]
         offline: bool,
-        /// A publisher's jess-packages.json to take packages from (repeatable). It is the
-        /// authority for what it lists, and the way to pick one publisher when an index knows two.
+        /// A publisher to take packages from (repeatable): a DreamWeave site's dreamweave.json, or
+        /// one project manifest. It is the authority for what it lists, and the way to pick one
+        /// publisher when an index knows two.
         #[arg(long, value_name = "URL")]
-        feed: Vec<String>,
+        publisher: Vec<String>,
         /// A package index that says who publishes an id (repeatable). Replaces the default,
         /// AsHyAmS's; JESS_REGISTRY_URL does the same.
         #[arg(long, value_name = "URL", env = "JESS_REGISTRY_URL", value_delimiter = ',')]
@@ -191,7 +193,7 @@ pub fn run(args: &WorkspaceArgs, format: Format) -> Result<u8, String> {
             package_paths,
             locked,
             offline,
-            feed,
+            publisher,
             index,
         } => {
             // Syncing is the host acting, in a runtime that runs no package code; reaching
@@ -213,7 +215,7 @@ pub fn run(args: &WorkspaceArgs, format: Format) -> Result<u8, String> {
                 locked: *locked,
                 offline: *offline,
                 indexes,
-                feeds: feed.clone(),
+                publishers: publisher.clone(),
             };
             let synced = workspace::sync(&lua, &request).map_err(|error| error.to_string())?;
             output::print(&synced, format)?;
