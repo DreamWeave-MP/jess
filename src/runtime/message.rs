@@ -325,6 +325,13 @@ fn segment(key: &MessageKey) -> String {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The table entries reads on this thread have visited, so a test can see a refused read
+    /// stop walking.
+    static VISITED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn read_table(frame: &Frame<'_>, view: ValueView<'_>, depth: usize, budget: &mut Budget) -> Result<Message, TransferError> {
     let table = view
         .as_table()
@@ -335,61 +342,73 @@ fn read_table(frame: &Frame<'_>, view: ValueView<'_>, depth: usize, budget: &mut
     let mut entries: Vec<(MessageKey, Message)> = Vec::with_capacity(length.min(budget.left / (ENTRY + NODE)));
     let mut array_keys = 0usize;
     let mut failure: Option<TransferError> = None;
-    table
-        .for_each(frame, |frame, key, value| {
-            if failure.is_some() {
-                return Ok(());
-            }
-            let key = match key.type_of() {
-                Type::String => match key.read::<&[u8]>() {
-                    Ok(bytes) => MessageKey::String(bytes.to_vec()),
-                    Err(error) => {
-                        failure = Some(unsupported(format!("a key l3i couldn't read ({error})")));
-                        return Ok(());
-                    }
-                },
-                Type::Number => match key.read::<f64>() {
-                    Ok(number) => MessageKey::Number(number),
-                    Err(error) => {
-                        failure = Some(unsupported(format!("a key l3i couldn't read ({error})")));
-                        return Ok(());
-                    }
-                },
-                other => {
-                    failure = Some(unsupported(format!("a table with a {} key", other.name())));
-                    return Ok(());
+    let walked = table.for_each(frame, |frame, key, value| {
+        #[cfg(test)]
+        VISITED.with(|visited| visited.set(visited.get() + 1));
+        match read_entry(frame, key, value, depth, budget) {
+            Ok((key, value)) => {
+                #[allow(clippy::cast_precision_loss)] // Array indexes are far below 2^53.
+                if let MessageKey::Number(number) = key
+                    && number.fract() == 0.0
+                    && number >= 1.0
+                    && number <= length as f64
+                {
+                    array_keys += 1;
                 }
-            };
-            #[allow(clippy::cast_precision_loss)] // Array indexes are far below 2^53.
-            if let MessageKey::Number(number) = key
-                && number.fract() == 0.0
-                && number >= 1.0
-                && number <= length as f64
-            {
-                array_keys += 1;
+                entries.push((key, value));
+                Ok(())
             }
-            let read = budget
-                .charge(ENTRY.saturating_add(key_bytes(&key)))
-                .and_then(|()| read_at(frame, value, depth + 1, budget));
-            match read {
-                Ok(value) => entries.push((key, value)),
-                Err(mut error) => {
-                    error.path.insert_str(0, &segment(&key));
-                    failure = Some(error);
-                }
+            Err(error) => {
+                failure = Some(error);
+                // Ends the walk here: the rest of a table that can't cross isn't visited.
+                Err(l3i::Error::runtime("the table can't cross"))
             }
-            Ok(())
-        })
-        .map_err(|error| unsupported(format!("a table l3i couldn't walk ({error})")))?;
+        }
+    });
     if let Some(error) = failure {
         return Err(error);
     }
+    walked.map_err(|error| unsupported(format!("a table l3i couldn't walk ({error})")))?;
     if length > 0 && array_keys == length && entries.len() == length {
         sort_entries(&mut entries);
         return Ok(Message::List(entries.into_iter().map(|(_, value)| value).collect()));
     }
     sort_entries(&mut entries);
     Ok(Message::Map(entries))
+}
+
+/// One entry of a table being read: its key, charged before its bytes are copied, and its value.
+fn read_entry(
+    frame: &Frame<'_>,
+    key: ValueView<'_>,
+    value: ValueView<'_>,
+    depth: usize,
+    budget: &mut Budget,
+) -> Result<(MessageKey, Message), TransferError> {
+    let unreadable = |error: l3i::Error| unsupported(format!("a key l3i couldn't read ({error})"));
+    let key = match key.type_of() {
+        Type::String => {
+            let bytes = key.read::<&[u8]>().map_err(unreadable)?;
+            budget.charge(ENTRY.saturating_add(bytes.len()))?;
+            MessageKey::String(bytes.to_vec())
+        }
+        Type::Number => {
+            let number = key.read::<f64>().map_err(unreadable)?;
+            let key = MessageKey::Number(number);
+            // A number key is cheap to name in the path; a string key isn't copied just to name it.
+            budget.charge(ENTRY).map_err(|mut error| {
+                error.path.insert_str(0, &segment(&key));
+                error
+            })?;
+            key
+        }
+        other => return Err(unsupported(format!("a table with a {} key", other.name()))),
+    };
+    let value = read_at(frame, value, depth + 1, budget).map_err(|mut error| {
+        error.path.insert_str(0, &segment(&key));
+        error
+    })?;
+    Ok((key, value))
 }
 
 fn format_number(number: f64) -> String {
@@ -610,5 +629,33 @@ mod tests {
         assert!(refused.found.contains(&format!("past the {} bytes", weight - 1)), "{refused}");
         let text = read("string.rep('x', 1000)", 500).unwrap_err();
         assert_eq!(text.path, "payload");
+    }
+
+    /// A read that passes its budget stops walking the table there, and a string key is charged
+    /// before its bytes are copied.
+    #[test]
+    fn a_refused_read_stops_walking() {
+        let runtime = Runtime::new().unwrap();
+        let read = |source: &str, limit: usize| {
+            let stack = runtime.stack();
+            stack
+                .with_frame(|frame| {
+                    let options = runtime.compile_options();
+                    let chunk = runtime.load(frame, "=message", &format!("return {source}"), &options)?;
+                    let value: l3i::value::Value = chunk.as_function()?.invoke(frame, ())?;
+                    VISITED.with(|visited| visited.set(0));
+                    value.with_value(frame, |frame, view| Ok(Message::read_within(frame, view, "payload", limit)))
+                })
+                .unwrap()
+        };
+        let vast = "(function() local t = {} for n = 1, 100000 do t[n] = {} end return t end)()";
+        assert!(read(vast, 10 * (NODE + ENTRY)).is_err());
+        let visited = VISITED.with(std::cell::Cell::get);
+        assert!(visited < 20, "visited {visited} entries of a refused table");
+
+        let keyed = "{ [string.rep('k', 100000)] = true }";
+        let refused = read(keyed, 1_000).unwrap_err();
+        assert_eq!(refused.path, "payload", "refused at the table, before the key is copied");
+        assert!(refused.found.contains("past the 1000 bytes"), "{refused}");
     }
 }
