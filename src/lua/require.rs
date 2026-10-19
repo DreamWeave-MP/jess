@@ -203,7 +203,7 @@ fn check_declared(call: &Call<'_>, jess: &Jess, name: &str) -> l3i::Result<()> {
 
 /// The chunk name of the function that called `require`, with its `@`: level 1 above the
 /// `require` C function.
-fn caller_chunk(call: &Call<'_>) -> Option<String> {
+pub(crate) fn caller_chunk(call: &Call<'_>) -> Option<String> {
     let site = call.call_site(1)?;
     (site.source != "[C]").then(|| format!("@{}", site.source))
 }

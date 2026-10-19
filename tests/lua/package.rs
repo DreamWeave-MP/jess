@@ -970,8 +970,14 @@ fn a_package_path_offers_what_a_plan_needs() {
 
     // The plan mounts, and its packages hold what they declared.
     let runtime = common::runtime();
-    package::activate_with(&runtime, &[text(&top)], &strings(&["example.top"]), None, &search(&[]))
-        .unwrap_or_else(|error| panic!("{error}"));
+    package::activate_with(
+        &runtime,
+        &[text(&top)],
+        &strings(&["example.top"]),
+        None,
+        &package::Search::default(),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
     common::run(&runtime, "assert(require('@top').base == 'base')");
 
     // Two candidates for one package are an error; one handed over outright is the answer.
@@ -1450,4 +1456,80 @@ fn a_check_reports_a_package_s_own_type_errors_with_its_requires_resolved() {
             .collect::<Vec<_>>();
         assert_eq!(errors, [("tests/run.jsl", 3)], "{report:#?}");
     }
+}
+
+/// A package's module can hand out its own payload with `jess.payload()`: every path and a read
+/// of each, from a Package Source and from the same package packed. A script has none, and
+/// nothing reads another package's payload uninvited.
+#[test]
+fn a_package_hands_out_its_own_payload() {
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path();
+    write(
+        root,
+        &[
+            (
+                "jess.toml",
+                r#"manifest_version = 1
+
+[package]
+id = "org.example.theme"
+version = "1.0.0"
+jess_api = "1"
+include = ["src", "templates"]
+
+[modules]
+"@theme" = "src/init.jsl"
+
+[[layer]]
+id = "example.theme"
+exports = ["@theme"]
+"#,
+            ),
+            (
+                "src/init.jsl",
+                "local payload = jess.payload()\nreturn { files = payload.files, read = payload.read }\n",
+            ),
+            ("templates/base.html", "<html>{{ body }}</html>\n"),
+        ],
+    );
+    let check = "local theme = require('@theme')\n\
+                 assert(theme.files[1] == 'jess.toml', theme.files[1])\n\
+                 assert(table.find(theme.files, 'templates/base.html'), 'the template is in the payload')\n\
+                 assert(buffer.tostring(theme.read('templates/base.html')) == '<html>{{ body }}</html>\\n')\n\
+                 assert(theme.read('templates/missing.html') == nil)\n\
+                 local ok, message = pcall(function() return jess.payload() end)\n\
+                 assert(not ok and string.find(message, 'not a package', 1, true), message)\n\
+                 local direct, reason = pcall(jess.payload)\n\
+                 assert(not direct and string.find(reason, 'through no module', 1, true), reason)";
+    let runtime = common::runtime();
+    package::activate_with(
+        &runtime,
+        &[text(root)],
+        &strings(&["example.theme"]),
+        None,
+        &package::Search::default(),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    common::run(&runtime, check);
+
+    let packed = root.join("theme.jpk");
+    package::pack(&common::runtime(), &text(root), &text(&packed)).unwrap();
+    let runtime = common::runtime();
+    package::activate_with(
+        &runtime,
+        &[text(&packed)],
+        &strings(&["example.theme"]),
+        None,
+        &package::Search::default(),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    common::run(&runtime, check);
+
+    let script = common::runtime();
+    let refused = script.eval::<()>("jess.payload()").unwrap_err().to_string();
+    assert!(
+        refused.contains("has no payload") || refused.contains("not a package"),
+        "{refused}"
+    );
 }

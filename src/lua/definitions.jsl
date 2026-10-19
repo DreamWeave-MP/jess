@@ -254,6 +254,11 @@ declare jess: {
   --- ...): the runtime's grant, or under a ScriptDomain the broker's. Asking is no denial. A name
   --- no jess runtime can be granted raises, so a misspelling isn't read as "not granted".
   granted: (capability: string) -> boolean,
+  --- The calling module's own package payload: every file's path in canonical order
+  --- (`jess.toml` first), and a read of one file's bytes, nil for a path the payload lacks. A
+  --- package shares its files by exporting a module that hands them out. A script belongs to no
+  --- package and raises.
+  payload: () -> { files: { string }, read: (path: string) -> buffer? },
   --- Typed shader construction; `require("@jess/shader")` is the same table.
   shader: ShaderModule,
 

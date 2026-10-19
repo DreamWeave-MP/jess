@@ -120,10 +120,11 @@ fn builder(capabilities: &[String], profiling: bool) -> RuntimePlanBuilder {
 
 /// The members of `@jess`, installed per runtime. Each table among them is also the module
 /// `@jess/<name>` (`require("@jess/shader")`).
-pub(crate) const MEMBERS: [&str; 11] = [
+pub(crate) const MEMBERS: [&str; 12] = [
     "version",
     "null",
     "granted",
+    "payload",
     "shader",
     "context",
     "worker",
@@ -203,10 +204,22 @@ impl Extension for JessExtension {
         })?;
         let module = cx.module(MODULE)?.table().clone();
         let jess = cx.insert_state(Jess::new(runtime, module, granted)?);
+        // The built-in package's payload is the binary's: read from what it embeds.
+        let builtin_read = runtime.bind_function(
+            "jess.payload.builtin",
+            |path: crate::lua::Text| -> Option<l3i::convert::NewBuffer> {
+                crate::lua::builtin::file(&path.0).map(|source| l3i::convert::NewBuffer(source.as_bytes().to_vec()))
+            },
+        )?;
+        let payload_state = Rc::clone(&jess);
+        let payload = runtime.bind_function("jess.payload", move |call: &Call<'_>| {
+            crate::lua::package::payload(call, &payload_state, &builtin_read)
+        })?;
         let module = cx.module(MODULE)?;
         module.set("version", env!("CARGO_PKG_VERSION"))?;
         module.set("null", &crate::lua::convert::NULL)?;
         module.set("granted", &asked)?;
+        module.set("payload", &payload)?;
         module.set("bench", &crate::lua::bench::module(runtime)?)?;
         module.set("shader", &crate::lua::shader::module(runtime, &jess)?)?;
         let modules = cx

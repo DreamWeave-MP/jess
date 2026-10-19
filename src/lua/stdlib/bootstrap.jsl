@@ -94,6 +94,7 @@ type Mounted = {
   digest: string,
   dependencies: { string },
   managed: { Managed },
+  files: { string },
   read: (path: string) -> buffer?,
 }
 
@@ -276,6 +277,7 @@ local function activate(
       digest = opened.digest,
       dependencies = plan.packages[index].dependencies,
       managed = sortedManaged(opened.manifest.managed),
+      files = opened.files,
       read = opened.read,
     })
   end
