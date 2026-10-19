@@ -513,3 +513,81 @@ fn granted_asks_the_broker_under_a_domain() {
     assert_eq!(messages, ["true false"]);
     assert_eq!(domain.stats().capability_denials, 0);
 }
+
+/// A script under a host asks it to stop through `@jess/application`; the host reads the status,
+/// a restart forgets it, and nothing outside a host, or in a worker, can ask.
+#[test]
+fn a_script_asks_its_host_to_stop() {
+    let factory: Arc<dyn RuntimeFactory> = Arc::new(|| jess::lua::runtime(Options::default()));
+    let grant = RootAuthority::new().grant(CapabilitySet::from_names([WORKER_SPAWN]).unwrap());
+    let mut host = Host::create(factory, HostSpec::new(DomainSpec::new("stopping", grant))).unwrap();
+    host.domain()
+        .register_context(ContextSpec::new("main").schedule([Phase::Update, Phase::OnDemand]))
+        .unwrap();
+    host.domain()
+        .load_source(
+            "@test/kernel/exit.jsl",
+            r"
+            local application = require('@jess/application')
+            local worker = require('@jess/worker')
+            local frames = 0
+
+            require('@jess/context').bind('main', {
+              update = function()
+                frames += 1
+                if frames == 2 then application.exit(3) end
+              end,
+              onDemand = function(case)
+                if case == 'bad' then
+                  application.exit(2.5)
+                end
+
+                local asker = worker.spawn {
+                  shareServices = true,
+                  source = [[
+                    return function()
+                      local ok, problem = pcall(require('@jess/application').exit, 1)
+                      return problem
+                    end
+                  ]],
+                }
+                asker:send(true)
+                error(asker:receive(20))
+              end,
+            })
+            ",
+        )
+        .unwrap();
+    host.domain().start().unwrap();
+    host.frame(Duration::from_millis(16)).unwrap();
+    assert_eq!(host.exit_requested(), None);
+    host.frame(Duration::from_millis(16)).unwrap();
+    assert_eq!(host.exit_requested(), Some(3));
+
+    let refused = |case: &str| {
+        let report = host.domain().run_phase(Phase::OnDemand, &Message::text(case)).unwrap();
+        report.failures[0].to_string()
+    };
+    let bad = refused("bad");
+    assert!(
+        bad.contains("application.exit: the status is an integer from 0 to 255, not 2.5"),
+        "{bad}"
+    );
+    let from_worker = refused("worker");
+    assert!(
+        from_worker.contains("application.exit is for the domain's own code"),
+        "{from_worker}"
+    );
+    assert_eq!(host.exit_requested(), Some(3));
+
+    host.restart(|_| Ok(())).unwrap();
+    assert_eq!(host.exit_requested(), None, "a new generation hasn't asked anything");
+    host.stop().unwrap();
+
+    let outside = jess::lua::runtime(Options::default()).unwrap();
+    let problem = outside
+        .eval::<()>("require('@jess/application').exit()")
+        .unwrap_err()
+        .to_string();
+    assert!(problem.contains("application.exit: needs an application host"), "{problem}");
+}

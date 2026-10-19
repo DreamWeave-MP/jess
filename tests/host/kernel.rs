@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use jess::host::{Host, HostSpec, InputSource};
+use jess::host::{ExitRequest, Host, HostSpec, InputSource};
 use jess::input::{Control, GraphSpec, Key, NodeSpec, Owner, ValueType};
 use jess::runtime::l3i;
 use jess::runtime::l3i::extension::{Extension, ExtensionDescriptor, RuntimePlan, RuntimePolicy};
@@ -270,11 +270,13 @@ fn the_stub_backend_is_a_real_poll_loop_over_nothing() {
 }
 
 #[test]
-fn a_host_without_services_is_a_domain_with_none() {
+fn a_host_without_services_carries_only_its_exit_request() {
     let grant = RootAuthority::new().grant(CapabilitySet::empty());
     let mut host = Host::create(factory(), HostSpec::new(DomainSpec::new("bare", grant))).unwrap();
     assert!(host.input().is_none());
-    assert!(host.domain().services().is_empty());
+    assert_eq!(host.domain().services().len(), 1);
+    assert!(host.domain().service::<ExitRequest>().is_some());
+    assert_eq!(host.exit_requested(), None);
     host.domain().load_source("=main", "").unwrap();
     host.domain().start().unwrap();
     let report = host.frame(Duration::from_millis(16)).unwrap();

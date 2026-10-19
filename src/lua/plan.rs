@@ -120,8 +120,17 @@ fn builder(capabilities: &[String], profiling: bool) -> RuntimePlanBuilder {
 
 /// The members of `@jess`, installed per runtime. Each table among them is also the module
 /// `@jess/<name>` (`require("@jess/shader")`).
-pub(crate) const MEMBERS: [&str; 9] = [
-    "version", "null", "granted", "shader", "context", "worker", "events", "input", "bench",
+pub(crate) const MEMBERS: [&str; 10] = [
+    "version",
+    "null",
+    "granted",
+    "shader",
+    "context",
+    "worker",
+    "events",
+    "application",
+    "input",
+    "bench",
 ];
 
 /// The capabilities `jess.input` checks.
@@ -206,6 +215,7 @@ impl Extension for JessExtension {
         module.set("context", &modules.context)?;
         module.set("worker", &modules.worker)?;
         module.set("events", &modules.events)?;
+        module.set("application", &crate::lua::application::module(runtime)?)?;
         module.set("input", &crate::lua::input::module(runtime, &jess)?)?;
         Ok(())
     }

@@ -15,7 +15,8 @@
 //!
 //! The host declares no contexts and reserves no action names: the application registers its
 //! contexts on [`Host::domain`] and its scripts bind them. What the host owns is what outlives a
-//! script generation: the devices and the clock. At a [`Host::restart`] the input
+//! script generation: the devices and the clock. Every host's domain also carries an
+//! [`ExitRequest`], which its code sets to ask the host to stop. At a [`Host::restart`] the input
 //! service forgets the graph and routes the old code installed, keeps its devices, and the new
 //! code installs its own.
 //!
@@ -39,6 +40,7 @@
 pub mod input;
 
 use std::fmt;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -86,6 +88,33 @@ impl From<BackendError> for Error {
 /// to. The type is the contract; a binding looks it up with
 /// `jess::runtime::service::<SharedInput>()`.
 pub type SharedInput = Mutex<InputService>;
+
+/// The service every host's domain carries for asking the host to stop.
+///
+/// `@jess/application`'s `exit` sets it, and [`Host::exit_requested`] reads it. Asking stops
+/// nothing by itself; the host that drives the frames decides when to stop, normally after the
+/// current one.
+#[derive(Debug, Default)]
+pub struct ExitRequest(AtomicU32);
+
+impl ExitRequest {
+    /// Asks to stop with `status`. A later request replaces an earlier one.
+    pub fn request(&self, status: u8) {
+        self.0.store(u32::from(status) + 1, Ordering::Release);
+    }
+
+    /// The status asked for, if stopping has been asked.
+    #[must_use]
+    pub fn requested(&self) -> Option<u8> {
+        // Zero is "not asked"; anything else is a status plus one, so at most 256.
+        u8::try_from(self.0.load(Ordering::Acquire).checked_sub(1)?).ok()
+    }
+
+    /// Forgets a request, as a restart does: the new generation hasn't asked anything.
+    pub fn clear(&self) {
+        self.0.store(0, Ordering::Release);
+    }
+}
 
 /// What a host is made of: the domain's spec and the services it will carry.
 pub struct HostSpec {
@@ -142,6 +171,7 @@ impl FrameReport {
 pub struct Host {
     domain: ScriptDomain,
     input: Option<input::Driver>,
+    exit: Arc<ExitRequest>,
 }
 
 impl fmt::Debug for Host {
@@ -149,6 +179,7 @@ impl fmt::Debug for Host {
         f.debug_struct("Host")
             .field("domain", &self.domain)
             .field("input", &self.input.as_ref().map(input::Driver::source_name))
+            .field("exit", &self.exit.requested())
             .finish()
     }
 }
@@ -167,8 +198,10 @@ impl Host {
         if let Some(driver) = &input {
             domain_spec = domain_spec.service(Arc::clone(driver.service()));
         }
+        let exit = Arc::new(ExitRequest::default());
+        domain_spec = domain_spec.service(Arc::clone(&exit));
         let domain = ScriptDomain::create(factory, domain_spec)?;
-        Ok(Host { domain, input })
+        Ok(Host { domain, input, exit })
     }
 
     /// The domain: register contexts, load, start, spawn workers, and inspect through it.
@@ -182,6 +215,13 @@ impl Host {
     #[must_use]
     pub fn input(&self) -> Option<&Arc<SharedInput>> {
         self.input.as_ref().map(input::Driver::service)
+    }
+
+    /// The exit status the domain's code asked for through `@jess/application`, if it asked to
+    /// stop. The host that drives the frames reads it after each one and stops when it is set.
+    #[must_use]
+    pub fn exit_requested(&self) -> Option<u8> {
+        self.exit.requested()
     }
 
     /// One frame: the input tick and phase, then the domain's advance by
@@ -232,6 +272,7 @@ impl Host {
         if let Some(driver) = &self.input {
             driver.reset();
         }
+        self.exit.clear();
         self.domain.restart(load)
     }
 

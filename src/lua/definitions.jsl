@@ -259,6 +259,14 @@ declare jess: {
     emit: (name: string, payload: unknown?) -> (),
   },
 
+  --- What a script asks of the host running it (`@jess/application`). Only a domain's own code
+  --- under a host asks; elsewhere `exit` errors.
+  application: {
+    --- Asks the host to stop with `status` (0 without one, an integer up to 255) after the
+    --- current frame. Shutdown handlers still run; a later call replaces the status.
+    exit: (status: number?) -> (),
+  },
+
   --- The native half of `@jess/input`, which wraps it: compiling a binding document and the
   --- input runtime. See `jess::input`.
   input: {
