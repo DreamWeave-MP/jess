@@ -10,8 +10,10 @@
 //! never will: a layer that wants `world.pre-physics` runs [`Phase::OnDemand`] or posts an
 //! event with its own meaning.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fmt;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -202,6 +204,14 @@ impl ContextSpec {
     }
 }
 
+/// A context's handler calls so far.
+#[derive(Debug, Default)]
+pub struct ContextStats {
+    pub(crate) calls: Cell<u64>,
+    pub(crate) failures: Cell<u64>,
+    pub(crate) time: Cell<Duration>,
+}
+
 /// One registered context, as the scheduler keeps it.
 pub struct ContextRecord {
     pub(crate) id: ContextId,
@@ -215,15 +225,15 @@ pub struct ContextRecord {
     /// The handlers bound in the current generation, pinned on the domain's runtime.
     pub(crate) handlers: BTreeMap<Phase, Function>,
     /// `source:line` of the script code that bound each handler, when it was bound from Luau.
-    pub(crate) sources: BTreeMap<Phase, String>,
+    pub(crate) sources: BTreeMap<Phase, Rc<str>>,
     /// The named-event handlers bound in the current generation, by event name. They run in
     /// [`Phase::Event`], apart from the phase's own handler, which takes the raw events.
     pub(crate) events: BTreeMap<String, Function>,
     /// Where each named-event handler was defined or bound, when known.
-    pub(crate) event_sources: BTreeMap<String, String>,
-    pub(crate) calls: u64,
-    pub(crate) failures: u64,
-    pub(crate) time: Duration,
+    pub(crate) event_sources: BTreeMap<String, Rc<str>>,
+    /// What its handler calls have cost, shared with each dispatch so a call counts itself
+    /// without looking the context up.
+    pub(crate) stats: Rc<ContextStats>,
 }
 
 impl ContextRecord {
@@ -237,9 +247,9 @@ impl ContextRecord {
             budget: self.budget,
             bound: self.handlers.keys().copied().collect(),
             events: self.events.keys().cloned().collect(),
-            calls: self.calls,
-            failures: self.failures,
-            time: self.time,
+            calls: self.stats.calls.get(),
+            failures: self.stats.failures.get(),
+            time: self.stats.time.get(),
         }
     }
 }

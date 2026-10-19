@@ -161,6 +161,13 @@ fn named_events_are_queued_and_delivered_in_order_apart_from_phases() {
     let report = domain.drain_events().unwrap();
     assert_eq!((report.delivered, report.unhandled), (1, 1));
     assert_eq!(support::journal(), ["first raw raw"]);
+
+    // Each call counted itself to its context: second ran playerDied and boom, and boom raised.
+    let second = domain.context("second").unwrap();
+    assert_eq!((second.calls, second.failures), (2, 1));
+    let third = domain.context("third").unwrap();
+    assert_eq!((third.calls, third.failures), (4, 0));
+    assert!(!third.time.is_zero());
 }
 
 #[test]

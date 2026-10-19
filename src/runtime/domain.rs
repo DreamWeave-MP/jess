@@ -17,6 +17,7 @@
 //! reach it through a [`DomainMailbox`], which only queues.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::fmt;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
@@ -32,7 +33,7 @@ use l3i::value::Function;
 use crate::runtime::capability::{
     Authority, AuthorityGuard, CapabilitySet, Grant, Observer, WORKER_SPAWN, current_authority,
 };
-use crate::runtime::context::{Budget, ContextInfo, ContextRecord, ContextSpec, FixedStep, Phase};
+use crate::runtime::context::{Budget, ContextInfo, ContextRecord, ContextSpec, ContextStats, FixedStep, Phase};
 use crate::runtime::diagnostics::{Attribution, Diagnostic, DiagnosticKind, DiagnosticSink, DiscardDiagnostics, Severity};
 use crate::runtime::error::{RuntimeError, script_message};
 use crate::runtime::ids::{CapabilityId, ContextId, DomainId, Generation, ResourceId, WorkerId};
@@ -581,9 +582,11 @@ struct Dispatch {
     context: ContextId,
     handler: Function,
     /// Where the handler was bound, for diagnostics.
-    source: Option<String>,
+    source: Option<Rc<str>>,
     /// The named event it handles, for diagnostics.
-    event: Option<String>,
+    event: Option<Rc<str>>,
+    /// Its context's counters, which the call adds itself to.
+    stats: Rc<ContextStats>,
     capabilities: Arc<CapabilitySet>,
     budget: Option<Budget>,
 }
@@ -726,9 +729,7 @@ impl DomainCore {
             sources: std::collections::BTreeMap::new(),
             events: std::collections::BTreeMap::new(),
             event_sources: std::collections::BTreeMap::new(),
-            calls: 0,
-            failures: 0,
-            time: Duration::ZERO,
+            stats: Rc::default(),
         });
         Ok(id)
     }
@@ -765,7 +766,7 @@ impl DomainCore {
         }
         for (phase, handler) in handlers {
             match source.filter(|source| !source.is_empty()) {
-                Some(source) => context.sources.insert(phase, source.to_owned()),
+                Some(source) => context.sources.insert(phase, Rc::from(source)),
                 None => context.sources.remove(&phase),
             };
             context.handlers.insert(phase, handler);
@@ -821,7 +822,7 @@ impl DomainCore {
         function: Function,
         invoke: impl FnOnce(&Function) -> l3i::Result<()>,
     ) -> Result<(), RuntimeError> {
-        let (capabilities, budget) = {
+        let (capabilities, budget, stats) = {
             let contexts = self.contexts.borrow();
             let record =
                 contexts
@@ -831,13 +832,14 @@ impl DomainCore {
                         domain: self.id,
                         name: context.to_string(),
                     })?;
-            (Arc::clone(&record.capabilities), record.budget)
+            (Arc::clone(&record.capabilities), record.budget, Rc::clone(&record.stats))
         };
         let target = Dispatch {
             context,
             handler: function,
-            source,
+            source: source.map(Rc::from),
             event: None,
+            stats,
             capabilities,
             budget,
         };
@@ -876,7 +878,7 @@ impl DomainCore {
         }
         for (event, handler, source) in handlers {
             match source.filter(|source| !source.is_empty()) {
-                Some(source) => context.event_sources.insert(event.clone(), source),
+                Some(source) => context.event_sources.insert(event.clone(), Rc::from(source)),
                 None => context.event_sources.remove(&event),
             };
             context.events.insert(event, handler);
@@ -890,6 +892,7 @@ impl DomainCore {
             handler: context.handlers.get(&phase)?.clone(),
             source: context.sources.get(&phase).cloned(),
             event: None,
+            stats: Rc::clone(&context.stats),
             capabilities: Arc::clone(&context.capabilities),
             budget: context.budget,
         })
@@ -898,6 +901,7 @@ impl DomainCore {
     /// The handlers to call for the named event `event`: every context with a handler bound to
     /// that name, by priority, then registration order.
     fn named_targets(&self, event: &str) -> Vec<Dispatch> {
+        let name: Rc<str> = Rc::from(event);
         let contexts = self.contexts.borrow();
         let mut order: Vec<&ContextRecord> = contexts.iter().filter(|context| context.events.contains_key(event)).collect();
         order.sort_by_key(|context| (context.priority, context.order));
@@ -908,7 +912,8 @@ impl DomainCore {
                     context: context.id,
                     handler: context.events.get(event)?.clone(),
                     source: context.event_sources.get(event).cloned(),
-                    event: Some(event.to_owned()),
+                    event: Some(Rc::clone(&name)),
+                    stats: Rc::clone(&context.stats),
                     capabilities: Arc::clone(&context.capabilities),
                     budget: context.budget,
                 })
@@ -1643,16 +1648,10 @@ impl DomainCore {
         if target.budget.is_some() {
             runtime.set_limits(inherited);
         }
-        if let Some(context) = core
-            .contexts
-            .borrow_mut()
-            .iter_mut()
-            .find(|context| context.id == target.context)
-        {
-            context.calls += 1;
-            context.time += duration;
-            context.failures += u64::from(outcome.is_err());
-        }
+        let stats = &target.stats;
+        stats.calls.set(stats.calls.get() + 1);
+        stats.time.set(stats.time.get() + duration);
+        stats.failures.set(stats.failures.get() + u64::from(outcome.is_err()));
         Counters::add(&core.counters.context_calls, 1);
         core.profiler.record(ProfileEvent::ContextCall {
             attribution,
@@ -1668,8 +1667,8 @@ impl DomainCore {
                 core.report(
                     Diagnostic::new(attribution, Severity::Error, DiagnosticKind::HandlerFailed, message.clone())
                         .phase(phase)
-                        .event(target.event.clone())
-                        .source(target.source.clone()),
+                        .event(target.event.as_deref().map(str::to_owned))
+                        .source(target.source.as_deref().map(str::to_owned)),
                 );
             }
             RuntimeError::Script {
@@ -1724,7 +1723,10 @@ impl ScriptDomain {
         let Some(runtime) = runtime.as_ref() else {
             return Err(core.lifecycle("drain the events of"));
         };
-        for envelope in envelopes {
+        // The handlers of each name, looked up once a drain: a burst of one event sorts and pins
+        // them once, not once an envelope. Nothing binds a named handler while the queue drains.
+        let mut named: HashMap<&str, Rc<[Dispatch]>> = HashMap::new();
+        for envelope in &envelopes {
             if envelope.generation != core.generation.get() {
                 report.stale += 1;
                 Counters::add(&core.counters.stale_discarded, 1);
@@ -1755,19 +1757,23 @@ impl ScriptDomain {
                 ));
                 continue;
             }
-            let targets = match &envelope.delivery {
+            let targets: Rc<[Dispatch]> = match &envelope.delivery {
                 Delivery::Raw(EventTarget::Context(context)) => core.target(*context, Phase::Event).into_iter().collect(),
-                Delivery::Raw(EventTarget::All) => core.targets(Phase::Event),
-                Delivery::Named(event) => core.named_targets(event),
+                Delivery::Raw(EventTarget::All) => core.targets(Phase::Event).into(),
+                Delivery::Named(event) => Rc::clone(
+                    named
+                        .entry(event.as_str())
+                        .or_insert_with(|| core.named_targets(event).into()),
+                ),
             };
             if targets.is_empty() {
                 report.unhandled += 1;
                 continue;
             }
-            for target in targets {
+            for target in targets.iter() {
                 report.delivered += 1;
                 Counters::add(&core.counters.events_delivered, 1);
-                if let Err(error) = self.call(runtime, &target, Phase::Event, &envelope.payload, envelope.posted.elapsed()) {
+                if let Err(error) = self.call(runtime, target, Phase::Event, &envelope.payload, envelope.posted.elapsed()) {
                     report.failures.push(error);
                 }
             }
