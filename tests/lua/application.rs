@@ -920,6 +920,31 @@ fn interfaces_are_looked_up_after_composition_and_only_in_an_application_domain(
         "{early}"
     );
 
+    // A layer's entrypoint runs before every managed module, so it is early too.
+    let layered = temp.path().join("entrypoint");
+    write(
+        &layered,
+        &[
+            (
+                "jess.toml",
+                &manifest(
+                    "org.example.layered",
+                    "[modules]\n\"@layered/boot\" = \"src/boot.jsl\"\n\n[[layer]]\nid = \"example.layered\"\n\n[[layer.entrypoint]]\nmodule = \"@layered/boot\"\n\n[targets.app]\nkind = \"application\"\nentry = \"src/main.jsl\"\n",
+                ),
+            ),
+            (
+                "src/boot.jsl",
+                "require('@jess/interfaces').get('game.inventory')\nreturn nil\n",
+            ),
+            ("src/main.jsl", "return nil\n"),
+        ],
+    );
+    let entrypoint = launch_error(&request(&layered, "app", &[]));
+    assert!(
+        entrypoint.contains("interfaces.get: interfaces are composed once every managed module has loaded"),
+        "{entrypoint}"
+    );
+
     let application = launch(&request(&fixtures().join("game"), "game", &[]));
     let missing = application
         .domain()

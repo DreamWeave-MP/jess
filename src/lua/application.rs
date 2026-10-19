@@ -310,8 +310,10 @@ impl Setup {
         let domain = crate::runtime::luau::domain_of(runtime)
             .ok_or_else(|| error("an application loads into a ScriptDomain's primary runtime"))?;
         package::mount_with(runtime, &self.locations, &self.layers, Some(&self.capabilities), &self.search)?;
-        package::run_entrypoints(runtime)?;
+        // From here until they are published, a lookup says the interfaces are being composed:
+        // the layers' entrypoints run before any managed module, and are early too.
         crate::runtime::luau::compose_interfaces(runtime);
+        package::run_entrypoints(runtime)?;
         let jess = state(runtime)?;
         let mut providers = Vec::new();
         let order = {
