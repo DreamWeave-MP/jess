@@ -285,15 +285,19 @@ pub struct EventLimits {
     pub bytes: usize,
     /// The most events one drain delivers. Zero is treated as one.
     pub per_drain: usize,
+    /// The longest name a named event may have, in bytes. A queued name counts toward `bytes`
+    /// too, as the envelope holds a copy of it.
+    pub name: usize,
 }
 
 impl Default for EventLimits {
-    /// 65,536 events, 64 MiB of payload, and 4,096 events a drain.
+    /// 65,536 events, 64 MiB of payload, 4,096 events a drain, and names of up to 256 bytes.
     fn default() -> Self {
         EventLimits {
             pending: 65_536,
             bytes: 64 << 20,
             per_drain: 4_096,
+            name: 256,
         }
     }
 }
@@ -307,15 +311,23 @@ pub struct QueueFull {
     pub waiting: usize,
     /// The payload bytes waiting when it was refused.
     pub bytes: usize,
-    /// Its own payload's size.
+    /// Its own size: its payload's [`Message::queue_weight`] and its name's length.
     pub payload: usize,
+    /// Its name's length in bytes.
+    pub name: usize,
     /// The limits it was refused under.
     pub limits: EventLimits,
 }
 
 impl fmt::Display for QueueFull {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.payload > self.limits.bytes {
+        if self.name > self.limits.name {
+            write!(
+                f,
+                "{} takes event names of at most {} bytes, and this one is {}",
+                self.domain, self.limits.name, self.name
+            )
+        } else if self.payload > self.limits.bytes {
             write!(
                 f,
                 "{}'s event queue holds at most {} bytes of payload, and this event's is {}",
@@ -375,18 +387,24 @@ impl Backlog {
         (events, self.bytes.fetch_add(bytes, Ordering::AcqRel) + bytes)
     }
 
-    /// Counts an event of `bytes` in, or refuses it, counting nothing, when it doesn't fit.
-    fn admit(&self, domain: DomainId, bytes: usize) -> Result<(), QueueFull> {
+    /// Counts a named event of `bytes`, its name of `name` bytes among them, in; or refuses it,
+    /// counting nothing, when its name is too long or it doesn't fit.
+    fn admit(&self, domain: DomainId, name: usize, bytes: usize) -> Result<(), QueueFull> {
+        let refused = |waiting: usize, total: usize| QueueFull {
+            domain,
+            waiting,
+            bytes: total,
+            payload: bytes,
+            name,
+            limits: self.limits,
+        };
+        if name > self.limits.name {
+            return Err(refused(self.waiting(), self.bytes.load(Ordering::Acquire)));
+        }
         let (events, total) = self.count(bytes);
         if events > self.limits.pending || total > self.limits.bytes {
             self.release(bytes);
-            return Err(QueueFull {
-                domain,
-                waiting: events - 1,
-                bytes: total - bytes,
-                payload: bytes,
-                limits: self.limits,
-            });
+            return Err(refused(events - 1, total - bytes));
         }
         Ok(())
     }
@@ -467,7 +485,7 @@ impl DomainMailbox {
     /// # Errors
     ///
     /// [`PostRefused::Closed`] once the domain has stopped; [`PostRefused::Full`] when the event
-    /// doesn't fit in its queue under the domain's [`EventLimits`].
+    /// doesn't fit in its queue under the domain's [`EventLimits`], or its name is longer than they allow.
     pub fn post_named(&self, event: &str, payload: Message) -> Result<(), PostRefused> {
         self.post_named_for(event, Generation::from_raw(self.generation.load(Ordering::Acquire)), payload)
     }
@@ -478,9 +496,11 @@ impl DomainMailbox {
     ///
     /// As [`DomainMailbox::post_named`].
     pub fn post_named_for(&self, event: &str, generation: Generation, payload: Message) -> Result<(), PostRefused> {
-        let bytes = payload.queue_weight();
+        // The envelope holds a copy of the name, so the name is weighed with the payload, and
+        // refused for its length before anything is copied.
+        let bytes = payload.queue_weight().saturating_add(event.len());
         self.backlog
-            .admit(self.domain, bytes)
+            .admit(self.domain, event.len(), bytes)
             .map_err(|full| PostRefused::Full(Box::new(full)))?;
         self.enqueue(Delivery::Named(event.to_owned()), generation, payload, bytes)
             .map_err(PostRefused::Closed)

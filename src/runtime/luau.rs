@@ -332,6 +332,13 @@ fn emit(bindings: &Bindings, call: &Call<'_>, name: &str, payload: Option<ValueV
         return Err(l3i::Error::runtime("events.emit: an event needs a name"));
     }
     let domain = bindings.domain("events.emit")?;
+    let limit = domain.event_limits().name;
+    if name.len() > limit {
+        return Err(l3i::Error::runtime(format!(
+            "events.emit: an event name is at most {limit} bytes, and this one is {}",
+            name.len()
+        )));
+    }
     let payload = match payload {
         // Read no further than the queue could hold, so a vast table is refused part way in.
         Some(payload) => read_message(call, payload, Some(&domain), "payload", domain.event_limits().bytes)?,
@@ -570,8 +577,9 @@ impl Extension for RuntimeExtension {
         let state = Rc::clone(&bindings);
         events.function(
             "emit",
-            move |call: &Call<'_>, name: String, payload: Option<ValueView<'_>>| -> l3i::Result<()> {
-                emit(&state, call, &name, payload)
+            // The name is borrowed from Luau: one too long is refused before anything copies it.
+            move |call: &Call<'_>, name: &str, payload: Option<ValueView<'_>>| -> l3i::Result<()> {
+                emit(&state, call, name, payload)
             },
         )?;
         let events = events.table().clone();

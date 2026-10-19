@@ -71,7 +71,7 @@ return {
 | `shutdown` | once, when the application stops or restarts | nothing |
 | `interfaceOverride` | once, by the loader, if this module's interface replaces another | the table it replaces |
 
-`on.event` holds handlers for **named events**, keyed by event name. Names are case-sensitive strings; dots and anything else go in quoted keys, `['game.playerDied'] = function(payload) ... end`.
+`on.event` holds handlers for **named events**, keyed by event name. Names are case-sensitive strings of up to 256 bytes; dots and anything else go in quoted keys, `['game.playerDied'] = function(payload) ... end`.
 
 `interface` is a plain table, and it is required exactly when the manifest declares an `interface`.
 

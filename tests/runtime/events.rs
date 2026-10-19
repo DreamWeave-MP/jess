@@ -396,6 +396,7 @@ fn a_full_queue_refuses_named_events_observably_and_counts_raw_ones() {
         pending: 3,
         bytes: 1 << 20,
         per_drain: 2,
+        ..EventLimits::default()
     };
     let harness = limited(
         limits,
@@ -438,11 +439,13 @@ fn a_full_queue_refuses_named_events_observably_and_counts_raw_ones() {
 
 #[test]
 fn a_payload_larger_than_the_queue_holds_is_refused() {
-    let small = Message::text("small").queue_weight();
+    // What one 'small' event named 'hit' holds: its payload and its name.
+    let small = Message::text("small").queue_weight() + "hit".len();
     let limits = EventLimits {
         pending: 10,
         bytes: small + small / 2,
         per_drain: 10,
+        ..EventLimits::default()
     };
     let harness = limited(limits, "return { hit = function() end }", &[("hit", "hit")]);
     let domain = &harness.domain;
@@ -483,6 +486,7 @@ fn an_event_storm_is_bounded_in_memory_and_in_drain_work() {
         pending: 50,
         bytes: 1 << 20,
         per_drain: 10,
+        ..EventLimits::default()
     };
     let harness = limited(
         limits,
@@ -561,6 +565,7 @@ fn many_tiny_values_count_against_the_queue() {
         pending: 100,
         bytes: weight + weight / 2,
         per_drain: 100,
+        ..EventLimits::default()
     };
     let harness = limited(limits, "return { hit = function() end }", &[("hit", "hit")]);
     let domain = &harness.domain;
@@ -617,4 +622,43 @@ fn a_named_event_s_buffers_are_each_handler_s_own() {
     let report = domain.drain_events().unwrap();
     assert_eq!((report.delivered, report.failures.len()), (2, 0), "{:?}", report.failures);
     assert_eq!(support::journal(), ["first wrote 42", "second reads 0, frozen true"]);
+}
+
+/// An event's name is part of what it holds: a name past the limit is refused before anything
+/// copies it, and names count toward the queue's bytes, so a flood of long names with no
+/// payload still fills it.
+#[test]
+fn event_names_are_limited_and_weighed() {
+    let name = "n".repeat(200);
+    let one = Message::Nil.queue_weight() + name.len();
+    let limits = EventLimits {
+        pending: 100,
+        bytes: 2 * one + one / 2,
+        per_drain: 100,
+        name: 256,
+    };
+    let harness = limited(limits, "return {}", &[]);
+    let domain = &harness.domain;
+    let long = emit_error(domain, "require('@jess/events').emit(string.rep('X', 1024 * 1024))");
+    assert!(
+        long.contains("events.emit: an event name is at most 256 bytes, and this one is 1048576"),
+        "{long}"
+    );
+    let flood = format!("require('@jess/events').emit(string.rep('n', {}))", name.len());
+    support::eval::<()>(domain, &flood);
+    support::eval::<()>(domain, &flood);
+    let full = emit_error(domain, &flood);
+    assert!(full.contains(&format!("{} bytes of payload are waiting", 2 * one)), "{full}");
+
+    // A host's named post with a name past the limit is refused for it, and queues nothing.
+    let Err(PostRefused::Full(refused)) = domain.mailbox().unwrap().post_named(&"X".repeat(300), Message::Nil) else {
+        panic!("a name past the limit is refused");
+    };
+    assert!(
+        refused
+            .to_string()
+            .contains("takes event names of at most 256 bytes, and this one is 300"),
+        "{refused}"
+    );
+    assert_eq!(domain.drain_events().unwrap().unhandled, 2);
 }
