@@ -541,12 +541,28 @@ pub(crate) fn launch(
     let host = Host::create(factory, HostSpec::new(spec)).map_err(l3i::Error::from)?;
     let loading = Rc::clone(&setup);
     if let Err(problem) = host.domain().load(|runtime| loading.load(runtime)) {
+        // Every failure the load reported, each attributed to the context it happened in (a
+        // module's load handler) or to the application, and the first one when none was.
+        let names = host
+            .domain()
+            .contexts()
+            .into_iter()
+            .map(|context| (context.id, context.name))
+            .collect::<BTreeMap<_, _>>();
+        let mut lines = diagnostics
+            .drain()
+            .iter()
+            .map(|diagnostic| describe(&setup, &names, diagnostic))
+            .collect::<Vec<_>>();
+        if lines.is_empty() {
+            lines.push(message_of(&problem));
+        }
         drop(host.stop());
         return Err(error(format!(
-            "{} target {}: {}",
+            "{} target {} failed to load:\n{}",
             inspection.id,
             target.id,
-            message_of(&problem)
+            lines.join("\n")
         )));
     }
     let mut application = Application {

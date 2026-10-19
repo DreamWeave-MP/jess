@@ -78,7 +78,8 @@ return {
 Everything is checked when the module returns, before anything is bound, and a mistake stops the launch naming the package, the managed id, the file, and the key:
 
 ```text
-error: org.example.app target app: managed 'main' of org.example.app (org.example.app@1.0.0/src/main.jsl): on.host.updat is not a host callback; expected load, startup, fixedUpdate, update, lateUpdate, input, renderPrepare, onDemand, shutdown, interfaceOverride
+error: org.example.app target app failed to load:
+error in org.example.app:app during load: managed 'main' of org.example.app (org.example.app@1.0.0/src/main.jsl): on.host.updat is not a host callback; expected load, startup, fixedUpdate, update, lateUpdate, input, renderPrepare, onDemand, shutdown, interfaceOverride
 ```
 
 There is no "unknown key, probably fine". `on.host.event` is refused, because raw events are [`@jess/context`](@/docs/api/context.md)'s and named ones go in `on.event`. `message` and `timer` are refused because nothing in the kernel dispatches those phases yet, and a handler that never runs is worse than an error. A handler that isn't a function, an `on.event` keyed by a number, an interface the manifest doesn't declare, a declared interface the module didn't return, and an `interfaceOverride` with no interface to override all fail the same way.
@@ -97,7 +98,7 @@ Each managed module gets a context of its own, named `<package>/<managed id>`, s
 6. **Run the entry**, the target's private `entry`, with the target's arguments as `...` and `arg`. It runs inside the domain, after the interfaces exist, so it can look them up. What it returns is ignored: an application's status comes from `application.exit`.
 7. **`load` handlers**, then **`startup` handlers**, then frames.
 
-The order is the plan's, never the order you listed packages in or the filesystem listed them. A failure in steps 3 to 7 before startup stops the launch with the package and module that failed; a failure in a `startup`, `update`, or event handler is reported and the application runs on, as any domain does.
+The order is the plan's, never the order you listed packages in or the filesystem listed them. A failure in steps 3 to 7 stops the launch, listing every failure the load reported, each by the module's context (or the application's, for a module that wouldn't load) and where its handler was defined; a failure in a `startup`, `update`, or event handler is reported and the application runs on, as any domain does.
 
 ## Interfaces
 

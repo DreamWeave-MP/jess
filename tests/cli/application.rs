@@ -197,7 +197,7 @@ fn a_malformed_managed_module_stops_the_launch() {
     let stderr = text(&output.stderr);
     assert!(
         stderr.contains(
-            "org.example.app target app: managed 'main' of org.example.app (org.example.app@1.0.0/src/main.jsl): on.host.updat is not a host callback"
+            "org.example.app target app failed to load:\nerror in org.example.app:app during load: managed 'main' of org.example.app (org.example.app@1.0.0/src/main.jsl): on.host.updat is not a host callback"
         ),
         "{stderr}"
     );

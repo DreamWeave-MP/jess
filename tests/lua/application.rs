@@ -627,8 +627,7 @@ fn refused(source: &str, interface: Option<&str>) -> String {
 
 #[test]
 fn a_malformed_managed_module_fails_the_launch_naming_package_module_and_key() {
-    let at =
-        "org.example.single target app: managed 'broken' of org.example.single (org.example.single@1.0.0/src/broken.jsl): ";
+    let at = "org.example.single target app failed to load:\nerror in org.example.single:app during load: managed 'broken' of org.example.single (org.example.single@1.0.0/src/broken.jsl): ";
     for (source, interface, problem) in [
         ("return 5", None, "returned a number, not a table of on and interface"),
         ("return { handlers = {} }", None, "returned an unknown key 'handlers'"),
@@ -768,27 +767,47 @@ fn failing_host_callbacks_are_attributed_and_the_application_runs_on() {
     assert!(application.diagnostics()[0].contains("update 2 broke"), "the domain runs on");
     application.stop().unwrap();
 
-    // A load handler or the entry raising fails the launch, attributed.
+    // A load handler or the entry raising fails the launch, attributed: every load handler that
+    // raised is reported, by its module's context and where it was defined.
     let entry = temp.path().join("entry");
     single(&entry, &[], "error('the entry broke')\n", &[]);
     let message = launch_error(&request(&entry, "app", &[]));
     assert!(
-        message.contains("org.example.single target app: ") && message.contains("the entry broke"),
+        message.starts_with("org.example.single target app failed to load:\nerror in org.example.single:app during load: ")
+            && message.contains("the entry broke"),
         "{message}"
     );
     let loading = temp.path().join("loading");
     single(
         &loading,
-        &[(
-            "loader",
-            "return { on = { host = { load = function() error('load broke') end } } }\n",
-            None,
-        )],
+        &[
+            (
+                "first",
+                "return { on = { host = { load = function() error('first broke') end } } }\n",
+                None,
+            ),
+            (
+                "second",
+                "return { on = { host = { load = function() error('second broke') end } } }\n",
+                None,
+            ),
+        ],
         "return nil\n",
         &[],
     );
     let message = launch_error(&request(&loading, "app", &[]));
-    assert!(message.contains("load broke"), "{message}");
+    let lines = message.lines().collect::<Vec<_>>();
+    assert_eq!(lines.len(), 3, "{message}");
+    assert!(
+        lines[1].starts_with("error in org.example.single/first during load (org.example.single@1.0.0/src/first.jsl:1): ")
+            && lines[1].contains("first broke"),
+        "{message}"
+    );
+    assert!(
+        lines[2].starts_with("error in org.example.single/second during load (org.example.single@1.0.0/src/second.jsl:1): ")
+            && lines[2].contains("second broke"),
+        "{message}"
+    );
 }
 
 #[test]
