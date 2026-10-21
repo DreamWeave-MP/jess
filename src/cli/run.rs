@@ -98,6 +98,7 @@ pub fn run(args: &RunArgs) -> Result<u8, String> {
     if !args.script.is_file() {
         return Err(format!("'{}' isn't a file", args.script.display()));
     }
+    jess::lua::scripts::require_jsl(&args.script).map_err(|error| error.to_string())?;
     if (args.emit_asm.is_some() || args.disassemble.is_some()) && !args.args.is_empty() {
         return Err("script inspection modes don't execute the script and take no script arguments".to_owned());
     }

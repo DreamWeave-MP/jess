@@ -53,10 +53,31 @@ pub fn load(runtime: &Runtime, name: &str, source: &[u8]) -> l3i::Result<Functio
 /// # Errors
 /// Returns a file-read, compilation, or script error.
 pub fn run_file(runtime: &Runtime, path: &Path, args: &[String]) -> l3i::Result<Vec<Value>> {
+    require_jsl(path)?;
     let source = std::fs::read(path).map_err(|source| error(format!("failed to read '{}': {source}", path.display())))?;
     let name = path.display().to_string();
     let function = load(runtime, &name, &source)?;
     run_loaded(runtime, &name, &function, args)
+}
+
+/// Refuses a script that isn't a `.jsl` file: jess's sources are `.jsl`, the only extension its
+/// `require`, its manifests, and its checker take, and a script run from the command line is no
+/// exception.
+///
+/// # Errors
+///
+/// Returns an error naming the path when its extension isn't `jsl`.
+pub fn require_jsl(path: &Path) -> l3i::Result<()> {
+    if path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("jsl"))
+    {
+        return Ok(());
+    }
+    Err(error(format!(
+        "'{}' isn't a .jsl file: jess runs .jsl sources, and nothing else",
+        path.display()
+    )))
 }
 
 /// Runs a loaded chunk as a script: `args` through `...` and the global `arg` table, whose index

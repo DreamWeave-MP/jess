@@ -731,7 +731,7 @@ fn application_tools_are_not_embedded_script_aliases() {
     let runtime = common::runtime();
     for name in ["@jess/doctor", "@jess/tes3merge", "@jess/s3lightfixes", "@jess/mergedlands"] {
         let error = jess::lua::scripts::run_file(&runtime, Path::new(name), &[]).unwrap_err();
-        assert!(error.to_string().contains("failed to read"), "{name}: {error}");
+        assert!(error.to_string().contains("isn't a .jsl file"), "{name}: {error}");
     }
 }
 

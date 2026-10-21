@@ -597,3 +597,36 @@ fn package_check_fails_on_a_type_error_and_passes_without_one() {
     assert!(passed.status.success(), "{}", String::from_utf8_lossy(&passed.stderr));
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn scripts_must_be_jsl_files() {
+    let root = temp_dir_path("jsl-only");
+    drop(fs::remove_dir_all(&root));
+    fs::create_dir_all(&root).unwrap();
+    let lua = root.join("script.lua");
+    fs::write(&lua, "print(1)\n").unwrap();
+    let message = "isn't a .jsl file: jess runs .jsl sources, and nothing else";
+
+    let run = jess().arg("run").arg(&lua).output().unwrap();
+    assert!(!run.status.success());
+    assert!(
+        String::from_utf8_lossy(&run.stderr).contains(message),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let test = jess().args(["--format", "json", "test"]).arg(&lua).output().unwrap();
+    assert!(!test.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&test.stdout).unwrap();
+    assert!(report["modules"][0]["error"].as_str().unwrap().contains(message), "{report}");
+
+    let check = jess().arg("check").arg(&lua).output().unwrap();
+    assert!(!check.status.success());
+    assert!(
+        String::from_utf8_lossy(&check.stderr).contains(message),
+        "{}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
