@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+#
+# tools/dev/stub-clang: lint the Windows target from Linux. Usage, from the repository root:
+#
+#   rustup target add x86_64-pc-windows-gnu
+#   CC_x86_64_pc_windows_gnu=$PWD/tools/dev/stub-clang CXX_x86_64_pc_windows_gnu=$PWD/tools/dev/stub-clang \
+#     L3I_UNVERIFIED_TOOLCHAIN=1 CARGO_TARGET_DIR=target/winclippy \
+#     cargo clippy --workspace --all-targets --all-features --target x86_64-pc-windows-gnu -- -W clippy::pedantic -D warnings
+#
+# A compiler that compiles nothing: clippy never links, so a Windows-target lint from Linux only
+# needs something cc-rs takes for clang and that produces the object it was asked for. cc-rs
+# preprocesses a detection file (-E) and reads the family from the output, asks --version, and
+# hands long Windows command lines over as @response files.
+args=()
+for arg in "$@"; do
+  if [[ $arg == @* && -f ${arg#@} ]]; then
+    while IFS= read -r line; do args+=("$line"); done < "${arg#@}"
+  else
+    args+=("$arg")
+  fi
+done
+case " ${args[*]} " in
+  *" --version "*|*" -v "*) echo "clang version 22.1.8"; echo "Target: x86_64-pc-windows-gnu"; exit 0 ;;
+  *" -E "*) echo "clang"; exit 0 ;;
+esac
+out=""
+for ((i = 0; i < ${#args[@]}; i++)); do
+  case ${args[$i]} in
+    -o) out=${args[$((i + 1))]} ;;
+    -o?*) out=${args[$i]#-o} ;;
+    -Fo?*) out=${args[$i]#-Fo} ;;
+  esac
+done
+[[ -n $out ]] && : > "$out"
+exit 0
