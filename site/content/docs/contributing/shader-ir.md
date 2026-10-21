@@ -1,14 +1,14 @@
 ---
 title: 'Shader IR'
-description: 'What jess-shader is, what it deliberately is not, and how its types, validation, source attribution, constant folding, and WGSL lowering work.'
+description: 'What jess::shader is, what it deliberately is not, and how its types, validation, source attribution, constant folding, and WGSL lowering work.'
 weight: 70
 extra:
   kind: guide
 ---
 
-A lit, textured NIF shape needs about one line of shading: sample the diffuse texture, scale it by how much the surface faces the light. Written as WGSL, that line drags along a uniform struct with the right padding, a bind group number, a binding number for the texture, another for the sampler, attribute locations, and an interface struct the vertex and fragment stages have to agree on. None of that is shading. All of it is somewhere to be wrong.
+A lit, textured surface needs about one line of shading: sample the diffuse texture, scale it by how much the surface faces the light. Written as WGSL, that line drags along a uniform struct with the right padding, a bind group number, a binding number for the texture, another for the sampler, attribute locations, and an interface struct the vertex and fragment stages have to agree on. None of that is shading. All of it is somewhere to be wrong.
 
-`jess-shader` (`libs/shader`) keeps the one line and takes the rest. A program says what it computes. jess picks every binding and location, checks the program in its own terms, and writes the WGSL.
+`jess::shader` (`src/shader`) keeps the one line and takes the rest. A program says what it computes. jess picks every binding and location, checks the program in its own terms, and writes the WGSL.
 
 ## What It Is
 
@@ -23,20 +23,18 @@ shader expressions -> Program -> validate -> fold_constants -> wgsl::lower -> Wg
 - `Program::fold_constants` folds the trivial stuff, and nothing more.
 - `wgsl::lower` writes one WGSL module and reports every binding, uniform layout, and attribute location the renderer has to match.
 
-The Luau end (`@jess/shader`) doesn't exist yet, and neither does the renderer that consumes the module. Neither is in this crate.
+The Luau end is [`jess.shader`](@/docs/api/shader.md): an ordinary Luau module runs once, calls the builders, and returns a validated program in this IR. The renderer that consumes the lowered module is not in the kernel; the [render graph](@/docs/contributing/render-graph.md) is where a pass says what it touches.
 
 ## What It Is Not
 
 - **Not a WGSL API.** Nothing here takes WGSL. WGSL is backend output: dump it when debugging, never write it by hand. A raw escape hatch may exist someday if something proves it has to.
 - **Not a wgpu wrapper.** No public type names a wgpu or naga type. naga and wgpu are dev-dependencies, used only to prove the output is valid and draws.
-- **Not a Luau API.** There are no bindings. Those wait for l3i.
-- **Not a render graph or a material system.** Which passes run and what feeds them is `jess-render`'s problem. What a NIF property means is `NifScene`'s.
+- **Not a render graph or a material system.** Which passes run and what feeds them is the render graph's problem. What a surface's properties mean is the package that owns the format's.
 - **Not an optimizing compiler.** naga and the driver already are one.
-- **Not published.** The crate is `publish = false` until the native foundations are reassessed.
 
 ## Types
 
-Exactly what the NIF renderer needs:
+Exactly what a first renderer needs:
 
 | Type | Notes |
 | --- | --- |
@@ -91,10 +89,10 @@ Every expression and declaration can carry a `SourceOrigin`: owner, file, line, 
 Errors carry the origin of the expression or declaration at fault:
 
 ```text
-shaders/lit.jsl:12:5 (@jess/nif-viewer): dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size
+shaders/lit.jsl:12:5 (com.example.viewer): dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size
 ```
 
-The Luau front end will fill these in. The IR doesn't know what Luau is; it just refuses to be structurally incapable of pointing at it.
+The Luau front end fills these in from the module that built the expression. The IR doesn't know what Luau is; it just refuses to be structurally incapable of pointing at it.
 
 ## Constant Folding
 
@@ -144,9 +142,10 @@ fn fragment_main(input: VertexOutput) -> FragmentOutput {
 ## Testing
 
 ```sh
-cargo test -p jess-shader -- --nocapture
+cargo test --test shader -- --nocapture
+cargo test --test lua_shader
 ```
 
-Every lowered module in the tests goes through naga's parser and validator, and the uniform layouts jess reports are checked against the ones naga computes. The golden WGSL lives in `libs/shader/tests/golden`; `JESS_BLESS=1` rewrites it. Only bless when every change to the output is intended, and say why in the commit.
+Every lowered module in the tests goes through naga's parser and validator, and the uniform layouts jess reports are checked against the ones naga computes. The golden WGSL lives in `tests/shader/golden`; `JESS_BLESS=1` rewrites it. Only bless when every change to the output is intended, and say why in the commit. `lua_shader` builds a corpus of Luau shader modules (`tests/lua/shader/*.jsl`) through `jess.shader`, folds them, and lowers each to WGSL naga accepts, with the invalid ones failing where they should.
 
-`tests/triangle.rs` is the proof the layers compose: it builds a triangle program in the IR, lowers it, renders it headless with wgpu into an offscreen texture using only the bindings and locations `WgslModule` reported, and reads the center and corner pixels back. On a machine with no adapter at all, not even a software one, it prints `SKIPPED` and passes; `--nocapture` shows which adapter ran it.
+`tests/shader/triangle.rs` is the proof the layers compose: it builds a triangle program in the IR, lowers it, renders it headless with wgpu into an offscreen texture using only the bindings and locations `WgslModule` reported, and reads the center and corner pixels back. On a machine with no adapter at all, not even a software one, it prints `SKIPPED` and passes; `--nocapture` shows which adapter ran it.

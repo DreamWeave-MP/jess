@@ -38,7 +38,7 @@ intents                    @jess/input's router, in Luau          (names in, nam
 - **Not a backend.** No public type names evdev, gilrs, SDL, or a window toolkit. Backends translate into Jess's vocabulary behind a trait and a feature, and the stub compiles everywhere.
 - **Not haptics.** `DeviceDescriptor` lists `OutputChannel`s and nothing drives them. The shape is reserved so haptics later attaches to the device model instead of growing a second one.
 - **Not text input.** IME and text entry belong to the GUI and the platform.
-- **Not a host.** `InputService` bundles one application's runtime and a synthetic side into the unit a host ticks and a script configures; [jess-host](@/docs/contributing/application-kernel.md) ticks it in the input phase.
+- **Not a host.** `InputService` bundles one application's runtime and a synthetic side into the unit a host ticks and a script configures; the [application kernel](@/docs/contributing/application-kernel.md) ticks it in the input phase.
 
 ## Device Truth
 
@@ -161,7 +161,7 @@ The runtime enforces none, because a native caller holding an `InputRuntime` alr
 | `input.actions` | Action state and events |
 | `input.configure` | Installing, remapping, activating sets, pushing layers, synthetic events |
 
-`jess.input` checks them through `jess_runtime::require_capability` on every runtime method, whenever the script runs under a `ScriptDomain`; a denial is the broker's, `capability 'input.actions' denied to domain#1 gen#1 context#2`, attributed and diagnosed. Outside any domain the runtime's own grant decides: the CLI grants them to the scripts a person runs, a package target holds what it declares, and a library caller grants them when it builds the runtime (`jess::lua::host_script_grant`). The table of which method needs which is on [@jess/input](@/docs/api/input.md); labels, presentation, conflicts, and routing need nothing, since they read only the document and the events a script already has.
+`jess.input` checks them through `jess::runtime::require_capability` on every runtime method, whenever the script runs under a `ScriptDomain`; a denial is the broker's, `capability 'input.actions' denied to domain#1 gen#1 context#2`, attributed and diagnosed. Outside any domain the runtime's own grant decides: the CLI grants them to the scripts a person runs, a package target holds what it declares, and a library caller grants them when it builds the runtime (`jess::lua::host_script_grant`). The table of which method needs which is on [@jess/input](@/docs/api/input.md); labels, presentation, conflicts, and routing need nothing, since they read only the document and the events a script already has.
 
 ## Tests
 

@@ -28,7 +28,7 @@ The two ends of that line don't exist yet. The technique will eventually come fr
 - **Not a renderer.** It allocates no textures and records no commands.
 - **Not a wgpu wrapper.** No public type names a wgpu type. `TargetFormat` is jess's own list of the formats the renderer needs; a backend maps it to whatever its API calls them. The same goes, later, for bind groups, pipeline layouts, and shader modules.
 - **Not a Luau API.** There are no bindings. Those wait for l3i, and a temporary binding layer would become the permanent one the day it shipped.
-- **Not a material or shader system.** A pass says what it touches, not how it shades. Shaders are `jess-shader`'s problem.
+- **Not a material or shader system.** A pass says what it touches, not how it shades. Shaders are the [shader IR](@/docs/contributing/shader-ir.md)'s problem.
 - **Not published.** The crate is `publish = false` until the native foundations are reassessed.
 
 Compute passes aren't modeled. `PassKind` is non-exhaustive so they can land when a pass needs one.

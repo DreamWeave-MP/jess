@@ -1,6 +1,6 @@
 ---
 title: 'Script Domains'
-description: 'What jess-runtime is, what it deliberately is not, and how domains, contexts, capabilities, workers, generations, and teardown work.'
+description: 'What jess::runtime is, what it deliberately is not, and how domains, contexts, capabilities, workers, generations, and teardown work.'
 weight: 100
 extra:
   kind: guide
@@ -8,7 +8,7 @@ extra:
 
 `jess run` makes one Luau VM, installs jess in it, runs a script, and exits. That is the right shape for a command-line tool and the wrong one for an application that hosts an editor, a running game session, a headless server, and a profiler at once, each in Luau, each with its own authority, each able to reload without the others noticing.
 
-`jess-runtime` (`libs/runtime`) is the piece between those two: one process, many isolated Luau worlds, and one place that decides when each may run and what each may do. It sits on [l3i](https://DreamWeave-MP.github.io/l3i/) and knows nothing about Morrowind, OpenMW, or anything with a window.
+`jess::runtime` (`src/runtime`) is the piece between those two: one process, many isolated Luau worlds, and one place that decides when each may run and what each may do. It sits on [l3i](https://DreamWeave-MP.github.io/l3i/) and knows nothing about any application or anything with a window.
 
 ## What It Is
 
@@ -21,21 +21,21 @@ A `ScriptDomain` is one isolated Luau authority. It owns:
 - the native resources services created on its behalf;
 - the queue of events waiting for it.
 
-It has an explicit lifecycle (`Created`, `Loading`, `Ready`, `Running`, `Stopping`, `Stopped`, `Failed`), a stable `DomainId`, and a `Generation` that moves on every restart. Two domains made from the same plan share nothing: not globals, not module tables, not a userdata. The fixture in `libs/runtime/tests/runtime/fixture.rs` proves that with two domains in one process and is the definition of the crate being done.
+It has an explicit lifecycle (`Created`, `Loading`, `Ready`, `Running`, `Stopping`, `Stopped`, `Failed`), a stable `DomainId`, and a `Generation` that moves on every restart. Two domains made from the same plan share nothing: not globals, not module tables, not a userdata. The fixture in `tests/runtime/fixture.rs` proves that with two domains in one process and is the definition of the module being done.
 
 ## What It Is Not
 
 - **Not a session, workspace, or GUI.** No world state, no player, no windows. A session may later own domains; a tool domain may exist with no session.
-- **Not an OpenMW script system.** There is no `Player` or `Menu` phase and there never will be. The generic phases below are scheduler entries; a layer that wants `openmw.load` builds it on `onDemand` or events.
+- **Not a game's script system.** There is no `Player` or `Menu` phase and there never will be. The generic phases below are scheduler entries; a package that wants a named lifecycle of its own builds it on `onDemand` or events.
 - **Not an actor framework.** Workers exchange a small set of values over a channel. There is no object RPC, no shared table, no transparent anything.
-- **Not `jess_lua`.** The crate takes a factory. `jess_lua::plan` is one plan it can run, and `jess_lua::runtime` is one factory; the crate never names either.
+- **Not the Luau API.** The module takes a factory. `jess::lua::plan` is one plan it can run, and `jess::lua::runtime` is one factory; the module never names either.
 - **Not an application.** It carries a host's services by type ([Application Kernel](@/docs/contributing/application-kernel.md)) and never looks inside one.
 
 ## Threads
 
-l3i's `Runtime` is not `Send`: it owns a `lua_State` and `Rc` state. Neither is a `RuntimePlan`. The crate is built on that fact rather than around it, and its docs carry `compile_fail` tests that pin both.
+l3i's `Runtime` is not `Send`: it owns a `lua_State` and `Rc` state. Neither is a `RuntimePlan`. The module is built on that fact rather than around it, and its docs carry `compile_fail` tests that pin both.
 
-So a domain lives on the thread that created it, a worker builds and drops its own runtime on its own lane, and the factory is a plan *function*, not a plan: `FromPlan(jess_lua::plan)` calls `jess_lua::plan()` on whatever thread needs a runtime and gets that thread's cached plan. A closure returning a finished `Runtime` works too, for hosts that set up globals after `Runtime::from_plan`.
+So a domain lives on the thread that created it, a worker builds and drops its own runtime on its own lane, and the factory is a plan *function*, not a plan: `FromPlan(jess::lua::plan)` calls `jess::lua::plan()` on whatever thread needs a runtime and gets that thread's cached plan. A closure returning a finished `Runtime` works too, for hosts that set up globals after `Runtime::from_plan`.
 
 Other threads reach a domain through a `DomainMailbox`, which is `Send` and only queues. Nothing else crosses.
 
@@ -82,7 +82,7 @@ Interfaces, [`@jess/interfaces`](@/docs/api/interfaces.md), are the other half o
 
 ## Capabilities: What Code May Do
 
-A capability is a dotted lowercase name: `input.observe`, `render.scene`, `worker.spawn`. The host holds `RootAuthority` and grants a `CapabilitySet` to a domain. From there the math only shrinks: a child domain (`delegate`), a context (`ContextSpec::capabilities`), a worker (`WorkerSpec::capabilities`) each hold a subset of whoever made them, and asking for more fails with `RuntimeError::OverDelegation` naming what is missing. A script cannot grant itself anything, and a script spawning a worker cannot give it more than the calling context holds.
+A capability is a dotted lowercase name: `filesystem.read`, `input.observe`, `worker.spawn`. The host holds `RootAuthority` and grants a `CapabilitySet` to a domain. From there the math only shrinks: a child domain (`delegate`), a context (`ContextSpec::capabilities`), a worker (`WorkerSpec::capabilities`) each hold a subset of whoever made them, and asking for more fails with `RuntimeError::OverDelegation` naming what is missing. A script cannot grant itself anything, and a script spawning a worker cannot give it more than the calling context holds.
 
 A native service checks at its entry point:
 
@@ -90,7 +90,7 @@ A native service checks at its entry point:
 pub const INPUT_OBSERVE: &str = "input.observe";
 
 fn observe(/* ... */) -> l3i::Result<()> {
-    jess_runtime::require_capability(INPUT_OBSERVE)?;
+    jess::runtime::require_capability(INPUT_OBSERVE)?;
     Ok(())
 }
 ```
@@ -109,7 +109,7 @@ local worker = require('@jess/worker')
 
 local decoder = worker.spawn {
   name = 'decoder',
-  capabilities = { 'vfs.read' },
+  capabilities = { 'filesystem.read' },
   source = [[
     return function(message)
       return { decoded = message.path }
@@ -117,7 +117,7 @@ local decoder = worker.spawn {
   ]],
 }
 
-decoder:send { path = 'music/battle01.ogg' }
+decoder:send { path = 'music/ambient01.ogg' }
 local reply = decoder:receive(5)
 print(reply.decoded)
 decoder:join()
@@ -159,7 +159,7 @@ Every handler call also runs inside an l3i `CallScope` whose id is the `ContextI
 - `src/runtime/context.rs`: `Phase`, `ContextSpec`, `Budget`, `FixedStep`.
 - `src/runtime/capability.rs`: `CapabilityId`, `CapabilitySet`, `Grant`, `RootAuthority`, `Authority`, `require_capability`.
 - `src/runtime/worker.rs` and `message.rs`: lanes, `WorkerSpec`, `Message`, `TransferError`.
-- `src/runtime/service.rs`: `Services`, the typed slot a host attaches its input and localization to; `jess::runtime::service::<T>()` reads it from a binding.
+- `src/runtime/service.rs`: `Services`, the typed slot a host attaches its input to; `jess::runtime::service::<T>()` reads it from a binding.
 - `src/runtime/luau.rs`: the `@jess/context`, `@jess/worker`, `@jess/events`, and `@jess/interfaces` extension.
 - `src/lua/application.rs`: the application supervisor that loads managed modules into a domain, and `@jess/application`.
 

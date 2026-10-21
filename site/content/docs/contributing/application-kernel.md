@@ -1,6 +1,6 @@
 ---
 title: 'Application Kernel'
-description: 'What jess-host is: a script domain with its live input service, the frame a host runs, how the input phase arrives, and what a capability denial looks like.'
+description: 'What jess::host is: a script domain with its live input service, the frame a host runs, how the input phase arrives, and what a capability denial looks like.'
 weight: 102
 extra:
   kind: guide
@@ -8,13 +8,13 @@ extra:
 
 The substrates exist on their own terms. [Script Domains](@/docs/contributing/script-domains.md) run code and know nothing about devices or text. [Input](@/docs/contributing/input-runtime.md) knows devices and action graphs and has never heard of a domain. [Localization](@/docs/contributing/localization.md) is a Luau module with a registry in every runtime, so it isn't a host's business at all. Something has to put one application together out of them, and it should be small, because the GUI, the render executor, and every application above them will stand on it.
 
-`jess-host` (`libs/host`) is that something: one `ScriptDomain`, the services it carries, and a frame.
+`jess::host` (`src/host`) is that something: one `ScriptDomain`, the services it carries, and a frame.
 
 ## What a Host Is
 
 A `Host` owns:
 
-- a `ScriptDomain` built from any `RuntimeFactory` (`jess_lua::runtime` is the one jess uses);
+- a `ScriptDomain` built from any `RuntimeFactory` (`jess::lua::runtime` is the one jess uses);
 - the domain's **input service**, a `Mutex<jess::input::InputService>`: the live `InputRuntime` and a synthetic side;
 - the clock the input ticks on: the monotonic clock behind a platform backend, or the synthetic side's when there is none.
 
@@ -23,7 +23,7 @@ It declares no contexts, reserves no action names, formats nothing itself, and d
 ```rust
 let grant = RootAuthority::new().grant(CapabilitySet::from_names(["input.actions", "input.configure"])?);
 let mut host = Host::create(
-    Arc::new(|| jess_lua::runtime(Options::default())),
+    Arc::new(|| jess::lua::runtime(Options::default())),
     HostSpec::new(DomainSpec::new("editor", grant))
         .input(InputSource::platform()?),
 )?;
@@ -33,9 +33,11 @@ host.domain().load_source("@editor/main.jsl", &source)?;
 host.domain().start()?;
 ```
 
+An [application target](@/docs/scripting/applications.md) is this, assembled from a manifest: `jess::lua::package::launch` builds a `Host`, loads every selected package's managed modules into its domain, binds their callbacks, and drives frames until the application asks to stop.
+
 ## Services: What a Domain Carries
 
-The runtime gained one piece of mechanism for this: a typed service slot. `DomainSpec::service(Arc<T>)` attaches any `Send + Sync` value by type; `jess_runtime::service::<T>()` finds it again from a binding, through the same thread-scoped ticket `current_authority()` reads, so it is `Some` exactly while script code runs under the domain and `None` for host code calling a runtime directly. The runtime never looks inside a service and depends on no service crate. The *type* is the contract: `jess-host` attaches a `Mutex<InputService>` and `jess.input` looks up a `Mutex<InputService>`, and the two crates agree on nothing else.
+The runtime has one piece of mechanism for this: a typed service slot. `DomainSpec::service(Arc<T>)` attaches any `Send + Sync` value by type; `jess::runtime::service::<T>()` finds it again from a binding, through the same thread-scoped ticket `current_authority()` reads, so it is `Some` exactly while script code runs under the domain and `None` for host code calling a runtime directly. The runtime never looks inside a service and depends on no service type. The *type* is the contract: the host attaches a `Mutex<InputService>` and `jess.input` looks up a `Mutex<InputService>`, and the two modules agree on nothing else.
 
 Services are the host's, not the script generation's. A `restart` keeps them; what a generation configured in one (the graph it installed) is the host's to reset, and `Host::restart` does. A worker sees only what its spawner shares: `WorkerSpec::share::<T>()` by type, `share_all()` for everything, or from Luau `worker.spawn { shareServices = true }`, since a script cannot name a Rust type. A worker not given a service has none, and the jess modules fall back to state of the worker's own.
 
@@ -71,15 +73,15 @@ The rows are exactly what `InputRuntime:tick()` returns to a script, so reading 
 | `stub()` | monotonic | the backend path with no devices behind it |
 | `Synthetic` | the service's synthetic side, moved by `InputService::advance` | tests, replays, headless runs |
 
-A synthetic host's frames read the synthetic clock and never move it: `frame(delta)` advances the domain by `delta`, and input time moves only when whoever injects the events calls `InputService::advance`. That is a decision, not an accident. A replay keeps its recorded timing whatever frame cadence plays it back, and a tap or a hold is decided by input time, not by how many frames ran. A headless run that wants one fake clock for everything advances both by the same amount. `libs/host/tests/kernel.rs` pins it.
+A synthetic host's frames read the synthetic clock and never move it: `frame(delta)` advances the domain by `delta`, and input time moves only when whoever injects the events calls `InputService::advance`. That is a decision, not an accident. A replay keeps its recorded timing whatever frame cadence plays it back, and a tap or a hold is decided by input time, not by how many frames ran. A headless run that wants one fake clock for everything advances both by the same amount. `tests/host/kernel.rs` pins it.
 
-The device features are forwarded to `jess-input` and off by default. No test opens a real device: the backends are compile-checked, and every fixture presses keys through `host.input().lock().synthetic()` or through `InputRuntime:press` from a script holding `input.configure`.
+The device features are the input module's and off by default. No test opens a real device: the backends are compile-checked, and every fixture presses keys through `host.input().lock().synthetic()` or through `InputRuntime:press` from a script holding `input.configure`.
 
 On a live runtime, `InputRuntime:tick()` and `InputRuntime:advance()` are refused (`InputRuntime:tick is the host's on a live input runtime: it ticks in the input phase; bind a context to that phase and read the payload`): the host owns the tick and the clock.
 
 ## Logs
 
-The host adds no logging of its own: the application's log stream is the domain's. Give the `DomainSpec` a `LogSink` (`DomainSpec::logs`) and every `@jess/log` record from every context and every worker arrives there as a `jess_runtime::LogRecord`, with the domain, generation, and context or worker that wrote it. That stream, the diagnostics, and the profile events are what an Output, Problems, Logs, or Profiler view reads.
+The host adds no logging of its own: the application's log stream is the domain's. Give the `DomainSpec` a `LogSink` (`DomainSpec::logs`) and every `@jess/log` record from every context and every worker arrives there as a `jess::runtime::LogRecord`, with the domain, generation, and context or worker that wrote it. That stream, the diagnostics, and the profile events are what an Output, Problems, Logs, or Profiler view reads. An application's diagnostics sit in a bounded sink that reports a run of identical ones as the first and a count, so an embedder that never drains them doesn't grow without end.
 
 ```rust
 let logs = Arc::new(CollectedLogs::new());
@@ -88,7 +90,7 @@ let spec = DomainSpec::new("editor", grant).diagnostics(diagnostics).logs(logs.c
 
 ## Capabilities: Who May Do What
 
-The capabilities the input crate named are checked, at the script boundary, by `jess.input`, through `jess_runtime::require_capability`:
+Every native call that reaches outside the VM is behind a named capability, checked at the script boundary through `jess::runtime::require_capability`. The [capabilities reference](@/docs/reference/capabilities.md) has the whole list; the input ones are the host's own concern:
 
 | Capability | `jess.input` |
 | --- | --- |
@@ -102,26 +104,9 @@ The rule for the boundary: **someone always decides.** Under a domain, the check
 capability 'input.actions' denied to domain#1 gen#1 context#2
 ```
 
-The denial is also counted (`DomainStats::capability_denials`) and reported as a `DiagnosticKind::CapabilityDenied` carrying the capability and the attribution. Outside any domain the runtime's own grant decides, the same set its l3i plan was built from: the CLI grants `input.*` to the scripts a person runs, since they already have the keyboard; a package target holds what it declares; and a library caller grants what it means to (`jess::lua::host_script_grant`), or gets `jess.input: needs the 'input.configure' capability, which this runtime does not grant`. Everything else in `@jess/input` (the builders, `graph`, `fromJson`, labels, presentation, conflicts, and the router) checks nothing, because it touches no device and no runtime: it is data.
+The denial is also counted (`DomainStats::capability_denials`) and reported as a `DiagnosticKind::CapabilityDenied` carrying the capability and the attribution. Outside any domain the runtime's own grant decides, the same set its l3i plan was built from: `jess run` and `jess test` grant a script its terminal (`process.stdio`) and the input devices in front of the person running it (`input.actions`, `input.observe`, `input.configure`), since they already have the keyboard; a package target holds what it declares, once the operator grants it; and a library caller grants what it means to (`jess::lua::host_script_grant`), or gets `jess.input: needs the 'input.configure' capability, which this runtime does not grant`. Everything else in `@jess/input` (the builders, `graph`, `fromJson`, labels, presentation, conflicts, and the router) checks nothing, because it touches no device and no runtime: it is data.
 
-### What Is Not Checked Yet
-
-Input and `worker.spawn` are the whole list. Everything older than the broker runs under a domain exactly as it runs in `jess run`: with the process's own file permissions. The capability model is not a security boundary for third-party packages until every surface below checks something:
-
-| Surface | Reaches |
-| --- | --- |
-| `Plugin:save`, `jess.plugin.convert`, `jess.save.strip`, `jess.nif.fix`, `Nif:save` | writes at any path, or in place |
-| `jess.plugin.open`, `jess.save.open`, `jess.nif.open`, `jess.compare.bytes`, `jess.openmw.load` | reads at any path, or through the config's data folders |
-| `OpenMwContext:save`, `openmwConfig` `saveUser`/`saveToPath`/`saveSubconfig`/`saveResolvedToPath` | writes the user's `openmw.cfg` |
-| `jess.openmw.configPath`, the `config =` option, default config loading | re-points resolution at any config; reads `OPENMW_CONFIG*`, `HOME`, `XDG_*` |
-| `vfstool.host.*`, `vfs:setWriteRoot`, `dumpToDirectory`, `collapseInto`, `extractFile`, `runSetup*`/`runFinalize*` | anything: the plan grants l3i's `filesystem.host` and `filesystem.write` to every runtime, so those gates are open |
-| `VFS.fromDirectories`, `pushArchive`, `VfsFile.from` | reads at any path |
-| Dreamwind's `@dreamwind/archive` (`openPath`, `extractTo*`, builders' `addDir`/`writePath`) and `@dreamwind/archive/tool` (`extract*`, `create`, `add`) | reads and writes at any path, through `vfstool.host` |
-| `require('./...')` from a script on disk | reads from disk relative to the caller; `..` is not clamped |
-
-What is fine without a check: anything that works on bytes or records already in the VM (`parse`, `openBytes`, `luadata`, `toml`, `regex`, `shader`, `dreamPath`, record handles), `print` and `@jess/log`, and `os.time`/`os.clock`. Nothing in the plan spawns a process or opens a socket.
-
-The vocabulary for closing this (`filesystem.profile`, `filesystem.user-selected`, `filesystem.unrestricted`, `vfs.read`, `vfs.mount`) is written down in the design and not yet in code. Until it is, run only trusted code in a domain.
+What needs no capability: anything that works on values already in the VM (the codecs, `@jess/style`, `jess.shader`, `@jess/l10n`'s formatting), `print` and `@jess/log`, `os.time` and `os.clock`, and `require` of a module beside the caller or exported by an activated package, which reads through the script's folder or the package's provider rather than through `@dream/fs`. A package's modules may require only what its manifest declares, so that read is bounded by the plan, not by a grant.
 
 ## Restart
 
@@ -134,13 +119,13 @@ It is as destructive as the domain's restart: the graph is forgotten and the old
 Two fixtures, both headless:
 
 - `tests/host/kernel.rs` drives a host with the runtime's own modules and a journal: the quiet frame, the press that becomes an input phase with its generation, the restart that keeps the keyboard and drops the graph and the stale event, the stub backend's poll loop.
-- `tests/lua/kernel.rs` is the substrate handoff's integration fixture over jess's real plan: one host domain with a live input runtime; a `main` context and an `input` context holding `input.actions` alone; a script that installs the graph and formats a message from its own `@jess/l10n` registry at startup; a worker spawned with `shareServices = true` and no capabilities that formats from a registry of its own and is denied input; keys pressed on the host's synthetic side and from the script, arriving as action events and, through the script's router, intents; a locale switch that formats in Polish at once; the input context's denial in every input phase; a restart to a second generation with the held key, the graph, and a queued event gone; and a teardown that owns nothing.
+- `tests/lua/kernel.rs` is the integration fixture over jess's real plan: one host domain with a live input runtime; a `main` context and an `input` context holding `input.actions` alone; a script that installs the graph and formats a message from its own `@jess/l10n` registry at startup; a worker spawned with `shareServices = true` and no capabilities that formats from a registry of its own and is denied input; keys pressed on the host's synthetic side and from the script, arriving as action events and, through the script's router, intents; a locale switch that formats in Polish at once; the input context's denial in every input phase; a restart to a second generation with the held key, the graph, and a queued event gone; and a teardown that owns nothing.
 
 ## Where It Lives
 
-- `libs/host/src/lib.rs`: `Host`, `HostSpec`, `FrameReport`, `SharedInput`.
-- `libs/host/src/input.rs`: `InputSource`, the driver, `payload`.
-- `libs/runtime/src/service.rs`: `Services`; `DomainSpec::service`, `ScriptDomain::service`, `jess_runtime::service`, `WorkerSpec::share`.
-- `libs/input/src/service.rs`: `InputService`.
-- `libs/lua/src/input.rs`: the module that binds to the service and checks the capabilities.
-- `libs/runtime/README.md`: the contract, call by call, services and events included.
+- `src/host/mod.rs`: `Host`, `HostSpec`, `FrameReport`, `SharedInput`.
+- `src/host/input.rs`: `InputSource`, the driver, `payload`.
+- `src/runtime/service.rs`: `Services`; `DomainSpec::service`, `ScriptDomain::service`, `jess::runtime::service`, `WorkerSpec::share`.
+- `src/input/service.rs`: `InputService`.
+- `src/lua/input.rs`: the module that binds to the service and checks the capabilities.
+- `src/lua/application.rs`: the supervisor that turns an application target into a host, its managed modules, and a frame loop.
