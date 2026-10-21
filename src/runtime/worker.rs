@@ -198,10 +198,7 @@ pub enum Output {
 /// What a worker's own `@jess/worker` functions reach: the way back to its domain.
 #[derive(Clone)]
 pub struct WorkerLink {
-    pub(crate) attribution: Attribution,
     pub(crate) outbox: SyncSender<Output>,
-    pub(crate) counters: Arc<Counters>,
-    pub(crate) profiler: Arc<dyn ProfileSink>,
 }
 
 impl WorkerLink {
@@ -210,22 +207,11 @@ impl WorkerLink {
     /// past its watchdog. A domain that stopped listening is not the worker's problem: the
     /// message is dropped with the channel.
     pub(crate) fn send(&self, message: Message) -> Result<(), String> {
-        let bytes = message.size_hint();
         match self.outbox.try_send(Output::Message(message)) {
-            Ok(()) => {
-                Counters::add(&self.counters.messages_from_workers, 1);
-                Counters::add(&self.counters.bytes_from_workers, bytes as u64);
-                self.profiler.record(ProfileEvent::WorkerMessage {
-                    attribution: self.attribution,
-                    direction: Direction::FromWorker,
-                    bytes,
-                });
-                Ok(())
-            }
             Err(TrySendError::Full(_)) => Err(format!(
                 "the domain's queue is full: {WORKER_QUEUE} messages wait for it to receive them; send fewer, or reply less often"
             )),
-            Err(TrySendError::Disconnected(_)) => Ok(()),
+            Ok(()) | Err(TrySendError::Disconnected(_)) => Ok(()),
         }
     }
 }
@@ -263,6 +249,11 @@ pub struct WorkerRecord {
     /// receive.
     failure: Option<WorkerError>,
     lane: Option<JoinHandle<()>>,
+    /// Replies are counted here, as the domain takes them off the channel, not on the lane as it
+    /// sends them: a count the lane bumps after its send can trail the reply, and a domain that
+    /// reads its stats right after receiving one would see the message and not the count.
+    counters: Arc<Counters>,
+    profiler: Arc<dyn ProfileSink>,
 }
 
 impl WorkerRecord {
@@ -276,6 +267,8 @@ impl WorkerRecord {
         let module = launch.spec.chunk_name.clone();
         let on_failure = launch.spec.on_failure;
         let attribution = launch.attribution;
+        let counters = Arc::clone(&launch.counters);
+        let profiler = Arc::clone(&launch.profiler);
         let lane = std::thread::Builder::new()
             .name(format!("jess-{id}"))
             .spawn(move || run(&launch, &commands, &results, &lane_closing))
@@ -300,6 +293,8 @@ impl WorkerRecord {
             pending: VecDeque::new(),
             failure: None,
             lane: Some(lane),
+            counters,
+            profiler,
         })
     }
 
@@ -345,7 +340,17 @@ impl WorkerRecord {
                 }
                 None
             }
-            Output::Message(message) => Some(Ok(message)),
+            Output::Message(message) => {
+                let bytes = message.size_hint();
+                Counters::add(&self.counters.messages_from_workers, 1);
+                Counters::add(&self.counters.bytes_from_workers, bytes as u64);
+                self.profiler.record(ProfileEvent::WorkerMessage {
+                    attribution: self.attribution,
+                    direction: Direction::FromWorker,
+                    bytes,
+                });
+                Some(Ok(message))
+            }
             Output::Failed(error) => {
                 // A handler failure under `Continue` leaves the worker running.
                 if error.stage != WorkerStage::Handle || self.on_failure == WorkerFailurePolicy::Stop {
@@ -506,15 +511,7 @@ fn serve(launch: &Launch, commands: &Receiver<Command>, results: &SyncSender<Out
     if let Some(budget) = launch.spec.budget {
         runtime.set_limits(budget.limits());
     }
-    crate::runtime::luau::attach_worker(
-        &runtime,
-        WorkerLink {
-            attribution: launch.attribution,
-            outbox: results.clone(),
-            counters: Arc::clone(&launch.counters),
-            profiler: Arc::clone(&launch.profiler),
-        },
-    );
+    crate::runtime::luau::attach_worker(&runtime, WorkerLink { outbox: results.clone() });
     let observer = Observer {
         diagnostics: Arc::clone(&launch.diagnostics),
         profiler: Arc::clone(&launch.profiler),
@@ -599,17 +596,9 @@ fn handle_messages(
         match outcome {
             Ok(Message::Nil) => {}
             Ok(reply) => {
-                let bytes = reply.size_hint();
                 if results.send(Output::Message(reply)).is_err() {
                     return;
                 }
-                Counters::add(&launch.counters.messages_from_workers, 1);
-                Counters::add(&launch.counters.bytes_from_workers, bytes as u64);
-                launch.profiler.record(ProfileEvent::WorkerMessage {
-                    attribution: launch.attribution,
-                    direction: Direction::FromWorker,
-                    bytes,
-                });
             }
             Err(error) => {
                 fail(launch, results, WorkerStage::Handle, script_message(&error));
