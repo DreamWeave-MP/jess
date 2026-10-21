@@ -61,8 +61,34 @@ jobs:
           cargo build --release --locked
           echo "$CARGO_TARGET_DIR/release" >> "$GITHUB_PATH"
 
-      - name: Restore the pinned site generator from its publisher
-        run: jess workspace sync --locked
+      # The generator, exactly as jess.lock pins it, from its publisher. While the DreamWeave sites
+      # are first being brought up there is no publisher yet: the organization variable
+      # DREAMWEAVE_BOOTSTRAP_SOURCES names git sources (owner/repo@ref) to sync offline from
+      # instead, as the sites' own workflows do, and the lock this run writes is not committed.
+      - name: Restore the pinned site generator
+        env:
+          DREAMWEAVE_BOOTSTRAP_SOURCES: ${{ vars.DREAMWEAVE_BOOTSTRAP_SOURCES }}
+        run: |
+          if [ -z "$DREAMWEAVE_BOOTSTRAP_SOURCES" ]; then
+            jess workspace sync --locked
+            exit 0
+          fi
+          for source in $DREAMWEAVE_BOOTSTRAP_SOURCES; do
+            repo=${source%@*}
+            ref=${source#*@}
+            [ "$source" = "$repo" ] && ref=main
+            case "${repo,,}" in
+              */dreamweave-site) ;;
+              *) continue ;;
+            esac
+            folder="$RUNNER_TEMP/dreamweave-bootstrap/${repo//\//__}"
+            echo "DREAMWEAVE_BOOTSTRAP_SOURCES is set: syncing the generator offline from $repo@$ref"
+            git clone --quiet --depth 1 --branch "$ref" "https://github.com/$repo" "$folder"
+            jess workspace sync --offline "$folder"
+            exit 0
+          done
+          echo "::error::DREAMWEAVE_BOOTSTRAP_SOURCES is set but names no dreamweave-site source"
+          exit 1
 
       - name: Build the site
         run: jess workspace run --trusted jess-site-build -- site/public
