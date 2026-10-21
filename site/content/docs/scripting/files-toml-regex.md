@@ -1,17 +1,17 @@
 ---
-title: 'Files, TOML, and Regex'
+title: 'Files, Data, and Regex'
 description: 'The standard-library gaps jess fills: @dream/fs, @jess/data/toml, bytes.regex.'
-weight: 90
+weight: 20
 extra:
   kind: guide
 ---
 
-Luau on its own can't open a file, read a config, or match a regex. Scripts that write logs, read settings, or match record ids need all three, so jess has them: `@dream/fs`, `@jess/data/toml`, and `bytes.regex`. This page is recipes; the [fs](@/docs/api/fs.md), [toml](@/docs/api/toml.md), and [regex](@/docs/api/regex.md) references have every function.
+Luau on its own can't open a file, read a config, or match a regex. Scripts that write logs, read settings, or match names need all three, so jess has them: `@dream/fs`, `@jess/data/toml`, and `bytes.regex`. This page is recipes; the [fs](@/docs/api/fs.md), [toml](@/docs/api/toml.md), and [regex](@/docs/api/regex.md) references have every function, and the [`@dream` page](@/docs/api/l3i.md) says where the native modules are documented in full.
 
 ## Files
 
 [`@dream/fs`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-fs) is file
-access with host paths: the paths your operating system uses, not VFS paths. Reading needs
+access with host paths, the paths your operating system uses. Reading needs
 `filesystem.read` and changing the disk `filesystem.write`, both a `--capability` away for
 [`jess run`](@/docs/cli/run.md#capabilities); taking paths apart and joining them needs neither.
 
@@ -19,7 +19,7 @@ access with host paths: the paths your operating system uses, not VFS paths. Rea
 
 ```luau
 --!strict
-local fs = require('@dream/fs')
+local fs = require '@dream/fs'
 
 local root = ... or '.'
 local walk = assert(fs.walk(root, { include = 'files', metadata = true, sort = true }))
@@ -28,6 +28,7 @@ local total = 0
 for index in walk.paths do
   total += (walk.sizes :: { number })[index]
 end
+
 print(`{#walk.paths} files, {total} bytes under {root}`)
 ```
 
@@ -44,7 +45,7 @@ of tables. `list(folder)` is one folder's names, sorted.
 
 ```luau
 --!strict
-local fs = require('@dream/fs')
+local fs = require '@dream/fs'
 
 local logs = fs.join(assert(fs.cwd()), 'logs')
 assert(fs.mkdir(logs, { recursive = true }))
@@ -79,7 +80,7 @@ loader with defaults, typed all the way:
 
 ```luau
 --!strict
-local toml = require('@jess/data/toml')
+local toml = require '@jess/data/toml'
 
 type Settings = { radius: number, verbose: boolean, skip: { string }, folder: string }
 
@@ -97,6 +98,7 @@ local function loadSettings(path: string): Settings
       if type(pattern) == 'string' then table.insert(settings.skip, pattern) end
     end
   end
+
   local output = raw.output
   if type(output) == 'table' and type(output.folder) == 'string' then settings.folder = output.folder end
 
@@ -112,7 +114,7 @@ With this `settings.toml`:
 ```toml
 radius = 1.0
 verbose = true
-skip = ["^T_", "_unique$"]
+skip = ["^draft_", "_old$"]
 
 [output]
 folder = "out"
@@ -130,7 +132,7 @@ A Luau table forgets what a TOML file says about the order of its keys, whether 
 
 ```luau
 --!strict
-local toml = require('@jess/data/toml')
+local toml = require '@jess/data/toml'
 local settings, layout = toml.decode(require('@dream/fs').readFileString 'settings.toml' or '')
 
 for _, key in layout[settings].keys or {} do
@@ -145,7 +147,7 @@ skip	false
 output	false
 ```
 
-This is how `@dreamwind/tools/s3lightfixes` applies light overrides in the order `lightconfig.toml` lists them.
+A tool that applies a config's entries in the order the user wrote them, or rewrites a file without reordering it, reads the layout.
 
 ### Write TOML
 
@@ -154,14 +156,14 @@ given, `array` makes a list, and `float` keeps a whole number a float.
 
 ```luau
 --!strict
-local toml = require('@jess/data/toml')
-local values = require('@jess/data/value')
+local toml = require '@jess/data/toml'
+local values = require '@jess/data/value'
 
 local settings = values.struct {
   { 'radius', 1.5 },
   { 'scale', values.float(2) },
   { 'verbose', false },
-  { 'skip', values.array { '^T_', '_unique$' } },
+  { 'skip', values.array { '^draft_', '_old$' } },
   { 'output', values.struct { { 'folder', 'out' } } },
 }
 
@@ -173,15 +175,15 @@ radius = 1.5
 scale = 2.0
 verbose = false
 skip = [
-    "^T_",
-    "_unique$",
+    "^draft_",
+    "_old$",
 ]
 
 [output]
 folder = "out"
 ```
 
-Values come before tables, as Rust's `toml` crate lays a document out. `@jess/json` and `@jess/yaml`
+Values come before tables, as Rust's `toml` crate lays a document out. [`@jess/json`](@/docs/api/json.md) and [`@jess/yaml`](@/docs/api/yaml.md)
 write the same values.
 
 ## Regular expressions
@@ -190,22 +192,22 @@ Luau patterns aren't regexes: no alternation, no groups you can name, no `{2,3}`
 
 ```luau
 --!strict
-local bytes = require('@dream/bytes')
-local torch = bytes.regex([[^light_(?<color>[a-z]+)_(\d+)$]], { caseInsensitive = true })
+local bytes = require '@dream/bytes'
+local asset = bytes.regex([[^icon_(?<color>[a-z]+)_(\d+)$]], { caseInsensitive = true })
 
-print(torch:isMatch 'Light_Red_128')
-local groups = torch:captures 'Light_Red_128'
+print(asset:isMatch 'Icon_Red_128')
+local groups = asset:captures 'Icon_Red_128'
 if groups then print(groups[0], groups.color, groups[2]) end
-print(torch:find 'light_blue_64')
-print(torch:replace('light_red_64', 'light_${color}_256'))
 
+print(asset:find 'icon_blue_64')
+print(asset:replace('icon_red_64', 'icon_${color}_256'))
 ```
 
 ```
 true
-Light_Red_128	Red	128
-0	13
-light_red_256	1
+Icon_Red_128	Red	128
+0	12
+icon_red_256	1
 ```
 
 - Luau's raw strings, `[[\d+]]`, keep backslashes as they are; in a quoted string, `"\\d+"` is the regex `\d+`.
@@ -219,7 +221,7 @@ The options are `caseInsensitive`, `multiLine` (`^` and `$` match at every line)
 
 ```luau
 --!strict
-local bytes = require('@dream/bytes')
+local bytes = require '@dream/bytes'
 local number = bytes.regex [[\d+]]
 
 for text, start, finish in number:matches 'a1 b22 c333' do
@@ -235,7 +237,6 @@ local doubled, count = number:replaceAll('radius 64, 128', double)
 print(doubled, count)
 
 print(table.concat(bytes.regex([[\s*[,;]\s*]]):split 'a, b;c ,d', '|'))
-
 ```
 
 ```
@@ -252,29 +253,28 @@ A replacement function that returns `nil` or `false` keeps that match as it was,
 
 ```luau
 --!strict
-local bytes = require('@dream/bytes')
-local content = bytes.regex([[^content=(.+)$]], { multiLine = true })
-local cfg = 'data=foo\ncontent=Morrowind.esm\ncontent=Tribunal.esm\n'
+local bytes = require '@dream/bytes'
+local member = bytes.regex([[^member=(.+)$]], { multiLine = true })
+local config = 'root=.\nmember=jpk/builtin\nmember=tools/site\n'
 
-for line in content:matches(cfg) do
+for line in member:matches(config) do
   print(line)
 end
 
 -- regexEscape: match text exactly, dots and brackets included.
 local literal = bytes.regex(bytes.regexEscape 'a.b (c)')
 print(literal:isMatch 'a.b (c)', literal:isMatch 'axb (c)')
-
 ```
 
 ```
-content=Morrowind.esm
-content=Tribunal.esm
+member=jpk/builtin
+member=tools/site
 true	false
 ```
 
-`matches` yields each whole match and where it is; call `captures(text, start)` with a match's start for its groups. `bytes.regexEscape` quotes text so it matches literally, which is what you want when building a pattern out of a record id or a file name.
+`matches` yields each whole match and where it is; call `captures(text, start)` with a match's start for its groups. `bytes.regexEscape` quotes text so it matches literally, which is what you want when building a pattern out of a user's input or a file name.
 
 ## Related
 
 - The [fs](@/docs/api/fs.md), [toml](@/docs/api/toml.md), and [regex](@/docs/api/regex.md) references.
-- [Selections](@/docs/scripting/selections.md), whose specs use the same regex syntax.
+- [`@jess/json`](@/docs/api/json.md), [`@jess/yaml`](@/docs/api/yaml.md), and [`@jess/data/value`](@/docs/api/value.md): the other codecs, and the values they all write.

@@ -25,7 +25,6 @@ There's no ARM Linux or 32-bit build; use `cargo install` there. Each zip holds,
 - `jess-<platform>.bundle`, the binary's [Sigstore](https://www.sigstore.dev) signature (below)
 - `jess-README.md`
 - `LICENSE-MIT` and `LICENSE-APACHE`, the two license texts (pick either)
-- `docs/save-strip.md`, the notes on how `save strip` decides what's safe to remove
 
 Everything else lives on this site. The Luau types aren't in the zip, on purpose: `jess init` or `jess luau-types` writes them for the jess you actually have (see [Editor Setup](@/docs/getting-started/editor-setup.md)).
 
@@ -69,10 +68,10 @@ Open a new terminal afterwards; old ones keep the old `Path`.
 
 ## From crates.io
 
-With a Rust toolchain (1.88 or newer):
+With a Rust toolchain (1.92 or newer):
 
 ```sh
-cargo install jess-cli
+cargo install jess
 ```
 
 That builds the `jess` binary into `~/.cargo/bin`, which rustup already put on your `PATH`. It compiles Luau from source, so you also need a C++ compiler (the one your platform's Rust setup normally uses), and the first build takes a few minutes. Upgrade later by running the same command again.
@@ -82,10 +81,10 @@ That builds the `jess` binary into `~/.cargo/bin`, which rustup already put on y
 ```sh
 git clone https://github.com/DreamWeave-MP/jess
 cd jess
-cargo build --release -p jess-cli
+cargo build --release
 ```
 
-The binary lands at `target/release/jess`. `cargo run -p jess-cli -- <command>` runs a debug build without installing anything; debug builds also have `jess plugin test-codec`, the byte-for-byte round-trip checker that release builds leave out.
+The binary lands at `target/release/jess`. `cargo run -- <command>` runs a debug build without installing anything. [Building and Testing](@/docs/contributing/building-and-testing.md) has the rest.
 
 ## Check it works
 
@@ -97,7 +96,7 @@ jess --version
 jess 0.1.0
 ```
 
-Every subcommand takes `--version` too, and `jess help` (or `jess <group> --help`) lists what's there.
+Every subcommand takes `--version` too, and `jess help` (or `jess <command> --help`) lists what's there.
 
 ## Shell completions
 
@@ -122,22 +121,22 @@ jess man > jess.1
 man ./jess.1
 ```
 
-`jess man --output <folder>` writes `jess.1` plus a page for every command (`jess-plugin-dump.1`, `jess-save-strip.1`, and so on) and lists what it wrote. `man` looks for pages in a `man1` folder under each entry of its search path, so write them straight into one:
+`jess man --output <folder>` writes `jess.1` plus a page for every command (`jess-package-inspect.1`, `jess-workspace-sync.1`, and so on) and lists what it wrote. `man` looks for pages in a `man1` folder under each entry of its search path, so write them straight into one:
 
 ```sh
 jess man --output ~/.local/share/man/man1
-man jess-plugin-dump
+man jess-package-inspect
 ```
 
 On most Linux systems `~/.local/share/man` is already searched. If `man jess` says there's no entry, add `export MANPATH="$HOME/.local/share/man:"` to your shell's rc file (the trailing `:` keeps the system pages).
 
 ## Editor types for scripters
 
-If you're going to write Luau scripts, `jess init my-scripts` sets up a folder with the types for the jess you have installed, an example script, and your editor's luau-lsp settings. [Editor Setup](@/docs/getting-started/editor-setup.md) covers VS Code, Neovim, Zed, and Helix.
+If you're going to write Luau, `jess init my-scripts` sets up a folder with the types for the jess you have installed, an example script, and your editor's luau-lsp settings. [Editor Setup](@/docs/getting-started/editor-setup.md) covers VS Code, Neovim, Zed, and Helix.
 
 ## Upgrading
 
-Replace the binary the same way you installed it: unpack the new zip over the old `jess`, or rerun `cargo install jess-cli`. Then refresh what was generated from the old one:
+Replace the binary the same way you installed it: unpack the new zip over the old `jess`, or rerun `cargo install jess`. Then refresh what was generated from the old one:
 
 - **Script types:** `jess init <folder>` in each script folder rewrites `types/` and leaves your files alone.
 - **Completions and man pages:** rerun the commands above, so new commands and flags show up.
@@ -146,14 +145,13 @@ Read the release notes on the [releases page](https://github.com/DreamWeave-MP/j
 
 ## Uninstalling
 
-jess keeps no state of its own: no config folder, no cache, no registry entries. Delete what you put on disk:
+jess keeps no state of its own: no config folder, no cache, no registry entries. What it writes, it writes where you pointed it. Delete what you put on disk:
 
-- the binary (`~/.local/bin/jess`, `C:\Tools\jess\jess.exe`, or `cargo uninstall jess-cli`), and the `Path` entry if you added one;
+- the binary (`~/.local/bin/jess`, `C:\Tools\jess\jess.exe`, or `cargo uninstall jess`), and the `Path` entry if you added one;
 - the completion file and man pages, if you generated them;
-- any `.bak` backups jess made next to files it edited, once you're sure you don't want them.
-
-Two things you may have asked for without noticing: a script that activates content (`openmw:save()`, or a load-order tool's `activate = true`) edits your user `openmw.cfg` and leaves `openmw.cfg.bak` beside it, and the [load-order tools](@/docs/bundled-scripts/_index.md) write their plugins to `data-local` (S3LightFixes also writes `lightconfig.toml` next to your user `openmw.cfg`). Remove their `content=` lines before deleting their plugins.
+- the `types/` folders `jess init` wrote, if you don't want them, and a workspace's `.jess/packages`, which [`jess workspace sync`](@/docs/cli/workspace.md) fills and recreates on demand;
+- any `.bak` files jess made next to files it replaced with `--force`, once you're sure you don't want them.
 
 ## Next
 
-Run the [first commands](@/docs/getting-started/first-commands.md) against your own setup. Only `jess init` writes anything.
+Write [your first script](@/docs/scripting/intro.md). Only `jess init` writes anything, and only in the folder you name.

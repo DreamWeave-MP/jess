@@ -1,12 +1,12 @@
 ---
 title: 'Luau Pitfalls'
 description: 'Type checker and runtime surprises you will hit writing strict Luau for jess, each with a repro and the fix.'
-weight: 105
+weight: 70
 extra:
   kind: guide
 ---
 
-Porting tes3cmd, the OpenMW save tools, and jess's own plugin library to strict Luau ran into the same handful of surprises more than once. None of them is hard once you know about it. Every repro below is checked by the type checker jess itself uses: Luau's new solver, the same one `luau-lsp` runs over a [`jess init`](@/docs/cli/utility-commands.md) folder.
+Writing jess's own Luau in strict mode, the built-in package and the packages around it, ran into the same handful of surprises more than once. None of them is hard once you know about it. Every repro below is checked by the type checker jess itself uses: Luau's new solver, the same one `luau-lsp` runs over a [`jess init`](@/docs/cli/utility-commands.md) folder and `jess package check` runs over a package.
 
 Some are bugs in Luau, and the section says so, with a repro small enough to file. Some are Luau working as designed. One is a jess decision.
 
@@ -37,31 +37,31 @@ Upstream: `table.create(n)` not taking the expected type is a Luau bug; the old 
 
 ```luau
 --!strict
-type Options = { encoding: string?, profile: ('esp' | 'omwaddon')? }
+type Options = { encoding: string?, format: ('json' | 'toml')? }
 
 local function open(bytes: string, options: Options?): number
   return #bytes
 end
 
 -- `open` may throw; keep the failure as a value so this protected-call typing repro can continue.
-local ok, result = pcall(open, 'x', { encoding = 'win1252', profile = 'esp' })
+local ok, result = pcall(open, 'x', { encoding = 'utf8', format = 'json' })
 ```
 
-That fails with `Expected this to be 'Options?', but got '{ encoding: string, profile: ("esp" | "omwaddon")? }'`. Called directly, `open('x', { ... })` checks the literal against `Options`, and the same table type-checks. Passed through `pcall`, the literal gets its own type first, a `string` where `Options` has a `string?`, and a mutable field's type has to match exactly.
+That fails with `Expected this to be 'Options?', but got '{ encoding: string, format: ("json" | "toml")? }'`. Called directly, `open('x', { ... })` checks the literal against `Options`, and the same table type-checks. Passed through `pcall`, the literal gets its own type first, a `string` where `Options` has a `string?`, and a mutable field's type has to match exactly.
 
 Fix: call through a closure, which is also how you get typed results back, or give the table its type first.
 
 ```luau
 --!strict
-type Options = { encoding: string?, profile: ('esp' | 'omwaddon')? }
+type Options = { encoding: string?, format: ('json' | 'toml')? }
 
 local function open(bytes: string, options: Options?): number
   return #bytes
 end
 
 -- `open` may throw; keep the failure as a value while the closure preserves argument context.
-local ok, result = pcall(function(): number return open('x', { encoding = 'win1252' }) end)
-local options: Options = { encoding = 'win1252', profile = 'esp' }
+local ok, result = pcall(function(): number return open('x', { encoding = 'utf8' }) end)
+local options: Options = { encoding = 'utf8', format = 'json' }
 -- `open` may throw; keep the failure as a value while the typed options reach the call unchanged.
 local again, size = pcall(open, 'x', options)
 ```
@@ -87,7 +87,7 @@ Fix: write option tables at the call. Building one is cheap next to whatever the
 local bytes = require '@dream/bytes'
 
 local spans, count = bytes.frame(buffer.create(0), { header = 16, lengthAt = 4 })
-local ascii = bytes.regex('(?i)menumode', { unicode = false })
+local ascii = bytes.regex('(?i)readme', { unicode = false })
 ```
 
 Upstream: read-only fields from `table.freeze` are deliberate. Refusing a table only because it lacks an optional field is stricter than the old solver was. It's worth asking about, though it may well be intended.
@@ -125,7 +125,7 @@ count, name = if math.random() > 0.5 then pair() else pair()
 print(count, name)
 ```
 
-That prints `1 nil`. An `if` expression is an expression, and an expression is one value, so `name` is always `nil`. The type checker only notices when you use `name` as a `string`. Luau's linter warns (`UnbalancedAssignment`), but a strict type check alone doesn't. This one cost a real bug: a save's screenshot read from a Morrowind save came back with no format, because the second return value was lost.
+That prints `1 nil`. An `if` expression is an expression, and an expression is one value, so `name` is always `nil`. The type checker only notices when you use `name` as a `string`. Luau's linter warns (`UnbalancedAssignment`), but a strict type check alone doesn't. This one cost a real bug: a decoder returned the bytes and their format, and the format was lost on the way out.
 
 Fix: use an `if` statement when a branch returns more than one value.
 
@@ -150,12 +150,11 @@ Upstream: this is the language working as designed. Run `luau-lsp` or `luau-anal
 ## `_G` is read-only
 
 ```luau
--- Writing `_G.answer` throws under Jess; capture the error so the example can print it.
-local ok, problem = pcall(function() _G.answer = 42 end)
-print(ok, problem)
+--!strict
+_G.answer = 42
 ```
 
-Under `jess run` (and `jess test`, load-order scripts, and packages) that prints `false` and `attempt to modify a readonly table`, and so does a bare `answer = 42`. jess sandboxes its globals: scripts share one runtime with the jess API, and nothing one script does to the globals should leak into the next one. Reading works, so `(_G :: any).jess` is fine.
+Under `jess run` (and `jess test`, command targets, and packages) that stops with `attempt to modify a readonly table`, and so does a bare `answer = 42`. jess sandboxes its globals: scripts share one runtime with the jess API, and nothing one script does to the globals should leak into the next one. Reading works, so `(_G :: any).jess` is fine.
 
 Fix: keep state in locals, or in a module that returns a table. `require` caches modules, so every script that requires one gets the same table.
 
@@ -166,7 +165,7 @@ State.answer = 42
 return State
 ```
 
-Upstream: nothing to file. The sandbox is jess's decision, made through Luau's own sandboxing.
+Upstream: nothing to file. The sandbox is jess's decision, made through Luau's own sandboxing, and [Performance](@/docs/scripting/performance.md#the-safe-environment) says what it buys.
 
 ## Related
 

@@ -6,12 +6,12 @@ extra:
   kind: guide
 ---
 
-A jess script without types is a Lua script: it runs until the misspelled field, and then it tells you. With types, the editor underlines `record.data.weigth` before you run anything. This page gets you there.
+A jess script without types is a Lua script: it runs until the misspelled field, and then it tells you. With types, the editor underlines `logger.inof` before you run anything. This page gets you there.
 
 The pieces are the same in every editor:
 
 - **[luau-lsp](https://github.com/JohnnyMorganz/luau-lsp)**, the Luau language server. jess doesn't ship it.
-- **`types/`**, the types for the whole jess API, every record type and NIF type included: `jess.d.jsl`, the definitions, and one stub module per `@jess/...` and `@dream/...` name, so `require('@jess/log')` is typed by finding its file. `jess luau-types` writes it for the jess you have installed.
+- **`types/`**, the types for the whole jess API: `jess.d.jsl`, the definitions, and one stub module per `@jess/...` and `@dream/...` name, so `require('@jess/log')` is typed by finding its file. `jess luau-types` writes it for the jess you have installed.
 - **A `.jessrc`** aliasing `jess` and `dream` to their folders in `types/`.
 - **Settings** telling luau-lsp to load `types/jess.d.jsl` as `@jess`, to use the plain `standard` platform (not Roblox), and not to look for a Rojo sourcemap.
 - **Luau's new type solver**, which some of the types need. `jess init` turns it on. [See below](#the-new-type-solver).
@@ -28,7 +28,7 @@ editor: vscode
 types:
   folder: my-scripts/types
   definitions: my-scripts/types/jess.d.jsl
-  files: 33
+  files: 24
   removed: []
   aliases:
     dream: types/dream
@@ -39,9 +39,9 @@ written:
 - path: my-scripts/.vscode/settings.json
 skipped: []
 next_steps:
-- 'run the example over a load order: jess run my-scripts/main.jsl path/to/openmw.cfg'
-- 'or on one plugin: jess run my-scripts/main.jsl MyMod.esp'
-# ...
+- 'run the example: jess run my-scripts/main.jsl'
+- 'vscode: install the Luau Language Server extension (JohnnyMorganz.luau-lsp) and open the folder'
+- rerun jess init after updating jess to refresh types/
 ```
 
 The folder is created if it's missing, and defaults to the current one. What goes in it:
@@ -50,7 +50,7 @@ The folder is created if it's missing, and defaults to the current one. What goe
 | --- | --- | --- |
 | `types/` | all | The types: `jess.d.jsl` and the module stubs. |
 | `.jessrc` | all | `"languageMode": "strict"`, so every script in the folder is type-checked, `--!strict` or not, and the `jess` and `dream` aliases into `types/`. |
-| `main.jsl` | all | A working script that counts lights per plugin. `jess run my-scripts/main.jsl path/to/openmw.cfg` runs it over a load order, `jess run my-scripts/main.jsl MyMod.esp` on one plugin. |
+| `main.jsl` | all | A working script: a `@jess/log` logger reporting the version it runs under. `jess run my-scripts/main.jsl` runs it. |
 | `.vscode/settings.json` | `vscode` (the default) | luau-lsp settings for VS Code. |
 | `.nvim.lua` | `neovim` | A `vim.lsp.config` call for Neovim 0.11+. |
 | `.zed/settings.json` | `zed` | luau-lsp settings for Zed's Luau extension. |
@@ -64,7 +64,7 @@ Open the folder itself in your editor, not a parent of it. Every editor below fi
 
 jess's types used to be one file with one overloaded `require`, a function type listing every module name. Luau gives up on an overloaded function after eight overloads, and jess has more modules than that. A folder has no such ceiling: each module is a file, `.jessrc` aliases point `@jess/` and `@dream/` at them, and `require('@jess/package')` is typed the way every Luau `require` is, by resolving it.
 
-That resolution follows Luau's rules, which are stricter than OpenMW's. `require 'scripts.myMod.util'` (OpenMW's dotted names) and `require 'vfstool'` (a bare name) work at run time and type-check as unsupported paths. Use `./` paths and the `@jess/` and `@dream/` names in typed scripts; when you need OpenMW's form, call it untyped: `(require :: (name: string) -> any) 'scripts.myMod.util'`.
+That resolution is Luau's: `@jess/` and `@dream/` names through the aliases, and `./` paths relative to the file. Those are also the only names jess's own `require` resolves, apart from the exports of an activated package, so what type-checks is what runs. A package's exports type-check inside the package, under its own `.jessrc`, which [`jess init`](@/docs/getting-started/first-package.md) writes there too.
 
 ### After upgrading jess
 
@@ -202,9 +202,9 @@ Helix starts language servers in the folder it found `.helix` in, which is why t
 
 ## The new type solver
 
-Luau has two type checkers. The old one can't express parts of jess's types: view fields with separate `read` and `write` types (a struct field you read as a view but assign a whole table to), and read-only arrays. Under the old solver those show up as errors on code that is correct and runs fine.
+Luau has two type checkers. The old one can't express parts of jess's types: fields with separate `read` and `write` types, and read-only tables such as a frozen export. Under the old solver those show up as errors on code that is correct and runs fine.
 
-`luau-analyze` uses the new solver by default, and so does jess's own type-check of its examples and scripts. luau-lsp doesn't, so every settings file `jess init` writes turns it on, and the by-hand snippets above include it. If you set an editor up some other way, this is the line to add:
+`luau-analyze` uses the new solver by default, and so does `jess package check`. luau-lsp doesn't, so every settings file `jess init` writes turns it on, and the by-hand snippets above include it. If you set an editor up some other way, this is the line to add:
 
 | Editor | Setting |
 | --- | --- |
@@ -214,6 +214,6 @@ Luau has two type checkers. The old one can't express parts of jess's types: vie
 
 ## Checking without an editor
 
-Types help, but the only authority is running the script. `jess run` stops at the first error with the script's line and a traceback (a field the record type doesn't have is `unknown field 'data.weigth'`), and `plugin modify --script … --dry-run` runs a modify script without writing anything. When the editor and jess disagree, jess is running the code; the editor is guessing from a file that may be stale.
+Types help, but the only authority is running the code. `jess run` stops at the first error with the script's line and a traceback. For a package, [`jess package check`](@/docs/cli/package.md#jess-package-check) type-checks every `.jsl` under it in strict mode, with each `require` resolved as the runtime resolves it, and runs nothing. When the editor and jess disagree, jess is running the code; the editor is guessing from a file that may be stale.
 
 If something still isn't right, [Troubleshooting](@/docs/reference/troubleshooting.md#editors-and-types) has the usual suspects.

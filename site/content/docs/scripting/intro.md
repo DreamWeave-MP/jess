@@ -1,122 +1,160 @@
 ---
 title: 'Your First Script'
-description: 'Write, type-check, and run a jess script in five minutes.'
+description: 'Set up a folder, write a jess script, run it, and learn the handful of rules the whole API follows.'
 weight: 10
 extra:
   kind: guide
 ---
 
-A jess script is a [Luau](https://luau.org) file with the whole jess API already loaded. No imports, no project setup, no build step: write a file, run it. (There is a project setup, `jess init`, and you'll want it for the types. It's one command.)
+A jess script is a [Luau](https://luau.org) file with the `jess` global already there. No build step, no project file you have to understand first: write a file, run it. There is a one-command setup, and you want it, because it writes the types.
 
-## Count some books
+## Set up a folder
 
-Save this as `hello.jsl`:
+```sh
+jess init my-scripts
+```
+
+```yaml
+dir: my-scripts
+editor: vscode
+types:
+  folder: my-scripts/types
+  definitions: my-scripts/types/jess.d.jsl
+  files: 24
+  removed: []
+  aliases:
+    dream: types/dream
+    jess: types/jess
+written:
+- path: my-scripts/.jessrc
+- path: my-scripts/main.jsl
+- path: my-scripts/.vscode/settings.json
+skipped: []
+next_steps:
+- 'run the example: jess run my-scripts/main.jsl'
+- 'vscode: install the Luau Language Server extension (JohnnyMorganz.luau-lsp) and open the folder'
+- rerun jess init after updating jess to refresh types/
+```
+
+Four things landed: `types/`, the Luau types for the jess you have installed; `.jessrc`, which turns strict mode on for the folder and aliases `@jess/` and `@dream/` into `types/`; the editor settings that point [luau-lsp](https://github.com/JohnnyMorganz/luau-lsp) at them (`--editor neovim`, `zed`, `helix`, or `none` for another); and `main.jsl`:
 
 ```luau
 --!strict
-local name: string = ... or 'Morrowind.esm'
 
-local plugin = jess.plugin.open(name)
-local books = plugin:select({ type = 'BOOK' }):count()
+local log = require('@jess/log').new 'main'
 
-print(`{name} has {books} books`)
+log.info('ready', { version = jess.version })
 ```
 
 Run it:
 
 ```sh
-$ cd ~/Games/Morrowind/Data\ Files
-$ jess run ~/my-scripts/hello.jsl
-Morrowind.esm has 574 books
-$ jess run ~/my-scripts/hello.jsl Tribunal.esm
-Tribunal.esm has 49 books
+$ jess run my-scripts/main.jsl
+{"level":"info","target":"main","message":"ready","fields":{"version":"0.1.0"},"source":"my-scripts/main.jsl"}
 ```
 
-That's a complete script. Three things happened:
+That is a complete script. Three things happened:
 
-- `jess` is a global. Everything lives under it: `jess.plugin`, `jess.save`, `jess.nif`, `jess.openmw`, and friends.
-- `"Morrowind.esm"` is a path, relative to where you ran jess, the same as on the command line; hence the `cd`. A script that loads your `openmw.cfg` and makes it the default (`jess.openmw.configPath`) can use bare names the way OpenMW finds them. [Paths, Configs, and Encodings](@/docs/getting-started/openmw-config.md#in-scripts) covers the rules.
-- `...` holds the arguments after the script's name, as strings. The global `arg` table has them too, with the script's path at `arg[0]`.
+- `jess` is a global. Its members are the runtime's own API: `jess.version`, `jess.context`, `jess.worker`, `jess.events`, and the rest of the [`jess` page](@/docs/api/jess.md).
+- `require('@jess/log')` loaded a [built-in module](@/docs/scripting/built-in-modules.md). It is Luau that ships inside the binary, and the `@jess/` name resolves in every runtime without a file anywhere.
+- The logger wrote one JSON line to stderr. Where log records go is the host's decision, not the script's: `jess run` writes them to stderr, `jess test` collects them per case. `print` still goes to stdout.
 
-## Turn on the types
+## Arguments
 
-That `--!strict` on the first line isn't decoration. It tells Luau to type-check the whole file, and jess ships types for every function, report, record, and NIF block. Strict mode catches the misspelled field before you run the script over 300 plugins, not after, when the only evidence is a patch that quietly did nothing.
-
-The quickest way to get them is a script folder that's already set up:
-
-```sh
-jess init my-scripts                    # VS Code; or --editor neovim, zed, helix, none
-```
-
-That writes `types/` (the types, from the jess you have installed: `jess.d.jsl` and a stub module for each `@jess/` and `@dream/` name), a strict `.jessrc` aliasing those names into `types/`, a `main.jsl` to start from, and the settings that point [luau-lsp](https://github.com/JohnnyMorganz/luau-lsp) at the types in your editor. To do it by hand, `jess luau-types types` writes the folder and prints the aliases for your `.jessrc`, and in VS Code:
-
-```json
-{
-  "luau-lsp.platform.type": "standard",
-  "luau-lsp.fflags.enableNewSolver": true,
-  "luau-lsp.types.definitionFiles": { "@jess": "types/jess.d.jsl" }
-}
-```
-
-Other editors running luau-lsp take the file as `luau-lsp lsp --definitions:@jess=types/jess.d.jsl --flag:LuauSolverV2=true`. The flag turns on Luau's new type solver, which some of jess's types need. Now you get completion on `jess.`, hover docs, and red squiggles where your script is wrong.
-
-{% usage_note(title="Regenerate after upgrading") %}
-`types/` describes one jess version. After you upgrade jess, run `jess init` in the folder again (it only refreshes `types/`, leaving your files alone) or `jess luau-types types` again, or the editor will happily approve calls the new version doesn't have.
-{% end %}
-
-## Records are handles
-
-`select` hands back record *handles*. A handle is a live window onto one record in the plugin: read a field and you get the plugin's value, write one and the plugin changes. Every name on a handle is a field of its record or one of its methods; what the handle knows about the record itself (its number, tag, and plugin) is `jess.meta(record)`. The record's fields depend on its type, so in typed code you cast the handle to say which type it is:
+Everything after the script's path is the script's, as strings, two ways:
 
 ```luau
 --!strict
-local plugin = jess.plugin.open 'Morrowind.esm'
-
-local heaviest: BookRecord? = nil
-for record in plugin:select({ type = 'BOOK' }):records() do
-  local book = record :: BookRecord
-  if not heaviest or book.data.weight > heaviest.data.weight then heaviest = book end
-end
-
-if heaviest then
-  local number = jess.meta(heaviest).index
-  print(`{heaviest.name} ({heaviest.id}, record {number}) weighs {heaviest.data.weight}`)
-end
+local first, second = ...
+print(first, second)
+print(#arg, arg[0])
 ```
 
-```
-Boethiah's Pillow Book (bk_BoethiahPillowBook, record 11189) weighs 10
+```text
+$ jess run args.jsl a b
+a	b
+2	args.jsl
 ```
 
-Every record type has a `...Record` type: `BookRecord`, `LightRecord`, `NpcRecord`, `CellRecord`, and so on. The cast is only for the type checker; it doesn't check or convert anything at runtime, so cast to the type you selected. [Records and Views](@/docs/scripting/records-and-views.md) goes deeper.
+`...` is the script's varargs; `arg` is the same list as a table, with the script's own path at `arg[0]`. Flags after the script belong to the script, not to jess: `jess run build.jsl --verbose` hands `--verbose` to `build.jsl`.
+
+## Turn on the types
+
+That `--!strict` on the first line isn't decoration. It tells Luau to type-check the whole file, and jess ships a type for every function it exposes and every module `require` resolves. Strict mode catches the misspelled field before you run the script, not after, when the only evidence is a job that quietly did nothing.
+
+`jess init` already wired the types into your editor. By hand, `jess luau-types types` writes the same folder, and `.jessrc` needs the two aliases it prints:
+
+```json
+{
+  "languageMode": "strict",
+  "aliases": {
+    "dream": "types/dream",
+    "jess": "types/jess"
+  }
+}
+```
+
+[Editor Setup](@/docs/getting-started/editor-setup.md) covers each editor and the type solver flag some of the types need.
+
+{% usage_note(title="Regenerate after upgrading") %}
+`types/` describes one jess version. After you upgrade jess, run `jess init` in the folder again (it only refreshes `types/`, leaving your files alone), or the editor will happily approve calls the new version doesn't have.
+{% end %}
+
+## require
+
+`require` resolves four kinds of name and nothing else:
+
+- `@jess/<name>`: a member of `jess` (`@jess/worker` is `jess.worker`), a built-in module (`@jess/log`, `@jess/test`, `@jess/jpk`, `@jess/package`), or an export of the built-in package (`@jess/style`, `@jess/json`, ...). The namespace is closed: `require '@jess/whatever'` is `module not found: @jess/whatever: @jess/ is jess's own namespace (...), never a file`.
+- `@dream/<name>`: one of [L3i's native modules](@/docs/api/l3i.md), `@dream/fs`, `@dream/bytes`, `@dream/process`, and the rest.
+- The exports of a package activated with [`jess run --package`](@/docs/cli/run.md#running-with-packages), by the names its manifest gives them.
+- `./` and `../` paths, relative to the file calling `require`: `require './lib/util'` tries `lib/util.jsl`, then `lib/util/init.jsl`, beside the script. A module runs once and is cached, so two scripts requiring the same file get the same table.
+
+A bare name is none of those. `require 'lib.util'` is `module not found: lib.util`.
+
+```luau
+--!strict
+type Util = { answer: number }
+local util: Util = require './lib/util'
+
+print(util.answer)
+```
+
+`require` is typed `(name: string) -> any` for a path, so annotate what comes back, as `util: Util` does; the `@jess/` and `@dream/` names are typed by their stubs and need nothing.
+
+## Capabilities
+
+A script you run holds what you already have: your terminal and the input devices in front of you. Everything else is a [capability](@/docs/reference/capabilities.md), denied unless you grant it, and the refusal names the function and the capability:
+
+```luau
+--!strict
+local fs = require '@dream/fs'
+
+print(fs.readFileString 'settings.toml')
+```
+
+```text
+$ jess run read.jsl
+error: dream.fs.readFileString: needs the 'filesystem.read' capability, which this runtime does not grant
+$ jess run --capability filesystem.read read.jsl
+```
+
+`jess.granted('filesystem.read')` says whether the running code holds one, so a script can ask before reaching for something optional instead of catching the refusal.
 
 ## House rules
 
 A handful of conventions hold across the whole API. Learn them once.
 
-- **camelCase everywhere.** Functions, methods, fields, and report codes: `plugin:syncMasters()`, `check.verdict == "willNotLoad"`. Types are PascalCase.
-- **Errors raise.** A missing file, a bad regex, a field name the record type doesn't have, or a record that can't be encoded throws. When failure is an outcome you expect, like a file that may not be installed, catch it with `pcall` and carry on:
-
-  ```luau
-  --!strict
-  -- `open` throws for a plugin that isn't there.
-  local ok, problem = pcall(function() return jess.plugin.open 'Not A Real Plugin.esp' end)
-
-  if not ok then print(`couldn't open it: {problem}`) end
-  ```
-
-  A caught error is its message, as a string, ready to print or match. An error nothing catches stops the script and prints with a traceback.
-
-  Don't wrap code in `pcall` to find out whether a field exists or a call works. Know the type and use the documented field. A script that swallows its own bugs isn't resilient; it's lying to you.
-- **Outcomes aren't errors.** A save that won't load or a strip that's blocked comes back as a report with a verdict, not an exception. Errors mean jess couldn't do what you asked; reports tell you what it found.
-- **Record numbers are 0-based; lists are 1-based.** `jess.meta(record).index` matches the numbers `jess plugin dump` prints, and record 0 is the file's `TES3` header, so the first real record is 1. Every list jess returns is an ordinary Luau array starting at 1.
-- **Bytes are buffers.** `plugin:bytes()`, `record:bytes()`, and `openmw:readFile(path)` return Luau `buffer`s.
-- **Vectors are vectors.** OpenMW Lua data's `util.vector3` comes back as a native Luau `vector`.
-- **Holes are `jess.null`.** Where an array has a missing value, like an empty link in a NIF node's children, it holds `jess.null`, because `nil` would shift everything after it.
+- **camelCase everywhere.** Functions, methods, fields, and option keys: `fs.readFileString`, `log.new`, `{ atomic = true }`. Types are PascalCase.
+- **Errors raise.** A bad argument, an option key the function doesn't take, a missing capability, or a `require` that resolves nothing throws. Uncaught, it stops the script, prints `error: read.jsl:4: <message>` on stderr, and exits `1`. Don't wrap calls in `pcall` to find out whether a field exists or a call works. Know the type and use the documented field. A script that swallows its own bugs isn't resilient; it's lying to you.
+- **Outcomes aren't errors.** A file that isn't there is an outcome: `@dream/fs` answers `nil`, a message, and a kind (`notFound`) rather than throwing, so `assert(fs.readFileString(path))` is how a script says a missing file is fatal, and `fs.readFileString(path) or ''` is "use it if it's there". Errors mean jess couldn't do what you asked; a result tells you what it found.
+- **Lists are 1-based.** Every list jess returns is an ordinary Luau array starting at 1.
+- **Bytes are buffers.** Anything that hands you raw bytes hands you a Luau `buffer`, and anything that takes bytes also takes a string.
+- **Holes are `jess.null`.** Where a list has to keep a missing value in place, it holds `jess.null`, because `nil` would shift everything after it. It is the one null: `require('@jess/json').decode('[1,null,3]')[2] == jess.null` is `true`.
+- **The exit status is yours.** A script's first returned number, an integer from 0 to 255, is the process's exit status. `return 3` exits `3`.
 
 ## Where next
 
-- [Records and Views](@/docs/scripting/records-and-views.md) and [Selections](@/docs/scripting/selections.md): the core of almost every script.
-- [Load-Order Scripts](@/docs/scripting/load-order-scripts.md): scripts that run over your whole load order.
-- [Per-File Scripts](@/docs/scripting/modify-scripts.md): fix one plugin or mesh with a script, tes3cmd-style.
-- The [Luau API Reference](@/docs/api/_index.md), for every signature. The [`jess run` reference](@/docs/cli/run.md) covers the command's flags.
+- [Your first package](@/docs/getting-started/first-package.md): the same script with a manifest around it, tested, packed, and run as a command.
+- [Files, Data, and Regex](@/docs/scripting/files-toml-regex.md): the standard-library gaps jess fills.
+- [Packages](@/docs/scripting/packages.md), where almost everything else lives.
+- The [Luau API Reference](@/docs/api/_index.md), for every signature, and [`jess run`](@/docs/cli/run.md) for the command's flags.
