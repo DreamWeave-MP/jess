@@ -1,7 +1,7 @@
 //! Packages: the JPK container, Package Source and JPK parity, resolution, and `require` through
 //! a mounted plan.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use jess::lua::l3i::Runtime;
 use jess::lua::l3i::value::Table;
@@ -954,7 +954,9 @@ fn a_package_path_offers_what_a_plan_needs() {
     // A dependency, a layer, and a root each bring a candidate in; nothing brings the rest.
     let plan = graph(&[&top], &["example.top"], &[]).unwrap();
     assert_eq!(ids(&plan), ["org.example.base", "org.example.top"]);
-    assert_eq!(plan.packages[0].location, text(&path.join("base")));
+    // As paths: the resolver joins a search path and an entry with a slash, which Windows takes
+    // as a separator too but writes differently from a joined path.
+    assert_eq!(PathBuf::from(&plan.packages[0].location), path.join("base"));
     assert_eq!(ids(&graph(&[], &["example.base"], &[]).unwrap()), ["org.example.base"]);
     let rooted = graph(&[&top], &[], &["org.example.top"]).unwrap();
     assert_eq!(ids(&rooted), ["org.example.base", "org.example.top"]);
