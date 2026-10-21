@@ -1,96 +1,60 @@
 ## jess
 
-A native application kernel for [Luau](https://luau.org) applications.
+An optimized Luau runtime for general-purpose programming and game engine development.
 
 **Documentation: <https://DreamWeave-MP.github.io/jess>**
 
-Rust owns operating-system and hardware contact, resource lifetimes, and the trust boundary. Luau owns everything that means something: application behaviour, tools, workflows, formats, policy. The kernel knows nothing about what runs on it, and that is the whole design.
+Jess combines a small Rust kernel with a programmable [Luau](https://luau.org) environment. Rust manages access to the operating system and hardware; Luau implements applications, tools, workflows, and policy. The kernel knows nothing about what runs on it, and that is the whole design.
 
 > Rust exposes reality. Luau decides what it means.
 
-One binary, `jess`, is the runtime, the test runner, the package tool, the workspace tool, the type generator, and the style checker.
+It ships as one binary, `jess`: the runtime, the test runner, the package tool, the workspace tool, the type generator, and the style checker. There is no separate build system, package manager, or linter to install.
 
-### Install
+Jess is not a game engine. It is the environment you build one in, and the same environment builds command-line tools, servers, build pipelines, and the site that documents it.
 
-[Release archives](https://github.com/DreamWeave-MP/jess/releases) carry the `jess` binary for Linux, macOS, and Windows, signed with Sigstore. `cargo install jess` builds it from crates.io with Rust 1.92 or newer. [Install](https://DreamWeave-MP.github.io/jess/docs/getting-started/install/) covers both, plus shell completions and man pages.
+### Getting started
 
-### A script
-
-```sh
-jess init my-scripts      # types for your editor, a .jessrc, and main.jsl
-jess run my-scripts/main.jsl
-```
+[Release archives](https://github.com/DreamWeave-MP/jess/releases) carry the binary for Linux, macOS, and Windows, signed with Sigstore. `cargo install jess` builds it from crates.io with Rust 1.92 or newer. Then write a file:
 
 ```luau
 --!strict
+local name = ... or 'world'
 
-local log = require('@jess/log').new 'main'
-
-log.info('ready', { version = jess.version })
+print(`Hello, {name}.`)
 ```
-
-Sources are `.jsl` files: Luau, type-checked under `--!strict` against the types `jess luau-types` writes for every module. `jess run --profile` prints call, sampling, and native-block statistics; `--emit-asm` writes the generated assembly; `--disassemble` the bytecode.
-
-A script holds your terminal and the input devices in front of you, and nothing else. Files, the environment, processes, and the network are capabilities, denied until you grant them:
 
 ```text
-$ jess run read.jsl
-error: dream.fs.readFileString: needs the 'filesystem.read' capability, which this runtime does not grant
-$ jess run --capability filesystem.read read.jsl
+$ jess run hello.jsl
+Hello, world.
+$ jess run hello.jsl Dave
+Hello, Dave.
 ```
 
-### A package
+Sources are `.jsl` files: Luau, checked under `--!strict` against types Jess generates for every module, so your editor knows the whole API before you've written a line. `jess init` sets a folder up with them. [Getting Started](https://DreamWeave-MP.github.io/jess/docs/getting-started/) takes it from there.
 
-A **Package Source** is a folder with a `jess.toml`: modules, the layers that export them, dependencies, tests, and command targets with the capabilities each one needs. `jess pack` turns it into a **JPK**, an immutable archive. Above the provider boundary the two are the same package, down to the digest.
+### Packages and applications
 
-```toml
-manifest_version = 1
+Luau software ships for Jess as a **JPK**: an immutable archive with a manifest naming its modules, what they export, what they depend on, the tests that ship with them, and the commands they provide. A source folder is the same package before packing, down to the digest, so what you test is what you ship. Several packages developed together form a workspace with a lock file.
 
-[package]
-id = "com.example.greeter"
-version = "1.0.0"
-jess_api = "1"
-include = ["src", "tests", "tools"]
-tests = ["tests/run.jsl"]
+An **application** is packages loaded into one isolated runtime and driven by frames until it decides it is done. A game, an editor, and a server are all some packages, some callbacks, and a loop. [Packages](https://DreamWeave-MP.github.io/jess/docs/scripting/packages/) and [Applications](https://DreamWeave-MP.github.io/jess/docs/scripting/applications/) explain both.
 
-[modules]
-"@greeter" = "src/init.jsl"
+### What it gives you
 
-[[layer]]
-id = "example.greetings"
-exports = ["@greeter"]
+- **Isolated execution.** Script domains run separate programs in one process, each with its own lifetime and an explicit capability grant. Files, the environment, processes, and the network are denied until the operator grants them, and a package can never grant itself anything:
 
-[targets.greet]
-kind = "command"
-command = "greet"
-entry = "tools/greet.jsl"
-capabilities = ["process.environment"]
-```
+  ```text
+  $ jess run read.jsl
+  error: dream.fs.readFileString: needs the 'filesystem.read' capability, which this runtime does not grant
+  $ jess run --capability filesystem.read read.jsl
+  ```
 
-```sh
-jess package test greeter        # from the source, then packed; both digests must agree
-jess package check greeter       # strict types, every .jsl, each require resolved as the runtime does
-jess package run greeter         # refused: the target needs process.environment
-jess package run --capability process.environment greeter
-jess pack greeter -o greeter.jpk
-```
+- **Extensible packages.** Compose applications and tools from reusable Luau modules. A package is inert until a host activates it, and its tests, types, and style checks ship inside it.
+- **Game-engine foundations.** An input action graph, a typed shader IR that lowers to WGSL, a render graph, and localization bundles, none of them tied to a renderer or a game.
+- **Native speed where it's earned.** Luau runs on [L3i](https://github.com/DreamWeave-MP/l3i), with native code generation for the modules that ask for it and profiling built into the binary. Nothing goes native without a measurement.
 
-Exports are inert: requiring one starts nothing. A package never grants itself a capability, and running from a source folder gives code no power the packed archive would lack. Several packages developed together are a workspace, with a lock file and `jess workspace sync`, `run`, and `test`.
+[Architecture](https://DreamWeave-MP.github.io/jess/docs/contributing/architecture/) covers how the pieces fit.
 
-Applications are packages too: managed modules loaded into one script domain, host callbacks per frame, named events, and interfaces that later packages override on purpose. [Packages](https://DreamWeave-MP.github.io/jess/docs/scripting/packages/) and [Applications](https://DreamWeave-MP.github.io/jess/docs/scripting/applications/) cover both; the [manifest reference](https://DreamWeave-MP.github.io/jess/docs/reference/manifest/) has every key.
-
-### What's in the kernel
-
-- **Script domains**: isolated Luau authorities in one process, each with its contexts, its capability grant, its workers, a generation that moves on every restart, and an ownership registry that teardown releases.
-- **Packages**: the container (`@jess/jpk`), the model (`@jess/package`), resolution into an activation plan that runs no code, and activation that does, in dependency order.
-- **Capabilities**: fourteen names, checked at the native seam, granted only by the operator.
-- **Input**: a device vocabulary, a serializable action graph, and an evaluator; the policy above it is Luau.
-- **Render graph and shader IR**: backend-independent IRs, a deterministic WGSL lowering, and no renderer.
-- **The built-in package**: `@jess/style`, `@jess/analysis`, `@jess/json`, `@jess/yaml`, `@jess/data/toml`, `@jess/data/value`, `@jess/l10n`, `@jess/input`, `@jess/backup`, and `@jess/http`, built on the same public architecture any package can use.
-
-Luau runs on [L3i](https://github.com/DreamWeave-MP/l3i), which binds it and provides the native primitives (`@dream/fs`, `@dream/process`, `@dream/tcp`, and the rest). Native code is a privilege: a module compiles natively only where a measurement earned it.
-
-### Building
+### Building from source
 
 ```sh
 git clone https://github.com/DreamWeave-MP/jess
@@ -98,9 +62,7 @@ cd jess
 cargo build --release
 ```
 
-The binary lands at `target/release/jess`. [Contributing](https://DreamWeave-MP.github.io/jess/docs/contributing/) covers the gates every change passes and how the runtime is put together. The documentation site is built by a package running on jess, from `site/`, through the command targets in `tools/site`.
-
-Until 1.0, a minor version can break things: pin one.
+The binary lands at `target/release/jess`. [Contributing](https://DreamWeave-MP.github.io/jess/docs/contributing/) covers the gates every change passes. Until 1.0, a minor version can break things: pin one.
 
 ## License
 
