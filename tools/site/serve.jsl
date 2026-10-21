@@ -311,7 +311,10 @@ local function dispatch()
 end
 
 local parent = fs.parent(Output)
-if parent and parent ~= '' then assert(fs.mkdir(parent, { recursive = true })) end
+if parent and parent ~= '' then
+  local made, why = fs.mkdir(parent, { recursive = true })
+  if not made then error(`serve: cannot create {parent}: {why}`, 0) end
+end
 
 if not build() then error('serve: the first build failed; nothing to serve', 0) end
 

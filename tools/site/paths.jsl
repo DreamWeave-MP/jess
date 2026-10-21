@@ -5,7 +5,9 @@
 local fs = require '@dream/fs'
 
 local function repositoryRoot(): string
-  local start = assert(fs.cwd())
+  local start, problem = fs.cwd()
+  if not start then error(`site: the current folder can't be read: {problem}`, 0) end
+
   local folder: string? = start
 
   while folder and folder ~= '' do

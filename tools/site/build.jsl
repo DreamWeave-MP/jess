@@ -10,7 +10,7 @@ local paths = require './paths'
 local output = arg[1] or paths.public
 local baseUrl = arg[2]
 
-local options: { baseUrl: string? } = {}
+local options: { [string]: unknown } = {}
 if baseUrl and baseUrl ~= '' then options.baseUrl = baseUrl end
 
 governance.write(paths.root)
