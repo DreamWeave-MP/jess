@@ -763,8 +763,32 @@ local function moduleSuffixIndex(files: { string }): { [string]: string }
   return index
 end
 
-local function resolveLocalModule(moduleName: string, bySuffix: { [string]: string }): string?
-  local candidate = string.gsub(moduleName, '%.', '/')
+-- A relative name, `./words` or `../shared/words`, is a path from the requiring file's folder, the
+-- way jess's require reads it. Anything else is a dotted name, a path from a root.
+local function relativeCandidate(moduleName: string, from: string): string
+  local parts: { string } = {}
+  local folder = string.match(normalizePath(from), '^(.*)/[^/]*$')
+  if folder then
+    for part in string.gmatch(folder, '[^/]+') do table.insert(parts, part) end
+  end
+
+  for part in string.gmatch(moduleName, '[^/]+') do
+    if part == '.' then continue end
+
+    if part == '..' then
+      table.remove(parts)
+      continue
+    end
+
+    table.insert(parts, part)
+  end
+
+  return table.concat(parts, '/')
+end
+
+local function resolveLocalModule(moduleName: string, from: string, bySuffix: { [string]: string }): string?
+  local candidate = if string.find(moduleName, '^%.%.?/') then relativeCandidate(moduleName, from)
+    else string.gsub(moduleName, '%.', '/')
   return bySuffix[`{candidate}.lua`]
     or bySuffix[`{candidate}.jsl`]
     or bySuffix[`{candidate}/init.lua`]
@@ -794,7 +818,7 @@ local function workspace(paths: { string }, options: WorkspaceOptions?): Workspa
     for _, required in source.requires do
       if string.sub(required.module, 1, 1) == '@' or string.find(required.module, '^openmw%.') then continue end
 
-      local target = resolveLocalModule(required.module, bySuffix)
+      local target = resolveLocalModule(required.module, from, bySuffix)
       if target then
         table.insert(requireEdges, { from = from, to = target, module = required.module, line = required.line })
       else

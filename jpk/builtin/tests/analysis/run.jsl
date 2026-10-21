@@ -159,6 +159,27 @@ return { engineHandlers = handlers }
     expect(findAbsent).toThrow 'absent: no such file or folder'
     expect(openAbsent).toThrow 'absent: no such file or folder'
   end)
+
+  suite.it('resolves a relative require from the requiring file', function()
+    local scratch = assert(rawget(_G, 'scratchRoot') :: string?, 'the case needs a scratchRoot')
+    local root = Fs.join(scratch, 'analysis-relative')
+    local files: { [string]: string } = {
+      ['src/greet.jsl'] = "local words = require './words'\nlocal shared = require '../shared/names'\nreturn words\n",
+      ['src/words.jsl'] = 'return {}\n',
+      ['shared/names.jsl'] = 'return {}\n',
+    }
+
+    for path, text in files do
+      local written, problem = Fs.writeFile(Fs.join(root, path), text, { createParents = true })
+      assert(written, problem)
+    end
+
+    local workspace = analysis.workspace({ root }, {})
+    expect(#workspace.unresolvedRequires).toBe(0)
+    expect(#workspace.requireEdges).toBe(2)
+    expect(workspace.requireEdges[1].to).toBe(Fs.join(root, 'shared/names.jsl'))
+    expect(workspace.requireEdges[2].to).toBe(Fs.join(root, 'src/words.jsl'))
+  end)
 end)
 
 return suite
