@@ -10,4 +10,6 @@ extra:
   kind: reference
 ---
 
-Lookup-first: every subcommand, every flag, what it prints. The [guides](@/docs/guides/_index.md) show these commands in context; this is the part you search.
+Lookup-first: every subcommand, every flag, what it prints. [Getting Started](@/docs/getting-started/_index.md) shows these commands in context; this is the part you search.
+
+One binary, eight commands: `run`, `test`, `pack`, `package`, `workspace`, `init`, `luau-types`, and the two that generate things for your shell, `completions` and `man`. Every command that prints a document takes [`--format`](@/docs/cli/global-options.md).

@@ -1,6 +1,6 @@
 ---
 title: 'Scripting'
-description: 'Write Luau scripts against the whole jess API: over your load order, over one file, or standalone.'
+description: 'Write Luau against the jess API: scripts, require, the built-in modules, packages, and applications.'
 template: docs/section.html
 page_template: docs/page.html
 sort_by: weight
@@ -10,12 +10,12 @@ extra:
   kind: guide
 ---
 
-jess is a Luau runtime with plugins, saves, NIFs, and OpenMW configs a call away. These pages teach it in order; the [API reference](@/docs/api/_index.md) is where you look things up afterwards.
+These pages teach the runtime in order; the [API reference](@/docs/api/_index.md) is where you look things up afterwards.
 
-A script runs one of three ways:
+Luau runs under jess in three shapes:
 
-- **Standalone**: `jess run script.jsl args...`. Anything goes.
-- **Over your load order**: a module returning a function of `(state, openmw)`, called by a script that loaded your `openmw.cfg` with `jess.openmw.load`. This is how patchers work, including the [load-order tools](@/docs/bundled-scripts/_index.md).
-- **Over one file**: `jess plugin modify --script` or `jess nif modify --script`, which hand your script one plugin or mesh and save it if you changed it.
+- **A script**: `jess run script.jsl args...`. One VM, the `jess` global, your terminal, and whatever capabilities you grant on the command line.
+- **A command target**: a script with a package around it. The manifest names the entry, the layers it activates, and the capabilities it needs; `jess package run` grants exactly those.
+- **An application target**: packages loaded into one script domain, driven by frames until it says it is done.
 
-Start with [Your First Script](@/docs/scripting/intro.md), then [Records and Views](@/docs/scripting/records-and-views.md) and [Selections](@/docs/scripting/selections.md): almost every script is built from those. The rest you can read when you need it. Meshes have their own section, the [NIF deep dive](@/docs/nif/_index.md).
+Start with [Your First Script](@/docs/scripting/intro.md), then [Packages](@/docs/scripting/packages.md), which is where almost everything else lives. [Applications](@/docs/scripting/applications.md) is for things that keep running. The rest you can read when you need it.
