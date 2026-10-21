@@ -41,9 +41,11 @@ fn init_writes_types_an_example_and_each_editors_settings() {
                 .unwrap()
                 .contains("JessLogger")
         );
+        // As paths: the report writes the platform's separator, which a joined "types/jess.d.jsl"
+        // doesn't normalize on Windows.
         assert_eq!(
-            report["types"]["definitions"],
-            dir.join("types/jess.d.jsl").display().to_string()
+            PathBuf::from(report["types"]["definitions"].as_str().unwrap()),
+            dir.join("types").join("jess.d.jsl")
         );
         let jessrc: Value = serde_json::from_str(&fs::read_to_string(dir.join(".jessrc")).unwrap()).unwrap();
         assert_eq!(jessrc["languageMode"], "strict");
