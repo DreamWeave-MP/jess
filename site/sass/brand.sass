@@ -234,35 +234,42 @@ h1, h2, h3, .dw-brand__name, .jess-kicker
 
 // Shown, not told --------------------------------------------------------------------------
 
-// Each column is wide enough for its longest command line, so the blocks never scroll: three
-// across where the page allows it, fewer where it doesn't, and a line that still can't fit
-// wraps rather than hides.
+// Three rows, one per thing shown: the statement on the left, the terminal that proves it on
+// the right with the rest of the width, so no line scrolls and no cell is left empty. On a
+// narrow page the terminal drops under its statement.
 .jess-shown__grid
   display: grid
-  grid-template-columns: repeat(auto-fit, minmax(min(28rem, 100%), 1fr))
+  grid-template-columns: 1fr
   gap: 1px
   border: 1px solid var(--dw-line)
   background: var(--dw-line)
 
   article
-    display: flex
-    flex-direction: column
+    display: grid
+    grid-template-columns: minmax(16rem, 24rem) minmax(0, 1fr)
+    grid-template-rows: auto 1fr
+    column-gap: 2rem
     padding: 1.4rem 1.3rem 1.3rem
     background: var(--dw-bg-1)
 
   h3
+    grid-column: 1
     margin: 0 0 .6rem
     color: #f5f0f8
     font-size: 1.05rem
 
   p
-    margin: 0 0 1.1rem
+    grid-column: 1
+    margin: 0
     color: var(--dw-text-muted)
     font-size: .9rem
     line-height: 1.55
 
   pre
-    margin: auto 0 0
+    grid-column: 2
+    grid-row: 1 / span 2
+    align-self: start
+    margin: 0
     border: 1px solid #3a2350
     border-radius: 3px
     padding: 1rem
@@ -270,6 +277,18 @@ h1, h2, h3, .dw-brand__name, .jess-kicker
     white-space: pre-wrap
     overflow-wrap: anywhere
     background: #050307
+
+@media (max-width: 760px)
+  .jess-shown__grid article
+    grid-template-columns: 1fr
+    grid-template-rows: auto
+
+  .jess-shown__grid h3, .jess-shown__grid p, .jess-shown__grid pre
+    grid-column: 1
+    grid-row: auto
+
+  .jess-shown__grid p
+    margin-bottom: 1.1rem
 
   code
     color: #dfd0e8
