@@ -25,6 +25,8 @@
   <meta property="og:description" content="{{ document_description }}">
   <meta property="og:type" content="{% if page %}article{% else %}website{% endif %}">
   <meta property="og:url" content="{{ document_url | safe }}">
+  <link rel="icon" href="{{ get_url(path='favicon.ico', trailing_slash=false) | safe }}" sizes="16x16 32x32 48x48">
+  <link rel="apple-touch-icon" href="{{ get_url(path='apple-touch-icon.png', trailing_slash=false) | safe }}">
   <link rel="stylesheet" href="{{ get_url(path='site.css', trailing_slash=false) | safe }}">
   <link rel="stylesheet" href="{{ get_url(path='fonts.css', trailing_slash=false) | safe }}">
   <link rel="stylesheet" href="{{ get_url(path='brand.css', trailing_slash=false) | safe }}">
