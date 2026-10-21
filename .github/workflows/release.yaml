@@ -17,7 +17,7 @@ jobs:
       contents: write
       pages: write
       id-token: write
-    uses: DreamWeave-MP/StroggForge/.github/workflows/rustGlobalBuild.yml@v58
+    uses: DreamWeave-MP/StroggForge/.github/workflows/rustGlobalBuild.yml@v59
     secrets: inherit
     with:
       binary_names: '["jess"]'
