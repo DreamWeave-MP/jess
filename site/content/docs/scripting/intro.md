@@ -100,6 +100,21 @@ Hello, dave.
 
 Luau has no notion of a shebang; jess blanks that line before compiling and keeps the line numbers after it. The shebang hands jess `jess ./greet.jsl`, and a `.jsl` path where a command would go runs the script as a program: trusted, with every capability, which is why the environment read above needed no flag. You made it executable and ran it, the same call you make for any program. `jess run greet.jsl` is the cautious spelling of the same thing, denied by default, for a script you are reading rather than trusting; [Capabilities](#capabilities) below covers that side.
 
+{% usage_note(title="The program form is for scripts you trust") %}
+`jess script.jsl`, `./script.jsl`, and a file dropped onto `jess.exe` all run with every capability: files, your environment, processes, and the network, as your account. That is the right default for a program you wrote or chose to install, and the wrong one for a `.jsl` you just downloaded. For a script you haven't read, `jess run script.jsl` runs it denied by default and tells you exactly what it reaches for; `jess check script.jsl` reads it without running anything.
+{% end %}
+
+### On Windows
+
+Dropping a `.jsl` file onto `jess.exe` in Explorer runs it the same way, as a program. Two things to know: the console window jess opens closes the moment the script finishes, so output and errors disappear with it, and double-clicking a `.jsl` does nothing unless you associate the extension with `jess.exe` yourself, which jess doesn't do for you. When you want to read what a script printed, or why it stopped, run it from a terminal:
+
+```text
+> jess greet.jsl
+Hello, dave.
+> jess run greet.jsl
+error: dream.process.env: needs the 'process.environment' capability, which this runtime does not grant
+```
+
 ## Turn on the types
 
 That `--!strict` on the first line isn't decoration. It tells Luau to type-check the whole file, and jess ships a type for every function it exposes and every module `require` resolves. Strict mode catches the misspelled field before you run the script, not after, when the only evidence is a job that quietly did nothing.

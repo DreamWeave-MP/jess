@@ -99,6 +99,10 @@ What the shebang hands jess is `jess ./greet.jsl`, and a `.jsl` path where a com
 
 The program form takes no other flags: everything after the script is the script's. A package is a different thing, with a manifest that declares what each command needs; see [`jess package run`](@/docs/cli/package.md#jess-package-run).
 
+{% usage_note(title="Trusted means trusted") %}
+The program form, and `--trusted`, give a script every capability in the [table](@/docs/reference/capabilities.md): it reads and writes your files, your environment, and the network as you. Use it for scripts you wrote or chose to install. For a script you haven't read, `jess run` denies by default and names each thing it reaches for, and `jess check` reads it without running anything. On Windows, dropping a `.jsl` onto `jess.exe` is the program form too.
+{% end %}
+
 ## Capabilities
 
 A script you run is yours, so it holds what you already have: its terminal (`process.stdio`, for `@dream/process`'s `write`) and the input devices in front of you (`input.actions`, `input.observe`, `input.configure`). Everything else is a flag away and denied without one, with the function and the capability named:
