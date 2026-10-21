@@ -1016,9 +1016,9 @@ fn a_package_path_offers_what_a_plan_needs() {
     let broken = failure(&[&top], &["example.top"], &[]);
     assert!(
         broken.contains(&format!(
-            "package path '{}': '{}': jess.toml: manifest_version must be 1",
+            "package path '{}': '{}/broken': jess.toml: manifest_version must be 1",
             text(&path),
-            text(&path.join("broken"))
+            text(&path)
         )),
         "{broken}"
     );
