@@ -57,7 +57,9 @@ fn a_file_run_again_after_an_edit_runs_the_edit() {
             .with_frame(|frame| values[0].push_to(frame)?.read::<f64>())
             .unwrap()
     };
-    assert_eq!(run_text("return 1"), 1.0);
-    assert_eq!(run_text("return 2"), 2.0);
+    let one = run_text("return 1");
+    assert!((one - 1.0).abs() < f64::EPSILON, "{one}");
+    let two = run_text("return 2");
+    assert!((two - 2.0).abs() < f64::EPSILON, "{two}");
     std::fs::remove_dir_all(root).unwrap();
 }

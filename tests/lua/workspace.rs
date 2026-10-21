@@ -416,7 +416,7 @@ fn a_workspace_target_runs_over_its_members() {
         .stack()
         .with_frame(|frame| ran.values[0].push_to(frame)?.read::<f64>())
         .unwrap();
-    assert_eq!(status, 5.0);
+    assert!((status - 5.0).abs() < f64::EPSILON, "{status}");
 
     let denied = workspace::run_target(&options, &request("app", Some(&[])))
         .unwrap_err()

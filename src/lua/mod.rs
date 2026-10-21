@@ -75,6 +75,7 @@ pub fn plan() -> l3i::Result<Rc<RuntimePlan>> {
 }
 
 /// A sandboxed Luau VM with generic Jess services, package-aware `require`, and `print`.
+///
 /// Relative file imports resolve beside their calling script. Application VFS policy belongs
 /// to packages, not the host.
 ///
