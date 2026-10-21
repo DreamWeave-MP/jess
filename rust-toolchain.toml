@@ -1,0 +1,8 @@
+# The Rust that builds jess, pinned to the release whose LLVM major the verified toolchain can
+# match everywhere a release is built. l3i links Rust and C++ with cross-language LTO, which needs
+# clang and rustc to share an LLVM major; the Linux release builds in an EL9 container whose clang
+# is the one its AppStream ships (LLVM 22 today), and rustc 1.99 moved to LLVM 23. Move this when
+# that container's clang does. The MSRV, 1.92, is a separate check and reads `rust-version`.
+[toolchain]
+channel = "1.98"
+components = ["clippy", "rustfmt"]
