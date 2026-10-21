@@ -107,6 +107,7 @@ The digest is the source's: a JPK and the Package Source it was packed from are 
 | --- | --- |
 | `<PACKAGES>...` | The packages to resolve over. |
 | `--layer <ID>` | A layer to resolve (repeatable). Without any, every layer the packages declare. |
+| `--package-path <FOLDER>` | A folder of packages to find layers and dependencies in (repeatable): each Package Source folder and `.jpk` directly inside it, opened only when one is needed. A package named outright is chosen over one found here; two found for one need are an error. |
 
 Resolves the layers into an [activation plan](@/docs/api/package.md#package-resolve) and prints it: each layer after the ones it requires, the packages selected, the module namespace, the entrypoints activation would run, in order, and the capabilities they require, with who requires them. Nothing runs. When the graph doesn't resolve, the error says exactly where:
 
@@ -199,7 +200,7 @@ jess package check <PACKAGE> [--package <PACKAGE>]... [--package-path <FOLDER>].
 | `--package <PACKAGE>` | A package its dependencies resolve over (repeatable), handed over outright. |
 | `--package-path <FOLDER>` | A folder of packages its dependencies resolve over (repeatable), each opened only when needed. |
 
-Type-checks every `.jsl` file under a Package Source in strict mode, tests and benches included, the way an editor checks a folder [`jess init`](@/docs/cli/init.md) set up. Each `require` resolves the way the runtime would resolve it under the package's plan: its own modules, the exports of its `[dependencies]` and `[dev-dependencies]` (from a folder or a JPK alike), the built-in package's exports, and jess's own modules as `jess luau-types` declares them. The plan is resolved and mounted, and nothing in it runs. Only the package's own files are reported, since a dependency's errors are the dependency's to fix. Any error fails the command.
+Type-checks every `.jsl` file under a Package Source in strict mode, tests and benches included, the way an editor checks a folder [`jess init`](@/docs/cli/utility-commands.md#init) set up. Each `require` resolves the way the runtime would resolve it under the package's plan: its own modules, the exports of its `[dependencies]` and `[dev-dependencies]` (from a folder or a JPK alike), the built-in package's exports, and jess's own modules as `jess luau-types` declares them. The plan is resolved and mounted, and nothing in it runs. Only the package's own files are reported, since a dependency's errors are the dependency's to fix. Any error fails the command.
 
 ```text
 $ jess package check greeter

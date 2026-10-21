@@ -1,6 +1,6 @@
 ---
 title: 'Global Options'
-description: 'Options every command takes (--format, --help, --version); the save group''s --encoding and --game; and plugin commands'' --encoding.'
+description: 'The options every command takes: --format, --help, --version; and what every command prints, and how it fails.'
 weight: 5
 extra:
   kind: reference
@@ -8,40 +8,31 @@ extra:
 
 {{ api_signature(value="jess [--format <FORMAT>] [COMMAND]") }}
 
-With no command, `jess` prints its help: the commands, and a few to start with. It doesn't read an `openmw.cfg`, and no command does: every file a command works on is named by its path. A script that wants a load order loads one itself, with [`jess.openmw.load`](@/docs/api/openmw.md).
+With no command, `jess` prints its help: the commands, and two to start with. No command reads a configuration file of its own: every file a command works on is named by its path, and jess keeps no state between runs.
 
-These work on every command and can go anywhere on the command line: `jess --format json plugin stats MyMod.esp` and `jess plugin stats MyMod.esp --format json` are the same.
+These work on every command and can go anywhere on the command line: `jess --format json package inspect greeter` and `jess package inspect greeter --format json` are the same.
 
 | Option | Value | Default | Does |
 | --- | --- | --- | --- |
-| `--format <FORMAT>` | `yaml`, `json`, `toml` | `yaml` (`json` for `dump --raw`) | The output document's format. JSON is compact, one line. |
-| `-h`, `--help` | | | Help for the command it follows. |
-| `-V`, `--version` | | | Print `jess <version>` (subcommands print their own name, like `jess-plugin 0.1.0`). |
+| `--format <FORMAT>` | `yaml`, `json`, `toml` | `yaml` | The output document's format. JSON is compact, one line. |
+| `-h`, `--help` | | | Help for the command it follows. `jess <command> --help` is the long form, with every value explained; `-h` is the summary. |
+| `-V`, `--version` | | | Print `jess <version>`. A subcommand prints its own name, `jess-package 0.1.0`. A build without cross-language LTO says so after the version, and the benchmark harness refuses it. |
 
-What the formats look like: [Output Formats](@/docs/getting-started/output-formats.md). How inputs are found: [Paths, Masters, and Encodings](@/docs/getting-started/openmw-config.md).
+## Output
 
-## Group options
+A command that reports something prints one document, in the `--format` you asked for, to stdout. Scripts are the exception: `jess run` and a command target print whatever the script prints, as it prints it, and nothing else.
 
-These belong to the `save` group, and go anywhere after `save`, before or after the subcommand: `jess save --encoding win1251 info X.ess` and `jess save info --encoding win1251 X.ess` are the same.
+YAML is the default because it reads as a report. JSON is one line, for a program that parses it. TOML is for pasting into a file that is already TOML:
 
-| Option | On | Values | Default | Does |
-| --- | --- | --- | --- | --- |
-| `--encoding <ENCODING>` | `jess save` | `win1250`, `win1251`, `win1252` | `win1252` | The code page for strings in save info and dumps. |
-| `--game <GAME>` | `jess save` | `auto`, `openmw`, `morrowind` | `auto` | Which game wrote the save. `auto` detects it; the others insist, and fail on the other kind. `check` and `strip` take OpenMW saves only. |
-
-The plugin commands that read or write text take `--encoding` (`win1250`, `win1251`, or `win1252`) after the command: `dump`, `delete`, `modify`, `header`, `lint`, `clean`, `common`, `diff`, `overdial`, `validate`, and `assets`. Commands that only see bytes (`stats`, `compare`, `esm`, `esp`) don't have it.
-
-Without `--encoding`, both read text as `win1252`. See [Encodings](@/docs/getting-started/openmw-config.md#encodings).
-
-## Writing files
-
-Every command that edits a file follows the same rules; see [Output Formats](@/docs/getting-started/output-formats.md#commands-that-write-files) for the full story.
-
-- Without `--output`, the input is edited in place after a backup is copied beside it: `<file>.bak`, then `.bak1`, `.bak2`, never overwriting an older one.
-- With `--output <path>`, the input is untouched. A file already at the output path is backed up the same way before it's replaced. The path is literal, relative to the working directory, and must differ from the input.
-- The report says what was written as `written: {path, backup}`; nothing changed means nothing written, and `written: null`.
-- `--no-backup` skips the backup, and `--dry-run` writes nothing and reports what would change, with `dry_run: true`.
+```text
+$ jess --format json luau-types types
+{"folder":"types","definitions":"types/jess.d.jsl","files":24,"removed":[],"aliases":{"dream":"types/dream","jess":"types/jess"}}
+```
 
 ## Errors and exit codes
 
-Errors print to stderr as `error: <message>`; warnings as `warning: <message>`. Exit code `0` is success, `1` an error or a failure the command reports on purpose (see [exit codes](@/docs/getting-started/output-formats.md#exit-codes)), `2` a command line jess couldn't parse.
+Errors print to stderr as `error: <message>`; diagnostics an application reports go there too, one line each, as they happen. Exit code `0` is success, `1` an error or a failure the command reports on purpose (a failed test, a type error, a capability it declares and you didn't grant), `2` a command line jess couldn't parse. A script's first returned number, an integer from 0 to 255, is its exit status, and an application's is the one it passed to `application.exit`.
+
+## Environment
+
+Two variables, both for [`jess workspace sync`](@/docs/cli/workspace.md#jess-workspace-sync): `JESS_OFFLINE=1` asks no publisher, as `--offline` does, and `JESS_REGISTRY_URL` names the package index, as `--index` does. Nothing else in jess reads the environment on its own behalf; a script reads it through `@dream/process`, and only when granted `process.environment`.

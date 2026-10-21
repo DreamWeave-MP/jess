@@ -1,14 +1,14 @@
 ---
 title: 'Applications'
 description: 'Application targets: managed modules loaded into one ScriptDomain, host callbacks, named events, and domain-local interfaces that later packages override on purpose.'
-weight: 98
+weight: 50
 extra:
   kind: guide
 ---
 
 A command target is a script with a package around it: it runs, it returns, it's done. An **application target** keeps running. jess builds it a host of its own, loads the managed modules of every package in its graph into one [ScriptDomain](@/docs/contributing/script-domains.md), and drives frames until the application says it's finished.
 
-Nothing about this is Morrowind. A game, an editor, and a launcher are all "some packages, some callbacks, some frames"; what the callbacks mean is the packages' business.
+A game, an editor, and a launcher are all "some packages, some callbacks, some frames"; what the callbacks mean is the packages' business.
 
 ## The manifest
 
