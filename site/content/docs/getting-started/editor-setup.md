@@ -11,7 +11,7 @@ A jess script without types is a Lua script: it runs until the misspelled field,
 The pieces are the same in every editor:
 
 - **[luau-lsp](https://github.com/JohnnyMorganz/luau-lsp)**, the Luau language server. jess doesn't ship it.
-- **`types/`**, the types for the whole jess API: `jess.d.jsl`, the definitions, and one stub module per `@jess/...` and `@dream/...` name, so `require('@jess/log')` is typed by finding its file. `jess luau-types` writes it for the jess you have installed.
+- **`types/`**, the types for the whole jess API: `jess.d.jsl`, the definitions, one stub module per `@jess/...` and `@dream/...` name, and the built-in package's own modules, so `require('@jess/log')` and `require('@jess/json')` are typed by finding a file. `jess luau-types` writes it for the jess you have installed.
 - **A `.jessrc`** aliasing `jess` and `dream` to their folders in `types/`.
 - **Settings** telling luau-lsp to load `types/jess.d.jsl` as `@jess`, to use the plain `standard` platform (not Roblox), and not to look for a Rojo sourcemap.
 - **Luau's new type solver**, which some of the types need. `jess init` turns it on. [See below](#the-new-type-solver).
@@ -28,7 +28,7 @@ editor: vscode
 types:
   folder: my-scripts/types
   definitions: my-scripts/types/jess.d.jsl
-  files: 24
+  files: 44
   removed: []
   aliases:
     dream: types/dream

@@ -42,7 +42,7 @@ editor: helix
 types:
   folder: my-scripts/types
   definitions: my-scripts/types/jess.d.jsl
-  files: 24
+  files: 44
   removed: []
   aliases:
     dream: types/dream
@@ -70,12 +70,16 @@ types/
   jess/init.jsl        require '@jess'
   jess/log.jsl         require '@jess/log'
   jess/context.jsl     require '@jess/context', which is jess.context
-  jess/package.jsl     ...one stub per @jess/ name
+  jess/package.jsl     ...one stub per native @jess/ name
+  jess/style/init.jsl  require '@jess/style': the built-in package's module itself
+  jess/data/toml.jsl   require '@jess/data/toml', likewise
+  jess/json.jsl        require '@jess/json': `return require('./data/json')`
+  jess/data/json.jsl   the module it stands for, with the files beside it that it requires
   dream/fs.jsl         require '@dream/fs'
   dream/bytes.jsl, dream/process.jsl, dream/tcp.jsl, ...
 ```
 
-`jess.d.jsl` declares the globals and every type: the hand-written API and the generated library declarations. Every other file is a stub, one per module `require` resolves natively, returning a value of that module's type. A `.jessrc` aliases `jess` and `dream` to their folders, and from then on `require('@jess/log')` is typed the way Luau types any `require`: by finding a file. There is no list of overloads to outgrow, so a new module costs one file.
+`jess.d.jsl` declares the globals and every type: the hand-written API and the generated library declarations. Every module `require` resolves natively gets a stub, a file returning a value of that module's type. The built-in package's exports are Luau, and a Luau module's type is its source, so the package's modules are copied under `jess/` at their own paths, `src/` stripped: `@jess/style` resolves straight to the copy of `src/style/init.jsl`, whose `@self/` and relative requires find the files copied beside it. An export named differently from its path (`@jess/json` is `src/data/json.jsl`) gets a one-line stub that requires the copy. A `.jessrc` aliases `jess` and `dream` to their folders, and from then on `require('@jess/log')` and `require('@jess/json')` are typed the way Luau types any `require`: by finding a file. There is no list of overloads to outgrow, so a new module costs one file.
 
 ```sh
 jess luau-types types
@@ -84,7 +88,7 @@ jess luau-types types
 ```yaml
 folder: types
 definitions: types/jess.d.jsl
-files: 24
+files: 44
 removed: []
 aliases:
   dream: types/dream
@@ -105,7 +109,7 @@ Point luau-lsp at the definitions file (`luau-lsp.types.definitionFiles`, `{ "@j
 
 Rerunning it replaces jess's files and removes stubs a previous jess wrote that this one doesn't; nothing else in the folder is touched. The folder describes the jess you have installed, and it isn't shipped in release archives: regenerate it whenever you upgrade jess, or your editor will complain about functions that exist and miss ones that changed. Setup and usage: [Your First Script](@/docs/scripting/intro.md).
 
-The built-in package's exports (`@jess/style`, `@jess/json`, and the rest) aren't stubs here: they are Luau with their own types, and `jess package check` resolves them from the package itself.
+`jess package check` doesn't read this folder for the built-in package's exports: it resolves them from the package the binary carries, which is the same source these copies hold.
 
 ## completions
 

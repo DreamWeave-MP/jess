@@ -90,7 +90,7 @@ Grouped by what they belong to, each with the page that explains it properly.
 
 **Publisher.** A site that publishes packages through a project manifest, which `sync` can pin a package from, recording the manifest URL and the archive's SHA-256 in the lock.
 
-**Type stub.** The `.jsl` files `jess luau-types` writes: `jess.d.jsl` for the global and one stub module per `@jess/` and `@dream/` name, so luau-lsp can type-check a script under `--!strict`. [Editor Setup](@/docs/getting-started/editor-setup.md).
+**Type stub.** The `.jsl` files `jess luau-types` writes: `jess.d.jsl` for the global, one stub module per native `@jess/` and `@dream/` name, and a copy of each of the built-in package's modules, so luau-lsp can type-check a script under `--!strict`. [Editor Setup](@/docs/getting-started/editor-setup.md).
 
 **`.jsl`.** The extension of every Luau source jess reads. The language is Luau; the extension says whose it is. `require` tries `name.jsl` and `name/init.jsl`, nothing else.
 

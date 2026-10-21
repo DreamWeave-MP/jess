@@ -20,7 +20,7 @@ editor: vscode
 types:
   folder: my-scripts/types
   definitions: my-scripts/types/jess.d.jsl
-  files: 24
+  files: 44
   removed: []
   aliases:
     dream: types/dream

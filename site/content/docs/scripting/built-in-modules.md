@@ -20,7 +20,7 @@ extra:
 
 **Exports are frozen.** `require('@jess/test').expect = evil` is an error (`attempt to modify a readonly table`), and so is changing a logger or an expectation. The same table comes back from every `require`. This holds for every package's exports, not only jess's: one package can't patch another's module for the whole plan.
 
-**They're typed like everything else.** The folder `jess luau-types` writes has a stub for each, `types/jess/log.jsl` and the rest, and the `.jessrc` `jess init` writes aliases `@jess/` to them, so `local log = require '@jess/log'` is fully typed under `--!strict` with no annotation, the same way as `@jess/worker` or `@dream/fs`.
+**They're typed like everything else.** The folder `jess luau-types` writes has a stub for each built-in module, `types/jess/log.jsl` and the rest, and a copy of each of the built-in package's modules, `types/jess/data/json.jsl` under its own name, since a Luau module's type is its source; the `.jessrc` `jess init` writes aliases `@jess/` to them, so `local log = require '@jess/log'` is fully typed under `--!strict` with no annotation, the same way as `@jess/worker` or `@dream/fs`.
 
 **They stay small.** Four built-in modules: two for scripts, and two that packages needed before a package could exist, since the thing that opens packages can't itself come in one. Everything else jess ships in Luau is in the built-in package, which goes through the same package model as yours. A package that wants more brings it as a package.
 
