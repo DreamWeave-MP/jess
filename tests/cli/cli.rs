@@ -17,10 +17,8 @@ fn top_level_generators_write_to_stdout() {
     );
     let stdout = String::from_utf8(completions.stdout).unwrap();
     assert!(stdout.contains("jess"));
-    assert!(stdout.contains("package"));
-    assert!(stdout.contains("run"));
-    for name in ["plugin", "save", "nif"] {
-        assert!(!stdout.contains(&format!("jess-{name}")), "{stdout}");
+    for name in ["run", "test", "check", "pack", "package", "workspace", "init", "luau-types"] {
+        assert!(stdout.contains(name), "{name} is missing from the completions: {stdout}");
     }
 
     let man = Command::new(env!("CARGO_BIN_EXE_jess")).args(["man"]).output().unwrap();
@@ -249,12 +247,10 @@ fn bare_jess_prints_the_help_that_starts_people_off() {
 }
 
 #[test]
-fn native_format_commands_are_rejected() {
-    for name in ["plugin", "save", "nif"] {
-        let output = jess().args([name, "--help"]).output().unwrap();
-        assert!(!output.status.success(), "{name}");
-        assert!(String::from_utf8_lossy(&output.stderr).contains("unrecognized subcommand"));
-    }
+fn an_unknown_subcommand_is_rejected() {
+    let output = jess().args(["frobnicate", "--help"]).output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unrecognized subcommand"));
 }
 
 #[test]
@@ -285,8 +281,19 @@ fn generic_reports_support_yaml_json_and_toml() {
                 .iter()
                 .any(|path| path.as_str() == Some(folder.join("jess.1").to_str().unwrap()))
         );
-        for name in ["plugin", "save", "nif"] {
-            assert!(!folder.join(format!("jess-{name}.1")).exists());
+        for name in [
+            "run",
+            "test",
+            "check",
+            "package-inspect",
+            "workspace-sync",
+            "init",
+            "luau-types",
+        ] {
+            assert!(
+                folder.join(format!("jess-{name}.1")).is_file(),
+                "jess-{name}.1 was not written"
+            );
         }
     }
     fs::remove_dir_all(root).unwrap();

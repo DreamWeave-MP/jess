@@ -75,7 +75,7 @@ suite.describe('resolution', function()
   suite.it('resolves the default locale', function()
     local registry, common = base()
     expect(registry:locales()).toEqual {}
-    expect(common('hello', { name = 'Fargoth' })).toBe 'Hello, Fargoth!'
+    expect(common('hello', { name = 'Ada' })).toBe 'Hello, Ada!'
 
     local info = assert(common:lookup 'hello')
     expect(info.locale).toBe 'en'
@@ -86,7 +86,7 @@ suite.describe('resolution', function()
   suite.it('resolves an exact locale', function()
     local registry, common = base()
     registry:setLocales 'pl'
-    expect(common('hello', { name = 'Fargoth' })).toBe 'Cześć, Fargoth!'
+    expect(common('hello', { name = 'Ada' })).toBe 'Cześć, Ada!'
 
     local info = assert(common:lookup 'hello')
     expect(info.locale).toBe 'pl'
@@ -97,7 +97,7 @@ suite.describe('resolution', function()
     local registry, common = base()
     registry:setLocales 'pt-BR'
     expect(common:chain()).toEqual { 'pt-BR', 'pt', 'en' }
-    expect(common('hello', { name = 'Fargoth' })).toBe 'Olá, Fargoth!'
+    expect(common('hello', { name = 'Ada' })).toBe 'Olá, Ada!'
 
     local info = assert(common:lookup 'hello')
     expect(info.locale).toBe 'pt'
@@ -106,7 +106,7 @@ suite.describe('resolution', function()
     -- Every preferred locale's parents come before the next preferred locale.
     registry:setLocales { 'zh-Hant-TW', 'de-AT', 'de' }
     expect(common:chain()).toEqual { 'zh-Hant-TW', 'zh-Hant', 'zh', 'de-AT', 'de', 'en' }
-    expect(common('hello', { name = 'Fargoth' })).toBe 'Hallo, Fargoth!'
+    expect(common('hello', { name = 'Ada' })).toBe 'Hallo, Ada!'
   end)
 
   suite.it("uses the bundle's fallback locale, which needn't be English", function()
@@ -131,18 +131,18 @@ suite.describe('resolution', function()
   suite.it('changes the output at a locale switch, with no reload', function()
     local registry, common = base()
     local loaded = registry:generation()
-    expect(common('hello', { name = 'Fargoth' })).toBe 'Hello, Fargoth!'
+    expect(common('hello', { name = 'Ada' })).toBe 'Hello, Ada!'
 
     local polish = registry:setLocales { 'pl' }
     expect(polish > loaded).toBe(true)
-    expect(common('hello', { name = 'Fargoth' })).toBe 'Cześć, Fargoth!'
+    expect(common('hello', { name = 'Ada' })).toBe 'Cześć, Ada!'
 
     local german = registry:setLocales { 'de', 'pl' }
     expect(german > polish).toBe(true)
-    expect(common('hello', { name = 'Fargoth' })).toBe 'Hallo, Fargoth!'
+    expect(common('hello', { name = 'Ada' })).toBe 'Hallo, Ada!'
 
     registry:setLocales {}
-    expect(common('hello', { name = 'Fargoth' })).toBe 'Hello, Fargoth!'
+    expect(common('hello', { name = 'Ada' })).toBe 'Hello, Ada!'
     -- The bundle itself didn't change; only what the chain picks from it.
     expect(common:generation()).toBe(loaded)
   end)
@@ -240,10 +240,10 @@ suite.describe('formatting', function()
 
   suite.it('checks the variables table a script passes', function()
     local _, common = base()
-    expect(function() common('hello', 'Fargoth') end).toThrow(
+    expect(function() common('hello', 'Ada') end).toThrow(
       "variables for message 'hello' of bundle 'common' must be a table, not string"
     )
-    expect(function() common('hello', { 'Fargoth' }) end).toThrow(
+    expect(function() common('hello', { 'Ada' }) end).toThrow(
       "variables for message 'hello' of bundle 'common' are named by strings, not number"
     )
     expect(function() common('hello', { name = {} }) end).toThrow(
@@ -281,7 +281,7 @@ suite.describe('formatting', function()
     local cached, common = base()
     cached:setLocales 'pl'
     local cases: { { message: string, values: { [string]: l10n.Value } } } = {
-      { message = 'hello', values = { name = 'Fargoth' } },
+      { message = 'hello', values = { name = 'Ada' } },
       { message = 'file_count', values = { count = 5 } },
       { message = 'mode_label', values = { mode = 'view' } },
       { message = 'percent_complete', values = { progress = 0.5 } },
@@ -333,7 +333,7 @@ suite.describe('formatting', function()
   end
 
   suite.it('substitutes arguments by name, in any order, ignoring extras', function()
-    expect(format('en', 'Hello, {name}!', { name = 'Fargoth' })).toBe 'Hello, Fargoth!'
+    expect(format('en', 'Hello, {name}!', { name = 'Ada' })).toBe 'Hello, Ada!'
     expect(format('en', '{on}', { on = true })).toBe 'true'
     expect(format('en', '{first}{second}{first}', { second = '2', first = '1', third = '3' })).toBe '121'
   end)
@@ -376,13 +376,13 @@ suite.describe('formatting', function()
     local pattern =
       '{guests, plural, offset:1 =0 {nobody} =1 {{host}} one {{host} and # other} other {{host} and # others}}'
     local function party(guests: number): string
-      return format('en', pattern, { guests = guests, host = 'Caius' })
+      return format('en', pattern, { guests = guests, host = 'Rowan' })
     end
 
     expect(party(0)).toBe 'nobody'
-    expect(party(1)).toBe 'Caius'
-    expect(party(2)).toBe 'Caius and 1 other'
-    expect(party(3)).toBe 'Caius and 2 others'
+    expect(party(1)).toBe 'Rowan'
+    expect(party(2)).toBe 'Rowan and 1 other'
+    expect(party(3)).toBe 'Rowan and 2 others'
   end)
 
   suite.it('spells ordinals', function()
@@ -527,18 +527,18 @@ suite.describe('loading', function()
   suite.it('gives providers precedence in registration order', function()
     local registry = registryOver(l10n.files('base', Fixtures.base), l10n.files('layer', Fixtures.layer))
     local common = registry:bundle 'common'
-    expect(common('hello', { name = 'Fargoth' })).toBe 'Howdy, Fargoth!'
+    expect(common('hello', { name = 'Ada' })).toBe 'Howdy, Ada!'
     -- Messages merge by id: the layer adds one and leaves the rest of the base alone.
     expect(common 'layer_only').toBe 'From the layer'
     expect(common 'fallback_only').toBe 'Only English says this'
 
     -- The override is per locale: Polish still comes from the base.
     registry:setLocales 'pl'
-    expect(common('hello', { name = 'Fargoth' })).toBe 'Cześć, Fargoth!'
+    expect(common('hello', { name = 'Ada' })).toBe 'Cześć, Ada!'
 
     local reversed = registryOver(l10n.files('layer', Fixtures.layer), l10n.files('base', Fixtures.base))
     local other = reversed:bundle 'common'
-    expect(other('hello', { name = 'Fargoth' })).toBe 'Hello, Fargoth!'
+    expect(other('hello', { name = 'Ada' })).toBe 'Hello, Ada!'
     expect(other 'layer_only').toBe 'From the layer'
   end)
 
@@ -604,7 +604,7 @@ suite.describe('loading', function()
     local diagnostics, report = registry:reload()
     expect(clean(diagnostics)).toBe(true)
     expect(report.generation > good).toBe(true)
-    expect(common('hello', { name = 'Fargoth' })).toBe 'Hi, Fargoth!'
+    expect(common('hello', { name = 'Ada' })).toBe 'Hi, Ada!'
     good = registry:generation()
 
     -- A bad edit to one locale of `common`, and a good edit to `other`, in the same reload.
@@ -618,10 +618,10 @@ suite.describe('loading', function()
     expect(diagnostics[1].locale).toBe 'pl'
 
     -- The whole bundle keeps its last good generation: English didn't take the new text either.
-    expect(common('hello', { name = 'Fargoth' })).toBe 'Hi, Fargoth!'
+    expect(common('hello', { name = 'Ada' })).toBe 'Hi, Ada!'
     expect(common:generation()).toBe(good)
     registry:setLocales 'pl'
-    expect(common('hello', { name = 'Fargoth' })).toBe 'Cześć, Fargoth!'
+    expect(common('hello', { name = 'Ada' })).toBe 'Cześć, Ada!'
 
     -- The bundle that did load is live.
     expect(other 'title').toBe 'Another'
@@ -632,16 +632,16 @@ suite.describe('loading', function()
     diagnostics, report = registry:reload()
     expect(report.kept).toEqual { 'common' }
     expect(kinds(diagnostics)).toContain 'bundle-parse-failure'
-    expect(common('hello', { name = 'Fargoth' })).toBe 'Cześć, Fargoth!'
+    expect(common('hello', { name = 'Ada' })).toBe 'Cześć, Ada!'
 
     -- Fixing the file makes the next reload take everything, including the English edit.
     files['l10n/common/pl.toml'] = "hello = 'Hej, {name}!'"
     diagnostics, report = registry:reload()
     expect(clean(diagnostics)).toBe(true)
     expect(report.updated).toEqual { 'common', 'other' }
-    expect(common('hello', { name = 'Fargoth' })).toBe 'Hej, Fargoth!'
+    expect(common('hello', { name = 'Ada' })).toBe 'Hej, Ada!'
     registry:setLocales {}
-    expect(common('hello', { name = 'Fargoth' })).toBe 'Hey, Fargoth!'
+    expect(common('hello', { name = 'Ada' })).toBe 'Hey, Ada!'
   end)
 
   suite.it('changes nothing when a provider cannot list its files', function()
@@ -670,7 +670,7 @@ suite.describe('loading', function()
     expect(diagnostics[1].provider).toBe 'flaky'
     expect(diagnostics[1].path).toBe 'l10n'
     expect(diagnostics[1].detail).toContain 'the archive went away'
-    expect(common('hello', { name = 'Fargoth' })).toBe 'Hello, Fargoth!'
+    expect(common('hello', { name = 'Ada' })).toBe 'Hello, Ada!'
   end)
 
   suite.it('reads a folder and a table of the same files the same way', function()
@@ -682,7 +682,7 @@ suite.describe('loading', function()
     local fromFiles = registryOver(l10n.files('base', baseInMemory(), 'l10n'))
     local folderCommon, filesCommon = fromFolder:bundle 'common', fromFiles:bundle 'common'
     local cases: { { message: string, values: { [string]: l10n.Value } } } = {
-      { message = 'hello', values = { name = 'Fargoth' } },
+      { message = 'hello', values = { name = 'Ada' } },
       { message = 'file_count', values = { count = 3 } },
       { message = 'mode_label', values = { mode = 'edit' } },
       { message = 'percent_complete', values = { progress = 0.25 } },

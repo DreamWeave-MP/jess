@@ -235,15 +235,33 @@ mod tests {
         }
     }
 
+    /// The command set is exactly the documented one: a command jess doesn't have is rejected, and
+    /// nothing is registered that the CLI reference doesn't list.
     #[test]
-    fn native_format_commands_are_not_registered() {
+    fn the_command_set_is_exactly_the_documented_one() {
         let command = command();
-        for name in ["plugin", "save", "nif"] {
-            assert!(command.find_subcommand(name).is_none(), "{name}");
-            assert!(Cli::try_parse_from(["jess", name]).is_err(), "{name}");
-        }
-        for name in ["run", "test", "pack", "package", "init", "luau-types", "completions", "man"] {
-            assert!(command.find_subcommand(name).is_some(), "{name}");
-        }
+        let mut names = command
+            .get_subcommands()
+            .map(|subcommand| subcommand.get_name().to_owned())
+            .filter(|name| name != "help")
+            .collect::<Vec<_>>();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "check",
+                "completions",
+                "init",
+                "luau-types",
+                "man",
+                "pack",
+                "package",
+                "run",
+                "test",
+                "workspace"
+            ]
+        );
+        assert!(command.find_subcommand("frobnicate").is_none());
+        assert!(Cli::try_parse_from(["jess", "frobnicate"]).is_err());
     }
 }

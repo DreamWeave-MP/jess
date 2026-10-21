@@ -25,7 +25,7 @@ return {
         frames += 1
         journal.write(`director update {frames} ({typeof(deltaSeconds)})`)
 
-        if frames == 2 then events.emit('playerDied', { player = 'Caius', frame = frames }) end
+        if frames == 2 then events.emit('playerDied', { player = 'Rowan', frame = frames }) end
 
         if frames == 4 then application.exit(0) end
       end,

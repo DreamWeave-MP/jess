@@ -111,13 +111,13 @@ fn named_events_are_queued_and_delivered_in_order_apart_from_phases() {
     );
 
     // Emitting runs nothing; the drain runs every subscriber, by priority then registration.
-    support::eval::<()>(domain, "require('@jess/events').emit('playerDied', { player = 'Caius' })");
+    support::eval::<()>(domain, "require('@jess/events').emit('playerDied', { player = 'Rowan' })");
     assert_eq!(support::journal(), Vec::<String>::new());
     let report = domain.drain_events().unwrap();
     assert_eq!((report.delivered, report.unhandled), (3, 0));
     assert_eq!(
         support::journal(),
-        ["second died Caius", "first died Caius", "third died Caius"]
+        ["second died Rowan", "first died Rowan", "third died Rowan"]
     );
 
     // What a handler emitted while the queue drained waits for the next drain.
@@ -126,10 +126,10 @@ fn named_events_are_queued_and_delivered_in_order_apart_from_phases() {
     assert_eq!(support::journal(), ["later from first"]);
 
     // A failing handler is attributed with its event and doesn't stop the next one.
-    support::eval::<()>(domain, "require('@jess/events').emit('boom', { player = 'Fargoth' })");
+    support::eval::<()>(domain, "require('@jess/events').emit('boom', { player = 'Ada' })");
     let report = domain.drain_events().unwrap();
     assert_eq!((report.delivered, report.failures.len()), (2, 1));
-    assert_eq!(support::journal(), ["third died Fargoth"]);
+    assert_eq!(support::journal(), ["third died Ada"]);
     let failed = harness.diagnostics.of_kind(DiagnosticKind::HandlerFailed);
     let failed = failed.last().unwrap();
     assert_eq!(failed.phase, Some(Phase::Event));

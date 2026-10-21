@@ -582,10 +582,10 @@ mod tests {
     #[test]
     fn size_hints_count_payload_bytes() {
         let message = Message::map([
-            ("name", Message::text("Fargoth")),
+            ("name", Message::text("Ada")),
             ("bytes", Message::Bytes(Arc::from(vec![0u8; 100]))),
         ]);
-        assert_eq!(message.size_hint(), 5 + 100 + 4 + 7);
+        assert_eq!(message.size_hint(), 5 + 100 + 4 + 3);
         assert_eq!(Message::List(vec![Message::Number(1.0); 3]).size_hint(), 24);
         assert_eq!(Message::Integer(3).as_number(), Some(3.0));
         assert_eq!(Message::text("x").as_text(), Some("x"));

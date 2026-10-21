@@ -17,7 +17,7 @@ type Fruits = { fruit: { apple: { smooth: boolean }, name: string }, products: {
 type CoreSchema = { nulls: { unknown }, booleans: { boolean }, integers: { number }, floats: { number }, strings: { string } }
 type Nodes = { first: { folded: string, literal: string, flow: { unknown } }, second: unknown, custom: yaml.Tagged }
 type Trailing = { quoted: string, single: string, flow: { number }, map: { a: number }, tagged: string, items: { unknown } }
-type Quotes = { ["Desele's House"]: string, plain: string, said: string, indexed: string, list: { string } }
+type Quotes = { ["Maren's House"]: string, plain: string, said: string, indexed: string, list: { string } }
 
 suite.describe('json', function()
   suite.it('decodes RFC 8259 values and UTF-16 escapes', function()
@@ -122,14 +122,14 @@ color = "gray"
   end)
 
   suite.it('records where keys and values are, when asked', function()
-    local text = 'name = "Fargoth"\n[owner]\nage = 3\n'
+    local text = 'name = "Ada"\n[owner]\nage = 3\n'
     local document, layout = toml.decode(text, { positions = true })
     local positions = assert(layout[document].positions)
     local name = positions.name
     expect(name.key).toBe(1)
-    expect(string.sub(text, name.value, name.valueEnd)).toBe '"Fargoth"'
-    expect(positions.owner.key).toBe(19)
-    expect(assert(layout[document.owner].positions).age.value).toBe(32)
+    expect(string.sub(text, name.value, name.valueEnd)).toBe '"Ada"'
+    expect(positions.owner.key).toBe(15)
+    expect(assert(layout[document.owner].positions).age.value).toBe(28)
 
     local again, plain = toml.decode(text)
     expect(plain[again].positions).toBeNil()
@@ -199,13 +199,13 @@ custom: !<tag:example.com,2026:thing> hello
     expect(value.items[2]).toEqual { 3 }
   end)
 
-  -- OpenMW l10n files name places in their keys: `UI_Blurb_Suran, Desele's House: "..."`.
+  -- Localization files name places in their keys: `Maren's House: "..."`, quote and all.
   suite.it('reads a quote or a bracket inside a plain scalar as its own byte', function()
     local value = yaml.decode(
-      'Desele\'s House: "v"\nplain: it\'s fine # c\nsaid: say "hi" # c\nindexed: k[1] # c\n'
+      'Maren\'s House: "v"\nplain: it\'s fine # c\nsaid: say "hi" # c\nindexed: k[1] # c\n'
         .. 'list:\n  - it\'s # c\n'
     ) :: Quotes
-    expect(value["Desele's House"]).toBe 'v'
+    expect(value["Maren's House"]).toBe 'v'
     expect(value.plain).toBe "it's fine"
     expect(value.said).toBe 'say "hi"'
     expect(value.indexed).toBe 'k[1]'

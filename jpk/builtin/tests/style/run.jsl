@@ -509,7 +509,7 @@ suite.describe('profiles', function()
 
   suite.it('treat a returned function as the module', function()
     local source =
-      'return function(state: { [string]: unknown })\n  local Defaults = { fileName = \'out.esp\' }\n  print(state, Defaults)\nend\n'
+      'return function(state: { [string]: unknown })\n  local Defaults = { fileName = \'out.json\' }\n  print(state, Defaults)\nend\n'
     expect(found(source)).toEqual {}
   end)
 end)

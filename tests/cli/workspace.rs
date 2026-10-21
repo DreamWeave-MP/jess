@@ -376,7 +376,7 @@ fn publisher(server: &crate::common::http::Server, base: &str, name: &str, packa
             "generator": "fixture",
             "project": {
                 "id": project, "name": package.id, "type": "library", "status": "active", "versioning": "numeric",
-                "game": "morrowind", "tags": [], "maintainers": [],
+                "game": "example", "tags": [], "maintainers": [],
                 "links": { "page": page, "source": repository, "issues": format!("{repository}/issues") },
                 "integrations": {}, "media": [], "credits": []
             },

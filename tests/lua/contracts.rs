@@ -2,22 +2,40 @@
 
 mod common;
 
+/// The `jess` global holds exactly the kernel's members, each table among them is also its
+/// `@jess/` module, and the runtime adds no global of its own beside `jess`.
 #[test]
 fn only_generic_members_are_installed() {
     let runtime = common::runtime();
     common::run(
         &runtime,
         r"
-        for _, name in { 'plugin', 'nif', 'land', 'save', 'openmw', 'luadata', 'compare', 'select', 'meta' } do
-            assert(jess[name] == nil, name)
-            assert(not pcall(require, '@jess/' .. name), name)
-        end
-        assert(vfstool == nil and openmwConfig == nil and dreamPath == nil)
+        local expected = {
+            'application', 'bench', 'context', 'events', 'granted', 'input', 'interfaces', 'null',
+            'payload', 'shader', 'version', 'worker',
+        }
+        local members = {}
+        for name in jess do table.insert(members, name) end
+        table.sort(members)
+        assert(table.concat(members, ' ') == table.concat(expected, ' '), table.concat(members, ' '))
         for _, name in { 'shader', 'context', 'worker', 'events', 'interfaces', 'application', 'bench' } do
             assert(require('@jess/' .. name) == jess[name], name)
         end
         -- @jess/input is the built-in package's Luau, over jess.input.
         assert(require('@jess/input') ~= jess.input and require('@jess/input').runtime == jess.input.runtime)
+        local luau = {
+            _G = true, _VERSION = true, assert = true, bit32 = true, buffer = true, coroutine = true,
+            error = true, gcinfo = true, getmetatable = true, ipairs = true, math = true, newproxy = true,
+            next = true, os = true, pairs = true, pcall = true, print = true, rawequal = true, rawget = true,
+            rawlen = true, rawset = true, require = true, select = true, setmetatable = true, string = true,
+            table = true, tonumber = true, tostring = true, type = true, typeof = true, unpack = true,
+            utf8 = true, vector = true, xpcall = true, debug = true, getfenv = true, setfenv = true, integer = true,
+            __l3i_data = true,
+            jess = true, arg = true,
+        }
+        for name in _G do
+            assert(luau[name], 'unexpected global ' .. tostring(name))
+        end
     ",
     );
 }
@@ -62,22 +80,55 @@ fn granted_answers_from_the_runtime_s_grant() {
     );
 }
 
+/// The types folder covers exactly the kernel's `@jess/` surface: the global, its module members,
+/// the built-in modules, and the built-in package's exports, and nothing under any other scope
+/// but L3i's `@dream/`.
 #[test]
-fn definitions_and_stubs_have_no_native_format_surface() {
+fn the_types_cover_exactly_the_kernel_s_modules() {
     let types = jess::lua::types::types().unwrap();
-    for name in [
-        "@jess/plugin",
-        "@jess/nif",
-        "@jess/openmw",
-        "@dream/vfs",
-        "@dream/openmw-config",
-        "@dream/path",
-    ] {
-        assert!(types.module_file(name).is_none(), "{name}");
-    }
-    for name in ["TES3Object", "NifRecord", "OpenMwContext", "PluginValidation"] {
-        assert!(!types.definitions().contains(name), "{name}");
-    }
+    let mut jess_modules = types
+        .modules
+        .iter()
+        .filter(|name| name.starts_with("@jess"))
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    jess_modules.sort_unstable();
+    assert_eq!(
+        jess_modules,
+        [
+            "@jess",
+            "@jess/analysis",
+            "@jess/application",
+            "@jess/backup",
+            "@jess/bench",
+            "@jess/context",
+            "@jess/data/toml",
+            "@jess/data/value",
+            "@jess/events",
+            "@jess/http",
+            "@jess/input",
+            "@jess/interfaces",
+            "@jess/jpk",
+            "@jess/json",
+            "@jess/l10n",
+            "@jess/log",
+            "@jess/package",
+            "@jess/shader",
+            "@jess/style",
+            "@jess/test",
+            "@jess/worker",
+            "@jess/yaml",
+        ]
+    );
+    assert!(
+        types
+            .modules
+            .iter()
+            .all(|name| name.starts_with("@jess") || name.starts_with("@dream/")),
+        "{:?}",
+        types.modules
+    );
+    assert_eq!(types.scopes, ["dream", "jess"]);
 }
 
 #[test]

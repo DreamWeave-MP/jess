@@ -16,11 +16,11 @@ inventory startup
 director startup: heavy cuirass, weighs 30
 director update 1 (number)
 director update 2 (number)
-inventory drops Caius's loot
-armor dents for Caius
-scoreboard: death 1, Caius on frame 2
+inventory drops Rowan's loot
+armor dents for Rowan
+scoreboard: death 1, Rowan on frame 2
 director update 3 (number)
-director game over: Caius died
+director game over: Rowan died
 director update 4 (number)
 director shutdown
 ";
@@ -127,7 +127,7 @@ fn frames_stop_an_application_and_its_shutdown_still_runs() {
     assert!(output.status.success(), "{}", text(&output.stderr));
     let printed = text(&output.stdout);
     let lines = printed.lines().collect::<Vec<_>>();
-    assert_eq!(lines[lines.len() - 2], "scoreboard: death 1, Caius on frame 2");
+    assert_eq!(lines[lines.len() - 2], "scoreboard: death 1, Rowan on frame 2");
     assert_eq!(lines[lines.len() - 1], "director shutdown");
     // The game over the scoreboard emitted on the last frame never got a drain.
     assert_eq!(

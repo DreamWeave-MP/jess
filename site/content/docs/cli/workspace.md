@@ -173,9 +173,9 @@ inventory startup
 director startup: heavy cuirass, weighs 30
 director update 1 (number)
 director update 2 (number)
-inventory drops Caius's loot
-armor dents for Caius
-scoreboard: death 1, Caius on frame 2
+inventory drops Rowan's loot
+armor dents for Rowan
+scoreboard: death 1, Rowan on frame 2
 director shutdown
 jess: info in org.example.game:game: 1 queued events were dropped at teardown
 ```

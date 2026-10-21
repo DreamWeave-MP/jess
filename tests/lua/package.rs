@@ -727,9 +727,9 @@ fn analysis_is_embedded_and_loads_from_both_package_providers() {
 }
 
 #[test]
-fn application_tools_are_not_embedded_script_aliases() {
+fn names_under_jess_are_paths_to_run_file_not_script_aliases() {
     let runtime = common::runtime();
-    for name in ["@jess/doctor", "@jess/tes3merge", "@jess/s3lightfixes", "@jess/mergedlands"] {
+    for name in ["@jess/anything", "@jess/tools/merge", "@jess/fix-lights", "@jess/report"] {
         let error = jess::lua::scripts::run_file(&runtime, Path::new(name), &[]).unwrap_err();
         assert!(error.to_string().contains("isn't a .jsl file"), "{name}: {error}");
     }

@@ -78,7 +78,7 @@ context.bind('main', {
     })
     runtime:setActive 'ui'
     router:route('ui.accept', 'pressed', 'ui.activate')
-    note(`startup {common('hello', { name = 'Fargoth' })} gen {l10n.generation()}`)
+    note(`startup {common('hello', { name = 'Ada' })} gen {l10n.generation()}`)
 
     -- A worker that localizes with a registry of its own and has no say over input: it sees
     -- the domain's services but holds no capability.
@@ -133,7 +133,7 @@ context.bind('input', {
 })
 
 function calls.switchLocale(tag: string)
-  note(`setLocales {l10n.setLocales(tag)} now {common('hello', { name = 'Fargoth' })}`)
+  note(`setLocales {l10n.setLocales(tag)} now {common('hello', { name = 'Ada' })}`)
 end
 
 function calls.pressEnter()
@@ -273,18 +273,18 @@ fn the_application_kernel_end_to_end() {
     // 3. Startup: the script installs the graph, formats a message, spawns the worker.
     let started = host.domain().start().unwrap();
     assert!(started.failures.is_empty(), "{:?}", started.failures);
-    assert_eq!(log(&host, &reader), ["startup Hello, Fargoth! gen 1"]);
+    assert_eq!(log(&host, &reader), ["startup Hello, Ada! gen 1"]);
     assert_eq!(host.domain().workers().len(), 1);
     assert!(host.input().unwrap().lock().unwrap().runtime().graph().is_some());
 
     // 4. The worker formats from its own registry and is refused input: it holds no grant.
-    call(&host, "askGreeter", Message::text("Fargoth"));
+    call(&host, "askGreeter", Message::text("Ada"));
     let greeted = log(&host, &reader).pop().unwrap();
     let worker = host.domain().workers()[0].id;
     assert_eq!(
         greeted,
         format!(
-            "greeter Hello, Fargoth! / capability 'input.actions' denied to {}",
+            "greeter Hello, Ada! / capability 'input.actions' denied to {}",
             host.domain().attribution().in_worker(worker)
         )
     );
@@ -305,7 +305,7 @@ fn the_application_kernel_end_to_end() {
     assert_eq!(
         log(&host, &reader),
         [
-            "startup Hello, Fargoth! gen 1".to_owned(),
+            "startup Hello, Ada! gen 1".to_owned(),
             greeted,
             "input ui.accept pressed device 0 gen 1".to_owned(),
             "intent ui.activate <- ui.accept pressed value true".to_owned(),
@@ -350,7 +350,7 @@ fn the_application_kernel_end_to_end() {
     //    once: no reload, and nothing for the host to do.
     call(&host, "switchLocale", Message::text("pl-PL"));
     let entries = log(&host, &reader);
-    assert_eq!(entries.last().unwrap(), "setLocales 2 now Cześć, Fargoth!");
+    assert_eq!(entries.last().unwrap(), "setLocales 2 now Cześć, Ada!");
 
     // 8. A restart: the old generation's handlers, worker, graph, and queued events go; the
     //    devices stay; a key held across the restart is not the new code's press.

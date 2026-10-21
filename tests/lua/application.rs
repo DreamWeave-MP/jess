@@ -116,11 +116,11 @@ const EXAMPLE: [&str; 13] = [
     "director startup: heavy cuirass, weighs 30",
     "director update 1 (number)",
     "director update 2 (number)",
-    "inventory drops Caius's loot",
-    "armor dents for Caius",
-    "scoreboard: death 1, Caius on frame 2",
+    "inventory drops Rowan's loot",
+    "armor dents for Rowan",
+    "scoreboard: death 1, Rowan on frame 2",
     "director update 3 (number)",
-    "director game over: Caius died",
+    "director game over: Rowan died",
     "director update 4 (number)",
 ];
 
@@ -558,12 +558,12 @@ fn two_domains_have_their_own_interfaces_and_share_events_only_when_routed() {
     game.domain().route("playerDied", light.domain().mailbox().unwrap()).unwrap();
     eval(
         &game,
-        "require('@jess/events').emit('playerDied', { player = 'Fargoth', frame = 9 }) return ''",
+        "require('@jess/events').emit('playerDied', { player = 'Ada', frame = 9 }) return ''",
     );
     frame(&mut light);
     assert_eq!(
         journal(&light),
-        ["effective light 5", "inventory startup", "inventory drops Fargoth's loot"]
+        ["effective light 5", "inventory startup", "inventory drops Ada's loot"]
     );
     // Only transferable values cross, and a refusal names the path.
     let refused = game

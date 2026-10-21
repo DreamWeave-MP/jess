@@ -78,7 +78,7 @@ suite.describe('test', function()
     right.extra = true
     expect(function() expect(left).toEqual(right) end).toThrow 'to equal'
     expect({ 1, 2, { value = 3 } }).toContain { value = 3 }
-    expect('Morrowind.esm').toContain '.esm'
+    expect('settings.toml').toContain '.toml'
     expect(function() expect({ 1 }).toContain(2) end).toThrow 'expected { 1 } to contain 2'
   end)
 

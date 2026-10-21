@@ -50,7 +50,7 @@ fn run_holds_the_terminal_and_input_and_reads_files_only_when_granted() {
         "local l10n = require('@jess/l10n')\n\
          l10n.addDirectory(...)\n\
          l10n.reload()\n\
-         print(l10n.bundle 'common'('hello', { name = 'Fargoth' }))\n",
+         print(l10n.bundle 'common'('hello', { name = 'Ada' }))\n",
     )
     .unwrap();
 
@@ -78,7 +78,7 @@ fn run_holds_the_terminal_and_input_and_reads_files_only_when_granted() {
         .output()
         .unwrap();
     assert!(granted.status.success(), "{}", stderr(&granted));
-    assert_eq!(String::from_utf8(granted.stdout).unwrap(), "Hello, Fargoth!\n");
+    assert_eq!(String::from_utf8(granted.stdout).unwrap(), "Hello, Ada!\n");
     fs::remove_dir_all(root).unwrap();
 }
 

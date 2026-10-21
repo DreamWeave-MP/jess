@@ -164,7 +164,7 @@ Overrides happen once, at load. Swapping an interface while the application runs
 --!strict
 local events = require('@jess/events')
 
-events.emit('playerDied', { player = 'Caius' })
+events.emit('playerDied', { player = 'Rowan' })
 ```
 
 `emit` queues the event and returns. No handler runs inside `emit`, so emitting from a handler never re-enters one. The domain's next event drain, at the end of the current frame, delivers it to every handler bound to that name, in context order (load order). Events are delivered in the order they were emitted. One emitted while the queue drains waits for the next drain, which means the next frame. A handler that raises is reported, attributed to its context and event, and the next handler runs anyway. An event nobody handles is counted in the frame's report and dropped; nothing waits for a listener that will never come.
@@ -230,11 +230,11 @@ inventory startup
 director startup: heavy cuirass, weighs 30
 director update 1 (number)
 director update 2 (number)
-inventory drops Caius's loot
-armor dents for Caius
-scoreboard: death 1, Caius on frame 2
+inventory drops Rowan's loot
+armor dents for Rowan
+scoreboard: death 1, Rowan on frame 2
 director update 3 (number)
-director game over: Caius died
+director game over: Rowan died
 director update 4 (number)
 director shutdown
 ```

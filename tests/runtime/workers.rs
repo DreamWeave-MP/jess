@@ -101,7 +101,7 @@ fn every_transferable_value_crosses_and_nothing_else_does() {
             Message::text("two"),
             Message::List(vec![Message::Boolean(true)]),
         ]),
-        Message::map([("name", Message::text("Fargoth")), ("level", Message::Number(3.0))]),
+        Message::map([("name", Message::text("Ada")), ("level", Message::Number(3.0))]),
         Message::Handle(ResourceHandle {
             kind: "texture".to_owned(),
             id: u64::MAX,
