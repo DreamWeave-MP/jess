@@ -275,39 +275,34 @@ h1, h2, h3, .dw-brand__name, .jess-kicker
   .jess-shown__grid
     grid-template-columns: 1fr
 
-.jess-interlude
-  position: relative
-  display: grid
-  min-height: 18rem
-  place-items: center
-  overflow: hidden
-  background: #030204
-  text-align: center
+// Epigraphs ----------------------------------------------------------------------------------
+// A line under a section's heading, in the hero epigraph's register: small, italic, against a
+// rule, with its gloss in mono beneath. Not a band, not a poster.
 
-  &::before
-    content: ""
-    position: absolute
-    inset: -20%
-    background: radial-gradient(circle at 50% 50%, rgb(123 54 185 / 14%), transparent 30%), repeating-linear-gradient(112deg, transparent 0 42px, rgb(207 155 255 / 2%) 43px 44px)
-    transform: rotate(-3deg)
+.jess-epigraph
+  max-width: 44ch
+  margin: 0 0 2.2rem
+  border-left: 2px solid color-mix(in oklab, var(--dw-accent) 60%, transparent)
+  padding: .2rem 0 .2rem 1rem
 
-  .dw-shell
-    position: relative
-    z-index: 1
-
-  blockquote
-    max-width: 30ch
-    margin: 0 auto
-    border: 0
-    padding: 0
-    color: #f6f0fa
+  q
+    display: block
+    quotes: none
+    color: color-mix(in oklab, var(--dw-accent) 70%, var(--dw-text-faint))
     font-family: var(--dw-font-display)
-    font-size: clamp(1.5rem, 3.4vw, 2.6rem)
-    font-style: normal
-    font-weight: 600
-    letter-spacing: -.03em
-    line-height: 1.15
-    text-wrap: balance
+    font-size: 1rem
+    font-style: italic
+    letter-spacing: .02em
+    line-height: 1.45
+
+  span
+    display: block
+    margin-top: .35rem
+    color: var(--dw-text-faint)
+    font-family: var(--dw-font-mono)
+    font-size: .7rem
+    letter-spacing: .08em
+    text-transform: uppercase
 
 // Package wall -----------------------------------------------------------------------------
 
@@ -382,13 +377,6 @@ h1, h2, h3, .dw-brand__name, .jess-kicker
   max-width: 54ch
   color: var(--dw-text-muted)
   font-size: 1.05rem
-
-.jess-selfhost__aside
-  border-left: 2px solid var(--dw-accent)
-  padding-left: 1rem
-  color: #fff !important
-  font-family: var(--dw-font-display)
-  font-size: 1.18rem !important
 
 .jess-terminal
   border: 1px solid #4e2d67

@@ -35,16 +35,10 @@
   </div>
 </section>
 
-<section class="jess-interlude">
-  <div class="dw-shell">
-    <blockquote>A corpse at a funeral I will never attend</blockquote>
-    <p>The monolithic engine is not coming back.</p>
-  </div>
-</section>
-
 <section class="jess-shown dw-shell">
   <p class="jess-kicker">SHOWN, NOT TOLD</p>
   <h2>Three things that happen <span>before your code runs.</span></h2>
+  <p class="jess-epigraph"><q>A corpse at a funeral I will never attend</q><span>The monolithic engine is not coming back.</span></p>
   <div class="jess-shown__grid">
     <article>
       <h3>Denied by default under <code>jess run</code></h3>
@@ -86,16 +80,10 @@ error: 1 type error</code></pre>
   </div>
 </section>
 
-<section class="jess-interlude">
-  <div class="dw-shell">
-    <blockquote>Now I see you've got something to prove, and nothing to lose</blockquote>
-    <p>Good. Bring a manifest.</p>
-  </div>
-</section>
-
 <section class="jess-ecosystem dw-shell">
   <p class="jess-kicker">NO PRIVILEGED PATHS</p>
   <h2>Dehardcode the whole fucking stack.</h2>
+  <p class="jess-epigraph"><q>Now I see you've got something to prove, and nothing to lose</q><span>Good. Bring a manifest.</span></p>
   <p class="jess-section-lede">Whatever you build goes through the same package and capability boundary. There is no second, private framework for the first-party work, and nothing gets a native path merely because engines traditionally gave it one.</p>
   <div class="jess-cards">
     <article><span class="jess-card__tag">COMMAND TARGETS</span><h3>Command-line tools</h3><p>A target is a script with a package around it: an entry, the layers it activates, and the capabilities it declares. <code>jess package run</code> runs it with exactly those, and a workspace runs it by its command name with nothing wrapping it.</p></article>
@@ -108,10 +96,9 @@ error: 1 type error</code></pre>
 <section class="jess-selfhost">
   <div class="dw-shell jess-selfhost__grid">
     <div>
-      <p class="jess-kicker">DOGFOOD</p>
+      <p class="jess-kicker">BUILT WITH ITSELF</p>
       <h2>This site is a Jess workload.</h2>
       <p>The generator is a package. The build is a command target that activates it with the file capabilities it declares and nothing else. The dev server is another target with a TCP listener added. No Zola, no Node, no Python in the loop.</p>
-      <p class="jess-selfhost__aside">You thought you were looking at a game engine. That's your mistake.</p>
     </div>
     <div class="jess-terminal" aria-label="How this site builds">
       <div class="jess-terminal__bar"><span></span><span></span><span></span><b>tools/site</b></div>
