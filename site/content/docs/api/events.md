@@ -1,7 +1,7 @@
 ---
 title: 'jess.events'
 description: 'Emit named application events for the handlers a domain bound to a name, delivered at its next event drain.'
-weight: 152
+weight: 30
 extra:
   kind: api
 ---
@@ -35,7 +35,7 @@ local function died(player: string)
   events.emit('playerDied', { player = player, deaths = deaths })
 end
 
-died('Caius')
+died('ada')
 ```
 
 Related: [Applications](@/docs/scripting/applications.md#named-events), [jess.interfaces](@/docs/api/interfaces.md), [jess.context](@/docs/api/context.md).

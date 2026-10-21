@@ -1,7 +1,7 @@
 ---
 title: 'jess.shader'
 description: 'Typed shader programs, built by ordinary Luau modules.'
-weight: 125
+weight: 45
 extra:
   kind: api
 ---
@@ -344,12 +344,12 @@ Nothing here is a WGSL error. If the backend ever rejects what jess generated, t
 
 ## Loading a shader module
 
-A shader module is loaded under a contract: run it, and it must return a `ShaderProgram`. From Rust that's `jess_lua::scripts::load_module::<LuaShaderProgram>(&runtime, path)`, which resolves `path` the way `jess run` and `require` do (a file, else a name in the load order's VFS) and gives back the program to fold and lower. A module that returns anything else fails with the module and what came back:
+A shader module is loaded under a contract: run it, and it must return a `ShaderProgram`. From Rust that's `jess::lua::scripts::load_module::<LuaShaderProgram>(&runtime, path)`, which runs the file and gives back the program to fold and lower. A module that returns anything else fails with the module and what came back:
 
 ```text
 render/materials/water.jsl: expected the module to return a jess.shader.Program, but it returned a number
 ```
 
-`nil`, a string, a table, and another kind of userdata (`a jess.Plugin`) are all named the same way. The contract isn't shader-specific: it's how jess will load anything a module is supposed to *be*.
+`nil`, a string, a table, and another kind of userdata are all named the same way. The contract isn't shader-specific: it's how jess will load anything a module is supposed to *be*.
 
 Related: [require](@/docs/api/jess.md#require).

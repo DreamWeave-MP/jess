@@ -1,7 +1,7 @@
 ---
 title: '@jess/jpk'
 description: 'The JPK container: a narrow ZIP subset, read lazily under budgets and written as one canonical byte sequence.'
-weight: 114
+weight: 110
 extra:
   kind: api
 ---
@@ -10,7 +10,7 @@ extra:
 
 A [built-in module](@/docs/scripting/built-in-modules.md), typed as `Module__jess_jpk`. A JPK is a ZIP file, and this is the part of jess that reads and writes it. It knows entries, paths, and bytes. It does not know what a package is: manifests, digests, and layers are [`@jess/package`](@/docs/api/package.md)'s.
 
-It is Luau, all of it: the end record, the central directory, the local headers, the budgets, the canonical layout. The codecs and the CRC are [`@dream/bytes`](@/docs/scripting/downstream-libraries.md)'s, so the only native code a JPK passes through is the decompressor.
+It is Luau, all of it: the end record, the central directory, the local headers, the budgets, the canonical layout. The codecs and the CRC are [`@dream/bytes`](@/docs/api/l3i.md)'s, so the only native code a JPK passes through is the decompressor.
 
 It is not a general ZIP library, and it says so. A general ZIP library is a swamp: twenty compression methods, three encryption schemes, ZIP64, spanned archives, and every tool's private extra field. This reads what a package needs and refuses the rest by name:
 

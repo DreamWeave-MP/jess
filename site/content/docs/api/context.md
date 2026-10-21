@@ -1,7 +1,7 @@
 ---
 title: 'jess.context'
 description: 'Bind handlers to the phases a ScriptDomain schedules for a context.'
-weight: 150
+weight: 20
 extra:
   kind: api
 ---

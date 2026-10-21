@@ -1,26 +1,26 @@
 ---
 title: '@jess/log'
 description: 'Structured logging for scripts and packages: loggers with context, child loggers, and capture for tests.'
-weight: 112
+weight: 100
 extra:
   kind: api
 ---
 
 {{ api_signature(value="require('@jess/log'): { new, debug, info, warn, error, capture }") }}
 
-A [built-in module](@/docs/scripting/built-in-modules.md): `require('@jess/log')` is the same frozen table in every script, typed as `Module__jess_log`. A record has a level, a target, a message, and fields (strings, finite numbers, booleans). Records leave the VM through one sink the host owns: `jess` writes them to stderr as one JSON object per line, `debug` ones excepted; `jess test` collects them per case; a Rust host picks its own with `jess_lua::stdlib::set_log_sink`, or, for code running in a [script domain](@/docs/contributing/script-domains.md#diagnostics-and-profiling), gives the domain a log stream (`DomainSpec::logs`) that collects every context's and worker's records with who logged them. Scripts can't reach the sink, only the module.
+A [built-in module](@/docs/scripting/built-in-modules.md): `require('@jess/log')` is the same frozen table in every script, typed as `Module__jess_log`. A record has a level, a target, a message, and fields (strings, finite numbers, booleans). Records leave the VM through one sink the host owns: `jess` writes them to stderr as one JSON object per line, `debug` ones excepted; `jess test` collects them per case; a Rust host picks its own with `jess::lua::stdlib::set_log_sink`, or, for code running in a [script domain](@/docs/contributing/script-domains.md#diagnostics-and-profiling), gives the domain a log stream (`DomainSpec::logs`) that collects every context's and worker's records with who logged them. Scripts can't reach the sink, only the module.
 
 ```luau
 --!strict
 local log = require '@jess/log'
-local logger = log.new('importer', { package = 'openmw-import-morrowind' })
-logger.info('resolved', { file = 'Morrowind.esm', folder = 2 })
-logger.child({ step = 'archives' }).warn 'Tribunal.bsa is missing'
+local logger = log.new('site', { package = 'com.example.site' })
+logger.info('rendered', { page = 'docs/index.md', bytes = 4096 })
+logger.child({ step = 'sass' }).warn 'brand.sass has no tokens'
 ```
 
 ```text
-{"level":"info","target":"importer","message":"resolved","fields":{"file":"Morrowind.esm","folder":2.0,"package":"openmw-import-morrowind"},"source":"import.jsl"}
-{"level":"warn","target":"importer","message":"Tribunal.bsa is missing","fields":{"package":"openmw-import-morrowind","step":"archives"},"source":"import.jsl"}
+{"level":"info","target":"site","message":"rendered","fields":{"bytes":4096.0,"package":"com.example.site","page":"docs/index.md"},"source":"build.jsl"}
+{"level":"warn","target":"site","message":"brand.sass has no tokens","fields":{"package":"com.example.site","step":"sass"},"source":"build.jsl"}
 ```
 
 `source` is the chunk that logged, as the VM sees it, not something the script said.

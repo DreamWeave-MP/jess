@@ -1,7 +1,7 @@
 ---
 title: 'jess.worker'
 description: 'Spawn isolated Luau workers beside a ScriptDomain and talk to them in messages.'
-weight: 160
+weight: 25
 extra:
   kind: api
 ---
@@ -21,7 +21,7 @@ Spawns a worker and returns its handle. Needs the `worker.spawn` capability.
 - `capabilities`: the names the worker holds, a subset of the calling context's. By default it inherits them all.
 - `shareServices`: `true` gives the worker the domain's services (under a host, its live input). Off by default: a worker exists to run apart from the domain's state, and its capabilities still say what it may do with what it sees.
 
-The worker's runtime comes from the same plan as the domain's, so a worker under jess has the whole jess API: it can open plugins, read the VFS, and check NIFs, with its own state.
+The worker's runtime comes from the same plan as the domain's, so a worker has the whole jess API and the same package exports, with state of its own.
 
 - **Errors:** `unknown worker.spawn option '<key>': expected capabilities, name, shareServices, or source`; `worker.spawn needs source, the worker module's Luau source`; `capability 'worker.spawn' denied to <domain> ...`; `<domain> cannot delegate capabilities it does not hold: <names>`; inside a worker, `worker.spawn is for a domain's own code`.
 
@@ -29,21 +29,26 @@ The worker's runtime comes from the same plan as the domain's, so a worker under
 --!strict
 local worker = require('@jess/worker')
 
-local counter = worker.spawn {
-  name = 'counter',
+local summer = worker.spawn {
+  name = 'summer',
   capabilities = {},
   source = [[
     return function(message)
-      local plugin = jess.plugin.open(message.esp, { openmw = false })
-      return { records = #plugin }
+      local total = 0
+
+      for _, value in message.values do
+        total += value
+      end
+
+      return { total = total }
     end
   ]],
 }
 
-counter:send { esp = 'Morrowind.esm' }
-local reply = counter:receive(20)
-print(reply.records)
-counter:join()
+summer:send { values = { 1, 2, 3 } }
+local reply = summer:receive(20)
+print(reply.total)
+summer:join()
 ```
 
 A worker whose module does not load, does not return a function, or raises in its handler reports a structured failure to the host, attributed to the domain and worker, and (by default) stops; the domain is untouched. A worker's handler runs inside the budget the host gave it.
@@ -67,7 +72,7 @@ Only transferable values cross: `nil`, booleans, numbers, integers, strings, vec
 local worker = require('@jess/worker')
 
 local echo = worker.spawn { source = 'return function(message) return message end' }
-echo:send { name = 'Fargoth', bytes = buffer.fromstring('abc'), at = vector.create(1, 2, 3) }
+echo:send { name = 'ada', bytes = buffer.fromstring('abc'), at = vector.create(1, 2, 3) }
 local reply = echo:receive(20)
 print(reply.name, buffer.tostring(reply.bytes), reply.at)
 ```

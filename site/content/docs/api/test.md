@@ -1,7 +1,7 @@
 ---
 title: '@jess/test'
 description: 'Test suites in Luau: describe, it, hooks, expectations with deep equality, error assertions, log capture, and a report.'
-weight: 113
+weight: 105
 extra:
   kind: api
 ---
@@ -16,17 +16,25 @@ local test = require '@jess/test'
 local expect = test.expect
 local suite = test.new()
 
-suite.describe('openmw.cfg', function()
-  local config
+local greeter = require '@greeter'
 
-  suite.beforeEach(function() config = openmwConfig.loadOptional 'openmw.cfg' end)
+suite.describe('greet', function()
+  local names: { string }
 
-  suite.it('keeps the content files in order', function()
-    expect(config:contentFiles():toTable()).toEqual { 'Morrowind.esm', 'Tribunal.esm' }
+  suite.beforeEach(function()
+    names = { 'ada', 'grace' }
   end)
 
-  suite.it('rejects a config that is not there', function()
-    expect(function() openmwConfig.new 'nowhere/openmw.cfg' end).toThrow 'nowhere'
+  suite.it('greets by name', function()
+    expect(greeter.greet(names[1])).toBe 'Hello, ada.'
+  end)
+
+  suite.it('greets everyone in order', function()
+    expect(greeter.greetAll(names)).toEqual { 'Hello, ada.', 'Hello, grace.' }
+  end)
+
+  suite.it('refuses an empty name', function()
+    expect(function() greeter.greet '' end).toThrow 'empty'
   end)
 end)
 
@@ -80,7 +88,7 @@ An assertion on `actual`. Each check raises with what it saw and what it wanted,
 
 ## Running
 
-[`jess test a.jsl b.jsl`](@/docs/cli/test.md) loads each module, runs the suite it returns, and prints one report; it exits non-zero when anything failed. From Rust, `jess_lua::testing::run` does the same and hands back the report.
+[`jess test a.jsl b.jsl`](@/docs/cli/test.md) loads each module, runs the suite it returns, and prints one report; it exits non-zero when anything failed. From Rust, `jess::lua::testing::run` does the same and hands back the report.
 
 ## Types
 

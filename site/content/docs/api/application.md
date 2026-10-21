@@ -1,7 +1,7 @@
 ---
 title: 'jess.application'
 description: 'Ask the host running an application target to stop, with an exit status.'
-weight: 156
+weight: 40
 extra:
   kind: api
 ---

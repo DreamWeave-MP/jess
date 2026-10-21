@@ -1,7 +1,7 @@
 ---
 title: '@jess/package'
 description: 'Packages from a Package Source or a JPK: manifests, content digests, packing, and code-free resolution of layers into an activation plan.'
-weight: 116
+weight: 115
 extra:
   kind: api
 ---
@@ -70,14 +70,14 @@ Resolves `request.layers` over `packages` into an activation plan, deterministic
 - every requested layer, and every layer they require, has a provider (`example.tools requires example.core: no provider found for example.core`);
 - no layer cycles (`layer cycle: cycle.a -> cycle.b -> cycle.a`);
 - every package dependency of a selected package is offered and satisfies its requirement, with the chain that asked for it;
-- no module name is exported by two selected packages, or by a package and the host (`request.hostModules`): `@dream/vfs` belongs to vfstool, and a package exporting it is an error, not a shadow;
+- no module name is exported by two selected packages, or by a package and the host (`request.hostModules`): `@dream/fs` is L3i's, and a package exporting it is an error (`<id> exports '@dream/fs', which the host already provides`), not a shadow;
 - with `request.grant`, every capability the resolved layers' entrypoints require is in it; otherwise the plan fails before any code runs:
 
 ```text
 cannot activate example.tools
 
 required capability denied:
-    vfs.read
+    filesystem.read
 
 requested by:
     org.example.alpha 1.2.3
@@ -93,7 +93,7 @@ The plan is `{ requested, layers, packages, modules, entrypoints, capabilities }
 - `entrypoints`, the resolved layers' entrypoints in the order activation runs them, with their package, path, and layer;
 - `capabilities`, every capability those entrypoints require, with the entrypoint, layer, and package asking.
 
-`jess package graph` prints this table. Activating it is the host's job: `jess run --package` does it, and a Rust host calls `jess_lua::package::activate`. Activation mounts the plan, so `require` reaches the namespace, then runs the entrypoints, each once, in order. An entrypoint that fails stops the activation with its error; what ran before it stays done, because activation isn't a transaction.
+`jess package graph` prints this table. Activating it is the host's job: `jess run --package` does it, and a Rust host calls `jess::lua::package::activate`. Activation mounts the plan, so `require` reaches the namespace, then runs the entrypoints, each once, in order. An entrypoint that fails stops the activation with its error; what ran before it stays done, because activation isn't a transaction.
 
 ## package.manifest
 
