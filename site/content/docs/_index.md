@@ -27,7 +27,7 @@ That makes it deliberately wider than a game engine. The same runtime hosts comm
 - **Building a package?** [Packages](@/docs/scripting/packages.md) covers Package Sources, JPKs, layers, resolution, and activation; the [manifest reference](@/docs/reference/manifest.md) has every key; [Capabilities](@/docs/reference/capabilities.md) has every name a target can declare.
 - **Building an application?** [Applications](@/docs/scripting/applications.md): managed modules, host callbacks, named events, and interfaces.
 - **Looking something up?** The [Luau API Reference](@/docs/api/_index.md) and the [CLI Reference](@/docs/cli/_index.md).
-- **Working on Jess itself?** [Contributing](@/docs/contributing/_index.md) covers building, testing, the architecture, and the runtime internals.
+- **Working on Jess itself?** [Contributing](@/docs/contributing/_index.md) covers building, testing, the architecture, and the runtime internals. How decisions are made, who makes them, and what the project commits to is the [Constitution](@/governance.md).
 
 ## Architecture in one pass
 

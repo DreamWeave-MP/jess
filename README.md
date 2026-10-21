@@ -66,6 +66,8 @@ cargo build --release
 
 The binary lands at `target/release/jess`. [Contributing](https://DreamWeave-MP.github.io/jess/docs/contributing/) covers the gates every change passes. Until 1.0, a minor version can break things: pin one.
 
+How the project is run, who decides, and what it asks of you is [GOVERNANCE.md](GOVERNANCE.md), the Constitution of Jess. Its official venue is this repository's issues, pull requests, and discussions.
+
 ## License
 
 MIT OR Apache-2.0, at your option: [MIT](LICENSE-MIT), [Apache-2.0](LICENSE-APACHE).

@@ -1,0 +1,35 @@
+--!strict
+-- The site's governance page is the repository's GOVERNANCE.md, read at build time: one source,
+-- no copy to drift. The page gets the frontmatter the generator needs and loses the file's own
+-- title line, which the page template renders from the frontmatter. It is written only when its
+-- text would change, so a dev server watching content/ doesn't rebuild on its own write.
+local fs = require '@dream/fs'
+
+local Title = 'Governance'
+local Description =
+  'The Constitution of Jess: how the project is run, who decides, what the project commits to, and what happens when the founder is gone.'
+
+local function page(constitution: string): string
+  local body = string.gsub(constitution, '^# [^\n]*\n', '', 1)
+
+  return `---\ntitle: '{Title}'\ndescription: '{Description}'\n---\n{body}`
+end
+
+--- Writes site/content/governance.md under `root` from its GOVERNANCE.md. Returns whether the
+--- page changed.
+local function write(root: string): boolean
+  local source = fs.join(root, 'GOVERNANCE.md')
+  local constitution, problem = fs.readFileString(source)
+  if not constitution then error(`governance: {source}: {problem}`, 0) end
+
+  local target = fs.join(root, 'site', 'content', 'governance.md')
+  local text = page(constitution)
+  if fs.readFileString(target) == text then return false end
+
+  local written, why = fs.writeFile(target, text, { atomic = true, createParents = true })
+  if not written then error(`governance: {target}: {why}`, 0) end
+
+  return true
+end
+
+return table.freeze { write = write }

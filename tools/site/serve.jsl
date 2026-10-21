@@ -15,6 +15,7 @@ index.html, and 404.html for what isn't there. Nothing here is meant to face the
 ]]
 
 local fs = require '@dream/fs'
+local governance = require './governance'
 local paths = require './paths'
 local site = require '@dreamweave/site'
 local tcp = require '@dream/tcp'
@@ -23,6 +24,10 @@ local Host = arg[1] or '127.0.0.1'
 local Port = tonumber(arg[2] or '63333')
 local Output = arg[3] or fs.join(paths.root, 'target', 'site-dev')
 if not Port then error(`serve: the port must be a number, not "{arg[2]}"`, 0) end
+
+-- The governance page comes from the repository's GOVERNANCE.md, which the watch below doesn't
+-- cover: it is written once here, and again on the next start after an edit.
+governance.write(paths.root)
 
 local WatchedFolders = { 'content', 'templates', 'sass', 'static', 'data' }
 local WatchedFiles = { 'config.toml' }

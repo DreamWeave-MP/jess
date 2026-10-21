@@ -4,6 +4,7 @@
 --
 --   jess package run --package-path jpk tools/site -- [output] [base url]
 local site = require '@dreamweave/site'
+local governance = require './governance'
 local paths = require './paths'
 
 local output = arg[1] or paths.public
@@ -11,6 +12,8 @@ local baseUrl = arg[2]
 
 local options: { baseUrl: string? } = {}
 if baseUrl and baseUrl ~= '' then options.baseUrl = baseUrl end
+
+governance.write(paths.root)
 
 local report = site.build(paths.site, output, options)
 
