@@ -150,6 +150,31 @@ fn every_module_is_typed_through_require() {
     assert!(wrong.contains("buffer"), "{wrong}");
 }
 
+/// The built-in package's exports are typed through their own source, copied into the types
+/// folder: an export named after its path resolves to the copy, one named otherwise through a
+/// stub beside it, and a mistake through either is caught.
+#[test]
+fn the_built_in_packages_exports_are_typed_through_their_source() {
+    let types = jess::lua::types::types().unwrap();
+    for (module, path) in [
+        ("@jess/json", "jess/json.jsl"),
+        ("@jess/data/toml", "jess/data/toml.jsl"),
+        ("@jess/style", "jess/style/init.jsl"),
+    ] {
+        let file = types.module_file(module).unwrap_or_else(|| panic!("no file for {module}"));
+        assert_eq!(file.path, path, "{module}");
+    }
+    let stub = types.module_file("@jess/json").unwrap();
+    assert!(stub.source.contains("return require('./data/json')"), "{}", stub.source);
+    assert!(types.files.iter().any(|file| file.path == "jess/data/json.jsl"));
+    let right = common::type_check(
+        "local json = require '@jess/json'\nlocal style = require '@jess/style'\nlocal text: string = json.encodeTable({})\nlocal findings = style.check(text)\nprint(#findings)\n",
+    );
+    assert!(right.is_empty(), "{right}");
+    let wrong = common::type_check("local json = require '@jess/json'\nlocal text: number = json.encodeTable({})\n");
+    assert!(wrong.contains("number"), "{wrong}");
+}
+
 #[test]
 fn numbers_are_compared_within_a_tolerance() {
     common::run(

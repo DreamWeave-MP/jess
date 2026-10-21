@@ -142,12 +142,18 @@ struct Sources {
 }
 
 impl Sources {
-    /// The file `base` names: itself with `.jsl`, or its folder's `init.jsl`.
+    /// The file `base` names: itself with `.jsl`, or its folder's `init.jsl`, among the files
+    /// under check or, under `types/`, the generated types.
     fn find(&self, base: &str) -> Option<String> {
         let checked = self.checked.borrow();
         [format!("{base}.jsl"), format!("{base}/init.jsl")]
             .into_iter()
-            .find(|candidate| checked.files.contains_key(candidate))
+            .find(|candidate| {
+                checked.files.contains_key(candidate)
+                    || candidate
+                        .strip_prefix("types/")
+                        .is_some_and(|path| self.types.files.iter().any(|file| file.path == path))
+            })
     }
 }
 

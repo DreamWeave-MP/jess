@@ -95,6 +95,18 @@ impl Manifest {
         self.exports.get(name).map(String::as_str)
     }
 
+    /// Every export, as the name `require` takes and the payload path it stands for, sorted by
+    /// name.
+    pub(crate) fn exports(&self) -> Vec<(&str, &str)> {
+        let mut exports = self
+            .exports
+            .iter()
+            .map(|(name, path)| (name.as_str(), path.as_str()))
+            .collect::<Vec<_>>();
+        exports.sort_unstable();
+        exports
+    }
+
     /// The module at `path`, ready to load.
     pub(crate) fn module(&self, path: &str) -> Option<PackageModule> {
         file(path).map(|source| PackageModule {

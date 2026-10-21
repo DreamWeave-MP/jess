@@ -7,16 +7,29 @@
 //! A checker then types `require('@jess/log')` the way Luau types any require: by resolving it to
 //! a file. Nothing is overloaded, so nothing limits how many modules there are.
 //!
+//! The built-in package's exports (`@jess/json`, `@jess/style`, ...) are Luau, and a Luau module's
+//! type is its source: the package's payload is copied under the `jess` scope at its own paths,
+//! `src/` stripped, so `@jess/style` resolves to `jess/style/init.jsl`, the module itself, and its
+//! relative and `@self/` requires resolve beside it as they do in the package. An export whose
+//! name doesn't match its path (`@jess/json` is `src/data/json.jsl`) gets a one-line stub that
+//! requires the copy.
+//!
 //! ```text
 //! types/
 //!   jess.d.jsl          the definitions: globals and types
 //!   jess/init.jsl       @jess
 //!   jess/log.jsl        @jess/log
+//!   jess/json.jsl       @jess/json: `return require('./data/json')`
+//!   jess/data/json.jsl  the built-in package's src/data/json.jsl
+//!   jess/style/init.jsl @jess/style, the built-in package's src/style/init.jsl
 //! ```
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::{Path, PathBuf};
+
+/// The built-in package's payload folder, left off the copies' paths under the `jess` scope.
+const PAYLOAD_SOURCE: &str = "src/";
 
 /// The definitions file, at the folder's top.
 pub const DEFINITIONS: &str = "jess.d.jsl";
@@ -37,6 +50,8 @@ pub struct Types {
     pub files: Vec<TypeFile>,
     /// Every module typed, by the name `require` takes, sorted.
     pub modules: Vec<String>,
+    /// Where each typed module's file is inside the folder, by the name `require` takes.
+    pub paths: BTreeMap<String, String>,
     /// The `.jessrc` aliases' names, sorted: the first segment of every module name.
     pub scopes: Vec<String>,
 }
@@ -45,8 +60,8 @@ impl Types {
     /// The file `require(module)` resolves to through the aliases, if `module` is typed.
     #[must_use]
     pub fn module_file(&self, module: &str) -> Option<&TypeFile> {
-        let path = module_path(module, &self.modules)?;
-        self.files.iter().find(|file| file.path == path)
+        let path = self.paths.get(module)?;
+        self.files.iter().find(|file| &file.path == path)
     }
 
     /// The definitions file.
@@ -97,15 +112,53 @@ pub fn types() -> l3i::Result<Types> {
             stubs.push(source);
         }
     }
-    let mut files = vec![TypeFile {
-        path: DEFINITIONS.to_owned(),
-        source: crate::lua::definitions(),
-    }];
+    let mut paths = BTreeMap::new();
     let mut stub_files = modules
         .iter()
         .zip(stubs)
         .filter_map(|(name, source)| module_path(name, &modules).map(|path| TypeFile { path, source }))
         .collect::<Vec<_>>();
+    for (name, file) in modules.iter().zip(&stub_files) {
+        paths.insert(name.clone(), file.path.clone());
+    }
+    // The built-in package's modules, verbatim: a Luau module's type is its source.
+    let jess = crate::lua::state(&runtime)?;
+    let manifest = crate::lua::builtin::manifest(&runtime.stack(), &jess)?;
+    for (path, source) in crate::lua::builtin::FILES {
+        if let Some(rest) = path.strip_prefix(PAYLOAD_SOURCE).filter(|rest| is_jsl(rest)) {
+            stub_files.push(TypeFile {
+                path: format!("jess/{rest}"),
+                source: (*source).to_owned(),
+            });
+        }
+    }
+    for (name, path) in manifest.exports() {
+        let Some(body) = name.strip_prefix('@') else {
+            continue;
+        };
+        let Some(rest) = path.strip_prefix(PAYLOAD_SOURCE) else {
+            continue;
+        };
+        let copy = format!("jess/{rest}");
+        let natural = [format!("{body}.jsl"), format!("{body}/init.jsl")];
+        let resolved = if natural.contains(&copy) {
+            copy
+        } else {
+            let stub = format!("{body}.jsl");
+            stub_files.push(TypeFile {
+                source: reexport(name, &stub, &copy),
+                path: stub.clone(),
+            });
+            stub
+        };
+        modules.push(name.to_owned());
+        paths.insert(name.to_owned(), resolved);
+    }
+    modules.sort();
+    let mut files = vec![TypeFile {
+        path: DEFINITIONS.to_owned(),
+        source: crate::lua::definitions(),
+    }];
     stub_files.sort_by(|a, b| a.path.cmp(&b.path));
     files.extend(stub_files);
     let scopes = modules
@@ -115,12 +168,37 @@ pub fn types() -> l3i::Result<Types> {
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    Ok(Types { files, modules, scopes })
+    Ok(Types {
+        files,
+        modules,
+        paths,
+        scopes,
+    })
 }
 
 /// A stub that returns `expression`, a global or one of its members, as module `name`.
 fn stub(name: &str, expression: &str) -> String {
     format!("--!strict\n-- jess's stub for {name}: the runtime module is `{expression}`.\nreturn {expression}\n")
+}
+
+/// A stub at `stub` that requires the module copied at `target`, relative to the stub's folder, as
+/// module `name`: `jess/json.jsl` returning `require('./data/json')`.
+fn reexport(name: &str, stub: &str, target: &str) -> String {
+    let folder = stub.rsplit_once('/').map_or("", |(folder, _)| folder);
+    let mut up = folder.split('/').filter(|part| !part.is_empty()).collect::<Vec<_>>();
+    let mut down = target.strip_suffix(".jsl").unwrap_or(target).split('/').collect::<Vec<_>>();
+    while let (Some(first), Some(second)) = (up.first(), down.first())
+        && first == second
+    {
+        up.remove(0);
+        down.remove(0);
+    }
+    let mut relative = if up.is_empty() { vec!["."] } else { vec![".."; up.len()] };
+    relative.extend(down);
+    let relative = relative.join("/");
+    format!(
+        "--!strict\n-- jess's stub for {name}: the built-in package's module, copied beside it at {target}.\nreturn require('{relative}')\n"
+    )
 }
 
 /// Where module `name` lives in the folder: `@scope/a/b` is `scope/a/b.jsl`, or
@@ -198,4 +276,11 @@ fn remove_stale(dir: &Path, generated: &BTreeSet<PathBuf>, removed: &mut Vec<Pat
         }
     }
     Ok(())
+}
+
+/// Whether `path` names a `.jsl` file, whatever the case of its extension.
+fn is_jsl(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("jsl"))
 }
