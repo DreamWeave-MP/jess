@@ -173,8 +173,12 @@ pub(crate) fn payload(call: &Call<'_>, jess: &Jess, builtin_read: &Function) -> 
     )))
 }
 
-fn push_payload<'a>(call: &Call<'_>, files: impl Iterator<Item = &'a str>, read: &Function) -> l3i::Result<StackResults> {
-    let files: Vec<String> = files.map(str::to_owned).collect();
+fn push_payload(
+    call: &Call<'_>,
+    files: impl Iterator<Item = impl AsRef<str>>,
+    read: &Function,
+) -> l3i::Result<StackResults> {
+    let files: Vec<String> = files.map(|file| file.as_ref().to_owned()).collect();
     let list = string_list(call, &files)?;
     crate::lua::push_table(call, 0, 2, |frame, table| {
         table.raw_set_value(frame, "files", &list)?;
