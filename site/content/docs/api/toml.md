@@ -1,7 +1,7 @@
 ---
 title: '@jess/data/toml'
 description: 'Read and write TOML: tables with key order, float and datetime markers, and exact 64-bit integers.'
-weight: 110
+weight: 140
 extra:
   kind: api
 ---
@@ -37,18 +37,18 @@ Parses a TOML document, returning its tables and a layout table for what Luau ta
 ```luau
 --!strict
 local toml = require('@jess/data/toml')
-local text = 'name = "Fargoth"\n'
+local text = 'name = "greeter"\n'
 local document, layout = toml.decode(text, { positions = true })
 local positions = layout[document].positions or error 'decoded without positions'
 local where = positions.name
-print(where.key, string.sub(text, where.value, where.valueEnd)) -- 1	"Fargoth"
+print(where.key, string.sub(text, where.value, where.valueEnd)) -- 1	"greeter"
 ```
 
 ```luau
 --!strict
 local toml = require('@jess/data/toml')
 local settings, layout = toml.decode [[
-title = "My load order"
+title = "Site build"
 ratio = 1.0
 count = 3
 when = 1979-05-27
@@ -56,7 +56,7 @@ when = 1979-05-27
 [owner]
 name = "Tom"
 ]]
-print(settings.title, settings.count) -- My load order  3
+print(settings.title, settings.count) -- Site build  3
 local top = layout[settings]
 print(table.concat(top.keys or {}, ', ')) -- title, ratio, count, when, owner
 print(top.floats.ratio, top.floats.count, top.datetimes.when) -- true  nil  true

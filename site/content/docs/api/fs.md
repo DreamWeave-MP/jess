@@ -1,32 +1,37 @@
 ---
 title: 'Files'
-description: 'Files and folders are @dream/fs: what jess.fs was, and what each of its functions is now.'
-weight: 100
+description: 'Files and folders are @dream/fs, L3i''s file module: what jess adds is the capability gate and @jess/backup.'
+weight: 200
 extra:
   kind: api
 ---
 
 Scripts read and write files with
-[`@dream/fs`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-fs), l3i's file
-module, which every jess runtime has. Reading needs `filesystem.read` and changing the disk
-`filesystem.write` ([`jess run --capability`](@/docs/cli/run.md#capabilities)); joining and taking
-paths apart needs neither. jess had a second API, `jess.fs`, with its own error style and its own
-idea of list order; it is gone. The [Files recipes](@/docs/scripting/files-toml-regex.md#files)
-use `@dream/fs`.
+[`@dream/fs`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-fs), L3i's file
+module, which every jess runtime has. jess has no file API of its own, on purpose: one module, one
+error style, one idea of list order. What jess adds is the gate in front of it. Reading needs
+`filesystem.read` and changing the disk `filesystem.write`
+([`jess run --capability`](@/docs/cli/run.md#capabilities), or the capabilities a target
+declares); joining and taking paths apart needs neither. The
+[Files recipes](@/docs/scripting/files-toml-regex.md#files) use it.
 
-A `@dream/fs` function that fails answers `nil`, a message naming the path, and a kind, where
-`jess.fs` raised: wrap the call in `assert` where a failure should stop the script.
+A `@dream/fs` function that fails answers `nil`, a message naming the path, and a kind, and
+never raises: wrap the call in `assert` where a failure should stop the script.
 
-| `jess.fs` | `@dream/fs` |
-| --- | --- |
-| `read(path)` | `readFileString(path)` |
-| `readBuffer(path)` | `readFile(path)` |
-| `write(path, data)` | `writeFile(path, data, { atomic = true, createParents = true })` |
-| `write(path, data, { backup = true })` | [`@jess/backup`](@/docs/api/backup.md)'s `write(path, data)`, which keeps the old file as `.bak`, `.bak1`, ... first |
-| `replace(path, data)` | `writeFile(path, data, { atomic = true })` |
-| `copy(from, to)`, `remove(path)` | `copy(from, to)`, `remove(path)` (which also takes `{ recursive = true }`) |
-| `createDir(path)` | `mkdir(path, { recursive = true })` |
-| `exists`, `isDir`, `isFile`, `isFileName` | the same names |
-| `size(path)`, `modified(path)`, `stat(path)` | `stat(path)`: `size`, `modifiedSeconds`, `modifiedNanoseconds`, ... |
-| `list(path)` | `list(path)`, sorted by name; `walk(root, options)` for a whole tree |
-| `cwd`, `join`, `fileName`, `parent` | the same names, plus `extension` |
+```luau
+--!strict
+local fs = require '@dream/fs'
+
+local manifest = assert(fs.readFileString 'jess.toml')
+assert(fs.writeFile('target/manifest.copy.toml', manifest, { atomic = true, createParents = true }))
+```
+
+Three things to know before reaching for it:
+
+- `list(path)` is sorted by name, and `walk(root, options)` covers a whole tree.
+- `writeFile` writes what it's told and keeps nothing. A tool that overwrites someone's file
+  should keep what was there, which is [`@jess/backup`](@/docs/api/backup.md).
+- `stat(path)` has `size`, `modifiedSeconds`, and `modifiedNanoseconds`; there is no separate
+  `size` or `modified` call.
+
+The whole module, with the rest of L3i's primitives, is on [L3i's site](@/docs/api/l3i.md).

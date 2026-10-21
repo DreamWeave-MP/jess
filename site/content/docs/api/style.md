@@ -1,17 +1,17 @@
 ---
 title: '@jess/style'
 description: "jess's Luau style checker: findings with rule ids, spans, and severities, over Luau's own parser, from the built-in package jess carries."
-weight: 117
+weight: 120
 extra:
   kind: api
 ---
 
-{{ api_signature(value="require('@jess/style'): { check, checkFile, checkPackage, files, format, markdownBlocks, rules, run }") }}
+{{ api_signature(value="require('@jess/style'): { check, checkFile, checkPackage, files, format, markdownBlocks, rules, run, analysis, analyze, workspace }") }}
 
 The [Luau style](@/docs/contributing/luau-style.md) as a checker. It's an export of jess's [built-in package](@/docs/scripting/packages.md#the-built-in-package), `jpk/builtin`, layer `jess.style`, which the binary carries, so every script can `require` it.
 
 ```sh
-jess run check-style.jsl libs jpk
+jess run check-style.jsl src jpk/builtin
 ```
 
 ```luau
@@ -30,7 +30,7 @@ example.jsl:1:7: error[naming.case]: 'Total' is reassigned, so it isn't a consta
 example.jsl:3:7: error[quotes.double]: single quotes: double quotes are for a string that holds a single quote
 ```
 
-It parses with [`@dream/luau`](@/docs/api/downstream-globals.md), so a file that doesn't parse gets `syntax` findings at Luau's own error positions, and the rest of the tree, which the parser recovers, is still checked.
+It parses with [`@dream/luau`](@/docs/api/l3i.md), so a file that doesn't parse gets `syntax` findings at Luau's own error positions, and the rest of the tree, which the parser recovers, is still checked.
 
 ### style.check
 
@@ -47,7 +47,7 @@ Every finding in `source`, sorted by position.
 
 | Option | Does |
 | --- | --- |
-| `profile` | `'jess'`, the default, or `'lua'` for s3stash's Lua: no `hoisting` rule, PascalCase allowed for module-level and member-alias locals, LuaLS `---@param` types read for `truthiness`. |
+| `profile` | `'jess'`, the default, or `'lua'` for plain Lua sources: no `hoisting` rule, PascalCase allowed for module-level and member-alias locals, LuaLS `---@param` types read for `truthiness`. |
 | `directives` | Hot comments the file must start with, such as `{ 'strict', 'native' }`. |
 | `noAny` | Report every `any` type (`types.any`). |
 | `declarations` | `true` parses definition-file syntax (`declare`, `declare extern type`), `false` doesn't; left out, a source that only parses with it is taken for a definitions file. |
@@ -110,3 +110,7 @@ A Markdown page's ```` ```luau ```` blocks, each with the line its opening fence
 {{ api_signature(value="style.rules: { [string]: { severity: 'error' | 'warning', summary: string } }") }}
 
 Every rule by id, frozen. [Luau Style](@/docs/contributing/luau-style.md#the-checker) has the table.
+
+### style.analysis, style.analyze, style.workspace
+
+The same values as [`@jess/analysis`](@/docs/api/analysis.md) exports, re-exported so a style tool that also wants the dependency analysis needs one `require`.

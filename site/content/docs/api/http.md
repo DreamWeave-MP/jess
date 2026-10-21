@@ -1,16 +1,16 @@
 ---
 title: '@jess/http'
 description: 'Fetch one resource over HTTP or HTTPS: GET and HEAD, bounded in bytes and time, redirects followed under the same rules as the first request.'
-weight: 106
+weight: 160
 extra:
   kind: api
 ---
 
 {{ api_signature(value="require('@jess/http'): { get, parseUrl, resolveReference }") }}
 
-The client jess's own package distribution reads manifests and downloads archives with, and the one a
+The client `jess workspace sync` fetches manifests and archives with, and the one a
 tool reaches for when it needs a file from a URL. It is small on purpose: one connection per
-request, no cookies, no keep-alive, no pools. It is written over [`@dream/dns`](@/docs/api/_index.md),
+request, no cookies, no keep-alive, no pools. It is written over [`@dream/dns`](@/docs/api/l3i.md),
 `@dream/tcp` and `@dream/tls`, so it holds no authority of its own: the runtime has to hold
 `network.dns.resolve` and `network.tcp.connect`, and nothing here grants either. A package target
 that fetches declares both; `jess run` takes them with `--capability`.
@@ -36,12 +36,13 @@ failure. A 404 is a response; a host that will not talk is a failure.
   http and https, and never a redirect from https down to http), `credentialsInUrl`, `resolve`,
   `connect`, `tls`, `timeout`, `protocol` (a response that is not HTTP/1.x), `tooLarge`,
   `tooManyRedirects`, `closed` (the connection ended early). An option the function does not take
-  raises, as every jess option table does.
+  raises, as every jess option table does: `unknown jess.http.get option 'maxByte': expected maxBytes, timeoutMs, maxRedirects, headers, tls, method`.
 
 ```luau
+--!strict
 local http = require '@jess/http'
 
-local response, message, kind = http.get('https://dreamweave-mp.github.io/AsHyAmS/network-data/jess-packages-v1.json', {
+local response, message, kind = http.get('https://example.com/packages/index.json', {
   maxBytes = 4 * 1024 * 1024,
   timeoutMs = 10000,
 })
