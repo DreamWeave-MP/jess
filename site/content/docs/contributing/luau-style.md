@@ -1,6 +1,6 @@
 ---
 title: 'Luau Style'
-description: 'How the bundled scripts, the templates, and every Luau example in these docs are written, and @jess/style, the checker that holds them to it.'
+description: 'How jess''s own Luau, the templates, and every Luau example in these docs are written, and @jess/style, the checker that holds them to it.'
 weight: 50
 extra:
   kind: guide
@@ -8,11 +8,7 @@ extra:
 
 The built-in modules and templates are some of the first real Jess code people read, and whatever they find there is what they copy. So the Luau owned by this repo, the `jess init` template, the test fixtures, and every block on this site follows one style, and a test fails when it drifts.
 
-[`@jess/style`](#the-checker) is the repository's enforced Luau style gate: a checker written in Luau, over Luau's own parser, in the built-in package jess carries. It owns the structural rules below and runs as part of the Rust test suite.
-
-## Formatting
-
-Canonical formatting matters, but it belongs in Jess's built-in Luau tooling rather than an external formatter. Until that formatter lands, there is no separate formatter-specific validation pass: write source in the canonical shape used by the surrounding code and let `@jess/style` enforce the rules it can prove.
+[`@jess/style`](#the-checker) is the repository's enforced Luau style gate: a checker written in Luau, over Luau's own parser, in the built-in package jess carries. It owns the structural rules below and runs as part of the Rust test suite. There is no separate formatter and no formatter configuration, deliberately: the checker is the formatter-and-style gate for every repository that builds on Jess.
 
 ## The style
 
@@ -35,31 +31,30 @@ end
 **Guard clauses keep the happy path flat.** Return early, `continue` early, and keep the interesting code at the lowest indentation it can have.
 
 ```luau
-for record in plugin:records() do
-  local meta = jess.meta(record)
-  if not mergeTypes[meta.tag] then continue end
+for _, module in modules do
+  if not module.active then continue end
 
-  local id = identity(record, meta)
-  if not id or id == '' then continue end
+  local layer = module.layer
+  if not layer or layer == '' then continue end
 
-  table.insert(groups[id], record)
+  table.insert(groups[layer], module)
 end
 ```
 
-**Declare things where they're used.** No `local Next, Type, Format = next, type, string.format` at the top of the file. That's a LuaJIT habit, and Luau doesn't need it. Constants that belong to the module are PascalCase (`PluginName`, `FlagBits`); everything else is camelCase.
+**Declare things where they're used.** No `local Next, Type, Format = next, type, string.format` at the top of the file. That's a LuaJIT habit, and Luau doesn't need it. Constants that belong to the module are PascalCase (`PackageName`, `FlagBits`); everything else is camelCase.
 
-**Truthiness, unless false means something.** `if not plugin then`, `value or default`. Write `== nil` only where `false` is a real value that has to survive, like a TOML boolean or an option that turns a setting off, and say so in a comment when it isn't obvious.
+**Truthiness, unless false means something.** `if not package then`, `value or default`. Write `== nil` only where `false` is a real value that has to survive, like a TOML boolean or an option that turns a setting off, and say so in a comment when it isn't obvious.
 
 **Group declarations.** Same-kind locals initialize on one line; each multi-line table gets its own paragraph.
 
 ```luau
 local report, summary
 
-local merged, usedMasters, failed = {}, {}, {}
+local merged, usedLayers, failed = {}, {}, {}
 
 local defaults = {
-  fileName = 'Merged Objects.esp',
-  patches = { 'all' },
+  output = 'report.toml',
+  checks = { 'all' },
 }
 ```
 
@@ -71,7 +66,7 @@ local defaults = {
 
 Script code that breaks an invariant calls `error` and stops. It doesn't wrap its own functions in `pcall` to rewrap the message; pass the context in and raise the final message where the problem is found.
 
-`pcall` goes around a call into a Rust API that can legitimately throw, and nowhere else: `bytes.regex` on a user's pattern, `record:decode()` on a malformed record, `openmw:activate` on a file outside the data folders. Every one gets a comment naming what throws and why the script carries on.
+`pcall` goes around a call into an API that can legitimately throw, and nowhere else: `bytes.regex` on a user's pattern, `@jess/json`'s `decode` on a document that came from disk. Every one gets a comment naming what throws and why the script carries on.
 
 ```luau
 -- `bytes.regex` throws on a pattern Rust's regex crate rejects. Every bad pattern is reported
@@ -83,11 +78,11 @@ A `pcall` without that comment is a bug report waiting to happen, and the checke
 
 ## Types
 
-Every module starts with `--!strict`. `--!native` is a claim, not a default: a module carries it only when its package's bench shows a workload that runs faster with it, and the package's `BENCHMARKS.md` names that workload. Jess compiles natively only what is marked (`NativeCodeMode::Annotated`), so an unmarked module costs its bytecode compile at load and nothing more. A module that parses arguments, reads a config, or builds tables once is never marked. The same goes for one function: `@native` before a function in an unmarked module compiles that function and nothing else, which is the cheaper claim when one loop in a large module is the hot one.
+Every module starts with `--!strict`. `--!native` is a claim, not a default: a module carries it only when its package's bench shows a workload that runs faster with it, and the package records that workload beside the code. Jess compiles natively only what is marked (`NativeCodeMode::Annotated`), so an unmarked module costs its bytecode compile at load and nothing more. A module that parses arguments, reads a config, or builds tables once is never marked. The same goes for one function: `@native` before a function in an unmarked module compiles that function and nothing else, which is the cheaper claim when one loop in a large module is the hot one.
 
-Jess's own Luau follows the same rule. The package bootstrap, `@jess/package`, `@jess/jpk`, the workspace, and `@jess/log` load as bytecode: a run spends no time in them, and compiling them natively cost every start 9 to 28 ms. `@jess/test` is native, since every suite runs through it, and the style checker and the analysis carry `@native` on the functions a check spends its time in. The formats are the exception: every module under the built-in package's `src/data/` (`@jess/json`, `@jess/yaml`, `@jess/data/toml`, `@jess/data/value`) is native whole, because a codec can't know whether its caller hands it a manifest of a few hundred bytes or a document of megabytes, and execution time wins: native code decodes block YAML three times as fast, TOML 2.3 times, and JSON 1.6 to 1.8 times.
+Jess's own Luau follows the same rule. The package bootstrap, `@jess/package`, `@jess/jpk`, the workspace, and `@jess/log` load as bytecode: a run spends almost no time in them, and compiling them natively was measured to cost every start more than it ever gave back. `@jess/test` is native, since every suite runs through it, and the style checker and the analysis carry `@native` on the functions a check spends its time in. The formats are the exception: every module under the built-in package's `src/data/` (`@jess/json`, `@jess/yaml`, `@jess/data/toml`, `@jess/data/value`) is native whole, because a codec can't know whether its caller hands it a manifest of a few hundred bytes or a document of megabytes, and on documents of any size the native code won by a wide margin on a verified build.
 
-Everything is typed, and nothing is `any`. `unknown` is fine where the API really hands you an unknown (a `jess run` script's `state` table), and nowhere else. The test suite type-checks the built-in package and the shader corpus against the generated definitions; nothing type-checks the bundled scripts under `src/lua/stdlib` or the `jess init` template yet, so when you change one, check it with `common::type_check` from `tests/lua/common/mod.rs` in a test you don't commit.
+Everything is typed, and nothing is `any`. `unknown` is fine where the API really hands you an unknown (a decoded JSON or TOML document), and nowhere else. The test suite type-checks the built-in package and the shader corpus against the generated definitions; nothing type-checks the modules under `src/lua/stdlib` or the `jess init` template yet, so when you change one, check it with `common::type_check` from `tests/lua/common/mod.rs` in a test you don't commit.
 
 ## The l3i dialect
 
@@ -107,13 +102,14 @@ local {health, position: {x: column, y: row}} = entity
 
 **An element kind is a string.** `terrain[1:count, 'f32']` and `into(samples, 'f32@16')`, single-quoted like the rest.
 
-**Use it where it says the thing.** One list built from another, a count, a sum, a test, a few fields pulled out of a record. A loop with real work in its body, a walk over a map, or anything that leaves early is still a loop, and a comprehension that needed a helper invented to fit its projection was a loop too. It isn't free everywhere either: a comprehension checks every projection for `nil`, and next to a loop that already sizes its table and stores by index that costs about a fifth on a trivial projection (30.8 µs against 25.6 µs over 4,096 elements, on a verified release build). The hot loop that was already written well stays.
+**Use it where it says the thing.** One list built from another, a count, a sum, a test, a few fields pulled out of a record. A loop with real work in its body, a walk over a map, or anything that leaves early is still a loop, and a comprehension that needed a helper invented to fit its projection was a loop too. It isn't free everywhere either: a comprehension checks every projection for `nil`, and next to a loop that already sizes its table and stores by index that check is measurable on a trivial projection. The hot loop that was already written well stays.
 
 ## The checker
-`@jess/style` is the style above, as code. It's the first module of jess's built-in package, [`jpk/builtin`](@/docs/scripting/packages.md#the-built-in-package), and it's Luau end to end: one parse with [`@dream/luau`](@/docs/api/downstream-globals.md), Luau's own parser, the tree and its token stream as tables; one pass over the tokens for the layout of every line; one walk over the tree for everything else. No regexes over source text, no guessing where a long string ends.
+
+`@jess/style` is the style above, as code. It's the first module of jess's built-in package, [`jpk/builtin`](@/docs/scripting/packages.md#the-built-in-package), and it's Luau end to end: one parse with [`@dream/luau`](@/docs/api/l3i.md), Luau's own parser, the tree and its token stream as tables; one pass over the tokens for the layout of every line; one walk over the tree for everything else. No regexes over source text, no guessing where a long string ends.
 
 ```sh
-jess run check-style.jsl libs jpk tools
+jess run --capability filesystem.read check-style.jsl src tools jpk/builtin
 ```
 
 ```luau
@@ -125,7 +121,7 @@ local errors, warnings = style.run { ... }
 print(`{errors} errors, {warnings} warnings`)
 ```
 
-`style.run` prints one line per finding, `path:line:column: severity[rule]: message`. `style.check(source, options)` returns the findings as tables (`rule`, `severity`, `message`, and the span: `line`, `column`, `endLine`, `endColumn`), and `style.checkFile` reads a file first, checking a Markdown page's ```` ```luau ```` blocks one by one. The [API page](@/docs/api/style.md) has the rest.
+`style.run` prints one line per finding, `path:line:column: severity[rule]: message`. `style.check(source, options)` returns the findings as tables (`rule`, `severity`, `message`, and the span: `line`, `column`, `endLine`, `endColumn`), and `style.checkFile` reads a file first, checking a Markdown page's ```` ```luau ```` blocks one by one. `style.checkPackage` runs the whole thing over a Package Source, with its payload held to strict and no `any`. The [API page](@/docs/api/style.md) has the rest.
 
 | Rule | Severity | What it wants |
 | --- | --- | --- |
@@ -147,11 +143,11 @@ print(`{errors} errors, {warnings} warnings`)
 | `directives.strict`, `directives.native` | error | `--!strict` and `--!native` at the top, where the caller requires them. The repository holds its own Luau and every package to `strict` only; `native` is earned, never required. |
 | `types.any` | error | No `any`, where the caller requires it. |
 
-It costs more than the line-based check it replaced, and checks more. Over the repo's Luau (535 sources, the site's blocks included, 48,455 lines) on a verified release build, counted in retired instructions: the old Rust check took 5,627 per line (32 ms), parsing alone 17,990 per line (100 ms), and the whole check 28,151 per line (153 ms). Two thirds of it is Luau's parser building the tree as tables; the rules are the other third.
+It costs more than a line-based check would, and checks more: about two thirds of its time is Luau's parser building the tree as tables, and the rules are the other third.
 
 There's no comment that turns a rule off, for a line or a file. The style says to fix the code, not to quiet the checker; when the checker is wrong, fix the checker.
 
-Options choose what a file is held to. `directives = { 'strict' }` and `noAny = true` are for the bundled scripts; `only = { ... }` limits a check to some rules; `declarations` says whether a file is a definitions file, which the checker otherwise works out; and `profile = 'lua'` is s3stash's Lua, where hoisting globals into PascalCase locals (`local Next, Type = next, type`) is the style rather than a mistake and LuaLS `---@param` types feed the truthiness rule.
+Options choose what a file is held to. `directives = { 'strict' }` and `noAny = true` are for the built-in modules; `only = { ... }` limits a check to some rules; `declarations` says whether a file is a definitions file, which the checker otherwise works out; and `profile = 'lua'` is for plain Lua projects, where hoisting globals into PascalCase locals (`local Next, Type = next, type`) is the style rather than a mistake and LuaLS `---@param` types feed the truthiness rule.
 
 ## The style test
 
@@ -159,6 +155,6 @@ Options choose what a file is held to. `directives = { 'strict' }` and `noAny = 
 cargo test --test lua_luau_style
 ```
 
-`tests/lua/luau_style.rs` activates the built-in package from its source, which also checks that it's the copy the binary embeds, and runs `@jess/style` over every repository-owned `.jsl` file under `src/` and `tools/`, over every ```` ```luau ```` block on this site, and over `jess luau-types`' definitions. Any finding, error or warning, fails it. The bundled scripts and built-in modules are held to `--!strict` and no `any`; the `jess init` template to `--!strict`.
+`tests/lua/luau_style.rs` activates the built-in package from its source, which also checks that it's the copy the binary embeds, and runs `@jess/style` over every repository-owned `.jsl` file under `src/`, `tools/`, and `jpk/builtin`, over every ```` ```luau ```` block on this site, and over `jess luau-types`' definitions. Any finding, error or warning, fails it. The built-in modules are held to `--!strict` and no `any`; the `jess init` template to `--!strict`.
 
-The same test runs the checker's own suite (`jess package test jpk/builtin`, from the source and packed) and type-checks the package against the types folder. Canonical formatting will join this gate once Jess's built-in Luau formatter owns it.
+The same test runs the checker's own suite (`jess package test jpk/builtin`, from the source and packed) and type-checks the package against the types folder.
