@@ -14,7 +14,7 @@ Jess is not a game engine. It is the environment you build one in, and the same 
 
 ### Getting started
 
-[Release archives](https://github.com/DreamWeave-MP/jess/releases) carry the binary for Linux, macOS, and Windows, signed with Sigstore. `cargo install jess` builds it from crates.io with Rust 1.92 or newer. Then write a file:
+[Release archives](https://github.com/DreamWeave-MP/jess/releases) carry the binary for Linux, macOS, and Windows, signed with Sigstore. `cargo install jess` builds it from crates.io with Rust 1.92 or newer, given clang and lld on rustc's LLVM major and the linker flags the [install page](https://DreamWeave-MP.github.io/jess/docs/getting-started/install/) lists, or `L3I_UNVERIFIED_TOOLCHAIN=1` for a build with whatever compiler you have. Then write a file:
 
 ```luau
 --!strict

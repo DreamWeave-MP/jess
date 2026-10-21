@@ -6,7 +6,7 @@ extra:
   kind: guide
 ---
 
-jess is one Cargo crate: stable Rust 1.92 or newer, no build scripts of its own, no system libraries to hunt down. Luau compiles itself from source. The one thing you need besides Rust is clang and lld on the same LLVM major as your `rustc` (`rustc -vV` and `clang --version` tell you), because the repo's `.cargo/config.toml` compiles Luau with clang and links everything with lld under cross-language thin LTO. That's the toolchain [l3i](https://github.com/DreamWeave-MP/l3i) is measured on, and its build script refuses anything else rather than hand you a slower binary quietly.
+jess is one Cargo crate: no build scripts of its own, no system libraries to hunt down. Luau compiles itself from source. The repository's `rust-toolchain.toml` picks the Rust that builds it, 1.98 as this is written, and rustup follows the file wherever you run cargo inside the checkout; the MSRV, 1.92, is a separate check. The one thing you need besides Rust is clang and lld on the same LLVM major as that `rustc` (`rustc -vV` and `clang --version` tell you; 1.98 is LLVM 22), because the repo's `.cargo/config.toml` compiles Luau with clang and links everything with lld under cross-language thin LTO. That's the toolchain [l3i](https://github.com/DreamWeave-MP/l3i) is measured on, and its build script refuses anything else rather than hand you a slower binary quietly. The pin exists for the same reason: every platform a release is built on has to be able to install the clang that matches, and the Linux release builds in an EL9 container whose clang is whatever its AppStream ships. When that moves, the pin moves.
 
 ```sh
 sudo dnf install clang lld        # Fedora; Debian and Ubuntu want clang-N lld-N for rustc's LLVM N
@@ -49,7 +49,13 @@ Things worth knowing about those:
 
 - **Clippy is strict.** The lints already turn on `pedantic`, `nursery`, and `cargo` as warnings (see `[workspace.lints]` in `Cargo.toml`, with the allowed exceptions listed there), and `-D warnings` makes every one an error. If clippy has an opinion, fix it; don't `#[allow]` it without a reason in a comment. The gate is never left red, including a failure already on `main` that your change didn't cause.
 - **Formatting** uses the repo's `rustfmt.toml`: `max_width = 125`, `merge_derives = false`. `cargo fmt` and move on.
-- **Clippy runs on Windows and macOS too.** Code behind `cfg(windows)` or `cfg(target_os = "macos")`, and helpers whose only caller is Linux-gated, never meet a Linux clippy, and every round trip through CI costs about 25 minutes. Before you push, lint the Windows target from Linux: `rustup target add x86_64-pc-windows-gnu`, point `CC_x86_64_pc_windows_gnu`/`CXX_x86_64_pc_windows_gnu` at a stub compiler (clippy never links, so a script that answers `--version` and touches its `-o` output will do), set `L3I_UNVERIFIED_TOOLCHAIN=1` and a separate `CARGO_TARGET_DIR`, and run clippy with `--target x86_64-pc-windows-gnu`. macOS can't be cross-checked; read its `cfg` code by eye, remember APFS is case-insensitive and refuses non-UTF-8 file names, and gate such tests `target_os = "linux"`.
+- **Clippy runs on Windows and macOS too.** Code behind `cfg(windows)` or `cfg(target_os = "macos")`, and helpers whose only caller is Linux-gated, never meet a Linux clippy, and every round trip through CI costs about 25 minutes. Before you push, lint the Windows target from Linux with the stub compiler in `tools/dev/stub-clang`: clippy never links, so a script that answers cc-rs's family probe as clang, reads its `@response` files, and touches the object it was asked for is all the C++ side needs. `rustup target add x86_64-pc-windows-gnu`, then:
+
+  ```sh
+  CC_x86_64_pc_windows_gnu=$PWD/tools/dev/stub-clang CXX_x86_64_pc_windows_gnu=$PWD/tools/dev/stub-clang \
+    L3I_UNVERIFIED_TOOLCHAIN=1 CARGO_TARGET_DIR=target/winclippy \
+    cargo clippy --workspace --all-targets --all-features --target x86_64-pc-windows-gnu -- -W clippy::pedantic -D warnings
+  ``` macOS can't be cross-checked; read its `cfg` code by eye, remember APFS is case-insensitive and refuses non-UTF-8 file names, and gate such tests `target_os = "linux"`.
 - **MSRV** is read from `rust-version` in `Cargo.toml` (`msrv: auto`). Rust 1.92 ships an older LLVM than current clang, so a local `cargo +1.92 check` needs `L3I_UNVERIFIED_TOOLCHAIN=1`; a check never links, so the mismatch can't matter there.
 - **Tests must not depend on the platform.** No Linux path separators, no case-sensitive filesystems, no non-UTF-8 names: compare resolved paths as paths, keep case twins off disk, and gate symlink tests with `#[cfg(unix)]`.
 

@@ -74,7 +74,21 @@ With a Rust toolchain (1.92 or newer):
 cargo install jess
 ```
 
-That builds the `jess` binary into `~/.cargo/bin`, which rustup already put on your `PATH`. It compiles Luau from source, so you also need a C++ compiler (the one your platform's Rust setup normally uses), and the first build takes a few minutes. Upgrade later by running the same command again.
+That builds the `jess` binary into `~/.cargo/bin`, which rustup already put on your `PATH`, and takes a few minutes, since it compiles Luau from source. Run exactly as above it will stop with a message from [L3i](https://DreamWeave-MP.github.io/l3i/docs/building/)'s build script, the runtime underneath jess, which refuses to build without the toolchain it is measured on rather than quietly hand you a slower binary. You have two choices.
+
+**The verified build**, the one the release archives are: clang and lld on the same LLVM major as your `rustc` (`rustc -vV` and `clang --version` show the majors; on Debian and Ubuntu that's `clang-N lld-N` for rustc's LLVM N, on Fedora `clang lld`, on macOS LLVM's own release rather than Apple's clang), with the flags L3i checks for:
+
+```sh
+CC=clang CXX=clang++ RUSTFLAGS='-Clinker-plugin-lto -Clinker=clang -Clink-arg=-fuse-ld=lld' cargo install jess
+```
+
+**The unverified build**, with whatever C++ compiler your platform has and no cross-language LTO:
+
+```sh
+L3I_UNVERIFIED_TOOLCHAIN=1 cargo install jess
+```
+
+It works, and it says what it is: `jess --version` prints `(unverified toolchain, no cross-language LTO: not for measuring)`, and `jess.bench` refuses to post a number from it. For a binary to measure with, take the archive. Upgrade later by running the same command again.
 
 ## From a git checkout
 
