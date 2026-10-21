@@ -177,8 +177,8 @@ return { engineHandlers = handlers }
     local workspace = analysis.workspace({ root }, {})
     expect(#workspace.unresolvedRequires).toBe(0)
     expect(#workspace.requireEdges).toBe(2)
-    expect(workspace.requireEdges[1].to).toBe(Fs.join(root, 'shared/names.jsl'))
-    expect(workspace.requireEdges[2].to).toBe(Fs.join(root, 'src/words.jsl'))
+    expect(workspace.requireEdges[1].to).toBe(Fs.join(root, 'shared', 'names.jsl'))
+    expect(workspace.requireEdges[2].to).toBe(Fs.join(root, 'src', 'words.jsl'))
   end)
 
   suite.it('leaves a host module named by an external prefix out of the graph', function()
