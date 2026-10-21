@@ -1,200 +1,121 @@
 ---
 title: 'Troubleshooting'
-description: 'The errors jess prints, what they mean, and what to do about them: missing files, masters, encodings, lint exit codes, backups, scripts, and editor types.'
-weight: 20
+description: 'The errors jess prints, keyed by their text, with what each one means and what to do: scripts, require, capabilities, manifests, resolution, tests, and domains.'
+weight: 40
 extra:
   kind: reference
 ---
 
-Find the text jess printed, read what it means, do the thing. Errors go to stderr as lines starting `error:`, with `hint:` lines after some of them; the document on stdout is never mixed with them.
+Every text below is quoted as the binary prints it, so you can search this page for the line you got. Errors go to stderr, prefixed `error:`, and exit `1`. A report that says a test failed or a target was refused is also exit `1`, but it is a document, not an error: jess did what you asked, and this is the answer.
 
-## Finding files
+## Running a script
 
-### doesn't exist; jess takes plugins by their path
+**`error: 'nope.jsl' isn't a file`**
 
-```text
-error: 'BT-v2.esp' doesn't exist; jess takes plugins by their path
-```
+`jess run` takes a path, not a target name and not a module name. Check the path, and remember that `jess run fix.jsl --verbose` hands `--verbose` to the script, not to jess, so a flag you meant for jess goes before the script.
 
-There's no file at that path. Every command takes files by path, relative to where you ran jess or absolute; nothing is looked up in a load order. Give the path (`"C:/Games/Morrowind/Data Files/BT-v2.esp"`), or `cd` to the folder that has it. [Paths, Configs, and Encodings](@/docs/getting-started/openmw-config.md) has the rules.
+**`error: module not found: ./nothing`**
 
-### doesn't exist
+A relative `require` looked for `nothing.jsl` and `nothing/init.jsl` beside the requiring file and found neither. The extension is `.jsl`, not `.luau` or `.lua`, and there is no fallback. A bare name that isn't `@jess/`, `@dream/`, or an export of an activated package is also not found: `require` doesn't search the current folder, the data folder, or anything else.
 
-```text
-error: 'test/thing.nif' doesn't exist
-```
+**`error: module not found: @jess/whatever: @jess/ is jess's own namespace (its members, such as @jess/shader, @jess/log, @jess/test, @jess/jpk, @jess/package, and the built-in package's exports, such as @jess/style), never a file`**
 
-A NIF input that isn't a file is taken as a [VFS](@/docs/reference/glossary.md#vfs) path, and looked for in the `--data` folders and archives; with no `--data`, there's nowhere to look. Name the archive or folder that has it (`--data "Data Files/Morrowind.bsa"`), and give the whole VFS path from the top: `meshes/test/thing.nif`, not `test/thing.nif`. A plugin's mesh field (`test\thing.nif`) is relative to `meshes/`, so copying it straight out of a dump gets you this error. Backslashes and case don't matter in VFS paths.
+`@jess/` names are jess's: a member of the `jess` global, a [built-in module](@/docs/scripting/built-in-modules.md), or an export of the built-in package. No file, alias, or other package can stand in for one. The message lists where the real ones come from; the [API reference](@/docs/api/_index.md) lists them all.
 
-### unexpected argument '--openmw-cfg' found
+**`error: dream.fs.readFileString: needs the 'filesystem.read' capability, which this runtime does not grant`**
 
-```text
-error: unexpected argument '--openmw-cfg' found
-error: unrecognized subcommand 'openmw'
-```
+The function names itself and the capability. Under `jess run` and `jess test`, add `--capability filesystem.read`. In a command target, declare it in the target's `capabilities` and run with `--capability` or `--trusted`. [Capabilities](@/docs/reference/capabilities.md) has the whole table. If you'd rather degrade than fail, ask `jess.granted` first.
 
-The `jess` CLI doesn't read OpenMW configs: no `--openmw-cfg`, no `--no-openmw-config`, no `jess openmw`, and the `JESS_OPENMW_CFG` and `JESS_NO_OPENMW_CONFIG` variables are ignored. Commands take files by path. Load-order work (listing, enabling, merging, checking a whole load order) happens in Luau scripts that load the config with [`jess.openmw.load(path)`](@/docs/api/openmw.md); [Merging and Fixing a Load Order](@/docs/guides/load-order-scripts.md) has the one most people want.
+**`error: unknown capability 'filesystem.raed'; a jess runtime can be granted filesystem.read, filesystem.write, ...`**
 
-### failed to resolve TES3 master
+A `--capability` name, or a target's declared one, that no part of jess knows. The message lists every name that exists. A misspelled grant is refused rather than granting nothing, which is the behaviour you want from a thing called a capability.
 
-```text
-error: failed to resolve TES3 master 'Tribunal.esm'
-```
+**`error: worker.spawn: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and command targets run scripts outside one`**
 
-`plugin header --update-masters` (or `--synchronize`) needs each master's file, to read its size, and one of them isn't found. Masters are tried as paths relative to where you ran jess, then in the plugin's own folder, ignoring case. Install the master, put the plugin beside it, or run jess from the folder that has it.
+`jess.worker.spawn` and `jess.context.bind` only mean something inside a [script domain](@/docs/contributing/script-domains.md), which an application target or an embedding host provides. A plain script, a test module, and a command target run in a single VM with no domain around it. Make it an application target, or do the work in the script.
 
-## Reading plugins
+## Manifests
 
-### failed to parse
+Every manifest error starts with `package:` and names the table and key. [The Manifest](@/docs/reference/manifest.md) lists the full set under each key; these are the ones people hit first.
 
-```text
-error: failed to parse './bad.esp': truncated record header at offset 0
-```
+**`error: package: jess.toml [package] has an unknown key 'author'`**
 
-The file isn't a readable TES3 file: truncated, damaged, or not a plugin at all (a renamed archive, a Skyrim plugin). The offset is where reading stopped. jess doesn't guess past it. If Morrowind.exe or OpenMW loads the file anyway, that's a jess bug worth reporting, with the file.
+Jess rejects keys it doesn't know, at every level. Check the spelling against the manifest reference; there is no `author`, `description`, or `license` key, since jess doesn't read them.
 
-### Text looks garbled
+**`error: package: jess.toml has no [package] table`**
 
-Names like `Ñåðäöå` where you expected `Сердце` mean the plugin's text is in another code page. Morrowind's text isn't UTF-8: Western releases use Windows-1252, Russian uses Windows-1251, Polish and other Central European releases use Windows-1250. jess reads text as Windows-1252 unless told otherwise. A plugin in another code page needs telling:
+The file parsed but the `[package]` table is missing, usually because it was written `[Package]` or the file is the wrong one.
 
-```sh
-jess plugin dump --encoding win1251 --type book Morrowind.esm
-jess save --encoding win1251 info Quicksave.ess
-```
+**`error: toml: expected ']' at line 2, column 9`**
 
-Scripts read in the `encoding=` of the config a call resolves through, else Windows-1252, and take `encoding` in `jess.plugin.open`. Reading with the wrong encoding never damages a file: it still round-trips byte for byte, the text displays wrong.
+The file didn't parse as TOML at all. The line and column are the decoder's; the usual cause is an unclosed `[table` header or a string without its closing quote.
 
-### can't be written in Windows-1252, the plugin's encoding
+**`error: package: jess.toml: module '@greeter' is neither exported nor an entrypoint of any layer`**
 
-```text
-error: failed to modify plugin: STAT 'marker' NAME: 'м' (U+043C) can't be written in Windows-1252, the plugin's encoding; nothing was written
-hint: if the plugin's text isn't Windows-1252, pass its code page with --encoding (win1250, win1251, or win1252); if it is, the replacement needs characters Windows-1252 has
-```
+A `[modules]` entry no `[[layer]]` exports or runs. Add it to a layer's `exports`, make it an entrypoint, or delete it. A module nobody can reach ships for nothing.
 
-A `plugin modify --replace` produced a character the plugin's encoding can't hold, here Cyrillic into a Windows-1252 plugin. The error names the record, the field, the character, and the code page jess used. Plugins don't record their encoding, so jess used the one you gave it, or your config's `encoding=`, or `win1252`. If the plugin is really Russian (`win1251`) or Central European (`win1250`), say so with `--encoding`. If it really is Windows-1252, the character has no place in it, and no flag will change that.
+**`error: package: jess.toml: layer 'example.greetings' exports '@greeter', which [modules] doesn't name`**
 
-## Editing
+The layer exports a name that `[modules]` doesn't map to a file. Add the module, or fix the name on one side.
 
-### already exists; use --overwrite
+**`error: package: jess.toml module '@jess/greeter': @jess/ is jess's own namespace, open only to its built-in package (org.dreamweave.jess)`**
 
-```text
-error: ./AllTypes.esm already exists; use --overwrite to replace it
-```
+Pick a scope of your own. `@jess/` is reserved, whatever the package is called.
 
-`plugin esm` and `esp` won't replace an existing file unless you ask. `--overwrite` backs it up first.
+**`error: package: bm/missing-entry: target 'greet' entry is 'tools/run.jsl', which isn't in the payload`**
 
-### --output must differ from resolved input
+The file a target, module, or managed entry names isn't under any `include` root, or isn't there. Either add its folder to `[package] include` or fix the path. The same shape of message, `module '...' is '...', which isn't in the payload` and `managed '...' is '...', which isn't in the payload`, means the same thing for those.
 
-```text
-error: clean --output must differ from resolved input
-```
+**`error: package: 'greeter': [package] include names 'assets', which isn't there`**
 
-`--output` is for writing somewhere else. To edit in place, leave it off; jess backs up the original.
+An `include` root that doesn't exist on disk. Remove it or create it; an empty folder contributes nothing, so you may as well remove it.
 
-### delete needs at least one selector
+**`error: package: jess.toml dependency 'com.example.words' 'latest' is not a version requirement (^1.2, =1.2.3, =1.2.3-dev.4)`**
 
-```text
-error: delete needs at least one selector (--type, --id, --exact-id, --flag, --match, ...); without one it would delete every record
-```
+Requirements are caret ranges or exact versions. There is no `latest`, `*`, or `>=`. A pre-release can only be named exactly.
 
-A bare `plugin delete` used to delete everything but the header. Now it refuses. Name what to delete.
+## Resolution
 
-### Backups are piling up
+**`error: package: example.greetings requires example.words: no provider found for example.words`**
 
-Every in-place edit copies the original to `<file>.bak` first, then `.bak1`, `.bak2`, and so on. jess never overwrites or deletes a backup: a second fix mustn't eat your only copy of the original. Cleaning them up is yours:
+A layer requires another that nothing offered provides. Offer the package that has it with `--package` or put it in a `--package-path` folder; `jess package graph` shows what was found.
 
-```sh
-ls "Data Files"/*.bak*          # see them
-rm "Data Files"/MyMod.esp.bak*  # when you're sure
-```
+**`error: package: com.example.greeter 1.0.0 requires com.example.words ^1.2`** followed by **`resolution failed: com.example.words is not available`**
 
-To stop making them, pass `--no-backup` on commands you trust, or write to a new file with `--output`. `--dry-run` first is cheaper than either.
+A `[dependencies]` entry nothing offered meets. Offer the package at a version the requirement accepts. If the only version is a pre-release, the requirement must name it exactly: no range selects a pre-release.
 
-## Exit codes
+**`error: package: layer example.greetings has more than one candidate: com.example.greeter 1.0.0 (source pp/one), com.example.greeter 1.0.0 (source pp/two); offer one of them outright`**
 
-### lint exits 1
+Two packages in the offered set provide the same layer, typically a Package Source and a JPK of the same package in one `--package-path` folder, or two checkouts. Jess won't pick. Name the one you mean with `--package`, which is chosen over anything found in a path, or remove the other.
 
-```text
-error: 1 error was found
-error: 2 errors or warnings were found
-```
+## Packages and targets
 
-`plugin lint` printed its full report, and then found at least one finding at or above `--fail-on`: `error` by default, which means a broken plugin (a missing master, expansion functions without the expansion). Read the `summary` and `findings`. If you're in a CI job and want warnings to fail too, `--fail-on warning`; if you want lint to report and never fail, `--fail-on never`.
+**`error: cannot run target greet`** followed by **`required capability denied:`** and the names
 
-Other checking commands exit `1` when their check fails too, after printing: `compare`, `validate`, `assets`, `nif check`, `save check`, `run`. [Output Formats](@/docs/getting-started/output-formats.md#exit-codes) has the table. Exit `2` is always a command line jess didn't understand.
+The target declares a capability you didn't grant. Grant each with `--capability <name>`, or everything the target declares with `--trusted`, after `jess package inspect` has shown you what that is. This happens before anything is activated, so nothing ran.
 
-## Scripts
+**`jess: greeter.jpk: tests run from a Package Source; run `jess package test` on its source`**
 
-### isn't a file
+Not an error, and exit `0`: a JPK ships its tests but they only run from the folder they were written in, so `jess package test` on a `.jpk` reports no providers. Run it on the Package Source. That run packs the source into a temporary JPK and tests both, comparing their digests, which is the check you wanted.
 
-```text
-error: 'nope.jsl' isn't a file
-```
+**`error: 2 failed`** at the end of a `jess package test` report
 
-`jess run` takes the script's path, and there's no file there. It runs files only: bundled `@jess/...` names aren't scripts it runs.
+Each test module ran twice, from the source and from it packed, so one failing case counts twice. Read the `error:` under the failing case: an expectation failure quotes both values and the file and line, as in `expected "Hello, world." to be "Hi, world."` and `bad/tests/run.jsl:8`.
 
-### OpenMW config resolution is disabled
+**Two digests for what you thought was one package**
 
-```text
-error: OpenMW config resolution is disabled
-```
+`jess package inspect` on a source and on a `.jpk` disagree on `digest` after an edit. The digest covers the whole payload, so the JPK is now a different package from the folder: re-pack it. A workspace whose `jess.lock` pins the old digest reports the kept copy as `not the one jess.lock pins` until you `jess workspace sync` again.
 
-A script called `jess.openmw.load()` with no path, and it has no default config to load: a `jess run` script starts without one. Pass the `openmw.cfg` (or its folder): `jess.openmw.load(config)`, with the path taken from the script's arguments.
+**`error: 1 type error`** from `jess package check`, with a list above it
 
-### isn't in the load order, so its size is unknown
+The strict type checker found something, listed as `file`, `line`, `column`, and `message`, with each `require` resolved as the runtime resolves it. `Key 'gret' not found in table '{ read greet: (string) -> string }'` is a misspelled field; `unknown` where you expected a type usually means a value the checker can't see through, which you annotate. These are errors in your package, not in jess, and the check is a gate: fix them.
 
-```text
-error: master 'Morrowind.esm' isn't in the load order, so its size is unknown; give it as { name = "Morrowind.esm", size = <bytes> }
-```
+## Editor types
 
-`setMasters` (or `jess.plugin.new`'s `masters`) was given a master by name, and it isn't in the config the call looked through, or beside the plugin's file. A `jess run` script has no default config, so pass the load order's: `plugin:setMasters(names, { openmw = openmw })` (or `{ config = path }`). Or give the size, as the message says.
+**The editor approves a call the runtime rejects, or vice versa**
 
-### module not found
+`types/` describes one jess version. After upgrading jess, run `jess init` in the folder again (it refreshes `types/` and leaves your files alone) or `jess luau-types types`. If the editor shows no jess types at all, it isn't reading `.jessrc`: the alias file `jess init` writes is `.jessrc`, and luau-lsp needs the definitions flag, which [Editor Setup](@/docs/getting-started/editor-setup.md) spells out per editor.
 
-```text
-error: module not found: scripts.coolmod.patch
-```
+## None of these
 
-`require` looked for a VFS module and found nothing. Dotted and bare names are VFS paths, and they resolve through the script's default config, which a `jess run` script doesn't have until it calls `jess.openmw.configPath(config)`. A module beside the script is `require('./patch')`; a package's export needs `--package`.
-
-### unknown field
-
-```text
-error: unknown field 'data.weigth'
-```
-
-A script wrote a field the record type doesn't have, and nothing changed. jess refuses instead of skipping it, because a patch that silently didn't apply is worse than one that stopped. Check the spelling against [Record Types](@/docs/api/record-types.md), or let the [editor types](@/docs/getting-started/editor-setup.md) catch it before you run.
-
-## Editors and types
-
-### luau-lsp doesn't know `jess`
-
-Everything `jess.` is underlined, or has type `any`. luau-lsp isn't loading `types/jess.d.jsl`:
-
-- The folder isn't there: `jess init <folder>` writes it.
-- The editor opened a parent folder. Settings files (`.vscode/`, `.zed/`, `.helix/`) and relative definition paths are read from the folder you opened. Open the script folder itself.
-- The settings name the file with the wrong path, or the wrong key. [Editor Setup](@/docs/getting-started/editor-setup.md) has the exact settings per editor.
-
-### `require('@jess/...')` is an unknown require
-
-`require('@jess/log')` or `require('@dream/vfs')` is underlined as unknown, or its value is `any`: the `.jessrc` beside your scripts has no aliases for `jess` and `dream`, which point those names at `types/`. A folder set up before the types became a folder has an old `.jessrc`; add the aliases `jess init` prints, or rerun it with `--force`. `require 'scripts.myMod.util'` and `require 'vfstool'` are OpenMW's names, not Luau paths, and no `.jessrc` makes them resolve: [use `./` paths, or call them untyped](@/docs/getting-started/editor-setup.md#why-a-folder).
-
-### Neovim doesn't start luau-lsp
-
-`jess init --editor neovim` writes `.nvim.lua`, and Neovim ignores that file unless `vim.o.exrc = true` is in your `init.lua`. With it on, Neovim reads `.nvim.lua` only from the folder you start it in, and asks once whether to trust it. Start `nvim` inside the script folder, answer the prompt, and check `:checkhealth vim.lsp`. It also needs Neovim 0.11 or later and `luau-lsp` on your `PATH`.
-
-### Types that can't be right
-
-Errors on code that runs fine, especially around writing a whole table to a struct field (`light.data = {...}`) or around read-only arrays: luau-lsp is using the old type solver, which can't express those types. The settings `jess init` writes turn the new one on, so this means your editor is using settings from somewhere else. Turn it on there ([how, per editor](@/docs/getting-started/editor-setup.md#the-new-type-solver)).
-
-### Types for functions that don't exist (or missing ones that do)
-
-`types/` is from another version of jess. Rerun `jess init <folder>` after every upgrade; it refreshes `types/` and leaves your files alone.
-
-## Windows
-
-- **Paths.** Quote anything with spaces: `"C:/Games/Morrowind/Data Files/MyMod.esp"`. Forward slashes work everywhere and don't need escaping. VFS paths take either slash.
-- **Quoting regexes.** In PowerShell, single quotes pass a pattern through untouched: `--sub-match '^mesh:'`. In `cmd.exe`, use double quotes, and double any `%`.
-- **Non-ASCII output.** jess writes UTF-8. An old console code page shows accented names as junk even when the plugin is fine; `chcp 65001` in `cmd.exe`, or redirect to a file and open that. For scripts, use `--format json` and read it with something that knows UTF-8.
-- **Redirecting in Windows PowerShell 5.1.** `>` writes UTF-16. Fine for reading, wrong for files other tools read (JSON for `jq`). Use PowerShell 7, or `| Out-File -Encoding utf8`.
-- **Old terminals keep the old `Path`.** After adding jess to your `Path`, open a new terminal.
+If jess printed something this page doesn't have, and the [CLI](@/docs/cli/_index.md) and [API](@/docs/api/_index.md) references don't either, that is a documentation bug as well as whatever else it is. [File it](https://github.com/DreamWeave-MP/jess/issues) with the exact text.
