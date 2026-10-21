@@ -69,3 +69,14 @@ The binary lands at `target/release/jess`. [Contributing](https://DreamWeave-MP.
 ## License
 
 MIT OR Apache-2.0, at your option: [MIT](LICENSE-MIT), [Apache-2.0](LICENSE-APACHE).
+
+## Dedication
+Jess was inspired by the fierceness and independence of someone with whom I was very close in my youth. She taught me everything I know. I built Jess in order to preserve what little I have left of her.
+
+Without her, S3kshun8 never would have been.
+
+And hopefully, without Jess - your finest creations would never have been.
+
+I hope this runtime brings you a fraction of the joy which she brought to my life. Spread the love, and hold the things you love tightly.
+
+You never know when they'll be gone.
