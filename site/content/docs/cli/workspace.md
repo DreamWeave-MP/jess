@@ -41,6 +41,20 @@ Each member is a folder below the workspace's root holding a `jess.toml`, writte
 
 `jess-workspace.toml` is its own file, not a table in `jess.toml`, so a package's manifest, its digest, and its JPK never carry how it happened to be developed. A root whose file doesn't list `"."` is **virtual**: a folder of members with no package of its own.
 
+The file may also name the tools the workspace is developed with:
+
+```toml
+manifest_version = 1
+
+[workspace]
+members = []
+
+[dev-dependencies]
+"org.dreamweave.mod-template" = "0.3"
+```
+
+A workspace's `[dev-dependencies]` are package ids and [version requirements](@/docs/api/package.md#package-satisfies), as a manifest states them. `sync` pins them in `jess.lock` and keeps them in `.jess/packages` like anything a member needs, and `run` runs their targets over the workspace. No member depends on them: they are the workspace's, so no package's manifest or digest says what built it. A workspace may have them and no members at all, as this one does: a folder of content that a tool it doesn't write turns into something.
+
 ## Which workspace
 
 Without `--workspace`, each command starts from the current folder, finds the package it is in, and uses the workspace above that lists it. A folder inside a workspace but outside any package belongs to the nearest workspace above it. A package that no workspace lists is a workspace of one, its own root, whatever is above it, and `info` says which workspace file passed it over. Two workspaces listing one package is an error.
@@ -76,6 +90,7 @@ members:
   tests: []
 - id: org.example.greeter
   ...
+dev_dependencies: []
 lock:
   file: false
   state: stale
@@ -211,7 +226,7 @@ Runs the tests of the members named, by package id or path, or of every member t
 | `--locked` | Fail rather than change `jess.lock`. Packages it already pins may still be put in `.jess/packages`, from their publishers or from what is offered. |
 | `--offline` | Ask no publisher: only what is offered and kept. `JESS_OFFLINE=1` says the same. |
 
-Pins what the members depend on beyond each other, transitively, dev-dependencies included, and keeps each of those packages as a JPK in `.jess/packages`. A Package Source offered is packed there and a JPK copied there, each checked against the digest it was chosen by; an archive a publisher serves is downloaded there, checked against the SHA-256 its manifest declares and then, opened, against the content digest, and kept only when both hold. `jess.lock` is written last, so an interrupted sync never leaves a lock pointing at half a file.
+Pins what the members depend on beyond each other, transitively, dev-dependencies included, and the workspace file's own `[dev-dependencies]`, and keeps each of those packages as a JPK in `.jess/packages`. A Package Source offered is packed there and a JPK copied there, each checked against the digest it was chosen by; an archive a publisher serves is downloaded there, checked against the SHA-256 its manifest declares and then, opened, against the content digest, and kept only when both hold. `jess.lock` is written last, so an interrupted sync never leaves a lock pointing at half a file.
 
 ```text
 $ jess workspace sync ../words.jpk ../style.jpk

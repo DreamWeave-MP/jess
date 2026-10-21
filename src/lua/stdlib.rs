@@ -198,6 +198,11 @@ const PACKAGE: BuiltIn = BuiltIn {
             "Packs the Package Source at `source` into the canonical JPK at `output`, written atomically; with `options.version`, at that version, the manifest revised.",
         ),
         (
+            "requirement",
+            "(requirement: unknown, what: string) -> string",
+            "`requirement` when it is a version requirement, else an error naming `what`: how a manifest's dependency is checked.",
+        ),
+        (
             "resolve",
             "(packages: { JessPackage }, request: JessPackageRequest) -> (JessActivationPlan, { JessPackage })",
             "Resolves requested layers over `packages` into an activation plan, without running anything; the second result is the packages it selected.",

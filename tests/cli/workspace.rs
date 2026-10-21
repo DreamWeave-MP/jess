@@ -63,6 +63,7 @@ fn a_workspace_shows_its_members_and_their_targets() {
             .unwrap(),
     );
     assert_eq!(info["kind"], "package");
+    assert_eq!(info["dev_dependencies"], serde_json::json!([]));
     assert_eq!(info["members"][0]["path"], ".");
     assert_eq!(info["members"][1]["id"], "org.example.greeter");
 

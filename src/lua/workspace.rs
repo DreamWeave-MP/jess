@@ -66,6 +66,9 @@ pub struct Workspace {
     pub kind: String,
     /// Its members, by path.
     pub members: Vec<Member>,
+    /// The tools it is developed with, from its file's `[dev-dependencies]`: pinned by `sync`, run
+    /// by `run`, and no member's dependency.
+    pub dev_dependencies: Vec<Dependency>,
     /// What its `jess.lock` pins, and whether that is what the members need.
     pub lock: Lock,
     /// Why a package with a workspace above it is a workspace of its own.
@@ -135,6 +138,7 @@ fn workspace_shape() -> serde_json::Value {
             "devDependencies": [{ "id": "", "requirement": "" }],
             "tests": [""],
         }],
+        "devDependencies": [{ "id": "", "requirement": "" }],
         "lock": {
             "file": false, "state": "", "problems": [""],
             "packages": [{

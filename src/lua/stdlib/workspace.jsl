@@ -69,6 +69,7 @@ type PackageModule = {
   read candidates: (folder: string) -> { Offer },
   read pack: (source: string, output: string) -> { read digest: string },
   read satisfies: (version: string, requirement: string) -> boolean,
+  read requirement: (requirement: unknown, what: string) -> string,
 }
 
 type Requirement = { id: string, requirement: string }
@@ -163,12 +164,20 @@ export type Workspace = {
   --- names members only, `implicit` for a package no workspace lists.
   read kind: 'package' | 'virtual' | 'implicit',
   read members: { Member },
+  --- The tools the workspace is developed with, as its file's `[dev-dependencies]` names them:
+  --- pinned by `sync`, run by `run`, and no member's dependency. A workspace with no members may
+  --- have these alone.
+  read devDependencies: { [string]: string },
   read lock: Lock,
   --- Why a package that has a workspace above it isn't that workspace's member.
   read note: string?,
 }
 
 local WorkspaceFile, ManifestFile, LockFile = 'jess-workspace.toml', 'jess.toml', 'jess.lock'
+
+local function plainName(text: string, pattern: string): boolean
+  return string.find(text, pattern) ~= nil and not string.find(text, '..', 1, true)
+end
 
 --- Whether `text` is an exact version as @jess/package reads one: `major.minor.patch`, with the
 --- identifiers of a pre-release after a hyphen.
@@ -254,15 +263,36 @@ local function readToml(path: string, text: buffer): { [string]: unknown }
   return document
 end
 
---- The members the workspace file at `root` lists, in its order.
-local function listed(root: string): { string }
+--- The `[dev-dependencies]` of the workspace file at `root`: package ids to version requirements,
+--- each as a manifest would state it.
+local function tooling(document: { [string]: unknown }, where: string): { [string]: string }
+  local requirements: { [string]: string } = {}
+  local section = document['dev-dependencies']
+
+  if section == nil then return requirements end
+
+  if type(section) ~= 'table' then fail(`{where}: [dev-dependencies] is a table of package ids to version requirements`) end
+
+  for id, requirement in section :: { [unknown]: unknown } do
+    if type(id) ~= 'string' or not plainName(id, '^[%l%d][%l%d%.%-]*$') then
+      fail(`{where} [dev-dependencies]: '{tostring(id)}' is not a package id`)
+    end
+
+    requirements[id] = package.requirement(requirement, `{where} [dev-dependencies] '{id}': requirement`)
+  end
+
+  return requirements
+end
+
+--- The members the workspace file at `root` lists, in its order, and its `[dev-dependencies]`.
+local function listed(root: string): ({ string }, { [string]: string })
   local where = `'{root}/{WorkspaceFile}'`
   local text = host.readFile(`{root}/{WorkspaceFile}`)
 
   if not text then fail(`{where} is not there`) end
 
   local document = readToml(`{root}/{WorkspaceFile}`, text :: buffer)
-  checkKeys(document, { 'manifest_version', 'workspace' }, where)
+  checkKeys(document, { 'manifest_version', 'workspace', 'dev-dependencies' }, where)
 
   if document.manifest_version ~= 1 then fail(`{where}: manifest_version must be 1`) end
 
@@ -289,7 +319,7 @@ local function listed(root: string): { string }
 
   if #paths ~= count then fail(`{where}: [workspace] members must be a list of folders`) end
 
-  return paths
+  return paths, tooling(document, where)
 end
 
 --- Where member `path` of the workspace at `root` is, or nil when nothing is there.
@@ -336,10 +366,6 @@ local function storeName(entry: { read id: string, read version: string, read di
 end
 
 --- Whether `text` can name a package in a file name: no separators, nothing that climbs.
-local function plainName(text: string, pattern: string): boolean
-  return string.find(text, pattern) ~= nil and not string.find(text, '..', 1, true)
-end
-
 --- The packages the `jess.lock` in `root` pins, or nil when it has none.
 local function readLock(root: string): { Locked }?
   local path = `{root}/{LockFile}`
@@ -461,7 +487,7 @@ end
 --- one version pinned, nothing pinned that a member is or nothing requires, and every pinned
 --- package in `.jess/packages` as the lock says it is. Reads manifests; with `deep`, also opens
 --- every kept package and holds it to the digest the lock pins.
-local function lockState(root: string, members: { Member }, deep: boolean?): Lock
+local function lockState(root: string, members: { Member }, tools: { [string]: string }, deep: boolean?): Lock
   local entries = readLock(root)
   local packages: { Locked } = entries or {}
   local stale, missing = {} :: { string }, {} :: { string }
@@ -553,6 +579,8 @@ local function lockState(root: string, members: { Member }, deep: boolean?): Loc
     need(`{manifest.id} {manifest.version} (for its tests)`, manifest.devDependencies)
   end
 
+  need(`{WorkspaceFile} [dev-dependencies]`, tools)
+
   local index = 1
 
   while queue[index] do
@@ -594,8 +622,9 @@ local function declared(root: string): Workspace
   local folded, byLocation, byId =
     {} :: { [string]: string }, {} :: { [string]: string }, {} :: { [string]: string }
   local kind: 'package' | 'virtual' = 'virtual'
+  local paths, tools = listed(root)
 
-  for _, path in listed(root) do
+  for _, path in paths do
     local lower = string.lower(path)
 
     if folded[lower] == path then fail(`{where} lists '{path}' twice`) end
@@ -646,7 +675,8 @@ local function declared(root: string): Workspace
     root = root,
     kind = kind,
     members = table.freeze(members),
-    lock = lockState(root, members),
+    devDependencies = table.freeze(tools),
+    lock = lockState(root, members, tools),
     note = nil :: string?,
   }
 end
@@ -659,7 +689,8 @@ local function implicit(folder: string, note: string?): Workspace
     root = folder,
     kind = 'implicit' :: 'implicit',
     members = members,
-    lock = lockState(folder, members),
+    devDependencies = table.freeze {},
+    lock = lockState(folder, members, {}),
     note = note,
   }
 end
@@ -741,7 +772,8 @@ local function verify(workspace: Workspace): Workspace
     root = workspace.root,
     kind = workspace.kind,
     members = workspace.members,
-    lock = lockState(workspace.root, workspace.members, true),
+    devDependencies = workspace.devDependencies,
+    lock = lockState(workspace.root, workspace.members, workspace.devDependencies, true),
     note = workspace.note,
   }
 end
@@ -1523,6 +1555,8 @@ local function sync(
       need(`{manifest.id} {manifest.version} (for its tests)`, manifest.devDependencies)
     end
 
+    need(`{WorkspaceFile} [dev-dependencies]`, workspace.devDependencies)
+
     local walked: { [string]: boolean } = {}
     local more = true
 
@@ -1982,6 +2016,7 @@ local function describe(workspace: Workspace): { [string]: unknown }
     root = workspace.root,
     kind = workspace.kind,
     members = members,
+    devDependencies = sortedRequirements(workspace.devDependencies),
     lock = {
       file = lock.file,
       state = lock.state,

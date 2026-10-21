@@ -1532,5 +1532,6 @@ return function(dependencies: { host: Host, jpk: Jpk })
         checkRequirement(requirement, 'requirement')
       )
     end,
+    requirement = checkRequirement,
   }
 end
