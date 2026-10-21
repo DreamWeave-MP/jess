@@ -118,9 +118,8 @@ h1, h2, h3, .dw-brand__name, .jess-kicker
   font-size: 1.08rem
 
 // Hero -------------------------------------------------------------------------------------
-// The text stands left; the ornament stands in the stage on the right, and the canvas behind
-// both draws the whole windshield. Until the first frame, and without WebGL, the still in the
-// stage stands in for the ornament.
+// Text only: the kicker, the line, the lede, two buttons, and an epigraph. The glow behind it
+// is the only decoration, and it is CSS.
 
 .jess-home .dw-main
   padding-top: 0
@@ -128,44 +127,24 @@ h1, h2, h3, .dw-brand__name, .jess-kicker
 .jess-hero
   position: relative
   display: grid
-  min-height: min(56rem, calc(100vh - var(--dw-header-height)))
+  align-items: center
+  min-height: min(44rem, calc(88vh - var(--dw-header-height)))
   overflow: hidden
   isolation: isolate
   border-bottom: 1px solid color-mix(in oklab, var(--dw-accent) 35%, transparent)
-  background: radial-gradient(ellipse 70% 60% at 72% 48%, rgb(120 100 220 / 16%), transparent 70%), linear-gradient(180deg, #0a1020 0%, #07060c 55%, #0d0a13 100%)
-
-.jess-hero__canvas
-  position: absolute
-  inset: 0
-  z-index: 0
-  display: block
-  width: 100%
-  height: 100%
-  opacity: 0
-  transition: opacity 1.2s ease
-
-  &.is-ready
-    opacity: 1
-
-.jess-hero__grid
-  position: relative
-  z-index: 1
-  display: grid
-  grid-template-columns: minmax(0, 1.05fr) minmax(20rem, .95fr)
-  gap: clamp(2rem, 5vw, 5rem)
-  align-items: center
-  width: 100%
-  padding-top: clamp(3rem, 7vw, 6rem)
-  padding-bottom: clamp(3rem, 6vw, 5rem)
+  background: radial-gradient(ellipse 55% 60% at 18% 40%, rgb(120 70 200 / 16%), transparent 70%), radial-gradient(ellipse 40% 50% at 85% 90%, rgb(90 40 150 / 14%), transparent 70%), linear-gradient(180deg, #0a0812 0%, #07060c 55%, #0d0a13 100%)
 
 .jess-hero__text
   position: relative
-  max-width: 40rem
+  z-index: 1
+  max-width: 46rem
+  padding-top: clamp(4rem, 9vw, 7rem)
+  padding-bottom: clamp(4rem, 8vw, 6rem)
 
 .jess-hero h1
   margin: 0
   color: #fff
-  font-size: clamp(2.6rem, 5.2vw, 4.6rem)
+  font-size: clamp(2.6rem, 5.4vw, 4.8rem)
   font-weight: 650
   letter-spacing: -.045em
   line-height: .98
@@ -181,155 +160,35 @@ h1, h2, h3, .dw-brand__name, .jess-kicker
     -webkit-background-clip: text
 
 .jess-hero__lede
-  max-width: 38rem
+  max-width: 40rem
   margin: 1.6rem 0 0
   color: #d9d0e4
   font-size: clamp(1.02rem, 1.4vw, 1.2rem)
   line-height: 1.55
-  text-shadow: 0 2px 16px rgb(0 0 0 / 80%)
 
 .jess-hero__actions
   margin-top: 2rem
 
 .jess-hero__epigraph
-  margin: 2.4rem 0 0
+  max-width: 40rem
+  margin: 2.6rem 0 0
   color: color-mix(in oklab, var(--dw-accent) 70%, var(--dw-text-faint))
   font-family: var(--dw-font-display)
-  font-size: .92rem
+  font-size: .95rem
   font-style: italic
   letter-spacing: .02em
 
-.jess-hero__stage
-  position: relative
-  display: grid
-  align-items: end
-  justify-items: center
-  aspect-ratio: 4 / 5
-  max-height: 42rem
-  width: 100%
-
-.jess-hero__caption
-  position: relative
-  z-index: 2
-  margin: 0
-  padding: .35rem .6rem
-  border: 1px solid color-mix(in oklab, var(--dw-accent) 28%, transparent)
-  border-radius: 2px
-  background: rgb(8 5 12 / 55%)
-  color: color-mix(in oklab, var(--dw-accent) 70%, white)
-  font-family: var(--dw-font-mono)
-  font-size: .66rem
-  letter-spacing: .08em
-  backdrop-filter: blur(8px)
-  transition: opacity .6s ease
-
-  b
-    margin-right: .5rem
-    color: var(--dw-accent)
-    font-weight: 600
-
-// The still: the glow of the core and the ring of the vessel, where the ornament will stand.
-.jess-hero__still
-  position: absolute
-  inset: 0
-  z-index: 1
-  pointer-events: none
-  opacity: .9
-  transition: opacity 1.2s ease
-
-  &::before
-    content: ""
-    position: absolute
-    left: 50%
-    top: 58%
-    width: 46%
-    aspect-ratio: 1
-    transform: translate(-50%, -50%)
-    border-radius: 50%
-    background: radial-gradient(circle, rgb(160 190 255 / 55%) 0%, rgb(170 130 255 / 28%) 30%, transparent 68%)
-    filter: blur(6px)
-
-  span
-    position: absolute
-    left: 50%
-    border: 1px solid rgb(207 155 255 / 28%)
-    border-radius: 50%
-    transform: translate(-50%, -50%) scaleY(.32)
-
-  span:nth-child(1)
-    top: 58%
-    width: 34%
-    aspect-ratio: 1
-    border-color: rgb(220 200 255 / 50%)
-
-  span:nth-child(2)
-    top: 70%
-    width: 58%
-    aspect-ratio: 1
-
-  span:nth-child(3)
-    top: 76%
-    width: 80%
-    aspect-ratio: 1
-    border-color: rgb(207 155 255 / 16%)
-
-.jess-hero.is-live .jess-hero__still
-  opacity: 0
-
-.jess-hero__strip
-  position: relative
-  z-index: 1
-  border-top: 1px solid color-mix(in oklab, var(--dw-accent) 22%, transparent)
-  background: rgb(6 4 9 / 62%)
-  backdrop-filter: blur(10px)
-
-.jess-hero__facts
-  display: flex
-  flex-wrap: wrap
-  gap: .6rem 2.4rem
-  padding-top: .8rem
-  padding-bottom: .8rem
-  color: var(--dw-text-muted)
-  font-family: var(--dw-font-mono)
-  font-size: .72rem
-  letter-spacing: .04em
-
-  b
-    display: block
-    margin-bottom: .1rem
-    color: var(--dw-text-faint)
-    font-size: .6rem
-    font-weight: 600
-    letter-spacing: .16em
-    text-transform: uppercase
-
 @media (max-width: 900px)
-  .jess-hero__grid
-    grid-template-columns: 1fr
-    padding-top: 1.5rem
-
-  .jess-hero__stage
-    order: -1
-    aspect-ratio: 5 / 4
-    max-height: 24rem
-
-  .jess-hero__text
-    max-width: none
-
   .jess-hero h1
     font-size: clamp(2.3rem, 9vw, 3.6rem)
 
-@media (prefers-reduced-motion: reduce)
-  .jess-hero__canvas, .jess-hero__still, .jess-hero__caption
-    transition: none
-
 // Editorial rhythm ------------------------------------------------------------------------
 
-.jess-kernel, .jess-ecosystem, .jess-final
+.jess-pillars, .jess-shown, .jess-ecosystem, .jess-final
   padding-top: clamp(5rem, 9vw, 8rem)
   padding-bottom: clamp(5rem, 9vw, 8rem)
 
-.jess-kernel h2, .jess-receipts h2, .jess-ecosystem h2, .jess-selfhost h2, .jess-final h2
+.jess-pillars h2, .jess-shown h2, .jess-ecosystem h2, .jess-selfhost h2, .jess-final h2
   max-width: 20ch
   margin: 0 0 2rem
   color: #fff
@@ -338,12 +197,12 @@ h1, h2, h3, .dw-brand__name, .jess-kicker
   letter-spacing: -.045em
   text-wrap: balance
 
-.jess-kernel h2 span
+.jess-pillars h2 span, .jess-shown h2 span
   color: var(--dw-accent)
 
-// Kernel grid ------------------------------------------------------------------------------
+// Pillars ----------------------------------------------------------------------------------
 
-.jess-kernel__grid
+.jess-pillars__grid
   display: grid
   grid-template-columns: repeat(3, minmax(0, 1fr))
   gap: 1px
@@ -351,196 +210,70 @@ h1, h2, h3, .dw-brand__name, .jess-kicker
   background: var(--dw-line)
 
   article
-    padding: 1.5rem 1.4rem 1.7rem
+    padding: 1.6rem 1.5rem 1.8rem
     background: linear-gradient(160deg, rgb(207 155 255 / 4%), transparent 40%), var(--dw-bg-1)
 
   h3
-    margin: 0 0 .7rem
+    margin: 0 0 .8rem
     color: #f5f0f8
-    font-size: 1.05rem
+    font-size: 1.2rem
     letter-spacing: .01em
 
   p
     margin: 0
     color: var(--dw-text-muted)
-    font-size: .93rem
-    line-height: 1.6
+    font-size: .95rem
+    line-height: 1.62
 
   code
     font-size: .82em
 
-@media (max-width: 1000px)
-  .jess-kernel__grid
-    grid-template-columns: repeat(2, minmax(0, 1fr))
-
-@media (max-width: 600px)
-  .jess-kernel__grid
+@media (max-width: 900px)
+  .jess-pillars__grid
     grid-template-columns: 1fr
 
-// Receipts ---------------------------------------------------------------------------------
+// Shown, not told --------------------------------------------------------------------------
 
-.jess-receipts
-  padding: clamp(5rem, 9vw, 8rem) 0
-  border-block: 1px solid color-mix(in oklab, var(--dw-accent) 22%, transparent)
-  background: radial-gradient(ellipse 60% 40% at 15% 0%, rgb(207 155 255 / 8%), transparent 70%), #060408
-
-.jess-receipts__heading
-  margin: 3rem 0 1rem
-  color: var(--dw-accent)
-  font-family: var(--dw-font-mono)
-  font-size: .72rem
-  font-weight: 600
-  letter-spacing: .16em
-  text-transform: uppercase
-
-.jess-benchmark-grid
+.jess-shown__grid
   display: grid
-  grid-template-columns: repeat(4, minmax(0, 1fr))
+  grid-template-columns: repeat(3, minmax(0, 1fr))
   gap: 1px
   border: 1px solid var(--dw-line)
   background: var(--dw-line)
 
-.jess-benchmark
-  position: relative
-  display: flex
-  flex-direction: column
-  min-height: 17rem
-  padding: 1.45rem
-  overflow: hidden
-  background: #0b080f
+  article
+    display: flex
+    flex-direction: column
+    padding: 1.4rem 1.3rem 1.3rem
+    background: var(--dw-bg-1)
 
-  &::after
-    content: ""
-    position: absolute
-    right: -5rem
-    bottom: -7rem
-    width: 14rem
-    height: 14rem
-    border: 1px solid rgb(207 155 255 / 8%)
-    border-radius: 50%
-    box-shadow: 0 0 0 2rem rgb(207 155 255 / 2%), 0 0 0 5rem rgb(207 155 255 / 1%)
-
-  > *
-    position: relative
-    z-index: 1
-
-  strong
-    display: block
-    color: #fff
-    font-family: var(--dw-font-display)
-    font-size: clamp(2.4rem, 4.5vw, 4.2rem)
-    line-height: .95
-    letter-spacing: -.05em
-    text-shadow: 0 0 28px rgb(207 155 255 / 20%)
-
-  > span
-    display: block
-    margin-top: .4rem
-    color: var(--dw-accent)
-    font-family: var(--dw-font-mono)
-    font-size: .68rem
-    letter-spacing: .12em
-    text-transform: uppercase
-
-  h4
-    margin: 1.8rem 0 .5rem
-    color: #eee7f3
-    font-size: 1rem
+  h3
+    margin: 0 0 .6rem
+    color: #f5f0f8
+    font-size: 1.05rem
 
   p
-    margin: 0
+    margin: 0 0 1.1rem
     color: var(--dw-text-muted)
-    font-size: .86rem
+    font-size: .9rem
     line-height: 1.55
 
-  small
-    display: block
-    margin-top: auto
-    padding-top: 1rem
-    color: var(--dw-text-faint)
-    font-family: var(--dw-font-mono)
-    font-size: .64rem
-    letter-spacing: .04em
-
-.jess-benchmark--hero
-  grid-column: span 2
-  background: radial-gradient(circle at 80% 85%, rgb(207 155 255 / 13%), transparent 42%), #0d0912
-
-  strong
-    font-size: clamp(3.6rem, 7vw, 6.5rem)
-    color: transparent
-    background: linear-gradient(105deg, #fff, #ddbbff 48%, #9651d1)
-    background-clip: text
-    -webkit-background-clip: text
-
-.jess-runtime-table
-  display: grid
-  border: 1px solid var(--dw-line)
-  background: var(--dw-bg-1)
-  font-size: .9rem
-
-  [role="row"]
-    display: grid
-    grid-template-columns: minmax(9rem, .9fr) minmax(0, 2.2fr) minmax(6rem, .6fr) minmax(10rem, 1fr)
-    gap: 1rem
-    align-items: baseline
-    padding: .7rem 1rem
-    border-top: 1px solid var(--dw-line)
-    color: var(--dw-text-muted)
-
-  [role="row"]:first-child
-    border-top: 0
-
-  [role="columnheader"]
-    color: var(--dw-text-faint)
-    font-family: var(--dw-font-mono)
-    font-size: .62rem
-    letter-spacing: .14em
-    text-transform: uppercase
+  pre
+    margin: auto 0 0
+    border: 1px solid #3a2350
+    border-radius: 3px
+    padding: 1rem
+    overflow-x: auto
+    background: #050307
 
   code
-    color: var(--dw-accent)
-    font-size: .82em
+    color: #dfd0e8
+    font-size: .76rem
+    line-height: 1.65
 
-  b
-    color: #fff
-    font-family: var(--dw-font-display)
-    font-size: 1.15rem
-    font-weight: 600
-    letter-spacing: -.02em
-
-  [role="cell"]:last-child
-    color: var(--dw-text-faint)
-    font-family: var(--dw-font-mono)
-    font-size: .66rem
-
-.jess-benchmark-note
-  max-width: 72rem
-  margin: 1.5rem 0 0
-  color: var(--dw-text-faint)
-  font-family: var(--dw-font-mono)
-  font-size: .68rem
-  line-height: 1.6
-
-@media (max-width: 1000px)
-  .jess-benchmark-grid
-    grid-template-columns: repeat(2, minmax(0, 1fr))
-
-@media (max-width: 700px)
-  .jess-benchmark-grid
+@media (max-width: 1050px)
+  .jess-shown__grid
     grid-template-columns: 1fr
-
-  .jess-benchmark--hero
-    grid-column: span 1
-
-  .jess-runtime-table [role="row"]
-    grid-template-columns: 1fr 1fr
-
-  .jess-runtime-table__head
-    display: none !important
-
-// Interlude ---------------------------------------------------------------------------------
-// One line between the numbers and the packages. It is quiet on purpose.
 
 .jess-interlude
   position: relative
@@ -579,17 +312,17 @@ h1, h2, h3, .dw-brand__name, .jess-kicker
 // Package wall -----------------------------------------------------------------------------
 
 .jess-ecosystem h2
-  max-width: 15ch
+  max-width: 26ch
 
 .jess-cards
   display: grid
-  grid-template-columns: repeat(4, minmax(0, 1fr))
+  grid-template-columns: repeat(2, minmax(0, 1fr))
   gap: 1px
   border: 1px solid var(--dw-line)
   background: var(--dw-line)
 
   article
-    min-height: 15rem
+    min-height: 13rem
     padding: 1.35rem
     background: linear-gradient(145deg, rgb(207 155 255 / 3%), transparent 45%), var(--dw-bg-1)
     transition: background .18s ease, transform .18s ease
@@ -735,23 +468,6 @@ h1, h2, h3, .dw-brand__name, .jess-kicker
     background: var(--dw-code-bg)
     color: var(--dw-accent)
     font-size: .82rem
-
-// Reveal motion ----------------------------------------------------------------------------
-
-.dw-js .jess-reveal
-  opacity: 0
-  transform: translateY(22px)
-  transition: opacity .7s ease, transform .7s ease
-
-.dw-js .jess-reveal.is-visible
-  opacity: 1
-  transform: none
-
-@media (prefers-reduced-motion: reduce)
-  .dw-js .jess-reveal
-    opacity: 1
-    transform: none
-    transition: none
 
 // Ordinary pages ---------------------------------------------------------------------------
 

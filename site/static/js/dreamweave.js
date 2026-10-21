@@ -1,19 +1,10 @@
-// DreamWeave Mod Template: progressive enhancement. Every page works without this file;
-// it adds search, copy buttons, the narrow header's search and menu buttons, the screenshot
-// viewer, the openmw.cfg configurator, and marks the visitor's own platform among a program's
-// downloads.
+// DreamWeave shell: progressive enhancement. Every page works without this file; it adds
+// search, copy buttons, the narrow header's search and menu buttons, the screenshot viewer,
+// and marks the visitor's own platform among a program's downloads.
 (() => {
   'use strict';
 
   const script = document.currentScript;
-
-  function readStorage(key) {
-    try { return window.localStorage.getItem(key); } catch { return null; }
-  }
-
-  function writeStorage(key, value) {
-    try { window.localStorage.setItem(key, value); } catch { /* private mode or blocked: fine */ }
-  }
 
   async function copyText(text) {
     try {
@@ -317,52 +308,5 @@
       image.src = 'data:,';
       opener?.focus();
     });
-  }
-
-  // openmw.cfg configurator -------------------------------------------------------------------
-
-  const MODS_FOLDER_KEY = 'dreamweave.modsFolder';
-
-  for (const configurator of document.querySelectorAll('[data-configurator]')) {
-    const model = JSON.parse(configurator.querySelector('[data-install-model]').textContent);
-    const output = configurator.querySelector('.dw-configurator__output code');
-    const pathInput = configurator.querySelector('[data-install-path]');
-    const choices = [...configurator.querySelectorAll('[data-component-choice]')];
-    const section = configurator.closest('.dw-method__body') || configurator;
-
-    for (const controls of section.querySelectorAll('[data-configurator-controls]')) controls.hidden = false;
-    if (pathInput) {
-      pathInput.placeholder = model.placeholder;
-      pathInput.value = readStorage(MODS_FOLDER_KEY) || '';
-    }
-
-    const selected = () => {
-      const chosen = new Set(model.components.filter(component => component.required).map(component => component.id));
-      for (const choice of choices) {
-        if (choice.checked && choice.value) chosen.add(choice.value);
-      }
-      return chosen;
-    };
-
-    const update = () => {
-      const folder = (pathInput?.value.trim() || model.placeholder).replace(/\\/g, '/').replace(/\/+$/, '');
-      const root = `${folder}/${model.name}`;
-      const chosen = selected();
-      const lines = [];
-      for (const block of model.config) {
-        if (!chosen.has(block.component)) continue;
-        for (const line of block.lines) lines.push(line.replaceAll('{install}', root));
-      }
-      output.textContent = lines.join('\n') + '\n';
-      if (pathInput?.value.trim()) writeStorage(MODS_FOLDER_KEY, folder);
-    };
-
-    pathInput?.addEventListener('input', update);
-    for (const choice of choices) choice.addEventListener('change', update);
-    if (pathInput) {
-      const label = configurator.querySelector(`label[for="${pathInput.id}"]`);
-      if (label) label.textContent = 'Your mods folder';
-    }
-    update();
   }
 })();

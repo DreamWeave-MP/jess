@@ -3,157 +3,136 @@
 {% block body_class %}jess-home{% endblock body_class %}
 
 {% block content %}
-{% set showcase = load_data(path="data/showcase.toml") %}
-<section class="jess-hero" data-jess-hero>
-  <div class="dw-shell jess-hero__grid">
-    <div class="jess-hero__text">
-      <p class="jess-kicker">JESS // A NATIVE APPLICATION KERNEL FOR LUAU</p>
-      <h1>Rust exposes reality. <span>Luau decides what it means.</span></h1>
-      <p class="jess-hero__lede">Jess is the native kernel under a Luau application. It owns the operating system, the hardware, resource lifetimes, and the trust boundary, and nothing else. The game, the tool, the editor, and the site you are reading are packages, each running with exactly the capabilities it asked for.</p>
-      <div class="dw-actions jess-hero__actions">
-        <a class="dw-button dw-button--primary" href="{{ get_url(path='@/docs/_index.md') | safe }}">Read the docs</a>
-        <a class="dw-button" href="#receipts">See the numbers</a>
-      </div>
-      <p class="jess-hero__epigraph">The monolith isn't coming back. We're fine.</p>
+<section class="jess-hero">
+  <div class="dw-shell jess-hero__text">
+    <p class="jess-kicker">JESS // A NATIVE APPLICATION KERNEL FOR LUAU</p>
+    <h1>Rust exposes reality. <span>Luau decides what it means.</span></h1>
+    <p class="jess-hero__lede">Jess is the native kernel under a Luau application. It owns the operating system, the hardware, resource lifetimes, and the trust boundary, and nothing else. Everything that means something is a package, running with exactly the capabilities it asked for.</p>
+    <div class="dw-actions jess-hero__actions">
+      <a class="dw-button dw-button--primary" href="{{ get_url(path='@/docs/_index.md') | safe }}">Read the docs</a>
+      <a class="dw-button" href="https://github.com/DreamWeave-MP/jess">Source</a>
     </div>
-    <div class="jess-hero__stage" data-jess-hero-stage>
-      <div class="jess-hero__still" aria-hidden="true"><span></span><span></span><span></span></div>
-      <p class="jess-hero__caption"><b>fig. 1</b> a reactor you can keep on the dashboard. Press it.</p>
-    </div>
-  </div>
-  <div class="jess-hero__strip" aria-label="Facts">
-    <div class="dw-shell jess-hero__facts">
-      <span><b>Runtime</b>{{ showcase.context.runtime }}</span>
-      <span><b>Native layer</b>{{ showcase.context.native }}</span>
-      <span><b>License</b>MIT or Apache-2.0</span>
-      <span><b>Hosts</b>Linux, macOS, Windows</span>
-    </div>
+    <p class="jess-hero__epigraph">Nothing is special. Not the game, not the renderer, not the tooling. Not even the engine.</p>
   </div>
 </section>
 
-<section class="jess-kernel dw-shell jess-reveal">
-  <p class="jess-kicker">WHAT THE KERNEL DOES</p>
-  <h2>Small on purpose.<br><span>Everything that means something is a package.</span></h2>
-  <div class="jess-kernel__grid">
+<section class="jess-pillars dw-shell">
+  <p class="jess-kicker">WHY JESS</p>
+  <h2>Performance. Reliability. <span>Productivity.</span></h2>
+  <div class="jess-pillars__grid">
     <article>
-      <h3>Script domains</h3>
-      <p>One isolated Luau authority per domain: the contexts that say when its code runs, the capability grant that says what it may do, workers that talk to it in messages, a generation that moves on every restart, and an ownership registry that teardown releases. The runtime knows nothing about games, editors, or windows.</p>
+      <h3>Performance</h3>
+      <p>Luau runs on <a href="https://github.com/DreamWeave-MP/l3i">L3i</a>, with native code generated for the modules that ask for it and no others. <code>jess run --profile</code> prints call, sampling, and native-block statistics; <code>--emit-asm</code> writes the generated assembly and <code>--disassemble</code> the bytecode, from the same binary. A stable frame does no hidden Luau work. Native code is a privilege: it earns the boundary with a measurement, or it leaves.</p>
     </article>
     <article>
-      <h3>Packages</h3>
-      <p>A JPK is an immutable archive of Luau with a manifest: modules, layers, dependencies, command targets, and the capabilities each one needs. A source folder behaves the same way above the provider boundary. Exports are inert; requiring one starts nothing. Activated layers run their entrypoints once, in dependency order.</p>
+      <h3>Reliability</h3>
+      <p>Files, the environment, processes, and the network are named capabilities, denied by default and checked at the native seam. A package cannot grant itself one, and running from a source folder gives code no power the packed archive would lack. Exports are frozen. A script domain is one isolated authority, with its own contexts, workers, generation, and teardown. A Package Source and the JPK packed from it carry the same digest, and the tests ship inside.</p>
     </article>
     <article>
-      <h3>Capabilities</h3>
-      <p>Nothing optional is granted unless the operator asks. Files, environment, processes, TCP, DNS, and TLS are named capabilities, denied by default, checked at the native seam. A package cannot grant itself one, and running from a source folder gives code no power the packed archive would lack.</p>
-    </article>
-    <article>
-      <h3>Native lowering</h3>
-      <p>Luau runs on <a href="https://github.com/DreamWeave-MP/l3i">L3i</a>, with native code generated for the modules that ask for it. <code>jess run --profile</code> prints call, sampling, and native-block statistics; <code>--emit-asm</code> writes the generated assembly; <code>--disassemble</code> the bytecode. The hot paths below are Luau, measured, not Rust with a Luau face.</p>
-    </article>
-    <article>
-      <h3>Typed from the start</h3>
-      <p><code>jess luau-types</code> writes a type stub for every module, native or built-in, and <code>jess init</code> wires them into an editor. Package code is <code>--!strict</code> and <code>--!native</code>; <code>@jess/style</code>, the repository's own style checker, runs on Luau's parser and ships inside the binary.</p>
-    </article>
-    <article>
-      <h3>Presentation as data</h3>
-      <p>A backend-independent render graph with targets, passes, culling, and aliasing; a typed shader IR that lowers deterministically to WGSL from ordinary Luau; an input action graph with sets, layers, and intents; localization bundles with ICU MessageFormat semantics. None of them knows what application they serve.</p>
+      <h3>Productivity</h3>
+      <p>One binary is the runtime, the test runner, the package tool, the workspace tool, the type generator, and the style checker. A manifest, a lock file, workspaces, <code>pack</code>, <code>sync</code>, <code>test</code>, <code>check</code>. <code>jess luau-types</code> writes a strict type stub for every module, native or built-in, and <code>jess init</code> wires them into your editor before you've written a line.</p>
     </article>
   </div>
 </section>
 
-<section class="jess-receipts jess-reveal" id="receipts">
+<section class="jess-interlude">
   <div class="dw-shell">
-    <p class="jess-kicker">RECEIPTS</p>
-    <h2>Measured, not felt.</h2>
-    <p class="jess-section-lede">Every number on this page comes from a verified release build of {{ showcase.context.binary }}, on {{ showcase.context.machine }}, {{ showcase.context.measured }}, from a bench whose script is named beside it. Each bench checks its answer before it posts a time. These are engineering evidence on one machine, not promises about yours.</p>
-
-    <h3 class="jess-receipts__heading">Against the tools the packages replace</h3>
-    <div class="jess-benchmark-grid">
-      {% for row in showcase.native %}
-      <article class="jess-benchmark{% if loop.first %} jess-benchmark--hero{% endif %}">
-        <strong>{{ row.value }}</strong>
-        <span>{{ row.label }}</span>
-        <h4>{{ row.headline }}</h4>
-        <p>{{ row.detail }}</p>
-        <small>{{ row.source }}</small>
-      </article>
-      {% endfor %}
-    </div>
-
-    <h3 class="jess-receipts__heading">Inside the packages</h3>
-    <div class="jess-runtime-table" role="table" aria-label="Package benchmarks on the verified build">
-      <div class="jess-runtime-table__head" role="row"><span role="columnheader">Package</span><span role="columnheader">Workload</span><span role="columnheader">Time</span><span role="columnheader">Source</span></div>
-      {% for row in showcase.runtime %}
-      <div role="row"><span role="cell"><code>{{ row.package }}</code></span><span role="cell">{{ row.workload }}</span><span role="cell"><b>{{ row.value }}</b></span><span role="cell">{{ row.source }}</span></div>
-      {% endfor %}
-    </div>
-    <p class="jess-benchmark-note">{{ showcase.context.note }}</p>
+    <blockquote>A corpse at a funeral I will never attend</blockquote>
+    <p>The monolithic engine is not coming back.</p>
   </div>
 </section>
 
-<section class="jess-interlude jess-reveal">
+<section class="jess-shown dw-shell">
+  <p class="jess-kicker">SHOWN, NOT TOLD</p>
+  <h2>Three things that happen <span>before your code runs.</span></h2>
+  <div class="jess-shown__grid">
+    <article>
+      <h3>Denied by default</h3>
+      <p>A script you run holds your terminal and the input devices in front of you. Everything else is a flag away, and the refusal names the function and the capability.</p>
+      <pre><code>$ jess run read.jsl
+error: dream.fs.readFileString: needs the 'filesystem.read'
+capability, which this runtime does not grant
+
+$ jess run --capability filesystem.read read.jsl</code></pre>
+    </article>
+    <article>
+      <h3>A target says what it needs</h3>
+      <p>A package's command declares its capabilities in the manifest. Running it grants them only when the operator agrees, and the package never gets a vote.</p>
+      <pre><code>[targets.greet]
+kind = "command"
+entry = "tools/greet.jsl"
+capabilities = ["process.environment"]
+
+$ jess package run greeter
+error: cannot run target greet
+required capability denied:
+    process.environment
+
+$ jess package run --capability process.environment greeter
+Hello, dave.</code></pre>
+    </article>
+    <article>
+      <h3>Typed before it runs</h3>
+      <p>Every module in a package is checked in strict mode, with each <code>require</code> resolved the way the runtime resolves it. The typo fails here, not in front of a user.</p>
+      <pre><code>$ jess package check greeter
+errors:
+- file: tools/greet.jsl
+  line: 5
+  column: 7
+  message: 'Key ''gret'' not found in table
+    ''{ read greet: (string) -> string }'''
+error: 1 type error</code></pre>
+    </article>
+  </div>
+</section>
+
+<section class="jess-interlude">
   <div class="dw-shell">
-    <blockquote>Native code is a privilege. It earns the boundary or it leaves.</blockquote>
+    <blockquote>Now I see you've got something to prove, and nothing to lose</blockquote>
+    <p>Good. Bring a manifest.</p>
   </div>
 </section>
 
-<section class="jess-ecosystem dw-shell jess-reveal">
-  <p class="jess-kicker">WHAT RUNS ON IT</p>
-  <h2>Packages, not promises.</h2>
-  <p class="jess-section-lede">Each of these goes through the same package and capability boundary any application does. There is no second, private framework for the first-party work.</p>
+<section class="jess-ecosystem dw-shell">
+  <p class="jess-kicker">NO PRIVILEGED PATHS</p>
+  <h2>Dehardcode the whole fucking stack.</h2>
+  <p class="jess-section-lede">Whatever you build goes through the same package and capability boundary. There is no second, private framework for the first-party work, and nothing gets a native path merely because engines traditionally gave it one.</p>
   <div class="jess-cards">
-    <article><span class="jess-card__tag">DREAMWIND</span><h3>Bethesda formats, in Luau</h3><p>TES3 plugins and saves, raw-preserving: an untouched record saves as its original bytes. NIF for every version OpenMW reads. BSA and BA2 archives. OpenMW's config chain and virtual filesystem, resolved the way the engine resolves them.</p></article>
-    <article><span class="jess-card__tag">TES3MERGE · MERGED LANDS · S3LIGHTFIXES</span><h3>The load-order tools</h3><p>Ports of three native tools, held to byte-level comparison with the originals' output on a real load order, each with a command target and a bench that checks its answer.</p></article>
-    <article><span class="jess-card__tag">@RECAST</span><h3>Navigation without the C++ ABI</h3><p>Recast's build stages, Detour tiles, queries and paths, the crowd, the tile cache, and tiled navmeshes, over buffers and typed records.</p></article>
-    <article><span class="jess-card__tag">@DREAM/SCENE · @DREAM/PHYSICS2D · @DREAM/ECS</span><h3>Simulation state the kernel never sees</h3><p>A scenegraph with packed identity and incremental bounds, a buffer-backed 2D solver with a grid broadphase, and an archetype ECS whose hot queries lower from JessQL once into cached plans.</p></article>
-    <article><span class="jess-card__tag">@JESSQL · @DREAMWIND-SQL</span><h3>A relational engine for anything with rows</h3><p>SQL over in-memory tables and over providers: the VFS, TES3 records, and NIF blocks answer the same queries, with pushdown for prefix, order, and limit.</p></article>
-    <article><span class="jess-card__tag">@DREAM/HTTP</span><h3>Application protocol, not engine feature</h3><p>An HTTP/1.1 router and request views with lazy parsing on the hot path, and the request and response pairs over the transport the runtime exposes.</p></article>
-    <article><span class="jess-card__tag">@MAGICK</span><h3>Raster work without spawning ImageMagick</h3><p>PNG, BMP, and TGA in and out, resizing, compositing, and the graphics build steps that used to be shell scripts.</p></article>
-    <article class="jess-card--site"><span class="jess-card__tag">@DREAMWEAVE/SITE</span><h3>Yes, the website generator too.</h3><p>Markdown, Tera-shaped templates, Sass, search, feeds, and static output. The dev server that rebuilds this page when a file changes is one Luau file over a TCP poller. Keep scrolling.</p></article>
+    <article><span class="jess-card__tag">COMMAND TARGETS</span><h3>Command-line tools</h3><p>A target is a script with a package around it: an entry, the layers it activates, and the capabilities it declares. <code>jess package run</code> runs it with exactly those, and a workspace runs it by its command name with nothing wrapping it.</p></article>
+    <article><span class="jess-card__tag">APPLICATION TARGETS</span><h3>Applications</h3><p>Managed modules loaded into one script domain, host callbacks per frame, named events routed between domains, and interfaces that later packages override on purpose. A game, an editor, and a launcher are all some packages, some callbacks, and some frames.</p></article>
+    <article><span class="jess-card__tag">HEADLESS BY DESIGN</span><h3>Services</h3><p>TCP, TLS, DNS, and UDP are capabilities, not engine features. The host runs frames without a window, so a server is an application that never asked for one, and a build pipeline is a command that reads and writes exactly the paths it was granted.</p></article>
+    <article class="jess-card--site"><span class="jess-card__tag">SITES AND PIPELINES</span><h3>This site, for one</h3><p>Markdown, templates, Sass, search, and static output, from a generator that is a package built on Jess. The dev server that rebuilds this page when a file changes is one Luau file over a TCP poller. Keep scrolling.</p></article>
   </div>
 </section>
 
-<section class="jess-selfhost jess-reveal">
+<section class="jess-selfhost">
   <div class="dw-shell jess-selfhost__grid">
     <div>
       <p class="jess-kicker">DOGFOOD</p>
       <h2>This site is a Jess workload.</h2>
       <p>The generator is a package. The build is a command target that activates it with the file capabilities it declares and nothing else. The dev server is another target with a TCP listener added. No Zola, no Node, no Python in the loop.</p>
-      <p class="jess-selfhost__aside">{{ showcase.site.summary }}</p>
-      <small class="jess-selfhost__source">{{ showcase.site.source }}</small>
+      <p class="jess-selfhost__aside">You thought you were looking at a game engine. That's your mistake.</p>
     </div>
     <div class="jess-terminal" aria-label="How this site builds">
       <div class="jess-terminal__bar"><span></span><span></span><span></span><b>tools/site</b></div>
-      <pre><code>$ jess package run --trusted --package-path jpk tools/site
-[jess] site complete: {{ showcase.site.pages }} pages, {{ showcase.site.sections }} sections, 1 search indexes -> site/public
+      <pre><code>$ jess workspace run --trusted jess-site-build -- target/site
+[jess] site complete: 64 pages, 7 sections, 1 search indexes -> target/site
 
-$ jess package run --trusted --target serve --package-path jpk tools/site
-[jess] built {{ showcase.site.pages }} pages and {{ showcase.site.sections }} sections into target/site-dev
+$ jess workspace run --trusted jess-site-serve
 [serve] http://127.0.0.1:63333/
 [serve] watching site: config.toml, content, templates, sass, static, data</code></pre>
     </div>
   </div>
 </section>
 
-<section class="jess-final dw-shell jess-reveal">
+<section class="jess-final dw-shell">
   <p class="jess-kicker">FINE. GIVE ME THE PRIMITIVES.</p>
   <h2>Build something.</h2>
   <div class="jess-final__commands"><code>jess init my-app</code><code>jess run main.jsl</code><code>jess pack my-app -o my-app.jpk</code><code>jess package run my-app.jpk</code></div>
   <div class="dw-actions">
-    <a class="dw-button dw-button--primary" href="{{ get_url(path='@/docs/scripting/_index.md') | safe }}">Learn the runtime</a>
+    <a class="dw-button dw-button--primary" href="{{ get_url(path='@/docs/getting-started/_index.md') | safe }}">Get started</a>
     <a class="dw-button" href="{{ get_url(path='@/docs/scripting/packages.md') | safe }}">Build a package</a>
     <a class="dw-button" href="{{ get_url(path='@/docs/api/_index.md') | safe }}">Read the API</a>
   </div>
 </section>
 {% endblock content %}
-
-{% block extra_head %}
-<link rel="modulepreload" href="{{ get_url(path='js/vendor/three.module.min.js', trailing_slash=false) | safe }}">
-<link rel="modulepreload" href="{{ get_url(path='js/vendor/three.core.min.js', trailing_slash=false) | safe }}">
-{% endblock extra_head %}
-
-{% block extra_body %}
-{{ super() }}
-<script type="module" src="{{ get_url(path='js/jess-hero.js', trailing_slash=false) | safe }}"></script>
-{% endblock extra_body %}
