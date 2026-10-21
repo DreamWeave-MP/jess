@@ -169,6 +169,12 @@ export type Workspace = {
 }
 
 local WorkspaceFile, ManifestFile, LockFile = 'jess-workspace.toml', 'jess.toml', 'jess.lock'
+
+--- Whether `text` is an exact version as @jess/package reads one: `major.minor.patch`, with the
+--- identifiers of a pre-release after a hyphen.
+local function isVersion(text: string): boolean
+  return string.find(text, '^%d+%.%d+%.%d+$') ~= nil or string.find(text, '^%d+%.%d+%.%d+%-[%w%-]+[%w%-%.]*$') ~= nil
+end
 local Generated, LockVersion = '.jess', 2
 --- The lock versions this jess reads: 1 pinned local packages only.
 local ReadableLockVersions = { 1, LockVersion }
@@ -373,8 +379,8 @@ local function readLock(root: string): { Locked }?
       fail(`{at}: id must be a package id`)
     end
 
-    if type(version) ~= 'string' or not string.find(version, '^%d+%.%d+%.%d+$') then
-      fail(`{at}: version must be an exact version (1.2.3)`)
+    if type(version) ~= 'string' or not isVersion(version) then
+      fail(`{at}: version must be an exact version (1.2.3, or 1.2.3-dev.4 for a pre-release)`)
     end
 
     if type(digest) ~= 'string' or not string.find(digest, '^%x+$') or #digest ~= 64 then
@@ -1067,8 +1073,8 @@ local function packageRelease(value: unknown, at: string): (Release?, string?)
   local artifact = archive :: { [string]: unknown }
   local version, status = fields.version, fields.status
 
-  if type(version) ~= 'string' or not string.find(version, '^%d+%.%d+%.%d+$') then
-    fail(`{at}: a package's version must be exact (1.2.3)`)
+  if type(version) ~= 'string' or not isVersion(version) then
+    fail(`{at}: a package's version must be exact (1.2.3, or 1.2.3-dev.4 for a pre-release)`)
   end
 
   if status ~= 'available' and status ~= 'yanked' and status ~= 'deprecated' then

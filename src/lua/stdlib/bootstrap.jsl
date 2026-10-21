@@ -67,7 +67,7 @@ type PackageModule = {
   read open: (location: string) -> Package,
   read peek: (location: string) -> Offer,
   read candidates: (folder: string) -> { Offer },
-  read pack: (source: string, output: string) -> { [string]: unknown },
+  read pack: (source: string, output: string, options: { version: string? }?) -> { [string]: unknown },
   read resolve: (packages: { Package }, request: { [string]: unknown }) -> (Plan, { Package }),
 }
 
@@ -339,7 +339,9 @@ end
 
 return table.freeze {
   inspect = inspect,
-  pack = package.pack,
+  pack = function(source: string, output: string, version: string?): { [string]: unknown }
+    return package.pack(source, output, if version then { version = version } else nil)
+  end,
   graph = graph,
   activate = activate,
   workspace = workspace,

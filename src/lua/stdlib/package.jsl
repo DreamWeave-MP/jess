@@ -45,7 +45,9 @@ export type Jpk = {
   read checkPath: (path: string) -> string?,
 }
 
-export type Version = { major: number, minor: number, patch: number }
+--- A version: `major.minor.patch`, and the identifiers of a pre-release (`1.2.0-dev.57`), none for
+--- a release. A pre-release precedes its release, and is chosen only when a requirement names it.
+export type Version = { major: number, minor: number, patch: number, prerelease: { string } }
 
 --- Code jess runs because its layer was activated, and the capabilities that code needs.
 export type Entrypoint = { read module: string, read capabilities: { string } }
@@ -233,27 +235,79 @@ local function checkCommand(command: unknown, what: string): string
 end
 
 local function parseVersion(text: string, what: string): Version
-  local major, minor, patch = string.match(text, '^(%d+)%.(%d+)%.(%d+)$')
+  local major, minor, patch, rest = string.match(text, '^(%d+)%.(%d+)%.(%d+)(.*)$')
 
-  if not major then fail(`{what} '{text}' is not a major.minor.patch version`) end
+  if not major then
+    fail(`{what} '{text}' is not a version: major.minor.patch, with -identifiers for a pre-release`)
+  end
+
+  local prerelease: { string } = {}
+
+  if rest ~= '' then
+    local identifiers = string.match(rest :: string, '^%-(.+)$')
+
+    if not identifiers then
+      fail(`{what} '{text}' is not a version: major.minor.patch, with -identifiers for a pre-release`)
+    end
+
+    for _, identifier in string.split(identifiers :: string, '.') do
+      if identifier == '' or not string.find(identifier, '^[%w%-]+$') then
+        fail(`{what} '{text}': a pre-release is dot-separated identifiers of ASCII letters, digits and hyphens`)
+      end
+
+      if string.find(identifier, '^0%d') then
+        fail(`{what} '{text}': a numeric pre-release identifier has no leading zero`)
+      end
+
+      table.insert(prerelease, identifier)
+    end
+  end
 
   return {
     major = tonumber(major) :: number,
     minor = tonumber(minor) :: number,
     patch = tonumber(patch) :: number,
+    prerelease = prerelease,
   }
 end
 
+--- Two pre-release identifiers in precedence order: numbers numerically, below any word; words
+--- bytewise.
+local function compareIdentifiers(left: string, right: string): number
+  local leftNumber, rightNumber = string.find(left, '^%d+$'), string.find(right, '^%d+$')
+
+  if leftNumber and rightNumber then return (tonumber(left) :: number) - (tonumber(right) :: number) end
+
+  if leftNumber then return -1 end
+
+  if rightNumber then return 1 end
+
+  return if left < right then -1 elseif left > right then 1 else 0
+end
+
+--- `left` against `right` in precedence order: negative, zero or positive. A release follows every
+--- pre-release of its number; pre-releases compare identifier by identifier, a shorter list first.
 local function compareVersions(left: Version, right: Version): number
   if left.major ~= right.major then return left.major - right.major end
 
   if left.minor ~= right.minor then return left.minor - right.minor end
 
-  return left.patch - right.patch
+  if left.patch ~= right.patch then return left.patch - right.patch end
+
+  if #left.prerelease == 0 or #right.prerelease == 0 then return #right.prerelease - #left.prerelease end
+
+  for index = 1, math.min(#left.prerelease, #right.prerelease) do
+    local order = compareIdentifiers(left.prerelease[index], right.prerelease[index])
+
+    if order ~= 0 then return order end
+  end
+
+  return #left.prerelease - #right.prerelease
 end
 
 --- Whether `version` meets `requirement`: `=x.y.z` exactly, or `^x`, `^x.y`, `^x.y.z` (and the
 --- same without the caret) as Cargo reads a caret: at least that, below the next breaking release.
+--- A pre-release meets only the exact requirement that names it: no range ever picks one.
 local function satisfies(version: Version, requirement: string): boolean
   local exact, rest = string.match(requirement, '^(=?)(.*)$')
   rest = string.gsub(rest :: string, '^%^', '')
@@ -262,11 +316,14 @@ local function satisfies(version: Version, requirement: string): boolean
     return compareVersions(version, parseVersion(rest :: string, 'requirement')) == 0
   end
 
+  if #version.prerelease > 0 then return false end
+
   local parts = string.split(rest :: string, '.')
   local floor = {
     major = tonumber(parts[1]) or 0,
     minor = tonumber(parts[2]) or 0,
     patch = tonumber(parts[3]) or 0,
+    prerelease = {},
   }
 
   if compareVersions(version, floor) < 0 then return false end
@@ -286,8 +343,9 @@ local function checkRequirement(requirement: unknown, what: string): string
     or not string.find(requirement, '^[=^]?%d+$')
       and not string.find(requirement, '^[=^]?%d+%.%d+$')
       and not string.find(requirement, '^[=^]?%d+%.%d+%.%d+$')
+      and not string.find(requirement, '^=%d+%.%d+%.%d+%-')
   then
-    fail(`{what} '{tostring(requirement)}' is not a version requirement (^1.2, =1.2.3)`)
+    fail(`{what} '{tostring(requirement)}' is not a version requirement (^1.2, =1.2.3, =1.2.3-dev.4)`)
   end
 
   local text = requirement :: string
@@ -817,8 +875,11 @@ local function isLeftover(path: string): boolean
     or string.sub(name, -5) == '.orig'
 end
 
-local function openSource(location: string): Package
-  local text = host.readFile(`{location}/{Manifest}`)
+--- The Package Source at `location`, read as its `jess.toml` says, or as `revisedManifest` says
+--- when one is given: the manifest as packed at another version, which stands in for the file on
+--- disk everywhere, the digest included.
+local function openSource(location: string, revisedManifest: buffer?): Package
+  local text = revisedManifest or host.readFile(`{location}/{Manifest}`)
 
   if not text then fail(`'{location}' has no {Manifest}`) end
 
@@ -864,7 +925,9 @@ local function openSource(location: string): Package
     location,
     files,
     manifestBytes,
-    function(path: string): buffer? return host.readFile(`{location}/{path}`) end
+    function(path: string): buffer?
+      return if path == Manifest then manifestBytes else host.readFile(`{location}/{path}`)
+    end
   )
 
   return table.freeze {
@@ -1033,11 +1096,55 @@ end
 --- Packs the Package Source at `source` into the canonical JPK at `output`, written atomically.
 --- Every byte packed is read through the sealed package, so the digest returned is the digest of
 --- what was written: a file edited mid-pack fails the pack.
+--- `text`, a `jess.toml`, with the `version` line of its `[package]` table saying `version`
+--- instead: the one line changed, everything else byte for byte.
+local function revised(text: string, version: string, where: string): string
+  local lines = string.split(text, '\n')
+  local inPackage, changed = false, false
+
+  for index, line in lines do
+    if string.find(line, '^%s*%[') then inPackage = string.find(line, '^%s*%[package%]%s*$') ~= nil end
+
+    if inPackage and not changed then
+      local head, tail = string.match(line, '^(%s*version%s*=%s*")[^"]*(".*)$')
+
+      if head then
+        lines[index] = `{head}{version}{tail}`
+        changed = true
+      end
+    end
+  end
+
+  if not changed then
+    fail(`'{where}/{Manifest}': to pack at another version, [package] needs a line version = "..."`)
+  end
+
+  return table.concat(lines, '\n')
+end
+
+--- Packs the Package Source at `source` into the canonical JPK at `output`. With `options.version`,
+--- the payload is packed with `jess.toml` saying that version: a development build of the same
+--- files, whose digest differs because its manifest does.
 local function pack(
   source: string,
-  output: string
-): { path: string, digest: string, files: number, size: number }
-  local package = openSource((string.gsub(source, '[/\\]+$', '')))
+  output: string,
+  options: { version: string? }?
+): { path: string, version: string, digest: string, files: number, size: number }
+  local location = (string.gsub(source, '[/\\]+$', ''))
+  local revisedManifest: buffer?
+
+  if options and options.version then
+    local version = options.version :: string
+    parseVersion(version, 'version')
+
+    local text = host.readFile(`{location}/{Manifest}`)
+
+    if not text then fail(`'{location}' has no {Manifest}`) end
+
+    revisedManifest = buffer.fromstring(revised(buffer.tostring(text :: buffer), version, location))
+  end
+
+  local package = openSource(location, revisedManifest)
   local files = {}
 
   for _, path in package.files do
@@ -1047,7 +1154,7 @@ local function pack(
   local archive = container.write(files)
   host.replace(output, archive)
 
-  return { path = output, digest = package.digest, files = #files, size = buffer.len(archive) }
+  return { path = output, version = package.version, digest = package.digest, files = #files, size = buffer.len(archive) }
 end
 
 local function sortedKeys<T>(map: { [string]: T }): { string }

@@ -194,8 +194,8 @@ const PACKAGE: BuiltIn = BuiltIn {
         ),
         (
             "pack",
-            "(source: string, output: string) -> JessPackResult",
-            "Packs the Package Source at `source` into the canonical JPK at `output`, written atomically.",
+            "(source: string, output: string, options: { version: string? }?) -> JessPackResult",
+            "Packs the Package Source at `source` into the canonical JPK at `output`, written atomically; with `options.version`, at that version, the manifest revised.",
         ),
         (
             "resolve",
@@ -289,7 +289,7 @@ const PACKAGE_TYPES: &str = "\
          --- A package a resolution may select: its manifest and where it is, with nothing else read.\n\
          export type JessPackageOffer = { manifest: JessPackageManifest, id: string, version: string, kind: \"source\" | \"jpk\", location: string }\n\n\
          --- What `pack` wrote.\n\
-         export type JessPackResult = { path: string, digest: string, files: number, size: number }\n\n\
+         export type JessPackResult = { path: string, version: string, digest: string, files: number, size: number }\n\n\
          --- What to resolve: the layers, the module names the host already provides, the capabilities it\n\
          --- grants, candidates opened only when a layer or a dependency needs one, package ids selected\n\
          --- whatever the layers (`roots`), the ids whose `[dev-dependencies]` come with them (`dev`), and\n\

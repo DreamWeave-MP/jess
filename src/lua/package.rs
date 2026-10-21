@@ -555,6 +555,8 @@ pub struct Inspection {
 pub struct Packed {
     /// The JPK written.
     pub path: String,
+    /// The version it was packed at.
+    pub version: String,
     /// Its content digest.
     pub digest: String,
     /// How many files it holds.
@@ -787,8 +789,18 @@ pub fn inspect(runtime: &Runtime, location: &str) -> l3i::Result<Inspection> {
 ///
 /// Returns an error if the source is invalid or the JPK can't be written.
 pub fn pack(runtime: &Runtime, source: &str, output: &str) -> l3i::Result<Packed> {
-    let shape = serde_json::json!({ "path": "", "digest": "", "files": 0, "size": 0 });
-    bootstrap(runtime, "pack", &shape, (source, output))
+    pack_as(runtime, source, output, None)
+}
+
+/// Packs the Package Source at `source` into the canonical JPK at `output`, at `version` when one
+/// is given: the same payload with `jess.toml` saying that version, a development build.
+///
+/// # Errors
+///
+/// Returns an error if the source is invalid, the version is not one, or the JPK can't be written.
+pub fn pack_as(runtime: &Runtime, source: &str, output: &str, version: Option<&str>) -> l3i::Result<Packed> {
+    let shape = serde_json::json!({ "path": "", "version": "", "digest": "", "files": 0, "size": 0 });
+    bootstrap(runtime, "pack", &shape, (source, output, version))
 }
 
 /// Resolves `layers` over the packages at `locations` into a plan, without running anything.

@@ -1527,3 +1527,111 @@ exports = ["@theme"]
         "{refused}"
     );
 }
+
+/// A version is `major.minor.patch`, with a pre-release after a hyphen. A pre-release meets only the
+/// exact requirement that names it, so no range picks a development build; a malformed version or
+/// requirement is refused where it is read.
+#[test]
+fn a_version_may_be_a_pre_release_that_only_an_exact_pin_picks() {
+    let runtime = common::runtime();
+    common::run(
+        &runtime,
+        "local package = require '@jess/package'\n\
+         local function refused(expected, ...)\n  \
+           local ok, problem = pcall(package.satisfies, ...)\n  \
+           assert(not ok and string.find(tostring(problem), expected, 1, true), tostring(problem))\n\
+         end\n\
+         assert(package.satisfies('1.2.1-dev.57', '=1.2.1-dev.57'))\n\
+         assert(package.satisfies('1.2.1-dev.57', '=1.2.1-dev.57') == true)\n\
+         assert(not package.satisfies('1.2.1-dev.57', '^1.2'))\n\
+         assert(not package.satisfies('1.2.1-dev.57', '1'))\n\
+         assert(not package.satisfies('1.2.1-dev.57', '=1.2.1'))\n\
+         assert(not package.satisfies('1.2.1', '=1.2.1-dev.57'))\n\
+         assert(not package.satisfies('1.2.1-dev.58', '=1.2.1-dev.57'))\n\
+         assert(not package.satisfies('1.2.1-alpha', '=1.2.1-dev.57'))\n\
+         assert(package.satisfies('1.2.1', '^1.2'))\n\
+         refused(\"'1.2' is not a version: major.minor.patch, with -identifiers for a pre-release\", '1.2', '1')\n\
+         refused('is not a version: major.minor.patch', '1.2.3-', '1')\n\
+         refused('a pre-release is dot-separated identifiers of ASCII letters, digits and hyphens', '1.2.3-a..b', '1')\n\
+         refused('a pre-release is dot-separated identifiers', '1.2.3-dev.5!', '1')\n\
+         refused('a numeric pre-release identifier has no leading zero', '1.2.3-dev.07', '1')\n\
+         refused('is not a version requirement (^1.2, =1.2.3, =1.2.3-dev.4)', '1.2.3', '^1.2.3-dev.1')\n\
+         refused('is not a version requirement', '1.2.3', '1.2.3-dev.1')\n\
+         refused('a numeric pre-release identifier has no leading zero', '1.2.3', '=1.2.3-00')\n\
+         local manifest = package.manifest('manifest_version = 1\\n[package]\\nid = \"org.example.pre\"\\n\
+         version = \"0.3.1-dev.57\"\\njess_api = \"1\"\\ninclude = [\"src\"]\\n')\n\
+         assert(manifest.version == '0.3.1-dev.57')\n\
+         local ok, problem = pcall(package.manifest, 'manifest_version = 1\\n[package]\\nid = \"org.example.pre\"\\n\
+         version = \"0.3.1-dev.07\"\\njess_api = \"1\"\\ninclude = [\"src\"]\\n')\n\
+         assert(not ok and string.find(tostring(problem), 'package version', 1, true), tostring(problem))",
+    );
+}
+
+/// Packing at another version packs the same payload with the manifest's version line revised: the
+/// JPK reads as that version, with a digest of its own, and the source is untouched.
+#[test]
+fn a_source_packs_at_another_version_as_a_development_build() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("alpha");
+    alpha(&source);
+    let capabilities = ["filesystem.read".to_owned(), "filesystem.write".to_owned()];
+    let runtime = jess::lua::runtime_with_capabilities(jess::lua::Options::default(), &capabilities)
+        .unwrap_or_else(|error| panic!("{error}"));
+    let manifest_before = std::fs::read_to_string(source.join("jess.toml")).unwrap();
+    let release = temp.path().join("release.jpk");
+    let development = temp.path().join("development.jpk");
+    let released = package::pack(&runtime, &text(&source), &text(&release)).unwrap();
+    let developed = package::pack_as(&runtime, &text(&source), &text(&development), Some("1.2.4-dev.7")).unwrap();
+    assert_eq!(
+        (released.version.as_str(), developed.version.as_str()),
+        ("1.2.3", "1.2.4-dev.7")
+    );
+    assert_eq!(released.files, developed.files);
+    assert_ne!(released.digest, developed.digest);
+    assert_eq!(std::fs::read_to_string(source.join("jess.toml")).unwrap(), manifest_before);
+
+    let opened = package::inspect(&runtime, &text(&development)).unwrap();
+    assert_eq!(
+        (opened.id.as_str(), opened.version.as_str()),
+        ("org.example.alpha", "1.2.4-dev.7")
+    );
+    assert_eq!(opened.digest, developed.digest);
+    assert_eq!(package::inspect(&runtime, &text(&source)).unwrap().version, "1.2.3");
+
+    // The same from a script, through the options table, and the same digest: a development build
+    // is a function of the source and the version.
+    common::set_global(&runtime, "source", text(&source).as_str());
+    common::set_global(&runtime, "output", text(&temp.path().join("again.jpk")).as_str());
+    common::set_global(&runtime, "digest", developed.digest.as_str());
+    common::run(
+        &runtime,
+        "local package = require '@jess/package'\n\
+         local packed = package.pack(source, output, { version = '1.2.4-dev.7' })\n\
+         assert(packed.version == '1.2.4-dev.7' and packed.digest == digest, packed.digest)\n\
+         assert(package.open(output).manifest.version == '1.2.4-dev.7')\n\
+         local ok, problem = pcall(package.pack, source, output, { version = '1.2' })\n\
+         assert(not ok and string.find(tostring(problem), 'is not a version', 1, true), tostring(problem))",
+    );
+
+    // A manifest whose version isn't on a `version = "..."` line of [package] can't be revised.
+    let odd = temp.path().join("odd");
+    alpha(&odd);
+    let text_of = std::fs::read_to_string(odd.join("jess.toml")).unwrap();
+    std::fs::write(
+        odd.join("jess.toml"),
+        text_of.replace("version = \"1.2.3\"\n", "version = '1.2.3'\n"),
+    )
+    .unwrap();
+    let refused = package::pack_as(
+        &runtime,
+        &text(&odd),
+        &text(&temp.path().join("odd.jpk")),
+        Some("1.2.4-dev.1"),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        refused.contains("to pack at another version, [package] needs a line version = \"...\""),
+        "{refused}"
+    );
+}
