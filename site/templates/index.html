@@ -30,7 +30,7 @@
     </article>
     <article>
       <h3>Productivity</h3>
-      <p>One binary is the runtime, the test runner, the package tool, the workspace tool, the type generator, and the style checker. A manifest, a lock file, workspaces, <code>pack</code>, <code>sync</code>, <code>test</code>, <code>check</code>. <code>jess luau-types</code> writes a strict type stub for every module, native or built-in, and <code>jess init</code> wires them into your editor before you've written a line.</p>
+      <p>One binary is the runtime, the test runner, the type checker, the package tool, the workspace tool, the type generator, and the style checker. A manifest, a lock file, workspaces, <code>pack</code>, <code>sync</code>, <code>test</code>, <code>check</code>. <code>jess luau-types</code> writes a strict type stub for every module, native or built-in, and <code>jess init</code> wires them into your editor before you've written a line.</p>
     </article>
   </div>
 </section>
@@ -116,7 +116,7 @@ error: 1 type error</code></pre>
     <div class="jess-terminal" aria-label="How this site builds">
       <div class="jess-terminal__bar"><span></span><span></span><span></span><b>tools/site</b></div>
       <pre><code>$ jess workspace run --trusted jess-site-build -- target/site
-[jess] site complete: 64 pages, 8 sections, 1 search indexes -> target/site
+[jess] site complete: 65 pages, 8 sections, 1 search indexes -> target/site
 
 $ jess workspace run --trusted jess-site-serve
 [serve] http://127.0.0.1:63333/

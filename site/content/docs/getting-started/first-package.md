@@ -1,6 +1,6 @@
 ---
 title: 'Your First Package'
-description: 'A manifest, a module, a test, and a command target; inspected, tested, type-checked, run, packed, and run again from the JPK.'
+description: 'A manifest, a module, a test, and a command target, written by jess init; inspected, tested, type-checked, run, packed, and run again from the JPK.'
 weight: 20
 extra:
   kind: guide
@@ -10,10 +10,10 @@ A script is a file. A package is a folder with a `jess.toml` at the top that say
 
 ## The folder
 
-Start with `jess init`, which sets up the types so your editor can see the API:
+`jess init --package` writes the whole thing: the types for your editor, and a package around a module, a test, and a command.
 
 ```sh
-jess init greeter --editor none
+jess init greeter --package com.example.greeter --editor none
 ```
 
 ```text
@@ -29,24 +29,31 @@ types:
     jess: types/jess
 written:
 - path: greeter/.jessrc
-- path: greeter/main.jsl
+- path: greeter/jess.toml
+- path: greeter/src/init.jsl
+- path: greeter/tests/run.jsl
+- path: greeter/tools/greeter.jsl
 skipped: []
 next_steps:
-- 'run the example: jess run greeter/main.jsl'
+- 'test the package, from its source and packed: jess package test greeter'
+- 'type-check it: jess package check greeter'
+- 'run its command: jess package run --capability process.environment greeter'
 - rerun jess init after updating jess to refresh types/
 ```
 
-Pass `--editor vscode`, `neovim`, `zed`, or `helix` instead of `none` to get that editor's luau-lsp settings too; [Editor Setup](@/docs/getting-started/editor-setup.md) covers them. Delete `main.jsl`, since the package has its own entry, and add four files:
+Pass `--editor vscode`, `neovim`, `zed`, or `helix` instead of `none` to get that editor's luau-lsp settings too; [Editor Setup](@/docs/getting-started/editor-setup.md) covers them. The `next_steps` are the rest of this page.
 
 ```text
 greeter/
   jess.toml
   src/init.jsl
   tests/run.jsl
-  tools/greet.jsl
-  types/           # from jess init; not part of the package
-  .jessrc
+  tools/greeter.jsl
+  types/           # for your editor; not part of the package
+  .jessrc          # likewise
 ```
+
+Everything was derived from the id. `com.example.greeter`'s last segment, `greeter`, names the module, the target, its command, and its entry; its last two, `example.greeter`, name the layer. The target declares `process.environment` because its entry reads the environment, and it is the package's default target, so `jess package run greeter` runs it without `--target`. `types/` and `.jessrc` sit in the folder but not in the package: the payload is exactly what `include` names, which is why they can be there.
 
 `jess.toml`, the whole description:
 
@@ -55,27 +62,27 @@ manifest_version = 1
 
 [package]
 id = "com.example.greeter"
-version = "1.0.0"
+version = "0.1.0"
 jess_api = "1"
 include = ["src", "tests", "tools"]
 tests = ["tests/run.jsl"]
-default_target = "greet"
+default_target = "greeter"
 
 [modules]
 "@greeter" = "src/init.jsl"
 
 [[layer]]
-id = "example.greetings"
+id = "example.greeter"
 exports = ["@greeter"]
 
-[targets.greet]
+[targets.greeter]
 kind = "command"
-command = "greet"
-entry = "tools/greet.jsl"
+command = "greeter"
+entry = "tools/greeter.jsl"
 capabilities = ["process.environment"]
 ```
 
-Read it top to bottom. The package is `com.example.greeter` at version 1.0.0, and its payload is the three folders `include` names; `types/` and `.jessrc` are not in it, which is why they can sit there. One module, `@greeter`, lives at `src/init.jsl`. One layer, `example.greetings`, exports it: a host that activates the layer makes `require('@greeter')` work. One command target, `greet`, runs `tools/greet.jsl` and needs to read the environment, and it is the default, so `jess package run greeter` runs it without `--target`. [The Manifest](@/docs/reference/manifest.md) has every key.
+Read it top to bottom. The package is `com.example.greeter` at version 0.1.0. One module, `@greeter`, lives at `src/init.jsl`. One layer, `example.greeter`, exports it: a host that activates the layer makes `require('@greeter')` work. One command target, `greeter`, runs `tools/greeter.jsl` with the one capability it declares. [The Manifest](@/docs/reference/manifest.md) has every key.
 
 `src/init.jsl`, the module. It returns a frozen table, because what comes back from `require` is frozen anyway and you may as well say so:
 
@@ -93,26 +100,28 @@ return table.freeze { greet = greet }
 ```luau
 --!strict
 local test = require '@jess/test'
-local greeter = require '@greeter'
+local module = require '@greeter'
 
 local suite = test.new()
 
 suite.it('greets by name', function()
-  test.expect(greeter.greet 'world').toBe 'Hello, world.'
+  test.expect(module.greet 'world').toBe 'Hello, world.'
 end)
 
 return suite
 ```
 
-`tools/greet.jsl`, the target's entry. It is a script with the package's layers already activated, so `@greeter` resolves, and it reads the environment, which is why the manifest asked for `process.environment`:
+`tools/greeter.jsl`, the target's entry. It is a script with the package's layers already activated, so `@greeter` resolves, and it reads the environment, which is why the manifest asked for `process.environment`:
 
 ```luau
 --!strict
 local process = require '@dream/process'
-local greeter = require '@greeter'
+local module = require '@greeter'
 
-print(greeter.greet(process.env 'USER' or 'stranger'))
+print(module.greet(process.env 'USER' or 'stranger'))
 ```
+
+Change any of it. The skeleton is a starting point, not a shape you have to keep: rename the module, add files under `src/`, add targets. The manifest is the only place that has to agree with the folder.
 
 ## Look at it
 
@@ -125,30 +134,30 @@ jess package inspect greeter
 ```text
 input: greeter
 id: com.example.greeter
-version: 1.0.0
-digest: 3e450d1a907a8ce0e6b034a434cc5b04caed51c3ff816bfa9a856dd92b26b076
+version: 0.1.0
+digest: 28a3f8dd066677ec8ab108cd8be271ee2c9eaefa3990949a747c4aa524f97591
 kind: source
 location: greeter
 jess_api: '1'
-default_target: greet
+default_target: greeter
 files: 4
 modules:
 - name: '@greeter'
   path: src/init.jsl
 layers:
-- id: example.greetings
+- id: example.greeter
   requires: []
   exports:
   - '@greeter'
   entrypoints: []
 managed: []
 targets:
-- id: greet
+- id: greeter
   kind: command
-  entry: tools/greet.jsl
+  entry: tools/greeter.jsl
   capabilities:
   - process.environment
-  command: greet
+  command: greeter
 dependencies: []
 dev_dependencies: []
 capabilities: []
@@ -166,20 +175,20 @@ jess package test greeter
 
 ```text
 id: com.example.greeter
-version: 1.0.0
+version: 0.1.0
 tests:
 - tests/run.jsl
 providers:
 - kind: source
   location: greeter
-  digest: 3e450d1a907a8ce0e6b034a434cc5b04caed51c3ff816bfa9a856dd92b26b076
+  digest: 28a3f8dd066677ec8ab108cd8be271ee2c9eaefa3990949a747c4aa524f97591
   run:
     passed: 1
     failed: 0
     ...
 - kind: jpk
-  location: /tmp/jess-package-test-37516/com.example.greeter-1.0.0.jpk
-  digest: 3e450d1a907a8ce0e6b034a434cc5b04caed51c3ff816bfa9a856dd92b26b076
+  location: /tmp/jess-package-test-64000/com.example.greeter-0.1.0.jpk
+  digest: 28a3f8dd066677ec8ab108cd8be271ee2c9eaefa3990949a747c4aa524f97591
   run:
     passed: 1
     failed: 0
@@ -198,16 +207,16 @@ jess package check greeter
 
 ```text
 id: com.example.greeter
-version: 1.0.0
+version: 0.1.0
 files: 3
 errors: []
 ```
 
-Every `.jsl` under the package, in strict mode, with each `require` resolved the way the runtime will resolve it under the package's plan. Misspell `greet` as `gret` in the entry and the check says so, with the file, line, and column, before anyone runs it:
+Every `.jsl` under the package, in strict mode, with each `require` resolved the way the runtime will resolve it under the package's plan. The `types/` folder `init` wrote is skipped: it is the editor's, not the package's. Misspell `greet` as `gret` in the entry and the check says so, with the file, line, and column, before anyone runs it:
 
 ```text
 errors:
-- file: tools/greet.jsl
+- file: tools/greeter.jsl
   line: 5
   column: 7
   message: 'Key ''gret'' not found in table ''{ read greet: (string) -> string }'''
@@ -221,14 +230,14 @@ jess package run greeter
 ```
 
 ```text
-error: cannot run target greet
+error: cannot run target greeter
 
 required capability denied:
     process.environment
 
 requested by:
-    com.example.greeter 1.0.0
-    target greet
+    com.example.greeter 0.1.0
+    target greeter
 ```
 
 This is the correct outcome. The manifest *declares* `process.environment`; it does not *grant* it, because a package never grants itself anything. You do:
@@ -250,7 +259,7 @@ A script of your own can use the package too. `jess run --package` activates its
 -- hello.jsl
 local greeter = require '@greeter'
 
-print(greeter.greet 'world')
+print(greeter.greet 'packages')
 ```
 
 ```sh
@@ -258,7 +267,7 @@ jess run --package greeter hello.jsl
 ```
 
 ```text
-Hello, world.
+Hello, packages.
 ```
 
 ## Pack it
@@ -270,10 +279,10 @@ jess pack greeter -o greeter.jpk
 ```text
 input: greeter
 id: com.example.greeter
-version: 1.0.0
-digest: 3e450d1a907a8ce0e6b034a434cc5b04caed51c3ff816bfa9a856dd92b26b076
+version: 0.1.0
+digest: 28a3f8dd066677ec8ab108cd8be271ee2c9eaefa3990949a747c4aa524f97591
 files: 4
-size: 1246
+size: 1245
 written:
   path: greeter.jpk
 ```
@@ -285,14 +294,24 @@ Everything above works on the archive exactly as on the folder, because above th
 ```sh
 jess package run --capability process.environment greeter.jpk
 jess run --package greeter.jpk hello.jsl
+jess package inspect greeter.jpk
 ```
 
 ```text
 Hello, dave.
-Hello, world.
+Hello, packages.
+input: greeter.jpk
+id: com.example.greeter
+version: 0.1.0
+digest: 28a3f8dd066677ec8ab108cd8be271ee2c9eaefa3990949a747c4aa524f97591
+kind: jpk
+location: greeter.jpk
+jess_api: '1'
+default_target: greeter
+...
 ```
 
-The one exception is `test`, which runs from a Package Source only; on a `.jpk` it reports no providers and says why. Edit `src/init.jsl` and inspect both again, and the folder's digest moves while the archive's stays: a changed package is a new JPK, and you pack it again.
+The one exception is `test`, which runs from a Package Source only; on a `.jpk` it runs nothing and says so: `tests run from a Package Source; run jess package test on its source`. Edit `src/init.jsl` and inspect both again, and the folder's digest moves while the archive's stays: a changed package is a new JPK, and you pack it again.
 
 ## Where next
 

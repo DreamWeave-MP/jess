@@ -12,7 +12,7 @@ Runs a Luau script with the whole jess API loaded.
 
 | Argument / option | Does |
 | --- | --- |
-| `<SCRIPT>` | The Luau file to run, by its path. Required: a missing one is `error: 'nope.jsl' isn't a file`. |
+| `<SCRIPT>` | The script to run, by its path, a `.jsl` file. A missing one is `error: 'nope.jsl' isn't a file`; any other extension is `error: 'script.lua' isn't a .jsl file: jess runs .jsl sources, and nothing else`. |
 | `[ARGS]...` | Everything after the script, passed to it as strings. Flags here belong to the script, not to jess: `jess run fix.jsl --verbose` hands `--verbose` to `fix.jsl`. |
 | `--package PACKAGE` | Activate a [package](@/docs/scripting/packages.md), a Package Source folder or a `.jpk`, before the script runs (repeatable). Its exports are then `require`-able by the script, and the activated layers' entrypoints have run. |
 | `--package-path FOLDER` | A folder of packages to find layers and dependencies in (repeatable): each Package Source folder and `.jpk` directly inside it, opened only when one is needed. A package named with `--package` is chosen over one found here; two found for one need are an error. |

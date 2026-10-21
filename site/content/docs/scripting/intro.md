@@ -32,6 +32,7 @@ written:
 skipped: []
 next_steps:
 - 'run the example: jess run my-scripts/main.jsl'
+- 'type-check it: jess check my-scripts/main.jsl'
 - 'vscode: install the Luau Language Server extension (JohnnyMorganz.luau-lsp) and open the folder'
 - rerun jess init after updating jess to refresh types/
 ```
@@ -40,24 +41,25 @@ Four things landed: `types/`, the Luau types for the jess you have installed; `.
 
 ```luau
 --!strict
-
 local log = require('@jess/log').new 'main'
 
-log.info('ready', { version = jess.version })
+print(`Hello from jess {jess.version}.`)
+log.info 'ready'
 ```
 
 Run it:
 
 ```sh
 $ jess run my-scripts/main.jsl
-{"level":"info","target":"main","message":"ready","fields":{"version":"0.1.0"},"source":"my-scripts/main.jsl"}
+Hello from jess 0.1.0.
+{"level":"info","target":"main","message":"ready","fields":{},"source":"my-scripts/main.jsl"}
 ```
 
 That is a complete script. Three things happened:
 
-- `jess` is a global. Its members are the runtime's own API: `jess.version`, `jess.context`, `jess.worker`, `jess.events`, and the rest of the [`jess` page](@/docs/api/jess.md).
+- `jess` is a global. Its members are the runtime's own API: `jess.version`, `jess.context`, `jess.worker`, `jess.events`, and the rest of the [`jess` page](@/docs/api/jess.md). `print` is Luau's, and goes to stdout.
 - `require('@jess/log')` loaded a [built-in module](@/docs/scripting/built-in-modules.md). It is Luau that ships inside the binary, and the `@jess/` name resolves in every runtime without a file anywhere.
-- The logger wrote one JSON line to stderr. Where log records go is the host's decision, not the script's: `jess run` writes them to stderr, `jess test` collects them per case. `print` still goes to stdout.
+- The logger wrote one JSON line to stderr. Where log records go is the host's decision, not the script's: `jess run` writes them to stderr, `jess test` collects them per case. Two streams, two jobs: what the script is for goes to stdout, what it has to say about itself goes to stderr.
 
 ## Arguments
 
@@ -99,6 +101,43 @@ That `--!strict` on the first line isn't decoration. It tells Luau to type-check
 {% usage_note(title="Regenerate after upgrading") %}
 `types/` describes one jess version. After you upgrade jess, run `jess init` in the folder again (it only refreshes `types/`, leaving your files alone), or the editor will happily approve calls the new version doesn't have.
 {% end %}
+
+## Check it from the command line
+
+The editor isn't the only thing that reads the types. [`jess check`](@/docs/cli/check.md) runs the same strict check over a script and prints what it found, which is nothing for `main.jsl`:
+
+```sh
+jess check my-scripts/main.jsl
+```
+
+```text
+files: 1
+errors: []
+```
+
+Put a mistake in a script and the check names the file, the line, the column, and the problem, then exits `1`:
+
+```luau
+--!strict
+local function width(): number
+  return 'three'
+end
+
+print(width())
+```
+
+```text
+$ jess check wrong.jsl
+files: 1
+errors:
+- file: wrong.jsl
+  line: 3
+  column: 10
+  message: Expected this to be 'number', but got 'string'
+error: 1 type error
+```
+
+The check follows `./` and `../` requires and reports those files too, and `--package` names packages whose exports the script requires, so they type the way they will under [`jess run --package`](@/docs/cli/run.md#running-with-packages). Nothing runs. `jess run` never type-checks: strict mode is a promise the checker keeps, not the runtime, so run the check before the script, or let the editor run it as you type.
 
 ## require
 

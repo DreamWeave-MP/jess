@@ -8,7 +8,7 @@ Jess combines a small Rust kernel with a programmable [Luau](https://luau.org) e
 
 > Rust exposes reality. Luau decides what it means.
 
-It ships as one binary, `jess`: the runtime, the test runner, the package tool, the workspace tool, the type generator, and the style checker. There is no separate build system, package manager, or linter to install.
+It ships as one binary, `jess`: the runtime, the test runner, the type checker, the package tool, the workspace tool, the type generator, and the style checker. There is no separate build system, package manager, or linter to install.
 
 Jess is not a game engine. It is the environment you build one in, and the same environment builds command-line tools, servers, build pipelines, and the site that documents it.
 

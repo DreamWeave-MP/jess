@@ -14,6 +14,14 @@ Every text below is quoted as the binary prints it, so you can search this page 
 
 `jess run` takes a path, not a target name and not a module name. Check the path, and remember that `jess run fix.jsl --verbose` hands `--verbose` to the script, not to jess, so a flag you meant for jess goes before the script.
 
+**`error: 'script.lua' isn't a .jsl file: jess runs .jsl sources, and nothing else`**
+
+Sources are `.jsl` files, everywhere: `jess run`, `jess test`, `jess check`, a manifest's modules, and `require`. The language is Luau; only the extension is jess's. Rename the file. Under `jess test` the same text appears as the module's `error`, since a test module that didn't run is reported, not fatal.
+
+**`error: 2 type errors`, after a report from `jess check`**
+
+[`jess check`](@/docs/cli/check.md) found what strict mode would show in your editor, in the scripts given and the files their `./` requires reach. Each error names the file, line, and column. A script that passes `jess check` can still fail at run time for reasons types don't cover, a missing file or a denied capability; a script that fails it has a bug the checker can prove.
+
 **`error: module not found: ./nothing`**
 
 A relative `require` looked for `nothing.jsl` and `nothing/init.jsl` beside the requiring file and found neither. The extension is `.jsl`, not `.luau` or `.lua`, and there is no fallback. A bare name that isn't `@jess/`, `@dream/`, or an export of an activated package is also not found: `require` doesn't search the current folder, the data folder, or anything else.

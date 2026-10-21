@@ -10,12 +10,13 @@ The commands that run no Luau and open no package: they write things for your ed
 
 ## init
 
-{{ api_signature(value="jess init [--editor <EDITOR>] [--force] [DIR]") }}
+{{ api_signature(value="jess init [--editor <EDITOR>] [--package <ID>] [--force] [DIR]") }}
 
 | Argument / option | Default | Does |
 | --- | --- | --- |
 | `[DIR]` | `.` | The folder to set up, created if missing. |
 | `--editor <EDITOR>` | `vscode` | Which editor's luau-lsp settings to write: `vscode`, `neovim`, `zed`, `helix`, or `none`. |
+| `--package <ID>` | off | Set the folder up as a Package Source with this id instead of a script folder: `jess.toml`, `src/init.jsl`, `tests/run.jsl`, and `tools/<name>.jsl`, where `<name>` is the id's last segment and the layer id is its last two. The target declares `process.environment`. No `main.jsl`. An id that isn't lowercase ASCII words joined by dots is refused: `error: failed to set up 'nope': package id 'Nope' is not lowercase ASCII words joined by dots (org.example.name)`. |
 | `--force` | off | Replace files already there, after backing them up. |
 
 Sets up a folder for Luau scripts:
@@ -24,7 +25,7 @@ Sets up a folder for Luau scripts:
 | --- | --- |
 | `types/` | The types of the whole jess API, from the jess you have installed: the folder [`luau-types`](#luau-types) writes. Rewritten on every run. |
 | `.jessrc` | `"languageMode": "strict"`, so every script is type-checked, and the aliases that point `@jess/...` and `@dream/...` at `types/`. |
-| `main.jsl` | A working example: a strict script that makes an [`@jess/log`](@/docs/api/log.md) logger and reports the jess version. `jess run main.jsl` runs it. |
+| `main.jsl` | A working example: a strict script that prints a greeting with `jess.version`, then logs `ready` through an [`@jess/log`](@/docs/api/log.md) logger. `jess run main.jsl` runs it; `jess check main.jsl` type-checks it. |
 | `.vscode/settings.json` | VS Code with the Luau Language Server extension: `luau-lsp.types.definitionFiles` set to `{ "@jess": "types/jess.d.jsl" }`, the `standard` platform, no Rojo sourcemap, and `luau-lsp.fflags.enableNewSolver`. |
 | `.nvim.lua` | Neovim 0.11+: `vim.lsp.config("luau_lsp", ...)` running `luau-lsp lsp --definitions:@jess=<folder>/types/jess.d.jsl --flag:LuauSolverV2=true`. Neovim reads it only with `vim.o.exrc = true`, and asks once whether to trust it. |
 | `.zed/settings.json` | Zed with the Luau extension: `definitions`, the standard platform, and `fflags.enable_new_solver` under `lsp.luau-lsp.settings`. |
@@ -54,9 +55,43 @@ written:
 skipped: []
 next_steps:
 - 'run the example: jess run my-scripts/main.jsl'
+- 'type-check it: jess check my-scripts/main.jsl'
 - 'helix: put luau-lsp on your PATH and open the folder with hx; hx --health luau checks it'
 - rerun jess init after updating jess to refresh types/
 ```
+
+With `--package`, the folder is a package instead, the one [Your First Package](@/docs/getting-started/first-package.md) walks through:
+
+```sh
+jess init greeter --package com.example.greeter --editor none
+```
+
+```yaml
+dir: greeter
+editor: none
+types:
+  folder: greeter/types
+  definitions: greeter/types/jess.d.jsl
+  files: 44
+  removed: []
+  aliases:
+    dream: types/dream
+    jess: types/jess
+written:
+- path: greeter/.jessrc
+- path: greeter/jess.toml
+- path: greeter/src/init.jsl
+- path: greeter/tests/run.jsl
+- path: greeter/tools/greeter.jsl
+skipped: []
+next_steps:
+- 'test the package, from its source and packed: jess package test greeter'
+- 'type-check it: jess package check greeter'
+- 'run its command: jess package run --capability process.environment greeter'
+- rerun jess init after updating jess to refresh types/
+```
+
+`types/` and `.jessrc` sit beside the package without being in it: the payload is what `include` names, and `jess package check` skips the `types/` folder `init` writes, so the editor's copies of jess's types are never checked as the package's own code.
 
 ## luau-types
 

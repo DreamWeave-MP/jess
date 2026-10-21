@@ -12,7 +12,7 @@ Runs Luau test modules. Each is a file that returns a suite made with [`@jess/te
 
 | Argument / option | Does |
 | --- | --- |
-| `<MODULES>...` | The test modules, as filesystem paths. Each gets a fresh VM. |
+| `<MODULES>...` | The test modules, as filesystem paths, `.jsl` files. Each gets a fresh VM; one that isn't a `.jsl` file is reported as a module that didn't run. |
 | `--shared` | One VM for every module, so they share the module cache and whatever state a module keeps. Faster for many small modules; isolation is the default because a test that depends on another module having run first is a bug. |
 | `--capability NAME` | Grant the modules a capability they don't hold by default (repeatable), as [`jess run`](@/docs/cli/run.md#capabilities) does: test modules hold the terminal and the input devices, and everything else, such as `filesystem.read` for a suite that reads files, is a flag away. |
 
