@@ -24,5 +24,4 @@ jobs:
       include_files: "README.md,LICENSE-MIT,LICENSE-APACHE"
       publish_docs: false
       cargo_publish: true
-      cargo_publish_workspace: true
       msrv: auto
