@@ -1,6 +1,8 @@
 use jess::lua::Options;
 use jess::lua::l3i::Runtime;
 
+mod http;
+
 fn runtime(capabilities: &[String]) -> Runtime {
     jess::lua::runtime_with_capabilities(Options::default(), capabilities).unwrap()
 }

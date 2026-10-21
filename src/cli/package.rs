@@ -17,6 +17,10 @@ pub struct PackArgs {
     /// The JPK to write. It is replaced atomically, and must not be inside the source.
     #[arg(short, long)]
     output: PathBuf,
+    /// Pack at this version instead of the one jess.toml says: the same payload with its manifest
+    /// revised, as a development build (1.2.1-dev.57) is.
+    #[arg(long, value_name = "VERSION")]
+    as_version: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -175,13 +179,13 @@ pub fn pack(args: &PackArgs, format: Format) -> Result<(), String> {
     }
     let lua = runtime()?;
     let inspection = jess::lua::package::inspect(&lua, &text(&args.source)).map_err(|error| error.to_string())?;
-    let packed =
-        jess::lua::package::pack(&lua, &text(&args.source), &text(&args.output)).map_err(|error| error.to_string())?;
+    let packed = jess::lua::package::pack_as(&lua, &text(&args.source), &text(&args.output), args.as_version.as_deref())
+        .map_err(|error| error.to_string())?;
     output::print(
         &Packed {
             input: text(&args.source),
             id: inspection.id,
-            version: inspection.version,
+            version: packed.version,
             digest: packed.digest,
             files: packed.files,
             size: packed.size,

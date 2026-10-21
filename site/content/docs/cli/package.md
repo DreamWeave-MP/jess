@@ -6,7 +6,7 @@ extra:
   kind: reference
 ---
 
-{{ api_signature(value="jess pack <SOURCE> -o <FILE>") }}
+{{ api_signature(value="jess pack <SOURCE> -o <FILE> [--as-version VERSION]") }}
 
 {{ api_signature(value="jess package inspect <PACKAGE> | graph <PACKAGES>... [--layer ID]... | test <PACKAGE> | run <PACKAGE> [--target ID] [-- ARGS...]") }}
 
@@ -48,6 +48,7 @@ exports = ["@greeter"]
 | --- | --- |
 | `<SOURCE>` | The Package Source folder. |
 | `-o, --output <FILE>` | The JPK to write, replaced atomically. It can't be inside `SOURCE`: a package that contains its own previous build is a package nobody meant to ship. |
+| `--as-version <VERSION>` | Pack at this version instead of the one `jess.toml` says: the same payload with the manifest's `version` line revised, which is what a development build (`1.2.1-dev.57`) is. The source is untouched, and the JPK's digest is its own, since its manifest differs. |
 
 Writes the [canonical JPK](@/docs/api/jpk.md#the-canonical-writer): `jess.toml` and what its `include` names, sorted, each entry Zstandard or stored, every header field fixed. The same source gives the same bytes on every machine.
 

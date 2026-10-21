@@ -1,0 +1,54 @@
+--!strict
+-- @jess/http's pure half: what it makes of a URL and of a Location header. The wire half runs
+-- against a loopback server in jess's own test suite, where sockets can be granted.
+local http = require '@jess/http'
+local test = require '@jess/test'
+local expect = test.expect
+local suite = test.new()
+
+suite.describe('@jess/http', function()
+  suite.it('takes a URL apart and fills in the defaults', function()
+    local url = http.parseUrl 'HTTPS://Example.ORG/a/b?c=1#frag'
+    assert(url)
+    expect(url.scheme).toBe 'https'
+    expect(url.host).toBe 'example.org'
+    expect(url.port).toBe(443)
+    expect(url.target).toBe '/a/b?c=1'
+
+    local bare = http.parseUrl 'http://127.0.0.1:8080'
+    assert(bare)
+    expect(bare.port).toBe(8080)
+    expect(bare.target).toBe '/'
+
+    local six = http.parseUrl 'http://[::1]:81/x'
+    assert(six)
+    expect(six.host).toBe '[::1]'
+    expect(six.port).toBe(81)
+  end)
+
+  suite.it('refuses what it does not fetch', function()
+    local _, _, kind = http.parseUrl 'ftp://example.org/file'
+    expect(kind).toBe 'unsupportedScheme'
+
+    local _, _, credentials = http.parseUrl 'https://user:secret@example.org/'
+    expect(credentials).toBe 'credentialsInUrl'
+
+    local _, _, relative = http.parseUrl '/just/a/path'
+    expect(relative).toBe 'invalidUrl'
+
+    local _, _, port = http.parseUrl 'http://example.org:99999/'
+    expect(port).toBe 'invalidUrl'
+  end)
+
+  suite.it('resolves a Location header the way a browser does', function()
+    local base = 'https://example.org/packages/feed.json?x=1'
+    expect(http.resolveReference(base, 'https://mirror.example/f.json')).toBe 'https://mirror.example/f.json'
+    expect(http.resolveReference(base, '//mirror.example/f.json')).toBe 'https://mirror.example/f.json'
+    expect(http.resolveReference(base, '/other.json')).toBe 'https://example.org/other.json'
+    expect(http.resolveReference(base, 'sibling.json')).toBe 'https://example.org/packages/sibling.json'
+    expect(http.resolveReference(base, '../up/./file.jpk?y=2')).toBe 'https://example.org/up/file.jpk?y=2'
+    expect(http.resolveReference(base, 'dir/')).toBe 'https://example.org/packages/dir/'
+  end)
+end)
+
+return suite

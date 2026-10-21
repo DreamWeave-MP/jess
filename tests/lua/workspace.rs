@@ -379,7 +379,7 @@ fn a_workspace_target_is_named_or_found_from_where_it_runs() {
         (
             Some("org.example.other:main"),
             &root,
-            "no member of the workspace is org.example.other",
+            "no member or pinned package of the workspace is org.example.other",
         ),
         (None, &root, "name a target to run"),
         (None, &root.join("tool/src"), "org.example.tool has no default_target"),
@@ -475,6 +475,9 @@ fn sync(root: &Path, artifacts: &[&Path], paths: &[&Path], locked: bool) -> Resu
         artifacts: artifacts.iter().map(|path| text(path)).collect(),
         paths: paths.iter().map(|path| text(path)).collect(),
         locked,
+        offline: true,
+        indexes: Vec::new(),
+        publishers: Vec::new(),
     };
     workspace::sync(&common::runtime(), &request).map_err(|error| error.to_string())
 }
@@ -948,9 +951,9 @@ fn a_lock_is_held_to_what_the_members_need() {
     // A lock this jess can't read, or that names a file outside the store, opens nothing.
     for (from_text, to_text, expected) in [
         (
-            "lock_version = 1",
             "lock_version = 2",
-            "is lock_version 2, and this jess reads lock_version 1",
+            "lock_version = 3",
+            "is lock_version 3, and this jess reads lock_version 2",
         ),
         (
             "id = \"org.example.words\"",
@@ -1037,4 +1040,104 @@ fn sync_keeps_packages_only_inside_the_workspace() {
     }
 
     sync(&root, &[], &[&jpks], false).unwrap();
+}
+
+/// A workspace file's `[dev-dependencies]` are the tools the workspace is developed with: `sync`
+/// pins them, `run` runs them, and no member depends on them. A workspace with no members may have
+/// them alone, which is what a site built by a tool it doesn't write is.
+#[test]
+fn a_workspace_of_tools_alone_pins_and_runs_them() {
+    let (temp, root) = scratch();
+    let (vendor, jpks) = (temp.path().join("vendor"), temp.path().join("jpks"));
+    write(
+        &root,
+        &[(
+            "jess-workspace.toml",
+            "manifest_version = 1\n\n[workspace]\nmembers = []\n\n[dev-dependencies]\n\"org.example.tool\" = \"1\"\n",
+        )],
+    );
+    member(
+        &vendor.join("tool"),
+        "tool",
+        "1.0.0",
+        "[dependencies]\n\"org.example.words\" = \"1\"\n\
+         [targets.main]\nkind = \"command\"\nentry = \"src/main.jsl\"\ncommand = \"build\"\n",
+    );
+    write(
+        &vendor.join("tool"),
+        &[("src/main.jsl", "assert(require('@words').name == 'words')\nreturn 0\n")],
+    );
+    member(&vendor.join("words"), "words", "1.1.0", "");
+    pack_all(&vendor, &jpks);
+
+    let before = from(&root);
+    assert_eq!(before.kind, "virtual");
+    assert_eq!(before.members.len(), 0);
+    assert_eq!(
+        before
+            .dev_dependencies
+            .iter()
+            .map(|d| (d.id.as_str(), d.requirement.as_str()))
+            .collect::<Vec<_>>(),
+        [("org.example.tool", "1")]
+    );
+    assert_eq!(before.lock.state, "stale");
+    assert!(
+        before.lock.problems.iter().any(|problem| problem
+            == "jess-workspace.toml [dev-dependencies] requires org.example.tool 1, which jess.lock doesn't pin"),
+        "{:#?}",
+        before.lock.problems
+    );
+
+    let synced = sync(&root, &[], &[&jpks], false).unwrap();
+    assert_eq!(synced.lock, "written");
+    assert_eq!(
+        synced.packages.iter().map(|package| package.id.as_str()).collect::<Vec<_>>(),
+        ["org.example.tool", "org.example.words"]
+    );
+    std::fs::remove_dir_all(&vendor).unwrap();
+    std::fs::remove_dir_all(&jpks).unwrap();
+
+    let after = from(&root);
+    assert_eq!(after.lock.state, "fresh", "{:#?}", after.lock);
+    run(&root, "org.example.tool:main").unwrap();
+    run(&root, "build").unwrap();
+    assert_eq!(sync(&root, &[], &[], true).unwrap().lock, "unchanged");
+
+    // A tool the file stops naming is a stale pin, like a dependency a member dropped.
+    workspace_file(&root, &[]);
+    let dropped = from(&root);
+    assert_eq!(dropped.lock.state, "stale");
+    assert!(
+        dropped
+            .lock
+            .problems
+            .iter()
+            .any(|problem| problem.contains("which nothing in the workspace requires")),
+        "{:#?}",
+        dropped.lock.problems
+    );
+
+    for (contents, expected) in [
+        (
+            "manifest_version = 1\n[workspace]\nmembers = []\n[dev-dependencies]\n\"Not An Id\" = \"1\"\n",
+            "[dev-dependencies]: 'Not An Id' is not a package id",
+        ),
+        (
+            "manifest_version = 1\n[workspace]\nmembers = []\n[dev-dependencies]\n\"org.example.tool\" = 1\n",
+            "[dev-dependencies] 'org.example.tool': requirement '1' is not a version requirement",
+        ),
+        (
+            "manifest_version = 1\n[workspace]\nmembers = []\n[dev-dependencies]\n\"org.example.tool\" = \"soon\"\n",
+            "[dev-dependencies] 'org.example.tool': requirement 'soon' is not a version requirement",
+        ),
+        (
+            "manifest_version = 1\ndev-dependencies = 1\n[workspace]\nmembers = []\n",
+            "[dev-dependencies] is a table of package ids to version requirements",
+        ),
+    ] {
+        write(&root, &[("jess-workspace.toml", contents)]);
+        let problem = failure(&Locate::Root(root.clone()));
+        assert!(problem.contains(expected), "{contents}: {problem}");
+    }
 }

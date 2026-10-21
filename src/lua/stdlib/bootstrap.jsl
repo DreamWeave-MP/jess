@@ -58,7 +58,8 @@ type WorkspaceModule = {
     workspace: unknown,
     artifacts: { string },
     paths: { string },
-    locked: boolean
+    locked: boolean,
+    remote: { offline: boolean, indexes: { string }, publishers: { string } }
   ) -> { [string]: unknown },
 }
 
@@ -66,7 +67,7 @@ type PackageModule = {
   read open: (location: string) -> Package,
   read peek: (location: string) -> Offer,
   read candidates: (folder: string) -> { Offer },
-  read pack: (source: string, output: string) -> { [string]: unknown },
+  read pack: (source: string, output: string, options: { version: string? }?) -> { [string]: unknown },
   read resolve: (packages: { Package }, request: { [string]: unknown }) -> (Plan, { Package }),
 }
 
@@ -93,6 +94,7 @@ type Mounted = {
   digest: string,
   dependencies: { string },
   managed: { Managed },
+  files: { string },
   read: (path: string) -> buffer?,
 }
 
@@ -275,6 +277,7 @@ local function activate(
       digest = opened.digest,
       dependencies = plan.packages[index].dependencies,
       managed = sortedManaged(opened.manifest.managed),
+      files = opened.files,
       read = opened.read,
     })
   end
@@ -313,20 +316,32 @@ local function workspaceTests(
   return workspaces.tests(located(start, explicit), names)
 end
 
---- Syncs the workspace at `start`'s lock and `.jess/packages` from the packages offered.
+--- Syncs the workspace at `start`'s lock and `.jess/packages` from the packages offered, and,
+--- unless `offline`, from the publishers named and the ones the indexes name.
 local function workspaceSync(
   start: string,
   explicit: boolean,
   artifacts: { string },
   paths: { string },
-  locked: boolean
+  locked: boolean,
+  offline: boolean,
+  indexes: { string },
+  publishers: { string }
 ): { [string]: unknown }
-  return workspaces.sync(located(start, explicit), artifacts, paths, locked)
+  return workspaces.sync(
+    located(start, explicit),
+    artifacts,
+    paths,
+    locked,
+    { offline = offline, indexes = indexes, publishers = publishers }
+  )
 end
 
 return table.freeze {
   inspect = inspect,
-  pack = package.pack,
+  pack = function(source: string, output: string, version: string?): { [string]: unknown }
+    return package.pack(source, output, if version then { version = version } else nil)
+  end,
   graph = graph,
   activate = activate,
   workspace = workspace,

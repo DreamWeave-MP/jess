@@ -104,6 +104,30 @@ end
 
 - **Errors:** `jess.granted: unknown capability '<name>'; a jess runtime can be granted ...` for a name no jess runtime can hold, so a misspelling isn't quietly `false`.
 
+## jess.payload
+
+{{ api_signature(value="jess.payload() -> { files: { string }, read: (path: string) -> buffer? }") }}
+
+The calling module's own package payload: `files`, every path in canonical order (`jess.toml`
+first, then the rest bytewise), and `read`, one file's bytes or `nil` for a path the payload
+lacks. It is how a package ships things that aren't Luau, templates, stylesheets, fonts, and hands
+them to whoever depends on it: the package exports a module that returns what `jess.payload()`
+gave it, and a dependent requires that module. Nothing reads another package's payload uninvited,
+and the same code answers the same from a Package Source and from the JPK packed from it.
+
+- **Returns:** a fresh table each call. `read` answers from the package's provider, the folder or
+  the archive, so it needs no capability of its own.
+- **Errors:** `jess.payload: <chunk> is a script, not a package's module, so it has no payload`
+  outside a package.
+
+```luau
+--!strict
+-- src/init.jsl of a theme package: its templates and stylesheets, for a site generator to read.
+local payload = jess.payload()
+
+return table.freeze { files = payload.files, read = payload.read }
+```
+
 ## jess.meta
 
 {{ api_signature(value="jess.meta(record: Record) -> RecordMeta; jess.meta(record: NifRecord) -> NifRecordMeta") }}

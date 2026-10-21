@@ -1,0 +1,8 @@
+--!strict
+local greeting = require '@tool/greeting'
+
+for index = 1, select('#', ...) do
+  print(greeting(tostring(select(index, ...))))
+end
+
+return 0

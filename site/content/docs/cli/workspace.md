@@ -6,7 +6,7 @@ extra:
   kind: reference
 ---
 
-{{ api_signature(value="jess workspace [--workspace FOLDER] info | targets | graph [TARGET] | run [TARGET] [--capability NAME]... [--trusted] [-- ARGS...] | test [MEMBER]... | sync [ARTIFACT]... [--package-path FOLDER]... [--locked]") }}
+{{ api_signature(value="jess workspace [--workspace FOLDER] info | targets | graph [TARGET] | run [TARGET] [--capability NAME]... [--trusted] [-- ARGS...] | test [MEMBER]... | sync [ARTIFACT]... [--package-path FOLDER]... [--publisher URL]... [--index URL]... [--locked] [--offline]") }}
 
 A **workspace** is a set of [Package Sources](@/docs/scripting/packages.md) developed together: a tool and the library it uses, an application and its editor. It saves you assembling `--package` and `--package-path` by hand for every command, and it makes what the members depend on beyond each other the same on every machine. It is a development arrangement and nothing more. A package's identity, its digest, and what its modules may `require` are its own manifest's business, in a workspace or out of one.
 
@@ -40,6 +40,20 @@ members = [".", "tools/greeter"]
 Each member is a folder below the workspace's root holding a `jess.toml`, written as folder names joined by `/`; `"."` is the root's own package. There are no globs, no `..`, no absolute paths, and no backslashes. A member reached through a link must land inside the workspace, and must not be another member under a second name. Two members may not differ only in case, since some filesystems can't tell them apart, and may not share a package id. A member may not have a workspace file of its own: workspaces don't nest. Every one of these is an error naming the file and the member, before anything runs.
 
 `jess-workspace.toml` is its own file, not a table in `jess.toml`, so a package's manifest, its digest, and its JPK never carry how it happened to be developed. A root whose file doesn't list `"."` is **virtual**: a folder of members with no package of its own.
+
+The file may also name the tools the workspace is developed with:
+
+```toml
+manifest_version = 1
+
+[workspace]
+members = []
+
+[dev-dependencies]
+"org.dreamweave.mod-template" = "0.3"
+```
+
+A workspace's `[dev-dependencies]` are package ids and [version requirements](@/docs/api/package.md#package-satisfies), as a manifest states them. `sync` pins them in `jess.lock` and keeps them in `.jess/packages` like anything a member needs, and `run` runs their targets over the workspace. No member depends on them: they are the workspace's, so no package's manifest or digest says what built it. A workspace may have them and no members at all, as this one does: a folder of content that a tool it doesn't write turns into something.
 
 ## Which workspace
 
@@ -76,6 +90,7 @@ members:
   tests: []
 - id: org.example.greeter
   ...
+dev_dependencies: []
 lock:
   file: false
   state: stale
@@ -109,13 +124,13 @@ $ jess workspace targets
 
 | Argument / option | Does |
 | --- | --- |
-| `[TARGET]` | The target to run. Without one, the default target of the member the current folder is in. |
+| `[TARGET]` | The target to run, a member's or a pinned package's. Without one, the default target of the member the current folder is in. |
 | `--capability <NAME>` | Grant a capability the target declares (repeatable). |
 | `--trusted` | Grant everything the target declares. |
 | `--frames <N>` | For an application target: stop after N frames, unless it stops itself first. Refused for a command target. |
 | `-- ARGS...` | Arguments for the target, which gets them as `...` and in the global `arg` table. |
 
-A target is named `<package id>:<target id>`; by a target id or a `command` name that only one target in the workspace has; or by a member's package id, for its `default_target`. A name two targets answer to is an error listing both.
+A target is named `<package id>:<target id>`; by a target id or a `command` name that only one target in the workspace has; or by a package id, for its `default_target`. The members' targets count, and so do the targets of the packages `jess.lock` pins: a tool a workspace depends on runs over that workspace by its command name, with nothing in the workspace wrapping it. That is how a DreamWeave site runs the Mod Template it pins: `jess workspace run --trusted dreamweave-build`. A name two targets answer to is an error listing both; `targets` lists the members' alone.
 
 The target runs as [`jess package run`](@/docs/cli/package.md#jess-package-run) runs one, command or [application](@/docs/scripting/applications.md): its package resolves over the other members and the packages `jess.lock` pins, each opened only when something needs it, and it runs with exactly the capabilities it declares, once you grant them. Being in a workspace grants nothing, and a member's modules still reach only the packages its own manifest declares. A command target's first returned number is the exit status; an application's is the status it asked to stop with.
 
@@ -206,9 +221,12 @@ Runs the tests of the members named, by package id or path, or of every member t
 | --- | --- |
 | `[ARTIFACT]...` | A package offered outright: a Package Source folder or a `.jpk`. For its id, it is the one. |
 | `--package-path <FOLDER>` | A folder of packages offered (repeatable): every Package Source folder and `.jpk` directly inside it. |
-| `--locked` | Fail rather than change `jess.lock`. Packages it already pins may still be put in `.jess/packages`. |
+| `--publisher <URL>` | A publisher (repeatable): a DreamWeave site's `dreamweave.json`, or one project manifest. The authority for the packages its projects publish, and the way to say which publisher you mean when an index knows two. |
+| `--index <URL>` | A package index that says who publishes an id (repeatable). Without one, AsHyAmS's `network-data/jess-packages-v1.json`; `JESS_REGISTRY_URL` names another. |
+| `--locked` | Fail rather than change `jess.lock`. Packages it already pins may still be put in `.jess/packages`, from their publishers or from what is offered. |
+| `--offline` | Ask no publisher: only what is offered and kept. `JESS_OFFLINE=1` says the same. |
 
-Pins what the members depend on beyond each other, transitively, dev-dependencies included, and keeps each of those packages as a JPK in `.jess/packages`. A Package Source offered is packed there and a JPK copied there, each checked against the digest it was chosen by; `jess.lock` is written last, so an interrupted sync never leaves a lock pointing at half a file.
+Pins what the members depend on beyond each other, transitively, dev-dependencies included, and the workspace file's own `[dev-dependencies]`, and keeps each of those packages as a JPK in `.jess/packages`. A Package Source offered is packed there and a JPK copied there, each checked against the digest it was chosen by; an archive a publisher serves is downloaded there, checked against the SHA-256 its manifest declares and then, opened, against the content digest, and kept only when both hold. `jess.lock` is written last, so an interrupted sync never leaves a lock pointing at half a file.
 
 ```text
 $ jess workspace sync ../words.jpk ../style.jpk
@@ -233,6 +251,7 @@ How a package is chosen for each id:
 3. A package named outright is the one for its id.
 4. Otherwise, what `jess.lock` already pins, as long as it still meets every requirement and is kept or offered. A newer version turning up on a package path moves nothing.
 5. Otherwise, the one package offered that meets every requirement. Two that would each do are an error naming both; name the one you mean.
+6. Otherwise, unless `--offline`, the newest available version from the one publisher that lists the id: a site or manifest named with `--publisher`, or the manifest an index says publishes it. An index that knows two publishers is an error naming both manifests; `--publisher` picks one. Nothing chooses a publisher for you.
 
 Ids are settled in order, so nothing depends on how a folder happens to list, and settled again whenever a package chosen later requires something an earlier choice doesn't meet: a pinned `words` 1.2.0 gives way to an offered 1.3.0 as soon as a new `style` asks for `^1.3`. A choice that still meets everything stays put. That is the whole search: no trying every combination, and no "pick the highest". When no one version can satisfy everyone, the error says who wanted what.
 
@@ -246,14 +265,35 @@ error: workspace: nothing offered for org.example.words is one the workspace can
 offer one with --package-path or by file
 ```
 
-Nothing is fetched. There is no registry yet, so there is no `--offline` either: everything sync does is already offline, and what isn't offered or kept isn't there.
+Nothing is fetched while something offered or kept will do: a workspace whose packages are all handed to it by file never touches the network, and neither does one whose lock pins what `.jess/packages` holds. The network is reached only for an id nothing local satisfies, and `--offline` forbids even that.
+
+## Publishers and indexes
+
+A **publisher** is a DreamWeave site, and a Jess package on it is a project like any mod: one repository, built with the Mod Template, whose releases are the package's versions. The project's **manifest** (protocol `schema_version` 3) lists each release with a `jpk` artifact: the package's content digest, the archive's SHA-256, and where the archive downloads from. The manifest is the authority for what it lists; the site's `dreamweave.json` says which project publishes which package. An **index** is somebody's listing of which sites publish which ids, such as AsHyAmS's `network-data/jess-packages-v1.json`; sync reads it for one thing, who to ask, and believes nothing else in it. Both are documented on the [AsHyAmS site](https://dreamweave-mp.github.io/AsHyAmS/about/packages/).
+
+A package from a publisher is pinned with its publisher:
+
+```toml
+[[package]]
+id = "org.dreamweave.site"
+version = "0.1.0"
+digest = "778b9e0e53f146dac8b5669ee93edcc692140851bed6cf7e018032c784e9bbc8"
+source = "publisher"
+manifest = "https://publisher.example/dreamweave/projects/7f3c1a2e-5b6d-4e8f-9a0b-1c2d3e4f5a6b.json"
+artifact_sha256 = "9fa73580fbe00766413be59765a5f8bd8d18ec0af87005c86975b31adea78742"
+dependencies = []
+```
+
+`digest` is what every lock pins, the package's content; `artifact_sha256` is the archive file the publisher served. A restore (`sync --locked` on a clean checkout) reads that manifest, finds the pinned version, and refuses to download if the manifest now describes different bytes for it: a publisher whose story changed is a reason to stop, not to accept. A file offered with the same content restores the package too, offline, and the lock keeps saying where it was published. Nothing ever moves a pin to another publisher because an index says the package moved; sync without `--locked` chooses again, and says so in the lock.
+
+Fetching is the host's own doing, in a runtime that runs no package code and holds `network.dns.resolve` and `network.tcp.connect` for the sync alone. No package gains a network capability because the workspace fetched it.
 
 ## jess.lock
 
 ```toml
 # Written by `jess workspace sync`: what the members depend on beyond each other, pinned.
 # Change a member's dependencies and sync again rather than editing this.
-lock_version = 1
+lock_version = 2
 
 [[package]]
 id = "org.example.style"
@@ -270,7 +310,7 @@ source = "local"
 dependencies = []
 ```
 
-One canonical form: sorted, no timestamps, no paths. The same pins write the same bytes on every machine, and a workspace moved or copied somewhere else is the same workspace. Members aren't in it: they are loose source you edit, and pinning every edit would be a lock that changes every time you save. The requirements aren't in it either, since those are the manifests'; the lock records what was chosen for them.
+One canonical form: sorted, no timestamps, no paths. The same pins write the same bytes on every machine, and a workspace moved or copied somewhere else is the same workspace. A `lock_version = 1` file, which pinned local packages only, still reads; the next sync that changes it writes version 2. Members aren't in it: they are loose source you edit, and pinning every edit would be a lock that changes every time you save. The requirements aren't in it either, since those are the manifests'; the lock records what was chosen for them.
 
 Each pinned package is kept as `.jess/packages/<id>-<version>-<digest>.jpk`, so two builds of one version are two files, and the lock says which one runs. `sync` writes only inside the workspace: a `.jess` or `.jess/packages` that links somewhere outside it is refused before anything is written.
 

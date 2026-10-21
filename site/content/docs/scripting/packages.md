@@ -73,7 +73,7 @@ Dreamwind's own is [`jpk/dreamwind/jess.toml`](https://github.com/DreamWeave-MP/
 | --- | --- |
 | `manifest_version` | `1`. |
 | `package.id` | The package's identity: two or more lowercase words joined by dots, like a reversed domain. Never inferred from a file name. |
-| `package.version` | `major.minor.patch`. |
+| `package.version` | `major.minor.patch`, or a pre-release of one, `1.2.1-dev.57`: see [version requirements](@/docs/api/package.md#package-satisfies). |
 | `package.jess_api` | `"1"`, the package API generation this jess provides. It moves when the package contract breaks, not when jess's version does. |
 | `package.include` | The payload: folders and files, relative to the manifest, that ship. `jess.toml` always does, and the tests the manifest names must be among them. Everything else (benchmarks, `.git`, `target/`) doesn't, without an ignore list, and neither do an editor's or a merge tool's leftovers (`*.bak*`, `*~`, `*.orig`) under an included folder. |
 | `package.tests` | Test modules for [`jess package test`](@/docs/cli/package.md#jess-package-test). Each must be in the payload, under a folder `include` names: tests and their fixtures ship in the JPK. |

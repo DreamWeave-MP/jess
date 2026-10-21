@@ -6,6 +6,15 @@
 -- The host's alone: nothing a script requires reaches it. Opening a workspace reads its file, its
 -- members' manifests, and its lock, and runs nothing. Only `sync` writes, and only `jess.lock` and
 -- `.jess/packages`.
+--
+-- What a member needs beyond the workspace comes from packages offered by file, from what the lock
+-- already pins, or, when nothing local will do, from a publisher: the DreamWeave project whose
+-- releases are the package, as its manifest (protocol schema_version 3) lists them, found through
+-- an index such as AsHyAmS or named outright as a site or a manifest. The manifest is the
+-- authority, the index only says who publishes an id, and an archive is kept only once its bytes
+-- match the manifest's SHA-256 and its content the digest the lock pins. A lock that pins a
+-- publisher source restores from that manifest, from `.jess/packages`, or from any file offered
+-- with the same content, and never quietly from anywhere else.
 
 type Host = {
   read readFile: (path: string) -> buffer?,
@@ -36,6 +45,7 @@ type Target = {
 type Manifest = {
   read id: string,
   read version: string,
+  read jessApi: string,
   read defaultTarget: string?,
   read dependencies: { [string]: string },
   read devDependencies: { [string]: string },
@@ -59,6 +69,7 @@ type PackageModule = {
   read candidates: (folder: string) -> { Offer },
   read pack: (source: string, output: string) -> { read digest: string },
   read satisfies: (version: string, requirement: string) -> boolean,
+  read requirement: (requirement: unknown, what: string) -> string,
 }
 
 type Requirement = { id: string, requirement: string }
@@ -72,14 +83,69 @@ export type Member = {
 }
 
 --- A package `jess.lock` pins: exactly which one, where it came from, and the packages it
---- depends on.
+--- depends on. A `publisher` source names the manifest of the DreamWeave project that publishes
+--- the package and the SHA-256 of the archive it served, so a restore reads the same publisher
+--- and checks the same bytes.
 type Locked = {
   read id: string,
   read version: string,
   read digest: string,
-  read source: string,
+  read source: 'local' | 'publisher',
+  read manifest: string?,
+  read artifactSha256: string?,
   read dependencies: { string },
 }
+
+--- Where `sync` may look beyond the files it is offered: nowhere when `offline`; otherwise the
+--- publishers named outright, which are authorities, and the indexes, which only say who
+--- publishes an id.
+export type Remote = {
+  read offline: boolean,
+  read indexes: { string },
+  read publishers: { string },
+}
+
+--- The archive of one release: the `jpk` artifact as the manifest lists it.
+type ReleaseArtifact = {
+  read filename: string,
+  read size: number,
+  read sha256: string,
+  --- Download URLs, the publisher's own first.
+  read sources: { string },
+}
+
+--- One release of a package as the manifest of the project publishing it lists it: the release
+--- carries one `jpk` artifact, whose `jess` block says what package it is.
+type Release = {
+  read version: string,
+  read jessApi: string,
+  read status: 'available' | 'yanked' | 'deprecated',
+  read contentDigest: string,
+  read dependencies: { [string]: string },
+  read artifact: ReleaseArtifact,
+}
+
+--- A DreamWeave project manifest (protocol schema_version 3) that publishes a Jess package: its
+--- URL, the project's name, the package id, and the releases that are the package, newest first.
+type Listing = {
+  read url: string,
+  read publisher: string,
+  read id: string,
+  read versions: { Release },
+}
+
+--- A version of a package a manifest offers, before its archive is downloaded.
+type RemoteOffer = { read listing: Listing, read entry: Release }
+
+type HttpResponse = { read status: number, read body: buffer, read url: string }
+type HttpModule = {
+  read get: (
+    url: string,
+    options: { maxBytes: number?, timeoutMs: number? }?
+  ) -> (HttpResponse?, string?, string?),
+}
+type JsonModule = { read decode: (text: string) -> unknown, read null: unknown }
+type BytesModule = { read sha256: (data: buffer | string) -> string }
 
 --- What `jess.lock` pins, and whether that is what the members need: `fresh` when it is,
 --- `stale` when the members need something it doesn't pin, or something else, and `missing` when
@@ -98,16 +164,57 @@ export type Workspace = {
   --- names members only, `implicit` for a package no workspace lists.
   read kind: 'package' | 'virtual' | 'implicit',
   read members: { Member },
+  --- The tools the workspace is developed with, as its file's `[dev-dependencies]` names them:
+  --- pinned by `sync`, run by `run`, and no member's dependency. A workspace with no members may
+  --- have these alone.
+  read devDependencies: { [string]: string },
   read lock: Lock,
   --- Why a package that has a workspace above it isn't that workspace's member.
   read note: string?,
 }
 
 local WorkspaceFile, ManifestFile, LockFile = 'jess-workspace.toml', 'jess.toml', 'jess.lock'
-local Generated, LockVersion = '.jess', 1
+
+local function plainName(text: string, pattern: string): boolean
+  return string.find(text, pattern) ~= nil and not string.find(text, '..', 1, true)
+end
+
+--- Whether `text` is an exact version as @jess/package reads one: `major.minor.patch`, with the
+--- identifiers of a pre-release after a hyphen.
+local function isVersion(text: string): boolean
+  return string.find(text, '^%d+%.%d+%.%d+$') ~= nil or string.find(text, '^%d+%.%d+%.%d+%-[%w%-]+[%w%-%.]*$') ~= nil
+end
+local Generated, LockVersion = '.jess', 2
+--- The lock versions this jess reads: 1 pinned local packages only.
+local ReadableLockVersions = { 1, LockVersion }
 local Store = `{Generated}/packages`
+--- The DreamWeave protocol version whose manifests publish Jess packages.
+local ProtocolVersion = '3'
+local IndexFormat, IndexFormatVersion = 'dreamweave-network-jess-packages', 1
+local ArchiveMediaType = 'application/vnd.jess.jpk'
+local MaxManifestBytes, MaxIndexBytes = 8 * 1024 * 1024, 64 * 1024 * 1024
+local FetchTimeoutMs, DownloadTimeoutMs = 30000, 300000
 
 local host: Host, package: PackageModule
+local httpModule: HttpModule?, jsonModule: JsonModule?, bytesModule: BytesModule?
+
+local function http(): HttpModule
+  if not httpModule then httpModule = (require :: (string) -> HttpModule) '@jess/http' end
+
+  return httpModule :: HttpModule
+end
+
+local function json(): JsonModule
+  if not jsonModule then jsonModule = (require :: (string) -> JsonModule) '@jess/json' end
+
+  return jsonModule :: JsonModule
+end
+
+local function bytes(): BytesModule
+  if not bytesModule then bytesModule = (require :: (string) -> BytesModule) '@dream/bytes' end
+
+  return bytesModule :: BytesModule
+end
 
 local function fail(message: string): never error(`workspace: {message}`, 0) end
 
@@ -156,15 +263,36 @@ local function readToml(path: string, text: buffer): { [string]: unknown }
   return document
 end
 
---- The members the workspace file at `root` lists, in its order.
-local function listed(root: string): { string }
+--- The `[dev-dependencies]` of the workspace file at `root`: package ids to version requirements,
+--- each as a manifest would state it.
+local function tooling(document: { [string]: unknown }, where: string): { [string]: string }
+  local requirements: { [string]: string } = {}
+  local section = document['dev-dependencies']
+
+  if section == nil then return requirements end
+
+  if type(section) ~= 'table' then fail(`{where}: [dev-dependencies] is a table of package ids to version requirements`) end
+
+  for id, requirement in section :: { [unknown]: unknown } do
+    if type(id) ~= 'string' or not plainName(id, '^[%l%d][%l%d%.%-]*$') then
+      fail(`{where} [dev-dependencies]: '{tostring(id)}' is not a package id`)
+    end
+
+    requirements[id] = package.requirement(requirement, `{where} [dev-dependencies] '{id}': requirement`)
+  end
+
+  return requirements
+end
+
+--- The members the workspace file at `root` lists, in its order, and its `[dev-dependencies]`.
+local function listed(root: string): ({ string }, { [string]: string })
   local where = `'{root}/{WorkspaceFile}'`
   local text = host.readFile(`{root}/{WorkspaceFile}`)
 
   if not text then fail(`{where} is not there`) end
 
   local document = readToml(`{root}/{WorkspaceFile}`, text :: buffer)
-  checkKeys(document, { 'manifest_version', 'workspace' }, where)
+  checkKeys(document, { 'manifest_version', 'workspace', 'dev-dependencies' }, where)
 
   if document.manifest_version ~= 1 then fail(`{where}: manifest_version must be 1`) end
 
@@ -191,7 +319,7 @@ local function listed(root: string): { string }
 
   if #paths ~= count then fail(`{where}: [workspace] members must be a list of folders`) end
 
-  return paths
+  return paths, tooling(document, where)
 end
 
 --- Where member `path` of the workspace at `root` is, or nil when nothing is there.
@@ -238,10 +366,6 @@ local function storeName(entry: { read id: string, read version: string, read di
 end
 
 --- Whether `text` can name a package in a file name: no separators, nothing that climbs.
-local function plainName(text: string, pattern: string): boolean
-  return string.find(text, pattern) ~= nil and not string.find(text, '..', 1, true)
-end
-
 --- The packages the `jess.lock` in `root` pins, or nil when it has none.
 local function readLock(root: string): { Locked }?
   local path = `{root}/{LockFile}`
@@ -253,7 +377,7 @@ local function readLock(root: string): { Locked }?
   local document = readToml(path, text :: buffer)
   checkKeys(document, { 'lock_version', 'package' }, where)
 
-  if document.lock_version ~= LockVersion then
+  if not table.find(ReadableLockVersions, document.lock_version) then
     fail(
       `{where} is lock_version {tostring(document.lock_version)}, and this jess reads lock_version {LockVersion}`
     )
@@ -272,24 +396,37 @@ local function readLock(root: string): { Locked }?
     if type(entry) ~= 'table' then fail(`{at} is not a table`) end
 
     local fields = entry :: { [string]: unknown }
-    checkKeys(fields, { 'id', 'version', 'digest', 'source', 'dependencies' }, at)
+    checkKeys(fields, { 'id', 'version', 'digest', 'source', 'manifest', 'artifact_sha256', 'dependencies' }, at)
 
     local id, version, digest, source = fields.id, fields.version, fields.digest, fields.source
+    local manifest, artifactSha256 = fields.manifest, fields.artifact_sha256
 
     if type(id) ~= 'string' or not plainName(id, '^[%l%d][%l%d%.%-]*$') then
       fail(`{at}: id must be a package id`)
     end
 
-    if type(version) ~= 'string' or not string.find(version, '^%d+%.%d+%.%d+$') then
-      fail(`{at}: version must be an exact version (1.2.3)`)
+    if type(version) ~= 'string' or not isVersion(version) then
+      fail(`{at}: version must be an exact version (1.2.3, or 1.2.3-dev.4 for a pre-release)`)
     end
 
     if type(digest) ~= 'string' or not string.find(digest, '^%x+$') or #digest ~= 64 then
       fail(`{at}: digest must be a content digest, as package inspect shows one`)
     end
 
-    if source ~= 'local' then
-      fail(`{at}: source '{tostring(source)}' is not one this jess knows (local)`)
+    if source ~= 'local' and source ~= 'publisher' then
+      fail(`{at}: source '{tostring(source)}' is not one this jess knows (local, publisher)`)
+    end
+
+    if source == 'publisher' then
+      if type(manifest) ~= 'string' or not string.find(manifest, '^https?://') then
+        fail(`{at}: a publisher source needs manifest, the URL of the project manifest that publishes the package`)
+      end
+
+      if type(artifactSha256) ~= 'string' or not string.find(artifactSha256, '^%x+$') or #artifactSha256 ~= 64 then
+        fail(`{at}: a publisher source needs artifact_sha256, the SHA-256 of the archive the manifest lists`)
+      end
+    elseif manifest ~= nil or artifactSha256 ~= nil then
+      fail(`{at}: manifest and artifact_sha256 belong to a publisher source, and this one is local`)
     end
 
     local dependencies = fields.dependencies or {}
@@ -315,7 +452,9 @@ local function readLock(root: string): { Locked }?
         id = pinned,
         version = version :: string,
         digest = digest :: string,
-        source = 'local',
+        source = if source == 'publisher' then 'publisher' :: 'publisher' else 'local' :: 'local',
+        manifest = if source == 'publisher' then manifest :: string else nil,
+        artifactSha256 = if source == 'publisher' then artifactSha256 :: string else nil,
         dependencies = table.freeze(ids),
       }
     )
@@ -348,7 +487,7 @@ end
 --- one version pinned, nothing pinned that a member is or nothing requires, and every pinned
 --- package in `.jess/packages` as the lock says it is. Reads manifests; with `deep`, also opens
 --- every kept package and holds it to the digest the lock pins.
-local function lockState(root: string, members: { Member }, deep: boolean?): Lock
+local function lockState(root: string, members: { Member }, tools: { [string]: string }, deep: boolean?): Lock
   local entries = readLock(root)
   local packages: { Locked } = entries or {}
   local stale, missing = {} :: { string }, {} :: { string }
@@ -440,6 +579,8 @@ local function lockState(root: string, members: { Member }, deep: boolean?): Loc
     need(`{manifest.id} {manifest.version} (for its tests)`, manifest.devDependencies)
   end
 
+  need(`{WorkspaceFile} [dev-dependencies]`, tools)
+
   local index = 1
 
   while queue[index] do
@@ -481,8 +622,9 @@ local function declared(root: string): Workspace
   local folded, byLocation, byId =
     {} :: { [string]: string }, {} :: { [string]: string }, {} :: { [string]: string }
   local kind: 'package' | 'virtual' = 'virtual'
+  local paths, tools = listed(root)
 
-  for _, path in listed(root) do
+  for _, path in paths do
     local lower = string.lower(path)
 
     if folded[lower] == path then fail(`{where} lists '{path}' twice`) end
@@ -533,7 +675,8 @@ local function declared(root: string): Workspace
     root = root,
     kind = kind,
     members = table.freeze(members),
-    lock = lockState(root, members),
+    devDependencies = table.freeze(tools),
+    lock = lockState(root, members, tools),
     note = nil :: string?,
   }
 end
@@ -546,7 +689,8 @@ local function implicit(folder: string, note: string?): Workspace
     root = folder,
     kind = 'implicit' :: 'implicit',
     members = members,
-    lock = lockState(folder, members),
+    devDependencies = table.freeze {},
+    lock = lockState(folder, members, {}),
     note = note,
   }
 end
@@ -628,16 +772,47 @@ local function verify(workspace: Workspace): Workspace
     root = workspace.root,
     kind = workspace.kind,
     members = workspace.members,
-    lock = lockState(workspace.root, workspace.members, true),
+    devDependencies = workspace.devDependencies,
+    lock = lockState(workspace.root, workspace.members, workspace.devDependencies, true),
     note = workspace.note,
   }
 end
 
---- Every member's targets, `<package id>:<target id>`, for messages.
+--- A package a workspace can run a target of: a member, or a package its lock pins, opened from
+--- `.jess/packages`. A pinned package's `path` is where it is kept, for messages.
+type Runnable = Member & { read pinned: Locked? }
+
+--- The packages the lock pins, as runnables: each read from the store, which `universe` has already
+--- held to the lock. One the store lacks is left out; `universe` says so when it is run.
+local function pinnedRunnables(workspace: Workspace): { Runnable }
+  local runnables: { Runnable } = {}
+
+  for _, entry in workspace.lock.packages do
+    local location = `{workspace.root}/{storeName(entry)}`
+    -- A damaged or missing JPK is reported where it is resolved, not here.
+    local ok, offer = pcall(package.peek, location)
+
+    if not ok then continue end
+
+    table.insert(runnables, table.freeze { path = storeName(entry), location = location, manifest = offer.manifest, pinned = entry })
+  end
+
+  return runnables
+end
+
+--- The members, then the pinned packages, as what a target can be chosen from.
+local function runnables(workspace: Workspace): { Runnable }
+  local all: { Runnable } = [for found in workspace.members => table.freeze { path = found.path, location = found.location, manifest = found.manifest, pinned = nil :: Locked? }]
+  table.move(pinnedRunnables(workspace), 1, #pinnedRunnables(workspace), #all + 1, all)
+
+  return all
+end
+
+--- Every runnable's targets, `<package id>:<target id>`, for messages.
 local function qualified(workspace: Workspace): string
   local names = {}
 
-  for _, found in workspace.members do
+  for _, found in runnables(workspace) do
     for id in found.manifest.targets do
       table.insert(names, `{found.manifest.id}:{id}`)
     end
@@ -662,10 +837,12 @@ local function holding(workspace: Workspace, folder: string): Member?
   return found
 end
 
---- The member and target id `name` names: `<package id>:<target id>`; a target id or a command
---- name no other target in the workspace has; or a member's package id, for its default target.
---- Without a name, the default target of the member holding `cwd`.
-local function choose(workspace: Workspace, name: string?, cwd: string): (Member, string)
+--- The package and target id `name` names, among the members and the packages the lock pins:
+--- `<package id>:<target id>`; a target id or a command name no other target in the workspace
+--- has; or a package id, for its default target. Without a name, the default target of the member
+--- holding `cwd`. A tool a workspace depends on runs this way, with the workspace to resolve
+--- over, and nothing in the workspace has to wrap it.
+local function choose(workspace: Workspace, name: string?, cwd: string): (Runnable, string)
   local available = `the workspace has: {qualified(workspace)}`
 
   if not name then
@@ -679,14 +856,17 @@ local function choose(workspace: Workspace, name: string?, cwd: string): (Member
       fail(`{manifest.id} has no default_target; name a target to run; {available}`)
     end
 
-    return found :: Member, manifest.defaultTarget :: string
+    local member = found :: Member
+
+    return table.freeze { path = member.path, location = member.location, manifest = member.manifest, pinned = nil :: Locked? }, manifest.defaultTarget :: string
   end
 
   local text = name :: string
   local owner, wanted = string.match(text, '^([^:]+):(.+)$')
+  local candidates = runnables(workspace)
 
   if owner and wanted then
-    for _, found in workspace.members do
+    for _, found in candidates do
       if found.manifest.id ~= owner then continue end
 
       if not found.manifest.targets[wanted] then
@@ -696,13 +876,13 @@ local function choose(workspace: Workspace, name: string?, cwd: string): (Member
       return found, wanted
     end
 
-    fail(`no member of the workspace is {owner}; {available}`)
+    fail(`no member or pinned package of the workspace is {owner}; {available}`)
   end
 
-  local matches: { { member: Member, target: string } } = {}
+  local matches: { { member: Runnable, target: string } } = {}
   local undefaulted: string?
 
-  for _, found in workspace.members do
+  for _, found in candidates do
     local manifest = found.manifest
 
     if manifest.id == text then
@@ -746,7 +926,7 @@ end
 --- What `chosen`'s dependencies resolve over, each opened only when needed: the other members, and
 --- the packages `jess.lock` pins, from `.jess/packages`, each held to its pinned digest. A lock
 --- that isn't what the members need is an error here, never something resolved around.
-local function universe(workspace: Workspace, chosen: Member): { [string]: unknown }
+local function universe(workspace: Workspace, chosen: Runnable): { [string]: unknown }
   local lock = workspace.lock
 
   if lock.state ~= 'fresh' then
@@ -755,17 +935,20 @@ local function universe(workspace: Workspace, chosen: Member): { [string]: unkno
       else "pins packages .jess/packages doesn't hold"
     local fix = if lock.state == 'stale'
       then 'jess workspace sync'
-      else 'jess workspace sync, offering them with --package-path or by file'
+      else 'jess workspace sync --locked, which restores them from their publishers, or from --package-path or a file'
     fail(
       `{workspace.root}/{LockFile} {what}:\n  {table.concat(lock.problems, '\n  ')}\nrun {fix}`
     )
   end
 
-  local candidates = [for found in workspace.members if found ~= chosen => found.location]
+  local candidates = [for found in workspace.members if found.location ~= chosen.location => found.location]
   local pins = {}
 
   for _, entry in lock.packages do
-    table.insert(candidates, `{workspace.root}/{storeName(entry)}`)
+    local location = `{workspace.root}/{storeName(entry)}`
+
+    if location ~= chosen.location then table.insert(candidates, location) end
+
     table.insert(pins, { id = entry.id, digest = entry.digest })
   end
 
@@ -833,6 +1016,12 @@ local function encodeLock(packages: { Locked }): string
     table.insert(lines, `version = "{entry.version}"`)
     table.insert(lines, `digest = "{entry.digest}"`)
     table.insert(lines, `source = "{entry.source}"`)
+
+    if entry.source == 'publisher' then
+      table.insert(lines, `manifest = "{entry.manifest}"`)
+      table.insert(lines, `artifact_sha256 = "{entry.artifactSha256}"`)
+    end
+
     table.insert(lines, `dependencies = [{table.concat(dependencies, ', ')}]`)
   end
 
@@ -861,9 +1050,375 @@ local function storeFolder(root: string)
   inside(store)
 end
 
---- A package sync selected, whether `.jess/packages` already holds it, and whether it was named
---- outright, which no requirement overrides.
-type Choice = { package: Package, stored: boolean, named: boolean }
+local function isHex64(value: unknown): boolean
+  return type(value) == 'string' and #(value :: string) == 64 and string.find(value :: string, '^%x+$') ~= nil
+end
+
+local function isUrl(value: unknown): boolean
+  return type(value) == 'string' and string.find(value :: string, '^https?://[^/]') ~= nil
+end
+
+--- `url` fetched and decoded as a JSON object, within `maxBytes`, or a failure that names it.
+local function fetchJson(url: string, what: string, maxBytes: number): { [string]: unknown }
+  if not isUrl(url) then fail(`{what} '{url}' is not an http(s) URL`) end
+
+  local response, message, kind = http().get(url, { maxBytes = maxBytes, timeoutMs = FetchTimeoutMs })
+
+  if not response then fail(`{what} {url} could not be read: {kind}: {message}`) end
+
+  local answer = response :: HttpResponse
+
+  if answer.status ~= 200 then fail(`{what} {url} answered HTTP {answer.status}`) end
+
+  -- The decoder throws on malformed JSON, with a position and no URL.
+  local ok, document = pcall(json().decode, buffer.tostring(answer.body))
+
+  if not ok then fail(`{what} {url} is not JSON: {document}`) end
+
+  if type(document) ~= 'table' then fail(`{what} {url} is not a JSON object`) end
+
+  return document :: { [string]: unknown }
+end
+
+--- The `jpk` artifact of a release, when it carries one: the release is then a version of the
+--- Jess package the artifact's `jess` block names. Checked field by field; a release of
+--- something else answers nothing.
+local function packageRelease(value: unknown, at: string): (Release?, string?)
+  if type(value) ~= 'table' then fail(`{at} is not an object`) end
+
+  local fields = value :: { [string]: unknown }
+
+  if type(fields.artifacts) ~= 'table' then fail(`{at}: artifacts must be a list`) end
+
+  local archive: { [string]: unknown }?
+
+  for _, candidate in fields.artifacts :: { unknown } do
+    if type(candidate) == 'table' and (candidate :: { [string]: unknown }).format == 'jpk' then
+      if archive then fail(`{at}: two jpk artifacts; a package's release has one`) end
+
+      archive = candidate :: { [string]: unknown }
+    end
+  end
+
+  if not archive then return nil, nil end
+
+  local artifact = archive :: { [string]: unknown }
+  local version, status = fields.version, fields.status
+
+  if type(version) ~= 'string' or not isVersion(version) then
+    fail(`{at}: a package's version must be exact (1.2.3, or 1.2.3-dev.4 for a pre-release)`)
+  end
+
+  if status ~= 'available' and status ~= 'yanked' and status ~= 'deprecated' then
+    fail(`{at}: status must be available, yanked or deprecated`)
+  end
+
+  if type(artifact.jess) ~= 'table' then fail(`{at}: a jpk artifact needs a jess block`) end
+
+  local jess = artifact.jess :: { [string]: unknown }
+  local id, jessApi = jess.package, jess.jess_api
+
+  if type(id) ~= 'string' or not plainName(id, '^[%l%d][%l%d%.%-]*$') then fail(`{at}: jess.package must be a package id`) end
+
+  if type(jessApi) ~= 'string' then fail(`{at}: jess.jess_api must be a string`) end
+
+  if not isHex64(jess.content_digest) then fail(`{at}: jess.content_digest must be a Jess content digest`) end
+
+  local dependencies: { [string]: string } = {}
+
+  if type(jess.dependencies) ~= 'table' then fail(`{at}: jess.dependencies must be an object`) end
+
+  for dependency, requirement in jess.dependencies :: { [unknown]: unknown } do
+    if type(dependency) ~= 'string' or type(requirement) ~= 'string' then
+      fail(`{at}: jess.dependencies must map package ids to requirements`)
+    end
+
+    dependencies[dependency :: string] = requirement :: string
+  end
+
+  local filename, size, digests = artifact.filename, artifact.size, artifact.digests
+
+  if type(filename) ~= 'string' or string.find(filename, '[/\\]') then fail(`{at}: the artifact's filename must be a file name`) end
+
+  if artifact.media_type ~= ArchiveMediaType then fail(`{at}: a jpk artifact's media_type must be {ArchiveMediaType}`) end
+
+  if type(size) ~= 'number' or size < 1 or size ~= math.floor(size) then fail(`{at}: the artifact's size must be a byte count`) end
+
+  if type(digests) ~= 'table' or not isHex64((digests :: { [string]: unknown }).sha256) then
+    fail(`{at}: the artifact's digests.sha256 must be the archive's SHA-256`)
+  end
+
+  if type(artifact.sources) ~= 'table' then fail(`{at}: the artifact's sources must be a list`) end
+
+  local publisherUrls, mirrorUrls = {} :: { string }, {} :: { string }
+
+  for _, source in artifact.sources :: { unknown } do
+    if type(source) ~= 'table' then fail(`{at}: artifact sources must be objects`) end
+
+    local entry = source :: { [string]: unknown }
+
+    if not isUrl(entry.url) then fail(`{at}: an artifact source url is not an http(s) URL`) end
+
+    if entry.kind == 'publisher' then
+      table.insert(publisherUrls, entry.url :: string)
+    elseif entry.kind == 'mirror' then
+      table.insert(mirrorUrls, entry.url :: string)
+    else
+      fail(`{at}: an artifact source kind must be publisher or mirror`)
+    end
+  end
+
+  table.move(mirrorUrls, 1, #mirrorUrls, #publisherUrls + 1, publisherUrls)
+
+  if #publisherUrls == 0 then fail(`{at}: the artifact has no source`) end
+
+  local release: Release = table.freeze {
+    version = version :: string,
+    jessApi = jessApi :: string,
+    status = if status == 'yanked' then 'yanked' :: 'yanked' elseif status == 'deprecated' then 'deprecated' :: 'deprecated' else 'available' :: 'available',
+    contentDigest = jess.content_digest :: string,
+    dependencies = table.freeze(dependencies),
+    artifact = table.freeze {
+      filename = filename :: string,
+      size = size :: number,
+      sha256 = (digests :: { [string]: unknown }).sha256 :: string,
+      sources = table.freeze(publisherUrls),
+    },
+  }
+
+  return release, id :: string
+end
+
+--- `document`, fetched from `url`, as the project manifest it has to be: schema_version 3, one
+--- Jess package across every release that carries a jpk artifact, versions listed once.
+local function listingOf(url: string, document: { [string]: unknown }): Listing
+  local where = `the project manifest {url}`
+
+  if document.schema_version ~= ProtocolVersion or document.document ~= 'project' then
+    fail(`{where} is not a DreamWeave project manifest of schema_version {ProtocolVersion}`)
+  end
+
+  local project = document.project
+
+  if type(project) ~= 'table' or type((project :: { [string]: unknown }).name) ~= 'string' then
+    fail(`{where} names no project`)
+  end
+
+  if type(document.releases) ~= 'table' then fail(`{where} has no releases list`) end
+
+  local id: string?
+  local versions: { Release } = {}
+  local seen: { [string]: boolean } = {}
+
+  for index, value in document.releases :: { unknown } do
+    local release, package = packageRelease(value, `{where}: releases[{index}]`)
+
+    if not release then continue end
+
+    local found = release :: Release
+
+    if id and id ~= package then
+      fail(`{where} publishes more than one Jess package ({id}, {tostring(package)}); one project is one package`)
+    end
+
+    id = package
+
+    if seen[found.version] then fail(`{where} lists version {found.version} twice`) end
+
+    seen[found.version] = true
+    table.insert(versions, found)
+  end
+
+  if not id then fail(`{where} publishes no Jess package: no release carries a jpk artifact`) end
+
+  return table.freeze {
+    url = url,
+    publisher = (project :: { [string]: unknown }).name :: string,
+    id = id :: string,
+    versions = table.freeze(versions),
+  }
+end
+
+--- The manifest at `url`, read and held to its format.
+local function readManifest(url: string): Listing
+  return listingOf(url, fetchJson(url, 'the project manifest', MaxManifestBytes))
+end
+
+--- What a publisher URL names: a site's `dreamweave.json` (or the site, whose index is
+--- `dreamweave.json` under it), whose entries say which project publishes which package, or one
+--- project manifest. Answers package id to manifest URL, and the manifest itself when that is
+--- what was read, so it isn't fetched twice.
+local function readPublisher(url: string): ({ [string]: string }, Listing?)
+  local target = if string.sub(url, -1) == '/' then `{url}dreamweave.json` else url
+  local document = fetchJson(target, 'the publisher', MaxManifestBytes)
+
+  if document.document == 'project' then
+    local listing = listingOf(target, document)
+
+    return { [listing.id] = target }, listing
+  end
+
+  local where = `the site index {target}`
+
+  if document.schema_version ~= ProtocolVersion or document.document ~= 'index' then
+    fail(`{where} is not a DreamWeave site index of schema_version {ProtocolVersion}`)
+  end
+
+  if type(document.projects) ~= 'table' then fail(`{where} has no projects list`) end
+
+  local published: { [string]: string } = {}
+
+  for index, value in document.projects :: { unknown } do
+    if type(value) ~= 'table' then fail(`{where}: projects[{index}] is not an object`) end
+
+    local entry = value :: { [string]: unknown }
+    local package, manifest = entry.jess_package, entry.manifest
+
+    if package == nil then continue end
+
+    if type(package) ~= 'string' or not isUrl(manifest) then
+      fail(`{where}: projects[{index}] names a Jess package without a manifest URL`)
+    end
+
+    if published[package :: string] then fail(`{where} lists two projects publishing {package}`) end
+
+    published[package :: string] = manifest :: string
+  end
+
+  return published, nil
+end
+
+--- The sites an index says publish each package id: id to the distinct manifest URLs publishing
+--- it. An index is a cache somebody else keeps; nothing in it is believed beyond who to ask.
+local function readIndex(url: string): { [string]: { string } }
+  local document = fetchJson(url, 'the package index', MaxIndexBytes)
+  local where = `the package index {url}`
+
+  if document.format ~= IndexFormat or document.format_version ~= IndexFormatVersion then
+    fail(`{where} is not a {IndexFormat} document of format_version {IndexFormatVersion}`)
+  end
+
+  if type(document.packages) ~= 'table' then fail(`{where} has no packages list`) end
+
+  local claims: { [string]: { string } } = {}
+
+  for index, value in document.packages :: { unknown } do
+    if type(value) ~= 'table' then fail(`{where}: packages[{index}] is not an object`) end
+
+    local fields = value :: { [string]: unknown }
+    local id, manifestUrl = fields.id, fields.manifest_url
+
+    if type(id) ~= 'string' or not isUrl(manifestUrl) then
+      fail(`{where}: packages[{index}] needs an id and a manifest_url`)
+    end
+
+    local manifests = claims[id :: string] or {}
+
+    if not table.find(manifests, manifestUrl :: string) then table.insert(manifests, manifestUrl :: string) end
+
+    claims[id :: string] = manifests
+  end
+
+  for _, manifests in claims do
+    table.sort(manifests)
+  end
+
+  return claims
+end
+
+--- The archive of `offer`, from the first source whose bytes are the ones the manifest describes.
+local function download(offer: RemoteOffer): buffer
+  local artifact = offer.entry.artifact
+  local attempts: { string } = {}
+
+  for _, url in artifact.sources do
+    local response, message, kind =
+      http().get(url, { maxBytes = artifact.size, timeoutMs = DownloadTimeoutMs })
+
+    if not response then
+      table.insert(attempts, `{url}: {kind}: {message}`)
+      continue
+    end
+
+    local answer = response :: HttpResponse
+
+    if answer.status ~= 200 then
+      table.insert(attempts, `{url}: HTTP {answer.status}`)
+      continue
+    end
+
+    if buffer.len(answer.body) ~= artifact.size then
+      table.insert(attempts, `{url}: served {buffer.len(answer.body)} bytes, and the manifest says {artifact.size}`)
+      continue
+    end
+
+    local sha256 = bytes().sha256(answer.body)
+
+    if sha256 ~= artifact.sha256 then
+      table.insert(attempts, `{url}: the archive's sha256 is {sha256}, and the manifest says {artifact.sha256}`)
+      continue
+    end
+
+    return answer.body
+  end
+
+  fail(
+    `{offer.listing.id} {offer.entry.version} could not be downloaded from any source its manifest names:\n  {table.concat(attempts, '\n  ')}`
+  )
+end
+
+--- A package sync selected: which one, what it depends on, and where it comes from. A local
+--- choice is an opened package; a remote one is a manifest's release, downloaded once the choices
+--- settle. `named` is a package named outright, which no requirement overrides.
+type Choice = {
+  id: string,
+  version: string,
+  digest: string,
+  dependencies: { [string]: string },
+  package: Package?,
+  remote: RemoteOffer?,
+  stored: boolean,
+  named: boolean,
+  source: 'local' | 'publisher',
+  manifest: string?,
+  artifactSha256: string?,
+}
+
+--- A local choice. `pin` carries a publisher source over: the same content from a file offered or
+--- kept is still the publisher's package, and the lock keeps saying so.
+local function localChoice(opened: Package, stored: boolean, named: boolean, pin: Locked?): Choice
+  local fromPublisher = pin ~= nil and pin.source == 'publisher' and pin.digest == opened.digest
+
+  return {
+    id = opened.id,
+    version = opened.version,
+    digest = opened.digest,
+    dependencies = opened.manifest.dependencies,
+    package = opened,
+    remote = nil,
+    stored = stored,
+    named = named,
+    source = if fromPublisher then 'publisher' :: 'publisher' else 'local' :: 'local',
+    manifest = if fromPublisher then (pin :: Locked).manifest else nil,
+    artifactSha256 = if fromPublisher then (pin :: Locked).artifactSha256 else nil,
+  }
+end
+
+local function remoteChoice(offer: RemoteOffer): Choice
+  return {
+    id = offer.listing.id,
+    version = offer.entry.version,
+    digest = offer.entry.contentDigest,
+    dependencies = offer.entry.dependencies,
+    package = nil,
+    remote = offer,
+    stored = false,
+    named = false,
+    source = 'publisher' :: 'publisher',
+    manifest = offer.listing.url,
+    artifactSha256 = offer.entry.artifact.sha256,
+  }
+end
 
 --- Brings `jess.lock` and `.jess/packages` into line with what the members need beyond each
 --- other, from the packages offered: `artifacts`, Package Source folders and `.jpk` files named
@@ -884,10 +1439,52 @@ local function sync(
   workspace: Workspace,
   artifacts: { string },
   paths: { string },
-  locked: boolean
+  locked: boolean,
+  remote: Remote
 ): { [string]: unknown }
   local root = workspace.root
   local memberById, pins = {} :: { [string]: Member }, {} :: { [string]: Locked }
+
+  for _, url in remote.indexes do
+    if not isUrl(url) then fail(`index '{url}' is not an http(s) URL`) end
+  end
+
+  for _, url in remote.publishers do
+    if not isUrl(url) then fail(`publisher '{url}' is not an http(s) URL`) end
+  end
+
+  local listings: { [string]: Listing } = {}
+
+  --- The project manifest at `url`, read once per sync.
+  local function listingAt(url: string): Listing
+    if not listings[url] then listings[url] = readManifest(url) end
+
+    return listings[url]
+  end
+
+  local publishers: { [string]: { [string]: string } } = {}
+
+  --- What the publisher named at `url` publishes, package id to manifest URL, read once per sync.
+  local function publishedBy(url: string): { [string]: string }
+    if not publishers[url] then
+      local published, listing = readPublisher(url)
+
+      if listing then listings[(listing :: Listing).url] = listing :: Listing end
+
+      publishers[url] = published
+    end
+
+    return publishers[url]
+  end
+
+  local indexes: { { [string]: { string } } }?
+
+  --- Every index's claims, read once per sync and only when something needs them.
+  local function indexed(): { { [string]: { string } } }
+    if not indexes then indexes = [for url in remote.indexes => readIndex(url)] end
+
+    return indexes :: { { [string]: { string } } }
+  end
 
   for _, found in workspace.members do
     memberById[found.manifest.id] = found
@@ -958,6 +1555,8 @@ local function sync(
       need(`{manifest.id} {manifest.version} (for its tests)`, manifest.devDependencies)
     end
 
+    need(`{WorkspaceFile} [dev-dependencies]`, workspace.devDependencies)
+
     local walked: { [string]: boolean } = {}
     local more = true
 
@@ -970,7 +1569,7 @@ local function sync(
         if walked[id] or not choice then continue end
 
         walked[id], more = true, true
-        need(`{choice.package.id} {choice.package.version}`, choice.package.manifest.dependencies)
+        need(`{choice.id} {choice.version}`, choice.dependencies)
       end
     end
   end
@@ -1023,10 +1622,94 @@ local function sync(
     return first
   end
 
+  --- The newest available version of `id` in `listing` meeting every requirement, if any. A
+  --- yanked or deprecated version is never chosen anew; a lock that pins one still restores it.
+  local function newest(id: string, listing: Listing): RemoteOffer?
+    if listing.id ~= id then return nil end
+
+    for _, entry in listing.versions do
+      if entry.status == 'available' and fits(id, entry.version) then
+        return { listing = listing, entry = entry }
+      end
+    end
+
+    return nil
+  end
+
+  --- The pinned version of `id` from the manifest the lock names, held to the digests it pins.
+  local function pinnedRemote(id: string, pin: Locked): RemoteOffer
+    local listing = listingAt(pin.manifest :: string)
+    local entry: Release?
+
+    if listing.id == id then
+      for _, candidate in listing.versions do
+        if candidate.version == pin.version then entry = candidate end
+      end
+    end
+
+    if not entry then
+      fail(
+        `{id} {pin.version} is pinned to {pin.manifest}, which no longer lists that version; nothing else is reached for: offer the package by file, or sync without --locked to choose again`
+      )
+    end
+
+    local found = entry :: Release
+
+    if found.contentDigest ~= pin.digest or found.artifact.sha256 ~= pin.artifactSha256 then
+      fail(
+        `{id} {pin.version} at {pin.manifest} no longer describes the bytes jess.lock pins (content digest {pin.digest}, archive sha256 {pin.artifactSha256}); nothing is downloaded from a publisher whose story changed`
+      )
+    end
+
+    return { listing = listing, entry = found }
+  end
+
+  --- The one publisher of `id` the publishers named outright or the indexes know, or nothing.
+  local function discover(id: string): RemoteOffer?
+    local offers: { RemoteOffer } = {}
+
+    for _, url in remote.publishers do
+      local manifestUrl = publishedBy(url)[id]
+
+      if manifestUrl then
+        local offer = newest(id, listingAt(manifestUrl))
+
+        if offer then table.insert(offers, offer) end
+      end
+    end
+
+    if #offers > 1 then
+      local urls = [for offer in offers => offer.listing.url]
+      fail(`{id} is published by more than one publisher named here: {table.concat(urls, ', ')}; name one`)
+    end
+
+    if #offers == 1 then return offers[1] end
+
+    local manifests: { string } = {}
+
+    for _, claims in indexed() do
+      for _, url in claims[id] or {} do
+        if not table.find(manifests, url) then table.insert(manifests, url) end
+      end
+    end
+
+    table.sort(manifests)
+
+    if #manifests > 1 then
+      fail(
+        `{id} is published by more than one site: {table.concat(manifests, ', ')}; this jess chooses no publisher for you: name the one you mean with --publisher URL`
+      )
+    end
+
+    if #manifests == 0 then return nil end
+
+    return newest(id, listingAt(manifests[1]))
+  end
+
   local function pick(id: string): Choice
     local outright = named[id]
 
-    if outright then return { package = single(id, outright), stored = false, named = true } end
+    if outright then return localChoice(single(id, outright), false, true, pins[id]) end
 
     local pin, available = pins[id], offered[id] or {} :: { Offer }
 
@@ -1034,7 +1717,7 @@ local function sync(
       local stored = opened(`{root}/{storeName(pin)}`)
 
       if stored and stored.id == id and stored.version == pin.version and stored.digest == pin.digest then
-        return { package = stored, stored = true, named = false }
+        return localChoice(stored, true, false, pin)
       end
 
       for _, candidate in available do
@@ -1042,32 +1725,43 @@ local function sync(
 
         local same = package.open(candidate.location)
 
-        if same.digest == pin.digest then return { package = same, stored = false, named = false } end
+        if same.digest == pin.digest then return localChoice(same, false, false, pin) end
       end
+
+      if pin.source == 'publisher' and not remote.offline then return remoteChoice(pinnedRemote(id, pin)) end
     end
 
     local fitting = [for candidate in available if fits(id, candidate.version) => candidate]
 
-    if #fitting == 0 then
-      local pinned = if pin and fits(id, pin.version)
-        then `; jess.lock pins {pin.version}, which isn't in .jess/packages`
-        else ''
-      local unfit = if #available > 0
-        then `; offered, but not meeting that: {listed(available)}`
-        else ''
-      fail(
-        `nothing offered for {id} is one the workspace can use{pinned}{unfit}\n  {wantedBy(id)}\noffer one with --package-path or by file`
-      )
-    end
+    if #fitting > 0 then return localChoice(single(id, fitting), false, false, pin) end
 
-    return { package = single(id, fitting), stored = false, named = false }
+    local offer = if remote.offline then nil else discover(id)
+
+    if offer then return remoteChoice(offer :: RemoteOffer) end
+
+    local pinned = if pin and fits(id, pin.version)
+      then `; jess.lock pins {pin.version}, which isn't in .jess/packages`
+      else ''
+    local unfit = if #available > 0
+      then `; offered, but not meeting that: {listed(available)}`
+      else ''
+    local reach = if remote.offline
+      then 'offline, so no publisher was asked'
+      elseif #remote.indexes == 0 and #remote.publishers == 0 then 'no index or publisher to ask'
+      else 'no publisher or index named here lists it'
+    fail(
+      `nothing offered for {id} is one the workspace can use{pinned}{unfit}; {reach}\n  {wantedBy(id)}\noffer one with --package-path or by file, or name its publisher with --publisher URL`
+    )
   end
 
   -- Each round settles every id required, with what the members and the packages chosen so far
   -- require, and keeps any choice that still meets it; the next round sees what the new choices
   -- require. It stops at the round that changes nothing. A selection that keeps trading one
-  -- version for another is cut off after as many rounds as there are packages to choose between.
+  -- version for another is cut off after as many rounds as there are packages to choose between:
+  -- those offered here, those the lock pins, and every id a publisher was asked for, since a
+  -- round that only reaches further along a publisher's dependencies is discovery, not trading.
   local budget = #workspace.lock.packages + 2
+  local reached: { [string]: true } = {}
 
   for _, offers in named do
     budget += #offers
@@ -1083,7 +1777,13 @@ local function sync(
   while changed do
     rounds += 1
 
-    if rounds > budget then
+    local discovered = 0
+
+    for _ in reached do
+      discovered += 1
+    end
+
+    if rounds > budget + discovered then
       fail(
         `choosing what to pin never settled: {table.concat(moved, ', ')} kept changing; name the versions to pin with jess workspace sync <file>`
       )
@@ -1101,9 +1801,10 @@ local function sync(
     for _, id in sortedKeys(requirements) do
       local choice = chosen[id]
 
-      if choice and (choice.named or fits(id, choice.package.version)) then continue end
+      if choice and (choice.named or fits(id, choice.version)) then continue end
 
       chosen[id], changed = pick(id), true
+      reached[id] = true
       table.insert(moved, id)
     end
   end
@@ -1114,42 +1815,45 @@ local function sync(
     end
   end
 
-  local entries, installs, report = {} :: { Locked }, {} :: { Package }, {}
+  local entries, installs, report = {} :: { Locked }, {} :: { Choice }, {}
 
   for _, id in sortedKeys(chosen) do
     local choice = chosen[id]
-    local selected = choice.package
 
-    if not fits(id, selected.version) then
+    if not fits(id, choice.version) then
       fail(
-        `no one {id} meets every requirement on it; {selected.version} is the one selected\n  {wantedBy(id)}`
+        `no one {id} meets every requirement on it; {choice.version} is the one selected\n  {wantedBy(id)}`
       )
     end
 
     local present = choice.stored
 
     if not present then
-      local existing = opened(`{root}/{storeName(selected)}`)
-      present = existing ~= nil and existing.id == id and existing.digest == selected.digest
+      local existing = opened(`{root}/{storeName(choice)}`)
+      present = existing ~= nil and existing.id == id and existing.digest == choice.digest
     end
 
-    if not present then table.insert(installs, selected) end
+    if not present then table.insert(installs, choice) end
 
     table.insert(
       entries,
       table.freeze {
         id = id,
-        version = selected.version,
-        digest = selected.digest,
-        source = 'local',
-        dependencies = table.freeze(sortedKeys(selected.manifest.dependencies)),
+        version = choice.version,
+        digest = choice.digest,
+        source = choice.source,
+        manifest = choice.manifest,
+        artifactSha256 = choice.artifactSha256,
+        dependencies = table.freeze(sortedKeys(choice.dependencies)),
       }
     )
 
     table.insert(report, {
       id = id,
-      version = selected.version,
-      digest = selected.digest,
+      version = choice.version,
+      digest = choice.digest,
+      source = choice.source,
+      manifest = choice.manifest,
       installed = not present,
     })
   end
@@ -1168,24 +1872,78 @@ local function sync(
 
   if #installs > 0 then storeFolder(root) end
 
-  for _, selected in installs do
-    local path = `{root}/{storeName(selected)}`
+  --- Downloads `offer`'s archive, checks it against the manifest and `choice`, and writes it to `path`
+  --- only then. The bytes are checked as a file first, since the container reads files, under a
+  --- name no resolution ever offers.
+  local function install(choice: Choice, offer: RemoteOffer, path: string)
+    local data = download(offer)
+    local partial = `{path}.download`
+    host.replace(partial, data)
 
-    if selected.kind == 'jpk' then
-      local bytes = host.readFile(selected.location)
+    local written = opened(partial)
 
-      if not bytes then fail(`'{selected.location}' went away while it was being installed`) end
+    if not written then
+      host.remove(partial)
+      fail(`{choice.id} {choice.version}: the archive the publisher serves is not a package jess can open`)
+    end
 
-      host.replace(path, bytes :: buffer)
+    local archive = written :: Package
+    local problem: string?
+
+    if archive.id ~= choice.id or archive.version ~= choice.version then
+      problem = `it is {archive.id} {archive.version}`
+    elseif archive.digest ~= choice.digest then
+      problem = `its content digest is {archive.digest}, not the {choice.digest} the manifest declares`
+    elseif archive.manifest.jessApi ~= offer.entry.jessApi then
+      problem = `its jess_api is {archive.manifest.jessApi}, not the {offer.entry.jessApi} the manifest declares`
     else
-      package.pack(selected.location, path)
+      local declared = sortedKeys(archive.manifest.dependencies)
+      local listed = sortedKeys(offer.entry.dependencies)
+
+      if table.concat(declared, ' ') ~= table.concat(listed, ' ') then
+        problem = 'it declares dependencies the manifest does not list'
+      end
+
+      for _, dependency in declared do
+        if archive.manifest.dependencies[dependency] ~= offer.entry.dependencies[dependency] then
+          problem = `it requires {dependency} {archive.manifest.dependencies[dependency]}, and the manifest says {offer.entry.dependencies[dependency]}`
+        end
+      end
+    end
+
+    if problem then
+      host.remove(partial)
+      fail(`{choice.id} {choice.version} from {offer.listing.url}: the archive is not what the manifest describes: {problem}; nothing was kept`)
+    end
+
+    host.replace(path, data)
+    host.remove(partial)
+  end
+
+  for _, choice in installs do
+    local path = `{root}/{storeName(choice)}`
+
+    if choice.remote then
+      install(choice, choice.remote :: RemoteOffer, path)
+    else
+      local selected = choice.package :: Package
+
+      if selected.kind == 'jpk' then
+        local data = host.readFile(selected.location)
+
+        if not data then fail(`'{selected.location}' went away while it was being installed`) end
+
+        host.replace(path, data :: buffer)
+      else
+        package.pack(selected.location, path)
+      end
     end
 
     local written = opened(path)
 
-    if not written or written.id ~= selected.id or written.digest ~= selected.digest then
+    if not written or written.id ~= choice.id or written.digest ~= choice.digest then
       host.remove(path)
-      fail(`'{selected.location}' changed while it was being installed; sync again`)
+      fail(`{choice.id} {choice.version} changed while it was being installed; sync again`)
     end
   end
 
@@ -1247,6 +2005,8 @@ local function describe(workspace: Workspace): { [string]: unknown }
       version = entry.version,
       digest = entry.digest,
       source = entry.source,
+      manifest = entry.manifest,
+      artifactSha256 = entry.artifactSha256,
       dependencies = entry.dependencies,
       location = `{workspace.root}/{storeName(entry)}`,
     })
@@ -1256,6 +2016,7 @@ local function describe(workspace: Workspace): { [string]: unknown }
     root = workspace.root,
     kind = workspace.kind,
     members = members,
+    devDependencies = sortedRequirements(workspace.devDependencies),
     lock = {
       file = lock.file,
       state = lock.state,

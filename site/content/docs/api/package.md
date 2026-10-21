@@ -53,9 +53,11 @@ tests/run.jsl
 
 ## package.pack
 
-{{ api_signature(value="package.pack(source: string, output: string) -> JessPackResult") }}
+{{ api_signature(value="package.pack(source: string, output: string, options: { version: string? }?) -> JessPackResult") }}
 
-Packs the Package Source at `source` into the [canonical JPK](@/docs/api/jpk.md#the-canonical-writer) at `output`, written through a temporary file and a rename. Returns `{ path, digest, files, size }`. Only the payload goes in: `jess.toml` and what `include` names, which holds the tests the manifest names. Benchmarks, `.git`, and an editor's or a merge tool's leftovers (`*.bak*`, `*~`, `*.orig`) stay home. [`jess pack`](@/docs/cli/package.md#jess-pack) is this function.
+Packs the Package Source at `source` into the [canonical JPK](@/docs/api/jpk.md#the-canonical-writer) at `output`, written through a temporary file and a rename. Returns `{ path, version, digest, files, size }`. Only the payload goes in: `jess.toml` and what `include` names, which holds the tests the manifest names. Benchmarks, `.git`, and an editor's or a merge tool's leftovers (`*.bak*`, `*~`, `*.orig`) stay home. [`jess pack`](@/docs/cli/package.md#jess-pack) is this function.
+
+With `options.version`, the payload is packed at that version: the one `version` line of `jess.toml`'s `[package]` table is revised, every other byte stays, and the manifest, the id, the digest, and the files all read as revised. That is how a development build is made: the same files as the source, at `1.2.1-dev.57`, with a digest of its own, because its manifest differs. The source on disk is untouched.
 
 ## package.resolve
 
@@ -103,7 +105,13 @@ Parses and checks a `jess.toml`, with the same errors `open` gives. An unknown k
 
 {{ api_signature(value="package.satisfies(version: string, requirement: string) -> boolean") }}
 
-Whether `version` meets `requirement`. Requirements are Cargo's caret ranges and exact pins: `^1.2` (and `1.2`) is at least 1.2.0 and below 2.0.0, `^0.2` stays below 0.3.0, `^0.0.3` is exactly 0.0.3, and `=1.2.3` is exactly that.
+Whether `version` meets `requirement`. Requirements are Cargo's caret ranges and exact pins: `^1.2` (and `1.2`) is at least 1.2.0 and below 2.0.0, `^0.2` stays below 0.3.0, `^0.0.3` is exactly 0.0.3, and `=1.2.3` is exactly that. A version is `major.minor.patch`, optionally with a pre-release after a hyphen: dot-separated identifiers of ASCII letters, digits and hyphens, numeric ones without a leading zero, as `1.2.1-dev.57`. A pre-release precedes its release, and pre-releases order identifier by identifier, numbers numerically and below words, words bytewise, a shorter list first. A pre-release meets only the exact requirement that names it, `=1.2.1-dev.57`: no range ever picks one, so a development build is used by whoever asks for it and nobody else.
+
+## package.requirement
+
+{{ api_signature(value="package.requirement(requirement: unknown, what: string) -> string") }}
+
+`requirement` when it is a version requirement as `satisfies` reads one, and otherwise an error that starts with `what`: the same check a manifest's `[dependencies]` get, for a file that states requirements of its own, as `jess-workspace.toml` does.
 
 ## The content digest
 

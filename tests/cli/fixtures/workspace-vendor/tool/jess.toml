@@ -1,0 +1,26 @@
+manifest_version = 1
+
+# A tool a workspace depends on and runs, the way a site runs the DreamWeave template: a command
+# target that resolves over the workspace it is pinned in.
+[package]
+id = "org.example.tool"
+version = "1.0.0"
+jess_api = "1"
+default_target = "hello"
+include = ["src"]
+
+[dependencies]
+"org.example.words" = "1"
+
+[modules]
+"@tool/greeting" = "src/greeting.jsl"
+
+[[layer]]
+id = "example.tool"
+exports = ["@tool/greeting"]
+
+[targets.hello]
+kind = "command"
+command = "hello"
+entry = "src/hello.jsl"
+capabilities = []

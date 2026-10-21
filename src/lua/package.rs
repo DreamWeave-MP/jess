@@ -20,14 +20,14 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use l3i::Runtime;
-use l3i::bind::{ArgView, Call};
+use l3i::bind::{ArgView, Call, StackResults};
 use l3i::convert::{Exact, NewBuffer};
-use l3i::stack::Scope;
+use l3i::stack::{Frame, Scope, ValueView};
 use l3i::value::{Function, Table, Value};
 use serde::{Deserialize, Serialize};
 
 use crate::lua::convert;
-use crate::lua::{Bytes, Text, error};
+use crate::lua::{Bytes, Jess, Text, error};
 
 const BOOTSTRAP: &str = include_str!("stdlib/bootstrap.jsl");
 const BOOTSTRAP_CHUNK: &str = "=jess.package.bootstrap";
@@ -50,6 +50,8 @@ struct MountedPackage {
     digest: String,
     /// `@<id>@<version>/`, the start of every chunk name this package's modules load with.
     prefix: String,
+    /// The payload's paths in canonical order, `jess.toml` first.
+    files: Vec<String>,
     read: Function,
 }
 
@@ -93,6 +95,12 @@ impl Mounted {
     /// The id of package `index`, for messages.
     pub(crate) fn id(&self, index: usize) -> &str {
         &self.packages[index].id
+    }
+
+    /// Package `index`'s payload: every path, and the reader its provider gave.
+    fn payload(&self, index: usize) -> (&[String], &Function) {
+        let package = &self.packages[index];
+        (&package.files, &package.read)
     }
 
     /// Where the package with `id` is mounted.
@@ -140,6 +148,41 @@ impl Mounted {
     }
 }
 
+/// `jess.payload()`: the calling module's own package payload, as `{ files, read }`: every path
+/// in canonical order, and a read of one's bytes (nil for a path the payload lacks). A package
+/// shares its files by exporting a module that hands them out; nothing reads another package's
+/// payload uninvited, and a script, which belongs to no package, has none.
+pub(crate) fn payload(call: &Call<'_>, jess: &Jess, builtin_read: &Function) -> l3i::Result<StackResults> {
+    let Some(caller) = crate::lua::require::caller_chunk(call) else {
+        return Err(error(
+            "jess.payload: only a package's module has a payload, and this call came through no module (pcall it from a function of your own)",
+        ));
+    };
+    let mounted = jess.packages.borrow();
+    if let Some(mounted) = mounted.as_ref()
+        && let Some((index, _)) = mounted.owner(&caller)
+    {
+        let (files, read) = mounted.payload(index);
+        return push_payload(call, files.iter().map(String::as_str), read);
+    }
+    if caller.starts_with(&format!("@{}@", crate::lua::builtin::ID)) {
+        return push_payload(call, crate::lua::builtin::FILES.iter().map(|(path, _)| *path), builtin_read);
+    }
+    Err(error(format!(
+        "jess.payload: {caller} is a script, not a package's module, so it has no payload"
+    )))
+}
+
+fn push_payload<'a>(call: &Call<'_>, files: impl Iterator<Item = &'a str>, read: &Function) -> l3i::Result<StackResults> {
+    let files: Vec<String> = files.map(str::to_owned).collect();
+    let list = string_list(call, &files)?;
+    crate::lua::push_table(call, 0, 2, |frame, table| {
+        table.raw_set_value(frame, "files", &list)?;
+        table.raw_set_value(frame, "read", read)
+    })?;
+    Ok(StackResults)
+}
+
 /// The host functions `@jess/package` reads and writes through: the only file access it has.
 ///
 /// `read` and `write` say whether whoever holds the table may read and write the host's files.
@@ -157,7 +200,7 @@ pub(crate) fn host_table(runtime: &Runtime, read: bool, write: bool) -> l3i::Res
                 row.raw_set_value(frame, "kind", &kind)
             })
         })?;
-        Ok::<_, l3i::Error>(l3i::bind::StackResults)
+        Ok::<_, l3i::Error>(StackResults)
     })?;
     let read_file = runtime.bind_function("jess.package.readFile", |path: Text| -> l3i::Result<Option<NewBuffer>> {
         match std::fs::read(&path.0) {
@@ -196,7 +239,7 @@ pub(crate) fn host_table(runtime: &Runtime, read: bool, write: bool) -> l3i::Res
                 row.raw_set_value(frame, "kind", &kind)
             })
         })?;
-        Ok::<_, l3i::Error>(l3i::bind::StackResults)
+        Ok::<_, l3i::Error>(StackResults)
     })?;
     let replace = runtime.bind_function("jess.package.replace", |path: Text, data: Bytes| {
         crate::lua::files::replace_file(Path::new(&path.0), &data.0).map_err(error)
@@ -210,7 +253,7 @@ pub(crate) fn host_table(runtime: &Runtime, read: bool, write: bool) -> l3i::Res
             .invoke_with(call, (text.0.as_str(),), |_, document| Value::store(document))
             .map_err(crate::lua::callback_error)?;
         document.push_to_scope(call)?;
-        Ok::<_, l3i::Error>(l3i::bind::StackResults)
+        Ok::<_, l3i::Error>(StackResults)
     })?;
     let builtin = runtime.bind_function("jess.package.builtin", |call: &Call<'_>| {
         crate::lua::lua::push_table(call, 0, crate::lua::builtin::FILES.len(), |frame, files| {
@@ -219,7 +262,7 @@ pub(crate) fn host_table(runtime: &Runtime, read: bool, write: bool) -> l3i::Res
             }
             Ok(())
         })?;
-        Ok::<_, l3i::Error>(l3i::bind::StackResults)
+        Ok::<_, l3i::Error>(StackResults)
     })?;
     let functions = [
         ("listTree", list_tree, Some((read, l3i::fs::READ_CAPABILITY))),
@@ -512,6 +555,8 @@ pub struct Inspection {
 pub struct Packed {
     /// The JPK written.
     pub path: String,
+    /// The version it was packed at.
+    pub version: String,
     /// Its content digest.
     pub digest: String,
     /// How many files it holds.
@@ -744,8 +789,18 @@ pub fn inspect(runtime: &Runtime, location: &str) -> l3i::Result<Inspection> {
 ///
 /// Returns an error if the source is invalid or the JPK can't be written.
 pub fn pack(runtime: &Runtime, source: &str, output: &str) -> l3i::Result<Packed> {
-    let shape = serde_json::json!({ "path": "", "digest": "", "files": 0, "size": 0 });
-    bootstrap(runtime, "pack", &shape, (source, output))
+    pack_as(runtime, source, output, None)
+}
+
+/// Packs the Package Source at `source` into the canonical JPK at `output`, at `version` when one
+/// is given: the same payload with `jess.toml` saying that version, a development build.
+///
+/// # Errors
+///
+/// Returns an error if the source is invalid, the version is not one, or the JPK can't be written.
+pub fn pack_as(runtime: &Runtime, source: &str, output: &str, version: Option<&str>) -> l3i::Result<Packed> {
+    let shape = serde_json::json!({ "path": "", "version": "", "digest": "", "files": 0, "size": 0 });
+    bootstrap(runtime, "pack", &shape, (source, output, version))
 }
 
 /// Resolves `layers` over the packages at `locations` into a plan, without running anything.
@@ -807,6 +862,55 @@ pub fn activate_with(
     Ok(plan)
 }
 
+/// One package of the plan the Luau side hands `jess.package.mount`, read from its row, with the
+/// ids its manifest declared as dependencies; those become indexes once every package is read.
+fn mounted_package(frame: &Frame<'_>, row: ValueView<'_>) -> l3i::Result<(MountedPackage, Vec<String>)> {
+    let row = row.as_table()?;
+    let id = row.raw_get(frame, "id")?.read::<String>()?;
+    let version = row.raw_get(frame, "version")?.read::<String>()?;
+    let digest = row.raw_get(frame, "digest")?.read::<String>()?;
+    let read = Function::from_value(Value::store(row.raw_get(frame, "read")?)?)?;
+    let mut files = Vec::new();
+    row.raw_get(frame, "files")?.as_table()?.for_each_array(frame, |_, _, path| {
+        files.push(path.read::<String>()?);
+        Ok(())
+    })?;
+    let mut declared = Vec::new();
+    row.raw_get(frame, "dependencies")?
+        .as_table()?
+        .for_each_array(frame, |_, _, dependency| {
+            declared.push(dependency.read::<String>()?);
+            Ok(())
+        })?;
+    let mut managed = Vec::new();
+    row.raw_get(frame, "managed")?
+        .as_table()?
+        .for_each_array(frame, |frame, _, declaration| {
+            let declaration = declaration.as_table()?;
+            let interface = declaration.raw_get(frame, "interface")?;
+            managed.push(Managed {
+                id: declaration.raw_get(frame, "id")?.read::<String>()?,
+                module: declaration.raw_get(frame, "module")?.read::<String>()?,
+                interface: if interface.is_nil() {
+                    None
+                } else {
+                    Some(interface.read::<String>()?)
+                },
+            });
+            Ok(())
+        })?;
+    let package = MountedPackage {
+        prefix: format!("@{id}@{version}/"),
+        id,
+        dependencies: Vec::new(),
+        managed,
+        digest,
+        files,
+        read,
+    };
+    Ok((package, declared))
+}
+
 /// Resolves and mounts a plan as [`activate_with`] does, and runs none of its entrypoints: its
 /// modules can be read and required, and nothing a package holds has run.
 pub(crate) fn mount_with(
@@ -830,44 +934,9 @@ pub(crate) fn mount_with(
             let mut dependencies = Vec::new();
             call.with_frame(|frame| {
                 packages.push_to(frame)?.for_each_array(frame, |frame, _, row| {
-                    let row = row.as_table()?;
-                    let id = row.raw_get(frame, "id")?.read::<String>()?;
-                    let version = row.raw_get(frame, "version")?.read::<String>()?;
-                    let digest = row.raw_get(frame, "digest")?.read::<String>()?;
-                    let read = Function::from_value(Value::store(row.raw_get(frame, "read")?)?)?;
-                    let mut declared = Vec::new();
-                    row.raw_get(frame, "dependencies")?
-                        .as_table()?
-                        .for_each_array(frame, |_, _, dependency| {
-                            declared.push(dependency.read::<String>()?);
-                            Ok(())
-                        })?;
+                    let (package, declared) = mounted_package(frame, row)?;
+                    mounted.packages.push(package);
                     dependencies.push(declared);
-                    let mut managed = Vec::new();
-                    row.raw_get(frame, "managed")?
-                        .as_table()?
-                        .for_each_array(frame, |frame, _, declaration| {
-                            let declaration = declaration.as_table()?;
-                            let interface = declaration.raw_get(frame, "interface")?;
-                            managed.push(Managed {
-                                id: declaration.raw_get(frame, "id")?.read::<String>()?,
-                                module: declaration.raw_get(frame, "module")?.read::<String>()?,
-                                interface: if interface.is_nil() {
-                                    None
-                                } else {
-                                    Some(interface.read::<String>()?)
-                                },
-                            });
-                            Ok(())
-                        })?;
-                    mounted.packages.push(MountedPackage {
-                        prefix: format!("@{id}@{version}/"),
-                        id,
-                        dependencies: Vec::new(),
-                        managed,
-                        digest,
-                        read,
-                    });
                     Ok(())
                 })?;
                 for (index, declared) in dependencies.iter().enumerate() {
