@@ -142,8 +142,8 @@ fn fragment_main(input: VertexOutput) -> FragmentOutput {
 ## Testing
 
 ```sh
-cargo test --test shader -- --nocapture
-cargo test --test lua_shader
+cargo test --test integration shader:: -- --nocapture
+cargo test --test integration lua::shader::
 ```
 
 Every lowered module in the tests goes through naga's parser and validator, and the uniform layouts jess reports are checked against the ones naga computes. The golden WGSL lives in `tests/shader/golden`; `JESS_BLESS=1` rewrites it. Only bless when every change to the output is intended, and say why in the commit. `lua_shader` builds a corpus of Luau shader modules (`tests/lua/shader/*.jsl`) through `jess.shader`, folds them, and lowers each to WGSL naga accepts, with the invalid ones failing where they should.

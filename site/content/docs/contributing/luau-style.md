@@ -152,7 +152,7 @@ Options choose what a file is held to. `directives = { 'strict' }` and `noAny = 
 ## The style test
 
 ```sh
-cargo test --test lua_luau_style
+cargo test --test integration lua::luau_style::
 ```
 
 `tests/lua/luau_style.rs` activates the built-in package from its source, which also checks that it's the copy the binary embeds, and runs `@jess/style` over every repository-owned `.jsl` file under `src/`, `tools/`, and `jpk/builtin`, over every ```` ```luau ```` block on this site, and over `jess luau-types`' definitions. Any finding, error or warning, fails it. The built-in modules are held to `--!strict` and no `any`; the `jess init` template to `--!strict`.

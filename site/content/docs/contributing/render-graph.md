@@ -141,7 +141,7 @@ The dump is deterministic, and it's golden-tested. It's the first graph inspecto
 ## Testing
 
 ```sh
-cargo test --test render
+cargo test --test integration render::
 ```
 
 The representative golden dumps live in `tests/render/golden`. `JESS_BLESS=1` rewrites them; only bless when every change to the dump is intended, and say why in the commit.

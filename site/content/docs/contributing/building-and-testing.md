@@ -23,7 +23,7 @@ The verified toolchain LTOs everything, test binaries included: rustc writes LLV
 
 ```sh
 . tools/dev/no-lto.sh
-CARGO_BUILD_JOBS=8 cargo test --test lua_package
+CARGO_BUILD_JOBS=8 cargo test --test integration lua::package::
 ```
 
 It sets `RUSTFLAGS` to plain clang and lld, which replaces the config's flags (`--config` and `CARGO_TARGET_<triple>_RUSTFLAGS` would only add to them), sets `L3I_UNVERIFIED_TOOLCHAIN=1` so l3i's build script warns instead of refusing, and builds into `target/fast`, so the verified build in `target/` survives switching back. Source it in the shell you build jess from, not in your profile: it would reach every other cargo project too, l3i's own benchmarks included.
@@ -72,28 +72,28 @@ The `cargo hack` run checks every feature combination. CI doesn't, so it's on yo
 
 ## The test suite
 
-Integration tests are explicit `[[test]]` binaries (`autotests = false`), because every test binary is another l3i link. Each is one root file under `tests/` that declares its modules; a new test file goes into the binary that owns the area, never beside it as a binary of its own.
+Integration tests are one `[[test]]` binary, `integration` (`autotests = false`), because every test binary is another whole-program link of jess and l3i, and under the verified toolchain that link is most of the build. `tests/main.rs` declares one module per area, and each area declares one module per file. A new test file goes into the area that owns it, never beside the binary as a binary of its own.
 
-| Binary | Root | Covers |
+| Module | Under | Covers |
 | --- | --- | --- |
-| `cli` | `tests/cli/main.rs` | The `jess` binary end to end, one module per file, parsing its `--format json` output |
-| `host` | `tests/host/kernel.rs` | The application kernel: frames, the input phase, restart |
-| `runtime` | `tests/runtime/main.rs` | Script domains: lifecycle, scheduling, events, workers, services |
-| `input` | `tests/input/main.rs` | The action graph and the evaluator, against a golden document |
-| `render` | `tests/render/graph.rs` | The render graph IR, against golden dumps |
-| `shader` | `tests/shader/main.rs` | The shader IR: builder, validation, folding, WGSL goldens, and a headless triangle |
-| `lua_contracts`, `lua_kernel`, `lua_lua_api`, `lua_luau_style`, `lua_network_capability`, `lua_package`, `lua_script_support`, `lua_shader`, `lua_stdlib` | `tests/lua/*.rs` | Everything Luau sees: the API contracts, the kernel from a script's side, the style gate, capabilities, packages, workspaces, applications, the shader front end, and the stdlib |
+| `cli` | `tests/cli/` | The `jess` binary end to end, one module per file, parsing its `--format json` output |
+| `host` | `tests/host/` | The application kernel: frames, the input phase, restart |
+| `runtime` | `tests/runtime/` | Script domains: lifecycle, scheduling, events, workers, services |
+| `input` | `tests/input/` | The action graph and the evaluator, against a golden document |
+| `render` | `tests/render/` | The render graph IR, against golden dumps |
+| `shader` | `tests/shader/` | The shader IR: builder, validation, folding, WGSL goldens, and a headless triangle |
+| `lua` | `tests/lua/` | Everything Luau sees: `contracts`, `kernel`, `lua_api`, `luau_style`, `network_capability`, `package` (with `application` and `workspace` under it), `script_support`, `shader`, and `stdlib` |
 
-Prefer the smallest binary that proves a change, then widen:
+A filter is a prefix of a test's path. Prefer the smallest one that proves a change, then widen:
 
 ```sh
-cargo test --test lua_package          # packages, resolution, targets, workspaces, applications
-cargo test --test cli                  # the binary, end to end
-cargo test --test lua_luau_style       # @jess/style over every .jsl under src/ and tools/,
-                                       # the site's luau blocks, the definitions, jpk/builtin's suite
-cargo test --test runtime --test host --test input
-cargo test --test render --test shader --test lua_shader
-cargo test --test cli workspace::      # one module of a binary
+cargo test --test integration lua::package::      # packages, resolution, targets, workspaces, applications
+cargo test --test integration cli::               # the binary, end to end
+cargo test --test integration lua::luau_style::   # @jess/style over every .jsl under src/ and tools/,
+                                                  # the site's luau blocks, the definitions, jpk/builtin's suite
+cargo test --test integration -- runtime:: host:: input::
+cargo test --test integration -- render:: shader:: lua::shader::
+cargo test --test integration cli::workspace::    # one file
 ```
 
 If you add a command, test it through the binary. If you add a member to the `jess` global, `only_generic_members_are_installed` in `tests/lua/contracts.rs` is where its name is pinned, and `jess luau-types` must stub it.
@@ -101,7 +101,7 @@ If you add a command, test it through the binary. If you add a member to the `je
 ## Luau types and goldens
 
 - **Type checks** need nothing installed. The suite type-checks the built-in package, the contract fixtures, and the shader corpus against the generated definitions, through l3i's embedded Luau frontend: `jess.d.jsl` loaded as definitions, `require` resolved through the stubs as the `.jessrc` aliases resolve it, every module strict (`tests/lua/common/mod.rs`, `type_check`). Nothing type-checks `src/lua/stdlib/` or the `jess init` template; when you change one, check it with `common::type_check` in a throwaway test, and don't commit the throwaway.
-- **The style gate** is `cargo test --test lua_luau_style`: [`@jess/style`](@/docs/contributing/luau-style.md) over every `.jsl` under `src/`, `tools/`, and `jpk/builtin`, every ```` ```luau ```` block on this site, and the definitions `jess luau-types` writes. Any finding fails it.
+- **The style gate** is `cargo test --test integration lua::luau_style::`: [`@jess/style`](@/docs/contributing/luau-style.md) over every `.jsl` under `src/`, `tools/`, and `jpk/builtin`, every ```` ```luau ```` block on this site, and the definitions `jess luau-types` writes. Any finding fails it.
 - **`JESS_BLESS=1`** rewrites the goldens (`tests/input/golden`, `tests/render/golden`, `tests/shader/golden`) from the current run instead of comparing against them. Bless only when every change to the output is intended, and say why in the commit.
 - **The built-in package** is embedded byte for byte: adding a file to `jpk/builtin` means adding it to `FILES` in `src/lua/builtin.rs`, or `the_embedded_built_in_package_is_its_source` fails.
 
