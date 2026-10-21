@@ -230,7 +230,7 @@ A package's gates are `jess package test` and `jess package check`, and `@jess/s
 | `--frames <N>` | For an application target: stop after N frames, shutdown handlers and all, unless it stops itself first. Refused for a command target. |
 | `ARGS...` | Arguments for the target, which gets them as `...` and in the global `arg` table. |
 
-Runs one of a package's targets. A `command` target's package resolves with its dependencies, every layer it declares is activated, and the target's entry runs as a script in a fresh runtime holding exactly the capabilities the target declares. Not one more, and not one fewer: a capability it declares and you don't grant stops the run before anything is activated. The exceptions are what you already have when you run a tool, as with [`jess run`](@/docs/cli/run.md): your terminal (`process.stdio`) and the input devices in front of you (`input.actions`, `input.observe`, `input.configure`). A target that declares one gets it without asking; one that doesn't declare it still doesn't get it.
+Runs one of a package's targets. A `command` target's package resolves with its dependencies, every layer it declares is activated, and the target's entry runs as a script in a fresh runtime holding exactly the capabilities the target declares. Not one more, and not one fewer: a capability it declares and you don't grant stops the run before anything is activated. That includes the terminal and the input devices a [`jess run`](@/docs/cli/run.md#capabilities) script holds for free: a target that wants `process.stdio` declares it like anything else, and one that doesn't declare it doesn't have it.
 
 ```text
 $ jess package run tools/greeter --package-path .. -- one
