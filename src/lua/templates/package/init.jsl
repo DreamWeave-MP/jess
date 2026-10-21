@@ -1,0 +1,6 @@
+--!strict
+local function greet(name: string): string
+  return `Hello, {name}.`
+end
+
+return table.freeze { greet = greet }

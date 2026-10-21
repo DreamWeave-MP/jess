@@ -1,0 +1,5 @@
+--!strict
+local process = require '@dream/process'
+local module = require '@__NAME__'
+
+print(module.greet(process.env 'USER' or 'stranger'))

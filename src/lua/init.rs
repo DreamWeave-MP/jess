@@ -1,7 +1,9 @@
 //! Setting up a folder for jess scripts, as `jess init` does.
 //!
 //! It holds jess's Luau types (the folder of [`crate::lua::types`]), a strict `.jessrc` aliasing its
-//! modules, a working `main.jsl`, and luau-lsp settings for an editor.
+//! modules, a working `main.jsl`, and luau-lsp settings for an editor. With
+//! [`InitOptions::package`] it is a Package Source instead: a `jess.toml`, a module, a test, and a
+//! command target, the smallest package worth having, in place of the script.
 //!
 //! The settings turn on Luau's new type solver, which some of jess's types (read and write
 //! property types) need.
@@ -80,12 +82,55 @@ impl Editor {
 }
 
 /// How [`init`] writes.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct InitOptions {
     /// Which editor to write settings for.
     pub editor: Editor,
     /// Replace files that are already there (after backing them up) instead of skipping them.
     pub force: bool,
+    /// Set the folder up as a Package Source with this id instead of a script folder: a
+    /// `jess.toml`, a module, a test, and a command target, in place of `main.jsl`.
+    pub package: Option<String>,
+}
+
+/// The pieces of a package id `jess init --package` writes a skeleton for: the id, its last
+/// segment as the module and target name, and its last two segments as the layer id.
+struct PackageNames {
+    id: String,
+    name: String,
+    layer: String,
+}
+
+impl PackageNames {
+    /// Reads `id`, a package id: lowercase ASCII letters and digits in two or more segments joined
+    /// by dots, as a manifest requires.
+    fn parse(id: &str) -> io::Result<Self> {
+        let segments = id.split('.').collect::<Vec<_>>();
+        let well_formed = segments.len() >= 2
+            && segments.iter().all(|segment| {
+                !segment.is_empty() && segment.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+            });
+        if !well_formed {
+            return Err(io::Error::other(format!(
+                "package id '{id}' is not lowercase ASCII words joined by dots (org.example.name)"
+            )));
+        }
+        let name = (*segments.last().unwrap_or(&id)).to_owned();
+        let layer = segments[segments.len() - 2..].join(".");
+        Ok(Self {
+            id: id.to_owned(),
+            name,
+            layer,
+        })
+    }
+
+    /// `template` with its placeholders filled in.
+    fn fill(&self, template: &str) -> String {
+        template
+            .replace("__ID__", &self.id)
+            .replace("__NAME__", &self.name)
+            .replace("__LAYER__", &self.layer)
+    }
 }
 
 /// What [`init`] did.
@@ -103,11 +148,28 @@ pub struct InitReport {
     pub skipped: Vec<PathBuf>,
 }
 
-/// The files for a script folder besides the types, as (path relative to the folder, contents):
-/// the `.jessrc` aliasing `types`' modules, the example, and the editor's settings.
-#[must_use]
-pub fn files(editor: Editor, types: &crate::lua::types::Types) -> Vec<(&'static str, String)> {
-    let mut files = vec![(".jessrc", types.jessrc(TYPES_FOLDER)), ("main.jsl", MAIN.to_owned())];
+/// The files for the folder besides the types, as (path relative to the folder, contents).
+///
+/// They are the `.jessrc` aliasing `types`' modules, the example script or, with
+/// [`InitOptions::package`], the package skeleton (`jess.toml`, `src/init.jsl`, `tests/run.jsl`, and
+/// the target's entry under `tools/`), and the editor's settings.
+///
+/// # Errors
+///
+/// Returns an error if [`InitOptions::package`] isn't a well-formed package id.
+pub fn files(options: &InitOptions, types: &crate::lua::types::Types) -> io::Result<Vec<(String, String)>> {
+    let mut files = vec![(".jessrc".to_owned(), types.jessrc(TYPES_FOLDER))];
+    match &options.package {
+        None => files.push(("main.jsl".to_owned(), MAIN.to_owned())),
+        Some(id) => {
+            let names = PackageNames::parse(id)?;
+            files.push(("jess.toml".to_owned(), names.fill(PACKAGE_MANIFEST)));
+            files.push(("src/init.jsl".to_owned(), names.fill(PACKAGE_MODULE)));
+            files.push(("tests/run.jsl".to_owned(), names.fill(PACKAGE_TEST)));
+            files.push((format!("tools/{}.jsl", names.name), names.fill(PACKAGE_ENTRY)));
+        }
+    }
+    let editor = options.editor;
     let settings = match editor {
         Editor::VsCode => Some(VSCODE),
         Editor::Neovim => Some(NEOVIM),
@@ -116,9 +178,9 @@ pub fn files(editor: Editor, types: &crate::lua::types::Types) -> Vec<(&'static 
         Editor::None => None,
     };
     if let (Some(path), Some(settings)) = (editor.settings_file(), settings) {
-        files.push((path, settings.to_owned()));
+        files.push((path.to_owned(), settings.to_owned()));
     }
-    files
+    Ok(files)
 }
 
 /// Writes the types into `dir/types` and [`files`] into `dir`, creating it and any folders the
@@ -140,7 +202,7 @@ pub fn init(dir: &Path, options: &InitOptions) -> io::Result<InitReport> {
         types: folder,
         ..InitReport::default()
     };
-    for (name, contents) in files(options.editor, &types) {
+    for (name, contents) in files(options, &types)? {
         let path = dir.join(name);
         if path.exists() && !options.force {
             report.skipped.push(path);
@@ -156,6 +218,12 @@ pub fn init(dir: &Path, options: &InitOptions) -> io::Result<InitReport> {
 }
 
 const MAIN: &str = include_str!("templates/main.jsl");
+
+/// The package skeleton, with `__ID__`, `__NAME__`, and `__LAYER__` for [`PackageNames`] to fill.
+const PACKAGE_MANIFEST: &str = include_str!("templates/package/jess.toml");
+const PACKAGE_MODULE: &str = include_str!("templates/package/init.jsl");
+const PACKAGE_TEST: &str = include_str!("templates/package/run.jsl");
+const PACKAGE_ENTRY: &str = include_str!("templates/package/entry.jsl");
 
 const VSCODE: &str = r#"{
   "luau-lsp.platform.type": "standard",
@@ -248,6 +316,7 @@ mod tests {
         let options = InitOptions {
             editor: Editor::Helix,
             force: false,
+            package: None,
         };
         let first = init(&folder, &options).unwrap();
         assert_eq!(first.written.len(), 3);

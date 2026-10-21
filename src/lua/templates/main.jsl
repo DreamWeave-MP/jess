@@ -1,5 +1,5 @@
 --!strict
-
 local log = require('@jess/log').new 'main'
 
-log.info('ready', { version = jess.version })
+print(`Hello from jess {jess.version}.`)
+log.info 'ready'

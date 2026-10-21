@@ -113,3 +113,55 @@ fn rerunning_init_refreshes_the_types_and_keeps_your_files() {
 
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn init_package_writes_a_skeleton_that_tests_checks_and_runs() {
+    let dir = temp_dir_path("init-package");
+    drop(fs::remove_dir_all(&dir));
+    let report = init(&dir, &["--editor", "none", "--package", "org.example.greeter"]);
+    let mut paths = written(&report);
+    paths.sort();
+    let expected = [".jessrc", "jess.toml", "src/init.jsl", "tests/run.jsl", "tools/greeter.jsl"]
+        .iter()
+        .map(|name| dir.join(name).display().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(paths, expected, "{report}");
+    assert!(!dir.join("main.jsl").exists());
+    assert!(report["next_steps"].to_string().contains("jess package test"), "{report}");
+    let manifest = fs::read_to_string(dir.join("jess.toml")).unwrap();
+    assert!(manifest.contains("id = \"org.example.greeter\""), "{manifest}");
+    assert!(manifest.contains("\"@greeter\" = \"src/init.jsl\""), "{manifest}");
+    assert!(manifest.contains("id = \"example.greeter\""), "{manifest}");
+
+    for command in [["package", "test"], ["package", "check"]] {
+        let output = jess().args(["--format", "json"]).args(command).arg(&dir).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{:?}: {}",
+            command,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let run = jess()
+        .args(["package", "run", "--capability", "process.environment"])
+        .arg(&dir)
+        .env("USER", "ada")
+        .output()
+        .unwrap();
+    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "Hello, ada.");
+
+    let bad = jess()
+        .args(["init", "--editor", "none", "--package", "Not.An.Id"])
+        .arg(dir.join("bad"))
+        .output()
+        .unwrap();
+    assert!(!bad.status.success());
+    assert!(
+        String::from_utf8_lossy(&bad.stderr).contains("is not lowercase ASCII words joined by dots"),
+        "{}",
+        String::from_utf8_lossy(&bad.stderr)
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}

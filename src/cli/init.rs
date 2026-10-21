@@ -20,6 +20,11 @@ pub struct InitArgs {
     /// folder is rewritten.
     #[arg(long)]
     force: bool,
+    /// Set the folder up as a Package Source with this id (org.example.name) instead of a script
+    /// folder: a jess.toml, a module, a test, and a command target, ready for jess package test,
+    /// check, run, and pack.
+    #[arg(long, value_name = "ID")]
+    package: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -64,11 +69,24 @@ pub fn run(args: &InitArgs, format: Format) -> Result<(), String> {
     let options = InitOptions {
         editor,
         force: args.force,
+        package: args.package.clone(),
     };
     let report = jess::lua::init::init(&args.dir, &options)
         .map_err(|error| format!("failed to set up '{}': {error}", args.dir.display()))?;
-    let main = args.dir.join("main.jsl");
-    let mut next_steps = vec![format!("run the example: jess run {}", main.display())];
+    let dir = args.dir.display();
+    let mut next_steps = if args.package.is_some() {
+        vec![
+            format!("test the package, from its source and packed: jess package test {dir}"),
+            format!("type-check it: jess package check {dir}"),
+            format!("run its command: jess package run --capability process.environment {dir}"),
+        ]
+    } else {
+        let main = args.dir.join("main.jsl").display().to_string();
+        vec![
+            format!("run the example: jess run {main}"),
+            format!("type-check it: jess check {main}"),
+        ]
+    };
     if let Some(hint) = editor.hint() {
         next_steps.push(format!("{}: {hint}", editor.name()));
     }

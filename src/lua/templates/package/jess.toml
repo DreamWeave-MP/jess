@@ -1,0 +1,22 @@
+manifest_version = 1
+
+[package]
+id = "__ID__"
+version = "0.1.0"
+jess_api = "1"
+include = ["src", "tests", "tools"]
+tests = ["tests/run.jsl"]
+default_target = "__NAME__"
+
+[modules]
+"@__NAME__" = "src/init.jsl"
+
+[[layer]]
+id = "__LAYER__"
+exports = ["@__NAME__"]
+
+[targets.__NAME__]
+kind = "command"
+command = "__NAME__"
+entry = "tools/__NAME__.jsl"
+capabilities = ["process.environment"]

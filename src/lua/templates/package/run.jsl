@@ -1,0 +1,11 @@
+--!strict
+local test = require '@jess/test'
+local module = require '@__NAME__'
+
+local suite = test.new()
+
+suite.it('greets by name', function()
+  test.expect(module.greet 'world').toBe 'Hello, world.'
+end)
+
+return suite
