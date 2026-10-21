@@ -1,7 +1,5 @@
 # The Constitution of Jess
 
-**Founding Draft — Version 0.3**
-
 *The fundamental principles of the Jess project, its engineering, its governance, and its community.*
 
 ## Preamble
@@ -436,8 +434,8 @@ And no rule beyond reconsideration.
 
 ---
 
-**Status:** Founding draft — not yet ratified.
+**Status:** Ratified 10/21/2026
 
-**Custodian:** Founder of Jess
+**Custodian:** S3kshun8
 
 **Constitutional version:** 0.3
