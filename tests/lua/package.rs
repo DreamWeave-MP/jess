@@ -662,7 +662,7 @@ fn a_package_cannot_export_a_module_the_host_registered() {
 }
 
 /// The built-in package `jpk/builtin`, as jess carries it.
-fn builtin() -> std::path::PathBuf {
+fn builtin() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("jpk/builtin")
 }
 
