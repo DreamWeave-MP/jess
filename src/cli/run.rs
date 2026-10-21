@@ -26,8 +26,12 @@ pub struct RunArgs {
     #[arg(long = "package-path", value_name = "FOLDER")]
     package_paths: Vec<PathBuf>,
     /// Explicitly grant an optional runtime/package capability (repeatable).
-    #[arg(long = "capability", value_name = "NAME")]
+    #[arg(long = "capability", value_name = "NAME", conflicts_with = "trusted")]
     capabilities: Vec<String>,
+    /// Grant the script every capability, as running it as a program (jess script.jsl) does:
+    /// files, the environment, processes, and the network included.
+    #[arg(long)]
+    trusted: bool,
     /// Print script call/sampling/native-block statistics after execution.
     #[arg(long)]
     profile: bool,
@@ -94,6 +98,23 @@ fn activate(lua: &Runtime, args: &RunArgs, capabilities: &[String]) -> Result<()
         .map_err(|error| error.to_string())
 }
 
+/// `jess <script>.jsl [ARGS]...`: the script run as a program, trusted, with no packages activated.
+/// It is what a shebang line, `#!/usr/bin/env jess`, makes an executable script into.
+pub fn run_as_program(script: PathBuf, args: Vec<String>) -> Result<u8, String> {
+    run(&RunArgs {
+        script,
+        packages: Vec::new(),
+        layers: Vec::new(),
+        package_paths: Vec::new(),
+        capabilities: Vec::new(),
+        trusted: true,
+        profile: false,
+        emit_asm: None,
+        disassemble: None,
+        args,
+    })
+}
+
 pub fn run(args: &RunArgs) -> Result<u8, String> {
     if !args.script.is_file() {
         return Err(format!("'{}' isn't a file", args.script.display()));
@@ -103,8 +124,13 @@ pub fn run(args: &RunArgs) -> Result<u8, String> {
         return Err("script inspection modes don't execute the script and take no script arguments".to_owned());
     }
     // A script run from the command line is its user's: it holds their terminal and their input
-    // devices, and what they grant.
-    let capabilities = jess::lua::host_script_grant(&args.capabilities);
+    // devices, and what they grant. Run as a program, `jess script.jsl` or `--trusted`, it holds
+    // everything, as any program they chose to run would.
+    let capabilities = if args.trusted {
+        jess::lua::known_capabilities().map_err(|error| error.to_string())?
+    } else {
+        jess::lua::host_script_grant(&args.capabilities)
+    };
     let lua = lua_with_profile(&capabilities, args.profile)?;
     activate(&lua, args, &capabilities)?;
     let result = match (&args.emit_asm, &args.disassemble) {

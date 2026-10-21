@@ -60,6 +60,20 @@ pub fn run_file(runtime: &Runtime, path: &Path, args: &[String]) -> l3i::Result<
     run_loaded(runtime, &name, &function, args)
 }
 
+/// `source` without a shebang line.
+///
+/// A first line starting with `#!` is blanked, its newline kept, so an executable script
+/// (`#!/usr/bin/env jess`) compiles and keeps its line numbers; anything else is returned as it is.
+/// Luau has no notion of a shebang, so every reader of a source does this before parsing: the
+/// loader, the checker, and the style checker.
+#[must_use]
+pub fn strip_shebang(source: &str) -> &str {
+    if !source.starts_with("#!") {
+        return source;
+    }
+    source.find('\n').map_or("", |end| &source[end..])
+}
+
 /// Refuses a script that isn't a `.jsl` file: jess's sources are `.jsl`, the only extension its
 /// `require`, its manifests, and its checker take, and a script run from the command line is no
 /// exception.

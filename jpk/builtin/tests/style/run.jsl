@@ -512,6 +512,13 @@ suite.describe('profiles', function()
       'return function(state: { [string]: unknown })\n  local Defaults = { fileName = \'out.json\' }\n  print(state, Defaults)\nend\n'
     expect(found(source)).toEqual {}
   end)
+
+  suite.it('blank a shebang line and keep the line numbers after it', function()
+    expect(found("#!/usr/bin/env jess\n--!strict\nprint('ran')\n")).toEqual {}
+
+    local findings = style.check('#!/usr/bin/env jess\n--!strict\nlocal x = 1\nprint(x)\n')
+    expect(findings[1].line).toBe(3)
+  end)
 end)
 
 suite.describe('the l3i dialect', function()

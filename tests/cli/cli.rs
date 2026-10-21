@@ -637,3 +637,104 @@ fn scripts_must_be_jsl_files() {
 
     fs::remove_dir_all(root).unwrap();
 }
+
+/// A shebang line is jess's, not Luau's: `jess run`, `jess test`, and `jess check` blank it and
+/// keep the line numbers after it, and a required module may carry one too.
+#[test]
+fn a_shebang_line_is_stripped_everywhere_a_source_is_read() {
+    let root = temp_dir_path("shebang");
+    drop(fs::remove_dir_all(&root));
+    fs::create_dir_all(root.join("lib")).unwrap();
+    fs::write(
+        root.join("main.jsl"),
+        "#!/usr/bin/env jess\n--!strict\nlocal util = require './lib/util'\nprint(util.answer, ...)\nerror('line four')\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("lib/util.jsl"),
+        "#!/usr/bin/env jess\n--!strict\nreturn { answer = 42 }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("suite.jsl"),
+        "#!/usr/bin/env jess\n--!strict\nlocal test = require '@jess/test'\nlocal suite = test.new()\nsuite.it('adds', function() test.expect(1 + 1).toBe(2) end)\nreturn suite\n",
+    )
+    .unwrap();
+
+    let run = jess().arg("run").arg(root.join("main.jsl")).arg("extra").output().unwrap();
+    assert!(!run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "42\textra\n");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains("main.jsl:5: line four"),
+        "line numbers must survive the shebang: {stderr}"
+    );
+
+    let check = jess().arg("check").arg(root.join("main.jsl")).output().unwrap();
+    assert!(check.status.success(), "{}", String::from_utf8_lossy(&check.stderr));
+
+    let test = jess()
+        .args(["--format", "json", "test"])
+        .arg(root.join("suite.jsl"))
+        .output()
+        .unwrap();
+    assert!(test.status.success(), "{}", String::from_utf8_lossy(&test.stderr));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// `jess <script>.jsl`, what a shebang line hands jess, runs the script as a program: trusted,
+/// with every capability. `jess run` on the same file is the default-deny form, and
+/// `jess run --trusted` is the explicit spelling of the first.
+#[test]
+fn a_script_run_as_a_program_is_trusted_and_jess_run_is_not() {
+    let root = temp_dir_path("run-as-program");
+    drop(fs::remove_dir_all(&root));
+    fs::create_dir_all(&root).unwrap();
+    let script = root.join("env.jsl");
+    fs::write(
+        &script,
+        "#!/usr/bin/env jess\n--!strict\nlocal process = require '@dream/process'\nprint(process.env 'JESS_TEST_GREETING', jess.granted 'filesystem.write', ...)\n",
+    )
+    .unwrap();
+
+    let program = jess()
+        .arg(&script)
+        .arg("first")
+        .env("JESS_TEST_GREETING", "hello")
+        .output()
+        .unwrap();
+    assert!(program.status.success(), "{}", String::from_utf8_lossy(&program.stderr));
+    assert_eq!(String::from_utf8_lossy(&program.stdout), "hello\ttrue\tfirst\n");
+
+    let trusted = jess()
+        .args(["run", "--trusted"])
+        .arg(&script)
+        .env("JESS_TEST_GREETING", "hello")
+        .output()
+        .unwrap();
+    assert!(trusted.status.success(), "{}", String::from_utf8_lossy(&trusted.stderr));
+    assert_eq!(String::from_utf8_lossy(&trusted.stdout), "hello\ttrue\n");
+
+    let denied = jess()
+        .arg("run")
+        .arg(&script)
+        .env("JESS_TEST_GREETING", "hello")
+        .output()
+        .unwrap();
+    assert!(!denied.status.success());
+    assert!(
+        String::from_utf8_lossy(&denied.stderr).contains("needs the 'process.environment' capability"),
+        "{}",
+        String::from_utf8_lossy(&denied.stderr)
+    );
+
+    let conflict = jess()
+        .args(["run", "--trusted", "--capability", "filesystem.read"])
+        .arg(&script)
+        .output()
+        .unwrap();
+    assert!(!conflict.status.success(), "--trusted and --capability must not combine");
+
+    fs::remove_dir_all(root).unwrap();
+}

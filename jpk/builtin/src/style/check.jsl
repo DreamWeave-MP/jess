@@ -1426,6 +1426,13 @@ end
 
 -- Every finding in `text`, sorted by position.
 local function check(text: string, given: Options?): { Finding }
+  -- An executable script's shebang line is jess's, not Luau's: blank it, newline kept, so the
+  -- rest parses and keeps its line numbers, as the loader does.
+  if string.sub(text, 1, 2) == '#!' then
+    local lineEnd = string.find(text, '\n', 1, true)
+    text = if lineEnd then string.sub(text, lineEnd) else ''
+  end
+
   options = given or ({} :: Options)
   local profile = options.profile or 'jess'
   jessProfile, only = profile == 'jess', nil

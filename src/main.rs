@@ -101,15 +101,36 @@ struct ManArgs {
 
 fn main() -> ExitCode {
     restore_default_sigpipe();
-    let matches = command().get_matches();
-    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
-    match run(cli) {
+    let outcome = if let Some((script, args)) = script_to_run() {
+        run::run_as_program(script, args)
+    } else {
+        let matches = command().get_matches();
+        let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
+        run(cli)
+    };
+    match outcome {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
             eprintln!("error: {error}");
             ExitCode::FAILURE
         }
     }
+}
+
+/// The script `jess <script>.jsl [ARGS]...` names, and its arguments: a first argument ending in
+/// `.jsl`, which no command is called, is a program to run. It is what a shebang line hands jess.
+fn script_to_run() -> Option<(std::path::PathBuf, Vec<String>)> {
+    let mut args = std::env::args_os().skip(1);
+    let first = args.next()?;
+    let script = std::path::Path::new(&first);
+    let is_script = script
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("jsl"));
+    if !is_script {
+        return None;
+    }
+    let rest = args.map(|arg| arg.to_string_lossy().into_owned()).collect();
+    Some((script.to_path_buf(), rest))
 }
 
 /// Leaves `runtime` and what came out of it for the process's exit to reclaim.

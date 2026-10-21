@@ -247,6 +247,7 @@ impl Jess {
             bytecode
         } else {
             let source = std::str::from_utf8(source).map_err(|_| error(format!("{name}: the script isn't UTF-8")))?;
+            let source = scripts::strip_shebang(source);
             let options = self.compile_options.borrow();
             let options = options
                 .as_ref()

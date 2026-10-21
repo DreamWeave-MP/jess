@@ -130,7 +130,7 @@ impl SourceProvider for Sources {
             self.types.files.iter().find(|file| file.path == path)?.source.clone()
         } else {
             let (id, path) = Self::split(name)?;
-            self.cached(id, path)?
+            crate::lua::scripts::strip_shebang(&self.cached(id, path)?).to_owned()
         };
         Some(SourceCode { text, is_script: false })
     }
@@ -343,7 +343,7 @@ impl SourceProvider for ScriptSources {
         if self.is_file(name) {
             let text = std::fs::read_to_string(name).ok()?;
             return Some(SourceCode {
-                text,
+                text: crate::lua::scripts::strip_shebang(&text).to_owned(),
                 is_script: self.scripts.contains(name),
             });
         }
@@ -351,7 +351,7 @@ impl SourceProvider for ScriptSources {
         if let Some(text) = self.read.borrow().get(name) {
             return text.clone().map(|text| SourceCode { text, is_script: false });
         }
-        let text = package_file(&self.runtime, id, path);
+        let text = package_file(&self.runtime, id, path).map(|text| crate::lua::scripts::strip_shebang(&text).to_owned());
         self.read.borrow_mut().insert(name.to_owned(), text.clone());
         text.map(|text| SourceCode { text, is_script: false })
     }
