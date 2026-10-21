@@ -1,118 +1,68 @@
 ---
 title: 'Architecture'
-description: 'The crate map: what lives where and how the pieces fit.'
+description: 'The module map: what lives where, what moves between the layers, and the rules the layout enforces.'
 weight: 20
 extra:
   kind: guide
 ---
 
-jess is layers. Bytes at the bottom, Luau at the top, and each crate only knows about the ones under it:
+jess is one crate, `jess`, with a library and the `jess` binary. Rust owns operating-system and hardware contact, native resource lifetimes, trust boundaries, generic hot paths, and a few small retained machines. Luau owns everything that means something: application semantics, composition, workflows, tools, package behavior, and policy. Nothing under `src/` knows what any application is.
 
-| Crate | Directory | Depends on (jess crates) |
-| --- | --- | --- |
-| `jess-macros` | `libs/macros` | none |
-| `jess-io` | `libs/bytes_io` | `jess-macros` |
-| `jess-luau-types` | `libs/luau_types` | none |
-| `jess-plugin` | `libs/plugin` | `jess-io` |
-| `jess-openmw` | `libs/openmw` | `jess-plugin` |
-| `jess-nif` | `libs/nif` | `jess-io`, `jess-macros` (`nif`), `jess-luau-types` |
-| `jess-omwaddon` | `libs/omwaddon` | `jess-plugin`, `jess-io`, `jess-macros` (`tes3`), `jess-luau-types` |
-| `jess-save` | `libs/save` | `jess-plugin`, `jess-omwaddon`, `jess-openmw` |
-| `jess-assets` | `libs/assets` | `jess-plugin`, `jess-omwaddon`, `jess-openmw`, `jess-nif` |
-| `jess-render` | `libs/render` | none (render graph IR) |
-| `jess-shader` | `libs/shader` | none (shader IR and WGSL lowering; `jess-lua` binds it as `jess.shader`) |
-| `jess-runtime` | `libs/runtime` | none (script domains, contexts, capabilities, and workers over l3i; `jess-lua` binds it as `jess.context` and `jess.worker`) |
-| `jess-input` | `libs/input` | none (device truth, action graph; `jess-lua` binds it as `jess.input`, under `@jess/input`) |
-| `jess-lua` | `libs/lua` | all of the above except `jess-render` |
-| `jess-cli` | `libs/cli` | all of the above |
-| `jess` | repository root | re-exports the library crates |
+| Module | Job |
+| --- | --- |
+| `src/runtime` | `ScriptDomain`: lifecycle and generation, contexts and phases, capabilities, workers, ownership teardown, diagnostics, profiling. Ignorant of GUI and application identity. |
+| `src/host` | The headless application kernel: a `ScriptDomain` joined to live input, advancing frames. No window, renderer, or GUI. |
+| `src/input` | Device and control vocabulary, action graph compilation, the evaluator, synthetic input, and the optional platform backends (features `linux-evdev`, `gilrs`). Input policy is Luau, `@jess/input`. |
+| `src/render` | The backend-independent render graph IR. Not a renderer. |
+| `src/shader` | The typed shader IR, validation, deterministic WGSL lowering. |
+| `src/lua` | The l3i extension plan: everything Luau sees. `stdlib/` holds the built-in Luau (`@jess/log`, `@jess/test`, `@jess/jpk`, `@jess/package`, and the private package bootstrap); `templates/` is `jess init`'s; `definitions.jsl` feeds `jess luau-types`. |
+| `src/cli` | Thin argv and printing layers for the binary; `src/main.rs` pulls them in. |
+| `jpk/builtin` | `org.dreamweave.jess`, the built-in package jess embeds and the one package allowed to export under `@jess/`. |
+| `tools/bench`, `tools/site`, `tools/dev` | The benchmark harness, the two command targets that build this site, and the no-LTO development script. |
+| `tests/` | The integration test binaries; see [Building and Testing](@/docs/contributing/building-and-testing.md). |
 
-Data moves up through them:
+The crate depends on [l3i](https://DreamWeave-MP.github.io/l3i/) for the Luau VM, the binder, the native code generator, and the `@dream/*` primitives (bytes, files, processes, the network, text), on clap for the command line, and on serde for the documents the binary prints. That is the whole native stack.
+
+## What moves between the layers
 
 ```text
-bytes -> framed records -> typed values (on demand) -> views -> Luau tables
+bytes, files, sockets, devices           L3i's @dream/* and src/input: reality, behind capabilities
+    v
+modules and payloads                     @jess/jpk and @jess/package: a Package Source or a JPK, opened
+    v
+an activation plan                       @jess/package: layers resolved over packages; no code has run
+    v
+a runtime with the plan mounted          src/lua: require resolves exports; entrypoints run once, in order
+    v
+contexts, workers, events, interfaces    src/runtime: one isolated authority per domain
+    v
+frames                                   src/host: input phase, fixed steps, update, event drain
 ```
 
-Nothing gets decoded until someone asks for it, and nothing gets re-encoded unless someone changed it. Decoding every record in a plugin up front would be stupid, and re-encoding every record on save would be worse: it would quietly destroy whatever the typed model doesn't understand.
+Each boundary is explicit about ownership and cost. Opening a package reads its manifest and payload and runs nothing. Resolving layers into a plan runs nothing. Activation, mounting the plan and running the entrypoints, is the host's decision and happens once per generation. A capability is checked where the native call is made, under the authority of the context or worker asking. A frame with nothing to do enters no Luau. Nothing is retained between frames on the Luau side just because native presentation continues.
 
-## The layers
+## The package seam
 
-### `jess-io` (`libs/bytes_io`)
+The package model is Luau. `@jess/jpk` is the container, a narrow ZIP subset read lazily under budgets and written canonically. `@jess/package` is manifests, providers, content digests, resolution, and plans. `src/lua/stdlib/bootstrap.jsl` is the host's private entry into that Luau. `src/lua/package.rs` is the narrow native seam: the file reads handed to that Luau, mounting an accepted plan so `require` resolves package modules (under chunk names `@<id>@<version>/<path>`, in a cache keyed by id, digest, and path), package-aware `require`, and running entrypoints and targets. Package policy never moves into Rust.
 
-Endian-aware `Load` and `Save` traits for binary data, a `Reader`/`Writer` pair, byte-range helpers, and the three legacy code pages Morrowind content is written in. A derive (`jess-macros`, `libs/macros`) generates the boring impls. It knows nothing about TES3 or NIFs, on purpose.
+A Package Source and the JPK packed from it are one package. Above the provider boundary they behave the same, down to the digest, and nothing a package's code does may tell them apart. `jess package test` runs a package's tests from its source and then from a temporary JPK and compares the two digests, which is how that promise is kept honest.
 
-### `jess-plugin` (`libs/plugin`): the raw spine
+## The Luau seam
 
-Frames a plugin into records and subrecords, keeps the original buffer, and remembers byte ranges. An untouched record saves by copying its original range; an edited one is rebuilt alone. That's the whole byte-identical guarantee, and it lives here so nothing above has to think about it.
+`src/lua/plan.rs` composes jess's extensions with l3i's into one runtime plan, which assigns every tag, atom, and direct-access slot; `runtime` makes a VM from it with `jess`, `require`, and `print` as globals, then sandboxes the globals so builtins run on Luau's fast path. `convert.rs` moves values between Rust and Luau through a `serde_value` tree, renaming snake_case to camelCase, keeping NaN and `-0`, and using `jess.null` to hold array slots. `definitions()` builds `jess.d.jsl`, every alias an `export type`; `types.rs` is the folder around it that `jess luau-types` and `jess init` write: a stub per name `require` resolves natively, `.jessrc` aliases per scope, and stale stubs removed.
 
-Also here: TES3 header helpers (`tes3`, including `RecordCount` for edits that remove records), OpenMW save helpers and the save format constants (`openmw_save`), profiles (what a file should be, checked without refusing to parse), the round-trip checker (`codec`), and how master files are found by name (`masters`). `files` is how everything writes: backups, the output-isn't-the-input check, `--no-backup` (`Backup::Skip`), and `.esp`/`.esm` conversion. The CLI, `jess-save`, and Luau all go through it, so a backup is named the same way whoever made it.
-
-### `jess-openmw` (`libs/openmw`)
-
-`OpenMwContext` reads the `openmw.cfg` chain through `openmw-config`, lists and edits the content list (`activate_content` is the check behind Luau's `context:activate`: the file has to be in the data folders, read afresh, unless forced), and builds the VFS through `vfstool_lib`: loose files for content lookups, loose files over the fallback archives for everything else. `OpenMwResolver` loads it the first time a name doesn't exist on disk. It knows nothing about record types, so crates that only need config resolution don't pull them in.
-
-### `jess-omwaddon` (`libs/omwaddon`): typed records
-
-`libs/omwaddon/src/types.rs` is the registry: the `TES3Object` enum, one variant per record tag. `jess-macros` (`libs/macros/src/tes3.rs`, feature `tes3`) reads those tags and the `#[esp_meta]` structs and generates load/save dispatch, field metadata, and the Luau type descriptions. Adding a record type means adding its module and a line in `types.rs`.
-
-On top of the types:
-
-- `view`: `PluginView` and `PluginEditor`, which borrow a `RawPlugin` and decode one record at a time.
-- `writeback`: minimal write-back, re-encoding only the subrecords an edit changed.
-- `select`, `edit`, `lint`, `compare`, `records`: selectors, deletes and replacements, lint and clean, diffs, and cheap record queries, all shared by the CLI and Luau.
-- `symbol`, `display`, `luau` (with `serde`): report codes and their camelCase spellings, readable record trees, record Luau types.
-
-### `jess-nif` (`libs/nif`)
-
-Two readers. `NiStream` is the editable, writable model of Morrowind NIFs; its type universe is in `libs/nif/src/types.rs`, with inheritance and dispatch derived by `jess-macros` (`libs/macros/src/nif.rs`, feature `nif`). `gamebryo` is a read-only port of OpenMW's `components/nif`, for every version OpenMW reads, with its record factory generated from OpenMW's own sources.
-
-`check` (`libs/nif/src/check`) predicts what OpenMW does with a file. Every rule follows OpenMW's `nifosg` and `nifbullet` loaders and cites the function it comes from. `fix` repairs what has one clear fix.
-
-`scene` translates an `NiStream` into what a renderer draws: nodes with world transforms, packed geometry, materials with OpenMW's state, texture references, and skins, each traceable to its source record. It's a view; the stream stays authoritative. [NIF Render Data](@/docs/contributing/nif-render-data.md) covers what it translates and why.
-
-### `jess-assets` (`libs/assets`)
-
-Runs the NIF check over files, folders, archives, or the load order's VFS (`Sources`), and finds every file a plugin refers to. `paths` ports OpenMW's resource lookups (`components/misc/resourcehelpers.cpp`), so `textures\foo.tga` resolves the way the engine resolves it.
-
-### `jess-save` (`libs/save`)
-
-Save check, strip, info, and readable save records, over the raw spine. Stripping plans every edit, applies them in memory, verifies the result, and only then writes. The rules and their engine citations are in `docs/save-strip.md`.
-
-### `jess-runtime` (`libs/runtime`)
-
-`ScriptDomain`: one isolated Luau authority over an l3i runtime, with the contexts that say when its code runs, the capability grant that says what it may do, isolated workers that talk to it in messages, a generation that moves on every restart, and an ownership registry teardown releases. Generic on purpose: no Morrowind, no OpenMW, no GUI. Its `@jess/context` and `@jess/worker` modules are what `jess.context` and `jess.worker` are. [Script Domains](@/docs/contributing/script-domains.md) has the model; `libs/runtime/README.md` the integration contract.
-
-### `jess-input` (`libs/input`)
-
-Input for applications, before there is a GUI to want it. `Control` is Jess's device vocabulary (positional keys, positional gamepad buttons, normalized axes); `InputQueue` and `InputState` are events and current state; `GraphSpec` is the serializable binding document (sources, chords, gates, tap and hold, deadzones, composite vectors, sets, layers) that `ActionGraph::compile` validates and an allocation-free `Evaluator` ticks into `ActionState` and `ActionEvent`s; Labels, binding presentation, conflict checks, and intents are Luau over the document and the action events, in `@jess/input`. Backends (evdev on Linux, gilrs on macOS and Windows) sit behind a trait and features; the default build is headless. [Input Runtime](@/docs/contributing/input-runtime.md) has the model.
-
-### `jess-lua` (`libs/lua`)
-
-The Luau API, an [l3i](https://DreamWeave-MP.github.io/l3i/) extension. `plan.rs` composes it with the downstream libraries' extensions and `jess-runtime`'s into one runtime plan, which assigns every tag, atom, and direct-access slot; `runtime` makes a VM from it with `jess`, the libraries, `require`, and `print` as globals, then sandboxes the globals so builtins run on Luau's fast path.
-
-- `convert.rs` moves values between Rust and Luau through a `serde_value` tree, renaming snake_case to camelCase, keeping NaN and `-0`, and using `jess.null` to hold array slots.
-- `plugin.rs` gives plugins handles with stable record handles (slot ids that survive inserts and deletes); `view.rs` gives live field views that read and write in place.
-- `nif_edit.rs` is `jess.nif.new/open/openBytes`: Morrowind NIFs as handles.
-- `input.rs` is `jess.input`, the native half of `@jess/input`: compiling a JSON document, the control vocabulary, and the runtime.
-- `scripts.rs` runs `jess-script=` load-order scripts for Rust hosts (`load_order_scripts`, `run_scripts`, `list_load_order_scripts`; the CLI doesn't use them), script files the way `jess run` does (`run_file`, which also takes a bundled script's name when no file has it), and modify scripts; `BUNDLED` holds the `@jess/...` scripts, all embedded from the Dreamwind package's tool sources (`jpk/dreamwind/src/tools`). A load-order script that returns a function is called as a module.
-- `package.rs` is the host side of packages. The format and the model are Luau (`stdlib/jpk.jsl`, `stdlib/package.jsl`); Rust hands `@jess/package` its file reads, runs `stdlib/bootstrap.jsl` for `inspect`, `pack`, `graph`, `test`, and `activate`, and owns the mount: the accepted plan `require` resolves package modules through, under chunk names `@<id>@<version>/<path>` and a cache keyed by id, digest, and path.
-- `init.rs` is `jess init`: the script folder, its `.jessrc`, and the editor settings.
-- `definitions()` builds `jess.d.jsl`: hand-written API types plus generated record and NIF types, every alias an `export type` (a definitions file shares only those). `types.rs` is the folder around it (`jess luau-types`, `jess init`): a stub per name `require` resolves natively, from the runtime's own namespace, `.jessrc` aliases per scope, and stale stubs removed.
-
-### `jess-cli` (`libs/cli`)
-
-The `jess` binary. It parses flags, calls a library function, and prints the result through `libs/cli/src/output.rs`: one YAML, JSON, or TOML document per command, no free text. Commands that write report `written: {path, backup}`.
+The built-in modules are Luau embedded with `include_str!`, compiled once per thread and cached as bytecode, run as factories that receive the few native values they are built on, and frozen. The built-in package is embedded byte for byte (`src/lua/builtin.rs`); a package claiming its id is accepted only if it is that copy.
 
 ## Rules the layout enforces
 
-**The CLI is a thin frontend.** If a command needs logic, the logic goes in a library crate and the CLI calls it. That's how `jess plugin lint` and Luau `plugin:lint()` run the same checks, and how `jess nif check` and Luau `nif.check` share one source setup and one severity filter. If you catch yourself parsing records in `libs/cli`, stop and move it down.
+**The kernel is generic.** Nothing in `src/` may know what a game, an editor, a launcher, or a file format is. If a name from an application shows up in Rust, it is in the wrong place.
 
-**Everything is in Luau.** Whatever the CLI can do, a script can do, with the same reports as tables. A feature that only exists as a flag is half done.
+**Application semantics are Luau.** If it can be built from bytes, buffers, handles, generic services, and l3i primitives, it is a package module, not new Rust. The first-party packages use the same public architecture any trusted package can; there is no private framework for them.
 
-**Policy lives in scripts.** Plugin merging isn't a Rust feature: it's `@dreamwind/tools/tes3merge`, a Luau module over the API. Same for light fixes. The Rust side provides fast, correct primitives (selections, typed edits, record comparison); the scripts decide what to do with them. That keeps the crates small and lets users fork the policy without forking jess.
+**A missing primitive belongs in l3i.** A codec, a buffer operation, a filesystem call, a socket option: those go into l3i, the one Luau binder, not into a new jess dependency or a native jess API. jess has no second binder.
 
-**Raw first, typed on demand.** Code that doesn't need a decoded record shouldn't decode one. `RecordView::id()` reads one subrecord; `parse_filtered` skips records nobody asked for.
+**The CLI is a thin frontend.** `src/cli` parses flags, calls a library function, and prints one YAML, JSON, or TOML document. If a command needs logic, the logic goes below it. Tool packages follow the same shape: a library, a `commands` module taking typed requests and returning typed results, and a thin `cli` over it.
 
-**Licenses follow the links.** Every crate is MIT OR Apache-2.0, and every DreamWeave library it links is too (dream-path, and dream_archive through vfstool, from 1.1.0 on). A new dependency is checked before it goes in; one that isn't permissively licensed doesn't go in.
+**Native acceleration follows profiling.** A module compiles natively only when a measurement on a verified build says so; see [Luau Style](@/docs/contributing/luau-style.md#types) and [Benchmarks](@/docs/contributing/benchmarks.md).
 
-**Follow the engine, and cite it.** When jess predicts OpenMW's behavior (NIF checks, save strip, asset paths, reference grouping), it follows OpenMW's code and says where. The local checkout at `./openmw` (gitignored) is the reference. See [Format Notes](@/docs/contributing/format-notes.md).
+**Licenses follow the links.** The crate is MIT OR Apache-2.0, and so is everything it links, transitive and native components included. A dependency is checked before it goes in; one that isn't compatibly licensed doesn't go in, and code moved to Luau keeps its provenance.

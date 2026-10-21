@@ -1,82 +1,33 @@
 ---
 title: 'Benchmarks'
-description: 'The harnesses behind every performance number on this site: the showcase against the native tools, the site generator against Zola, the runtime canaries, and the benches each package carries.'
+description: 'The harness under tools/bench: why it refuses an unverified build, how a bench checks its answer before it posts a time, and how two runs are compared.'
 weight: 35
 extra:
   kind: guide
 ---
 
-No performance number on this site is typed in. Each comes out of a script that checks its answer before it posts a time, and the page that prints it names the script. "Feels faster" isn't a unit.
+"Feels faster" isn't a unit. A performance claim about jess is a number from a script that checked its answer before it posted a time, on a build that is the one people get. Everything in `tools/bench` exists to make that the only kind of number anyone can produce.
 
-There are four kinds:
+## The rule
 
-| Kind | Script | Measures |
-| --- | --- | --- |
-| The showcase | `tools/bench/showcase.jsl` | The Luau ports of the load-order tools, as whole programs over your real load order, next to the native tools they port, and whether both wrote the same files. |
-| The site | `tools/bench/site.jsl` | The site generator building this site, next to Zola building it from the same sources. |
-| The canaries | `tools/bench/bench.jsl` | Small synthetic workloads for regressions in the runtime and jess's bindings. |
-| Package benches | `jpk/<package>/bench/bench.jsl` | Each package's own hot paths through its public API, recorded in its `BENCHMARKS.md`. |
+A bench runs on a verified release build or not at all. The development build (`tools/dev/no-lto.sh`) links without cross-language LTO, so Luau runs slower in it by an amount that varies with the workload, and a number from it says nothing about what ships. `jess --version` marks such a binary (`unverified toolchain, no cross-language LTO: not for measuring`), `jess.bench.verified` is `false` in it, and every harness checks that first:
 
-All of them are Luau and run with `jess run`. All of them refuse a jess built without the verified toolchain: `jess --version` says when a build is unverified, its Luau runs slower than what ships by no fixed amount, and a number from it says nothing.
-
-## The showcase
-
-```sh
-jess run --capability filesystem.read --capability filesystem.write \
-  --capability process.spawn --capability process.environment \
-  tools/bench/showcase.jsl run --merged-lands ~/src/OpenMWMergedLands/target/release/merged_lands
+```luau
+--!strict
+if not jess.bench.verified then
+  error('bench: this jess was built without the verified toolchain: measure on a release', 0)
+end
 ```
 
-It measures `--jess` (default: the `jess` on `PATH`) over the load order of your `openmw.cfg`, only ever read:
+The build to measure is `cargo build --release` in a shell where the development script was never sourced, built one at a time with two jobs. Measure on an idle machine, and never with a build running beside it.
 
-| Workload | jess | Native |
-| --- | --- | --- |
-| `tes3merge` | `jpk/tes3merge` | TES3Merge (`tes3merge` on `PATH`, or `--tes3merge`) |
-| `s3lightfixes` | `jpk/s3lightfixes` | S3LightFixes (`s3lightfixes` on `PATH`, or `--s3lightfixes`) |
-| `s3lightfixes-sun` | the same, `disable_interior_sun = true` | the same |
-| `mergedlands` | `jpk/merged-lands` | Merged Lands, which has no release binary for Linux: build it with `cargo build --release` from its repository and name it with `--merged-lands` |
-| `doctor` | `jpk/doctor` | none exists |
-| `doctor-assets` | `jpk/doctor`, `--checks assets,meshes` | none |
-| `doctor-rest` | `jpk/doctor`, the other four checks | none |
-
-`--only tes3merge --only mergedlands` runs some, `--no-native` skips the originals, `--openmw-cfg` picks the config to flatten, and `--packages` names the folder the ports' packages are found in (default: the repository's `jpk`).
-
-`flatten.jsl` loads the config chain and writes one standalone `openmw.cfg` with absolute data folders and the content list, minus the three tools' own outputs, so neither side merges last run's result, and with each content file spelled as it is on disk, since native Merged Lands resolves names case-sensitively on Linux and your config may not. Each run then starts from an empty folder under `target/bench/showcase/<workload>/run` with that config, a `data-local=` inside it, and the workload's seed files (`TES3Merge.ini`, a `lightconfig.toml`), with a home folder of its own under `target/bench/home` and every `JESS_*` and `OPENMW_*` variable removed, so no tool finds or touches yours. jess and the native tool run in the same folder, one after the other.
-
-The jess side is the way a person runs the tool: `jess package run --trusted --package-path jpk jpk/<package> -- <arguments>`, so the timings include starting jess, resolving and activating the package, and loading its modules: for the load-order tools, a process that does nothing but require one takes 0.10 to 0.12 s. Each package compiles to native code only the modules its bench showed were hot (its `BENCHMARKS.md` names them), since every marked module is compiled at load. With `--packed`, each tool's package and every package its activation plan selects are packed once into `target/bench/jpk` with `jess pack`, and the jess side runs from those, with nothing else on the package path, as an install looks; it changes nothing about that cost. The results then carry each JPK's digest and the file is named `-showcase-packed.json`.
-
-Each side runs once to warm the page cache and `--runs` (5) times more, alternating, so a slow drift can't favor either one. GNU time (`/usr/bin/time`) measures each process from outside: wall seconds, user and system CPU, and peak resident memory. `--max-load` (1.5) waits up to `--patience` minutes (10) for the one-minute load average to drop below it before measuring; the load at the start and the end is recorded either way, along with the machine and the binaries' SHA-256s. After the measured runs, one more jess run calls the tool through its module with `facts.jsl` and records what it reports about the load order (LAND records read, lights changed, and so on) for the pages to quote.
-
-### Output equivalence
-
-A port that's fast and wrong is a bug with good marketing. After the runs, `equivalence.jsl` compares every file each side wrote and gives each one a verdict:
-
-- `identical`: byte for byte.
-- `identical-except-timestamp`: byte for byte once the time of the run in the plugin header's description is blanked, the only thing a merge can't reproduce. Nothing else is normalized.
-- `known-differences`: after the rules the workload declares, the records the native tool alone writes are exactly the listed ones, and everything else matches byte for byte, record order and masters included. Only TES3Merge declares any, each with its reason: it merges the garbage in AIDT padding (`aidt-padding` zeroes it on both sides, and four creature records that change nothing are native's alone), writes magic effect subrecords in its own order (`mgef-subrecord-order` puts them back in the Construction Set's, and three effects that are the winner reshuffled are native's alone), and keeps a reference count in cells whose references it drops (`cell-nam0` drops a `NAM0` from a cell without references). The [TES3Merge](@/docs/bundled-scripts/tes3merge.md#differences-from-native-tes3merge) page explains each.
-- `mismatch`: anything else, with the records that differ and which side alone has them. `run` prints it and exits with 1 after writing its results.
-
-A mismatch is reported, not excused: the current native Merged Lands writes LAND records the port leaves out, and the [Merged Lands](@/docs/bundled-scripts/mergedlands.md#performance) page says so rather than the harness growing a rule.
-
-`--against RESULTS` also compares every output this run kept with the same output in an earlier results file, by SHA-256, which is how a packed run is checked against a source run.
-
-## The site
-
-```sh
-jess run --capability filesystem.read --capability filesystem.write \
-  --capability process.spawn --capability process.environment \
-  tools/bench/site.jsl [runs] [zola binary]
-```
-
-Each side builds `site/` into a folder of its own under `target/bench/site`, from a cold process: the jess side through the package target in `tools/site`, the Zola side with `zola build`. One warm-up round, then `runs` (5) measured rounds alternating the two, timed by GNU time the same way; the medians, the ratio, and both outputs' file counts are printed. The landing page quotes it.
-
-## Canaries
+## The canaries
 
 ```sh
 jess run --capability filesystem.read --capability filesystem.write tools/bench/bench.jsl canaries
 ```
 
-Small synthetic workloads for regressions in the Luau runtime and jess's bindings, the things a new binding layer changes. They need no game data. Each prints how long its hot loop took, which is the number the harness compares.
+`tools/bench/bench.jsl` is the native kernel's own harness: small synthetic workloads for regressions in the runtime and jess's bindings, the things a new binding layer changes. They need no data and no packages. Each prints how long its hot loop took, which is the number the harness compares.
 
 | Canary | Measures |
 | --- | --- |
@@ -85,22 +36,21 @@ Small synthetic workloads for regressions in the Luau runtime and jess's binding
 | `buffer` | `buffer.*` reads and writes. |
 | `vector` | Native vectors packed into a buffer and read back. |
 
-`safeenv` is the one that can't pass by accident. Luau calls builtins on its fast path only in an environment marked safe; when jess stopped marking it, Merged Lands went from 3.4 s to 41 s and nothing failed. The ratio doesn't depend on the machine. The others' times do; `compare <baseline> <results>` puts two runs from the same machine side by side.
+`safeenv` is the one that can't pass by accident. Luau calls builtins on its fast path only in an environment marked safe; when jess once stopped marking it, every workload got an order of magnitude slower and nothing failed. The ratio doesn't depend on the machine. The others' times do, so a canary result is only ever compared with another from the same machine.
 
-## Package benches
+`bench.jsl list` names the canaries; `bench.jsl compare <baseline> <results>` puts two result files from the same machine side by side.
 
-Every first-party package carries `bench/bench.jsl`, run as `jess run --package jpk/<package> --package-path jpk jpk/<package>/bench/bench.jsl`, and a `BENCHMARKS.md` that records what it measured, on which binary and machine, under what protocol, usually as a table of base against head for the change that was being judged. Each workload is warmed up, sized to a batch of about a tenth of a second, and reported as the median of seven batches with a full collection between them, and every workload checks its result against a pinned answer before its first batch and after its last. The landing page's in-package numbers are those tables' current heads.
+## What a bench owes
 
-## Results
+Whatever it measures, a bench in this repository follows the same protocol, and a package's bench is expected to as well:
 
-A showcase run writes one JSON file to `target/bench/results/<time>-showcase.json`: the jess binary's version, path, SHA-256, runtime, and Luau version; the machine; the load averages; the flattened load order's counts and digest; each native's version and SHA-256; and per workload the facts, the equivalence verdicts, and each side's command, every sample (wall, CPU, peak memory), their medians, and every output's size and digests. The baselines the site's numbers come from are committed in `tools/bench/results`, named for the runtime and CPU they ran on. Anything else stays in `target/`.
+- **It checks its answer.** Every workload compares its result with a pinned answer before its first timed batch and after its last. A path that stops doing the work fails instead of posting a time. A port that's fast and wrong is a bug with good marketing.
+- **It warms up, then sizes.** A workload is warmed, then sized to a batch of about a tenth of a second, and reported as the median of several batches with a full collection (`jess.bench.collect()`) between them, so one batch's garbage isn't collected inside the next one's timing.
+- **It names its build.** A results file records the jess version, the binary's SHA-256, the runtime and Luau versions, and the machine. A number without those attached is a rumor.
+- **It stays out of the tree.** Results land under `target/bench`; the baselines worth keeping are committed under `tools/bench/results`, named for the runtime and CPU they ran on.
 
-## The site's numbers
+## Whole programs
 
-```sh
-jess run --capability filesystem.read --capability filesystem.write \
-  --capability process.spawn --capability process.environment \
-  tools/bench/showcase.jsl docs tools/bench/results/<baseline>.json
-```
+`tools/bench/site.jsl` is the one whole-program measurement the repository keeps: it builds this site through the `tools/site` command target from a cold process, several rounds, timed from outside by GNU time (wall, CPU, peak memory). It's the model for timing a command target the way a person runs it: starting jess, resolving and activating the package, and loading its modules are part of the cost, and the harness says so rather than hiding them.
 
-`docs` writes `site/data/benchmarks.toml`: the run's context, and per workload the times, memory, ratios, and facts, already formatted. Pages print the values with the `bench` shortcode, `{{/* bench(workload="tes3merge", value="faster") */}}` or `{{/* bench(value="plugins") */}}`, and the site build fails on a name the file doesn't have. `faster` and `less_memory` are native divided by jess, so a value under 1 means the native won that one. To update the numbers, commit the new baseline and the data file it made; don't touch the pages. The landing page's other numbers live in `site/data/showcase.toml`, each beside the bench it came from.
+A package's own hot paths belong with the package, in its `bench/bench.jsl`, under the same protocol, and the decisions they drive (which modules earn `--!native`, say) are recorded beside the code they justify. Nothing on this site quotes them.
