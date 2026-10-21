@@ -1,6 +1,6 @@
 ---
 title: 'Localization'
-description: 'What @jess/l10n is, the OpenMW model it keeps, the ICU MessageFormat it speaks, how bundles are laid out and loaded, how locales fall back, and why every pattern compiles exactly once.'
+description: 'What @jess/l10n is, the ICU MessageFormat it speaks, how bundles are laid out and loaded, how locales fall back, and why every pattern compiles exactly once.'
 weight: 75
 extra:
   kind: guide
@@ -12,8 +12,8 @@ an English string, and translation becomes a retrofit. So the text service comes
 values into a string in the user's language, with plurals and numbers done right, and it does it
 from tables it built once.
 
-The model is OpenMW's (`components/l10n`). The formatting language is ICU MessageFormat, the one
-OpenMW's YAML files already use. The implementation is Luau in the built-in package
+The model is bundles of messages, one file per locale, resolved through a fallback chain. The
+formatting language is ICU MessageFormat. The implementation is Luau in the built-in package
 (`jpk/builtin/src/l10n`), and it is small: the native side contributes nothing but
 [`@dream/intl`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-intl)'s CLDR
 plural rules and decimal formatting, which are reality; what a message means is Luau's.
@@ -24,14 +24,14 @@ plural rules and decimal formatting, which are reality; what a message means is 
 providers -> reload -> compiled patterns per bundle and locale -> resolution tables -> format
 ```
 
-| Concept | What it is | OpenMW calls it |
-| --- | --- | --- |
-| Bundle | A named group of messages: `common`, `jess.editor`, `s3maphore.playlist-editor`. | context |
-| Message | A stable id inside a bundle: `file_count`. Never the English text. | key |
-| Pattern | ICU MessageFormat text for one message in one locale. | the YAML value |
-| Provider | Something that offers `<bundle>/<locale>.toml` files: a folder, a table of files. | the VFS |
-| Locale chain | The preferred locales, each followed by its parents, then the bundle's fallback locale. | `MessageBundles` |
-| Generation | A counter that rises when a reload swaps a bundle in or a locale preference changes. | (none) |
+| Concept | What it is |
+| --- | --- |
+| Bundle | A named group of messages: `common`, `jess.editor`, `example.inventory`. |
+| Message | A stable id inside a bundle: `file_count`. Never the English text. |
+| Pattern | ICU MessageFormat text for one message in one locale. |
+| Provider | Something that offers `<bundle>/<locale>.toml` files: a folder, a table of files, a package's payload. |
+| Locale chain | The preferred locales, each followed by its parents, then the bundle's fallback locale. |
+| Generation | A counter that rises when a reload swaps a bundle in or a locale preference changes. |
 
 | Module | What it owns |
 | --- | --- |
@@ -41,7 +41,7 @@ providers -> reload -> compiled patterns per bundle and locale -> resolution tab
 | `l10n/format.jsl` | Formatting compiled parts with one locale's plural rules and number formatters. |
 | `l10n/init.jsl` | Providers, the registry, reload, resolution, diagnostics, and bundle handles. |
 
-Nothing in it knows about Morrowind, OpenMW's paths, or a GUI; the GUI doesn't exist yet, and when
+Nothing in it knows about an application's paths or a GUI; the GUI doesn't exist yet, and when
 it does it will get strings from here.
 
 ## What It Is Not
@@ -59,8 +59,7 @@ it does it will get strings from here.
 
 ## The Files
 
-Files lay out the way OpenMW's do (`Manager::readLangData` in `components/l10n/manager.cpp` opens
-`l10n/<context>/<locale>.yaml`): a folder per bundle, a file per locale.
+A folder per bundle, a file per locale:
 
 ```text
 l10n/
@@ -92,10 +91,10 @@ percent_complete = "{progress, number, percent} complete"
 ```
 
 A value that isn't a string, a duplicate id, a key with whitespace in it, or a file whose name
-isn't a locale is a load error, not a guess. TOML was chosen over OpenMW's YAML for what jess's
-decoder gives back: `@jess/data/toml` with `positions = true` records where every key and value
-sits, so an error lands on its line and column, and it refuses duplicate keys itself. Nothing
-public depends on the format; an adapter that reads OpenMW's YAML would be another provider.
+isn't a locale is a load error, not a guess. TOML was chosen for what jess's decoder gives back:
+`@jess/data/toml` with `positions = true` records where every key and value sits, so an error
+lands on its line and column, and it refuses duplicate keys itself. Nothing public depends on the
+format; an adapter that reads another layout would be another provider.
 
 ## The Grammar
 
@@ -106,8 +105,7 @@ Patterns are ICU MessageFormat, compiled by `pattern.jsl` (ICU's `MessagePattern
   `1,234` in English and `1.234` in German.
 - `{name, number, style}`: `integer`, `percent` (times 100, whole number, sign), or a `::`
   skeleton: `group-off`, `group-min2`, `percent`, `scale/100`, `precision-integer`, `.00` (two
-  required fraction digits), `.0#` (one required, one optional). OpenMW's own files use
-  `:: group-off` and `::.00`.
+  required fraction digits), `.0#` (one required, one optional).
 - `{name, plural, offset:n =0 {…} one {…} other {…}}` and `{name, selectordinal, …}`: `=n` matches
   the exact value before the offset; the CLDR categories match the value after it; `other` is
   required. `#` inside a case is the offset number, formatted.
@@ -127,19 +125,16 @@ digits that read back as the double (`bytes.shortest`), so scaling adds no binar
 
 `setLocales { 'pt-BR', 'en' }` expands to a chain: each locale, then its parents (variants first,
 then region, then script), then the next locale. A message of `common` is looked up in `pt-BR`,
-`pt`, `en`, then `common`'s fallback locale (`en` unless declared otherwise, OpenMW's default
-too). This is `MessageBundles::setPreferredLocales` and `formatMessage` in
-`components/l10n/messagebundles.cpp`, with one extension: OpenMW rebuilds stripped locales from
-language and country, which loses a script along with a variant; jess keeps `zh-Hant` between
-`zh-Hant-TW` and `zh`. Locales without a script fall back identically.
+`pt`, `en`, then `common`'s fallback locale (`en` unless declared otherwise). Parents come from the
+locale's own tags, so nothing is lost on the way down: `zh-Hant` stays between `zh-Hant-TW` and
+`zh`. Locales without a script fall back the same way.
 
-The rules that format a message are those of the locale its file came from, not the user's, as
-in OpenMW (`loadLocaleYaml` builds each `MessageFormat` with its file's locale). A Polish pattern
-reached through fallback still pluralizes in Polish.
+The rules that format a message are those of the locale its file came from, not the user's. A
+Polish pattern reached through fallback still pluralizes in Polish.
 
-Where OpenMW formats the key itself when nothing defines it, jess raises an error naming the
-locales tried. `bundle:placeholder(id)` gives `[[bundle:message]]` for a caller that must show
-something; the error is still the caller's to report.
+When nothing defines a message in any locale of the chain, jess raises an error naming the locales
+tried rather than printing the id and hoping. `bundle:placeholder(id)` gives `[[bundle:message]]`
+for a caller that must show something; the error is still the caller's to report.
 
 ## Providers and Precedence
 
@@ -152,8 +147,8 @@ message missing in Polish, and which file defines it in English?".
 
 A provider is a table: a name, `resources()` that lists what it offers, and `read(resource)`.
 `l10n.directory` reads a folder through `@dream/fs`, so the folder is behind `filesystem.read`
-like any other read; `l10n.files` reads a table of paths to text, the shape of a virtual
-filesystem or of bundles a package carries.
+like any other read; `l10n.files` reads a table of paths to text, the shape of a package's
+payload ([`jess.payload`](@/docs/api/jess.md#jess-payload)) or of bundles assembled in memory.
 
 ## Compiled Once
 
@@ -161,9 +156,6 @@ A reload reads every provider, parses every file, and compiles every pattern of 
 Each bundle then gets a resolution table, message id to compiled entry, built by walking the chain
 once. Formatting is: look up the entry, walk its parts, concatenate. A locale switch rebuilds the
 tables and compiles nothing. A message with no arguments has its text ready (`bundle:literal`).
-
-No numbers here yet: the Rust registry's are gone with it, and the Luau one hasn't been measured
-on a verified build.
 
 ## Generations and Last Known Good
 
@@ -199,5 +191,4 @@ The acceptance cases are `jpk/builtin/tests/l10n/run.jsl`, over the fixtures in 
 - Date and time arguments, when `@dream/intl` formats them.
 - Localized percent sign placement (German writes `42 %`, Turkish `%42`) when ICU4X's percent
   formatter is stable.
-- A provider over a package's own files, once packages can read their payload.
 - A GUI that formats when the generation moves instead of caching text per frame.
