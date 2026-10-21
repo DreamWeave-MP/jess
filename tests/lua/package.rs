@@ -984,8 +984,9 @@ fn a_package_path_offers_what_a_plan_needs() {
         twice.contains("package org.example.base has more than one candidate"),
         "{twice}"
     );
-    assert!(twice.contains(&format!("(jpk {})", text(&packed))), "{twice}");
-    assert!(twice.contains(&format!("(source {})", text(&path.join("base")))), "{twice}");
+    // A candidate is named as the search folder, a slash, and its entry, on every platform.
+    assert!(twice.contains(&format!("(jpk {}/base.jpk)", text(&path))), "{twice}");
+    assert!(twice.contains(&format!("(source {}/base)", text(&path))), "{twice}");
     assert!(twice.contains("offer one of them outright"), "{twice}");
     let chosen = graph(&[&top, &packed], &["example.top"], &[]).unwrap();
     assert_eq!(chosen.packages[0].kind, "jpk");
