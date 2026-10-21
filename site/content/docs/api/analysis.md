@@ -87,8 +87,8 @@ Reads one file and analyzes it, with `source.path` set to the path with its sepa
 
 `workspace` reads and analyzes every file `files` finds, then pairs each module's requires with the file they name. Needs `filesystem.read`.
 
-- **Parameters:** `paths`, the roots. `options.transform`: a function from a file's text and path to the text to analyze, for a tool that strips or rewrites something first.
-- **Returns:** a `Workspace`: `roots`, `files`, `sources` in file order, `byPath` and `byModule` to find a source by its path or its module key, `requireEdges` (`{ from, to, module, line }` for each require paired with a file) and `unresolvedRequires` (`{ from, module, line }` for the rest). Names starting with `@` are a package's or jess's business and are never edges.
+- **Parameters:** `paths`, the roots. `options.transform`: a function from a file's text and path to the text to analyze, for a tool that strips or rewrites something first. `options.external`: prefixes of require names that a host provides from outside the tree, `{ 'engine.' }`, which the graph neither resolves nor reports; a name starting with `@` is always external.
+- **Returns:** a `Workspace`: `roots`, `files`, `sources` in file order, `byPath` and `byModule` to find a source by its path or its module key, `requireEdges` (`{ from, to, module, line }` for each require paired with a file) and `unresolvedRequires` (`{ from, module, line }` for the rest). A relative name, `./words` or `../shared/names`, resolves from the requiring file's folder; a dotted name, `lib.words`, from a root. The analysis knows nothing about any particular host: what its modules are called is the caller's to say, through `external`.
 - **Errors:** `<path>: no such file or folder` for a root that isn't there; `<path>: <why>` for a folder that can't be listed.
 
 ```luau

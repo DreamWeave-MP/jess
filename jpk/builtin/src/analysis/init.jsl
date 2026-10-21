@@ -115,6 +115,9 @@ export type WorkspaceOptions = {
   extensions: { string }?,
   skipDirectories: { string }?,
   transform: ((source: string, path: string) -> string)?,
+  -- Prefixes of require names that resolve outside the tree, a host's modules, which the graph
+  -- neither resolves nor reports: `{ 'engine.' }`. A name starting with `@` is always external.
+  external: { string }?,
 }
 
 type Expr = dream_luau_Expr
@@ -812,11 +815,22 @@ local function workspace(paths: { string }, options: WorkspaceOptions?): Workspa
 
   local requireEdges, unresolvedRequires = {}, {}
   local bySuffix = moduleSuffixIndex(files)
+  local external = given.external or {}
+
+  local function isExternal(moduleName: string): boolean
+    if string.sub(moduleName, 1, 1) == '@' then return true end
+
+    for _, prefix in external do
+      if string.sub(moduleName, 1, #prefix) == prefix then return true end
+    end
+
+    return false
+  end
 
   for _, source in sources do
     local from = source.path :: string
     for _, required in source.requires do
-      if string.sub(required.module, 1, 1) == '@' or string.find(required.module, '^openmw%.') then continue end
+      if isExternal(required.module) then continue end
 
       local target = resolveLocalModule(required.module, from, bySuffix)
       if target then

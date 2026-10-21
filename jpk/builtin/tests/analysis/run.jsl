@@ -180,6 +180,22 @@ return { engineHandlers = handlers }
     expect(workspace.requireEdges[1].to).toBe(Fs.join(root, 'shared/names.jsl'))
     expect(workspace.requireEdges[2].to).toBe(Fs.join(root, 'src/words.jsl'))
   end)
+
+  suite.it('leaves a host module named by an external prefix out of the graph', function()
+    local scratch = assert(rawget(_G, 'scratchRoot') :: string?, 'the case needs a scratchRoot')
+    local root = Fs.join(scratch, 'analysis-external')
+    local source = "local core = require 'engine.core'\nlocal util = require 'engine.util'\nreturn core\n"
+    local written, problem = Fs.writeFile(Fs.join(root, 'main.jsl'), source, { createParents = true })
+    assert(written, problem)
+
+    local plain = analysis.workspace({ root }, {})
+    expect(#plain.unresolvedRequires).toBe(2)
+    expect(plain.unresolvedRequires[1].module).toBe 'engine.core'
+
+    local hosted = analysis.workspace({ root }, { external = { 'engine.' } })
+    expect(#hosted.unresolvedRequires).toBe(0)
+    expect(#hosted.requireEdges).toBe(0)
+  end)
 end)
 
 return suite
