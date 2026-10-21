@@ -40,7 +40,7 @@ Grouped by what they belong to, each with the page that explains it properly.
 
 **Activation.** Mounting a plan so its exports resolve through `require`, then running its entrypoints. The host's decision, never a side effect of opening something.
 
-**Target.** Something `jess package run` runs, declared under `[targets]`: a **command** target, a script with a package around it that runs and returns, or an **application** target, which keeps running. Each declares the capabilities it needs. [The Manifest](@/docs/reference/manifest.md#targets-id).
+**Target.** Something `jess package run` runs, declared under `[targets]`: a **command** target, a script with a package around it that runs and returns, or an **application** target, which keeps running. Each declares the capabilities it needs. [The Manifest](@/docs/reference/manifest.md#targets).
 
 **Managed module.** A module an application target loads into its script domain, declared under `[managed]`, which binds host callbacks and event handlers and may provide an interface. [Applications](@/docs/scripting/applications.md).
 
