@@ -205,7 +205,9 @@ fn sizes_and_time_are_bounded_and_failures_are_named() {
     let (status, _, kind, ..) = fetch(&runtime, &server.url("/garbage"), "{}");
     assert_eq!((status, kind.as_str()), (None, "protocol"));
 
-    let (status, _, kind, ..) = fetch(&runtime, "http://127.0.0.1:1/nothing-listens", "{ timeoutMs = 2000 }");
+    // Windows retries a refused SYN a few times, a second apart, before it reports the refusal, so
+    // the timeout stays well clear of that or the failure would be named timeout instead.
+    let (status, _, kind, ..) = fetch(&runtime, "http://127.0.0.1:1/nothing-listens", "{ timeoutMs = 10000 }");
     assert_eq!((status, kind.as_str()), (None, "connect"));
 
     let (status, _, kind, ..) = fetch(&runtime, "https://user:pw@example.org/", "{}");
