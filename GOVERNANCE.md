@@ -402,11 +402,9 @@ Project procedures and maintainer decisions should be interpreted consistently w
 
 Nothing herein supersedes applicable law, published software licenses, or the rights conferred by those licenses.
 
-### Section 5. Ratification
+### Section 5. Ratification of Amendments
 
-This Constitution takes effect upon ratification. Ratification is a commit to this file on the default branch of the official repository, made by the founder or the acting steward, that sets the status line below to ratified with the date and the version. Nothing else is ratification. The founding draft becomes version 1.0 when ratified.
-
-Amendments are ratified the same way, after the comment period of Section 2, and take effect on ratification unless the amendment says otherwise.
+An amendment is ratified by a commit to this file on the default branch of the official repository, made by the founder or the acting steward after the comment period of Section 2, that carries the amended text and raises the version below. Nothing else is ratification. An amendment takes effect on ratification unless it says otherwise.
 
 ---
 
@@ -438,4 +436,4 @@ And no rule beyond reconsideration.
 
 **Custodian:** S3kshun8
 
-**Constitutional version:** 0.3
+**Constitutional version:** 1.0
