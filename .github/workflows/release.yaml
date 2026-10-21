@@ -13,6 +13,7 @@ permissions:
 jobs:
   build:
     permissions:
+      actions: write # the default-branch run modGlobalBuild starts, which v55 declares even when mod_template is off
       contents: write
       pages: write
       id-token: write
