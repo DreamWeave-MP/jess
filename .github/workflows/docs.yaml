@@ -69,6 +69,7 @@ jobs:
         env:
           DREAMWEAVE_BOOTSTRAP_SOURCES: ${{ vars.DREAMWEAVE_BOOTSTRAP_SOURCES }}
         run: |
+          echo "DREAMWEAVE_BOOTSTRAP_SOURCES: ${DREAMWEAVE_BOOTSTRAP_SOURCES:-(not visible to this repository)}"
           if [ -z "$DREAMWEAVE_BOOTSTRAP_SOURCES" ]; then
             jess workspace sync --locked
             exit 0
