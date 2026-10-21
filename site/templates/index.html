@@ -47,8 +47,8 @@
   <h2>Three things that happen <span>before your code runs.</span></h2>
   <div class="jess-shown__grid">
     <article>
-      <h3>Denied by default</h3>
-      <p>A script you run holds your terminal and the input devices in front of you. Everything else is a flag away, and the refusal names the function and the capability.</p>
+      <h3>Denied by default under <code>jess run</code></h3>
+      <p>A script under <code>jess run</code> holds your terminal and the input devices in front of you. Everything else is a flag away, and the refusal names the function and the capability. A script you make executable and run as a program holds everything, as any program you chose to run does.</p>
       <pre><code>$ jess run read.jsl
 error: dream.fs.readFileString: needs the 'filesystem.read'
 capability, which this runtime does not grant
@@ -128,7 +128,8 @@ $ jess workspace run --trusted jess-site-serve
 <section class="jess-final dw-shell">
   <p class="jess-kicker">FINE. GIVE ME THE PRIMITIVES.</p>
   <h2>Build something.</h2>
-  <div class="jess-final__commands"><code>jess init my-app</code><code>jess run main.jsl</code><code>jess pack my-app -o my-app.jpk</code><code>jess package run my-app.jpk</code></div>
+  <div class="jess-final__commands"><code>jess init my-app</code><code>jess run my-app/main.jsl</code><code>jess check my-app/main.jsl</code></div>
+  <div class="jess-final__commands"><code>jess init greeter --package com.example.greeter</code><code>jess package test greeter</code><code>jess pack greeter -o greeter.jpk</code></div>
   <div class="dw-actions">
     <a class="dw-button dw-button--primary" href="{{ get_url(path='@/docs/getting-started/_index.md') | safe }}">Get started</a>
     <a class="dw-button" href="{{ get_url(path='@/docs/scripting/packages.md') | safe }}">Build a package</a>
