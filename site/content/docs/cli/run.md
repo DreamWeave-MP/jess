@@ -6,9 +6,11 @@ extra:
   kind: reference
 ---
 
-{{ api_signature(value="jess run [--package PACKAGE]... [--package-path FOLDER]... [--layer ID]... [--capability NAME]... [--profile | --emit-asm FILE | --disassemble FILE] <SCRIPT> [ARGS]...") }}
+{{ api_signature(value="jess run [--package PACKAGE]... [--package-path FOLDER]... [--layer ID]... [--capability NAME]... | --trusted] [--profile | --emit-asm FILE | --disassemble FILE] <SCRIPT> [ARGS]...") }}
 
-Runs a Luau script with the whole jess API loaded.
+{{ api_signature(value="jess <SCRIPT>.jsl [ARGS]...") }}
+
+Runs a Luau script with the whole jess API loaded. The second form, a `.jsl` path where a command would go, runs the script as a program: trusted, with every capability, which is what a shebang line hands jess ([below](#running-a-script-as-a-program)).
 
 | Argument / option | Does |
 | --- | --- |
@@ -18,6 +20,7 @@ Runs a Luau script with the whole jess API loaded.
 | `--package-path FOLDER` | A folder of packages to find layers and dependencies in (repeatable): each Package Source folder and `.jpk` directly inside it, opened only when one is needed. A package named with `--package` is chosen over one found here; two found for one need are an error. |
 | `--layer ID` | Activate only this layer of the packages, and the layers it requires (repeatable). Without any, every layer they declare. Needs `--package`. |
 | `--capability NAME` | Grant the script a capability it doesn't hold by default (repeatable): `filesystem.read`, `network.transport`, and the rest of the [list](@/docs/reference/capabilities.md). A name no part of jess declares is an error, not a grant of nothing. |
+| `--trusted` | Grant the script every capability, the same as running it as a program with `jess script.jsl`. Can't be combined with `--capability`: it is all of them. |
 | `--profile` | After the script, print its call, sampling, and native-block statistics. |
 | `--emit-asm FILE` | Write the native assembly generated for the script to `FILE`, without running it. |
 | `--disassemble FILE` | Write the script's Luau bytecode, as text, to `FILE`, without running it. |
@@ -71,6 +74,30 @@ A plan that doesn't resolve stops the run before anything has started. An entryp
 ```sh
 jess run --package greeter --layer example.greetings hello.jsl
 ```
+
+## Running a script as a program
+
+A `.jsl` file can be an executable. Put a shebang line at the top, make it executable, and run it like any other program:
+
+```luau
+#!/usr/bin/env jess
+--!strict
+local process = require '@dream/process'
+
+print(`Hello, {process.env 'USER' or 'stranger'}.`)
+```
+
+```text
+$ chmod +x greet.jsl
+$ ./greet.jsl
+Hello, dave.
+```
+
+The kernel handles the shebang: Luau has no notion of one, so jess blanks that first line before compiling, newline kept, and line numbers in errors and tracebacks still match the file. `jess check`, `jess test`, `@jess/style`, and a module another file requires take the line the same way.
+
+What the shebang hands jess is `jess ./greet.jsl`, and a `.jsl` path where a command would go runs the script **as a program: trusted, with every capability.** No `--capability process.environment` was needed above. The reasoning is the shell's: you made the file executable and ran it, the same decision you make for any program, and a loose script has no manifest in which to declare what it needs. `jess run script.jsl` is the other spelling, default-deny, for a script you are inspecting rather than trusting, and `jess run --trusted script.jsl` is the trusted form with the flags of `run` available. A shebang can name either: `#!/usr/bin/env -S jess run --capability filesystem.read` runs the file denied-by-default with one grant, on systems whose `env` takes `-S`.
+
+The program form takes no other flags: everything after the script is the script's. A package is a different thing, with a manifest that declares what each command needs; see [`jess package run`](@/docs/cli/package.md#jess-package-run).
 
 ## Capabilities
 

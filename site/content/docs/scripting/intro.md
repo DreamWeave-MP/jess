@@ -80,6 +80,26 @@ a	b
 
 `...` is the script's varargs; `arg` is the same list as a table, with the script's own path at `arg[0]`. Flags after the script belong to the script, not to jess: `jess run build.jsl --verbose` hands `--verbose` to `build.jsl`.
 
+## Make it executable
+
+A script can be a program. Put a shebang line above `--!strict`, make the file executable, and run it like anything else on your `PATH`:
+
+```luau
+#!/usr/bin/env jess
+--!strict
+local process = require '@dream/process'
+
+print(`Hello, {process.env 'USER' or 'stranger'}.`)
+```
+
+```text
+$ chmod +x greet.jsl
+$ ./greet.jsl
+Hello, dave.
+```
+
+Luau has no notion of a shebang; jess blanks that line before compiling and keeps the line numbers after it. The shebang hands jess `jess ./greet.jsl`, and a `.jsl` path where a command would go runs the script as a program: trusted, with every capability, which is why the environment read above needed no flag. You made it executable and ran it, the same call you make for any program. `jess run greet.jsl` is the cautious spelling of the same thing, denied by default, for a script you are reading rather than trusting; [Capabilities](#capabilities) below covers that side.
+
 ## Turn on the types
 
 That `--!strict` on the first line isn't decoration. It tells Luau to type-check the whole file, and jess ships a type for every function it exposes and every module `require` resolves. Strict mode catches the misspelled field before you run the script, not after, when the only evidence is a job that quietly did nothing.

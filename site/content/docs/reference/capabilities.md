@@ -33,6 +33,8 @@ The native modules are L3i's, and L3i owns the check for each; jess decides what
 
 ## Who holds what
 
+**A script you run as a program holds everything.** `jess script.jsl`, which is what a shebang line (`#!/usr/bin/env jess`) hands jess, and `jess run --trusted`, grant every capability in the table: you made the file executable and ran it, the same decision you make for any program, and a loose script has no manifest to declare what it needs in. The two forms below are for code you are inspecting rather than trusting.
+
 **A script you run holds what you already have.** Under `jess run` and `jess test`, the runtime starts with `process.stdio`, `input.actions`, `input.observe`, and `input.configure`: your terminal and the input devices in front of you. Everything else is `--capability <name>`, repeatable, and denied without it.
 
 ```text

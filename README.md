@@ -30,7 +30,9 @@ $ jess run hello.jsl Dave
 Hello, Dave.
 ```
 
-Sources are `.jsl` files: Luau, checked under `--!strict` against types Jess generates for every module, so your editor knows the whole API before you've written a line. `jess init` sets a folder up with them. [Getting Started](https://DreamWeave-MP.github.io/jess/docs/getting-started/) takes it from there.
+A shebang line makes it a program. `#!/usr/bin/env jess` at the top and `chmod +x`, and `./hello.jsl Dave` runs it with every capability, as you'd expect of a program you chose to run; `jess run` is the default-deny form for code you're inspecting.
+
+Sources are `.jsl` files: Luau, checked under `--!strict` against types Jess generates for every module, so your editor knows the whole API before you've written a line. `jess init` sets a folder up with them, and `jess check` runs the same checker from the command line. [Getting Started](https://DreamWeave-MP.github.io/jess/docs/getting-started/) takes it from there.
 
 ### Packages and applications
 
