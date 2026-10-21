@@ -26,3 +26,8 @@ jobs:
       publish_docs: false
       cargo_publish: true
       msrv: auto
+      # 64-bit ARM Linux, cross-compiled in StroggForge's EL9 builder with clang and lld against a
+      # glibc 2.34 sysroot, under the same LLVM toolchain rule as the x86 build. Android stays off:
+      # that job compiles with the NDK's clang (LLVM 18), which l3i's toolchain rule refuses next to
+      # stable rustc's LLVM; it needs StroggForge to drive rustc's clang at the NDK sysroot first.
+      enable_portmaster: true
