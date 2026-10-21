@@ -28,7 +28,5 @@ footer_text = "only baby scars"
 menu_items = [
   { name = "Overview", url = "@/_index.md" },
   { name = "Docs", url = "@/docs/_index.md" },
-  { name = "Packages", url = "@/docs/scripting/packages.md" },
-  { name = "Benchmarks", url = "@/docs/contributing/benchmarks.md" },
   { name = "Source", url = "https://github.com/DreamWeave-MP/jess" },
 ]
