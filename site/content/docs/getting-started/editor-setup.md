@@ -216,4 +216,4 @@ Luau has two type checkers. The old one can't express parts of jess's types: fie
 
 Types help, but the only authority is running the code. `jess run` stops at the first error with the script's line and a traceback. For a package, [`jess package check`](@/docs/cli/package.md#jess-package-check) type-checks every `.jsl` under it in strict mode, with each `require` resolved as the runtime resolves it, and runs nothing. When the editor and jess disagree, jess is running the code; the editor is guessing from a file that may be stale.
 
-If something still isn't right, [Troubleshooting](@/docs/reference/troubleshooting.md#editors-and-types) has the usual suspects.
+If something still isn't right, [Troubleshooting](@/docs/reference/troubleshooting.md#editor-types) has the usual suspects.
