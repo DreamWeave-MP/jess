@@ -21,7 +21,7 @@ jobs:
     with:
       binary_names: '["jess"]'
       binary_package: jess
-      include_files: "README.md,LICENSE-MIT,LICENSE-APACHE,docs"
+      include_files: "README.md,LICENSE-MIT,LICENSE-APACHE"
       publish_docs: false
       cargo_publish_workspace: true
       msrv: auto
