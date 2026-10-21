@@ -1,7 +1,5 @@
 //! Shared checks: every lowered module goes through naga, and goldens compare or bless.
 
-#![allow(dead_code)]
-
 use std::path::PathBuf;
 
 use jess::shader::wgsl::{UniformBlock, WgslModule};

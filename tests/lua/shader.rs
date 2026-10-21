@@ -11,7 +11,7 @@ use jess::lua::shader::LuaShaderProgram;
 use jess::shader::wgsl::{self, WgslModule};
 use jess::shader::{Program, Type};
 
-mod common;
+use super::common;
 
 fn corpus(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/lua/shader").join(name)

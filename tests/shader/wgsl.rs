@@ -1,6 +1,6 @@
 //! WGSL lowering: goldens for small programs, every one checked by naga, plus bindings and layout.
 
-use crate::common;
+use super::common;
 
 use common::{assert_golden, assert_valid_wgsl};
 use jess::shader::wgsl::{self, PARAMETER_GROUP, ResourceBinding, SEMANTIC_GROUP, UniformMember};

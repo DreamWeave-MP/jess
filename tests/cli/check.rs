@@ -1,6 +1,6 @@
 //! `jess check`: loose scripts type-checked in strict mode.
 
-use crate::common;
+use super::common;
 
 use common::*;
 use serde_json::Value;

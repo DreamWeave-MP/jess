@@ -2,7 +2,7 @@
 //! program lowers to WGSL naga accepts, two of them to the same bytes as the hand-built IR in
 //! `wgsl.rs`, and each mistake is reported at the site that made it.
 
-use crate::common;
+use super::common;
 
 use std::sync::Arc;
 

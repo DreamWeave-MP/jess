@@ -2,15 +2,13 @@
 //! the Luau definitions, a module that declares everything `jess::lua::runtime` installs, for
 //! type-checking scripts against.
 
-#![allow(dead_code)] // Each test binary uses the part it needs.
-
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use jess::lua::Options;
 use jess::lua::l3i;
 use jess::lua::l3i::Runtime;
-use jess::lua::l3i::convert::{NewBuffer, Push};
+use jess::lua::l3i::convert::Push;
 use jess::lua::l3i::value::Table;
 
 /// A runtime with config resolution off, as most tests want.
@@ -40,11 +38,6 @@ pub fn run(runtime: &Runtime, script: &str) {
 pub fn set_global<T: Push + ?Sized>(runtime: &Runtime, name: &str, value: &T) {
     let globals = Table::from_value(runtime.global("_G").unwrap()).unwrap();
     l3i::readonly::set_read_only_field(runtime, &globals, name, value).unwrap();
-}
-
-/// Sets a global holding `bytes` as a buffer.
-pub fn set_buffer(runtime: &Runtime, name: &str, bytes: Vec<u8>) {
-    set_global(runtime, name, &NewBuffer(bytes));
 }
 
 thread_local! {

@@ -1,6 +1,6 @@
 //! Generic runtime surface contracts; application APIs are package-owned.
 
-mod common;
+use super::common;
 
 /// The `jess` global holds exactly the kernel's members, each table among them is also its
 /// `@jess/` module, and the runtime adds no global of its own beside `jess`.

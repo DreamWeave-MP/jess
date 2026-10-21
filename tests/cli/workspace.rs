@@ -1,7 +1,7 @@
 //! `jess workspace`, over the showcase in `fixtures/workspace`: a root package and a tool that
 //! uses it, with the libraries they depend on in `fixtures/workspace-vendor`.
 
-use crate::common::{Path, PathBuf, fs, jess, temp_dir_path};
+use super::common::{Path, PathBuf, fs, jess, temp_dir_path};
 
 /// Copies the folder `from` to `to`.
 fn copy(from: &Path, to: &Path) {
@@ -357,7 +357,7 @@ fn project_id(id: &str) -> String {
 /// A publisher site on `server` under `base`: a project manifest per package, each listing the
 /// package's one release and its archive, downloadable there, and an index naming which project
 /// publishes which package.
-fn publisher(server: &crate::common::http::Server, base: &str, name: &str, packages: &[&Published]) -> PublisherSite {
+fn publisher(server: &super::common::http::Server, base: &str, name: &str, packages: &[&Published]) -> PublisherSite {
     let site = server.url(base);
     let repository = format!("https://github.com/fixture/{}", name.replace(' ', "-").to_lowercase());
     let mut entries = Vec::new();
@@ -424,7 +424,7 @@ fn publisher(server: &crate::common::http::Server, base: &str, name: &str, packa
 }
 
 /// An index on `server` that says which manifest publishes which id, as the `AsHyAmS` file does.
-fn index(server: &crate::common::http::Server, claims: &[(&str, &str)]) -> String {
+fn index(server: &super::common::http::Server, claims: &[(&str, &str)]) -> String {
     let packages: Vec<serde_json::Value> = claims
         .iter()
         .map(|(id, manifest)| serde_json::json!({ "id": id, "origin": "fixture", "manifest_url": manifest }))
@@ -476,7 +476,7 @@ fn a_site_like_workspace_reaches_a_publisher_s_dependencies_of_dependencies() {
     .unwrap();
     let words = publish("words", &jpks);
     let tool = publish("tool", &jpks);
-    let server = crate::common::http::Server::start();
+    let server = super::common::http::Server::start();
     let published = publisher(&server, "/publisher/", "Fixture publisher", &[&words, &tool]);
 
     let synced = json(&sync(&site, &["--publisher", &published.index]));
@@ -516,7 +516,7 @@ fn the_showcase_syncs_from_a_publisher_and_restores_its_pins() {
     fs::create_dir_all(&jpks).unwrap();
     let words = publish("words", &jpks);
     let style = publish("style", &jpks);
-    let server = crate::common::http::Server::start();
+    let server = super::common::http::Server::start();
     let published = publisher(&server, "/publisher/", "Fixture publisher", &[&words, &style]);
     let index_url = index(
         &server,
@@ -621,7 +621,7 @@ fn a_sync_refuses_bytes_manifests_and_publishers_that_do_not_add_up() {
     fs::create_dir_all(&jpks).unwrap();
     let words = publish("words", &jpks);
     let style = publish("style", &jpks);
-    let server = crate::common::http::Server::start();
+    let server = super::common::http::Server::start();
     let published = publisher(&server, "/publisher/", "Fixture publisher", &[&words, &style]);
 
     // Tampered bytes: the archive served is not the one the manifest describes.

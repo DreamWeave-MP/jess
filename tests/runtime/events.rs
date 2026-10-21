@@ -8,7 +8,7 @@ use jess::runtime::l3i::Runtime;
 use jess::runtime::l3i::value::{Function, Table};
 use jess::runtime::{ContextSpec, DiagnosticKind, EventLimits, EventTarget, Message, Phase, PostRefused, ScriptDomain};
 
-use crate::support;
+use super::support;
 
 /// Loads `source`, whose chunk returns a table of functions, and binds each `name = function` as
 /// the handler of the named event `name` in `context`, in the order `bindings` lists them.

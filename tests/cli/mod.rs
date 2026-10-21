@@ -4,9 +4,9 @@
 mod application;
 mod capabilities;
 mod check;
-mod cli;
 mod common;
 mod fast_path;
 mod init;
 mod luau_test;
+mod toplevel;
 mod workspace;

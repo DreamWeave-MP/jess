@@ -8,7 +8,7 @@ use std::rc::Rc;
 use jess::lua::l3i::Runtime;
 use jess::lua::l3i::value::Table;
 
-mod common;
+use super::common;
 
 #[test]
 fn modules_are_frozen_and_the_sink_is_private() {

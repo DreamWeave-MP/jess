@@ -7,7 +7,7 @@ use jess::lua::l3i::Runtime;
 use jess::lua::l3i::value::Table;
 use std::path::{Path, PathBuf};
 
-mod common;
+use super::common;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

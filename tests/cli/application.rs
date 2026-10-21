@@ -2,7 +2,7 @@
 //! example in `tests/lua/application`, from its Package Sources and from JPKs, with the ways an
 //! application stops: it asks to, `--frames` runs out, or it is interrupted.
 
-use crate::common::{Path, PathBuf, fs, jess, temp_dir_path};
+use super::common::{Path, PathBuf, fs, jess, temp_dir_path};
 
 fn example() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/lua/application")

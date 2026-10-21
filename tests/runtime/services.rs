@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use jess::runtime::{ContextSpec, DiagnosticKind, Message, Phase, RuntimeError, ScriptDomain, WorkerSpec};
 
-use crate::support::{self, Counter};
+use super::support::{self, Counter};
 
 const WAIT: Option<Duration> = Some(Duration::from_secs(20));
 

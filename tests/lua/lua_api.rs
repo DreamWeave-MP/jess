@@ -1,6 +1,6 @@
 //! Generic require behavior without application configuration or VFS lookup.
 
-mod common;
+use super::common;
 
 #[test]
 fn relative_modules_are_cached_by_file() {

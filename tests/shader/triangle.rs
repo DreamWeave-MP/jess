@@ -2,7 +2,7 @@
 //!
 //! Skips, loudly, when the machine has no adapter at all (not even a software one).
 
-use crate::common;
+use super::common;
 
 use jess::shader::wgsl::{self, FRAGMENT_ENTRY_POINT, PARAMETER_GROUP, VERTEX_ENTRY_POINT, WgslModule};
 use jess::shader::{Expression, Literal, Program, Type};

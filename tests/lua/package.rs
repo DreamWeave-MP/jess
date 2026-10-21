@@ -8,7 +8,7 @@ use jess::lua::l3i::value::Table;
 use jess::lua::package::{self, Plan};
 
 mod application;
-mod common;
+use super::common;
 mod workspace;
 
 /// Writes `files` (path, contents) under `root`.

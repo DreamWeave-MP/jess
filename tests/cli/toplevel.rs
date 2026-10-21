@@ -1,6 +1,6 @@
 //! Top-level commands and generic script execution.
 
-use crate::common;
+use super::common;
 
 use common::*;
 

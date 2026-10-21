@@ -69,64 +69,8 @@ path = "src/main.rs"
 doc = false
 
 [[test]]
-name = "runtime"
-path = "tests/runtime/main.rs"
-
-[[test]]
-name = "input"
-path = "tests/input/main.rs"
-
-[[test]]
-name = "shader"
-path = "tests/shader/main.rs"
-
-[[test]]
-name = "render"
-path = "tests/render/graph.rs"
-
-[[test]]
-name = "host"
-path = "tests/host/kernel.rs"
-
-[[test]]
-name = "cli"
-path = "tests/cli/main.rs"
-
-[[test]]
-name = "lua_contracts"
-path = "tests/lua/contracts.rs"
-
-[[test]]
-name = "lua_kernel"
-path = "tests/lua/kernel.rs"
-
-[[test]]
-name = "lua_lua_api"
-path = "tests/lua/lua_api.rs"
-
-[[test]]
-name = "lua_luau_style"
-path = "tests/lua/luau_style.rs"
-
-[[test]]
-name = "lua_network_capability"
-path = "tests/lua/network_capability.rs"
-
-[[test]]
-name = "lua_package"
-path = "tests/lua/package.rs"
-
-[[test]]
-name = "lua_script_support"
-path = "tests/lua/script_support.rs"
-
-[[test]]
-name = "lua_shader"
-path = "tests/lua/shader.rs"
-
-[[test]]
-name = "lua_stdlib"
-path = "tests/lua/stdlib.rs"
+name = "integration"
+path = "tests/main.rs"
 
 [package.metadata.docs.rs]
 all-features = true

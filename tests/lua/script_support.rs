@@ -3,9 +3,7 @@
 
 use jess::lua::l3i::Runtime;
 
-mod common;
-
-use common::run;
+use super::common::{self, run};
 
 fn lua() -> Runtime {
     common::runtime()

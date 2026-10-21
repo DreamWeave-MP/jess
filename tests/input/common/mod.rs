@@ -1,7 +1,5 @@
 //! The acceptance fixture the input tests share: one gameplay set, one inventory layer.
 
-#![allow(dead_code)] // Each test binary uses the part it needs.
-
 use jess::input::{Control, GamepadButton, GraphSpec, Key, LayerSpec, NodeSpec, Origin, Owner, ValueType};
 
 pub const PACKAGE: &str = "@jess/acceptance";

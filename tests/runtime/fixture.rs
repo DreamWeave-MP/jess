@@ -17,7 +17,7 @@ use jess::runtime::{
     WORKER_SPAWN, WorkerState,
 };
 
-use crate::support::{self, TEST_ECHO};
+use super::support::{self, TEST_ECHO};
 
 const DOMAIN_A: &str = r"
 local context = require('@jess/context')

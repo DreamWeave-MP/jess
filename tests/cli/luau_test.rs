@@ -1,6 +1,6 @@
 //! `jess test` over Luau test modules.
 
-use crate::common;
+use super::common;
 
 use common::*;
 

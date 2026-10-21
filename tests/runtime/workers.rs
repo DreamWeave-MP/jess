@@ -9,7 +9,7 @@ use jess::runtime::{
     WorkerStage, WorkerState,
 };
 
-use crate::support::{self, Rendezvous};
+use super::support::{self, Rendezvous};
 
 const WAIT: Option<Duration> = Some(Duration::from_secs(20));
 

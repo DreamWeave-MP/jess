@@ -1,7 +1,7 @@
 //! Capabilities along the real CLI paths: what `jess run` holds without asking, what it needs a
 //! flag for, and that a package target holds what it declares and nothing the request adds.
 
-use crate::common::*;
+use super::common::*;
 
 fn stderr(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()

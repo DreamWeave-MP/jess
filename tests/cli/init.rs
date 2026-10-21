@@ -1,6 +1,6 @@
 //! `jess init`: a script folder with types, an example, and editor settings.
 
-use crate::common;
+use super::common;
 
 use common::*;
 use serde_json::Value;

@@ -8,7 +8,7 @@ use jess::input::{
     ActionEventKind, Control, GamepadButton, GraphSpec, InputRuntime, Key, SyntheticSource, Value, ValueType,
 };
 
-use crate::common;
+use super::common;
 
 use common::{HOLD_MS, TAP_MS, gameplay};
 

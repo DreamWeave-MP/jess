@@ -7,7 +7,7 @@ use jess::input::{
     RuntimeError, SpecError, Value, ValueType,
 };
 
-use crate::common;
+use super::common;
 
 use common::{PACKAGE, gameplay, key, south};
 

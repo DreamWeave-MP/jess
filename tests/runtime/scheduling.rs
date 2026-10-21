@@ -8,7 +8,7 @@ use jess::runtime::{
     RootAuthority, RuntimeError, ScriptDomain,
 };
 
-use crate::support;
+use super::support;
 
 /// Binds, for each named context, handlers that journal `<context> <phase> <payload>`.
 fn journaling(contexts: &[(&str, &[&str])]) -> String {

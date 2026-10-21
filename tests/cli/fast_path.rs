@@ -1,7 +1,7 @@
 //! Runtime fast-path integration checks that belong to Jess itself. Whether the fast path is fast
 //! is the safeenv canary's to measure, on a verified build; a test checks what it computes.
 
-use crate::common;
+use super::common;
 
 use common::*;
 

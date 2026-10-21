@@ -10,7 +10,7 @@ use jess::runtime::{
     RuntimeError, RuntimeFactory, ScriptDomain, WORKER_SPAWN, WorkerSpec,
 };
 
-use crate::support;
+use super::support;
 
 fn lifecycle(error: &RuntimeError) -> (DomainState, &'static str) {
     match error {
