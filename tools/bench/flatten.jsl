@@ -3,7 +3,7 @@
 Flattens an OpenMW config chain into one standalone config for the benchmark.
 
   jess run --capability filesystem.read --capability filesystem.write \
-    --package jpk/openmw --package-path jpk \
+    --package jpk/openmw-install --package-path jpk \
     tools/bench/flatten.jsl <output folder> <openmw.cfg> [content name to leave out]...
 
 Writes `openmw.cfg.in`: `encoding=`, every data folder (data-local included, as OpenMW searches
