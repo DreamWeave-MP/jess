@@ -26,15 +26,7 @@ pub fn replace_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => None,
         Err(error) => return Err(error),
     };
-    let mut builder = tempfile::Builder::new();
-    // The mode is what `File::create` asks for, and the process's umask applies to it as it
-    // would there.
-    #[cfg(unix)]
-    if permissions.is_none() {
-        use std::os::unix::fs::PermissionsExt;
-        builder.permissions(fs::Permissions::from_mode(0o666));
-    }
-    let mut temporary = builder.tempfile_in(parent)?;
+    let mut temporary = temporary_builder(permissions.is_none()).tempfile_in(parent)?;
     temporary.write_all(bytes)?;
     if let Some(permissions) = permissions {
         temporary.as_file().set_permissions(permissions)?;
@@ -42,6 +34,25 @@ pub fn replace_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
     temporary.as_file().sync_all()?;
     temporary.persist(path).map_err(|error| error.error)?;
     Ok(())
+}
+
+/// The builder for the temporary file a write goes through. For a file that doesn't exist yet
+/// (`new`), the mode is what `File::create` would ask for, 0o666 under the process's umask, not
+/// tempfile's private 0o600; an existing file's permissions are copied over afterwards instead.
+#[cfg(unix)]
+fn temporary_builder(new: bool) -> tempfile::Builder<'static, 'static> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut builder = tempfile::Builder::new();
+    if new {
+        builder.permissions(fs::Permissions::from_mode(0o666));
+    }
+    builder
+}
+
+/// [`temporary_builder`] where there is no mode to set: the platform's default.
+#[cfg(not(unix))]
+fn temporary_builder(_new: bool) -> tempfile::Builder<'static, 'static> {
+    tempfile::Builder::new()
 }
 
 /// Backs up an existing target without clobbering an earlier backup, then replaces it.
