@@ -3,6 +3,7 @@
 
 mod application;
 mod capabilities;
+mod check;
 mod cli;
 mod common;
 mod fast_path;

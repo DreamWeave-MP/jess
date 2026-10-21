@@ -8,6 +8,8 @@ use clap_complete::Shell;
 
 #[path = "cli/application.rs"]
 mod application;
+#[path = "cli/check.rs"]
+mod check;
 #[path = "cli/init.rs"]
 mod init;
 #[path = "cli/output.rs"]
@@ -65,6 +67,9 @@ enum Command {
     Run(Box<run::RunArgs>),
     /// Run Luau test modules returning an @jess/test suite.
     Test(Box<test::TestArgs>),
+    /// Type-check Luau scripts in strict mode, with jess's types and any packages they require.
+    /// Runs nothing.
+    Check(Box<check::CheckArgs>),
     /// Pack a Package Source folder into a JPK.
     Pack(Box<package::PackArgs>),
     /// Inspect, resolve, and test packages: Package Source folders and JPKs.
@@ -185,6 +190,7 @@ fn run(cli: Cli) -> Result<u8, String> {
         Command::LuauTypes(args) => types::run(&args, cli.format.unwrap_or(output::Format::Yaml)).map(|()| 0),
         Command::Run(args) => run::run(&args),
         Command::Test(args) => test::run(&args, cli.format.unwrap_or(output::Format::Yaml)).map(|()| 0),
+        Command::Check(args) => check::run(&args, cli.format.unwrap_or(output::Format::Yaml)).map(|()| 0),
         Command::Pack(args) => package::pack(&args, cli.format.unwrap_or(output::Format::Yaml)).map(|()| 0),
         Command::Package(args) => package::run(&args, cli.format.unwrap_or(output::Format::Yaml)),
         Command::Workspace(args) => workspace::run(&args, cli.format.unwrap_or(output::Format::Yaml)),
