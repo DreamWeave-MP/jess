@@ -99,6 +99,15 @@ struct ManArgs {
     output: Option<std::path::PathBuf>,
 }
 
+/// The section a macOS jess reserves for the packed workspace a standalone executable carries:
+/// `jess workspace pack --runtime` grows it to hold one. Code signing on macOS seals the file, so
+/// a payload can't follow it; it goes in a section of its own, which only the linker can add room
+/// for. It holds the trailer magic until then.
+#[cfg(target_os = "macos")]
+#[used]
+#[unsafe(link_section = "__JESS,__jsw")]
+static PACKED_WORKSPACE: [u8; 16] = *jess::lua::image::MAGIC;
+
 fn main() -> ExitCode {
     restore_default_sigpipe();
     // An executable carrying a packed workspace is that application, not jess: every argument is

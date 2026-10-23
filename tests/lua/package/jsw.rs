@@ -379,10 +379,189 @@ fn an_executable_carries_a_packed_workspace_inside_its_signature() {
     assert_eq!(Image::open(&path).unwrap().length, runtime.len() as u64);
 
     for (unfit, why) in [
-        ([0xcf, 0xfa, 0xed, 0xfe].repeat(8), "is a macOS executable"),
+        ([0xca, 0xfe, 0xba, 0xbe].repeat(8), "is a universal"),
         (portable_executable(Some((512, 8))), "is already signed"),
         (unsigned, "already carries a packed workspace"),
         (vec![0; 64], "predates standalone executables"),
+    ] {
+        let problem = image::standalone(&unfit, &payload).unwrap_err();
+        assert!(problem.contains(why), "{problem}");
+    }
+}
+
+const PAGE: usize = 0x4000;
+
+/// A Mach-O load command: its kind, then `body`, its size counted in.
+fn command(kind: u32, body: &[u8]) -> Vec<u8> {
+    let mut bytes = kind.to_le_bytes().to_vec();
+    bytes.extend_from_slice(&u32::try_from(body.len() + 8).unwrap().to_le_bytes());
+    bytes.extend_from_slice(body);
+    bytes
+}
+
+fn name16(name: &str) -> [u8; 16] {
+    let mut field = [0; 16];
+    field[..name.len()].copy_from_slice(name.as_bytes());
+    field
+}
+
+/// An `LC_SEGMENT_64` named `name`, with one section `section` filling it when given.
+fn segment(name: &str, vmaddr: u64, fileoff: u64, filesize: u64, section: Option<(&str, u64)>) -> Vec<u8> {
+    let mut body = name16(name).to_vec();
+    for value in [vmaddr, filesize, fileoff, filesize] {
+        body.extend_from_slice(&value.to_le_bytes());
+    }
+    body.extend_from_slice(&[3, 0, 0, 0, 3, 0, 0, 0]);
+    body.extend_from_slice(&u32::from(section.is_some()).to_le_bytes());
+    body.extend_from_slice(&0u32.to_le_bytes());
+    if let Some((section, size)) = section {
+        body.extend_from_slice(&name16(section));
+        body.extend_from_slice(&name16(name));
+        body.extend_from_slice(&vmaddr.to_le_bytes());
+        body.extend_from_slice(&size.to_le_bytes());
+        body.extend_from_slice(&u32::try_from(fileoff).unwrap().to_le_bytes());
+        body.extend_from_slice(&[0; 28]);
+    }
+    command(0x19, &body)
+}
+
+/// A thin arm64 Mach-O laid out as a macOS jess is: `__TEXT`, then the reserved `__JESS,__jsw`
+/// holding the placeholder (when `reserved`), then `__LINKEDIT` with a symbol table and, when
+/// `signed`, an ad hoc signature for the identifier `jess-test`.
+fn mach_o(reserved: bool, signed: bool) -> Vec<u8> {
+    let linkedit = if reserved { 2 * PAGE } else { PAGE };
+    let (symbols, strings) = (b"symbols-symbols!".as_slice(), b"strings\0".as_slice());
+    let mut identity = Vec::new();
+    for word in [0xfade_0cc0u32, 0, 1, 0, 20, 0xfade_0c02, 0, 0x20400, 2, 0, 88] {
+        identity.extend_from_slice(&word.to_be_bytes());
+    }
+    identity.extend_from_slice(&[0; 64]);
+    identity.extend_from_slice(b"jess-test\0");
+    let signature_at = (linkedit + symbols.len() + strings.len()).next_multiple_of(16);
+    let end = if signed {
+        signature_at + identity.len()
+    } else {
+        linkedit + symbols.len() + strings.len()
+    };
+
+    let mut commands = segment("__TEXT", 0x1_0000_0000, 0, PAGE as u64, None);
+    if reserved {
+        commands.extend(segment(
+            "__JESS",
+            0x1_0000_4000,
+            PAGE as u64,
+            PAGE as u64,
+            Some(("__jsw", 16)),
+        ));
+    }
+    let base = 0x1_0000_0000 + linkedit as u64;
+    commands.extend(segment("__LINKEDIT", base, linkedit as u64, (end - linkedit) as u64, None));
+    let mut symtab = Vec::new();
+    for value in [linkedit, 1, linkedit + symbols.len(), strings.len()] {
+        symtab.extend_from_slice(&u32::try_from(value).unwrap().to_le_bytes());
+    }
+    commands.extend(command(0x2, &symtab));
+    let count = if signed { 4 } else { 3 } + u32::from(reserved);
+    if signed {
+        let mut body = u32::try_from(signature_at).unwrap().to_le_bytes().to_vec();
+        body.extend_from_slice(&u32::try_from(identity.len()).unwrap().to_le_bytes());
+        commands.extend(command(0x1d, &body));
+    }
+
+    let mut bytes = Vec::new();
+    for word in [
+        0xfeed_facfu32,
+        0x0100_000c,
+        0,
+        2,
+        count,
+        u32::try_from(commands.len()).unwrap(),
+        0x0020_0085,
+        0,
+    ] {
+        bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    bytes.extend_from_slice(&commands);
+    bytes.resize(PAGE, 0xc3);
+    if reserved {
+        bytes.extend_from_slice(image::MAGIC);
+        bytes.resize(2 * PAGE, 0);
+    }
+    bytes.extend_from_slice(symbols);
+    bytes.extend_from_slice(strings);
+    if signed {
+        bytes.resize(signature_at, 0);
+        bytes.extend_from_slice(&identity);
+    }
+    bytes
+}
+
+fn le32(bytes: &[u8], at: usize) -> usize {
+    u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize
+}
+
+fn be32(bytes: &[u8], at: usize) -> usize {
+    u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap()) as usize
+}
+
+/// A macOS jess carries a packed workspace in the section it reserves: the payload in the section,
+/// `__LINKEDIT` after it with every offset into it moved along, and a fresh ad hoc signature
+/// hashing every page before it, so the result runs and `codesign` can sign it again.
+#[test]
+fn a_macos_executable_carries_a_packed_workspace_in_its_reserved_section() {
+    use sha2::Digest;
+
+    let temp = tempfile::tempdir().unwrap();
+    let payload = (0..40_000u32).map(|index| (index % 251) as u8).collect::<Vec<_>>();
+    let runtime = mach_o(true, true);
+    let path = temp.path().join("jess");
+    std::fs::write(&path, &runtime).unwrap();
+    assert_eq!(Image::carried(&path).unwrap(), None, "the placeholder carries nothing");
+
+    let carrying = image::standalone(&runtime, &payload).unwrap_or_else(|problem| panic!("{problem}"));
+    assert_eq!(&carrying[..32][..4], &runtime[..4]);
+    let grown = payload.len().div_ceil(PAGE) * PAGE;
+    let linkedit = PAGE + grown;
+    // Load commands, in order: __TEXT, __JESS and its section, __LINKEDIT, LC_SYMTAB, the signature.
+    let (jess, section, linkedit_command, symtab, signature) = (32 + 72, 32 + 144, 32 + 224, 32 + 296, 32 + 320);
+    assert_eq!(&carrying[PAGE..PAGE + payload.len()], &payload[..]);
+    assert_eq!(le32(&carrying, section + 48), PAGE);
+    assert_eq!(le32(&carrying, section + 40), payload.len());
+    assert_eq!(le32(&carrying, jess + 48), grown);
+    assert_eq!(le32(&carrying, linkedit_command + 40), linkedit);
+    assert_eq!(le32(&carrying, linkedit_command + 24), 0x4000 + grown);
+    assert_eq!(&carrying[le32(&carrying, symtab + 8)..][..16], b"symbols-symbols!");
+    assert_eq!(&carrying[le32(&carrying, symtab + 16)..][..8], b"strings\0");
+
+    let (dataoff, datasize) = (le32(&carrying, signature + 8), le32(&carrying, signature + 12));
+    assert_eq!(dataoff + datasize, carrying.len());
+    assert_eq!(le32(&carrying, linkedit_command + 48), carrying.len() - linkedit);
+    let blob = &carrying[dataoff..];
+    assert_eq!(be32(blob, 0), 0xfade_0cc0);
+    let directory = &blob[be32(blob, 16)..];
+    assert_eq!(be32(directory, 0), 0xfade_0c02);
+    assert_eq!(be32(directory, 32), dataoff, "the code limit is the signature");
+    let identifier = &directory[be32(directory, 20)..];
+    assert_eq!(&identifier[..10], b"jess-test\0");
+    let (hashes, slots) = (be32(directory, 16), be32(directory, 28));
+    assert_eq!(slots, dataoff.div_ceil(4096));
+    for (index, page) in carrying[..dataoff].chunks(4096).enumerate() {
+        assert_eq!(
+            &directory[hashes + index * 32..hashes + index * 32 + 32],
+            &sha2::Sha256::digest(page)[..],
+            "page {index}"
+        );
+    }
+
+    std::fs::write(&path, &carrying).unwrap();
+    let found = Image::carried(&path).unwrap().unwrap();
+    assert_eq!((found.offset, found.length), (PAGE as u64, payload.len() as u64));
+
+    let unsigned = image::standalone(&mach_o(true, false), &payload).unwrap();
+    assert_eq!(&unsigned[unsigned.len() - 8..], b"strings\0", "nothing is signed that wasn't");
+    for (unfit, why) in [
+        (carrying, "already carries a packed workspace"),
+        (mach_o(false, true), "predates standalone executables"),
     ] {
         let problem = image::standalone(&unfit, &payload).unwrap_err();
         assert!(problem.contains(why), "{problem}");

@@ -5,11 +5,12 @@
 //! where its bytes are. That is a byte range of a file either way, so a `.jsw` run by `jess` and the
 //! same bytes inside an executable are read by the same code from the same offsets on.
 //!
-//! An executable carries one as a payload followed by a [`TRAILER_LEN`]-byte trailer: the
-//! payload's offset and length, little-endian `u64`s, then [`MAGIC`]. On a Windows executable
-//! signed after the payload was added, the trailer ends where the signature's certificate table
-//! begins, since signing appends that table. A Mach-O executable is refused: code signing on macOS
-//! seals the file, and data after it is outside the signature.
+//! A Linux or Windows executable carries one as a payload followed by a [`TRAILER_LEN`]-byte
+//! trailer: the payload's offset and length, little-endian `u64`s, then [`MAGIC`]. On a Windows
+//! executable signed after the payload was added, the trailer ends where the signature's
+//! certificate table begins, since signing appends that table. A macOS executable carries one in the
+//! section a macOS jess reserves for it (see `mach_o`): code signing on macOS seals the file, and
+//! bytes appended after the seal can't be signed again.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -77,6 +78,10 @@ impl Image {
     /// is a signed executable with bytes after its signature, which nothing vouches for.
     pub fn carried(path: &Path) -> std::io::Result<Option<Self>> {
         let mut file = File::open(path)?;
+        let mut magic = [0; 4];
+        if file.read_exact(&mut magic).is_ok() && super::mach_o::is_mach_o(&magic) {
+            return Self::reserved(path, &mut file);
+        }
         let (end, signed) = content_end(&mut file)?;
         if signed == Some(false) {
             return Err(std::io::Error::new(
@@ -124,6 +129,43 @@ impl Image {
         }))
     }
 
+    /// The payload the Mach-O file at `path` carries in its reserved section, if it carries one: a
+    /// section holding only the placeholder carries none.
+    fn reserved(path: &Path, file: &mut File) -> std::io::Result<Option<Self>> {
+        let length = file.seek(SeekFrom::End(0))?;
+        let mut header = [0; 32];
+        file.seek(SeekFrom::Start(0))?;
+        file.read_exact(&mut header)?;
+        let commands = u32::from_le_bytes([header[20], header[21], header[22], header[23]]);
+        // Load commands are a few kilobytes; a header claiming more than a megabyte is no jess.
+        let head_len = (32 + u64::from(commands)).min(length).min(1 << 20);
+        let mut head = vec![0; usize::try_from(head_len).unwrap_or(32)];
+        file.seek(SeekFrom::Start(0))?;
+        file.read_exact(&mut head)?;
+        let Some((offset, size)) = super::mach_o::reserved(&head) else {
+            return Ok(None);
+        };
+        if offset.checked_add(size).is_none_or(|end| end > length) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("'{}' has a __JESS,__jsw section past its end", path.display()),
+            ));
+        }
+        if size == MAGIC.len() as u64 {
+            let mut placeholder = [0; 16];
+            file.seek(SeekFrom::Start(offset))?;
+            file.read_exact(&mut placeholder)?;
+            if &placeholder == MAGIC {
+                return Ok(None);
+            }
+        }
+        Ok(Some(Self {
+            path: text(path)?,
+            offset,
+            length: size,
+        }))
+    }
+
     /// This image as the table the bootstrap reads: `{ path, offset, length }`.
     pub(crate) fn table(&self, scope: &impl l3i::stack::Scope) -> l3i::Result<l3i::value::Table> {
         let table = l3i::value::Table::new(scope, 0, 3)?;
@@ -137,14 +179,20 @@ impl Image {
     }
 }
 
-/// `runtime`, a jess executable, carrying `payload`, a packed workspace: the executable's bytes
-/// unchanged, then the payload, then the trailer. Sign the result afterwards, if at all.
+/// `runtime`, a jess executable, carrying `payload`, a packed workspace.
+///
+/// For Linux and Windows, the executable's bytes unchanged, then the payload, then the trailer;
+/// for macOS, the payload in the section the runtime reserves, signed ad hoc as the runtime was.
+/// Sign the result afterwards, if at all.
 ///
 /// # Errors
 ///
 /// As [`check_runtime`].
 pub fn standalone(runtime: &[u8], payload: &[u8]) -> Result<Vec<u8>, String> {
     check_runtime(runtime)?;
+    if super::mach_o::is_mach_o(runtime) {
+        return super::mach_o::standalone(runtime, payload);
+    }
     let offset = runtime.len() as u64;
     let mut bytes = Vec::with_capacity(runtime.len() + payload.len() + TRAILER_LEN);
     bytes.extend_from_slice(runtime);
@@ -159,11 +207,12 @@ pub fn standalone(runtime: &[u8], payload: &[u8]) -> Result<Vec<u8>, String> {
 ///
 /// # Errors
 ///
-/// Returns an error naming why it can't: it is a Mach-O executable, it is already signed (signing
-/// comes after), it already carries a packed workspace, or it predates them.
+/// Returns an error naming why it can't: it is already signed with Authenticode (signing comes
+/// after), it already carries a packed workspace, or it predates them; for macOS, it is universal
+/// or reserves no section.
 pub fn check_runtime(runtime: &[u8]) -> Result<(), String> {
-    if is_mach_o(runtime) {
-        return Err("the runtime is a macOS executable; a standalone macOS application needs the packed workspace inside a signed Mach-O segment, which this jess doesn't write yet: ship the .jsw beside jess instead".to_owned());
+    if super::mach_o::is_mach_o(runtime) {
+        return super::mach_o::check(runtime);
     }
     if certificate_table_in(runtime).is_some() {
         return Err(
@@ -192,13 +241,6 @@ fn text(path: &Path) -> std::io::Result<String> {
             format!("'{}' has a name that isn't UTF-8", path.display()),
         )
     })
-}
-
-fn is_mach_o(bytes: &[u8]) -> bool {
-    matches!(
-        bytes.get(..4),
-        Some([0xcf | 0xce, 0xfa, 0xed, 0xfe] | [0xca, 0xfe, 0xba, 0xbe] | [0xfe, 0xed, 0xfa, 0xce | 0xcf])
-    )
 }
 
 /// Where the content of the file ends, and whether it is signed: before the certificate table of

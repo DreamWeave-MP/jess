@@ -137,29 +137,12 @@ fn a_packed_workspace_run_as_a_program_holds_what_its_target_declares() {
     assert_eq!(stdout(&greeted), "HELLO, YOU! (hello)\n");
 }
 
-/// A macOS jess can't carry a packed workspace yet, and says so rather than writing anything.
-#[cfg(target_os = "macos")]
-#[test]
-fn a_macos_runtime_is_refused() {
-    let showcase = synced("jsw-macos");
-    let standalone = showcase.root.join("showcase");
-    let refused = jess()
-        .current_dir(showcase.workspace())
-        .args(["workspace", "pack", "--output"])
-        .arg(&standalone)
-        .arg("--runtime")
-        .arg(env!("CARGO_BIN_EXE_jess"))
-        .output()
-        .unwrap();
-    assert!(!refused.status.success());
-    assert!(stderr(&refused).contains("is a macOS executable"), "{}", stderr(&refused));
-    assert!(!standalone.exists());
-}
-
 /// A standalone executable is a jess carrying a packed workspace: run from anywhere, it is that
 /// application, every argument its default target's, and under the name of another target's
-/// command it runs that target. What it carries is the packed workspace, byte for byte.
-#[cfg(not(target_os = "macos"))]
+/// command it runs that target. What it carries is the packed workspace, byte for byte: after the
+/// runtime on Linux and Windows, in the section the runtime reserves on macOS, where the result is
+/// signed ad hoc, passes `codesign`'s strict check, and can be signed again with the hardened
+/// runtime and still run.
 #[test]
 fn a_standalone_executable_is_the_application_it_carries() {
     let showcase = synced("jsw-standalone");
@@ -170,17 +153,28 @@ fn a_standalone_executable_is_the_application_it_carries() {
     let standalone = showcase.root.join(name);
     let runtime = std::path::PathBuf::from(env!("CARGO_BIN_EXE_jess"));
     let report = pack(&workspace, &standalone, Some(&runtime));
-    let (runtime_bytes, image, executable) = (
-        fs::read(&runtime).unwrap(),
-        fs::read(&packed).unwrap(),
-        fs::read(&standalone).unwrap(),
-    );
     assert_eq!(report["sha256"], pack(&workspace, &packed, None)["sha256"]);
-    assert_eq!(&executable[..runtime_bytes.len()], &runtime_bytes[..]);
-    assert_eq!(
-        &executable[runtime_bytes.len()..runtime_bytes.len() + image.len()],
-        &image[..]
+    if !cfg!(target_os = "macos") {
+        let (runtime_bytes, image, executable) = (
+            fs::read(&runtime).unwrap(),
+            fs::read(&packed).unwrap(),
+            fs::read(&standalone).unwrap(),
+        );
+        assert_eq!(&executable[..runtime_bytes.len()], &runtime_bytes[..]);
+        assert_eq!(
+            &executable[runtime_bytes.len()..runtime_bytes.len() + image.len()],
+            &image[..]
+        );
+    }
+    let carried = json(
+        &jess()
+            .args(["--format", "json", "workspace", "--workspace"])
+            .arg(&standalone)
+            .arg("info")
+            .output()
+            .unwrap(),
     );
+    assert_eq!(carried["kind"], "packed");
 
     fs::remove_dir_all(&workspace).unwrap();
     let elsewhere = showcase.root.join("elsewhere");
@@ -207,4 +201,36 @@ fn a_standalone_executable_is_the_application_it_carries() {
         stdout(&greeted),
         "HELLO, ONE! (hello)\nHELLO, TWO! (hello)\nHELLO, THREE! (hello)\n"
     );
+
+    if cfg!(target_os = "macos") {
+        let codesign = |args: &[&str]| {
+            let output = std::process::Command::new("codesign")
+                .args(args)
+                .arg(&moved)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "codesign {args:?}: {}", stderr(&output));
+        };
+        codesign(&["--verify", "--strict", "--verbose=2"]);
+        let entitlements = elsewhere.join("jit.plist");
+        fs::write(
+            &entitlements,
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\
+             <key>com.apple.security.cs.allow-jit</key><true/></dict></plist>\n",
+        )
+        .unwrap();
+        let entitlements = entitlements.display().to_string();
+        codesign(&[
+            "--force",
+            "--sign",
+            "-",
+            "--options",
+            "runtime",
+            "--entitlements",
+            &entitlements,
+        ]);
+        codesign(&["--verify", "--strict", "--verbose=2"]);
+        let resigned = std::process::Command::new(&moved).current_dir(&elsewhere).output().unwrap();
+        assert_eq!(stdout(&resigned), "hello, showcase\n", "{}", stderr(&resigned));
+    }
 }
