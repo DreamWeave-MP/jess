@@ -84,6 +84,10 @@ enum WorkspaceCommand {
         /// The file to write.
         #[arg(long, value_name = "FILE")]
         output: PathBuf,
+        /// Write a standalone executable instead: this jess executable, for any platform but macOS,
+        /// carrying the packed workspace, which runs its default target with every argument.
+        #[arg(long, value_name = "JESS")]
+        runtime: Option<PathBuf>,
     },
 }
 
@@ -174,8 +178,8 @@ fn run_target(at: Locate, args: &RunArgs) -> Result<u8, String> {
     crate::application::finish(launched, args.frames)
 }
 
-/// Runs a target of a packed workspace as a program, as `jess app.jsw` does: `target`, or its
-/// default without one, holding what it declares, with `args`.
+/// Runs a target of a packed workspace as a program, `jess app.jsw` or a standalone executable
+/// does: `target`, or its default without one, holding what it declares, with `args`.
 pub fn run_packed(image: Image, target: Option<String>, args: Vec<String>) -> Result<u8, String> {
     let request = workspace::RunRequest {
         at: Locate::Packed(image),
@@ -186,6 +190,26 @@ pub fn run_packed(image: Image, target: Option<String>, args: Vec<String>) -> Re
     };
     let launched = workspace::launch(&jess::lua::Options::default(), &request).map_err(|error| error.to_string())?;
     crate::application::finish(launched, None)
+}
+
+/// Runs the packed workspace this executable carries: the target whose command is the
+/// executable's own name, when one has it, so one payload can ship under several names; else its
+/// default target.
+pub fn run_standalone(image: Image, args: Vec<String>) -> Result<u8, String> {
+    let name = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.file_stem().map(|stem| stem.to_string_lossy().into_owned()));
+    let lua = crate::run::lua_default()?;
+    let opened = workspace::open(&lua, &Locate::Packed(image.clone())).map_err(|error| error.to_string())?;
+    let target = name.filter(|name| {
+        opened.members.iter().any(|member| {
+            member
+                .targets
+                .iter()
+                .any(|target| target.command.as_deref() == Some(name.as_str()))
+        })
+    });
+    run_packed(image, target, args)
 }
 
 fn test(at: &Locate, members: &[String], format: Format) -> Result<(), String> {
@@ -213,9 +237,9 @@ pub fn run(args: &WorkspaceArgs, format: Format) -> Result<u8, String> {
         }
         WorkspaceCommand::Run(run) => return run_target(at, run),
         WorkspaceCommand::Test { members } => test(&at, members, format)?,
-        WorkspaceCommand::Pack { output } => {
+        WorkspaceCommand::Pack { output, runtime } => {
             let lua = crate::run::lua_default()?;
-            let packed = workspace::pack(&lua, &at, output).map_err(|error| error.to_string())?;
+            let packed = workspace::pack(&lua, &at, output, runtime.as_deref()).map_err(|error| error.to_string())?;
             output::print(&packed, format)?;
         }
         WorkspaceCommand::Sync {

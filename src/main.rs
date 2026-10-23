@@ -101,14 +101,28 @@ struct ManArgs {
 
 fn main() -> ExitCode {
     restore_default_sigpipe();
-    let outcome = if let Some((image, args)) = image_to_run() {
-        image.and_then(|image| workspace::run_packed(image, None, args))
-    } else if let Some((script, args)) = script_to_run() {
-        run::run_as_program(script, args)
-    } else {
-        let matches = command().get_matches();
-        let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
-        run(cli)
+    // An executable carrying a packed workspace is that application, not jess: every argument is
+    // the application's.
+    let outcome = match jess::lua::image::Image::embedded() {
+        Err(problem) => Err(problem),
+        Ok(Some(image)) => {
+            let args = std::env::args_os()
+                .skip(1)
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect();
+            workspace::run_standalone(image, args)
+        }
+        Ok(None) => {
+            if let Some((image, args)) = image_to_run() {
+                image.and_then(|image| workspace::run_packed(image, None, args))
+            } else if let Some((script, args)) = script_to_run() {
+                run::run_as_program(script, args)
+            } else {
+                let matches = command().get_matches();
+                let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
+                run(cli)
+            }
+        }
     };
     match outcome {
         Ok(code) => ExitCode::from(code),

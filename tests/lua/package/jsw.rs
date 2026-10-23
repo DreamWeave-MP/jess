@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use jess::lua::image::Image;
+use jess::lua::image::{self, Image};
 use jess::lua::package::TargetRun;
 use jess::lua::workspace::{self, Locate, RunRequest};
 
@@ -52,7 +52,7 @@ fn workspace(root: &Path) -> PathBuf {
 }
 
 fn pack(folder: &Path, output: &Path) -> workspace::Packed {
-    workspace::pack(&common::runtime(), &Locate::Root(folder.to_path_buf()), output)
+    workspace::pack(&common::runtime(), &Locate::Root(folder.to_path_buf()), output, None)
         .unwrap_or_else(|error| panic!("{error}"))
 }
 
@@ -152,7 +152,7 @@ fn a_packed_workspace_is_the_workspace_s_plan_in_one_file() {
     assert_eq!(opened.lock.packages.len(), 3);
     for doing in [
         workspace::test(&jess::lua::Options::default(), &packed(&output), &[], temp.path()).map(|_| ()),
-        workspace::pack(&runtime, &packed(&output), &again).map(|_| ()),
+        workspace::pack(&runtime, &packed(&output), &again, None).map(|_| ()),
     ] {
         let refused = doing.unwrap_err().to_string();
         assert!(refused.contains("is a packed workspace, which is sealed"), "{refused}");
@@ -176,14 +176,19 @@ fn a_workspace_file_says_what_is_packed() {
     assert_eq!(report.default.as_deref(), Some("org.example.app:hello"));
 
     std::fs::write(&file, format!("{listed}\n[pack]\ntargets = [\"nothing\"]\n")).unwrap();
-    let unnamed = workspace::pack(&common::runtime(), &Locate::Root(folder.clone()), &temp.path().join("x.jsw"))
-        .unwrap_err()
-        .to_string();
+    let unnamed = workspace::pack(
+        &common::runtime(),
+        &Locate::Root(folder.clone()),
+        &temp.path().join("x.jsw"),
+        None,
+    )
+    .unwrap_err()
+    .to_string();
     assert!(unnamed.contains("nothing in the workspace is named 'nothing'"), "{unnamed}");
 
     std::fs::write(&file, &listed).unwrap();
     std::fs::remove_file(folder.join("jess.lock")).unwrap();
-    let stale = workspace::pack(&common::runtime(), &Locate::Root(folder), &temp.path().join("x.jsw"))
+    let stale = workspace::pack(&common::runtime(), &Locate::Root(folder), &temp.path().join("x.jsw"), None)
         .unwrap_err()
         .to_string();
     assert!(stale.contains("jess.lock is out of date"), "{stale}");
@@ -313,4 +318,73 @@ fn a_packed_workspace_that_does_not_add_up_is_refused() {
     );
     let impostor = run(packed(&bad), Some("org.dreamweave.jess:evil"), &[]).unwrap_err();
     assert!(impostor.contains("says it is jess's built-in package"), "{impostor}");
+}
+
+/// The bytes of an executable carrying `payload` after `runtime`, as [`image::standalone`] writes it.
+fn carrying(runtime: &[u8], payload: &[u8]) -> Vec<u8> {
+    image::standalone(runtime, payload).unwrap_or_else(|problem| panic!("{problem}"))
+}
+
+/// A PE32+ header with room after it, signed when `certificate` is given: its certificate table's
+/// file offset and size, which signing appends at the end.
+fn portable_executable(certificate: Option<(u32, u32)>) -> Vec<u8> {
+    let mut bytes = vec![0; 512];
+    bytes[..2].copy_from_slice(b"MZ");
+    bytes[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+    bytes[0x80..0x84].copy_from_slice(b"PE\0\0");
+    bytes[0x98..0x9a].copy_from_slice(&0x20bu16.to_le_bytes());
+    if let Some((offset, size)) = certificate {
+        let directory = 0x98 + 112 + 4 * 8;
+        bytes[directory..directory + 4].copy_from_slice(&offset.to_le_bytes());
+        bytes[directory + 4..directory + 8].copy_from_slice(&size.to_le_bytes());
+    }
+    // A runtime that looks for a trailer holds its magic.
+    bytes[0x180..0x190].copy_from_slice(image::MAGIC);
+    bytes
+}
+
+/// An executable carries a packed workspace after itself, behind a trailer; signing it afterwards
+/// keeps it readable, and bytes added after the signature are refused, never read. A runtime that
+/// can't carry one is refused before anything is written.
+#[test]
+fn an_executable_carries_a_packed_workspace_inside_its_signature() {
+    let temp = tempfile::tempdir().unwrap();
+    let payload = b"the packed workspace".to_vec();
+    let runtime = portable_executable(None);
+    let unsigned = carrying(&runtime, &payload);
+    let path = temp.path().join("app.exe");
+    std::fs::write(&path, &unsigned).unwrap();
+    let found = Image::carried(&path).unwrap().unwrap();
+    assert_eq!((found.offset, found.length), (runtime.len() as u64, payload.len() as u64));
+
+    // Signing pads to 8 bytes and appends the certificate table, which the headers then name.
+    let mut signed = unsigned.clone();
+    signed.resize(signed.len().next_multiple_of(8), 0);
+    let table = u32::try_from(signed.len()).unwrap();
+    signed.extend_from_slice(&[0x5a; 64]);
+    let header = portable_executable(Some((table, 64)));
+    signed[..header.len()].copy_from_slice(&header);
+    std::fs::write(&path, &signed).unwrap();
+    let found = Image::carried(&path).unwrap().unwrap();
+    assert_eq!((found.offset, found.length), (runtime.len() as u64, payload.len() as u64));
+
+    let mut appended = signed.clone();
+    appended.extend_from_slice(&carrying(&portable_executable(None), b"something else")[512..]);
+    std::fs::write(&path, &appended).unwrap();
+    let refused = Image::carried(&path).unwrap_err().to_string();
+    assert!(refused.contains("has bytes after its signature"), "{refused}");
+
+    std::fs::write(&path, &runtime).unwrap();
+    assert_eq!(Image::carried(&path).unwrap(), None);
+    assert_eq!(Image::open(&path).unwrap().length, runtime.len() as u64);
+
+    for (unfit, why) in [
+        ([0xcf, 0xfa, 0xed, 0xfe].repeat(8), "is a macOS executable"),
+        (portable_executable(Some((512, 8))), "is already signed"),
+        (unsigned, "already carries a packed workspace"),
+        (vec![0; 64], "predates standalone executables"),
+    ] {
+        let problem = image::standalone(&unfit, &payload).unwrap_err();
+        assert!(problem.contains(why), "{problem}");
+    }
 }

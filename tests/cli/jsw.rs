@@ -1,7 +1,7 @@
 //! Packed workspaces from the command line, over the showcase: `jess workspace pack`, `jess
-//! app.jsw`, and a packed workspace named with `--workspace`.
+//! app.jsw`, a packed workspace named with `--workspace`, and a standalone executable.
 
-use super::common::{Path, fs, jess};
+use super::common::{Path, PathBuf, fs, jess};
 use super::workspace::{Showcase, fixture, json};
 
 /// The showcase with its JPKs synced into the lock, ready to pack.
@@ -29,15 +29,16 @@ fn synced(name: &str) -> Showcase {
     showcase
 }
 
-fn pack(workspace: &Path, output: &Path) -> serde_json::Value {
-    json(
-        &jess()
-            .current_dir(workspace)
-            .args(["--format", "json", "workspace", "pack", "--output"])
-            .arg(output)
-            .output()
-            .unwrap(),
-    )
+fn pack(workspace: &Path, output: &Path, runtime: Option<&Path>) -> serde_json::Value {
+    let mut command = jess();
+    command
+        .current_dir(workspace)
+        .args(["--format", "json", "workspace", "pack", "--output"])
+        .arg(output);
+    if let Some(runtime) = runtime {
+        command.arg("--runtime").arg(runtime);
+    }
+    json(&command.output().unwrap())
 }
 
 fn stdout(output: &std::process::Output) -> String {
@@ -56,14 +57,14 @@ fn a_packed_workspace_runs_without_its_workspace() {
     let showcase = synced("jsw-runs");
     let workspace = showcase.workspace();
     let packed = showcase.root.join("showcase.jsw");
-    let report = pack(&workspace, &packed);
+    let report = pack(&workspace, &packed, None);
     assert_eq!(report["default"], "org.example.showcase:showcase");
     assert_eq!(
         report["targets"],
         serde_json::json!(["org.example.greeter:greet", "org.example.showcase:showcase"])
     );
     let again = showcase.root.join("again.jsw");
-    pack(&workspace, &again);
+    pack(&workspace, &again, None);
     assert_eq!(fs::read(&packed).unwrap(), fs::read(&again).unwrap());
 
     let listed = json(
@@ -130,8 +131,60 @@ fn a_packed_workspace_run_as_a_program_holds_what_its_target_declares() {
     let listed = fs::read_to_string(&file).unwrap();
     fs::write(&file, format!("{listed}\n[pack]\ndefault = \"greet\"\n")).unwrap();
     let packed = showcase.root.join("greeter.jsw");
-    pack(&workspace, &packed);
+    pack(&workspace, &packed, None);
     let greeted = jess().arg(&packed).arg("you").output().unwrap();
     assert_eq!(greeted.status.code(), Some(1), "{}", stderr(&greeted));
     assert_eq!(stdout(&greeted), "HELLO, YOU! (hello)\n");
+}
+
+/// A standalone executable is a jess carrying a packed workspace: run from anywhere, it is that
+/// application, every argument its default target's, and under the name of another target's
+/// command it runs that target. What it carries is the packed workspace, byte for byte.
+#[test]
+fn a_standalone_executable_is_the_application_it_carries() {
+    let showcase = synced("jsw-standalone");
+    let workspace = showcase.workspace();
+    let packed = showcase.root.join("showcase.jsw");
+    pack(&workspace, &packed, None);
+    let name = if cfg!(windows) { "showcase.exe" } else { "showcase" };
+    let standalone = showcase.root.join(name);
+    let runtime = PathBuf::from(env!("CARGO_BIN_EXE_jess"));
+    let report = pack(&workspace, &standalone, Some(&runtime));
+    let (runtime_bytes, image, executable) = (
+        fs::read(&runtime).unwrap(),
+        fs::read(&packed).unwrap(),
+        fs::read(&standalone).unwrap(),
+    );
+    assert_eq!(report["sha256"], pack(&workspace, &packed, None)["sha256"]);
+    assert_eq!(&executable[..runtime_bytes.len()], &runtime_bytes[..]);
+    assert_eq!(
+        &executable[runtime_bytes.len()..runtime_bytes.len() + image.len()],
+        &image[..]
+    );
+
+    fs::remove_dir_all(&workspace).unwrap();
+    let elsewhere = showcase.root.join("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let moved = elsewhere.join(name);
+    fs::rename(&standalone, &moved).unwrap();
+    let ran = std::process::Command::new(&moved)
+        .current_dir(&elsewhere)
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert!(ran.status.success(), "{}", stderr(&ran));
+    assert_eq!(stdout(&ran), "hello, showcase\n");
+
+    let alias = elsewhere.join(if cfg!(windows) { "greet.exe" } else { "greet" });
+    fs::copy(&moved, &alias).unwrap();
+    let greeted = std::process::Command::new(&alias)
+        .current_dir(&elsewhere)
+        .args(["one", "two", "three"])
+        .output()
+        .unwrap();
+    assert_eq!(greeted.status.code(), Some(3), "{}", stderr(&greeted));
+    assert_eq!(
+        stdout(&greeted),
+        "HELLO, ONE! (hello)\nHELLO, TWO! (hello)\nHELLO, THREE! (hello)\n"
+    );
 }

@@ -28,8 +28,8 @@ pub enum Locate {
 }
 
 impl Locate {
-    /// The workspace `path` names: a packed workspace when it is a file, a `.jsw`, else the
-    /// workspace whose root it is.
+    /// The workspace `path` names: a packed workspace when it is a file (a `.jsw`, or an
+    /// executable carrying one), else the workspace whose root it is.
     ///
     /// # Errors
     ///
@@ -513,11 +513,12 @@ pub struct PackedPackage {
 /// What [`pack`] wrote.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Packed {
-    /// The `.jsw` written.
+    /// The file written: a `.jsw`, or a standalone executable carrying one.
     pub path: String,
     /// Its size in bytes.
     pub size: u64,
-    /// Its SHA-256, for a publisher to print beside the download.
+    /// The SHA-256 of the packed workspace, the same whether it is a file of its own or carried
+    /// by an executable.
     pub sha256: String,
     /// The target it runs without a name, `<package id>:<target id>`.
     pub default: Option<String>,
@@ -533,11 +534,16 @@ pub struct Packed {
 /// the workspace resolves it, and every package those runs would mount, each pinned to its
 /// digest. The workspace's lock must be fresh; nothing is fetched.
 ///
+/// With `standalone`, a jess executable for any platform, `output` is a standalone executable:
+/// `standalone` carrying the same packed workspace, which runs its default target with every
+/// argument it is given.
+///
 /// # Errors
 ///
 /// Returns an error if the workspace doesn't open, its lock isn't fresh, a target doesn't resolve,
-/// a package changes while it is packed, or `output` can't be written.
-pub fn pack(runtime: &Runtime, at: &Locate, output: &Path) -> l3i::Result<Packed> {
+/// a package changes while it is packed, `standalone` can't carry a packed workspace, or `output`
+/// can't be written.
+pub fn pack(runtime: &Runtime, at: &Locate, output: &Path, standalone: Option<&Path>) -> l3i::Result<Packed> {
     let shape = serde_json::json!({
         "path": "", "size": 0, "sha256": "", "default": null, "targets": [""],
         "packages": [{ "id": "", "version": "", "digest": "" }],
@@ -545,6 +551,42 @@ pub fn pack(runtime: &Runtime, at: &Locate, output: &Path) -> l3i::Result<Packed
     let (start, explicit) = at.args("packing")?;
     let reserved = package::host_modules(runtime)?;
     let reserved = package::string_list(&runtime.stack(), &reserved)?;
-    let args = (start, explicit, output.display().to_string(), reserved);
-    package::bootstrap(runtime, "workspacePack", &shape, args)
+    let Some(executable) = standalone else {
+        let args = (start, explicit, output.display().to_string(), reserved);
+        return package::bootstrap(runtime, "workspacePack", &shape, args);
+    };
+    let failed = |what: &str, path: &Path, source: std::io::Error| {
+        crate::lua::error(format!("failed to {what} '{}': {source}", path.display()))
+    };
+    let jess = std::fs::read(executable).map_err(|source| failed("read", executable, source))?;
+    let unfit =
+        |problem: String| crate::lua::error(format!("'{}' can't be a standalone runtime: {problem}", executable.display()));
+    crate::lua::image::check_runtime(&jess).map_err(unfit)?;
+    let folder = output
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let scratch = tempfile::Builder::new()
+        .prefix(".jess-pack")
+        .suffix(".jsw")
+        .tempfile_in(folder)
+        .map_err(|source| failed("write beside", output, source))?;
+    let args = (start, explicit, scratch.path().display().to_string(), reserved);
+    let mut packed: Packed = package::bootstrap(runtime, "workspacePack", &shape, args)?;
+    let payload = std::fs::read(scratch.path()).map_err(|source| failed("read", scratch.path(), source))?;
+    let bytes = crate::lua::image::standalone(&jess, &payload).map_err(unfit)?;
+    crate::lua::files::replace_file(output, &bytes).map_err(|source| failed("write", output, source))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(output)
+            .map_err(|source| failed("read", output, source))?
+            .permissions()
+            .mode();
+        std::fs::set_permissions(output, std::fs::Permissions::from_mode(mode | 0o111))
+            .map_err(|source| failed("make executable", output, source))?;
+    }
+    packed.path = output.display().to_string();
+    packed.size = bytes.len() as u64;
+    Ok(packed)
 }
