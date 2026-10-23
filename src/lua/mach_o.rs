@@ -51,11 +51,17 @@ const CODE_DIRECTORY_FLAGS: u32 = 0x0002_0002;
 const CODE_DIRECTORY_HEADER: usize = 88;
 const CS_EXECSEG_MAIN_BINARY: u64 = 1;
 
-/// Whether `bytes` start as a Mach-O file of any kind: thin, 32-bit, universal, or big-endian.
+/// Whether `bytes` start as a Mach-O file of any kind: thin or universal, 32- or 64-bit, in either
+/// byte order. Every one is read as macOS's, and refused unless it is what jess is built as.
 pub fn is_mach_o(bytes: &[u8]) -> bool {
     matches!(
         bytes.get(..4),
-        Some([0xcf | 0xce, 0xfa, 0xed, 0xfe] | [0xca, 0xfe, 0xba, 0xbe] | [0xfe, 0xed, 0xfa, 0xce | 0xcf])
+        Some(
+            [0xcf | 0xce, 0xfa, 0xed, 0xfe]
+                | [0xfe, 0xed, 0xfa, 0xce | 0xcf]
+                | [0xca, 0xfe, 0xba, 0xbe | 0xbf]
+                | [0xbe | 0xbf, 0xba, 0xfe, 0xca]
+        )
     )
 }
 

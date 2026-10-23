@@ -82,7 +82,7 @@ impl Image {
         if file.read_exact(&mut magic).is_ok() && super::mach_o::is_mach_o(&magic) {
             return Self::reserved(path, &mut file);
         }
-        let (end, signed) = content_end(&mut file)?;
+        let (end, signed) = content_end(path, &mut file)?;
         if signed == Some(false) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -214,11 +214,15 @@ pub fn check_runtime(runtime: &[u8]) -> Result<(), String> {
     if super::mach_o::is_mach_o(runtime) {
         return super::mach_o::check(runtime);
     }
-    if certificate_table_in(runtime).is_some() {
-        return Err(
-            "the runtime is already signed; add the packed workspace to an unsigned runtime, then sign the result"
-                .to_owned(),
-        );
+    match certificate_table_in(runtime) {
+        Err(why) => return Err(format!("the runtime starts as a Windows executable, but {why}")),
+        Ok(Some(_)) => {
+            return Err(
+                "the runtime is already signed; add the packed workspace to an unsigned runtime, then sign the result"
+                    .to_owned(),
+            );
+        }
+        Ok(None) => {}
     }
     if runtime.len() >= TRAILER_LEN && &runtime[runtime.len() - 16..] == MAGIC {
         return Err("the runtime already carries a packed workspace; start from jess itself".to_owned());
@@ -246,42 +250,82 @@ fn text(path: &Path) -> std::io::Result<String> {
 /// Where the content of the file ends, and whether it is signed: before the certificate table of
 /// a signed PE file, else at the end. A signature is `Some(true)` when its table runs to the end,
 /// as signing leaves it, and `Some(false)` when bytes follow it.
-fn content_end(file: &mut File) -> std::io::Result<(u64, Option<bool>)> {
+///
+/// A file that starts as a Windows executable is read as one: its PE headers are wherever its DOS
+/// header says, and a file whose PE headers don't read is refused, never taken as unsigned.
+fn content_end(path: &Path, file: &mut File) -> std::io::Result<(u64, Option<bool>)> {
     let length = file.seek(SeekFrom::End(0))?;
-    // The headers that locate the certificate table are within the first few hundred bytes.
-    let head_len = usize::try_from(length.min(4096)).unwrap_or(4096);
-    let mut head = vec![0; head_len];
+    let invalid = |why: &str| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("'{}' starts as a Windows executable, but {why}", path.display()),
+        )
+    };
+    let mut dos = Vec::with_capacity(DOS_HEADER_LEN);
     file.seek(SeekFrom::Start(0))?;
-    file.read_exact(&mut head)?;
-    Ok(match certificate_table_in(&head) {
+    file.by_ref().take(DOS_HEADER_LEN as u64).read_to_end(&mut dos)?;
+    let Some(at) = pe_headers_at(&dos).map_err(invalid)? else {
+        return Ok((length, None));
+    };
+    let mut headers = Vec::with_capacity(PE_HEADERS_LEN);
+    file.seek(SeekFrom::Start(at as u64))?;
+    file.by_ref().take(PE_HEADERS_LEN as u64).read_to_end(&mut headers)?;
+    Ok(match certificate_table(&headers).map_err(invalid)? {
         Some((offset, size)) if offset.checked_add(size) == Some(length) => (offset, Some(true)),
         Some(_) => (length, Some(false)),
         None => (length, None),
     })
 }
 
-/// The certificate table the PE headers in `head` name, as a file offset and a size. Its data
-/// directory entry is the fifth: a file offset, unlike every other entry's address.
-fn certificate_table_in(head: &[u8]) -> Option<(u64, u64)> {
-    let read_u16 = |at: usize| head.get(at..at + 2).map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]));
+/// The DOS header's length, `e_lfanew` its last field.
+const DOS_HEADER_LEN: usize = 0x40;
+
+/// The PE headers' bytes up to the certificate table's data directory entry, the fifth: the
+/// signature, the file header, and the PE32+ optional header's fields and first five entries.
+const PE_HEADERS_LEN: usize = 24 + 112 + 5 * 8;
+
+/// Where the PE headers of the file `dos` starts are, if it starts as a Windows executable.
+fn pe_headers_at(dos: &[u8]) -> Result<Option<usize>, &'static str> {
+    if dos.get(..2) != Some(b"MZ") {
+        return Ok(None);
+    }
+    let at = dos.get(0x3c..0x40).ok_or("its DOS header is cut short")?;
+    let at = u32::from_le_bytes([at[0], at[1], at[2], at[3]]);
+    usize::try_from(at)
+        .map(Some)
+        .map_err(|_| "its PE headers are past what this machine can address")
+}
+
+/// The certificate table the PE headers starting `headers` name, as a file offset and a size,
+/// if they name one. Its data directory entry is the fifth, a file offset, unlike every other
+/// entry's address; a file with fewer than five has none.
+fn certificate_table(headers: &[u8]) -> Result<Option<(u64, u64)>, &'static str> {
     let read_u32 = |at: usize| {
-        head.get(at..at + 4)
+        headers
+            .get(at..at + 4)
             .map(|bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+            .ok_or("its PE headers are cut short")
     };
-    if head.get(..2) != Some(b"MZ") {
-        return None;
+    if headers.get(..4) != Some(b"PE\0\0") {
+        return Err("it has no PE headers where its DOS header says they are");
     }
-    let pe = usize::try_from(read_u32(0x3c)?).ok()?;
-    if head.get(pe..pe + 4) != Some(b"PE\0\0") {
-        return None;
-    }
-    let optional = pe + 24;
-    let directories = match read_u16(optional)? {
-        0x10b => optional + 96,
-        0x20b => optional + 112,
-        _ => return None,
+    let optional = 24;
+    let (count, directories) = match headers.get(optional..optional + 2) {
+        Some([0x0b, 0x01]) => (optional + 92, optional + 96),
+        Some([0x0b, 0x02]) => (optional + 108, optional + 112),
+        _ => return Err("its optional header is neither PE32 nor PE32+"),
     };
-    let offset = read_u32(directories + 4 * 8)?;
-    let size = read_u32(directories + 4 * 8 + 4)?;
-    (offset != 0 && size != 0).then_some((u64::from(offset), u64::from(size)))
+    if read_u32(count)? < 5 {
+        return Ok(None);
+    }
+    let (offset, size) = (read_u32(directories + 4 * 8)?, read_u32(directories + 4 * 8 + 4)?);
+    Ok((offset != 0 && size != 0).then_some((u64::from(offset), u64::from(size))))
+}
+
+/// The certificate table the Windows executable `bytes` names, if it is one and names one.
+fn certificate_table_in(bytes: &[u8]) -> Result<Option<(u64, u64)>, &'static str> {
+    let Some(at) = pe_headers_at(bytes)? else {
+        return Ok(None);
+    };
+    certificate_table(bytes.get(at..).unwrap_or_default())
 }

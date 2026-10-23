@@ -328,29 +328,34 @@ fn carrying(runtime: &[u8], payload: &[u8]) -> Vec<u8> {
 /// A PE32+ header with room after it, signed when `certificate` is given: its certificate table's
 /// file offset and size, which signing appends at the end.
 fn portable_executable(certificate: Option<(u32, u32)>) -> Vec<u8> {
-    let mut bytes = vec![0; 512];
+    portable_executable_at(0x80, certificate)
+}
+
+/// [`portable_executable`] with its PE headers at `at`, after a DOS stub that long.
+fn portable_executable_at(at: usize, certificate: Option<(u32, u32)>) -> Vec<u8> {
+    let mut bytes = vec![0; at + 0x180];
     bytes[..2].copy_from_slice(b"MZ");
-    bytes[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
-    bytes[0x80..0x84].copy_from_slice(b"PE\0\0");
-    bytes[0x98..0x9a].copy_from_slice(&0x20bu16.to_le_bytes());
+    bytes[0x3c..0x40].copy_from_slice(&u32::try_from(at).unwrap().to_le_bytes());
+    bytes[at..at + 4].copy_from_slice(b"PE\0\0");
+    bytes[at + 24..at + 26].copy_from_slice(&0x20bu16.to_le_bytes());
+    bytes[at + 24 + 108..at + 24 + 112].copy_from_slice(&16u32.to_le_bytes());
     if let Some((offset, size)) = certificate {
-        let directory = 0x98 + 112 + 4 * 8;
+        let directory = at + 24 + 112 + 4 * 8;
         bytes[directory..directory + 4].copy_from_slice(&offset.to_le_bytes());
         bytes[directory + 4..directory + 8].copy_from_slice(&size.to_le_bytes());
     }
     // A runtime that looks for a trailer holds its magic.
-    bytes[0x180..0x190].copy_from_slice(image::MAGIC);
+    bytes[0x40..0x50].copy_from_slice(image::MAGIC);
     bytes
 }
 
-/// An executable carries a packed workspace after itself, behind a trailer; signing it afterwards
-/// keeps it readable, and bytes added after the signature are refused, never read. A runtime that
-/// can't carry one is refused before anything is written.
-#[test]
-fn an_executable_carries_a_packed_workspace_inside_its_signature() {
+/// An executable with its PE headers at `at` carries a packed workspace after itself, behind a
+/// trailer; signing it afterwards keeps it readable, and bytes added after the signature are
+/// refused, never read.
+fn carries_inside_its_signature(at: usize) {
     let temp = tempfile::tempdir().unwrap();
     let payload = b"the packed workspace".to_vec();
-    let runtime = portable_executable(None);
+    let runtime = portable_executable_at(at, None);
     let unsigned = carrying(&runtime, &payload);
     let path = temp.path().join("app.exe");
     std::fs::write(&path, &unsigned).unwrap();
@@ -358,18 +363,18 @@ fn an_executable_carries_a_packed_workspace_inside_its_signature() {
     assert_eq!((found.offset, found.length), (runtime.len() as u64, payload.len() as u64));
 
     // Signing pads to 8 bytes and appends the certificate table, which the headers then name.
-    let mut signed = unsigned.clone();
+    let mut signed = unsigned;
     signed.resize(signed.len().next_multiple_of(8), 0);
     let table = u32::try_from(signed.len()).unwrap();
     signed.extend_from_slice(&[0x5a; 64]);
-    let header = portable_executable(Some((table, 64)));
+    let header = portable_executable_at(at, Some((table, 64)));
     signed[..header.len()].copy_from_slice(&header);
     std::fs::write(&path, &signed).unwrap();
     let found = Image::carried(&path).unwrap().unwrap();
     assert_eq!((found.offset, found.length), (runtime.len() as u64, payload.len() as u64));
 
     let mut appended = signed.clone();
-    appended.extend_from_slice(&carrying(&portable_executable(None), b"something else")[512..]);
+    appended.extend_from_slice(&carrying(&runtime, b"something else")[runtime.len()..]);
     std::fs::write(&path, &appended).unwrap();
     let refused = Image::carried(&path).unwrap_err().to_string();
     assert!(refused.contains("has bytes after its signature"), "{refused}");
@@ -377,13 +382,48 @@ fn an_executable_carries_a_packed_workspace_inside_its_signature() {
     std::fs::write(&path, &runtime).unwrap();
     assert_eq!(Image::carried(&path).unwrap(), None);
     assert_eq!(Image::open(&path).unwrap().length, runtime.len() as u64);
+}
 
-    for (unfit, why) in [
-        ([0xca, 0xfe, 0xba, 0xbe].repeat(8), "is a universal"),
+/// An executable carries a packed workspace after itself, and inside a signature added after,
+/// wherever its DOS stub puts its PE headers, past the first page included. A file that starts as
+/// a Windows executable but whose PE headers don't read is refused, never taken as unsigned, and a
+/// runtime that can't carry one is refused before anything is written: every universal and
+/// non-native Mach-O among them.
+#[test]
+fn an_executable_carries_a_packed_workspace_inside_its_signature() {
+    carries_inside_its_signature(0x80);
+    carries_inside_its_signature(0x1200);
+
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("app.exe");
+    let payload = b"the packed workspace".to_vec();
+    let (mut lost, mut unreadable) = (portable_executable(None), portable_executable(None));
+    lost[0x3c..0x40].copy_from_slice(&0x10_0000u32.to_le_bytes());
+    unreadable[0x80 + 24] = 0;
+    for (broken, why) in [(lost, "has no PE headers"), (unreadable, "neither PE32 nor PE32+")] {
+        std::fs::write(&path, &broken).unwrap();
+        let refused = Image::carried(&path).unwrap_err().to_string();
+        assert!(refused.contains(why), "{refused}");
+        let problem = image::standalone(&broken, &payload).unwrap_err();
+        assert!(problem.contains(why), "{problem}");
+    }
+
+    let mach_o = [
+        [0xca, 0xfe, 0xba, 0xbe],
+        [0xca, 0xfe, 0xba, 0xbf],
+        [0xbe, 0xba, 0xfe, 0xca],
+        [0xbf, 0xba, 0xfe, 0xca],
+        [0xfe, 0xed, 0xfa, 0xce],
+        [0xfe, 0xed, 0xfa, 0xcf],
+        [0xce, 0xfa, 0xed, 0xfe],
+    ]
+    .map(|magic| (magic.repeat(8), "is a universal, 32-bit, or big-endian"));
+    let unsigned = carrying(&portable_executable(None), &payload);
+    for (unfit, why) in mach_o.into_iter().chain([
         (portable_executable(Some((512, 8))), "is already signed"),
         (unsigned, "already carries a packed workspace"),
         (vec![0; 64], "predates standalone executables"),
-    ] {
+    ]) {
         let problem = image::standalone(&unfit, &payload).unwrap_err();
         assert!(problem.contains(why), "{problem}");
     }
