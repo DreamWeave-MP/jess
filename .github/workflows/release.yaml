@@ -17,7 +17,7 @@ jobs:
       contents: write
       pages: write
       id-token: write
-    uses: DreamWeave-MP/StroggForge/.github/workflows/rustGlobalBuild.yml@v64
+    uses: DreamWeave-MP/StroggForge/.github/workflows/rustGlobalBuild.yml@v65
     secrets: inherit
     with:
       binary_names: '["jess"]'
@@ -31,6 +31,9 @@ jobs:
       # that job compiles with the NDK's clang (LLVM 18), which l3i's toolchain rule refuses next to
       # stable rustc's LLVM; it needs StroggForge to drive rustc's clang at the NDK sysroot first.
       enable_portmaster: true
+      # Pushes to main refresh `dev`, not `development`: GitHub keeps this repository's `development`
+      # tag for the immutable release it was frozen as on 2026-10-23, and never frees the name.
+      development_release: dev
 
   # The jess image: this release's Linux jess and every platform's jess as a packing runtime, for
   # pipelines that run jess, built from the archives the build job staged in this run.
@@ -40,6 +43,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-    uses: DreamWeave-MP/StroggForge/.github/workflows/publishJessImage.yml@v64
+    uses: DreamWeave-MP/StroggForge/.github/workflows/publishJessImage.yml@v65
     with:
       version: ${{ github.ref_name }}

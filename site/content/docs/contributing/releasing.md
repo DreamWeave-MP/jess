@@ -13,7 +13,7 @@ Releases are boring on purpose. You bump the version, let the gates pass on `mai
 `.github/workflows/release.yaml` is a few lines that call StroggForge's reusable `rustGlobalBuild.yml`:
 
 ```yaml
-uses: DreamWeave-MP/StroggForge/.github/workflows/rustGlobalBuild.yml@v64
+uses: DreamWeave-MP/StroggForge/.github/workflows/rustGlobalBuild.yml@v65
 secrets: inherit
 with:
   binary_names: '["jess"]'
@@ -23,6 +23,7 @@ with:
   cargo_publish: true
   msrv: auto
   enable_portmaster: true
+  development_release: dev
 ```
 
 - `binary_package: jess` builds the binary with `cargo build --package jess --bin jess`.
@@ -31,6 +32,7 @@ with:
 - `cargo_publish: true` publishes the crate on a tag.
 - `msrv: auto` checks against the `rust-version` in `Cargo.toml` (1.92).
 - `enable_portmaster: true` adds a 64-bit ARM Linux build, cross-compiled against the same glibc as the x86 one.
+- `development_release: dev` names the rolling pre-release pushes to `main` refresh. It isn't `development` because that tag is spoken for: it belongs to an immutable release GitHub froze, and GitHub never lets a repository reuse such a tag name, even after the release is deleted.
 
 On a tag, a second job, `image`, publishes [the jess image](#the-jess-image) from the archives the first one built.
 
@@ -39,7 +41,7 @@ It runs on pull requests, pushes to `main`, tags, and by hand. What it does depe
 | Trigger | Gates | Binaries | GitHub release | crates.io | Discord |
 | --- | --- | --- | --- | --- | --- |
 | Pull request | yes | built, uploaded as workflow artifacts | no | dry run | no |
-| Push to `main` | yes | built, signed, scanned | refreshes `development` | dry run | yes |
+| Push to `main` | yes | built, signed, scanned | refreshes `dev` | dry run | yes |
 | Tag | yes | built, signed, scanned | creates one named after the tag | publishes | yes |
 
 **Gates** are the checks in [Building and Testing](@/docs/contributing/building-and-testing.md#what-ci-checks): tests on every platform, fmt, pedantic clippy with `-D warnings`, `cargo audit`, and the MSRV check. The builds run alongside them, and nothing is published until every one has passed.
