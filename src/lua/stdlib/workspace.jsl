@@ -278,7 +278,7 @@ local function tooling(document: { [string]: unknown }, where: string): { [strin
       fail(`{where} [dev-dependencies]: '{tostring(id)}' is not a package id`)
     end
 
-    requirements[id] = package.requirement(requirement, `{where} [dev-dependencies] '{id}': requirement`)
+    requirements[id :: string] = package.requirement(requirement, `{where} [dev-dependencies] '{id}': requirement`)
   end
 
   return requirements
@@ -377,7 +377,7 @@ local function readLock(root: string): { Locked }?
   local document = readToml(path, text :: buffer)
   checkKeys(document, { 'lock_version', 'package' }, where)
 
-  if not table.find(ReadableLockVersions, document.lock_version) then
+  if not table.find(ReadableLockVersions, document.lock_version :: number) then
     fail(
       `{where} is lock_version {tostring(document.lock_version)}, and this jess reads lock_version {LockVersion}`
     )
@@ -689,7 +689,7 @@ local function implicit(folder: string, note: string?): Workspace
     root = folder,
     kind = 'implicit' :: 'implicit',
     members = members,
-    devDependencies = table.freeze {},
+    devDependencies = table.freeze({} :: { [string]: string }),
     lock = lockState(folder, members, {}),
     note = note,
   }
@@ -926,7 +926,7 @@ end
 --- What `chosen`'s dependencies resolve over, each opened only when needed: the other members, and
 --- the packages `jess.lock` pins, from `.jess/packages`, each held to its pinned digest. A lock
 --- that isn't what the members need is an error here, never something resolved around.
-local function universe(workspace: Workspace, chosen: Runnable): { [string]: unknown }
+local function universe(workspace: Workspace, chosen: Member): { [string]: unknown }
   local lock = workspace.lock
 
   if lock.state ~= 'fresh' then
@@ -1362,7 +1362,7 @@ local function download(offer: RemoteOffer): buffer
     return answer.body
   end
 
-  fail(
+  return fail(
     `{offer.listing.id} {offer.entry.version} could not be downloaded from any source its manifest names:\n  {table.concat(attempts, '\n  ')}`
   )
 end
@@ -1749,7 +1749,7 @@ local function sync(
       then 'offline, so no publisher was asked'
       elseif #remote.indexes == 0 and #remote.publishers == 0 then 'no index or publisher to ask'
       else 'no publisher or index named here lists it'
-    fail(
+    return fail(
       `nothing offered for {id} is one the workspace can use{pinned}{unfit}; {reach}\n  {wantedBy(id)}\noffer one with --package-path or by file, or name its publisher with --publisher URL`
     )
   end
