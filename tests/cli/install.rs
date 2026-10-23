@@ -184,6 +184,40 @@ fn a_directory_where_a_command_goes_is_never_replaced() {
     }
 }
 
+/// One jess at a time changes an install root: while another holds its lock, from what it checks
+/// and asks to what it commits, installing and uninstalling there are refused and change nothing.
+#[test]
+fn an_install_root_another_jess_holds_is_left_alone() {
+    let showcase = synced("install-locked");
+    let (workspace, root) = (showcase.workspace(), showcase.root.join("root"));
+    let path = workspace.to_str().unwrap();
+    json(&install(&root, &["--path", path, "--yes"]));
+    let before = fs::read(root.join("installs/org.example.showcase/install.toml")).unwrap();
+
+    let held = fs::OpenOptions::new().write(true).open(root.join("install.lock")).unwrap();
+    held.try_lock().unwrap();
+    for refused in [
+        install(&root, &["--path", path, "--yes", "--force"]),
+        uninstall(&root, &["greet"]),
+    ] {
+        assert!(!refused.status.success());
+        assert!(
+            stderr(&refused).contains("another jess is installing or uninstalling"),
+            "{}",
+            stderr(&refused)
+        );
+    }
+    assert_eq!(
+        fs::read(root.join("installs/org.example.showcase/install.toml")).unwrap(),
+        before
+    );
+    assert!(command(&root, "greet").is_file());
+
+    drop(held);
+    json(&uninstall(&root, &["greet"]));
+    assert!(!command(&root, "greet").exists());
+}
+
 /// Uninstalling removes only what the install wrote: a command that has changed since is left
 /// where it is, and the report says so.
 #[test]

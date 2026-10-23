@@ -8,6 +8,7 @@
 //! won't let anything overwrite.
 
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use l3i::Runtime;
@@ -130,6 +131,40 @@ pub struct Prepared {
     /// The install root.
     #[serde(skip)]
     pub root: PathBuf,
+    /// The install root's lock, held from [`prepare`] until this is dropped, so nothing else
+    /// installs or uninstalls there between what was checked and asked and what is committed.
+    #[serde(skip)]
+    lock: Option<Rc<std::fs::File>>,
+}
+
+/// The file an install root is locked by.
+const LOCK_FILE: &str = "install.lock";
+
+/// Locks the install root `root`, making it first: one jess at a time changes what is installed
+/// there. Another holding it is an error now, not a wait: it may be waiting for someone's answer.
+///
+/// # Errors
+///
+/// Returns an error if the root or its lock file can't be made, or another jess holds the lock.
+fn lock(root: &Path) -> l3i::Result<Rc<std::fs::File>> {
+    let failed =
+        |what: &str, path: &Path, source: std::io::Error| error(format!("failed to {what} '{}': {source}", path.display()));
+    std::fs::create_dir_all(root).map_err(|source| failed("create", root, source))?;
+    let path = root.join(LOCK_FILE);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|source| failed("open", &path, source))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Rc::new(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Err(error(format!(
+            "another jess is installing or uninstalling in '{}'; try again once it's done",
+            root.display()
+        ))),
+        Err(std::fs::TryLockError::Error(source)) => Err(failed("lock", &path, source)),
+    }
 }
 
 /// An executable an install wrote.
@@ -234,13 +269,17 @@ fn text(path: &Path) -> l3i::Result<String> {
 /// Stages what `request` names under its root and says what installing it would do. Nothing
 /// outside the staging folder changes; [`commit`] puts it in place and [`abandon`] drops it.
 ///
+/// The install root is locked first, and stays locked until the [`Prepared`] is dropped: what was
+/// checked here, and agreed to, is still what [`commit`] finds, as far as any other jess goes.
+///
 /// # Errors
 ///
-/// Returns an error if the source can't be resolved, packed, or read, the packed workspace doesn't
-/// hold what it pins or was packed for an incompatible jess, it has nothing to install, or a
-/// command it would write is taken and `request.force` isn't set. The staging folder is removed
-/// then.
+/// Returns an error if another jess holds the install root's lock, the source can't be resolved,
+/// packed, or read, the packed workspace doesn't hold what it pins or was packed for an
+/// incompatible jess, it has nothing to install, or a command it would write is taken and
+/// `request.force` isn't set. The staging folder is removed then.
 pub fn prepare(runtime: &Runtime, request: &InstallRequest) -> l3i::Result<Prepared> {
+    let held = lock(&request.root)?;
     let staging = request.root.join("staging").join(std::process::id().to_string());
     let failed =
         |what: &str, path: &Path, source: std::io::Error| error(format!("failed to {what} '{}': {source}", path.display()));
@@ -255,6 +294,7 @@ pub fn prepare(runtime: &Runtime, request: &InstallRequest) -> l3i::Result<Prepa
     let mut prepared = prepared?;
     prepared.staging = staging;
     prepared.root.clone_from(&request.root);
+    prepared.lock = Some(held);
     Ok(prepared)
 }
 
@@ -321,14 +361,21 @@ fn stage(runtime: &Runtime, request: &InstallRequest, staging: &Path) -> l3i::Re
 /// the packed workspace they carry and the record of where it came from, under `installs`.
 ///
 /// Everything is written beside the staging folder first; then every file is put in place, or,
-/// when one can't be, none is, and what was there before is back. What it replaces is removed only
-/// once everything is in place.
+/// when one fails, the ones before it are taken out again and what was there before is back. What
+/// it replaces is removed only once everything is in place. That undoes an error, not a crash: a
+/// process killed partway leaves what it had done.
 ///
 /// # Errors
 ///
-/// Returns an error if this jess can't carry a packed workspace, or a file can't be written or put
-/// in place. Nothing outside the staging folder has changed then.
+/// Returns an error if `prepared` holds no lock on its root (it wasn't made by [`prepare`]), this
+/// jess can't carry a packed workspace, or a file can't be written or put in place. Nothing outside
+/// the staging folder has changed then.
 pub fn commit(runtime: &Runtime, prepared: &Prepared) -> l3i::Result<Installed> {
+    if prepared.lock.is_none() {
+        return Err(error(
+            "this install holds no lock on its root: only an install `prepare` staged, still held, can be committed",
+        ));
+    }
     let shape = serde_json::json!({
         "package": "", "version": "", "bin": "",
         "commands": [{ "name": "", "path": "" }],
@@ -373,12 +420,14 @@ pub fn list(runtime: &Runtime, root: &Path) -> l3i::Result<Vec<Listed>> {
 }
 
 /// Removes the installs `names` picks under `root`, each named by its package id or one of its
-/// commands.
+/// commands, with the install root locked.
 ///
 /// # Errors
 ///
-/// Returns an error, removing nothing, if a name picks no install.
+/// Returns an error, removing nothing, if another jess holds the install root's lock or a name
+/// picks no install.
 pub fn uninstall(runtime: &Runtime, root: &Path, names: &[String]) -> l3i::Result<Vec<Removed>> {
+    let _held = lock(root)?;
     let shape = serde_json::json!([{ "package": "", "version": "", "commands": [""], "kept": [""] }]);
     let names = crate::lua::package::string_list(&runtime.stack(), names)?;
     call(runtime, "uninstall", &shape, (text(root)?, names, SUFFIX))
@@ -462,10 +511,19 @@ fn publish(steps: &[Step], trash: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Takes one step, or, when it fails halfway, puts back what it moved aside.
+/// Takes one step, or, when it fails halfway, puts back what it moved aside. A directory at a
+/// `to` that isn't a `folder`'s is refused here too, whatever was there when `publish` looked:
+/// something other than jess may have made it since.
 fn take(step: &Step, trash: &Path) -> Result<Done, String> {
     let to = PathBuf::from(&step.to);
-    let aside = if occupant(&to).is_some() {
+    let found = occupant(&to);
+    if !step.folder && matches!(found, Some("directory" | "other")) {
+        return Err(format!(
+            "'{}' is a directory, and jess install never replaces or removes one",
+            to.display()
+        ));
+    }
+    let aside = if found.is_some() {
         let aside = retired_name(trash, &to);
         std::fs::rename(&to, &aside).map_err(|source| format!("failed to move '{}' aside: {source}", to.display()))?;
         Some(aside)
@@ -652,6 +710,35 @@ mod tests {
         assert_eq!(std::fs::read_to_string(staged.join("first")).unwrap(), "new first");
         assert!(!bin.join("second").exists());
         assert_eq!(std::fs::read_dir(&trash).unwrap().count(), 0);
+    }
+
+    /// A step refuses a directory at its own target, not only `publish` before it starts: one that
+    /// appears between the two is left alone too.
+    #[test]
+    fn a_step_refuses_a_directory_that_appears_after_the_check() {
+        let folder = tempfile::tempdir().unwrap();
+        let (to, trash) = (folder.path().join("greet"), folder.path().join("trash"));
+        std::fs::create_dir_all(to.join("important")).unwrap();
+        let staged = folder.path().join("staged");
+        std::fs::write(&staged, "new greet").unwrap();
+
+        let problem = take(&step(&to, Some(&staged)), &trash).err().unwrap();
+        assert!(problem.contains("never replaces or removes one"), "{problem}");
+        assert!(to.join("important").is_dir());
+        assert_eq!(std::fs::read_to_string(&staged).unwrap(), "new greet");
+    }
+
+    /// One jess at a time holds an install root: another is refused while the first holds it,
+    /// and can have it once the first lets go.
+    #[test]
+    fn an_install_root_is_locked_by_one_jess_at_a_time() {
+        let folder = tempfile::tempdir().unwrap();
+        let root = folder.path().join("root");
+        let held = lock(&root).unwrap();
+        let problem = lock(&root).unwrap_err().to_string();
+        assert!(problem.contains("another jess is installing or uninstalling"), "{problem}");
+        drop(held);
+        lock(&root).unwrap();
     }
 
     /// A directory where a command goes is never moved, replaced or emptied, before anything else
