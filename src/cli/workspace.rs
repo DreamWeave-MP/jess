@@ -192,12 +192,14 @@ pub fn run_packed(image: Image, target: Option<String>, args: Vec<String>) -> Re
     crate::application::finish(launched, None)
 }
 
-/// Runs the packed workspace this executable carries: the target whose command is the
-/// executable's own name, when one has it, so one payload can ship under several names; else its
-/// default target.
+/// Runs the packed workspace this executable carries: the target whose command is the name it
+/// was run by, when one has it, so one payload can ship under several names; else its default
+/// target. The name is argv[0]'s, which a link keeps and the executable's own path resolves away.
 pub fn run_standalone(image: Image, args: Vec<String>) -> Result<u8, String> {
-    let name = std::env::current_exe()
-        .ok()
+    let name = std::env::args_os()
+        .next()
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_exe().ok())
         .and_then(|path| path.file_stem().map(|stem| stem.to_string_lossy().into_owned()));
     let lua = crate::run::lua_default()?;
     let opened = workspace::open(&lua, &Locate::Packed(image.clone())).map_err(|error| error.to_string())?;

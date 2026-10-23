@@ -202,46 +202,63 @@ fn a_standalone_executable_is_the_application_it_carries() {
         "HELLO, ONE! (hello)\nHELLO, TWO! (hello)\nHELLO, THREE! (hello)\n"
     );
 
-    if cfg!(target_os = "macos") {
-        let codesign = |args: &[&str]| {
-            let output = std::process::Command::new("codesign")
-                .args(args)
-                .arg(&moved)
-                .output()
-                .unwrap();
-            assert!(output.status.success(), "codesign {args:?}: {}", stderr(&output));
-        };
-        // arm64's linker signs ad hoc and so does packing; x86-64's signs nothing, and neither
-        // does packing. Either way the result signs.
-        let signed = std::process::Command::new("codesign")
-            .arg("--verify")
-            .arg(&runtime)
+    // A link keeps the name it was run by, though the executable it reaches has another.
+    #[cfg(unix)]
+    {
+        let linked = elsewhere.join("linked");
+        fs::create_dir_all(&linked).unwrap();
+        std::os::unix::fs::symlink(&moved, linked.join("greet")).unwrap();
+        let greeted = std::process::Command::new(linked.join("greet"))
+            .current_dir(&elsewhere)
+            .arg("link")
             .output()
-            .unwrap()
-            .status
-            .success();
-        if signed {
-            codesign(&["--verify", "--strict", "--verbose=2"]);
-        }
-        let entitlements = elsewhere.join("jit.plist");
-        fs::write(
-            &entitlements,
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\
-             <key>com.apple.security.cs.allow-jit</key><true/></dict></plist>\n",
-        )
-        .unwrap();
-        let entitlements = entitlements.display().to_string();
-        codesign(&[
-            "--force",
-            "--sign",
-            "-",
-            "--options",
-            "runtime",
-            "--entitlements",
-            &entitlements,
-        ]);
-        codesign(&["--verify", "--strict", "--verbose=2"]);
-        let resigned = std::process::Command::new(&moved).current_dir(&elsewhere).output().unwrap();
-        assert_eq!(stdout(&resigned), "hello, showcase\n", "{}", stderr(&resigned));
+            .unwrap();
+        assert_eq!(greeted.status.code(), Some(1), "{}", stderr(&greeted));
+        assert_eq!(stdout(&greeted), "HELLO, LINK! (hello)\n");
     }
+
+    if cfg!(target_os = "macos") {
+        signs_on_macos(&runtime, &moved, &elsewhere);
+    }
+}
+
+/// `moved`, a standalone executable written from `runtime`, verifies as strictly as its runtime
+/// does, and still runs signed again with the hardened runtime and `allow-jit`.
+fn signs_on_macos(runtime: &Path, moved: &Path, elsewhere: &Path) {
+    let codesign = |args: &[&str]| {
+        let output = std::process::Command::new("codesign").args(args).arg(moved).output().unwrap();
+        assert!(output.status.success(), "codesign {args:?}: {}", stderr(&output));
+    };
+    // arm64's linker signs ad hoc and so does packing; x86-64's signs nothing, and neither
+    // does packing. Either way the result signs.
+    let signed = std::process::Command::new("codesign")
+        .arg("--verify")
+        .arg(runtime)
+        .output()
+        .unwrap()
+        .status
+        .success();
+    if signed {
+        codesign(&["--verify", "--strict", "--verbose=2"]);
+    }
+    let entitlements = elsewhere.join("jit.plist");
+    fs::write(
+        &entitlements,
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\
+             <key>com.apple.security.cs.allow-jit</key><true/></dict></plist>\n",
+    )
+    .unwrap();
+    let entitlements = entitlements.display().to_string();
+    codesign(&[
+        "--force",
+        "--sign",
+        "-",
+        "--options",
+        "runtime",
+        "--entitlements",
+        &entitlements,
+    ]);
+    codesign(&["--verify", "--strict", "--verbose=2"]);
+    let resigned = std::process::Command::new(moved).current_dir(elsewhere).output().unwrap();
+    assert_eq!(stdout(&resigned), "hello, showcase\n", "{}", stderr(&resigned));
 }
