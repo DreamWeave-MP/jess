@@ -1,7 +1,7 @@
 //! Packed workspaces from the command line, over the showcase: `jess workspace pack`, `jess
 //! app.jsw`, a packed workspace named with `--workspace`, and a standalone executable.
 
-use super::common::{Path, PathBuf, fs, jess};
+use super::common::{Path, fs, jess};
 use super::workspace::{Showcase, fixture, json};
 
 /// The showcase with its JPKs synced into the lock, ready to pack.
@@ -137,9 +137,29 @@ fn a_packed_workspace_run_as_a_program_holds_what_its_target_declares() {
     assert_eq!(stdout(&greeted), "HELLO, YOU! (hello)\n");
 }
 
+/// A macOS jess can't carry a packed workspace yet, and says so rather than writing anything.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_macos_runtime_is_refused() {
+    let showcase = synced("jsw-macos");
+    let standalone = showcase.root.join("showcase");
+    let refused = jess()
+        .current_dir(showcase.workspace())
+        .args(["workspace", "pack", "--output"])
+        .arg(&standalone)
+        .arg("--runtime")
+        .arg(env!("CARGO_BIN_EXE_jess"))
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("is a macOS executable"), "{}", stderr(&refused));
+    assert!(!standalone.exists());
+}
+
 /// A standalone executable is a jess carrying a packed workspace: run from anywhere, it is that
 /// application, every argument its default target's, and under the name of another target's
 /// command it runs that target. What it carries is the packed workspace, byte for byte.
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn a_standalone_executable_is_the_application_it_carries() {
     let showcase = synced("jsw-standalone");
@@ -148,7 +168,7 @@ fn a_standalone_executable_is_the_application_it_carries() {
     pack(&workspace, &packed, None);
     let name = if cfg!(windows) { "showcase.exe" } else { "showcase" };
     let standalone = showcase.root.join(name);
-    let runtime = PathBuf::from(env!("CARGO_BIN_EXE_jess"));
+    let runtime = std::path::PathBuf::from(env!("CARGO_BIN_EXE_jess"));
     let report = pack(&workspace, &standalone, Some(&runtime));
     let (runtime_bytes, image, executable) = (
         fs::read(&runtime).unwrap(),
