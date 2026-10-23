@@ -162,7 +162,7 @@ const JPK: BuiltIn = BuiltIn {
         (
             "write",
             "(files: { JessJpkFile }) -> buffer",
-            "The canonical archive of `files`: sorted by path, each zstd when smaller and stored otherwise, every header field fixed.",
+            "The canonical archive of `files`: sorted by path, each zstd when smaller and stored otherwise (always stored when it says `store`), every header field fixed.",
         ),
         (
             "checkPath",
@@ -250,10 +250,11 @@ const PACKAGE_TYPES: &str = "\
          export type JessJpkSource = { size: number, read: (offset: number, length: number) -> buffer }\n\n\
          --- The reader's limits, each optional against `budgets`' defaults.\n\
          export type JessJpkBudgets = { maxEntries: number?, maxPathLength: number?, maxCentralDirectory: number?, maxEntrySize: number?, maxTotalSize: number? }\n\n\
-         --- An opened JPK: its entries, a lookup by path, and a read that unpacks and CRC-checks one entry.\n\
-         export type JessJpkArchive = { entries: { JessJpkEntry }, find: (path: string) -> JessJpkEntry?, read: (entry: JessJpkEntry | string) -> buffer }\n\n\
-         --- A file to write into a JPK.\n\
-         export type JessJpkFile = { path: string, data: buffer }\n\n\
+         --- An opened JPK: its entries, a lookup by path, a read that unpacks and CRC-checks one entry, and\n\
+         --- a stored entry's bytes as a source of their own, read in place.\n\
+         export type JessJpkArchive = { entries: { JessJpkEntry }, find: (path: string) -> JessJpkEntry?, read: (entry: JessJpkEntry | string) -> buffer, source: (entry: JessJpkEntry | string) -> JessJpkSource }\n\n\
+         --- A file to write into a JPK; `store` keeps it stored whatever zstd would save.\n\
+         export type JessJpkFile = { path: string, data: buffer, store: boolean? }\n\n\
          --- Code a layer runs when it is activated, and the capabilities it needs.\n\
          export type JessPackageEntrypoint = { module: string, capabilities: { string } }\n\n\
          --- A layer as a manifest declares it: what it requires, the modules it exports as inert API, and\n\
