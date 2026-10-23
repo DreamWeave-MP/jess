@@ -566,14 +566,17 @@ pub fn pack(runtime: &Runtime, at: &Locate, output: &Path, standalone: Option<&P
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
+    // Packing replaces the scratch file by renaming over it, which Windows refuses while a handle
+    // is open: keep only the path, which still removes the file when dropped.
     let scratch = tempfile::Builder::new()
         .prefix(".jess-pack")
         .suffix(".jsw")
         .tempfile_in(folder)
-        .map_err(|source| failed("write beside", output, source))?;
-    let args = (start, explicit, scratch.path().display().to_string(), reserved);
+        .map_err(|source| failed("write beside", output, source))?
+        .into_temp_path();
+    let args = (start, explicit, scratch.display().to_string(), reserved);
     let mut packed: Packed = package::bootstrap(runtime, "workspacePack", &shape, args)?;
-    let payload = std::fs::read(scratch.path()).map_err(|source| failed("read", scratch.path(), source))?;
+    let payload = std::fs::read(&scratch).map_err(|source| failed("read", &scratch, source))?;
     let bytes = crate::lua::image::standalone(&jess, &payload).map_err(unfit)?;
     crate::lua::files::replace_file(output, &bytes).map_err(|source| failed("write", output, source))?;
     #[cfg(unix)]
