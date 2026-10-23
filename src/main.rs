@@ -12,6 +12,8 @@ mod application;
 mod check;
 #[path = "cli/init.rs"]
 mod init;
+#[path = "cli/install.rs"]
+mod install;
 #[path = "cli/output.rs"]
 mod output;
 #[path = "cli/package.rs"]
@@ -76,6 +78,12 @@ enum Command {
     Package(Box<package::PackageArgs>),
     /// Work in a workspace: the Package Sources a jess-workspace.toml lists, developed together.
     Workspace(Box<workspace::WorkspaceArgs>),
+    /// Put an application on the PATH: a package from its publisher, a .jsw, or a workspace,
+    /// embedded in this jess as one executable per command it exports.
+    #[command(disable_version_flag = true)]
+    Install(Box<install::InstallArgs>),
+    /// Remove applications jess install put on the PATH.
+    Uninstall(Box<install::UninstallArgs>),
     /// Set up a folder for Luau scripts: jess's types, an example, and editor settings.
     Init(Box<init::InitArgs>),
     /// Write jess's Luau types into a folder: jess.d.jsl and one stub module per require name.
@@ -259,6 +267,8 @@ fn run(cli: Cli) -> Result<u8, String> {
         Command::Package(args) => package::run(&args, cli.format.unwrap_or(output::Format::Yaml)),
         Command::Workspace(args) => workspace::run(&args, cli.format.unwrap_or(output::Format::Yaml)),
         Command::Init(args) => init::run(&args, cli.format.unwrap_or(output::Format::Yaml)).map(|()| 0),
+        Command::Install(args) => install::run(&args, cli.format.unwrap_or(output::Format::Yaml)),
+        Command::Uninstall(args) => install::uninstall(&args, cli.format.unwrap_or(output::Format::Yaml)),
     }
 }
 
@@ -316,12 +326,14 @@ mod tests {
                 "check",
                 "completions",
                 "init",
+                "install",
                 "luau-types",
                 "man",
                 "pack",
                 "package",
                 "run",
                 "test",
+                "uninstall",
                 "workspace"
             ]
         );

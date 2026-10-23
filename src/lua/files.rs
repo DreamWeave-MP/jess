@@ -36,6 +36,18 @@ pub fn replace_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+/// Replaces a file as [`replace_file`] does, and makes it executable by whoever may read it.
+pub fn replace_executable(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    replace_file(path, bytes)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(path)?.permissions().mode();
+        fs::set_permissions(path, fs::Permissions::from_mode(mode | 0o111))?;
+    }
+    Ok(())
+}
+
 /// The builder for the temporary file a write goes through. For a file that doesn't exist yet
 /// (`new`), the mode is what `File::create` would ask for, 0o666 under the process's umask, not
 /// tempfile's private 0o600; an existing file's permissions are copied over afterwards instead.

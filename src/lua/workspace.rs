@@ -578,17 +578,7 @@ pub fn pack(runtime: &Runtime, at: &Locate, output: &Path, standalone: Option<&P
     let mut packed: Packed = package::bootstrap(runtime, "workspacePack", &shape, args)?;
     let payload = std::fs::read(&scratch).map_err(|source| failed("read", &scratch, source))?;
     let bytes = crate::lua::image::standalone(&jess, &payload).map_err(unfit)?;
-    crate::lua::files::replace_file(output, &bytes).map_err(|source| failed("write", output, source))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(output)
-            .map_err(|source| failed("read", output, source))?
-            .permissions()
-            .mode();
-        std::fs::set_permissions(output, std::fs::Permissions::from_mode(mode | 0o111))
-            .map_err(|source| failed("make executable", output, source))?;
-    }
+    crate::lua::files::replace_executable(output, &bytes).map_err(|source| failed("write", output, source))?;
     packed.path = output.display().to_string();
     packed.size = bytes.len() as u64;
     Ok(packed)

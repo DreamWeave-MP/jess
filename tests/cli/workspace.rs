@@ -263,7 +263,7 @@ fn the_showcase_syncs_its_jpks_and_runs_without_them() {
 // Publishers --------------------------------------------------------------------------------
 
 /// A JPK packed from a vendor fixture, with the facts a manifest states about it.
-struct Published {
+pub(super) struct Published {
     id: String,
     version: String,
     digest: String,
@@ -274,7 +274,7 @@ struct Published {
     dependencies: serde_json::Value,
 }
 
-fn publish(name: &str, into: &Path) -> Published {
+pub(super) fn publish(name: &str, into: &Path) -> Published {
     let path = into.join(format!("{name}.jpk"));
     let packed = jess()
         .arg("pack")
@@ -323,15 +323,15 @@ fn publish(name: &str, into: &Path) -> Published {
 
 /// A publisher: a `DreamWeave` site whose projects are Jess packages, one project per package,
 /// each with one release that is the package's JPK (protocol `schema_version` 3).
-struct PublisherSite {
+pub(super) struct PublisherSite {
     /// The site's `dreamweave.json`.
-    index: String,
+    pub(super) index: String,
     /// Each package's project manifest, by package id.
     manifests: std::collections::BTreeMap<String, String>,
 }
 
 impl PublisherSite {
-    fn manifest(&self, id: &str) -> &str {
+    pub(super) fn manifest(&self, id: &str) -> &str {
         &self.manifests[id]
     }
 }
@@ -357,7 +357,12 @@ fn project_id(id: &str) -> String {
 /// A publisher site on `server` under `base`: a project manifest per package, each listing the
 /// package's one release and its archive, downloadable there, and an index naming which project
 /// publishes which package.
-fn publisher(server: &super::common::http::Server, base: &str, name: &str, packages: &[&Published]) -> PublisherSite {
+pub(super) fn publisher(
+    server: &super::common::http::Server,
+    base: &str,
+    name: &str,
+    packages: &[&Published],
+) -> PublisherSite {
     let site = server.url(base);
     let repository = format!("https://github.com/fixture/{}", name.replace(' ', "-").to_lowercase());
     let mut entries = Vec::new();
@@ -424,7 +429,7 @@ fn publisher(server: &super::common::http::Server, base: &str, name: &str, packa
 }
 
 /// An index on `server` that says which manifest publishes which id, as the `AsHyAmS` file does.
-fn index(server: &super::common::http::Server, claims: &[(&str, &str)]) -> String {
+pub(super) fn index(server: &super::common::http::Server, claims: &[(&str, &str)]) -> String {
     let packages: Vec<serde_json::Value> = claims
         .iter()
         .map(|(id, manifest)| serde_json::json!({ "id": id, "origin": "fixture", "manifest_url": manifest }))
