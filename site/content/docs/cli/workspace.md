@@ -425,7 +425,7 @@ $ cp app greet && ./greet you
 HELLO, YOU! (hello)
 ```
 
-It runs its default target with every argument it's given, and claims none of them for itself. Named for a target's `command`, or run through a link by that name, it runs that target instead, so one payload can ship as several commands. It needs nothing installed: no jess, no compiler, no network. It doesn't change the folder it runs in or write beside itself, and it runs from wherever it's moved to. `jess workspace --workspace app info` reads what it carries.
+It runs its default target with every argument it's given, and claims none of them for itself. Named for a target's `command`, or run through a link by that name, it runs that target instead, so one payload can ship as several commands. It needs nothing installed: no jess, no compiler, no network. It doesn't change the folder it runs in or write beside itself, and it runs from wherever it's moved to. `jess workspace --workspace app info` reads what it carries. [`jess install`](@/docs/cli/install.md) writes one onto your PATH for each command a packed workspace exports.
 
 The runtime can be any jess executable, for any platform, whatever you're packing on: the release archive for another platform will do, so one machine builds every platform's executable without a compiler for any of them. What the executable carries is the packed workspace, byte for byte, so it reports the same SHA-256 as the `.jsw`. A runtime that already carries a packed workspace, or predates standalone executables, is refused.
 

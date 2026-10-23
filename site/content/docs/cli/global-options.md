@@ -35,4 +35,4 @@ Errors print to stderr as `error: <message>`; diagnostics an application reports
 
 ## Environment
 
-Two variables, both for [`jess workspace sync`](@/docs/cli/workspace.md#jess-workspace-sync): `JESS_OFFLINE=1` asks no publisher, as `--offline` does, and `JESS_REGISTRY_URL` names the package index, as `--index` does. Nothing else in jess reads the environment on its own behalf; a script reads it through `@dream/process`, and only when granted `process.environment`.
+Two variables for [`jess workspace sync`](@/docs/cli/workspace.md#jess-workspace-sync) and [`jess install`](@/docs/cli/install.md): `JESS_OFFLINE=1` asks no publisher, as `--offline` does, and `JESS_REGISTRY_URL` names the package index, as `--index` does. `JESS_INSTALL_ROOT` names the install root for `jess install` and `jess uninstall`, as `--root` does; without it, they use `.jess` in your home folder, which is where they read `HOME` (`USERPROFILE` on Windows). `jess install` also reads `PATH`, only to warn when what it installs isn't on it. Nothing else in jess reads the environment on its own behalf; a script reads it through `@dream/process`, and only when granted `process.environment`.
