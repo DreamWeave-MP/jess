@@ -109,6 +109,18 @@ pub fn write_with_backup(path: &Path, bytes: &[u8]) -> io::Result<Written> {
     })
 }
 
+/// The SHA-256 of `bytes`, as lowercase hex.
+pub fn sha256(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    use std::fmt::Write;
+    sha2::Sha256::digest(bytes)
+        .iter()
+        .fold(String::with_capacity(64), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

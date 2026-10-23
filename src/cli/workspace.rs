@@ -88,6 +88,11 @@ enum WorkspaceCommand {
         /// the packed workspace, which runs its default target with every argument.
         #[arg(long, value_name = "JESS")]
         runtime: Option<PathBuf>,
+        /// Write the packed workspace, and beside it a standalone executable for every jess runtime
+        /// in this folder, each named for the output and the runtime: jess-Windows-X64.exe beside
+        /// app.jsw writes app-Windows-X64.exe.
+        #[arg(long, value_name = "FOLDER", conflicts_with = "runtime")]
+        runtimes: Option<PathBuf>,
     },
 }
 
@@ -239,9 +244,19 @@ pub fn run(args: &WorkspaceArgs, format: Format) -> Result<u8, String> {
         }
         WorkspaceCommand::Run(run) => return run_target(at, run),
         WorkspaceCommand::Test { members } => test(&at, members, format)?,
-        WorkspaceCommand::Pack { output, runtime } => {
+        WorkspaceCommand::Pack {
+            output,
+            runtime,
+            runtimes,
+        } => {
             let lua = crate::run::lua_default()?;
-            let packed = workspace::pack(&lua, &at, output, runtime.as_deref()).map_err(|error| error.to_string())?;
+            let packed = runtimes
+                .as_deref()
+                .map_or_else(
+                    || workspace::pack(&lua, &at, output, runtime.as_deref()),
+                    |folder| workspace::pack_for_runtimes(&lua, &at, output, folder),
+                )
+                .map_err(|error| error.to_string())?;
             output::print(&packed, format)?;
         }
         WorkspaceCommand::Sync {

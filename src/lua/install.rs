@@ -13,7 +13,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use l3i::Runtime;
 use l3i::value::{Function, Table};
 use serde::{Deserialize, Serialize};
-use sha2::Digest;
 
 use crate::lua::image::Image;
 use crate::lua::{Text, error};
@@ -391,14 +390,6 @@ fn beside(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
-        let _ = write!(out, "{byte:02x}");
-        out
-    })
-}
-
 /// Writes this jess carrying the packed workspace at `payload` to `output`, executable, and
 /// answers its SHA-256.
 fn standalone(payload: &Path, output: &Path, trash: &Path) -> l3i::Result<String> {
@@ -416,7 +407,7 @@ fn standalone(payload: &Path, output: &Path, trash: &Path) -> l3i::Result<String
     let staged = beside(output);
     crate::lua::files::replace_executable(&staged, &bytes).map_err(|source| failed("write", &staged, source))?;
     place(&staged, output, trash).map_err(|source| failed("write", output, source))?;
-    Ok(hex(&sha2::Sha256::digest(&bytes)))
+    Ok(crate::lua::files::sha256(&bytes))
 }
 
 /// Makes `link` the same executable as `existing`: a hard link, or a copy where linking fails.
@@ -448,7 +439,7 @@ fn empty_trash(trash: &Path) {
 /// The SHA-256 of the file at `path`, or `None` when there is no file.
 fn digest(path: &Path) -> l3i::Result<Option<String>> {
     match std::fs::read(path) {
-        Ok(bytes) => Ok(Some(hex(&sha2::Sha256::digest(&bytes)))),
+        Ok(bytes) => Ok(Some(crate::lua::files::sha256(&bytes))),
         Err(source) if matches!(source.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::IsADirectory) => Ok(None),
         Err(source) => Err(error(format!("failed to read '{}': {source}", path.display()))),
     }
