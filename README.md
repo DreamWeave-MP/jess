@@ -36,7 +36,7 @@ Sources are `.jsl` files: Luau, checked under `--!strict` against types Jess gen
 
 ### Packages and applications
 
-Luau software ships for Jess as a **JPK**: an immutable archive with a manifest naming its modules, what they export, what they depend on, the tests that ship with them, and the commands they provide. A source folder is the same package before packing, down to the digest, so what you test is what you ship. Several packages developed together form a workspace with a lock file.
+Luau software ships for Jess as a **JPK**: an immutable archive with a manifest naming its modules, what they export, what they depend on, the tests that ship with them, and the commands they provide. A source folder is the same package before packing, down to the digest, so what you test is what you ship. Several packages developed together form a workspace with a lock file, and a workspace packs into one file that runs anywhere jess does, or into one executable that runs where jess doesn't.
 
 An **application** is packages loaded into one isolated runtime and driven by frames until it decides it is done. A game, an editor, and a server are all some packages, some callbacks, and a loop. [Packages](https://DreamWeave-MP.github.io/jess/docs/scripting/packages/) and [Applications](https://DreamWeave-MP.github.io/jess/docs/scripting/applications/) explain both.
 

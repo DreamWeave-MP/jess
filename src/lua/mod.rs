@@ -25,6 +25,7 @@ pub mod check;
 mod convert;
 pub mod document;
 mod files;
+pub mod image;
 pub mod init;
 mod input;
 #[expect(
@@ -32,6 +33,7 @@ mod input;
     reason = "the binding shapes keep the name they had as the jess-lua crate's `lua` module"
 )]
 mod lua;
+mod mach_o;
 #[doc(hidden)]
 pub mod namespaces;
 pub mod package;

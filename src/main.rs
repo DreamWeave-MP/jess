@@ -99,14 +99,39 @@ struct ManArgs {
     output: Option<std::path::PathBuf>,
 }
 
+/// The section a macOS jess reserves for the packed workspace a standalone executable carries:
+/// `jess workspace pack --runtime` grows it to hold one. Code signing on macOS seals the file, so
+/// a payload can't follow it; it goes in a section of its own, which only the linker can add room
+/// for. It holds the trailer magic until then.
+#[cfg(target_os = "macos")]
+#[used]
+#[unsafe(link_section = "__JESS,__jsw")]
+static PACKED_WORKSPACE: [u8; 16] = *jess::lua::image::MAGIC;
+
 fn main() -> ExitCode {
     restore_default_sigpipe();
-    let outcome = if let Some((script, args)) = script_to_run() {
-        run::run_as_program(script, args)
-    } else {
-        let matches = command().get_matches();
-        let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
-        run(cli)
+    // An executable carrying a packed workspace is that application, not jess: every argument is
+    // the application's.
+    let outcome = match jess::lua::image::Image::embedded() {
+        Err(problem) => Err(problem),
+        Ok(Some(image)) => {
+            let args = std::env::args_os()
+                .skip(1)
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect();
+            workspace::run_standalone(image, args)
+        }
+        Ok(None) => {
+            if let Some((image, args)) = image_to_run() {
+                image.and_then(|image| workspace::run_packed(image, None, args))
+            } else if let Some((script, args)) = script_to_run() {
+                run::run_as_program(script, args)
+            } else {
+                let matches = command().get_matches();
+                let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
+                run(cli)
+            }
+        }
     };
     match outcome {
         Ok(code) => ExitCode::from(code),
@@ -115,6 +140,24 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The packed workspace `jess <app>.jsw [ARGS]...` names, and its arguments: a first argument
+/// ending in `.jsw`, which no command is called, is an application to run, its default target
+/// getting every argument after it.
+fn image_to_run() -> Option<(Result<jess::lua::image::Image, String>, Vec<String>)> {
+    let mut args = std::env::args_os().skip(1);
+    let first = args.next()?;
+    let path = std::path::Path::new(&first);
+    if !path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("jsw"))
+    {
+        return None;
+    }
+    let image = jess::lua::image::Image::open(path).map_err(|error| format!("failed to open '{}': {error}", path.display()));
+    let rest = args.map(|arg| arg.to_string_lossy().into_owned()).collect();
+    Some((image, rest))
 }
 
 /// The script `jess <script>.jsl [ARGS]...` names, and its arguments: a first argument ending in

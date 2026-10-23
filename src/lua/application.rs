@@ -522,6 +522,7 @@ pub(crate) fn launch(
         pins: request.pins.clone(),
         roots: vec![inspection.id.clone()],
         dev: Vec::new(),
+        image: request.image.clone(),
     };
     let setup = Rc::new(Setup {
         package: inspection.id.clone(),

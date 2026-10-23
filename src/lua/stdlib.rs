@@ -162,7 +162,7 @@ const JPK: BuiltIn = BuiltIn {
         (
             "write",
             "(files: { JessJpkFile }) -> buffer",
-            "The canonical archive of `files`: sorted by path, each zstd when smaller and stored otherwise, every header field fixed.",
+            "The canonical archive of `files`: sorted by path, each zstd when smaller and stored otherwise (always stored when it says `store`), every header field fixed.",
         ),
         (
             "checkPath",
@@ -181,6 +181,11 @@ const PACKAGE: BuiltIn = BuiltIn {
             "open",
             "(location: string) -> JessPackage",
             "Opens a Package Source folder or a `.jpk` file; reads it, runs nothing.",
+        ),
+        (
+            "openJpk",
+            "(source: JessJpkSource, label: string) -> JessPackage",
+            "Opens the JPK `source` holds, one that isn't a file of its own, named `label` in messages and plans; reads it, runs nothing.",
         ),
         (
             "peek",
@@ -229,6 +234,15 @@ const WORKSPACE: BuiltIn = BuiltIn {
     members: &[],
 };
 
+/// Packed workspaces, as the host opens and writes them, built on the host's `@jess/package` and
+/// `@jess/jpk`. Not a module: nothing a script requires reaches it.
+const IMAGES: BuiltIn = BuiltIn {
+    path: "jess.jsw",
+    doc: "",
+    source: include_str!("stdlib/jsw.jsl"),
+    members: &[],
+};
+
 /// Every built-in module, in installation order: `@jess/test` is built on `@jess/log`, and
 /// `@jess/package` on `@jess/jpk`.
 const BUILT_INS: [&BuiltIn; 4] = [&LOG, &TEST, &JPK, &PACKAGE];
@@ -250,10 +264,11 @@ const PACKAGE_TYPES: &str = "\
          export type JessJpkSource = { size: number, read: (offset: number, length: number) -> buffer }\n\n\
          --- The reader's limits, each optional against `budgets`' defaults.\n\
          export type JessJpkBudgets = { maxEntries: number?, maxPathLength: number?, maxCentralDirectory: number?, maxEntrySize: number?, maxTotalSize: number? }\n\n\
-         --- An opened JPK: its entries, a lookup by path, and a read that unpacks and CRC-checks one entry.\n\
-         export type JessJpkArchive = { entries: { JessJpkEntry }, find: (path: string) -> JessJpkEntry?, read: (entry: JessJpkEntry | string) -> buffer }\n\n\
-         --- A file to write into a JPK.\n\
-         export type JessJpkFile = { path: string, data: buffer }\n\n\
+         --- An opened JPK: its entries, a lookup by path, a read that unpacks and CRC-checks one entry, and\n\
+         --- a stored entry's bytes as a source of their own, read in place.\n\
+         export type JessJpkArchive = { entries: { JessJpkEntry }, find: (path: string) -> JessJpkEntry?, read: (entry: JessJpkEntry | string) -> buffer, source: (entry: JessJpkEntry | string) -> JessJpkSource }\n\n\
+         --- A file to write into a JPK; `store` keeps it stored whatever zstd would save.\n\
+         export type JessJpkFile = { path: string, data: buffer, store: boolean? }\n\n\
          --- Code a layer runs when it is activated, and the capabilities it needs.\n\
          export type JessPackageEntrypoint = { module: string, capabilities: { string } }\n\n\
          --- A layer as a manifest declares it: what it requires, the modules it exports as inert API, and\n\
@@ -296,10 +311,11 @@ const PACKAGE_TYPES: &str = "\
          --- What `pack` wrote.\n\
          export type JessPackResult = { path: string, version: string, digest: string, files: number, size: number }\n\n\
          --- What to resolve: the layers, the module names the host already provides, the capabilities it\n\
-         --- grants, candidates opened only when a layer or a dependency needs one, package ids selected\n\
+         --- grants, candidates opened only when a layer or a dependency needs one, what opens a selected\n\
+         --- candidate by its location (`open`, `package.open` when not given), package ids selected\n\
          --- whatever the layers (`roots`), the ids whose `[dev-dependencies]` come with them (`dev`), and\n\
          --- the content digest a package with a given id must have (`pins`).\n\
-         export type JessPackageRequest = { layers: { string }, hostModules: { string }?, grant: { string }?, candidates: { JessPackageOffer }?, roots: { string }?, dev: { string }?, pins: { [string]: string }? }\n\n\
+         export type JessPackageRequest = { layers: { string }, hostModules: { string }?, grant: { string }?, candidates: { JessPackageOffer }?, open: ((location: string) -> JessPackage)?, roots: { string }?, dev: { string }?, pins: { [string]: string }? }\n\n\
          --- An activation plan: requested layers resolved over packages, with nothing run.\n\
          export type JessActivationPlan = {\n  \
            requested: { string },\n  \
@@ -423,6 +439,7 @@ impl Extension for StdlibExtension {
             jpk,
             module: RefCell::new(None),
             workspace: RefCell::new(None),
+            images: RefCell::new(None),
         });
         Ok(())
     }
@@ -439,11 +456,13 @@ fn package_dependencies(runtime: &Runtime, jpk: &Table, read: bool, write: bool)
     Ok(dependencies)
 }
 
-/// The host's own `@jess/package` and workspaces, each made when it is first needed.
+/// The host's own `@jess/package`, workspaces, and packed workspaces, each made when it is first
+/// needed.
 struct HostPackages {
     jpk: Table,
     module: RefCell<Option<Table>>,
     workspace: RefCell<Option<Table>>,
+    images: RefCell<Option<Table>>,
 }
 
 /// `@jess/package` as the host uses it for its own package operations: the same module over file
@@ -462,10 +481,36 @@ pub(crate) fn host_packages(runtime: &Runtime) -> l3i::Result<Table> {
     Ok(module)
 }
 
-/// The host's workspaces (`stdlib/workspace.jsl`), over the host's own `@jess/package` and file
-/// access.
+/// The host's packed workspaces (`stdlib/jsw.jsl`), over the host's own `@jess/package`,
+/// `@jess/jpk`, and file access.
+pub(crate) fn host_images(runtime: &Runtime) -> l3i::Result<Table> {
+    let packages = host_packages(runtime)?;
+    let state = runtime
+        .state_of::<HostPackages>(EXTENSION_ID)
+        .ok_or_else(|| l3i::Error::logic("jess.stdlib isn't installed in this Luau runtime"))?;
+    if let Some(module) = state.images.borrow().clone() {
+        return Ok(module);
+    }
+    let host = crate::lua::package::host_table(runtime, true, true)?;
+    let dependencies = {
+        let stack = runtime.stack();
+        let dependencies = Table::new(&stack, 0, 3)?;
+        dependencies.set(&stack, "host", &host)?;
+        dependencies.set(&stack, "package", &packages)?;
+        dependencies.set(&stack, "jpk", &state.jpk)?;
+        dependencies
+    };
+    let module = exports(runtime, &IMAGES, (&dependencies,))?;
+    l3i::readonly::make_read_only(runtime, &module)?;
+    *state.images.borrow_mut() = Some(module.clone());
+    Ok(module)
+}
+
+/// The host's workspaces (`stdlib/workspace.jsl`), over the host's own `@jess/package`, packed
+/// workspaces, and file access.
 pub(crate) fn host_workspaces(runtime: &Runtime) -> l3i::Result<Table> {
     let packages = host_packages(runtime)?;
+    let images = host_images(runtime)?;
     let state = runtime
         .state_of::<HostPackages>(EXTENSION_ID)
         .ok_or_else(|| l3i::Error::logic("jess.stdlib isn't installed in this Luau runtime"))?;
@@ -475,9 +520,10 @@ pub(crate) fn host_workspaces(runtime: &Runtime) -> l3i::Result<Table> {
     let host = crate::lua::package::host_table(runtime, true, true)?;
     let dependencies = {
         let stack = runtime.stack();
-        let dependencies = Table::new(&stack, 0, 2)?;
+        let dependencies = Table::new(&stack, 0, 3)?;
         dependencies.set(&stack, "host", &host)?;
         dependencies.set(&stack, "package", &packages)?;
+        dependencies.set(&stack, "jsw", &images)?;
         dependencies
     };
     let module = exports(runtime, &WORKSPACE, (&dependencies,))?;

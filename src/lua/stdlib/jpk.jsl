@@ -48,9 +48,11 @@ export type Archive = {
   read entries: { Entry },
   read find: (path: string) -> Entry?,
   read read: (entry: Entry | string) -> buffer,
+  read source: (entry: Entry | string) -> Source,
 }
 
-export type File = { path: string, data: buffer }
+--- A file to write: its path and bytes, and `store` to keep it stored whatever zstd would save.
+export type File = { path: string, data: buffer, store: boolean? }
 
 local LocalSignature, CentralSignature, EndSignature = 0x04034b50, 0x02014b50, 0x06054b50
 local LocalHeaderSize, CentralHeaderSize, EndSize = 30, 46, 22
@@ -278,11 +280,16 @@ local function open(input: Source | buffer, budgets: Budgets?): Archive
 
   if at ~= cdSize then fail 'the central directory has bytes after its last entry' end
 
-  local function readEntry(wanted: Entry | string): buffer
+  local function entryOf(wanted: Entry | string): Entry
     local entry = if type(wanted) == 'string' then byPath[wanted] else wanted
 
     if not entry then return fail(`'{tostring(wanted)}' is not in the archive`) end
 
+    return entry
+  end
+
+  --- Where `entry`'s bytes start, once its local header is checked against the directory.
+  local function dataStart(entry: Entry): number
     local header = readSource(source, entry.offset, LocalHeaderSize)
 
     if buffer.readu32(header, 0) ~= LocalSignature then
@@ -306,7 +313,12 @@ local function open(input: Source | buffer, budgets: Budgets?): Archive
       fail(`'{entry.path}' has a different name in its local header`)
     end
 
-    local packed = readSource(source, dataAt, entry.compressedSize)
+    return dataAt
+  end
+
+  local function readEntry(wanted: Entry | string): buffer
+    local entry = entryOf(wanted)
+    local packed = readSource(source, dataStart(entry), entry.compressedSize)
     local data = packed
 
     if entry.method == 'deflate' then
@@ -324,14 +336,43 @@ local function open(input: Source | buffer, budgets: Budgets?): Archive
     return data
   end
 
+  --- A stored entry's bytes as a source of their own, read in place: nothing is copied or
+  --- checked up front, so whoever reads them checks them (an inner JPK checks its own).
+  local function entrySource(wanted: Entry | string): Source
+    local entry = entryOf(wanted)
+
+    if entry.method ~= 'stored' then
+      fail(`'{entry.path}' is {entry.method}, and only a stored entry can be read in place`)
+    end
+
+    if entry.compressedSize ~= entry.size then
+      fail(`'{entry.path}' is stored, but declares {entry.compressedSize} bytes packed and {entry.size} unpacked`)
+    end
+
+    local dataAt = dataStart(entry)
+
+    return table.freeze {
+      size = entry.size,
+      read = function(offset: number, length: number): buffer
+        if offset < 0 or length < 0 or offset + length > entry.size then
+          fail(`a read of {length} bytes at {offset} runs past the {entry.size} bytes of '{entry.path}'`)
+        end
+
+        return readSource(source, dataAt + offset, length)
+      end,
+    }
+  end
+
   return table.freeze {
     entries = table.freeze(entries),
     find = function(path: string): Entry? return byPath[path] end,
     read = readEntry,
+    source = entrySource,
   }
 end
 
---- The canonical archive of `files`: sorted bytewise by path, zstd when smaller, else stored.
+--- The canonical archive of `files`: sorted bytewise by path, zstd when smaller, else stored, and
+--- stored whatever zstd would save for a file that says `store`.
 local function write(files: { File }): buffer
   local sorted = table.clone(files)
   table.sort(sorted, function(left: File, right: File): boolean return left.path < right.path end)
@@ -359,7 +400,7 @@ local function write(files: { File }): buffer
     local size = buffer.len(file.data)
     local packed, code, version = file.data, 0, StoredVersion
 
-    if size > 0 then
+    if size > 0 and not file.store then
       local zstd = codecs().zstdCompress(file.data)
 
       if buffer.len(zstd) < size then

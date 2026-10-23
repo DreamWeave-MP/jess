@@ -162,9 +162,11 @@ members = [".", "tools/greeter"]
 jess workspace sync --package-path ../vendor   # pin and keep what the members need
 jess workspace run greet --trusted -- you      # from anywhere in the workspace
 jess workspace test                            # every member's tests
+jess workspace pack --output app.jsw           # the whole thing, in one file
+jess app.jsw                                   # anywhere, offline, no workspace
 ```
 
-[`jess workspace`](@/docs/cli/workspace.md) has the rules: which workspace a folder is in, how a target is named, and how `sync` chooses.
+[`jess workspace`](@/docs/cli/workspace.md) has the rules: which workspace a folder is in, how a target is named, how `sync` chooses, and how `pack` freezes a workspace into one file, or one executable, to ship.
 
 ## The built-in package
 

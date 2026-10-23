@@ -37,10 +37,14 @@ export type Archive = {
   read read: (entry: Entry | string) -> buffer,
 }
 
+--- Where a JPK's bytes come from: its size, and a read of `length` bytes at `offset`.
+export type Source = {
+  read size: number,
+  read read: (offset: number, length: number) -> buffer,
+}
+
 export type Jpk = {
-  read open: (
-    source: { read size: number, read read: (offset: number, length: number) -> buffer }
-  ) -> Archive,
+  read open: (source: Source) -> Archive,
   read write: (files: { { path: string, data: buffer } }) -> buffer,
   read checkPath: (path: string) -> string?,
 }
@@ -122,6 +126,9 @@ export type Request = {
   --- Packages opened only when a layer or a dependency needs one. A package handed to `resolve`
   --- outright is the one chosen over a candidate with its id.
   candidates: { Offer }?,
+  --- Opens a selected candidate by its location: `open` when not given. A resolution whose
+  --- candidates aren't files or folders of their own names the one that opens them.
+  open: ((location: string) -> Package)?,
   --- Package ids selected whether or not a requested layer is theirs.
   roots: { string }?,
   --- Package ids whose `[dev-dependencies]` are selected with them.
@@ -942,16 +949,24 @@ local function openSource(location: string, revisedManifest: buffer?): Package
   }
 end
 
-local function openJpk(location: string): Package
+--- The JPK file at `location`, as a source of its bytes.
+local function fileSource(location: string): Source
   local size = host.fileSize(location) or fail(`'{location}' is not there`)
-  local archive = container.open {
+
+  return {
     size = size,
     read = function(offset: number, length: number): buffer
       return host.readAt(location, offset, length)
     end,
   }
+end
 
-  if not archive.find(Manifest) then fail(`'{location}' has no {Manifest}`) end
+--- The JPK `source` holds, named `label` wherever a message or a plan names it. Every JPK is
+--- opened here, whatever holds its bytes.
+local function openArchive(label: string, source: Source): Package
+  local archive = container.open(source)
+
+  if not archive.find(Manifest) then fail(`'{label}' has no {Manifest}`) end
 
   local manifestBytes = archive.read(Manifest)
   local manifest = parseManifest(buffer.tostring(manifestBytes))
@@ -959,15 +974,15 @@ local function openJpk(location: string): Package
 
   for _, entry in archive.entries do
     if not inPayload(entry.path, manifest.include) then
-      fail(`'{location}': '{entry.path}' is outside the payload [package] include names`)
+      fail(`'{label}': '{entry.path}' is outside the payload [package] include names`)
     end
 
     table.insert(paths, entry.path)
   end
 
-  local files = canonicalFiles(manifest, paths, location)
+  local files = canonicalFiles(manifest, paths, label)
   local digest, read = seal(
-    location,
+    label,
     files,
     manifestBytes,
     function(path: string): buffer? return if archive.find(path) then archive.read(path) else nil end
@@ -979,7 +994,7 @@ local function openJpk(location: string): Package
     version = manifest.version,
     digest = digest,
     kind = 'jpk' :: 'jpk',
-    location = location,
+    location = label,
     files = table.freeze(files),
     read = read,
   }
@@ -1017,14 +1032,26 @@ local function trimmed(location: string): string
   return if stripped == '' then location else stripped
 end
 
---- A package from a Package Source folder or a `.jpk` file. Reads; runs nothing.
-local function open(location: string): Package
-  local place = trimmed(location)
-  local package = if host.isDir(place) then openSource(place) else openJpk(place)
-
+--- `package`, unless it claims to be the built-in package and isn't the copy jess carries.
+local function admitted(package: Package): Package
   if package.id == BuiltinPackage then checkBuiltin(package) end
 
   return package
+end
+
+--- A package from a Package Source folder or a `.jpk` file. Reads; runs nothing.
+local function open(location: string): Package
+  local place = trimmed(location)
+
+  return admitted(
+    if host.isDir(place) then openSource(place) else openArchive(place, fileSource(place))
+  )
+end
+
+--- The JPK `source` holds, a JPK that isn't a file of its own, named `label` wherever a message
+--- or a plan names it. Reads; runs nothing.
+local function openJpk(source: Source, label: string): Package
+  return admitted(openArchive(label, source))
 end
 
 --- The manifest of the package at `location`, with nothing else read: what a resolution needs to
@@ -1037,13 +1064,7 @@ local function peek(location: string): Offer
   if source then
     text = host.readFile(`{place}/{Manifest}`)
   else
-    local size = host.fileSize(place) or fail(`'{place}' is not there`)
-    local archive = container.open {
-      size = size,
-      read = function(offset: number, length: number): buffer
-        return host.readAt(place, offset, length)
-      end,
-    }
+    local archive = container.open(fileSource(place))
 
     if archive.find(Manifest) then text = archive.read(Manifest) end
   end
@@ -1174,12 +1195,12 @@ end
 --- module name, nothing colliding with `request.hostModules`, and, when `request.grant` is given,
 --- every capability the resolved layers require inside it.
 ---
---- `request.candidates` are opened only when a layer or a dependency needs one, and never in
---- place of a package handed over outright; two candidates that could each fill the same need
---- are an error, not a choice. `request.roots` are selected with their dependencies whatever the
---- layers, and `request.dev` adds their `[dev-dependencies]`. A package whose id `request.pins`
---- names must have the digest it pins. The second result is the selected packages, opened, in
---- the plan's order.
+--- `request.candidates` are opened only when a layer or a dependency needs one, by `request.open`
+--- when it is given and `open` when it isn't, and never in place of a package handed over
+--- outright; two candidates that could each fill the same need are an error, not a choice.
+--- `request.roots` are selected with their dependencies whatever the layers, and `request.dev`
+--- adds their `[dev-dependencies]`. A package whose id `request.pins` names must have the digest
+--- it pins. The second result is the selected packages, opened, in the plan's order.
 local function resolve(packages: { Package }, request: Request): (Plan, { Package })
   local byId, layerProvider =
     {} :: { [string]: Package }, {} :: { [string]: { package: Package, layer: Layer } }
@@ -1261,7 +1282,7 @@ local function resolve(packages: { Package }, request: Request): (Plan, { Packag
       fail(`{need} has more than one candidate: {places(same)}; offer one of them outright`)
     end
 
-    local opened = open(chosen.location)
+    local opened = (request.open or open)(chosen.location)
 
     if opened.id ~= chosen.id or opened.version ~= chosen.version then
       fail(`'{chosen.location}' changed while it was being resolved; resolve again`)
@@ -1521,6 +1542,7 @@ return function(dependencies: { host: Host, jpk: Jpk })
 
   return {
     open = open,
+    openJpk = openJpk,
     peek = peek,
     candidates = candidates,
     pack = pack,

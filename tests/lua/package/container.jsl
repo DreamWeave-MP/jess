@@ -55,6 +55,18 @@ suite.describe('the canonical writer', function()
     expect(methods['assets/empty.txt']).toBe 'stored'
   end)
 
+  suite.it('keeps a file stored when it says store, however well it would compress', function()
+    local written = files()
+    written[1] = { path = 'src/init.jsl', data = written[1].data, store = true }
+
+    local archive = jpk.open(jpk.write(written))
+    local entry = assert(archive.find 'src/init.jsl')
+
+    expect(entry.method).toBe 'stored'
+    expect(entry.compressedSize).toBe(entry.size)
+    expect(buffer.tostring(archive.read(entry))).toBe(buffer.tostring(written[1].data))
+  end)
+
   suite.it('round-trips every entry', function()
     local archive = jpk.open(jpk.write(files()))
 
@@ -204,6 +216,22 @@ suite.describe('the reader', function()
 
     expect(buffer.tostring(opened.read 'jess.toml')).toBe 'manifest_version = 1\n'
     expect(reads > afterOpen).toBe(true)
+  end)
+
+  suite.it('opens an archive stored inside another one in place', function()
+    local inner = jpk.write(files())
+    local outer = jpk.open(jpk.write {
+      { path = 'inner.jpk', data = inner, store = true },
+      { path = 'notes.txt', data = buffer.fromstring(string.rep('notes\n', 100)) },
+    })
+    local source = outer.source 'inner.jpk'
+
+    expect(source.size).toBe(buffer.len(inner))
+    expect(buffer.tostring(source.read(0, source.size))).toBe(buffer.tostring(inner))
+    expect(buffer.tostring(jpk.open(source).read 'jess.toml')).toBe 'manifest_version = 1\n'
+    expect(function() source.read(source.size - 1, 2) end).toThrow 'runs past the'
+    expect(function() outer.source 'notes.txt' end).toThrow 'only a stored entry can be read in place'
+    expect(function() outer.source 'missing.jpk' end).toThrow 'is not in the archive'
   end)
 end)
 

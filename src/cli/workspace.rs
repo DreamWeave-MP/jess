@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
+use jess::lua::image::Image;
 use jess::lua::workspace::{self, Locate};
 use serde::Serialize;
 
@@ -76,6 +77,18 @@ enum WorkspaceCommand {
         /// The members to test, by package id or path. Without any, every member with tests.
         members: Vec<String>,
     },
+    /// Freeze the workspace into a packed workspace, a .jsw: the targets its [pack] table names,
+    /// or every member's, and every package they run, pinned. Runs offline from the one file:
+    /// jess app.jsw, or jess workspace --workspace app.jsw run TARGET.
+    Pack {
+        /// The file to write.
+        #[arg(long, value_name = "FILE")]
+        output: PathBuf,
+        /// Write a standalone executable instead: this jess executable, for any platform, carrying
+        /// the packed workspace, which runs its default target with every argument.
+        #[arg(long, value_name = "JESS")]
+        runtime: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -106,9 +119,10 @@ struct Listed {
 }
 
 fn locate(args: &WorkspaceArgs) -> Result<Locate, String> {
-    args.workspace
-        .as_ref()
-        .map_or_else(|| current().map(Locate::From), |root| Ok(Locate::Root(root.clone())))
+    let Some(root) = &args.workspace else {
+        return current().map(Locate::From);
+    };
+    Locate::at(root.clone()).map_err(|error| format!("failed to open '{}': {error}", root.display()))
 }
 
 fn texts(paths: &[PathBuf]) -> Vec<String> {
@@ -155,12 +169,49 @@ fn run_target(at: Locate, args: &RunArgs) -> Result<u8, String> {
         let lua = crate::run::lua_default()?;
         let chosen = workspace::choose(&lua, &request.at, request.target.as_deref(), &request.cwd)
             .map_err(|error| error.to_string())?;
-        let inspection = jess::lua::package::inspect(&lua, &chosen.location).map_err(|error| error.to_string())?;
+        let inspection = jess::lua::package::inspect_with(&lua, &chosen.location, request.at.image())
+            .map_err(|error| error.to_string())?;
         let target = jess::lua::package::target(&inspection, Some(&chosen.target)).map_err(|error| error.to_string())?;
         crate::application::check_frames(args.frames, target, &inspection.id)?;
     }
     let launched = workspace::launch(&jess::lua::Options::default(), &request).map_err(|error| error.to_string())?;
     crate::application::finish(launched, args.frames)
+}
+
+/// Runs a target of a packed workspace as a program, `jess app.jsw` or a standalone executable
+/// does: `target`, or its default without one, holding what it declares, with `args`.
+pub fn run_packed(image: Image, target: Option<String>, args: Vec<String>) -> Result<u8, String> {
+    let request = workspace::RunRequest {
+        at: Locate::Packed(image),
+        target,
+        cwd: current()?,
+        grant: None,
+        args,
+    };
+    let launched = workspace::launch(&jess::lua::Options::default(), &request).map_err(|error| error.to_string())?;
+    crate::application::finish(launched, None)
+}
+
+/// Runs the packed workspace this executable carries: the target whose command is the name it
+/// was run by, when one has it, so one payload can ship under several names; else its default
+/// target. The name is argv[0]'s, which a link keeps and the executable's own path resolves away.
+pub fn run_standalone(image: Image, args: Vec<String>) -> Result<u8, String> {
+    let name = std::env::args_os()
+        .next()
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_exe().ok())
+        .and_then(|path| path.file_stem().map(|stem| stem.to_string_lossy().into_owned()));
+    let lua = crate::run::lua_default()?;
+    let opened = workspace::open(&lua, &Locate::Packed(image.clone())).map_err(|error| error.to_string())?;
+    let target = name.filter(|name| {
+        opened.members.iter().any(|member| {
+            member
+                .targets
+                .iter()
+                .any(|target| target.command.as_deref() == Some(name.as_str()))
+        })
+    });
+    run_packed(image, target, args)
 }
 
 fn test(at: &Locate, members: &[String], format: Format) -> Result<(), String> {
@@ -188,6 +239,11 @@ pub fn run(args: &WorkspaceArgs, format: Format) -> Result<u8, String> {
         }
         WorkspaceCommand::Run(run) => return run_target(at, run),
         WorkspaceCommand::Test { members } => test(&at, members, format)?,
+        WorkspaceCommand::Pack { output, runtime } => {
+            let lua = crate::run::lua_default()?;
+            let packed = workspace::pack(&lua, &at, output, runtime.as_deref()).map_err(|error| error.to_string())?;
+            output::print(&packed, format)?;
+        }
         WorkspaceCommand::Sync {
             artifacts,
             package_paths,

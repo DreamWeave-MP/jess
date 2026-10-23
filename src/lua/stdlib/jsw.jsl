@@ -1,0 +1,431 @@
+--!strict
+-- jess's packed workspaces: what a workspace runs, frozen into one `.jsw` file.
+--
+-- A packed workspace is a JPK-format archive holding `jsw.toml`, its index, and the JPK of every
+-- package its exported targets run, each stored, so it opens in place as a slice of the archive
+-- and nothing is ever copied out. The index names the targets it exports and its default, the
+-- built-in package it was packed against, and every package's id, version, and content digest.
+-- Those digests pin the packages the way `jess.lock` pins a workspace's, so a package whose bytes
+-- aren't the ones packed is refused before anything runs.
+--
+-- The host's alone: nothing a script requires reaches it. Opening one reads its index and its
+-- packages' manifests and runs nothing. It resolves over itself and the built-in package only:
+-- never over files beside it, and never over the network.
+
+type Host = {
+  read readAt: (path: string, offset: number, length: number) -> buffer,
+  read readFile: (path: string) -> buffer?,
+  read decodeToml: (text: string) -> { [string]: unknown },
+  read builtin: () -> { [string]: string },
+}
+
+type Source = { read size: number, read read: (offset: number, length: number) -> buffer }
+type Entry = { read path: string, read method: string }
+
+type Archive = {
+  read entries: { Entry },
+  read find: (path: string) -> Entry?,
+  read read: (entry: Entry | string) -> buffer,
+  read source: (entry: Entry | string) -> Source,
+}
+
+--- A file to write into an archive; `store` keeps it stored.
+type File = { path: string, data: buffer, store: boolean? }
+
+type Jpk = {
+  read open: (source: Source | buffer) -> Archive,
+  read write: (files: { File }) -> buffer,
+}
+
+type Target = {
+  read id: string,
+  read kind: string,
+  read entry: string,
+  read capabilities: { string },
+  read command: string?,
+}
+
+type Manifest = {
+  read id: string,
+  read version: string,
+  read jessApi: string,
+  read defaultTarget: string?,
+  read dependencies: { [string]: string },
+  read devDependencies: { [string]: string },
+  read targets: { [string]: Target },
+  read tests: { string },
+}
+
+type Offer = {
+  read manifest: Manifest,
+  read id: string,
+  read version: string,
+  read kind: 'source' | 'jpk',
+  read location: string,
+}
+
+type Package = Offer & {
+  read digest: string,
+  read files: { string },
+  read read: (path: string) -> buffer?,
+}
+
+type PackageModule = {
+  read openJpk: (source: Source, label: string) -> Package,
+  read manifest: (text: string) -> Manifest,
+  read satisfies: (version: string, requirement: string) -> boolean,
+}
+
+--- A target a packed workspace runs: its package's id and the target's.
+export type Exported = { read package: string, read target: string }
+
+--- A package a packed workspace holds, exactly.
+export type Pinned = { read id: string, read version: string, read digest: string }
+
+--- What `jsw.toml` says: the built-in package version the image was packed against, the targets
+--- it exports and its default, and the packages it holds.
+export type Index = {
+  read builtin: string,
+  read default: Exported?,
+  read targets: { Exported },
+  read packages: { Pinned },
+}
+
+--- An opened packed workspace: its label, its index, its packages as candidates with the
+--- digests they're pinned to, and what opens one of them by its location.
+export type Image = {
+  read label: string,
+  read index: Index,
+  read offers: { Offer },
+  read pins: { [string]: string },
+  read open: (location: string) -> Package,
+}
+
+local IndexFile, Format, FormatVersion = 'jsw.toml', 'jess-packed-workspace', 1
+local Packages, ManifestFile = 'packages', 'jess.toml'
+
+local host: Host, package: PackageModule, container: Jpk
+
+local function fail(message: string): never error(`jsw: {message}`, 0) end
+
+local function checkKeys(value: { [string]: unknown }, allowed: { string }, where: string)
+  for key in value do
+    if not table.find(allowed, key) then fail(`{where}: unknown key '{key}'`) end
+  end
+end
+
+local function text(value: unknown, where: string): string
+  if type(value) ~= 'string' or value == '' then fail(`{where} must be a string`) end
+
+  return value :: string
+end
+
+local function isHex64(value: string): boolean
+  return #value == 64 and string.find(value, '^%x+$') ~= nil
+end
+
+--- Where package `id` at `version` is held in a packed workspace.
+local function packagePath(id: string, version: string): string
+  return `{Packages}/{id}-{version}.jpk`
+end
+
+local function byTarget(left: Exported, right: Exported): boolean
+  if left.package ~= right.package then return left.package < right.package end
+
+  return left.target < right.target
+end
+
+--- The version of the built-in package this jess carries.
+local function builtinVersion(): string
+  return package.manifest(host.builtin()[ManifestFile]).version
+end
+
+--- `index` as `jsw.toml`'s text: one canonical form, sorted, with nothing in it that differs
+--- between machines.
+local function encode(index: Index): string
+  local targets, packages = table.clone(index.targets), table.clone(index.packages)
+  table.sort(targets, byTarget)
+  table.sort(packages, function(left: Pinned, right: Pinned): boolean return left.id < right.id end)
+
+  local lines = {
+    '# Written by `jess workspace pack`: what this packed workspace runs, pinned.',
+    `format = "{Format}"`,
+    `format_version = {FormatVersion}`,
+    `builtin = "{index.builtin}"`,
+  }
+
+  if index.default then
+    table.insert(lines, `default = "{index.default.package}:{index.default.target}"`)
+  end
+
+  for _, exported in targets do
+    table.insert(lines, '')
+    table.insert(lines, '[[target]]')
+    table.insert(lines, `package = "{exported.package}"`)
+    table.insert(lines, `id = "{exported.target}"`)
+  end
+
+  for _, pinned in packages do
+    table.insert(lines, '')
+    table.insert(lines, '[[package]]')
+    table.insert(lines, `id = "{pinned.id}"`)
+    table.insert(lines, `version = "{pinned.version}"`)
+    table.insert(lines, `digest = "{pinned.digest}"`)
+  end
+
+  return `{table.concat(lines, '\n')}\n`
+end
+
+local function rows(value: unknown, where: string): { { [string]: unknown } }
+  if value == nil then return {} end
+
+  if type(value) ~= 'table' then fail(`{where} must be a list of tables`) end
+
+  local list = {}
+
+  for _, row in value :: { unknown } do
+    if type(row) ~= 'table' then fail(`{where} must be a list of tables`) end
+
+    table.insert(list, row :: { [string]: unknown })
+  end
+
+  return list
+end
+
+--- `jsw.toml`'s text as an index, checked: a format this jess reads, and every field it needs.
+local function decode(source: string, where: string): Index
+  local document = host.decodeToml(source)
+  checkKeys(document, { 'format', 'format_version', 'builtin', 'default', 'target', 'package' }, where)
+
+  if document.format ~= Format then fail(`{where} is not a packed workspace`) end
+
+  if document.format_version ~= FormatVersion then
+    fail(
+      `{where} is format_version {tostring(document.format_version)}, and this jess reads format_version {FormatVersion}`
+    )
+  end
+
+  local targets, packages, held = {} :: { Exported }, {} :: { Pinned }, {} :: { [string]: boolean }
+
+  for _, row in rows(document.target, `{where} [[target]]`) do
+    checkKeys(row, { 'package', 'id' }, `{where} [[target]]`)
+    table.insert(
+      targets,
+      table.freeze {
+        package = text(row.package, `{where} [[target]] package`),
+        target = text(row.id, `{where} [[target]] id`),
+      }
+    )
+  end
+
+  for _, row in rows(document.package, `{where} [[package]]`) do
+    checkKeys(row, { 'id', 'version', 'digest' }, `{where} [[package]]`)
+
+    local id = text(row.id, `{where} [[package]] id`)
+    local digest = text(row.digest, `{where} [[package]] {id} digest`)
+
+    if held[id] then fail(`{where} lists {id} twice`) end
+
+    if not isHex64(digest) then fail(`{where}: {id}'s digest is not a content digest`) end
+
+    held[id] = true
+    table.insert(
+      packages,
+      table.freeze { id = id, version = text(row.version, `{where} [[package]] {id} version`), digest = digest }
+    )
+  end
+
+  local default: Exported?
+
+  if document.default ~= nil then
+    local named = text(document.default, `{where} default`)
+    local owner, target = string.match(named, '^([^:]+):(.+)$')
+
+    if not owner or not target then fail(`{where}: default '{named}' is not <package id>:<target id>`) end
+
+    default = table.freeze { package = owner :: string, target = target :: string }
+  end
+
+  return table.freeze {
+    builtin = text(document.builtin, `{where} builtin`),
+    default = default,
+    targets = table.freeze(targets),
+    packages = table.freeze(packages),
+  }
+end
+
+--- The packed workspace `input` holds, named `label`: its index checked against what it holds,
+--- and its packages offered, nothing else read.
+local function openImage(input: Source | buffer, label: string): Image
+  local where = `'{label}'`
+  local archive = container.open(input)
+
+  if not archive.find(IndexFile) then fail(`{where} is not a packed workspace: it has no {IndexFile}`) end
+
+  local index = decode(buffer.tostring(archive.read(IndexFile)), where)
+  local running = builtinVersion()
+
+  if not package.satisfies(running, index.builtin) then
+    fail(
+      `{where} was packed for jess's built-in package {index.builtin}, and this jess carries {running}; run it with a jess whose built-in package is compatible`
+    )
+  end
+
+  local expected, sources = { [IndexFile] = true }, {} :: { [string]: Source }
+  local offers, pins, byId = {} :: { Offer }, {} :: { [string]: string }, {} :: { [string]: Offer }
+
+  for _, pinned in index.packages do
+    local path = packagePath(pinned.id, pinned.version)
+    local location = `{label}!/{path}`
+
+    if not archive.find(path) then
+      fail(`{where} lists {pinned.id} {pinned.version}, which it doesn't hold`)
+    end
+
+    local inner = archive.source(path)
+    local opened = container.open(inner)
+
+    if not opened.find(ManifestFile) then fail(`'{location}' has no {ManifestFile}`) end
+
+    local manifest = package.manifest(buffer.tostring(opened.read(ManifestFile)))
+
+    if manifest.id ~= pinned.id or manifest.version ~= pinned.version then
+      fail(
+        `'{location}' is {manifest.id} {manifest.version}, not the {pinned.id} {pinned.version} its index lists`
+      )
+    end
+
+    local offer: Offer = table.freeze {
+      manifest = manifest,
+      id = manifest.id,
+      version = manifest.version,
+      kind = 'jpk' :: 'jpk',
+      location = location,
+    }
+    expected[path] = true
+    sources[location] = inner
+    pins[pinned.id] = pinned.digest
+    byId[pinned.id] = offer
+    table.insert(offers, offer)
+  end
+
+  for _, entry in archive.entries do
+    if not expected[entry.path] then
+      fail(`{where} holds '{entry.path}', which its index doesn't list`)
+    end
+  end
+
+  for _, exported in index.targets do
+    local owner = byId[exported.package]
+
+    if not owner or not owner.manifest.targets[exported.target] then
+      fail(`{where} exports {exported.package}:{exported.target}, which none of its packages declares`)
+    end
+  end
+
+  local default = index.default
+
+  if default then
+    local exported = false
+
+    for _, candidate in index.targets do
+      if candidate.package == default.package and candidate.target == default.target then
+        exported = true
+      end
+    end
+
+    if not exported then
+      fail(`{where}: default {default.package}:{default.target} is not a target it exports`)
+    end
+  end
+
+  return table.freeze {
+    label = label,
+    index = index,
+    offers = table.freeze(offers),
+    pins = table.freeze(pins),
+    open = function(location: string): Package
+      local inner = sources[location]
+
+      if not inner then fail(`'{location}' is not in the packed workspace {where}`) end
+
+      return package.openJpk(inner :: Source, location)
+    end,
+  }
+end
+
+--- The packed workspace in the file `path`, in the `length` bytes from `offset`: the whole file
+--- for a `.jsw`, or the part of an executable carrying one.
+local function open(path: string, offset: number, length: number): Image
+  return openImage({
+    size = length,
+    read = function(at: number, count: number): buffer return host.readAt(path, offset + at, count) end,
+  }, path)
+end
+
+--- `opened`, a Package Source, as its canonical JPK: what `jess pack` writes.
+local function packed(opened: Package): buffer
+  local files: { File } = {}
+
+  for _, path in opened.files do
+    table.insert(files, { path = path, data = opened.read(path) :: buffer })
+  end
+
+  return container.write(files)
+end
+
+--- The packed workspace holding `packages`, exporting `targets`, `default` the one it runs
+--- without a name: each package's JPK stored, a Package Source packed canonically, and a JPK as
+--- its bytes are. Every package is opened again from the bytes about to be returned, and must
+--- have the digest it was resolved with: what a run reads is what was resolved.
+local function pack(
+  targets: { Exported },
+  default: Exported?,
+  packages: { Package },
+  label: string
+): buffer
+  local pinned: { Pinned } = {}
+  local files: { File } = {}
+
+  for _, opened in packages do
+    local data = if opened.kind == 'jpk' then host.readFile(opened.location) else packed(opened)
+
+    if not data then fail(`'{opened.location}' went away while it was being packed`) end
+
+    table.insert(pinned, table.freeze { id = opened.id, version = opened.version, digest = opened.digest })
+    table.insert(files, { path = packagePath(opened.id, opened.version), data = data :: buffer, store = true })
+  end
+
+  local index: Index = table.freeze {
+    builtin = builtinVersion(),
+    default = default,
+    targets = targets,
+    packages = pinned,
+  }
+  -- The index is stored too, so any unzip tool shows it.
+  table.insert(files, { path = IndexFile, data = buffer.fromstring(encode(index)), store = true })
+
+  local image = container.write(files)
+  local reopened = openImage(image, label)
+
+  for _, offer in reopened.offers do
+    local opened = reopened.open(offer.location)
+
+    if opened.digest ~= reopened.pins[opened.id] then
+      fail(
+        `{opened.id} {opened.version} changed while it was being packed: it was resolved as {reopened.pins[opened.id]}, and packed as {opened.digest}`
+      )
+    end
+  end
+
+  return image
+end
+
+return function(dependencies: { host: Host, package: PackageModule, jpk: Jpk })
+  host, package, container = dependencies.host, dependencies.package, dependencies.jpk
+
+  return {
+    open = open,
+    pack = pack,
+  }
+end
