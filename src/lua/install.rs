@@ -30,7 +30,8 @@ pub fn default_root() -> Option<PathBuf> {
 /// Where an install comes from.
 #[derive(Clone, Debug)]
 pub enum Source {
-    /// A package id, resolved from its publisher, with the requirement a version must meet.
+    /// A package id, from its publisher: the packed workspace its newest release carries, or else
+    /// resolved from its packages, with the requirement a version must meet.
     Package {
         /// The package id.
         id: String,
@@ -53,6 +54,9 @@ pub struct InstallRequest {
     /// Take over command names another install owns, or files no install owns, and install again
     /// what is already installed.
     pub force: bool,
+    /// For a package id: resolve it from its publisher's packages even when a release carries it
+    /// as an application.
+    pub resolve: bool,
     /// Ask no publisher.
     pub offline: bool,
     /// Package indexes that say who publishes an id.
@@ -99,9 +103,9 @@ pub struct Prepared {
     pub package: String,
     /// Its version.
     pub version: String,
-    /// `resolved`, `file` or `workspace`.
+    /// `publisher` (a package's own packed workspace), `resolved`, `file` or `workspace`.
     pub source: String,
-    /// For a resolved install, the project manifest the package came from.
+    /// For a `publisher` or `resolved` install, the project manifest it came from.
     pub manifest: Option<String>,
     /// The commands it writes.
     pub commands: Vec<Command>,
@@ -114,6 +118,9 @@ pub struct Prepared {
     pub consent: bool,
     /// The names it takes over.
     pub takes: Vec<Take>,
+    /// What whoever is asked should know: a newer release this jess can't run, or a package
+    /// resolved because no release carries it as an application.
+    pub notes: Vec<String>,
     /// Where it is staged.
     #[serde(skip)]
     pub staging: PathBuf,
@@ -166,9 +173,9 @@ pub struct Listed {
     pub package: String,
     /// Its version.
     pub version: String,
-    /// `resolved`, `file` or `workspace`.
+    /// `publisher`, `resolved`, `file` or `workspace`.
     pub source: String,
-    /// For a resolved install, the project manifest the package came from.
+    /// For a `publisher` or `resolved` install, the project manifest it came from.
     pub manifest: Option<String>,
     /// The jess version its executables carry.
     pub runtime: String,
@@ -249,6 +256,7 @@ fn stage(runtime: &Runtime, request: &InstallRequest, staging: &Path) -> l3i::Re
         "previous": { "version": "", "commands": [command_shape()] },
         "unchanged": false, "consent": false,
         "takes": [{ "name": "", "from": null }],
+        "notes": [""],
     });
     let host_modules = crate::lua::package::host_modules(runtime)?;
     let table = {
@@ -286,6 +294,7 @@ fn stage(runtime: &Runtime, request: &InstallRequest, staging: &Path) -> l3i::Re
             }
         }
         table.set(&stack, "force", &request.force)?;
+        table.set(&stack, "resolve", &request.resolve)?;
         table.set(&stack, "remote", &remote)?;
         table.set(
             &stack,

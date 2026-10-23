@@ -6,9 +6,11 @@
 --
 -- Every source ends as one packed workspace, `app.jsw`, staged before anything on the PATH
 -- changes: a `.jsw` or an executable carrying one, taken as its bytes are; a workspace, packed; or
--- a package id, resolved from its publisher in a workspace of the install's own and packed there.
--- `prepare` stages it and says what installing it would do; `commit` does it. Between the two the
--- host asks whoever runs it, so nothing is written to `bin` that they didn't agree to.
+-- a package id, whose publisher's own packed workspace is taken when a release carries one (the
+-- set of packages the publisher froze and tested), and which is otherwise, or when asked to,
+-- resolved from its publisher in a workspace of the install's own and packed there. `prepare`
+-- stages it and says what installing it would do; `commit` does it. Between the two the host asks
+-- whoever runs it, so nothing is written to `bin` that they didn't agree to.
 --
 -- The host's alone: nothing a script requires reaches it.
 
@@ -21,6 +23,7 @@ type Host = {
   read replace: (path: string, data: buffer) -> (),
   read decodeToml: (text: string) -> { [string]: unknown },
   read createDir: (path: string) -> (),
+  read builtin: () -> { [string]: string },
 }
 
 --- The file operations installing needs beyond reading and writing files. `standalone` writes
@@ -57,14 +60,23 @@ type Package = { read id: string, read version: string, read digest: string }
 
 type PackageModule = {
   read peek: (location: string) -> Offer,
+  read manifest: (text: string) -> Manifest,
   read satisfies: (version: string, requirement: string) -> boolean,
   read requirement: (requirement: unknown, what: string) -> string,
 }
 
 type Exported = { read package: string, read target: string }
 
+--- What a packed workspace's `jsw.toml` says.
+type Index = {
+  read builtin: string,
+  read default: Exported?,
+  read targets: { Exported },
+  read packages: { { read id: string, read version: string, read digest: string } },
+}
+
 type Image = {
-  read index: { read default: Exported? },
+  read index: Index,
   read offers: { Offer },
   read pins: { [string]: string },
   read open: (location: string) -> Package,
@@ -73,13 +85,32 @@ type Image = {
 type JswModule = { read open: (path: string, offset: number, length: number) -> Image }
 
 type Remote = { read offline: boolean, read indexes: { string }, read publishers: { string } }
+type Artifact = { read sha256: string }
 type Release = { read version: string }
 type RemoteOffer = { read listing: { read url: string }, read entry: Release }
+
+--- A release of a package as an application, as its publisher's manifest lists it.
+type Application = {
+  read version: string,
+  read builtin: string,
+  read default: string?,
+  read targets: { string },
+  read commands: { [string]: string },
+  read packages: { [string]: { read version: string, read contentDigest: string } },
+  read artifact: Artifact,
+}
+
+type ApplicationOffer = { read listing: { read id: string, read url: string }, read entry: Application }
 
 type PublisherModule = {
   read session: (remote: Remote) -> {
     read discover: (id: string, accept: (release: Release) -> boolean) -> RemoteOffer?,
+    read discoverApplication: (
+      id: string,
+      accept: (application: Application) -> boolean
+    ) -> ApplicationOffer?,
   },
+  read download: (offer: ApplicationOffer) -> buffer,
 }
 
 --- A workspace as `describe` and `describeImage` hand it out: plain data.
@@ -132,6 +163,9 @@ export type Request = {
   read path: string?,
   --- For `file`: where its packed workspace is.
   read image: ImageRef?,
+  --- For `package`: resolve it from its publisher's packages even when a release carries it as
+  --- an application.
+  read resolve: boolean,
   read force: boolean,
   read remote: Remote,
   read hostModules: { string },
@@ -173,10 +207,22 @@ type Ledger = {
   read version: string,
   read source: string,
   read manifest: string?,
+  --- For a `publisher` install: the SHA-256 of the archive its manifest listed.
+  read artifactSha256: string?,
   read jswSha256: string,
   read runtime: string,
   read executableSha256: string?,
   read commands: { Command },
+}
+
+--- One packed workspace as an install sees it: the package that names it, its version, the
+--- commands it would write, its index, and the command names its exported targets declare.
+type Examined = {
+  read id: string,
+  read version: string,
+  read commands: { Command },
+  read index: Index,
+  read declared: { [string]: string },
 }
 
 local LedgerFile, LedgerFormat, LedgerVersion = 'install.toml', 'jess-install', 1
@@ -222,6 +268,8 @@ local function encode(ledger: Ledger): string
   }
 
   if ledger.manifest then table.insert(lines, `manifest = "{ledger.manifest}"`) end
+
+  if ledger.artifactSha256 then table.insert(lines, `artifact_sha256 = "{ledger.artifactSha256}"`) end
 
   table.insert(lines, `jsw_sha256 = "{ledger.jswSha256}"`)
   table.insert(lines, `runtime = "{ledger.runtime}"`)
@@ -277,6 +325,9 @@ local function readLedger(path: string): Ledger?
     version = text(document.version, `{path} version`),
     source = text(document.source, `{path} source`),
     manifest = if document.manifest == nil then nil else text(document.manifest, `{path} manifest`),
+    artifactSha256 = if document.artifact_sha256 == nil
+      then nil
+      else text(document.artifact_sha256, `{path} artifact_sha256`),
     jswSha256 = text(document.jsw_sha256, `{path} jsw_sha256`),
     runtime = text(document.runtime, `{path} runtime`),
     executableSha256 = if document.executable_sha256 == nil
@@ -346,19 +397,133 @@ local function newest(id: string, requirement: string?, remote: Remote): RemoteO
   return fail(`no release of {id}{meeting} to install: {reach}`)
 end
 
+--- The requirement `--version` states, if it states one. A whole version with no operator is that
+--- version, as cargo install's `--version` takes one.
+local function wanted(request: Request): string?
+  if not request.requirement then return nil end
+
+  local given = request.requirement :: string
+  local exact = if string.find(given, '^%d+%.%d+%.%d+') then `={given}` else given
+
+  return package.requirement(exact, '--version')
+end
+
+--- The version of jess's built-in package this jess carries: what a packed workspace's
+--- `builtin` has to admit.
+local function builtinVersion(): string
+  return package.manifest(host.builtin()['jess.toml']).version
+end
+
+--- The newest release of `id` as an application its publisher offers, that meets the request's
+--- `--version` (or isn't a pre-release, without one) and that this jess can run; nil when no
+--- release carries it as one. A newer one this jess can't run is a note, and so is being left
+--- with none.
+local function application(request: Request, id: string, notes: { string }): ApplicationOffer?
+  if request.remote.offline then fail(`installing {id} needs its publisher, and this install is offline`) end
+
+  local requirement, running = wanted(request), builtinVersion()
+
+  local function meets(release: Application): boolean
+    if requirement then return package.satisfies(release.version, requirement) end
+
+    return not string.find(release.version, '-', 1, true)
+  end
+
+  local session = publisher.session(request.remote)
+  local runnable = session.discoverApplication(
+    id,
+    function(release: Application): boolean return meets(release) and package.satisfies(running, release.builtin) end
+  )
+  local newestOne = session.discoverApplication(id, meets)
+
+  if not newestOne then return nil end
+
+  local newer = (newestOne :: ApplicationOffer).entry
+  local chosen = if runnable then (runnable :: ApplicationOffer).entry.version else nil
+
+  if chosen ~= newer.version then
+    table.insert(
+      notes,
+      `{id} {newer.version} was packed for jess's built-in package {newer.builtin}, and this jess carries {running}: a newer jess installs it`
+    )
+  end
+
+  if not runnable then
+    fail(`no release of {id} as an application runs on this jess; upgrade jess, or install with --resolve to build one from its packages`)
+  end
+
+  return runnable
+end
+
+--- The packed workspace `examined` is, held to what its publisher's manifest says of it: the same
+--- built-in package, default, targets, commands, and every package pinned to the same version
+--- and digest. A packed workspace that is something other than what the manifest describes is
+--- refused, whatever its archive's SHA-256.
+local function matches(examined: Examined, offer: ApplicationOffer)
+  local index, entry = examined.index, offer.entry
+  local where = `{offer.listing.id} {entry.version} from {offer.listing.url}`
+  local problems: { string } = {}
+
+  if index.builtin ~= entry.builtin then
+    table.insert(problems, `it was packed for built-in package {index.builtin}, and the manifest says {entry.builtin}`)
+  end
+
+  local default = if index.default then `{index.default.package}:{index.default.target}` else nil
+
+  if default ~= entry.default then
+    table.insert(problems, `its default target is {tostring(default)}, and the manifest says {tostring(entry.default)}`)
+  end
+
+  local targets = [for exported in index.targets => `{exported.package}:{exported.target}`]
+  local listed = table.clone(entry.targets)
+  table.sort(targets)
+  table.sort(listed)
+
+  if table.concat(targets, ' ') ~= table.concat(listed, ' ') then
+    table.insert(problems, `it exports {table.concat(targets, ', ')}, and the manifest says {table.concat(listed, ', ')}`)
+  end
+
+  local declared, stated = {} :: { string }, {} :: { string }
+
+  for name, target in examined.declared do
+    table.insert(declared, `{name}={target}`)
+  end
+
+  for name, target in entry.commands do
+    table.insert(stated, `{name}={target}`)
+  end
+
+  table.sort(declared)
+  table.sort(stated)
+
+  if table.concat(declared, ' ') ~= table.concat(stated, ' ') then
+    table.insert(problems, `its commands are {table.concat(declared, ', ')}, and the manifest says {table.concat(stated, ', ')}`)
+  end
+
+  local held: { [string]: boolean } = {}
+
+  for _, pinned in index.packages do
+    local claimed = entry.packages[pinned.id]
+    held[pinned.id] = true
+
+    if not claimed or claimed.version ~= pinned.version or claimed.contentDigest ~= pinned.digest then
+      table.insert(problems, `it holds {pinned.id} {pinned.version} ({pinned.digest}), which the manifest doesn't pin`)
+    end
+  end
+
+  for id in entry.packages do
+    if not held[id] then table.insert(problems, `the manifest pins {id}, which it doesn't hold`) end
+  end
+
+  if #problems > 0 then
+    fail(`{where}: the packed workspace is not what the manifest describes: {table.concat(problems, '; ')}; nothing was installed`)
+  end
+end
+
 --- Resolves `id` in a workspace of the install's own at `staging`, from its publisher, and packs
 --- every target it declares there. Answers the manifest it came from.
 local function resolved(request: Request, id: string, payload: string): string?
-  local requirement: string?
-
-  if request.requirement then
-    local given = request.requirement :: string
-    -- A whole version with no operator is that version, as cargo install's --version takes one.
-    local exact = if string.find(given, '^%d+%.%d+%.%d+') then `={given}` else given
-    requirement = package.requirement(exact, '--version')
-  end
-
-  local offer = newest(id, requirement, request.remote)
+  local offer = newest(id, wanted(request), request.remote)
   local version = offer.entry.version
   local file = `{request.staging}/{WorkspaceFile}`
   local header = {
@@ -401,7 +566,7 @@ end
 
 --- What one packed workspace installs as: its package, version, and commands. Every package it
 --- holds is opened and held to the digest it pins before anything is decided about it.
-local function examine(payload: string): (string, string, { Command })
+local function examine(payload: string): Examined
   local size = host.fileSize(payload)
 
   if not size then fail(`'{payload}' went away while it was being installed`) end
@@ -429,13 +594,16 @@ local function examine(payload: string): (string, string, { Command })
 
   local version: string?
   local commands: { Command } = {}
-  local named: { [string]: string } = {}
+  local named, declared = {} :: { [string]: string }, {} :: { [string]: string }
 
   for _, member in described.members do
     if member.id == owner then version = member.version end
 
     for _, target in member.targets do
       local full = `{member.id}:{target.id}`
+
+      if target.command then declared[target.command :: string] = full end
+
       local isDefault = default ~= nil and default.package == member.id and default.target == target.id
       local name = target.command or (if isDefault then target.id else nil)
 
@@ -463,7 +631,13 @@ local function examine(payload: string): (string, string, { Command })
 
   table.sort(commands, byName)
 
-  return owner :: string, version :: string, commands
+  return table.freeze {
+    id = owner :: string,
+    version = version :: string,
+    commands = commands,
+    index = image.index,
+    declared = declared,
+  }
 end
 
 --- Whether installing `commands` over `previous` asks for anything `previous` wasn't granted: a
@@ -494,19 +668,75 @@ end
 --- the staging folder.
 local function prepare(request: Request): { [string]: unknown }
   local payload = `{request.staging}/{Payload}`
-  local manifest: string?
+  local ledgers = installed(request.root)
+  local manifest: string?, artifactSha256: string?
+  local offered: ApplicationOffer?
+  local source: string = request.source
+  local notes: { string } = {}
 
-  if request.source == 'package' then
-    manifest = resolved(request, request.name :: string, payload)
+  if request.source == 'package' and not request.resolve then
+    local id = request.name :: string
+    offered = application(request, id, notes)
+
+    if offered then
+      local offer = offered :: ApplicationOffer
+      local before = ledgers[id]
+
+      -- The same archive into the same jess, still where it was written, is what is installed.
+      local present: boolean = before ~= nil
+        and all[
+          for command in (before :: Ledger).commands => installing.digest(executable(request.root, command.name, request.suffix))
+            == (before :: Ledger).executableSha256
+        ]
+
+      if
+        before
+        and present
+        and not request.force
+        and before.artifactSha256 == offer.entry.artifact.sha256
+        and before.runtime == request.runtime
+      then
+        return {
+          package = id,
+          version = before.version,
+          source = before.source,
+          manifest = before.manifest,
+          commands = before.commands,
+          previous = { version = before.version, commands = before.commands },
+          unchanged = true,
+          consent = false,
+          takes = {},
+          notes = notes,
+        }
+      end
+
+      host.replace(payload, publisher.download(offer))
+      manifest, artifactSha256, source = offer.listing.url, offer.entry.artifact.sha256, 'publisher'
+    else
+      table.insert(notes, `no release of {id} carries it as an application; resolving it from its packages`)
+    end
+  end
+
+  if request.source == 'package' and not offered then
+    manifest, source = resolved(request, request.name :: string, payload), 'resolved'
   elseif request.source == 'workspace' then
     workspaces.pack(workspaces.discover(request.path :: string), payload, request.hostModules)
-  else
+  elseif request.source == 'file' then
     local image = request.image :: ImageRef
     host.replace(payload, host.readAt(image.path, image.offset, image.length))
   end
 
-  local id, version, commands = examine(payload)
-  local ledgers = installed(request.root)
+  local examined = examine(payload)
+
+  if offered then
+    matches(examined, offered :: ApplicationOffer)
+
+    if examined.id ~= request.name then
+      fail(`{request.name} from {manifest}: its packed workspace is named for {examined.id}`)
+    end
+  end
+
+  local id, version, commands = examined.id, examined.version, examined.commands
   local owned, previous = owners(ledgers), ledgers[id]
   local takes, refused = {} :: { Take }, {} :: { string }
 
@@ -531,8 +761,9 @@ local function prepare(request: Request): { [string]: unknown }
   local ledger: Ledger = {
     package = id,
     version = version,
-    source = if request.source == 'package' then 'resolved' else request.source,
+    source = source,
     manifest = manifest,
+    artifactSha256 = artifactSha256,
     jswSha256 = bytes().sha256(data),
     runtime = request.runtime,
     executableSha256 = nil,
@@ -563,6 +794,7 @@ local function prepare(request: Request): { [string]: unknown }
     unchanged = unchanged,
     consent = grows(previous, commands),
     takes = takes,
+    notes = notes,
   }
 end
 
@@ -594,6 +826,7 @@ local function commit(root: string, staging: string, suffix: string): { [string]
       version = other.version,
       source = other.source,
       manifest = other.manifest,
+      artifactSha256 = other.artifactSha256,
       jswSha256 = other.jswSha256,
       runtime = other.runtime,
       executableSha256 = other.executableSha256,
@@ -638,6 +871,7 @@ local function commit(root: string, staging: string, suffix: string): { [string]
     version = staged.version,
     source = staged.source,
     manifest = staged.manifest,
+    artifactSha256 = staged.artifactSha256,
     jswSha256 = staged.jswSha256,
     runtime = staged.runtime,
     executableSha256 = sha256,

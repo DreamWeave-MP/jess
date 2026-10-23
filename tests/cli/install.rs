@@ -3,7 +3,7 @@
 //! from there by name.
 
 use super::common::{Path, PathBuf, fs, jess};
-use super::workspace::{Showcase, fixture, index, json, publish, publisher};
+use super::workspace::{Published, Showcase, fixture, index, json, project_id, publish, publisher};
 
 /// The showcase with its JPKs synced into the lock, ready to install or pack.
 fn synced(name: &str) -> Showcase {
@@ -327,4 +327,247 @@ fn a_package_installs_from_its_publisher() {
         .output()
         .unwrap();
     assert_eq!(stdout(&ran), "hello again from the tool\n", "{}", stderr(&ran));
+}
+
+// Applications ------------------------------------------------------------------------------
+
+/// The tool packed as an application: a workspace of nothing but the tool, pinned from `jpks`,
+/// exporting its one target. Answers the `.jsw` and what packing it reported.
+fn tool_application(showcase: &Showcase, tool: &Published, words: &Published) -> (PathBuf, serde_json::Value) {
+    let workspace = showcase.root.join("application");
+    fs::create_dir_all(&workspace).unwrap();
+    fs::write(
+        workspace.join("jess-workspace.toml"),
+        concat!(
+            "manifest_version = 1\n\n[workspace]\nmembers = []\n\n",
+            "[dev-dependencies]\n\"org.example.tool\" = \"=1.0.0\"\n\n",
+            "[pack]\ntargets = [\"org.example.tool:hello\"]\ndefault = \"org.example.tool:hello\"\n",
+        ),
+    )
+    .unwrap();
+    let synced = jess()
+        .current_dir(&workspace)
+        .args(["workspace", "sync", "--offline"])
+        .arg(&tool.path)
+        .arg(&words.path)
+        .output()
+        .unwrap();
+    assert!(synced.status.success(), "{}", stderr(&synced));
+    let packed = workspace.join("tool.jsw");
+    let report = json(
+        &jess()
+            .current_dir(&workspace)
+            .args(["--format", "json", "workspace", "pack", "--output"])
+            .arg(&packed)
+            .output()
+            .unwrap(),
+    );
+    (packed, report)
+}
+
+/// A protocol `schema_version` 4 site publishing the tool as one project whose release carries
+/// its JPK and the application, and words as another, with `edit` applied to the application's
+/// `jess_workspace` block. Answers the site's `dreamweave.json`.
+fn application_site(
+    server: &super::common::http::Server,
+    base: &str,
+    packages: (&Published, &Published),
+    application: (&Path, &serde_json::Value),
+    edit: impl FnOnce(&mut serde_json::Value),
+) -> String {
+    let (tool, words) = packages;
+    let (packed, report) = application;
+    let builtin = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("jpk/builtin/jess.toml"))
+        .unwrap()
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("version = \"")
+                .map(|rest| rest.trim_end_matches('"').to_owned())
+        })
+        .unwrap();
+    let source = |file: &str| {
+        let path = format!("{base}files/{file}");
+        server.url(&path)
+    };
+    let serve = |file: &str, media: &str, path: &Path| {
+        server.serve(&format!("{base}files/{file}"), media, fs::read(path).unwrap());
+    };
+    let jsw_bytes = fs::read(packed).unwrap();
+    let mut block = serde_json::json!({
+        "package": "org.example.tool",
+        "builtin": builtin,
+        "default": report["default"],
+        "targets": report["targets"],
+        "commands": { "hello": "org.example.tool:hello" },
+        "packages": report["packages"].as_array().unwrap().iter().map(|pinned| (
+            pinned["id"].as_str().unwrap().to_owned(),
+            serde_json::json!({ "version": pinned["version"], "content_digest": pinned["digest"] }),
+        )).collect::<serde_json::Map<_, _>>(),
+    });
+    edit(&mut block);
+    let jpk = |package: &Published| {
+        serde_json::json!({
+            "id": "jpk", "format": "jpk", "filename": format!("{}.jpk", package.id), "media_type": "application/vnd.jess.jpk",
+            "size": package.size, "digests": { "sha256": package.sha256 },
+            "jess": { "package": package.id, "jess_api": "1", "content_digest": package.digest, "dependencies": package.dependencies },
+            "sources": [{ "url": source(&format!("{}.jpk", package.id)), "kind": "publisher" }], "signatures": []
+        })
+    };
+    serve("org.example.tool.jpk", "application/vnd.jess.jpk", &tool.path);
+    serve("org.example.words.jpk", "application/vnd.jess.jpk", &words.path);
+    serve("tool.jsw", "application/vnd.jess.jsw", packed);
+    let mut entries = Vec::new();
+    for (package, artifacts) in [
+        (
+            tool,
+            vec![
+                jpk(tool),
+                serde_json::json!({
+                    "id": "jsw", "format": "jsw", "filename": "tool.jsw", "media_type": "application/vnd.jess.jsw",
+                    "size": jsw_bytes.len(), "digests": { "sha256": report["sha256"] },
+                    "jess_workspace": block, "sources": [{ "url": source("tool.jsw"), "kind": "publisher" }], "signatures": []
+                }),
+            ],
+        ),
+        (words, vec![jpk(words)]),
+    ] {
+        let project = project_id(&package.id);
+        let manifest_path = format!("{base}dreamweave/projects/{project}.json");
+        let manifest = serde_json::json!({
+            "schema_version": "4", "document": "project", "generator": "fixture",
+            "project": {
+                "id": project, "name": package.id, "type": "tool", "status": "active", "versioning": "numeric",
+                "game": "example", "tags": [], "maintainers": [],
+                "links": { "page": server.url(base), "source": "https://github.com/fixture/tool", "issues": "https://github.com/fixture/tool/issues" },
+                "integrations": {}, "media": [], "credits": []
+            },
+            "channels": { "stable": { "version": package.version } },
+            "releases": [{
+                "version": package.version, "channel": "stable", "date": "2026-10-23", "status": "available",
+                "source": { "repository": "https://github.com/fixture/tool" },
+                "runtimes": {}, "platforms": [], "provides": [], "relationships": [], "components": [], "groups": [],
+                "extensions": {}, "critical_extensions": [], "artifacts": artifacts
+            }]
+        });
+        server.serve(&manifest_path, "application/json", serde_json::to_vec(&manifest).unwrap());
+        entries.push(serde_json::json!({
+            "id": project, "name": package.id, "type": "tool", "jess_package": package.id, "status": "active",
+            "page": server.url(base), "manifest": server.url(&manifest_path), "manifest_sha256": "0".repeat(64),
+            "updated": "2026-10-23", "channels": { "stable": package.version }
+        }));
+    }
+    let index = serde_json::json!({
+        "schema_version": "4", "document": "index", "generator": "fixture",
+        "site": { "name": "Applications", "url": server.url(base) }, "projects": entries,
+    });
+    let path = format!("{base}dreamweave.json");
+    server.serve(&path, "application/json", serde_json::to_vec(&index).unwrap());
+    server.url(&path)
+}
+
+/// A package whose release carries it as an application installs the publisher's own packed
+/// workspace: the frozen set it shipped, checked against the manifest, never resolved here. The
+/// same release again downloads nothing; `--resolve` builds one from the packages instead; and a
+/// packed workspace that isn't what the manifest says, or one this jess can't run, is refused.
+#[test]
+fn a_package_installs_its_publisher_s_packed_workspace() {
+    let showcase = Showcase::new("install-application");
+    let (jpks, root) = (showcase.root.join("jpks"), showcase.root.join("root"));
+    fs::create_dir_all(&jpks).unwrap();
+    let words = publish("words", &jpks);
+    let tool = publish("tool", &jpks);
+    let (packed, report) = tool_application(&showcase, &tool, &words);
+    let server = super::common::http::Server::start();
+    let empty = index(&server, &[]);
+    let site = application_site(&server, "/apps/", (&tool, &words), (&packed, &report), |_| {});
+
+    let installed = json(&install(
+        &root,
+        &["org.example.tool", "--publisher", &site, "--index", &empty, "--yes"],
+    ));
+    assert_eq!(installed["version"], "1.0.0");
+    let ran = std::process::Command::new(command(&root, "hello"))
+        .arg("world")
+        .output()
+        .unwrap();
+    assert_eq!(stdout(&ran), "hello world from the tool\n", "{}", stderr(&ran));
+    assert_eq!(
+        fs::read(root.join("installs/org.example.tool/app.jsw")).unwrap(),
+        fs::read(&packed).unwrap()
+    );
+    let ledger = fs::read_to_string(root.join("installs/org.example.tool/install.toml")).unwrap();
+    assert!(ledger.contains("source = \"publisher\""), "{ledger}");
+    assert!(
+        ledger.contains(&format!("artifact_sha256 = \"{}\"", report["sha256"].as_str().unwrap())),
+        "{ledger}"
+    );
+
+    let downloads = || server.requests().iter().filter(|path| path.ends_with("tool.jsw")).count();
+    assert_eq!(downloads(), 1);
+    let again = json(&install(
+        &root,
+        &["org.example.tool", "--publisher", &site, "--index", &empty],
+    ));
+    assert_eq!(again["state"], "already installed");
+    assert_eq!(downloads(), 1, "the same release isn't downloaded again");
+
+    let resolved = json(&install(
+        &root,
+        &[
+            "org.example.tool",
+            "--resolve",
+            "--publisher",
+            &site,
+            "--index",
+            &empty,
+            "--force",
+        ],
+    ));
+    assert_eq!(resolved["version"], "1.0.0");
+    let ledger = fs::read_to_string(root.join("installs/org.example.tool/install.toml")).unwrap();
+    assert!(ledger.contains("source = \"resolved\""), "{ledger}");
+
+    let lying = application_site(&server, "/lying/", (&tool, &words), (&packed, &report), |block| {
+        block["packages"]["org.example.words"]["content_digest"] = "0".repeat(64).into();
+    });
+    let refused = install(
+        &root,
+        &[
+            "org.example.tool",
+            "--publisher",
+            &lying,
+            "--index",
+            &empty,
+            "--yes",
+            "--force",
+        ],
+    );
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("is not what the manifest describes"),
+        "{}",
+        stderr(&refused)
+    );
+
+    let future = application_site(&server, "/future/", (&tool, &words), (&packed, &report), |block| {
+        block["builtin"] = "99.0.0".into();
+    });
+    let refused = install(
+        &root,
+        &[
+            "org.example.tool",
+            "--publisher",
+            &future,
+            "--index",
+            &empty,
+            "--yes",
+            "--force",
+        ],
+    );
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("runs on this jess; upgrade jess"),
+        "{}",
+        stderr(&refused)
+    );
 }

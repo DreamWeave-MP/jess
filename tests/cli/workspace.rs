@@ -264,14 +264,14 @@ fn the_showcase_syncs_its_jpks_and_runs_without_them() {
 
 /// A JPK packed from a vendor fixture, with the facts a manifest states about it.
 pub(super) struct Published {
-    id: String,
-    version: String,
-    digest: String,
-    sha256: String,
-    size: u64,
-    path: PathBuf,
+    pub(super) id: String,
+    pub(super) version: String,
+    pub(super) digest: String,
+    pub(super) sha256: String,
+    pub(super) size: u64,
+    pub(super) path: PathBuf,
     /// Its declared `[dependencies]`, as the manifest must state them.
-    dependencies: serde_json::Value,
+    pub(super) dependencies: serde_json::Value,
 }
 
 pub(super) fn publish(name: &str, into: &Path) -> Published {
@@ -337,7 +337,7 @@ impl PublisherSite {
 }
 
 /// A project id for a fixture package: a UUID spelled from the package id's bytes.
-fn project_id(id: &str) -> String {
+pub(super) fn project_id(id: &str) -> String {
     let hex: String = id
         .bytes()
         .map(|byte| format!("{byte:02x}"))

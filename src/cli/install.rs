@@ -25,6 +25,10 @@ pub struct InstallArgs {
     /// must meet (^1.2). Without it, the newest release that isn't a pre-release.
     #[arg(long, value_name = "VERSION")]
     version: Option<String>,
+    /// For a package id: resolve it from its publisher's packages and pack it here, rather than
+    /// install the packed workspace a release carries.
+    #[arg(long)]
+    resolve: bool,
     /// List what is installed instead, and whether each command is still what was written.
     #[arg(long)]
     list: bool,
@@ -184,6 +188,7 @@ pub fn run(args: &InstallArgs, format: Format) -> Result<u8, String> {
         root: root.clone(),
         source,
         force: args.force,
+        resolve: args.resolve,
         offline: args.offline,
         indexes: if args.index.is_empty() {
             vec![crate::workspace::DEFAULT_INDEX.to_owned()]
@@ -193,6 +198,9 @@ pub fn run(args: &InstallArgs, format: Format) -> Result<u8, String> {
         publishers: args.publisher.clone(),
     };
     let prepared = install::prepare(&lua, &request).map_err(|error| error.to_string())?;
+    for note in &prepared.notes {
+        eprintln!("note: {note}");
+    }
     if prepared.unchanged {
         install::abandon(&prepared);
         let unchanged = Unchanged {
