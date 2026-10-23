@@ -13,22 +13,26 @@ Releases are boring on purpose. You bump the version, let the gates pass on `mai
 `.github/workflows/release.yaml` is a few lines that call StroggForge's reusable `rustGlobalBuild.yml`:
 
 ```yaml
-uses: DreamWeave-MP/StroggForge/.github/workflows/rustGlobalBuild.yml@v55
+uses: DreamWeave-MP/StroggForge/.github/workflows/rustGlobalBuild.yml@v64
 secrets: inherit
 with:
   binary_names: '["jess"]'
   binary_package: jess
-  include_files: "README.md,LICENSE-MIT,LICENSE-APACHE,docs"
+  include_files: "README.md,LICENSE-MIT,LICENSE-APACHE"
   publish_docs: false
-  cargo_publish_workspace: true
+  cargo_publish: true
   msrv: auto
+  enable_portmaster: true
 ```
 
 - `binary_package: jess` builds the binary with `cargo build --package jess --bin jess`.
-- `include_files` goes into every archive next to the binary: the readme, both license texts, and a `docs` folder. The Luau types aren't shipped: `jess luau-types` writes the folder that matches the binary, and `jess init` writes it into a script folder.
+- `include_files` goes into every archive next to the binary: the readme and both license texts. The Luau types aren't shipped: `jess luau-types` writes the folder that matches the binary, and `jess init` writes it into a script folder.
 - `publish_docs: false`, because this site deploys itself (below) instead of StroggForge's `cargo doc` pages. API docs live on docs.rs.
-- `cargo_publish_workspace: true` publishes through StroggForge's workspace publisher, which for a one-crate workspace is one crate: `jess`.
+- `cargo_publish: true` publishes the crate on a tag.
 - `msrv: auto` checks against the `rust-version` in `Cargo.toml` (1.92).
+- `enable_portmaster: true` adds a 64-bit ARM Linux build, cross-compiled against the same glibc as the x86 one.
+
+On a tag, a second job, `image`, publishes [the jess image](#the-jess-image) from the archives the first one built.
 
 It runs on pull requests, pushes to `main`, tags, and by hand. What it does depends on which:
 
@@ -38,11 +42,23 @@ It runs on pull requests, pushes to `main`, tags, and by hand. What it does depe
 | Push to `main` | yes | built, signed, scanned | refreshes `development` | dry run | yes |
 | Tag | yes | built, signed, scanned | creates one named after the tag | publishes | yes |
 
-**Gates** are the checks in [Building and Testing](@/docs/contributing/building-and-testing.md#what-ci-checks): tests on every platform, fmt, pedantic clippy with `-D warnings`, `cargo audit`, and the MSRV check. Every build job waits on all of them.
+**Gates** are the checks in [Building and Testing](@/docs/contributing/building-and-testing.md#what-ci-checks): tests on every platform, fmt, pedantic clippy with `-D warnings`, `cargo audit`, and the MSRV check. The builds run alongside them, and nothing is published until every one has passed.
 
-**Binaries** build on macOS (ARM and Intel) and Windows, and on Linux inside an AlmaLinux 8 container, so the Linux build runs on anything with glibc 2.28 or newer. Each binary is signed with cosign, archived with the `include_files`, and scanned on VirusTotal; the scan links go into the release notes.
+**Binaries** build on macOS (ARM and Intel) and Windows, and on Linux inside a CentOS Stream 9 container, so the Linux build runs on anything with glibc 2.34 or newer. Each binary is signed with cosign, archived with the `include_files`, and scanned on VirusTotal; the scan links go into the release notes.
 
 **The GitHub release** gets every platform's archive. StroggForge generates its notes from the git history, which is why commit subjects are written for humans: they are the changelog. There is no hand-maintained one.
+
+## The jess image
+
+On a tag, StroggForge's `publishJessImage.yml` turns the release's archives into `ghcr.io/dreamweave-mp/jess:<version>`: the Linux jess, every platform's jess under `/opt/jess/runtimes` (`jess-Linux-X64`, `jess-Windows-X64.exe`, `jess-macOS-ARM64`, `jess-macOS-X64`, `jess-Portmaster-ARM64`), the libraries the Linux one links against, a CA bundle, and nothing else: no shell, no package manager. The archives come from the same run, so the image holds exactly what the release ships. A pipeline that runs jess pins it by the digest the job prints and runs it as a step:
+
+```yaml
+- uses: docker://ghcr.io/dreamweave-mp/jess@sha256:<digest>
+  with:
+    args: workspace pack --output dist/app.exe --runtime /opt/jess/runtimes/jess-Windows-X64.exe
+```
+
+Since any jess can be the runtime for any platform, one Linux step packs every platform's [standalone executable](@/docs/cli/workspace.md#standalone-executables). Checkout and signing stay on the runner, outside the image.
 
 ## Publishing to crates.io
 
