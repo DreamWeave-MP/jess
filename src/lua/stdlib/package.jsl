@@ -1032,16 +1032,26 @@ local function trimmed(location: string): string
   return if stripped == '' then location else stripped
 end
 
---- A package from a Package Source folder or a `.jpk` file. Reads; runs nothing.
-local function open(location: string): Package
-  local place = trimmed(location)
-  local package = if host.isDir(place)
-    then openSource(place)
-    else openArchive(place, fileSource(place))
-
+--- `package`, unless it claims to be the built-in package and isn't the copy jess carries.
+local function admitted(package: Package): Package
   if package.id == BuiltinPackage then checkBuiltin(package) end
 
   return package
+end
+
+--- A package from a Package Source folder or a `.jpk` file. Reads; runs nothing.
+local function open(location: string): Package
+  local place = trimmed(location)
+
+  return admitted(
+    if host.isDir(place) then openSource(place) else openArchive(place, fileSource(place))
+  )
+end
+
+--- The JPK `source` holds, a JPK that isn't a file of its own, named `label` wherever a message
+--- or a plan names it. Reads; runs nothing.
+local function openJpk(source: Source, label: string): Package
+  return admitted(openArchive(label, source))
 end
 
 --- The manifest of the package at `location`, with nothing else read: what a resolution needs to
@@ -1532,6 +1542,7 @@ return function(dependencies: { host: Host, jpk: Jpk })
 
   return {
     open = open,
+    openJpk = openJpk,
     peek = peek,
     candidates = candidates,
     pack = pack,

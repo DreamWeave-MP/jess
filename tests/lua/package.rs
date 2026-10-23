@@ -579,6 +579,35 @@ fn a_script_opens_and_packs_only_what_it_may_read_and_write() {
     }
 }
 
+/// A JPK held in something other than a file of its own opens from a source of its bytes, as the
+/// same package with the same digest, named as its opener says.
+#[test]
+fn a_jpk_opens_from_any_source_of_its_bytes() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("alpha");
+    alpha(&source);
+    let packed = temp.path().join("alpha.jpk");
+    package::pack(&common::runtime(), &text(&source), &text(&packed)).unwrap();
+    let runtime = common::filesystem_runtime();
+    common::set_global(&runtime, "packed", text(&packed).as_str());
+    common::run(
+        &runtime,
+        "local package, fs = require '@jess/package', require '@dream/fs'\n\
+         local bytes = assert(fs.readFile(packed))\n\
+         local held = package.openJpk({\n  \
+           size = buffer.len(bytes),\n  \
+           read = function(offset, length)\n    \
+             local slice = buffer.create(length)\n    \
+             buffer.copy(slice, 0, bytes, offset, length)\n    \
+             return slice\n  \
+           end,\n\
+         }, 'held in memory')\n\
+         local opened = package.open(packed)\n\
+         assert(held.id == opened.id and held.digest == opened.digest, held.digest)\n\
+         assert(held.kind == 'jpk' and held.location == 'held in memory', held.location)",
+    );
+}
+
 #[test]
 fn a_jpk_holds_only_its_payload() {
     let temp = tempfile::tempdir().unwrap();

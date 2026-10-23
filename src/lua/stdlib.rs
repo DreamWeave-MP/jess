@@ -183,6 +183,11 @@ const PACKAGE: BuiltIn = BuiltIn {
             "Opens a Package Source folder or a `.jpk` file; reads it, runs nothing.",
         ),
         (
+            "openJpk",
+            "(source: JessJpkSource, label: string) -> JessPackage",
+            "Opens the JPK `source` holds, one that isn't a file of its own, named `label` in messages and plans; reads it, runs nothing.",
+        ),
+        (
             "peek",
             "(location: string) -> JessPackageOffer",
             "Reads the manifest of the package at `location` and nothing else: what a resolution needs to know whether to open it.",
