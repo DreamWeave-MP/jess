@@ -131,7 +131,7 @@ package = "org.example.showcase"
 version = "0.1.0"
 source = "workspace"
 jsw_sha256 = "c43ff8e4e26bfb97233e35ed3862ff373069fa64ed0e7e367fced80ca12bc03c"
-runtime = "0.1.0"
+runtime = "0.2.0"
 executable_sha256 = "d6ab42d89fcaa2a286034d4e46c9c652bce96ae5b37c5e7c5ebf087557505ad8"
 
 [[command]]
@@ -155,7 +155,7 @@ $ jess install --list
   version: 1.0.0
   source: resolved
   manifest: https://publisher.example/dreamweave/projects/6f72672e-6578-416d-806c-652e746f6f6c.json
-  runtime: 0.1.0
+  runtime: 0.2.0
   commands:
   - name: hello
     path: /home/you/.jess/bin/hello
