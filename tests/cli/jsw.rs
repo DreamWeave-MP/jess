@@ -141,8 +141,8 @@ fn a_packed_workspace_run_as_a_program_holds_what_its_target_declares() {
 /// application, every argument its default target's, and under the name of another target's
 /// command it runs that target. What it carries is the packed workspace, byte for byte: after the
 /// runtime on Linux and Windows, in the section the runtime reserves on macOS, where the result is
-/// signed ad hoc, passes `codesign`'s strict check, and can be signed again with the hardened
-/// runtime and still run.
+/// signed ad hoc when the runtime was, passes `codesign`'s strict check, and can be signed again
+/// with the hardened runtime and still run.
 #[test]
 fn a_standalone_executable_is_the_application_it_carries() {
     let showcase = synced("jsw-standalone");
@@ -211,7 +211,18 @@ fn a_standalone_executable_is_the_application_it_carries() {
                 .unwrap();
             assert!(output.status.success(), "codesign {args:?}: {}", stderr(&output));
         };
-        codesign(&["--verify", "--strict", "--verbose=2"]);
+        // arm64's linker signs ad hoc and so does packing; x86-64's signs nothing, and neither
+        // does packing. Either way the result signs.
+        let signed = std::process::Command::new("codesign")
+            .arg("--verify")
+            .arg(&runtime)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        if signed {
+            codesign(&["--verify", "--strict", "--verbose=2"]);
+        }
         let entitlements = elsewhere.join("jit.plist");
         fs::write(
             &entitlements,
