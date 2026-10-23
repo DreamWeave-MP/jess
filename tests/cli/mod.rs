@@ -7,6 +7,7 @@ mod check;
 mod common;
 mod fast_path;
 mod init;
+mod jsw;
 mod luau_test;
 mod toplevel;
 mod workspace;

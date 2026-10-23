@@ -17,24 +17,24 @@ fn copy(from: &Path, to: &Path) {
     }
 }
 
-fn fixture(name: &str) -> PathBuf {
+pub(super) fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/cli/fixtures").join(name)
 }
 
 /// A copy of the showcase workspace in a folder of its own, removed when dropped.
-struct Showcase {
-    root: PathBuf,
+pub(super) struct Showcase {
+    pub(super) root: PathBuf,
 }
 
 impl Showcase {
-    fn new(name: &str) -> Self {
+    pub(super) fn new(name: &str) -> Self {
         let root = temp_dir_path(name);
         drop(fs::remove_dir_all(&root));
         copy(&fixture("workspace"), &root.join("workspace"));
         Self { root }
     }
 
-    fn workspace(&self) -> PathBuf {
+    pub(super) fn workspace(&self) -> PathBuf {
         self.root.join("workspace")
     }
 }
@@ -45,7 +45,7 @@ impl Drop for Showcase {
     }
 }
 
-fn json(output: &std::process::Output) -> serde_json::Value {
+pub(super) fn json(output: &std::process::Output) -> serde_json::Value {
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     serde_json::from_slice(&output.stdout).unwrap()
 }

@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use l3i::Runtime;
 use serde::{Deserialize, Serialize};
 
+use crate::lua::image::Image;
 use crate::lua::package::{self, Dependency, Launched, Plan, Search, Target, TargetRun};
 
 /// Where a workspace is.
@@ -22,13 +23,43 @@ pub enum Locate {
     From(PathBuf),
     /// The workspace whose root is this folder.
     Root(PathBuf),
+    /// A packed workspace: the targets it exports and the packages they run, sealed.
+    Packed(Image),
 }
 
 impl Locate {
-    fn args(&self) -> (String, bool) {
+    /// The workspace `path` names: a packed workspace when it is a file, a `.jsw`, else the
+    /// workspace whose root it is.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if it is a file that can't be read.
+    pub fn at(path: PathBuf) -> std::io::Result<Self> {
+        if path.is_file() {
+            return Image::open(&path).map(Self::Packed);
+        }
+        Ok(Self::Root(path))
+    }
+
+    /// The packed workspace this names, if it names one.
+    #[must_use]
+    pub fn image(&self) -> Option<&Image> {
         match self {
-            Self::From(path) => (path.display().to_string(), false),
-            Self::Root(path) => (path.display().to_string(), true),
+            Self::Packed(image) => Some(image),
+            Self::From(_) | Self::Root(_) => None,
+        }
+    }
+
+    /// The folder to start from and whether it is the root, for a workspace that isn't packed;
+    /// for a packed one, the error `doing` it gets.
+    fn args(&self, doing: &str) -> l3i::Result<(String, bool)> {
+        match self {
+            Self::From(path) => Ok((path.display().to_string(), false)),
+            Self::Root(path) => Ok((path.display().to_string(), true)),
+            Self::Packed(image) => Err(crate::lua::error(format!(
+                "'{}' is a packed workspace, which is sealed: {doing} needs the workspace it was packed from",
+                image.path
+            ))),
         }
     }
 }
@@ -155,8 +186,16 @@ fn workspace_shape() -> serde_json::Value {
 /// # Errors
 ///
 /// Returns an error if there is no workspace there, or its file or a member is invalid.
+///
+/// A packed workspace opens as one of `packed` kind: the packages holding the targets it exports
+/// are its members, each with only those targets, and every package it holds is what its lock
+/// pins.
 pub fn open(runtime: &Runtime, at: &Locate) -> l3i::Result<Workspace> {
-    package::bootstrap(runtime, "workspace", &workspace_shape(), at.args())
+    if let Some(image) = at.image() {
+        let image = image.table(&runtime.stack())?;
+        return package::bootstrap(runtime, "imageWorkspace", &workspace_shape(), (image,));
+    }
+    package::bootstrap(runtime, "workspace", &workspace_shape(), at.args("opening it")?)
 }
 
 /// A target a workspace picked, and what its package resolves over.
@@ -181,7 +220,8 @@ pub struct Chosen {
 ///
 /// `name` is `<package id>:<target id>`, a target id or command name only one target in the
 /// workspace has, or a member's package id for its default target; without one, the default
-/// target of the member holding `cwd`.
+/// target of the member holding `cwd`. In a packed workspace the names are its exported targets',
+/// and without one it is its default target, wherever it is run from.
 ///
 /// # Errors
 ///
@@ -191,7 +231,11 @@ pub fn choose(runtime: &Runtime, at: &Locate, name: Option<&str>, cwd: &Path) ->
         "package": "", "version": "", "location": "", "target": "", "candidates": [""],
         "pins": [{ "id": "", "digest": "" }],
     });
-    let (start, explicit) = at.args();
+    if let Some(image) = at.image() {
+        let image = image.table(&runtime.stack())?;
+        return package::bootstrap(runtime, "imageTarget", &shape, (image, name));
+    }
+    let (start, explicit) = at.args("choosing a target")?;
     let args = (start, explicit, name, cwd.display().to_string());
     package::bootstrap(runtime, "workspaceTarget", &shape, args)
 }
@@ -223,13 +267,14 @@ pub struct ResolvedTarget {
 /// As [`choose`], and if the plan doesn't resolve.
 pub fn resolve_target(runtime: &Runtime, at: &Locate, name: Option<&str>, cwd: &Path) -> l3i::Result<ResolvedTarget> {
     let chosen = choose(runtime, at, name, cwd)?;
-    let inspection = package::inspect(runtime, &chosen.location)?;
+    let inspection = package::inspect_with(runtime, &chosen.location, at.image())?;
     let target = package::target(&inspection, Some(&chosen.target))?.clone();
     let layers = inspection.layers.iter().map(|layer| layer.id.clone()).collect::<Vec<_>>();
     let search = Search {
         candidates: chosen.candidates.clone(),
         pins: pin_map(&chosen.pins),
         roots: vec![chosen.package.clone()],
+        image: at.image().cloned(),
         ..Search::default()
     };
     let plan = package::graph_with(runtime, std::slice::from_ref(&chosen.location), &layers, &search)?;
@@ -298,6 +343,7 @@ fn target_request(options: &crate::lua::Options, request: &RunRequest) -> l3i::R
         pins: pin_map(&chosen.pins),
         grant: request.grant.clone(),
         args: request.args.clone(),
+        image: request.at.image().cloned(),
         ..package::TargetRequest::default()
     })
 }
@@ -330,7 +376,7 @@ pub fn test(
     let shape = serde_json::json!([{
         "package": "", "location": "", "candidates": [""], "pins": [{ "id": "", "digest": "" }],
     }]);
-    let (start, explicit) = at.args();
+    let (start, explicit) = at.args("testing")?;
     let runtime = crate::lua::runtime(options.clone())?;
     let names = package::string_list(&runtime.stack(), names)?;
     let picked: Vec<Tested> = package::bootstrap(&runtime, "workspaceTests", &shape, (start, explicit, names))?;
@@ -426,7 +472,7 @@ pub fn sync(runtime: &Runtime, request: &SyncRequest) -> l3i::Result<Synced> {
         "lock": "",
         "packages": [{ "id": "", "version": "", "digest": "", "source": "", "manifest": null, "installed": false }],
     });
-    let (start, explicit) = request.at.args();
+    let (start, explicit) = request.at.args("syncing")?;
     let (artifacts, paths, indexes, publishers) = {
         let stack = runtime.stack();
         (
@@ -451,4 +497,54 @@ pub fn sync(runtime: &Runtime, request: &SyncRequest) -> l3i::Result<Synced> {
             publishers,
         ),
     )
+}
+
+/// A package a packed workspace holds.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PackedPackage {
+    /// Its package id.
+    pub id: String,
+    /// Its exact version.
+    pub version: String,
+    /// Its content digest, which the packed workspace pins.
+    pub digest: String,
+}
+
+/// What [`pack`] wrote.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Packed {
+    /// The `.jsw` written.
+    pub path: String,
+    /// Its size in bytes.
+    pub size: u64,
+    /// Its SHA-256, for a publisher to print beside the download.
+    pub sha256: String,
+    /// The target it runs without a name, `<package id>:<target id>`.
+    pub default: Option<String>,
+    /// The targets it exports, `<package id>:<target id>`.
+    pub targets: Vec<String>,
+    /// The packages it holds, by id.
+    pub packages: Vec<PackedPackage>,
+}
+
+/// Freezes the workspace `at` names into a packed workspace at `output`.
+///
+/// It holds every target its `[pack]` table names, or every member's, resolved as running it from
+/// the workspace resolves it, and every package those runs would mount, each pinned to its
+/// digest. The workspace's lock must be fresh; nothing is fetched.
+///
+/// # Errors
+///
+/// Returns an error if the workspace doesn't open, its lock isn't fresh, a target doesn't resolve,
+/// a package changes while it is packed, or `output` can't be written.
+pub fn pack(runtime: &Runtime, at: &Locate, output: &Path) -> l3i::Result<Packed> {
+    let shape = serde_json::json!({
+        "path": "", "size": 0, "sha256": "", "default": null, "targets": [""],
+        "packages": [{ "id": "", "version": "", "digest": "" }],
+    });
+    let (start, explicit) = at.args("packing")?;
+    let reserved = package::host_modules(runtime)?;
+    let reserved = package::string_list(&runtime.stack(), &reserved)?;
+    let args = (start, explicit, output.display().to_string(), reserved);
+    package::bootstrap(runtime, "workspacePack", &shape, args)
 }

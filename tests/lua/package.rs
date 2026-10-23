@@ -8,6 +8,7 @@ use jess::lua::l3i::value::Table;
 use jess::lua::package::{self, Plan};
 
 mod application;
+mod jsw;
 use super::common;
 mod workspace;
 

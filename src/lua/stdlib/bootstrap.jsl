@@ -54,6 +54,9 @@ type WorkspaceModule = {
   read verify: (workspace: unknown) -> unknown,
   read target: (workspace: unknown, name: string?, cwd: string) -> { [string]: unknown },
   read tests: (workspace: unknown, names: { string }) -> { { [string]: unknown } },
+  read pack: (workspace: unknown, output: string, hostModules: { string }) -> { [string]: unknown },
+  read describeImage: (image: Image) -> { [string]: unknown },
+  read imageTarget: (image: Image, name: string?) -> { [string]: unknown },
   read sync: (
     workspace: unknown,
     artifacts: { string },
@@ -61,6 +64,21 @@ type WorkspaceModule = {
     locked: boolean,
     remote: { offline: boolean, indexes: { string }, publishers: { string } }
   ) -> { [string]: unknown },
+}
+
+--- A packed workspace opened: its packages as candidates, the digests they're pinned to, and
+--- what opens one by its location.
+type Image = {
+  read offers: { Offer },
+  read pins: { [string]: string },
+  read open: (location: string) -> Package,
+}
+
+--- Where a packed workspace is: the `length` bytes from `offset` of the file `path`.
+type ImageRef = { path: string, offset: number, length: number }
+
+type ImageModule = {
+  read open: (path: string, offset: number, length: number) -> Image,
 }
 
 type PackageModule = {
@@ -74,19 +92,28 @@ type PackageModule = {
 --- Where a resolution looks beyond the packages it is handed, and what it selects besides the
 --- layers' providers: package path folders, packages offered as candidates by location, root
 --- package ids, the ids whose `[dev-dependencies]` come along, and the digests packages are pinned
---- to.
+--- to. With an `image`, the packed workspace is the whole world: every location is one of its
+--- packages, all of them are candidates, and each is pinned as its index pins it.
 type Search = {
   paths: { string }?,
   candidates: { string }?,
   roots: { string }?,
   dev: { string }?,
   pins: { [string]: string }?,
+  image: ImageRef?,
 }
 
--- The host's own @jess/package and workspaces, handed in: the @jess/package scripts require
--- reads and writes only what the runtime's policy grants them, and these entries are the host
--- acting.
-local package: PackageModule, workspaces: WorkspaceModule = ...
+-- The host's own @jess/package, workspaces, and packed workspaces, handed in: the @jess/package
+-- scripts require reads and writes only what the runtime's policy grants them, and these entries
+-- are the host acting.
+local package: PackageModule, workspaces: WorkspaceModule, images: ImageModule = ...
+
+--- The packed workspace `ref` names, opened, or nil without one.
+local function imageAt(ref: ImageRef?): Image?
+  if not ref then return nil end
+
+  return images.open(ref.path, ref.offset, ref.length)
+end
 
 type Mounted = {
   id: string,
@@ -104,11 +131,12 @@ export type Mount = (
   packages: { Mounted }
 ) -> ()
 
-local function openAll(locations: { string }): { Package }
+--- The packages at `locations`, each opened out of `image` when there is one.
+local function openAll(locations: { string }, image: Image?): { Package }
   local packages = {}
 
   for _, location in locations do
-    table.insert(packages, package.open(location))
+    table.insert(packages, if image then image.open(location) else package.open(location))
   end
 
   return packages
@@ -131,8 +159,8 @@ local function sortedManaged(declared: { [string]: Managed }): { Managed }
   return managed
 end
 
-local function inspect(location: string)
-  local opened = package.open(location)
+local function inspect(location: string, ref: ImageRef?)
+  local opened = openAll({ location }, imageAt(ref))[1]
   local manifest = opened.manifest
   local modules: { { name: string, path: string } } = {}
   local dependencies: { Requirement }, devDependencies: { Requirement } = {}, {}
@@ -219,14 +247,17 @@ local function inspect(location: string)
 end
 
 --- The request `resolve` takes for `layers` under `search`: every package path's candidates, in
---- the order the paths were given, then the candidates offered by location.
+--- the order the paths were given, then the candidates offered by location, then, with `image`,
+--- every package it holds, opened out of it and pinned as it pins them.
 local function request(
   layers: { string },
   hostModules: { string },
   search: Search?,
-  grant: { string }?
+  grant: { string }?,
+  image: Image?
 ): { [string]: unknown }
   local offers: { Offer } = {}
+  local pins = table.clone((search and search.pins) or {})
 
   for _, folder in (search and search.paths) or {} do
     for _, offer in package.candidates(folder) do
@@ -238,14 +269,25 @@ local function request(
     table.insert(offers, package.peek(location))
   end
 
+  if image then
+    for _, offer in image.offers do
+      table.insert(offers, offer)
+    end
+
+    for id, digest in image.pins do
+      pins[id] = digest
+    end
+  end
+
   return {
     layers = layers,
     hostModules = hostModules,
     grant = grant,
     candidates = offers,
+    open = image and image.open,
     roots = search and search.roots,
     dev = search and search.dev,
-    pins = search and search.pins,
+    pins = pins,
   }
 end
 
@@ -255,7 +297,9 @@ local function graph(
   hostModules: { string },
   search: Search?
 ): Plan
-  return (package.resolve(openAll(locations), request(layers, hostModules, search)))
+  local image = imageAt(search and search.image)
+
+  return (package.resolve(openAll(locations, image), request(layers, hostModules, search, nil, image)))
 end
 
 local function activate(
@@ -266,8 +310,9 @@ local function activate(
   grant: { string }?,
   search: Search?
 ): Plan
+  local image = imageAt(search and search.image)
   local plan, selected =
-    package.resolve(openAll(locations), request(layers, hostModules, search, grant))
+    package.resolve(openAll(locations, image), request(layers, hostModules, search, grant, image))
   local mounted: { Mounted } = {}
 
   for index, opened in selected do
@@ -337,6 +382,26 @@ local function workspaceSync(
   )
 end
 
+--- Freezes the workspace at `start` into the packed workspace at `output`.
+local function workspacePack(
+  start: string,
+  explicit: boolean,
+  output: string,
+  hostModules: { string }
+): { [string]: unknown }
+  return workspaces.pack(located(start, explicit), output, hostModules)
+end
+
+--- The packed workspace `ref` names, as a workspace's plain data.
+local function imageWorkspace(ref: ImageRef): { [string]: unknown }
+  return workspaces.describeImage(imageAt(ref) :: Image)
+end
+
+--- The exported target of the packed workspace `ref` names that `name` picks, or its default.
+local function imageTarget(ref: ImageRef, name: string?): { [string]: unknown }
+  return workspaces.imageTarget(imageAt(ref) :: Image, name)
+end
+
 return table.freeze {
   inspect = inspect,
   pack = function(source: string, output: string, version: string?): { [string]: unknown }
@@ -348,4 +413,7 @@ return table.freeze {
   workspaceTarget = workspaceTarget,
   workspaceTests = workspaceTests,
   workspaceSync = workspaceSync,
+  workspacePack = workspacePack,
+  imageWorkspace = imageWorkspace,
+  imageTarget = imageTarget,
 }

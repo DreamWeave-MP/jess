@@ -25,6 +25,7 @@ pub mod check;
 mod convert;
 pub mod document;
 mod files;
+pub mod image;
 pub mod init;
 mod input;
 #[expect(

@@ -661,12 +661,15 @@ pub struct Search {
     /// Content digests by package id: a package with one of these ids, handed over outright or a
     /// candidate, is refused unless it has that digest.
     pub pins: BTreeMap<String, String>,
+    /// A packed workspace to resolve within: every location is one of its packages, all of them
+    /// are candidates, each pinned as its index pins it, and nothing outside it is read.
+    pub image: Option<crate::lua::image::Image>,
 }
 
 impl Search {
     /// This search as the table the bootstrap reads.
     fn table(&self, scope: &impl Scope) -> l3i::Result<Table> {
-        let table = Table::new(scope, 0, 5)?;
+        let table = Table::new(scope, 0, 6)?;
         for (key, items) in [
             ("paths", &self.paths),
             ("candidates", &self.candidates),
@@ -680,6 +683,9 @@ impl Search {
             pins.set(scope, id.as_str(), digest.as_str())?;
         }
         table.set(scope, "pins", &pins)?;
+        if let Some(image) = &self.image {
+            table.set(scope, "image", &image.table(scope)?)?;
+        }
         Ok(table)
     }
 }
@@ -727,9 +733,10 @@ pub(crate) fn bootstrap<T: serde::de::DeserializeOwned + Serialize>(
     // workspaces.
     let packages = crate::lua::stdlib::host_packages(runtime)?;
     let workspaces = crate::lua::stdlib::host_workspaces(runtime)?;
+    let images = crate::lua::stdlib::host_images(runtime)?;
     let stack = runtime.stack();
     let chunk = jess.load(&stack, BOOTSTRAP_CHUNK, BOOTSTRAP.as_bytes())?;
-    let entries: Table = chunk.invoke(&stack, (&packages, &workspaces))?;
+    let entries: Table = chunk.invoke(&stack, (&packages, &workspaces, &images))?;
     let function: Function = entries.get(&stack, entry)?;
     function
         .invoke_with(&stack, args, |frame, value| {
@@ -772,6 +779,15 @@ pub(crate) fn host_modules(runtime: &Runtime) -> l3i::Result<Vec<String>> {
 ///
 /// Returns an error if it can't be read or its manifest or payload is invalid.
 pub fn inspect(runtime: &Runtime, location: &str) -> l3i::Result<Inspection> {
+    inspect_with(runtime, location, None)
+}
+
+/// [`inspect`], with `location` one of the packages in `image` when there is one.
+///
+/// # Errors
+///
+/// As [`inspect`], and if the packed workspace doesn't open or doesn't hold `location`.
+pub fn inspect_with(runtime: &Runtime, location: &str, image: Option<&crate::lua::image::Image>) -> l3i::Result<Inspection> {
     let shape = serde_json::json!({
         "id": "", "version": "", "digest": "", "kind": "", "location": "", "jessApi": "", "files": 0,
         "defaultTarget": null,
@@ -784,7 +800,8 @@ pub fn inspect(runtime: &Runtime, location: &str) -> l3i::Result<Inspection> {
         "capabilities": [{ "capability": "", "layer": "", "entrypoint": "" }],
         "tests": [""],
     });
-    bootstrap(runtime, "inspect", &shape, (location,))
+    let image = image.map(|image| image.table(&runtime.stack())).transpose()?;
+    bootstrap(runtime, "inspect", &shape, (location, image))
 }
 
 /// Packs the Package Source at `source` into the canonical JPK at `output`.
@@ -1206,6 +1223,9 @@ pub struct TargetRequest {
     pub grant: Option<Vec<String>>,
     /// The target's arguments, which its entry gets as `...` and in the global `arg` table.
     pub args: Vec<String>,
+    /// A packed workspace `package` is one of the packages of, and the whole of what it resolves
+    /// over: `packages`, `paths`, and `candidates` are then empty.
+    pub image: Option<crate::lua::image::Image>,
 }
 
 /// A target that ran: its runtime, which owns whatever it returned, and those values.
@@ -1315,7 +1335,11 @@ pub struct LaunchOptions {
 ///
 /// As [`launch`].
 pub fn launch_with(options: &crate::lua::Options, request: &TargetRequest, launch: LaunchOptions) -> l3i::Result<Launched> {
-    let inspection = inspect(&crate::lua::runtime(options.clone())?, &request.package)?;
+    let inspection = inspect_with(
+        &crate::lua::runtime(options.clone())?,
+        &request.package,
+        request.image.as_ref(),
+    )?;
     let target = target(&inspection, request.target.as_deref())?;
     check_grant(&inspection, target, request.grant.as_deref())?;
     if target.kind == "application" {
@@ -1337,7 +1361,11 @@ pub fn launch_with(options: &crate::lua::Options, request: &TargetRequest, launc
 /// Returns an error if the package or target can't be read, the target is an application target
 /// (which [`launch`] runs), a capability is denied, the plan doesn't resolve, or the entry fails.
 pub fn run_target(options: &crate::lua::Options, request: &TargetRequest) -> l3i::Result<TargetRun> {
-    let inspection = inspect(&crate::lua::runtime(options.clone())?, &request.package)?;
+    let inspection = inspect_with(
+        &crate::lua::runtime(options.clone())?,
+        &request.package,
+        request.image.as_ref(),
+    )?;
     let target = target(&inspection, request.target.as_deref())?;
     if target.kind != "command" {
         return Err(error(format!(
@@ -1366,6 +1394,7 @@ fn run_command(
         pins: request.pins.clone(),
         roots: vec![package.clone()],
         dev: Vec::new(),
+        image: request.image.clone(),
     };
     // The runtime holds what the target declares, so its entrypoints are admitted against exactly
     // that, whatever the request granted beyond it.

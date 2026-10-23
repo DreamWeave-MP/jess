@@ -51,6 +51,7 @@ type Manifest = {
   read devDependencies: { [string]: string },
   read targets: { [string]: Target },
   read tests: { string },
+  read layers: { { read id: string } },
 }
 
 type Offer = {
@@ -61,10 +62,17 @@ type Offer = {
   read location: string,
 }
 
-type Package = Offer & { read digest: string }
+type Package = Offer & {
+  read digest: string,
+  read files: { string },
+  read read: (path: string) -> buffer?,
+}
+
+type Plan = { read packages: { { read id: string } } }
 
 type PackageModule = {
   read open: (location: string) -> Package,
+  read resolve: (packages: { Package }, request: { [string]: unknown }) -> (Plan, { Package }),
   read peek: (location: string) -> Offer,
   read candidates: (folder: string) -> { Offer },
   read pack: (source: string, output: string) -> { read digest: string },
@@ -147,6 +155,44 @@ type HttpModule = {
 type JsonModule = { read decode: (text: string) -> unknown, read null: unknown }
 type BytesModule = { read sha256: (data: buffer | string) -> string }
 
+type Exported = { read package: string, read target: string }
+
+type Image = {
+  read label: string,
+  read index: {
+    read default: Exported?,
+    read targets: { Exported },
+    read packages: { { read id: string, read version: string, read digest: string } },
+  },
+  read offers: { Offer },
+  read pins: { [string]: string },
+}
+
+type JswModule = {
+  read pack: (
+    targets: { Exported },
+    default: Exported?,
+    packages: { Package },
+    label: string
+  ) -> buffer,
+}
+
+type Pin = { read id: string, read digest: string }
+
+--- What a package resolves over in a workspace: the other members and the packages the lock pins,
+--- by location, and the digests those are pinned to.
+type Universe = {
+  read package: string,
+  read location: string,
+  read candidates: { string },
+  read pins: { Pin },
+}
+
+--- What `jess workspace pack` freezes, as the workspace file's `[pack]` table says: the targets,
+--- named as `run` names them (every member's when it names none), and the one a packed workspace
+--- runs when it is run without a name.
+type Packing = { read targets: { string }?, read default: string? }
+
 --- What `jess.lock` pins, and whether that is what the members need: `fresh` when it is,
 --- `stale` when the members need something it doesn't pin, or something else, and `missing` when
 --- it is but `.jess/packages` lacks a package it pins. A workspace that needs nothing beyond its
@@ -171,6 +217,7 @@ export type Workspace = {
   read lock: Lock,
   --- Why a package that has a workspace above it isn't that workspace's member.
   read note: string?,
+  read packing: Packing,
 }
 
 local WorkspaceFile, ManifestFile, LockFile = 'jess-workspace.toml', 'jess.toml', 'jess.lock'
@@ -195,7 +242,7 @@ local ArchiveMediaType = 'application/vnd.jess.jpk'
 local MaxManifestBytes, MaxIndexBytes = 8 * 1024 * 1024, 64 * 1024 * 1024
 local FetchTimeoutMs, DownloadTimeoutMs = 30000, 300000
 
-local host: Host, package: PackageModule
+local host: Host, package: PackageModule, jsw: JswModule
 local httpModule: HttpModule?, jsonModule: JsonModule?, bytesModule: BytesModule?
 
 local function http(): HttpModule
@@ -284,15 +331,50 @@ local function tooling(document: { [string]: unknown }, where: string): { [strin
   return requirements
 end
 
---- The members the workspace file at `root` lists, in its order, and its `[dev-dependencies]`.
-local function listed(root: string): ({ string }, { [string]: string })
+--- The workspace file's `[pack]` table: target names, each as `run` reads one.
+local function packing(document: { [string]: unknown }, where: string): Packing
+  local section = document.pack
+
+  if section == nil then return table.freeze({} :: Packing) end
+
+  if type(section) ~= 'table' then fail(`{where}: [pack] is a table`) end
+
+  local fields = section :: { [string]: unknown }
+  checkKeys(fields, { 'targets', 'default' }, `{where} [pack]`)
+
+  local default = fields.default
+
+  if default ~= nil and (type(default) ~= 'string' or default == '') then
+    fail(`{where}: [pack] default is a target name`)
+  end
+
+  if fields.targets == nil then return table.freeze({ default = default :: string? } :: Packing) end
+
+  if type(fields.targets) ~= 'table' then fail(`{where}: [pack] targets is a list of target names`) end
+
+  local targets = {}
+
+  for _, name in fields.targets :: { unknown } do
+    if type(name) ~= 'string' or name == '' then
+      fail(`{where}: [pack] targets is a list of target names`)
+    end
+
+    table.insert(targets, name :: string)
+  end
+
+  return table.freeze { targets = table.freeze(targets), default = default :: string? }
+end
+
+--- The members the workspace file at `root` lists, in its order, its `[dev-dependencies]`, and
+--- its `[pack]`.
+local function listed(root: string): ({ string }, { [string]: string }, Packing)
   local where = `'{root}/{WorkspaceFile}'`
   local text = host.readFile(`{root}/{WorkspaceFile}`)
 
   if not text then fail(`{where} is not there`) end
 
   local document = readToml(`{root}/{WorkspaceFile}`, text :: buffer)
-  checkKeys(document, { 'manifest_version', 'workspace', 'dev-dependencies' }, where)
+  checkKeys(document, { 'manifest_version', 'workspace', 'dev-dependencies', 'pack' }, where)
 
   if document.manifest_version ~= 1 then fail(`{where}: manifest_version must be 1`) end
 
@@ -319,7 +401,7 @@ local function listed(root: string): ({ string }, { [string]: string })
 
   if #paths ~= count then fail(`{where}: [workspace] members must be a list of folders`) end
 
-  return paths, tooling(document, where)
+  return paths, tooling(document, where), packing(document, where)
 end
 
 --- Where member `path` of the workspace at `root` is, or nil when nothing is there.
@@ -622,7 +704,7 @@ local function declared(root: string): Workspace
   local folded, byLocation, byId =
     {} :: { [string]: string }, {} :: { [string]: string }, {} :: { [string]: string }
   local kind: 'package' | 'virtual' = 'virtual'
-  local paths, tools = listed(root)
+  local paths, tools, packed = listed(root)
 
   for _, path in paths do
     local lower = string.lower(path)
@@ -678,6 +760,7 @@ local function declared(root: string): Workspace
     devDependencies = table.freeze(tools),
     lock = lockState(root, members, tools),
     note = nil :: string?,
+    packing = packed,
   }
 end
 
@@ -692,6 +775,7 @@ local function implicit(folder: string, note: string?): Workspace
     devDependencies = table.freeze({} :: { [string]: string }),
     lock = lockState(folder, members, {}),
     note = note,
+    packing = table.freeze {} :: Packing,
   }
 end
 
@@ -775,6 +859,7 @@ local function verify(workspace: Workspace): Workspace
     devDependencies = workspace.devDependencies,
     lock = lockState(workspace.root, workspace.members, workspace.devDependencies, true),
     note = workspace.note,
+    packing = workspace.packing,
   }
 end
 
@@ -808,11 +893,11 @@ local function runnables(workspace: Workspace): { Runnable }
   return all
 end
 
---- Every runnable's targets, `<package id>:<target id>`, for messages.
-local function qualified(workspace: Workspace): string
+--- Every target of `candidates`, `<package id>:<target id>`, for messages.
+local function qualified(candidates: { Runnable }): string
   local names = {}
 
-  for _, found in runnables(workspace) do
+  for _, found in candidates do
     for id in found.manifest.targets do
       table.insert(names, `{found.manifest.id}:{id}`)
     end
@@ -837,33 +922,17 @@ local function holding(workspace: Workspace, folder: string): Member?
   return found
 end
 
---- The package and target id `name` names, among the members and the packages the lock pins:
---- `<package id>:<target id>`; a target id or a command name no other target in the workspace
---- has; or a package id, for its default target. Without a name, the default target of the member
---- holding `cwd`. A tool a workspace depends on runs this way, with the workspace to resolve
---- over, and nothing in the workspace has to wrap it.
-local function choose(workspace: Workspace, name: string?, cwd: string): (Runnable, string)
-  local available = `the workspace has: {qualified(workspace)}`
-
-  if not name then
-    local found = holding(workspace, host.canonical(cwd) or cwd)
-
-    if not found then fail(`name a target to run; {available}`) end
-
-    local manifest = (found :: Member).manifest
-
-    if not manifest.defaultTarget then
-      fail(`{manifest.id} has no default_target; name a target to run; {available}`)
-    end
-
-    local member = found :: Member
-
-    return table.freeze { path = member.path, location = member.location, manifest = member.manifest, pinned = nil :: Locked? }, manifest.defaultTarget :: string
-  end
-
-  local text = name :: string
+--- The package and target id `text` names among `candidates`: `<package id>:<target id>`; a
+--- target id or a command name no other target among them has; or a package id, for its default
+--- target. Messages say the candidates are `place`'s, and each one a `holder`.
+local function named(
+  candidates: { Runnable },
+  text: string,
+  place: string,
+  holder: string
+): (Runnable, string)
+  local available = `{place} has: {qualified(candidates)}`
   local owner, wanted = string.match(text, '^([^:]+):(.+)$')
-  local candidates = runnables(workspace)
 
   if owner and wanted then
     for _, found in candidates do
@@ -876,7 +945,7 @@ local function choose(workspace: Workspace, name: string?, cwd: string): (Runnab
       return found, wanted
     end
 
-    fail(`no member or pinned package of the workspace is {owner}; {available}`)
+    fail(`no {holder} is {owner}; {available}`)
   end
 
   local matches: { { member: Runnable, target: string } } = {}
@@ -918,15 +987,41 @@ local function choose(workspace: Workspace, name: string?, cwd: string): (Runnab
     fail(`{undefaulted} has no default_target; {available}`)
   end
 
-  if #names == 0 then fail(`nothing in the workspace is named '{text}'; {available}`) end
+  if #names == 0 then fail(`nothing in {place} is named '{text}'; {available}`) end
 
   return matches[1].member, matches[1].target
+end
+
+--- The package and target id `name` names, among the members and the packages the lock pins, as
+--- `named` reads it. Without a name, the default target of the member holding `cwd`. A tool a
+--- workspace depends on runs this way, with the workspace to resolve over, and nothing in the
+--- workspace has to wrap it.
+local function choose(workspace: Workspace, name: string?, cwd: string): (Runnable, string)
+  local candidates = runnables(workspace)
+
+  if name then
+    return named(candidates, name, 'the workspace', 'member or pinned package of the workspace')
+  end
+
+  local available = `the workspace has: {qualified(candidates)}`
+  local found = holding(workspace, host.canonical(cwd) or cwd)
+
+  if not found then fail(`name a target to run; {available}`) end
+
+  local member = found :: Member
+  local manifest = member.manifest
+
+  if not manifest.defaultTarget then
+    fail(`{manifest.id} has no default_target; name a target to run; {available}`)
+  end
+
+  return table.freeze { path = member.path, location = member.location, manifest = manifest, pinned = nil :: Locked? }, manifest.defaultTarget :: string
 end
 
 --- What `chosen`'s dependencies resolve over, each opened only when needed: the other members, and
 --- the packages `jess.lock` pins, from `.jess/packages`, each held to its pinned digest. A lock
 --- that isn't what the members need is an error here, never something resolved around.
-local function universe(workspace: Workspace, chosen: Member): { [string]: unknown }
+local function universe(workspace: Workspace, chosen: Member): Universe
   local lock = workspace.lock
 
   if lock.state ~= 'fresh' then
@@ -942,7 +1037,7 @@ local function universe(workspace: Workspace, chosen: Member): { [string]: unkno
   end
 
   local candidates = [for found in workspace.members if found.location ~= chosen.location => found.location]
-  local pins = {}
+  local pins: { Pin } = {}
 
   for _, entry in lock.packages do
     local location = `{workspace.root}/{storeName(entry)}`
@@ -964,14 +1059,20 @@ end
 local function target(workspace: Workspace, name: string?, cwd: string): { [string]: unknown }
   local chosen, id = choose(workspace, name, cwd)
   local resolved = universe(workspace, chosen)
-  resolved.version, resolved.target = chosen.manifest.version, id
 
-  return resolved
+  return {
+    package = resolved.package,
+    version = chosen.manifest.version,
+    location = resolved.location,
+    target = id,
+    candidates = resolved.candidates,
+    pins = resolved.pins,
+  }
 end
 
 --- The members whose tests `names` picks, each by package id or path, or every member that has
 --- tests, each with the universe its tests resolve in.
-local function tests(workspace: Workspace, names: { string }): { { [string]: unknown } }
+local function tests(workspace: Workspace, names: { string }): { Universe }
   local picked = {}
 
   for _, name in names do
@@ -994,6 +1095,187 @@ local function tests(workspace: Workspace, names: { string }): { { [string]: unk
   return [
     for found in workspace.members if #found.manifest.tests > 0 => universe(workspace, found)
   ]
+end
+
+local function byTarget(left: Exported, right: Exported): boolean
+  if left.package ~= right.package then return left.package < right.package end
+
+  return left.target < right.target
+end
+
+--- The targets `pack` freezes, each with the runnable holding it: those `[pack] targets` names,
+--- or every member's. And the one a packed workspace runs without a name: `[pack] default`; else
+--- the root member's `default_target`; else the one target, when there is only one.
+local function exported(workspace: Workspace): ({ Exported }, Exported?, { [string]: Runnable })
+  local candidates = runnables(workspace)
+  local names = workspace.packing.targets or {}
+
+  if not workspace.packing.targets then
+    for _, found in workspace.members do
+      for id in found.manifest.targets do
+        table.insert(names, `{found.manifest.id}:{id}`)
+      end
+    end
+  end
+
+  local targets, owners, packed = {} :: { Exported }, {} :: { [string]: Runnable }, {} :: { [string]: boolean }
+
+  local function pick(name: string): Exported
+    local found, id = named(candidates, name, 'the workspace', 'member or pinned package of the workspace')
+    owners[found.manifest.id] = found
+
+    return table.freeze { package = found.manifest.id, target = id }
+  end
+
+  for _, name in names do
+    local picked = pick(name)
+    local full = `{picked.package}:{picked.target}`
+
+    if packed[full] then continue end
+
+    packed[full] = true
+    table.insert(targets, picked)
+  end
+
+  table.sort(targets, byTarget)
+
+  local root = [for found in workspace.members if found.path == '.' => found][1]
+  local default: Exported?
+
+  if workspace.packing.default then
+    default = pick(workspace.packing.default :: string)
+
+    local full = `{(default :: Exported).package}:{(default :: Exported).target}`
+
+    if not packed[full] then fail(`[pack] default is {full}, which the workspace doesn't pack`) end
+  elseif root and root.manifest.defaultTarget and packed[`{root.manifest.id}:{root.manifest.defaultTarget}`] then
+    default = table.freeze { package = root.manifest.id, target = root.manifest.defaultTarget :: string }
+  elseif #targets == 1 then
+    default = targets[1]
+  end
+
+  return targets, default, owners
+end
+
+--- Freezes `workspace` into the packed workspace at `output`: each target `exported` names,
+--- resolved as running it from the workspace resolves it (every layer of its package, over the
+--- workspace, held to the lock, its entrypoints admitted against what it declares, no module
+--- name `hostModules` holds exported), and every package those plans select. Never reaches past
+--- the workspace: a stale lock is an error, as it is for `run`.
+local function pack(workspace: Workspace, output: string, hostModules: { string }): { [string]: unknown }
+  local targets, default, owners = exported(workspace)
+
+  if #targets == 0 then fail(`{workspace.root} has no targets to pack`) end
+
+  local packages, held = {} :: { Package }, {} :: { [string]: Package }
+
+  for _, wanted in targets do
+    local found = owners[wanted.package]
+    local resolved = universe(workspace, found)
+    local root = package.open(found.location)
+    local pins = {}
+
+    for _, pin in resolved.pins do
+      pins[pin.id] = pin.digest
+    end
+
+    local _, selected = package.resolve({ root }, {
+      layers = [for layer in root.manifest.layers => layer.id],
+      hostModules = hostModules,
+      grant = found.manifest.targets[wanted.target].capabilities,
+      candidates = [for location in resolved.candidates => package.peek(location)],
+      roots = { root.id },
+      pins = pins,
+    })
+
+    for _, chosen in selected do
+      local same = held[chosen.id]
+
+      if same and same.digest ~= chosen.digest then
+        fail(`{chosen.id} resolved as two different packages: {same.location} and {chosen.location}`)
+      end
+
+      if same then continue end
+
+      held[chosen.id] = chosen
+      table.insert(packages, chosen)
+    end
+  end
+
+  table.sort(packages, function(left: Package, right: Package): boolean return left.id < right.id end)
+
+  local image = jsw.pack(targets, default, packages, output)
+  host.replace(output, image)
+
+  return {
+    path = output,
+    size = buffer.len(image),
+    sha256 = bytes().sha256(image),
+    default = if default then `{default.package}:{default.target}` else nil,
+    targets = [for wanted in targets => `{wanted.package}:{wanted.target}`],
+    packages = [
+      for chosen in packages => { id = chosen.id, version = chosen.version, digest = chosen.digest }
+    ],
+  }
+end
+
+--- The packages of `image` that hold a target it exports, as runnables holding only those
+--- targets, the image's default being the default target of the package that holds it.
+local function imageRunnables(image: Image): { Runnable }
+  local default, found = image.index.default, {} :: { Runnable }
+
+  for _, offer in image.offers do
+    local full, targets = offer.manifest, {} :: { [string]: Target }
+
+    for _, wanted in image.index.targets do
+      if wanted.package == offer.id then targets[wanted.target] = full.targets[wanted.target] end
+    end
+
+    if next(targets) == nil then continue end
+
+    local manifest: Manifest = table.freeze {
+      id = full.id,
+      version = full.version,
+      jessApi = full.jessApi,
+      defaultTarget = if default and default.package == offer.id then default.target else nil,
+      dependencies = full.dependencies,
+      devDependencies = full.devDependencies,
+      targets = table.freeze(targets),
+      tests = full.tests,
+      layers = full.layers,
+    }
+    local path = string.match(offer.location, '!/(.+)$') or offer.location
+    table.insert(
+      found,
+      table.freeze { path = path, location = offer.location, manifest = manifest, pinned = nil :: Locked? }
+    )
+  end
+
+  return found
+end
+
+--- The exported target of `image` that `name` picks, as `named` reads it, or the image's default
+--- without one. It resolves over the image alone, which the host hands resolution itself.
+local function imageTarget(image: Image, name: string?): { [string]: unknown }
+  local candidates = imageRunnables(image)
+  local place = `the packed workspace '{image.label}'`
+  local default = image.index.default
+
+  if not name and not default then
+    fail(`{place} has no default target; name one to run; it has: {qualified(candidates)}`)
+  end
+
+  local text = name or `{(default :: Exported).package}:{(default :: Exported).target}`
+  local found, id = named(candidates, text, place, `package of {place}`)
+
+  return {
+    package = found.manifest.id,
+    version = found.manifest.version,
+    location = found.location,
+    target = id,
+    candidates = {},
+    pins = {},
+  }
 end
 
 --- `packages` as `jess.lock`'s text: one canonical form, sorted, with nothing in it that differs
@@ -1967,35 +2249,56 @@ local function sortedRequirements(map: { [string]: string }): { Requirement }
   return list
 end
 
---- `workspace` as plain data, for the host to read: no manifests, no functions.
-local function describe(workspace: Workspace): { [string]: unknown }
-  local members = {}
+--- A member as plain data, for the host to read.
+local function described(found: Member): { [string]: unknown }
+  local manifest = found.manifest
+  local targets: { Target } = {}
 
-  for _, found in workspace.members do
-    local manifest = found.manifest
-    local targets: { Target } = {}
-
-    for _, target in manifest.targets do
-      table.insert(targets, target)
-    end
-
-    table.sort(
-      targets,
-      function(left: Target, right: Target): boolean return left.id < right.id end
-    )
-    table.insert(members, {
-      id = manifest.id,
-      version = manifest.version,
-      path = found.path,
-      location = found.location,
-      defaultTarget = manifest.defaultTarget,
-      targets = targets,
-      dependencies = sortedRequirements(manifest.dependencies),
-      devDependencies = sortedRequirements(manifest.devDependencies),
-      tests = manifest.tests,
-    })
+  for _, target in manifest.targets do
+    table.insert(targets, target)
   end
 
+  table.sort(targets, function(left: Target, right: Target): boolean return left.id < right.id end)
+
+  return {
+    id = manifest.id,
+    version = manifest.version,
+    path = found.path,
+    location = found.location,
+    defaultTarget = manifest.defaultTarget,
+    targets = targets,
+    dependencies = sortedRequirements(manifest.dependencies),
+    devDependencies = sortedRequirements(manifest.devDependencies),
+    tests = manifest.tests,
+  }
+end
+
+--- `image` as a workspace's plain data: its packages holding exported targets as the members,
+--- holding only those, and every package it holds as what its lock pins.
+local function describeImage(image: Image): { [string]: unknown }
+  local packages = [
+    for offer in image.offers => {
+      id = offer.id,
+      version = offer.version,
+      digest = image.pins[offer.id],
+      source = 'packed',
+      dependencies = sortedKeys(offer.manifest.dependencies),
+      location = offer.location,
+    }
+  ]
+
+  return {
+    root = image.label,
+    kind = 'packed',
+    members = [for found in imageRunnables(image) => described(found)],
+    devDependencies = {},
+    lock = { file = true, state = 'fresh', problems = {}, packages = packages },
+  }
+end
+
+--- `workspace` as plain data, for the host to read: no manifests, no functions.
+local function describe(workspace: Workspace): { [string]: unknown }
+  local members = [for found in workspace.members => described(found)]
   local lock = workspace.lock
   local packages = {}
 
@@ -2027,8 +2330,8 @@ local function describe(workspace: Workspace): { [string]: unknown }
   }
 end
 
-return function(dependencies: { host: Host, package: PackageModule })
-  host, package = dependencies.host, dependencies.package
+return function(dependencies: { host: Host, package: PackageModule, jsw: JswModule })
+  host, package, jsw = dependencies.host, dependencies.package, dependencies.jsw
 
   return {
     open = open,
@@ -2038,5 +2341,8 @@ return function(dependencies: { host: Host, package: PackageModule })
     target = target,
     tests = tests,
     sync = sync,
+    pack = pack,
+    describeImage = describeImage,
+    imageTarget = imageTarget,
   }
 end

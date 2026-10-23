@@ -101,7 +101,9 @@ struct ManArgs {
 
 fn main() -> ExitCode {
     restore_default_sigpipe();
-    let outcome = if let Some((script, args)) = script_to_run() {
+    let outcome = if let Some((image, args)) = image_to_run() {
+        image.and_then(|image| workspace::run_packed(image, None, args))
+    } else if let Some((script, args)) = script_to_run() {
         run::run_as_program(script, args)
     } else {
         let matches = command().get_matches();
@@ -115,6 +117,24 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The packed workspace `jess <app>.jsw [ARGS]...` names, and its arguments: a first argument
+/// ending in `.jsw`, which no command is called, is an application to run, its default target
+/// getting every argument after it.
+fn image_to_run() -> Option<(Result<jess::lua::image::Image, String>, Vec<String>)> {
+    let mut args = std::env::args_os().skip(1);
+    let first = args.next()?;
+    let path = std::path::Path::new(&first);
+    if !path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("jsw"))
+    {
+        return None;
+    }
+    let image = jess::lua::image::Image::open(path).map_err(|error| format!("failed to open '{}': {error}", path.display()));
+    let rest = args.map(|arg| arg.to_string_lossy().into_owned()).collect();
+    Some((image, rest))
 }
 
 /// The script `jess <script>.jsl [ARGS]...` names, and its arguments: a first argument ending in
