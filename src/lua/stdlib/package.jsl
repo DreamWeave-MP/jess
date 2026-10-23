@@ -126,6 +126,9 @@ export type Request = {
   --- Packages opened only when a layer or a dependency needs one. A package handed to `resolve`
   --- outright is the one chosen over a candidate with its id.
   candidates: { Offer }?,
+  --- Opens a selected candidate by its location: `open` when not given. A resolution whose
+  --- candidates aren't files or folders of their own names the one that opens them.
+  open: ((location: string) -> Package)?,
   --- Package ids selected whether or not a requested layer is theirs.
   roots: { string }?,
   --- Package ids whose `[dev-dependencies]` are selected with them.
@@ -1182,12 +1185,12 @@ end
 --- module name, nothing colliding with `request.hostModules`, and, when `request.grant` is given,
 --- every capability the resolved layers require inside it.
 ---
---- `request.candidates` are opened only when a layer or a dependency needs one, and never in
---- place of a package handed over outright; two candidates that could each fill the same need
---- are an error, not a choice. `request.roots` are selected with their dependencies whatever the
---- layers, and `request.dev` adds their `[dev-dependencies]`. A package whose id `request.pins`
---- names must have the digest it pins. The second result is the selected packages, opened, in
---- the plan's order.
+--- `request.candidates` are opened only when a layer or a dependency needs one, by `request.open`
+--- when it is given and `open` when it isn't, and never in place of a package handed over
+--- outright; two candidates that could each fill the same need are an error, not a choice.
+--- `request.roots` are selected with their dependencies whatever the layers, and `request.dev`
+--- adds their `[dev-dependencies]`. A package whose id `request.pins` names must have the digest
+--- it pins. The second result is the selected packages, opened, in the plan's order.
 local function resolve(packages: { Package }, request: Request): (Plan, { Package })
   local byId, layerProvider =
     {} :: { [string]: Package }, {} :: { [string]: { package: Package, layer: Layer } }
@@ -1269,7 +1272,7 @@ local function resolve(packages: { Package }, request: Request): (Plan, { Packag
       fail(`{need} has more than one candidate: {places(same)}; offer one of them outright`)
     end
 
-    local opened = open(chosen.location)
+    local opened = (request.open or open)(chosen.location)
 
     if opened.id ~= chosen.id or opened.version ~= chosen.version then
       fail(`'{chosen.location}' changed while it was being resolved; resolve again`)

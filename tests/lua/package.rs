@@ -1034,6 +1034,57 @@ fn a_package_path_offers_what_a_plan_needs() {
     assert!(missing.unwrap_err().to_string().contains("is not a folder"));
 }
 
+/// A resolution opens the candidates it selects with the request's `open` when it names one, and
+/// with `package.open` when it doesn't: whatever holds the candidates, the rules are the same.
+#[test]
+fn a_resolution_opens_its_candidates_with_the_opener_it_is_given() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("packages");
+    let top = temp.path().join("top");
+    library(&path.join("base"), "base", "", "return { name = 'base' }\n");
+    library(&path.join("unrelated"), "unrelated", "", "error('nothing asked for this')\n");
+    library(
+        &top,
+        "top",
+        "[dependencies]\n\"org.example.base\" = \"1\"\n",
+        "return { base = require('@base').name }\n",
+    );
+    let runtime = common::filesystem_runtime();
+    common::set_global(&runtime, "folder", text(&path).as_str());
+    common::set_global(&runtime, "top", text(&top).as_str());
+    common::set_global(&runtime, "base", format!("{}/base", text(&path)).as_str());
+    common::set_global(&runtime, "unrelated", format!("{}/unrelated", text(&path)).as_str());
+    common::run(
+        &runtime,
+        "local package = require '@jess/package'\n\
+         local opened = {}\n\
+         local plan = package.resolve({ package.open(top) }, {\n  \
+           layers = { 'example.top' },\n  \
+           candidates = package.candidates(folder),\n  \
+           open = function(location)\n    \
+             table.insert(opened, location)\n    \
+             return package.open(location)\n  \
+           end,\n\
+         })\n\
+         assert(#opened == 1 and opened[1] == base, table.concat(opened, ', '))\n\
+         assert(#plan.packages == 2 and plan.packages[1].location == base)",
+    );
+
+    // An opener that hands back another package than the one offered fails the resolution.
+    let problem = runtime
+        .exec(
+            "local package = require '@jess/package'\n\
+             package.resolve({ package.open(top) }, {\n  \
+               layers = { 'example.top' },\n  \
+               candidates = package.candidates(folder),\n  \
+               open = function() return package.open(unrelated) end,\n\
+             })",
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(problem.contains("changed while it was being resolved"), "{problem}");
+}
+
 /// `[dev-dependencies]` are a package's tests' needs: `package test` selects them, with the
 /// package's dependencies, over the packages and package paths it is given, from the source and
 /// from the JPK alike. Nothing else selects them.
