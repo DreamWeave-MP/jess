@@ -6,7 +6,7 @@ extra:
   kind: reference
 ---
 
-{{ api_signature(value="jess workspace [--workspace FOLDER | FILE] info | targets | graph [TARGET] | run [TARGET] [--capability NAME]... [--trusted] [-- ARGS...] | test [MEMBER]... | sync [ARTIFACT]... [--package-path FOLDER]... [--publisher URL]... [--index URL]... [--locked] [--offline] | pack --output FILE [--runtime JESS]") }}
+{{ api_signature(value="jess workspace [--workspace FOLDER | FILE] info | targets | graph [TARGET] | run [TARGET] [--capability NAME]... [--trusted] [-- ARGS...] | test [MEMBER]... | sync [ARTIFACT]... [--package-path FOLDER]... [--publisher URL]... [--index URL]... [--locked] [--offline] | pack --output FILE [--runtime JESS | --runtimes FOLDER]") }}
 
 A **workspace** is a set of [Package Sources](@/docs/scripting/packages.md) developed together: a tool and the library it uses, an application and its editor. It saves you assembling `--package` and `--package-path` by hand for every command, and it makes what the members depend on beyond each other the same on every machine. It is a development arrangement and nothing more. A package's identity, its digest, and what its modules may `require` are its own manifest's business, in a workspace or out of one.
 
@@ -332,6 +332,7 @@ A kept JPK that isn't the package pinned, even one with the right id and version
 | --- | --- |
 | `--output <FILE>` | Where to write the packed workspace. |
 | `--runtime <JESS>` | Write a [standalone executable](#standalone-executables) instead: this jess executable carrying the packed workspace. |
+| `--runtimes <FOLDER>` | Write the packed workspace, and beside it a standalone executable for every jess runtime in the folder: `jess-Windows-X64.exe` beside `app.jsw` writes `app-Windows-X64.exe`. Each runtime is a jess named `jess-<System>-<Arch>`, as the release archives name them; anything else in the folder is refused. |
 
 Freezes the workspace into a **packed workspace**, a `.jsw`: every target it exports, and every package those targets run, as JPKs, each pinned to its content digest. It resolves each target exactly as `run` would (every layer of its package, over the other members and the packages the lock pins, its entrypoints admitted against what it declares), and keeps what those plans select and nothing else. A member's tests, its dev-dependencies, and the tools the workspace file's `[dev-dependencies]` name stay behind, unless a target the workspace exports needs them.
 
@@ -427,7 +428,7 @@ HELLO, YOU! (hello)
 
 It runs its default target with every argument it's given, and claims none of them for itself. Named for a target's `command`, or run through a link by that name, it runs that target instead, so one payload can ship as several commands. It needs nothing installed: no jess, no compiler, no network. It doesn't change the folder it runs in or write beside itself, and it runs from wherever it's moved to. `jess workspace --workspace app info` reads what it carries. [`jess install`](@/docs/cli/install.md) writes one onto your PATH for each command a packed workspace exports.
 
-The runtime can be any jess executable, for any platform, whatever you're packing on: the release archive for another platform will do, so one machine builds every platform's executable without a compiler for any of them. What the executable carries is the packed workspace, byte for byte, so it reports the same SHA-256 as the `.jsw`. A runtime that already carries a packed workspace, or predates standalone executables, is refused.
+The runtime can be any jess executable, for any platform, whatever you're packing on: the release archive for another platform will do, so one machine builds every platform's executable without a compiler for any of them. What the executable carries is the packed workspace, byte for byte, so it reports the same SHA-256 as the `.jsw`. A runtime that already carries a packed workspace, or predates standalone executables, is refused. `--runtimes` does every platform in one run, from a folder of runtimes such as the [jess image](@/docs/contributing/releasing.md#the-jess-image)'s `/opt/jess/runtimes`, and reports each executable it wrote with its SHA-256.
 
 On Linux and Windows the packed workspace follows the runtime, which is unchanged. Sign a Windows executable afterwards, if you sign at all; Authenticode then covers the packed workspace along with the rest of the file. Bytes added after the signature are outside it, so a signed executable with anything after its signature is refused rather than read, and a runtime that's already signed is refused: sign once, last. `strip` drops what a Linux executable carries, leaving plain jess: strip the runtime before packing, never after.
 
