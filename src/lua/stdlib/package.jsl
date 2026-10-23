@@ -37,10 +37,14 @@ export type Archive = {
   read read: (entry: Entry | string) -> buffer,
 }
 
+--- Where a JPK's bytes come from: its size, and a read of `length` bytes at `offset`.
+export type Source = {
+  read size: number,
+  read read: (offset: number, length: number) -> buffer,
+}
+
 export type Jpk = {
-  read open: (
-    source: { read size: number, read read: (offset: number, length: number) -> buffer }
-  ) -> Archive,
+  read open: (source: Source) -> Archive,
   read write: (files: { { path: string, data: buffer } }) -> buffer,
   read checkPath: (path: string) -> string?,
 }
@@ -942,16 +946,24 @@ local function openSource(location: string, revisedManifest: buffer?): Package
   }
 end
 
-local function openJpk(location: string): Package
+--- The JPK file at `location`, as a source of its bytes.
+local function fileSource(location: string): Source
   local size = host.fileSize(location) or fail(`'{location}' is not there`)
-  local archive = container.open {
+
+  return {
     size = size,
     read = function(offset: number, length: number): buffer
       return host.readAt(location, offset, length)
     end,
   }
+end
 
-  if not archive.find(Manifest) then fail(`'{location}' has no {Manifest}`) end
+--- The JPK `source` holds, named `label` wherever a message or a plan names it. Every JPK is
+--- opened here, whatever holds its bytes.
+local function openArchive(label: string, source: Source): Package
+  local archive = container.open(source)
+
+  if not archive.find(Manifest) then fail(`'{label}' has no {Manifest}`) end
 
   local manifestBytes = archive.read(Manifest)
   local manifest = parseManifest(buffer.tostring(manifestBytes))
@@ -959,15 +971,15 @@ local function openJpk(location: string): Package
 
   for _, entry in archive.entries do
     if not inPayload(entry.path, manifest.include) then
-      fail(`'{location}': '{entry.path}' is outside the payload [package] include names`)
+      fail(`'{label}': '{entry.path}' is outside the payload [package] include names`)
     end
 
     table.insert(paths, entry.path)
   end
 
-  local files = canonicalFiles(manifest, paths, location)
+  local files = canonicalFiles(manifest, paths, label)
   local digest, read = seal(
-    location,
+    label,
     files,
     manifestBytes,
     function(path: string): buffer? return if archive.find(path) then archive.read(path) else nil end
@@ -979,7 +991,7 @@ local function openJpk(location: string): Package
     version = manifest.version,
     digest = digest,
     kind = 'jpk' :: 'jpk',
-    location = location,
+    location = label,
     files = table.freeze(files),
     read = read,
   }
@@ -1020,7 +1032,9 @@ end
 --- A package from a Package Source folder or a `.jpk` file. Reads; runs nothing.
 local function open(location: string): Package
   local place = trimmed(location)
-  local package = if host.isDir(place) then openSource(place) else openJpk(place)
+  local package = if host.isDir(place)
+    then openSource(place)
+    else openArchive(place, fileSource(place))
 
   if package.id == BuiltinPackage then checkBuiltin(package) end
 
@@ -1037,13 +1051,7 @@ local function peek(location: string): Offer
   if source then
     text = host.readFile(`{place}/{Manifest}`)
   else
-    local size = host.fileSize(place) or fail(`'{place}' is not there`)
-    local archive = container.open {
-      size = size,
-      read = function(offset: number, length: number): buffer
-        return host.readAt(place, offset, length)
-      end,
-    }
+    local archive = container.open(fileSource(place))
 
     if archive.find(Manifest) then text = archive.read(Manifest) end
   end
