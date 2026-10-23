@@ -131,8 +131,17 @@ fn a_workspace_installs_as_commands_that_run_by_name() {
     let changed = json(&install(&root, &["--list"]));
     assert_eq!(changed[0]["commands"][1]["state"], "changed");
 
-    // Nothing grows by installing it again over the changed file, so it needs no yes.
-    let repaired = json(&install(&root, &["--path", path]));
+    // A command that has changed since it was installed is someone's now: putting it back takes
+    // --force. Nothing grows, so it needs no yes.
+    let refused = install(&root, &["--path", path]);
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("has changed since it was installed"),
+        "{}",
+        stderr(&refused)
+    );
+    assert_eq!(fs::read(command(&root, "showcase")).unwrap(), b"something else");
+    let repaired = json(&install(&root, &["--path", path, "--force"]));
     assert_eq!(repaired["package"], "org.example.showcase");
     let showcased = std::process::Command::new(command(&root, "showcase")).output().unwrap();
     assert_eq!(stdout(&showcased), "hello, showcase\n", "{}", stderr(&showcased));
@@ -145,6 +154,111 @@ fn a_workspace_installs_as_commands_that_run_by_name() {
     let unknown = uninstall(&root, &["greet"]);
     assert!(!unknown.status.success());
     assert!(stderr(&unknown).contains("is called 'greet'"), "{}", stderr(&unknown));
+}
+
+/// A directory where a command goes is someone's: installing refuses it, `--force` or not, and
+/// everything in it is still there afterwards.
+#[test]
+fn a_directory_where_a_command_goes_is_never_replaced() {
+    let showcase = synced("install-directory");
+    let (workspace, root) = (showcase.workspace(), showcase.root.join("root"));
+    let path = workspace.to_str().unwrap();
+    let kept = command(&root, "greet").join("important/data.txt");
+    fs::create_dir_all(kept.parent().unwrap()).unwrap();
+    fs::write(&kept, "keep me").unwrap();
+
+    for force in [false, true] {
+        let mut args = vec!["--path", path, "--yes"];
+        if force {
+            args.push("--force");
+        }
+        let refused = install(&root, &args);
+        assert!(!refused.status.success());
+        assert!(
+            stderr(&refused).contains("never replaces or removes one"),
+            "{}",
+            stderr(&refused)
+        );
+        assert_eq!(fs::read_to_string(&kept).unwrap(), "keep me");
+        assert!(!command(&root, "showcase").exists(), "nothing was installed beside it");
+    }
+}
+
+/// Uninstalling removes only what the install wrote: a command that has changed since is left
+/// where it is, and the report says so.
+#[test]
+fn uninstalling_keeps_a_command_that_has_changed_since() {
+    let showcase = synced("install-uninstall-changed");
+    let (workspace, root) = (showcase.workspace(), showcase.root.join("root"));
+    json(&install(&root, &["--path", workspace.to_str().unwrap(), "--yes"]));
+    // Its commands are links to one file: replacing one is a new file, not writing into the shared one.
+    fs::remove_file(command(&root, "showcase")).unwrap();
+    fs::write(command(&root, "showcase"), b"mine now").unwrap();
+
+    let removed = json(&uninstall(&root, &["org.example.showcase"]));
+    assert_eq!(removed[0]["commands"], serde_json::json!(["greet"]));
+    assert!(
+        removed[0]["kept"][0]
+            .as_str()
+            .unwrap()
+            .contains("has changed since it was installed"),
+        "{removed}"
+    );
+    assert!(!command(&root, "greet").exists());
+    assert_eq!(fs::read(command(&root, "showcase")).unwrap(), b"mine now");
+    assert!(!root.join("installs/org.example.showcase").exists());
+}
+
+/// An install that fails partway changes nothing: here its folder can't be swapped in after its
+/// executables were put in place, so they are taken out again and the earlier install's put
+/// back, executables, record and all.
+#[cfg(unix)]
+#[test]
+fn an_install_that_fails_partway_puts_back_what_was_there() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let showcase = synced("install-rollback");
+    let (workspace, root) = (showcase.workspace(), showcase.root.join("root"));
+    let path = workspace.to_str().unwrap();
+    json(&install(&root, &["--path", path, "--yes"]));
+    let ledger = root.join("installs/org.example.showcase/install.toml");
+    let (before, executable) = (fs::read(&ledger).unwrap(), fs::read(command(&root, "showcase")).unwrap());
+
+    fs::write(
+        workspace.join("src/main.jsl"),
+        fs::read_to_string(workspace.join("src/main.jsl"))
+            .unwrap()
+            .replace("'showcase'", "'changed'"),
+    )
+    .unwrap();
+    let installs = root.join("installs");
+    fs::set_permissions(&installs, fs::Permissions::from_mode(0o555)).unwrap();
+    let failed = install(&root, &["--path", path, "--yes"]);
+    fs::set_permissions(&installs, fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert!(!failed.status.success());
+    assert!(
+        stderr(&failed).contains("everything before it was put back"),
+        "{}",
+        stderr(&failed)
+    );
+    assert_eq!(fs::read(&ledger).unwrap(), before);
+    assert_eq!(fs::read(command(&root, "showcase")).unwrap(), executable);
+    let ran = std::process::Command::new(command(&root, "showcase")).output().unwrap();
+    assert_eq!(stdout(&ran), "hello, showcase\n", "{}", stderr(&ran));
+    let listed = json(&install(&root, &["--list"]));
+    assert_eq!(listed[0]["commands"][0]["state"], "installed");
+    assert_eq!(listed[0]["commands"][1]["state"], "installed");
+    for leftovers in ["staging", "trash"] {
+        let folder = root.join(leftovers);
+        let count = fs::read_dir(&folder).map_or(0, Iterator::count);
+        assert_eq!(count, 0, "{leftovers} keeps nothing");
+    }
+
+    let upgraded = json(&install(&root, &["--path", path, "--yes"]));
+    assert_eq!(upgraded["package"], "org.example.showcase");
+    let ran = std::process::Command::new(command(&root, "showcase")).output().unwrap();
+    assert_eq!(stdout(&ran), "hello, changed\n", "{}", stderr(&ran));
 }
 
 /// A packed workspace installs as its bytes are, and so does the one a standalone executable

@@ -133,10 +133,18 @@ fn describe(prepared: &Prepared, root: &Path) {
         eprintln!("It replaces {} {}.", prepared.package, previous.version);
     }
     for take in &prepared.takes {
-        match &take.from {
-            Some(from) => eprintln!("It takes '{}' over from {from}.", take.name),
-            None => eprintln!("It replaces the file '{}', which no install owns.", take.name),
+        match (take.kind.as_str(), &take.from) {
+            ("changed", _) => eprintln!("It replaces '{}', which has changed since it was installed.", take.name),
+            (_, Some(from)) => eprintln!("It takes '{}' over from {from}.", take.name),
+            (_, None) => eprintln!("It replaces the file '{}', which no install owns.", take.name),
         }
+    }
+}
+
+/// Says what was left where it is, and why.
+fn warn_kept(kept: &[String]) {
+    for why in kept {
+        eprintln!("warning: {why}, so it was left where it is");
     }
 }
 
@@ -228,6 +236,7 @@ pub fn run(args: &InstallArgs, format: Format) -> Result<u8, String> {
     }
     let installed = install::commit(&lua, &prepared).map_err(|error| error.to_string())?;
     output::print(&installed, format)?;
+    warn_kept(&installed.kept);
     let bin = root.join("bin");
     if !on_path(&bin) {
         eprintln!(
@@ -243,5 +252,8 @@ pub fn uninstall(args: &UninstallArgs, format: Format) -> Result<u8, String> {
     let lua = crate::run::lua_default()?;
     let removed = install::uninstall(&lua, &root, &args.names).map_err(|error| error.to_string())?;
     output::print(&removed, format)?;
+    for install in &removed {
+        warn_kept(&install.kept);
+    }
     Ok(0)
 }

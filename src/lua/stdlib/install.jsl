@@ -27,19 +27,27 @@ type Host = {
 }
 
 --- The file operations installing needs beyond reading and writing files. `standalone` writes
---- this jess carrying the packed workspace at `payload` to `output` and answers its SHA-256;
---- `link` makes `link` the same executable as `existing`; each replaces what was there by moving
---- it into `trash` first, which a running executable allows where overwriting it doesn't.
---- `retire` moves a file or folder into `trash`, `emptyTrash` removes what it can of what's
---- there, and `digest` is a file's SHA-256, or nil when there is no file.
+--- this jess carrying the packed workspace at `payload` to `output`, a new file, and answers its
+--- SHA-256; `link` makes `link`, a new file, the same executable as `existing`. `occupant` is what
+--- is at a path, a link not followed: `file`, `link`, `directory` or `other`, or nil for nothing;
+--- `digest` is a file's SHA-256, or nil when no file is there. `publish` takes every step of
+--- `steps` (JSON, a list of `Step`) or none: what is at each step's `to` is moved into `trash`,
+--- its `from` put there, and a step that fails undoes the ones before it; it never moves a
+--- directory at a `to` that isn't marked `folder`. `emptyTrash` removes what it can of `trash`.
 type Installing = {
-  read standalone: (payload: string, output: string, trash: string) -> string,
-  read link: (existing: string, link: string, trash: string) -> (),
-  read retire: (path: string, trash: string) -> (),
-  read rename: (from: string, to: string) -> (),
-  read emptyTrash: (trash: string) -> (),
+  read standalone: (payload: string, output: string) -> string,
+  read link: (existing: string, link: string) -> (),
+  read occupant: (path: string) -> string?,
   read digest: (path: string) -> string?,
+  read publish: (steps: string, trash: string) -> (),
+  read emptyTrash: (trash: string) -> (),
 }
+
+--- One step of `publish`: `from` put at `to`, or, without `from`, what is at `to` moved away.
+--- `folder` marks one of the install root's own folders, which may be a directory.
+type Step = { to: string, from: string?, folder: boolean? }
+
+type JsonModule = { read encodeTable: (value: unknown) -> string }
 
 type Target = {
   read id: string,
@@ -184,7 +192,7 @@ type Command = {
 }
 
 --- A command name an install takes over: from another install, or from a file none owns.
-type Take = { read name: string, read from: string? }
+type Take = { read name: string, read kind: 'install' | 'stray' | 'changed', read from: string? }
 
 --- An installed command as `list` reports it: `installed`, `missing`, or `changed` when what is
 --- there now isn't what was written.
@@ -199,7 +207,7 @@ type Listed = {
   read commands: { ListedCommand },
 }
 
-type Removed = { read package: string, read version: string, read commands: { string } }
+type Removed = { read package: string, read version: string, read commands: { string }, read kept: { string } }
 
 --- `install.toml`: what an install is and where it came from.
 type Ledger = {
@@ -230,12 +238,18 @@ local WorkspaceFile, Payload = 'jess-workspace.toml', 'app.jsw'
 
 local host: Host, installing: Installing, package: PackageModule, jsw: JswModule
 local workspaces: WorkspacesModule, publisher: PublisherModule
-local bytesModule: BytesModule?
+local bytesModule: BytesModule?, jsonModule: JsonModule?
 
 local function bytes(): BytesModule
   if not bytesModule then bytesModule = (require :: (string) -> BytesModule) '@dream/bytes' end
 
   return bytesModule :: BytesModule
+end
+
+local function json(): JsonModule
+  if not jsonModule then jsonModule = (require :: (string) -> JsonModule) '@jess/json' end
+
+  return jsonModule :: JsonModule
 end
 
 local function fail(message: string): never error(`install: {message}`, 0) end
@@ -343,6 +357,22 @@ local function folderOf(root: string, id: string): string return `{root}/install
 
 local function executable(root: string, name: string, suffix: string): string
   return `{binOf(root)}/{name}{suffix}`
+end
+
+--- Why what is at `path` isn't the executable `ledger`'s install wrote there, or nil when it is.
+--- Nothing at all is nil too: there is nothing of anyone's to keep.
+local function changed(path: string, ledger: Ledger): string?
+  local occupant = installing.occupant(path)
+
+  if not occupant then return nil end
+
+  if occupant == 'directory' or occupant == 'other' then return `'{path}' is a directory now` end
+
+  if occupant == 'link' then return `'{path}' is a link now` end
+
+  if installing.digest(path) ~= ledger.executableSha256 then return `'{path}' has changed since it was installed` end
+
+  return nil
 end
 
 --- Every install under `root`, by package id.
@@ -743,13 +773,24 @@ local function prepare(request: Request): { [string]: unknown }
   for _, command in commands do
     local owner = owned[command.name]
     local path = executable(request.root, command.name, request.suffix)
+    local occupant = installing.occupant(path)
+
+    -- Nothing takes a directory's place, `--force` or not: what is in it is someone's.
+    if occupant == 'directory' or occupant == 'other' then
+      fail(`'{path}' is a directory, and jess install never replaces or removes one: move it, or install with another --root`)
+    end
+
+    local mine = if previous and owner == id then changed(path, previous :: Ledger) else nil
 
     if owner and owner ~= id then
-      table.insert(takes, { name = command.name, from = owner })
+      table.insert(takes, { name = command.name, kind = 'install' :: 'install', from = owner })
       table.insert(refused, `'{command.name}' is {owner}'s`)
-    elseif not owner and host.fileSize(path) then
-      table.insert(takes, { name = command.name, from = nil })
+    elseif not owner and occupant then
+      table.insert(takes, { name = command.name, kind = 'stray' :: 'stray', from = nil })
       table.insert(refused, `'{path}' is there, and no install owns it`)
+    elseif mine then
+      table.insert(takes, { name = command.name, kind = 'changed' :: 'changed', from = id })
+      table.insert(refused, mine :: string)
     end
   end
 
@@ -798,10 +839,28 @@ local function prepare(request: Request): { [string]: unknown }
   }
 end
 
---- Puts the install staged at `staging` in place: its executables in `bin`, the commands it no
---- longer has and the ones it takes over from other installs moved out, and its folder under
---- `installs`.
-local function commit(root: string, staging: string, suffix: string): { [string]: unknown }
+--- `ledger`, holding only the commands `names` doesn't take away.
+local function without(ledger: Ledger, names: { [string]: boolean }): Ledger
+  return table.freeze {
+    package = ledger.package,
+    version = ledger.version,
+    source = ledger.source,
+    manifest = ledger.manifest,
+    artifactSha256 = ledger.artifactSha256,
+    jswSha256 = ledger.jswSha256,
+    runtime = ledger.runtime,
+    executableSha256 = ledger.executableSha256,
+    commands = table.freeze([for command in ledger.commands if not names[command.name] => command]),
+  }
+end
+
+--- Puts the install staged at `staging` in place. Everything is written to `outbox` first: its
+--- executables, and the records of the installs it takes command names from. Then one `publish`
+--- puts each of them in place, moves out the commands an earlier install of it had and this one
+--- doesn't, while each is still the executable that install wrote, and swaps its folder under
+--- `installs` for the staged one; or, when any of that fails, puts everything back as it was.
+--- What it replaced is removed only after all of it is done.
+local function commit(root: string, staging: string, outbox: string, suffix: string): { [string]: unknown }
   local ledger = readLedger(`{staging}/{LedgerFile}`)
 
   if not ledger then fail(`'{staging}' holds no staged install`) end
@@ -809,34 +868,31 @@ local function commit(root: string, staging: string, suffix: string): { [string]
   local staged = ledger :: Ledger
   local bin, trash = binOf(root), trashOf(root)
   host.createDir(bin)
-  host.createDir(trash)
+  host.createDir(`{root}/installs`)
+  host.createDir(`{outbox}/bin`)
+  host.createDir(`{outbox}/ledgers`)
 
   local ledgers = installed(root)
   local owned, previous = owners(ledgers), ledgers[staged.package]
+  local steps: { Step } = {}
+  local taken: { [string]: { [string]: boolean } } = {}
 
   for _, command in staged.commands do
     local owner = owned[command.name]
 
     if not owner or owner == staged.package then continue end
 
-    local other = ledgers[owner]
-    local kept = [for each in other.commands if each.name ~= command.name => each]
-    local revised: Ledger = table.freeze {
-      package = other.package,
-      version = other.version,
-      source = other.source,
-      manifest = other.manifest,
-      artifactSha256 = other.artifactSha256,
-      jswSha256 = other.jswSha256,
-      runtime = other.runtime,
-      executableSha256 = other.executableSha256,
-      commands = table.freeze(kept),
-    }
-    ledgers[owner] = revised
-    host.replace(`{folderOf(root, owner)}/{LedgerFile}`, buffer.fromstring(encode(revised)))
+    taken[owner] = taken[owner] or {}
+    taken[owner][command.name] = true
   end
 
-  local removed, keeping = {} :: { string }, {} :: { [string]: boolean }
+  for owner, names in taken do
+    local draft = `{outbox}/ledgers/{owner}.toml`
+    host.replace(draft, buffer.fromstring(encode(without(ledgers[owner], names))))
+    table.insert(steps, { from = draft, to = `{folderOf(root, owner)}/{LedgerFile}` })
+  end
+
+  local removed, kept, keeping = {} :: { string }, {} :: { string }, {} :: { [string]: boolean }
 
   for _, command in staged.commands do
     keeping[command.name] = true
@@ -844,27 +900,35 @@ local function commit(root: string, staging: string, suffix: string): { [string]
 
   if previous then
     for _, command in (previous :: Ledger).commands do
-      if keeping[command.name] then continue end
+      local path = executable(root, command.name, suffix)
 
-      installing.retire(executable(root, command.name, suffix), trash)
+      if keeping[command.name] or not installing.occupant(path) then continue end
+
+      local why = changed(path, previous :: Ledger)
+
+      if why then
+        table.insert(kept, why :: string)
+        continue
+      end
+
+      table.insert(steps, { to = path })
       table.insert(removed, command.name)
     end
   end
 
-  local first = executable(root, staged.commands[1].name, suffix)
-  local sha256 = installing.standalone(`{staging}/{Payload}`, first, trash)
-  local written = { { name = staged.commands[1].name, path = first } }
+  local first = `{outbox}/bin/{staged.commands[1].name}{suffix}`
+  local sha256 = installing.standalone(`{staging}/{Payload}`, first)
+  local written: { { name: string, path: string } } = {}
 
-  for index = 2, #staged.commands do
-    local path = executable(root, staged.commands[index].name, suffix)
-    installing.link(first, path, trash)
-    table.insert(written, { name = staged.commands[index].name, path = path })
+  for index, command in staged.commands do
+    local draft = `{outbox}/bin/{command.name}{suffix}`
+    local path = executable(root, command.name, suffix)
+
+    if index > 1 then installing.link(first, draft) end
+
+    table.insert(steps, { from = draft, to = path })
+    table.insert(written, { name = command.name, path = path })
   end
-
-  local folder = folderOf(root, staged.package)
-  host.createDir(`{root}/installs`)
-  installing.retire(folder, trash)
-  installing.rename(staging, folder)
 
   local final: Ledger = table.freeze {
     package = staged.package,
@@ -877,7 +941,9 @@ local function commit(root: string, staging: string, suffix: string): { [string]
     executableSha256 = sha256,
     commands = staged.commands,
   }
-  host.replace(`{folder}/{LedgerFile}`, buffer.fromstring(encode(final)))
+  host.replace(`{staging}/{LedgerFile}`, buffer.fromstring(encode(final)))
+  table.insert(steps, { from = staging, to = folderOf(root, staged.package), folder = true })
+  installing.publish(json().encodeTable(steps), trash)
   installing.emptyTrash(trash)
 
   return {
@@ -886,6 +952,7 @@ local function commit(root: string, staging: string, suffix: string): { [string]
     bin = bin,
     commands = written,
     removed = removed,
+    kept = kept,
   }
 end
 
@@ -908,8 +975,10 @@ local function list(root: string, suffix: string): { Listed }
 
     for _, command in ledger.commands do
       local path = executable(root, command.name, suffix)
-      local digest = installing.digest(path)
-      local state = if not digest then 'missing' elseif digest == ledger.executableSha256 then 'installed' else 'changed'
+      local state = if not installing.occupant(path)
+        then 'missing'
+        elseif changed(path, ledger) then 'changed'
+        else 'installed'
       table.insert(commands, { name = command.name, path = path, target = command.target, state = state })
     end
 
@@ -926,8 +995,9 @@ local function list(root: string, suffix: string): { Listed }
   return report
 end
 
---- Removes the installs `names` picks, each by package id or by one of its commands: their
---- executables and their folders.
+--- Removes the installs `names` picks, each by package id or by one of its commands: every
+--- executable of theirs still the one they wrote, and their folders, all of it or none. A command
+--- whose file has changed since, or that something else now stands in for, is left where it is.
 local function uninstall(root: string, names: { string }, suffix: string): { Removed }
   local ledgers = installed(root)
   local owned, picked, order = owners(ledgers), {} :: { [string]: boolean }, {} :: { string }
@@ -943,26 +1013,35 @@ local function uninstall(root: string, names: { string }, suffix: string): { Rem
     table.insert(order, id :: string)
   end
 
-  local trash = trashOf(root)
-  host.createDir(trash)
-
+  local steps: { Step } = {}
   local report: { Removed } = {}
 
   for _, id in order do
     local ledger = ledgers[id]
+    local commands, kept = {} :: { string }, {} :: { string }
 
     for _, command in ledger.commands do
-      installing.retire(executable(root, command.name, suffix), trash)
+      local path = executable(root, command.name, suffix)
+
+      if not installing.occupant(path) then continue end
+
+      local why = changed(path, ledger)
+
+      if why then
+        table.insert(kept, why :: string)
+        continue
+      end
+
+      table.insert(steps, { to = path })
+      table.insert(commands, command.name)
     end
 
-    installing.retire(folderOf(root, id), trash)
-    table.insert(report, {
-      package = id,
-      version = ledger.version,
-      commands = [for command in ledger.commands => command.name],
-    })
+    table.insert(steps, { to = folderOf(root, id), folder = true })
+    table.insert(report, { package = id, version = ledger.version, commands = commands, kept = kept })
   end
 
+  local trash = trashOf(root)
+  installing.publish(json().encodeTable(steps), trash)
   installing.emptyTrash(trash)
 
   return report
