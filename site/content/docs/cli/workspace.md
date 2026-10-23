@@ -409,7 +409,7 @@ $ jess showcase.jsw
 hello, showcase
 ```
 
-Every argument after the file is the target's. Run as a program, the target holds what it declares, the way `jess script.jsl` holds what a script needs: you chose to run it. It still holds nothing it doesn't declare, and `targets` says what that is before you run anything. `workspace run` keeps its explicit grants, for when you'd rather say yes capability by capability.
+Every argument after the file is the target's. Run as a program, the target holds what it declares, the way `jess script.jsl` holds what a script needs: you chose to run it. It still holds nothing it doesn't declare, and `targets` says what that is before you run anything. A declaration is a ceiling, not a character reference: running a packed workspace someone sent you is trusting them, as running any program they sent you is. `workspace run` keeps its explicit grants, for when you'd rather say yes capability by capability.
 
 A run resolves over the packed workspace and nothing else: no package path, no `.jess/packages`, no files beside it, no network. Every package is opened in place, inside the one file, and nothing is ever extracted. Each is held to the digest the packed workspace pins, so one whose bytes aren't the ones packed is refused, and so is anything the index doesn't list or lists but doesn't hold, before a line of package code runs. A packed workspace records the version of jess's built-in package it was packed against; a jess whose built-in package isn't compatible says so and runs nothing.
 
@@ -425,7 +425,7 @@ $ cp app greet && ./greet you
 HELLO, YOU! (hello)
 ```
 
-It runs its default target with every argument it's given, and claims none of them for itself. Named for a target's `command`, it runs that target instead, so one payload can ship as several commands. It needs nothing installed: no jess, no compiler, no network. It doesn't change the folder it runs in or write beside itself, and it runs from wherever it's moved to. `jess workspace --workspace app info` reads what it carries.
+It runs its default target with every argument it's given, and claims none of them for itself. Named for a target's `command`, or run through a link by that name, it runs that target instead, so one payload can ship as several commands. It needs nothing installed: no jess, no compiler, no network. It doesn't change the folder it runs in or write beside itself, and it runs from wherever it's moved to. `jess workspace --workspace app info` reads what it carries.
 
 The runtime can be any jess executable, for any platform, whatever you're packing on: the release archive for another platform will do, so one machine builds every platform's executable without a compiler for any of them. What the executable carries is the packed workspace, byte for byte, so it reports the same SHA-256 as the `.jsw`. A runtime that already carries a packed workspace, or predates standalone executables, is refused.
 
