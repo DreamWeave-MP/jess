@@ -6,7 +6,7 @@ extra:
   kind: reference
 ---
 
-{{ api_signature(value="jess install PACKAGE [--version VERSION] [--publisher URL]... [--index URL]... [--offline] | FILE | --path WORKSPACE [--root DIR] [--force] [--yes] | --list [--root DIR]") }}
+{{ api_signature(value="jess install PACKAGE [--version VERSION] [--resolve] [--publisher URL]... [--index URL]... [--offline] | FILE | --path WORKSPACE [--root DIR] [--force] [--yes] | --list [--root DIR]") }}
 
 {{ api_signature(value="jess uninstall NAME... [--root DIR]") }}
 
@@ -16,7 +16,7 @@ extra:
 
 | You name | It installs |
 | --- | --- |
-| a package id, `org.example.tool` | The newest release its publisher offers that isn't a pre-release, or the one `--version` picks, with what it depends on, packed. |
+| a package id, `org.example.tool` | The newest release its publisher offers that isn't a pre-release, or the one `--version` picks: the publisher's own packed workspace when the release carries one, and otherwise the package with what it depends on, resolved and packed here. See [From a publisher](#from-a-publisher). |
 | a file, `app.jsw` | That packed workspace, as its bytes are. |
 | a file that is a standalone executable | The packed workspace it carries, now carried by this jess instead. |
 | `--path WORKSPACE` | The workspace that folder is in, packed as [`jess workspace pack`](@/docs/cli/workspace.md#jess-workspace-pack) packs it: its lock has to be fresh. |
@@ -26,6 +26,7 @@ A name that is a file is a file; anything else is a package id.
 | Option | Does |
 | --- | --- |
 | `--version <VERSION>` | For a package id: a whole version (`1.2.0`) is that version, and a [requirement](@/docs/api/package.md#package-satisfies) (`^1.2`) the newest release meeting it. A pre-release is installed only when named exactly. |
+| `--resolve` | For a package id: resolve it from its publisher's packages and pack it here, even when a release carries a packed workspace. |
 | `--publisher <URL>` | A publisher to take the package from (repeatable): a DreamWeave site's `dreamweave.json`, or one project manifest. |
 | `--index <URL>` | A package index that says who publishes an id (repeatable). Without one, AsHyAmS's; `JESS_REGISTRY_URL` names another. |
 | `--offline` | Ask no publisher, as `JESS_OFFLINE=1` does. A package id then has nowhere to come from. |
@@ -34,7 +35,7 @@ A name that is a file is a file; anything else is a package id.
 | `--yes` | Install without asking. Needed when there is no terminal to ask in. |
 | `--list` | List what is installed instead. |
 
-A package id resolves exactly as [`jess workspace sync`](@/docs/cli/workspace.md#publishers-and-indexes) resolves one: from the one publisher named or indexed, every download checked against the manifest's SHA-256 and then the content digest, in a runtime that runs no package code. It happens in a workspace of the install's own, which keeps the lock and the packages, and is then packed. Every target the package declares is installed.
+A package id is found exactly as [`jess workspace sync`](@/docs/cli/workspace.md#publishers-and-indexes) finds one: through the one publisher named or indexed, in a runtime that runs no package code.
 
 ## Installing
 
@@ -79,6 +80,8 @@ state: already installed
 
 ## From a publisher
 
+A DreamWeave site can publish a package's release as an application too: a packed workspace beside the package's JPK (protocol `schema_version` 4, an artifact of format `jsw`). That is what the publisher froze and tested, so it's what `jess install` takes:
+
 ```text
 $ jess install org.example.tool --publisher https://publisher.example/dreamweave.json
 org.example.tool 1.0.0 from https://publisher.example/dreamweave/projects/6f72672e-6578-416d-806c-652e746f6f6c.json installs into /home/you/.jess/bin:
@@ -95,7 +98,15 @@ $ hello world
 hello world from the tool
 ```
 
-Running it again resolves again, and installs the newer release if there is one.
+The download is checked against the manifest's SHA-256, every package inside against the digest the packed workspace pins, and then the packed workspace against what the manifest says of it: the same built-in package, default target, targets, commands, and packages, at the same versions and digests. Anything that doesn't add up is refused, and nothing is installed. Of the releases, it takes the newest one this jess can run: one packed for a newer jess's built-in package is skipped, with a note saying a newer jess would install it.
+
+When no release carries the package as an application, or with `--resolve`, it's resolved here instead, as `sync` resolves one: the package and what it depends on, each download checked against the manifest's SHA-256 and then the content digest, in a workspace of the install's own that keeps the lock and the packages, and then packed. Every target the package declares is installed.
+
+```text
+note: no release of org.example.tool carries it as an application; resolving it from its packages
+```
+
+Running `jess install` again installs the newer release if there is one. The same release of a publisher's packed workspace, into the same jess, is already installed, and isn't downloaded again; a resolved one is resolved again to find out.
 
 ## The install root
 
@@ -107,7 +118,7 @@ Running it again resolves again, and installs the newer release if there is one.
     app.jsw                     what the executables carry, byte for byte
 ```
 
-An install from a package id keeps its workspace there too: `jess-workspace.toml`, `jess.lock`, and `.jess/packages`. `install.toml` is written in one canonical form, like `jess.lock`:
+A resolved install keeps its workspace there too: `jess-workspace.toml`, `jess.lock`, and `.jess/packages`. `install.toml` is written in one canonical form, like `jess.lock`:
 
 ```toml
 # Written by `jess install`: what this install is, and where it came from.
@@ -127,7 +138,7 @@ kind = "command"
 capabilities = ["process.environment"]
 ```
 
-`source` is `resolved` (a package id, with its `manifest`), `file`, or `workspace`; `runtime` the version of the jess the executables carry. A command name belongs to one install. Another install that wants it, or a file in `bin` no install wrote, is refused until `--force` takes it over, and the install that had it no longer does.
+`source` is `publisher` (a package's own packed workspace, with its `manifest` and the `artifact_sha256` it listed), `resolved` (a package resolved here, with its `manifest`), `file`, or `workspace`; `runtime` the version of the jess the executables carry. A command name belongs to one install. Another install that wants it, or a file in `bin` no install wrote, is refused until `--force` takes it over, and the install that had it no longer does.
 
 Replacing an executable moves the old one aside first, so installing over a program that's running works on every platform, Windows included; what was moved aside is removed by a later install or uninstall, once nothing is running it.
 
