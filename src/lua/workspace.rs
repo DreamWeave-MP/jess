@@ -526,6 +526,76 @@ pub struct Packed {
     pub targets: Vec<String>,
     /// The packages it holds, by id.
     pub packages: Vec<PackedPackage>,
+    /// The standalone executables written beside it, one per runtime, by [`pack_for_runtimes`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub executables: Vec<PackedExecutable>,
+}
+
+/// A standalone executable [`pack_for_runtimes`] wrote: a runtime carrying the packed workspace.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PackedExecutable {
+    /// The runtime it was made from.
+    pub runtime: String,
+    /// The file written.
+    pub path: String,
+    /// Its size in bytes.
+    pub size: u64,
+    /// Its SHA-256.
+    pub sha256: String,
+}
+
+/// Packs the workspace `at` names as [`pack`] does, with an executable for every runtime.
+///
+/// Beside the packed workspace `output` it writes a standalone executable for every jess runtime
+/// in `runtimes`, each named for `output` with the runtime's name after `jess`
+/// (`jess-Windows-X64.exe` beside `app.jsw` writes `app-Windows-X64.exe`). One machine packs
+/// every platform it has a runtime for.
+///
+/// # Errors
+///
+/// As [`pack`], and if `runtimes` can't be listed, holds a file not named `jess-...`, holds no
+/// runtime, or one of them can't carry a packed workspace.
+pub fn pack_for_runtimes(runtime: &Runtime, at: &Locate, output: &Path, runtimes: &Path) -> l3i::Result<Packed> {
+    let failed = |what: &str, path: &Path, source: std::io::Error| {
+        crate::lua::error(format!("failed to {what} '{}': {source}", path.display()))
+    };
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(runtimes).map_err(|source| failed("list", runtimes, source))? {
+        let path = entry.map_err(|source| failed("list", runtimes, source))?.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let Some(rest) = name.strip_prefix("jess-") else {
+            return Err(crate::lua::error(format!(
+                "'{}' is not a runtime: runtimes are named jess-<System>-<Arch>, as jess's release archives name them",
+                path.display()
+            )));
+        };
+        found.push((path.clone(), rest.to_owned()));
+    }
+    found.sort();
+    if found.is_empty() {
+        return Err(crate::lua::error(format!("'{}' holds no runtime", runtimes.display())));
+    }
+    let mut packed = pack(runtime, at, output, None)?;
+    let payload = std::fs::read(output).map_err(|source| failed("read", output, source))?;
+    let stem = output.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+    for (path, rest) in found {
+        let jess = std::fs::read(&path).map_err(|source| failed("read", &path, source))?;
+        let bytes = crate::lua::image::standalone(&jess, &payload).map_err(|problem| {
+            crate::lua::error(format!("'{}' can't be a standalone runtime: {problem}", path.display()))
+        })?;
+        let written = output.with_file_name(format!("{stem}-{rest}"));
+        crate::lua::files::replace_executable(&written, &bytes).map_err(|source| failed("write", &written, source))?;
+        packed.executables.push(PackedExecutable {
+            runtime: path.display().to_string(),
+            path: written.display().to_string(),
+            size: bytes.len() as u64,
+            sha256: crate::lua::files::sha256(&bytes),
+        });
+    }
+    Ok(packed)
 }
 
 /// Freezes the workspace `at` names into a packed workspace at `output`.
@@ -578,17 +648,7 @@ pub fn pack(runtime: &Runtime, at: &Locate, output: &Path, standalone: Option<&P
     let mut packed: Packed = package::bootstrap(runtime, "workspacePack", &shape, args)?;
     let payload = std::fs::read(&scratch).map_err(|source| failed("read", &scratch, source))?;
     let bytes = crate::lua::image::standalone(&jess, &payload).map_err(unfit)?;
-    crate::lua::files::replace_file(output, &bytes).map_err(|source| failed("write", output, source))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(output)
-            .map_err(|source| failed("read", output, source))?
-            .permissions()
-            .mode();
-        std::fs::set_permissions(output, std::fs::Permissions::from_mode(mode | 0o111))
-            .map_err(|source| failed("make executable", output, source))?;
-    }
+    crate::lua::files::replace_executable(output, &bytes).map_err(|source| failed("write", output, source))?;
     packed.path = output.display().to_string();
     packed.size = bytes.len() as u64;
     Ok(packed)

@@ -222,6 +222,56 @@ fn a_standalone_executable_is_the_application_it_carries() {
     }
 }
 
+/// A folder of runtimes packs every platform at once: the packed workspace, and beside it one
+/// standalone executable per runtime, named for the output and the runtime, each carrying the
+/// same packed workspace. A file in the folder that isn't a runtime is refused.
+#[test]
+fn a_folder_of_runtimes_packs_every_platform() {
+    let showcase = synced("jsw-runtimes");
+    let workspace = showcase.workspace();
+    let runtimes = showcase.root.join("runtimes");
+    fs::create_dir_all(&runtimes).unwrap();
+    let suffix = std::env::consts::EXE_SUFFIX;
+    for name in ["jess-Here-X64", "jess-There-ARM64"] {
+        fs::copy(env!("CARGO_BIN_EXE_jess"), runtimes.join(format!("{name}{suffix}"))).unwrap();
+    }
+    let output = showcase.root.join("dist/showcase.jsw");
+    fs::create_dir_all(output.parent().unwrap()).unwrap();
+    let report = json(
+        &jess()
+            .current_dir(&workspace)
+            .args(["--format", "json", "workspace", "pack", "--output"])
+            .arg(&output)
+            .arg("--runtimes")
+            .arg(&runtimes)
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(
+        report["sha256"],
+        pack(&workspace, &showcase.root.join("again.jsw"), None)["sha256"]
+    );
+    let executables = report["executables"].as_array().unwrap();
+    assert_eq!(executables.len(), 2);
+    let here = output.with_file_name(format!("showcase-Here-X64{suffix}"));
+    assert!(output.with_file_name(format!("showcase-There-ARM64{suffix}")).is_file());
+    assert_eq!(executables[0]["path"].as_str().map(Path::new), Some(here.as_path()));
+    let ran = std::process::Command::new(&here).output().unwrap();
+    assert_eq!(stdout(&ran), "hello, showcase\n", "{}", stderr(&ran));
+
+    fs::write(runtimes.join("README"), "not a runtime").unwrap();
+    let refused = jess()
+        .current_dir(&workspace)
+        .args(["workspace", "pack", "--output"])
+        .arg(&output)
+        .arg("--runtimes")
+        .arg(&runtimes)
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("is not a runtime"), "{}", stderr(&refused));
+}
+
 /// `moved`, a standalone executable written from `runtime`, verifies as strictly as its runtime
 /// does, and still runs signed again with the hardened runtime and `allow-jit`.
 fn signs_on_macos(runtime: &Path, moved: &Path, elsewhere: &Path) {

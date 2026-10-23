@@ -234,6 +234,24 @@ const WORKSPACE: BuiltIn = BuiltIn {
     members: &[],
 };
 
+/// The host's reading of the `DreamWeave` protocol: where packages come from when nothing local
+/// will do. Not a module: nothing a script requires reaches it.
+const PUBLISHER: BuiltIn = BuiltIn {
+    path: "jess.publisher",
+    doc: "",
+    source: include_str!("stdlib/publisher.jsl"),
+    members: &[],
+};
+
+/// Installed applications, as `jess install` keeps them, built on the host's workspaces, packed
+/// workspaces, and publishers. Not a module: nothing a script requires reaches it.
+const INSTALL: BuiltIn = BuiltIn {
+    path: "jess.install",
+    doc: "",
+    source: include_str!("stdlib/install.jsl"),
+    members: &[],
+};
+
 /// Packed workspaces, as the host opens and writes them, built on the host's `@jess/package` and
 /// `@jess/jpk`. Not a module: nothing a script requires reaches it.
 const IMAGES: BuiltIn = BuiltIn {
@@ -440,6 +458,8 @@ impl Extension for StdlibExtension {
             module: RefCell::new(None),
             workspace: RefCell::new(None),
             images: RefCell::new(None),
+            publisher: RefCell::new(None),
+            installs: RefCell::new(None),
         });
         Ok(())
     }
@@ -456,13 +476,15 @@ fn package_dependencies(runtime: &Runtime, jpk: &Table, read: bool, write: bool)
     Ok(dependencies)
 }
 
-/// The host's own `@jess/package`, workspaces, and packed workspaces, each made when it is first
-/// needed.
+/// The host's own `@jess/package`, workspaces, packed workspaces, publishers, and installs, each
+/// made when it is first needed.
 struct HostPackages {
     jpk: Table,
     module: RefCell<Option<Table>>,
     workspace: RefCell<Option<Table>>,
     images: RefCell<Option<Table>>,
+    publisher: RefCell<Option<Table>>,
+    installs: RefCell<Option<Table>>,
 }
 
 /// `@jess/package` as the host uses it for its own package operations: the same module over file
@@ -506,11 +528,26 @@ pub(crate) fn host_images(runtime: &Runtime) -> l3i::Result<Table> {
     Ok(module)
 }
 
+/// The host's reading of the `DreamWeave` protocol (`stdlib/publisher.jsl`).
+pub(crate) fn host_publisher(runtime: &Runtime) -> l3i::Result<Table> {
+    let state = runtime
+        .state_of::<HostPackages>(EXTENSION_ID)
+        .ok_or_else(|| l3i::Error::logic("jess.stdlib isn't installed in this Luau runtime"))?;
+    if let Some(module) = state.publisher.borrow().clone() {
+        return Ok(module);
+    }
+    let module = exports(runtime, &PUBLISHER, ())?;
+    l3i::readonly::make_read_only(runtime, &module)?;
+    *state.publisher.borrow_mut() = Some(module.clone());
+    Ok(module)
+}
+
 /// The host's workspaces (`stdlib/workspace.jsl`), over the host's own `@jess/package`, packed
-/// workspaces, and file access.
+/// workspaces, publishers, and file access.
 pub(crate) fn host_workspaces(runtime: &Runtime) -> l3i::Result<Table> {
     let packages = host_packages(runtime)?;
     let images = host_images(runtime)?;
+    let publisher = host_publisher(runtime)?;
     let state = runtime
         .state_of::<HostPackages>(EXTENSION_ID)
         .ok_or_else(|| l3i::Error::logic("jess.stdlib isn't installed in this Luau runtime"))?;
@@ -520,15 +557,48 @@ pub(crate) fn host_workspaces(runtime: &Runtime) -> l3i::Result<Table> {
     let host = crate::lua::package::host_table(runtime, true, true)?;
     let dependencies = {
         let stack = runtime.stack();
-        let dependencies = Table::new(&stack, 0, 3)?;
+        let dependencies = Table::new(&stack, 0, 4)?;
         dependencies.set(&stack, "host", &host)?;
         dependencies.set(&stack, "package", &packages)?;
         dependencies.set(&stack, "jsw", &images)?;
+        dependencies.set(&stack, "publisher", &publisher)?;
         dependencies
     };
     let module = exports(runtime, &WORKSPACE, (&dependencies,))?;
     l3i::readonly::make_read_only(runtime, &module)?;
     *state.workspace.borrow_mut() = Some(module.clone());
+    Ok(module)
+}
+
+/// The host's installs (`stdlib/install.jsl`), over the host's own `@jess/package`, packed
+/// workspaces, workspaces, publishers, file access, and the file operations installing needs.
+pub(crate) fn host_installs(runtime: &Runtime) -> l3i::Result<Table> {
+    let packages = host_packages(runtime)?;
+    let images = host_images(runtime)?;
+    let workspaces = host_workspaces(runtime)?;
+    let publisher = host_publisher(runtime)?;
+    let state = runtime
+        .state_of::<HostPackages>(EXTENSION_ID)
+        .ok_or_else(|| l3i::Error::logic("jess.stdlib isn't installed in this Luau runtime"))?;
+    if let Some(module) = state.installs.borrow().clone() {
+        return Ok(module);
+    }
+    let host = crate::lua::package::host_table(runtime, true, true)?;
+    let installing = crate::lua::install::host_table(runtime)?;
+    let dependencies = {
+        let stack = runtime.stack();
+        let dependencies = Table::new(&stack, 0, 6)?;
+        dependencies.set(&stack, "host", &host)?;
+        dependencies.set(&stack, "install", &installing)?;
+        dependencies.set(&stack, "package", &packages)?;
+        dependencies.set(&stack, "jsw", &images)?;
+        dependencies.set(&stack, "workspaces", &workspaces)?;
+        dependencies.set(&stack, "publisher", &publisher)?;
+        dependencies
+    };
+    let module = exports(runtime, &INSTALL, (&dependencies,))?;
+    l3i::readonly::make_read_only(runtime, &module)?;
+    *state.installs.borrow_mut() = Some(module.clone());
     Ok(module)
 }
 

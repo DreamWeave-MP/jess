@@ -1,0 +1,1067 @@
+--!strict
+-- jess's installs: applications put on the PATH, the way `cargo install` puts programs there. An
+-- install is a packed workspace embedded in this jess, written as an executable for every command
+-- it exports into the install root's `bin`, and kept, with the record of where it came from, in a
+-- folder of its own under `installs`.
+--
+-- Every source ends as one packed workspace, `app.jsw`, staged before anything on the PATH
+-- changes: a `.jsw` or an executable carrying one, taken as its bytes are; a workspace, packed; or
+-- a package id, whose publisher's own packed workspace is taken when a release carries one (the
+-- set of packages the publisher froze and tested), and which is otherwise, or when asked to,
+-- resolved from its publisher in a workspace of the install's own and packed there. `prepare`
+-- stages it and says what installing it would do; `commit` does it. Between the two the host asks
+-- whoever runs it, so nothing is written to `bin` that they didn't agree to.
+--
+-- The host's alone: nothing a script requires reaches it.
+
+type Host = {
+  read readFile: (path: string) -> buffer?,
+  read readAt: (path: string, offset: number, length: number) -> buffer,
+  read fileSize: (path: string) -> number?,
+  read isDir: (path: string) -> boolean,
+  read listDir: (path: string) -> { { read name: string, read kind: string } },
+  read replace: (path: string, data: buffer) -> (),
+  read decodeToml: (text: string) -> { [string]: unknown },
+  read createDir: (path: string) -> (),
+  read builtin: () -> { [string]: string },
+}
+
+--- The file operations installing needs beyond reading and writing files. `standalone` writes
+--- this jess carrying the packed workspace at `payload` to `output`, a new file, and answers its
+--- SHA-256; `link` makes `link`, a new file, the same executable as `existing`. `occupant` is what
+--- is at a path, a link not followed: `file`, `link`, `directory` or `other`, or nil for nothing;
+--- `digest` is a file's SHA-256, or nil when no file is there. `publish` takes every step of
+--- `steps` (JSON, a list of `Step`) or none: what is at each step's `to` is moved into `trash`,
+--- its `from` put there, and a step that fails undoes the ones before it; it never moves a
+--- directory at a `to` that isn't marked `folder`. `emptyTrash` removes what it can of `trash`.
+type Installing = {
+  read standalone: (payload: string, output: string) -> string,
+  read link: (existing: string, link: string) -> (),
+  read occupant: (path: string) -> string?,
+  read digest: (path: string) -> string?,
+  read publish: (steps: string, trash: string) -> (),
+  read emptyTrash: (trash: string) -> (),
+}
+
+--- One step of `publish`: `from` put at `to`, or, without `from`, what is at `to` moved away.
+--- `folder` marks one of the install root's own folders, which may be a directory.
+type Step = { to: string, from: string?, folder: boolean? }
+
+type JsonModule = { read encodeTable: (value: unknown) -> string }
+
+type Target = {
+  read id: string,
+  read kind: string,
+  read capabilities: { string },
+  read command: string?,
+}
+
+type Manifest = {
+  read id: string,
+  read version: string,
+  read defaultTarget: string?,
+  read targets: { [string]: Target },
+}
+
+type Offer = { read id: string, read location: string, read manifest: Manifest }
+type Package = { read id: string, read version: string, read digest: string }
+
+type PackageModule = {
+  read peek: (location: string) -> Offer,
+  read manifest: (text: string) -> Manifest,
+  read satisfies: (version: string, requirement: string) -> boolean,
+  read requirement: (requirement: unknown, what: string) -> string,
+}
+
+type Exported = { read package: string, read target: string }
+
+--- What a packed workspace's `jsw.toml` says.
+type Index = {
+  read builtin: string,
+  read default: Exported?,
+  read targets: { Exported },
+  read packages: { { read id: string, read version: string, read digest: string } },
+}
+
+type Image = {
+  read index: Index,
+  read offers: { Offer },
+  read pins: { [string]: string },
+  read open: (location: string) -> Package,
+}
+
+type JswModule = { read open: (path: string, offset: number, length: number) -> Image }
+
+type Remote = { read offline: boolean, read indexes: { string }, read publishers: { string } }
+type Artifact = { read sha256: string }
+type Release = { read version: string }
+type RemoteOffer = { read listing: { read url: string }, read entry: Release }
+
+--- A release of a package as an application, as its publisher's manifest lists it.
+type Application = {
+  read version: string,
+  read builtin: string,
+  read default: string?,
+  read targets: { string },
+  read commands: { [string]: string },
+  read packages: { [string]: { read version: string, read contentDigest: string } },
+  read artifact: Artifact,
+}
+
+type ApplicationOffer = { read listing: { read id: string, read url: string }, read entry: Application }
+
+type PublisherModule = {
+  read session: (remote: Remote) -> {
+    read discover: (id: string, accept: (release: Release) -> boolean) -> RemoteOffer?,
+    read discoverApplication: (
+      id: string,
+      accept: (application: Application) -> boolean
+    ) -> ApplicationOffer?,
+  },
+  read download: (offer: ApplicationOffer) -> buffer,
+}
+
+--- A workspace as `describe` and `describeImage` hand it out: plain data.
+type Described = {
+  read members: {
+    {
+      read id: string,
+      read version: string,
+      read defaultTarget: string?,
+      read targets: { Target },
+    }
+  },
+  read lock: {
+    read packages: {
+      { read id: string, read version: string, read location: string, read manifest: string? }
+    },
+  },
+}
+
+type WorkspacesModule = {
+  read open: (folder: string) -> unknown,
+  read discover: (start: string) -> unknown,
+  read describe: (workspace: unknown) -> Described,
+  read describeImage: (image: Image) -> Described,
+  read sync: (
+    workspace: unknown,
+    artifacts: { string },
+    paths: { string },
+    locked: boolean,
+    remote: Remote
+  ) -> unknown,
+  read pack: (workspace: unknown, output: string, hostModules: { string }) -> unknown,
+}
+
+type BytesModule = { read sha256: (data: buffer | string) -> string }
+
+--- Where the packed workspace a file holds is: the whole of a `.jsw`, or an executable's payload.
+type ImageRef = { read path: string, read offset: number, read length: number }
+
+--- What the host asks to have installed, and how.
+export type Request = {
+  read root: string,
+  --- An empty folder of the root's to stage the install in.
+  read staging: string,
+  read source: 'package' | 'file' | 'workspace',
+  --- For `package`: its id, and the requirement a version must meet.
+  read name: string?,
+  read requirement: string?,
+  --- For `workspace`: a folder in it.
+  read path: string?,
+  --- For `file`: where its packed workspace is.
+  read image: ImageRef?,
+  --- For `package`: resolve it from its publisher's packages even when a release carries it as
+  --- an application.
+  read resolve: boolean,
+  read force: boolean,
+  read remote: Remote,
+  read hostModules: { string },
+  --- This jess's version: what the executables will carry.
+  read runtime: string,
+  --- What an executable's name ends with here: `.exe` on Windows.
+  read suffix: string,
+}
+
+--- A command an install writes: its name, the target it runs, and what that target declares.
+type Command = {
+  read name: string,
+  read target: string,
+  read kind: string,
+  read capabilities: { string },
+}
+
+--- A command name an install takes over: from another install, or from a file none owns.
+type Take = { read name: string, read kind: 'install' | 'stray' | 'changed', read from: string? }
+
+--- An installed command as `list` reports it: `installed`, `missing`, or `changed` when what is
+--- there now isn't what was written.
+type ListedCommand = { read name: string, read path: string, read target: string, read state: string }
+
+type Listed = {
+  read package: string,
+  read version: string,
+  read source: string,
+  read manifest: string?,
+  read runtime: string,
+  read commands: { ListedCommand },
+}
+
+type Removed = { read package: string, read version: string, read commands: { string }, read kept: { string } }
+
+--- `install.toml`: what an install is and where it came from.
+type Ledger = {
+  read package: string,
+  read version: string,
+  read source: string,
+  read manifest: string?,
+  --- For a `publisher` install: the SHA-256 of the archive its manifest listed.
+  read artifactSha256: string?,
+  read jswSha256: string,
+  read runtime: string,
+  read executableSha256: string?,
+  read commands: { Command },
+}
+
+--- One packed workspace as an install sees it: the package that names it, its version, the
+--- commands it would write, its index, and the command names its exported targets declare.
+type Examined = {
+  read id: string,
+  read version: string,
+  read commands: { Command },
+  read index: Index,
+  read declared: { [string]: string },
+}
+
+local LedgerFile, LedgerFormat, LedgerVersion = 'install.toml', 'jess-install', 1
+local WorkspaceFile, Payload = 'jess-workspace.toml', 'app.jsw'
+
+local host: Host, installing: Installing, package: PackageModule, jsw: JswModule
+local workspaces: WorkspacesModule, publisher: PublisherModule
+local bytesModule: BytesModule?, jsonModule: JsonModule?
+
+local function bytes(): BytesModule
+  if not bytesModule then bytesModule = (require :: (string) -> BytesModule) '@dream/bytes' end
+
+  return bytesModule :: BytesModule
+end
+
+local function json(): JsonModule
+  if not jsonModule then jsonModule = (require :: (string) -> JsonModule) '@jess/json' end
+
+  return jsonModule :: JsonModule
+end
+
+local function fail(message: string): never error(`install: {message}`, 0) end
+
+local function byName(left: Command, right: Command): boolean return left.name < right.name end
+
+--- A name a command may have on every filesystem: letters, digits, `.`, `_` and `-`, starting
+--- with a letter or digit.
+local function plainCommand(name: string): boolean
+  return string.find(name, '^[%w][%w%._%-]*$') ~= nil
+end
+
+local function quoted(list: { string }): string
+  return table.concat([for item in list => `"{item}"`], ', ')
+end
+
+--- `ledger` as `install.toml`'s text: one canonical form, sorted, with nothing in it that differs
+--- between machines.
+local function encode(ledger: Ledger): string
+  local commands = table.clone(ledger.commands)
+  table.sort(commands, byName)
+
+  local lines = {
+    '# Written by `jess install`: what this install is, and where it came from.',
+    `format = "{LedgerFormat}"`,
+    `format_version = {LedgerVersion}`,
+    `package = "{ledger.package}"`,
+    `version = "{ledger.version}"`,
+    `source = "{ledger.source}"`,
+  }
+
+  if ledger.manifest then table.insert(lines, `manifest = "{ledger.manifest}"`) end
+
+  if ledger.artifactSha256 then table.insert(lines, `artifact_sha256 = "{ledger.artifactSha256}"`) end
+
+  table.insert(lines, `jsw_sha256 = "{ledger.jswSha256}"`)
+  table.insert(lines, `runtime = "{ledger.runtime}"`)
+
+  if ledger.executableSha256 then table.insert(lines, `executable_sha256 = "{ledger.executableSha256}"`) end
+
+  for _, command in commands do
+    local capabilities = table.clone(command.capabilities)
+    table.sort(capabilities)
+    table.insert(lines, '')
+    table.insert(lines, '[[command]]')
+    table.insert(lines, `name = "{command.name}"`)
+    table.insert(lines, `target = "{command.target}"`)
+    table.insert(lines, `kind = "{command.kind}"`)
+    table.insert(lines, `capabilities = [{quoted(capabilities)}]`)
+  end
+
+  return `{table.concat(lines, '\n')}\n`
+end
+
+local function text(value: unknown, where: string): string
+  if type(value) ~= 'string' or value == '' then fail(`{where} must be a string`) end
+
+  return value :: string
+end
+
+--- The ledger at `path`, checked, or nil when there is none.
+local function readLedger(path: string): Ledger?
+  local data = host.readFile(path)
+
+  if not data then return nil end
+
+  local document = host.decodeToml(buffer.tostring(data :: buffer))
+
+  if document.format ~= LedgerFormat or document.format_version ~= LedgerVersion then
+    fail(`'{path}' is not a jess-install ledger of format_version {LedgerVersion}`)
+  end
+
+  local commands: { Command } = {}
+
+  for _, row in (document.command or {}) :: { { [string]: unknown } } do
+    local capabilities = [for capability in (row.capabilities or {}) :: { unknown } => text(capability, `{path} capability`)]
+    table.insert(commands, table.freeze {
+      name = text(row.name, `{path} [[command]] name`),
+      target = text(row.target, `{path} [[command]] target`),
+      kind = text(row.kind, `{path} [[command]] kind`),
+      capabilities = table.freeze(capabilities),
+    })
+  end
+
+  return table.freeze {
+    package = text(document.package, `{path} package`),
+    version = text(document.version, `{path} version`),
+    source = text(document.source, `{path} source`),
+    manifest = if document.manifest == nil then nil else text(document.manifest, `{path} manifest`),
+    artifactSha256 = if document.artifact_sha256 == nil
+      then nil
+      else text(document.artifact_sha256, `{path} artifact_sha256`),
+    jswSha256 = text(document.jsw_sha256, `{path} jsw_sha256`),
+    runtime = text(document.runtime, `{path} runtime`),
+    executableSha256 = if document.executable_sha256 == nil
+      then nil
+      else text(document.executable_sha256, `{path} executable_sha256`),
+    commands = table.freeze(commands),
+  }
+end
+
+local function binOf(root: string): string return `{root}/bin` end
+local function trashOf(root: string): string return `{root}/trash` end
+local function folderOf(root: string, id: string): string return `{root}/installs/{id}` end
+
+local function executable(root: string, name: string, suffix: string): string
+  return `{binOf(root)}/{name}{suffix}`
+end
+
+--- Why what is at `path` isn't the executable `ledger`'s install wrote there, or nil when it is.
+--- Nothing at all is nil too: there is nothing of anyone's to keep.
+local function changed(path: string, ledger: Ledger): string?
+  local occupant = installing.occupant(path)
+
+  if not occupant then return nil end
+
+  if occupant == 'directory' or occupant == 'other' then return `'{path}' is a directory now` end
+
+  if occupant == 'link' then return `'{path}' is a link now` end
+
+  if installing.digest(path) ~= ledger.executableSha256 then return `'{path}' has changed since it was installed` end
+
+  return nil
+end
+
+--- Every install under `root`, by package id.
+local function installed(root: string): { [string]: Ledger }
+  local folder, found = `{root}/installs`, {} :: { [string]: Ledger }
+
+  if not host.isDir(folder) then return found end
+
+  for _, entry in host.listDir(folder) do
+    if entry.kind ~= 'dir' then continue end
+
+    local ledger = readLedger(`{folder}/{entry.name}/{LedgerFile}`)
+
+    if ledger then found[(ledger :: Ledger).package] = ledger :: Ledger end
+  end
+
+  return found
+end
+
+--- Who owns each command name under `root`: command name to package id.
+local function owners(ledgers: { [string]: Ledger }): { [string]: string }
+  local owned: { [string]: string } = {}
+
+  for id, ledger in ledgers do
+    for _, command in ledger.commands do
+      owned[command.name] = id
+    end
+  end
+
+  return owned
+end
+
+--- The newest version of `id` its publisher offers that meets `requirement`, or, without one,
+--- the newest that isn't a pre-release, with the manifest listing it.
+local function newest(id: string, requirement: string?, remote: Remote): RemoteOffer
+  if remote.offline then fail(`installing {id} needs its publisher, and this install is offline`) end
+
+  local function accept(release: Release): boolean
+    if requirement then return package.satisfies(release.version, requirement) end
+
+    return not string.find(release.version, '-', 1, true)
+  end
+
+  local offer = publisher.session(remote).discover(id, accept)
+
+  if offer then return offer :: RemoteOffer end
+
+  local meeting = if requirement then ` meeting {requirement}` else ''
+  local reach = if #remote.indexes == 0 and #remote.publishers == 0
+    then 'there is no index or publisher to ask'
+    else 'no publisher named here, and no index, offers one'
+  return fail(`no release of {id}{meeting} to install: {reach}`)
+end
+
+--- The requirement `--version` states, if it states one. A whole version with no operator is that
+--- version, as cargo install's `--version` takes one.
+local function wanted(request: Request): string?
+  if not request.requirement then return nil end
+
+  local given = request.requirement :: string
+  local exact = if string.find(given, '^%d+%.%d+%.%d+') then `={given}` else given
+
+  return package.requirement(exact, '--version')
+end
+
+--- The version of jess's built-in package this jess carries: what a packed workspace's
+--- `builtin` has to admit.
+local function builtinVersion(): string
+  return package.manifest(host.builtin()['jess.toml']).version
+end
+
+--- The newest release of `id` as an application its publisher offers, that meets the request's
+--- `--version` (or isn't a pre-release, without one) and that this jess can run; nil when no
+--- release carries it as one. A newer one this jess can't run is a note, and so is being left
+--- with none.
+local function application(request: Request, id: string, notes: { string }): ApplicationOffer?
+  if request.remote.offline then fail(`installing {id} needs its publisher, and this install is offline`) end
+
+  local requirement, running = wanted(request), builtinVersion()
+
+  local function meets(release: Application): boolean
+    if requirement then return package.satisfies(release.version, requirement) end
+
+    return not string.find(release.version, '-', 1, true)
+  end
+
+  local session = publisher.session(request.remote)
+  local runnable = session.discoverApplication(
+    id,
+    function(release: Application): boolean return meets(release) and package.satisfies(running, release.builtin) end
+  )
+  local newestOne = session.discoverApplication(id, meets)
+
+  if not newestOne then return nil end
+
+  local newer = (newestOne :: ApplicationOffer).entry
+  local chosen = if runnable then (runnable :: ApplicationOffer).entry.version else nil
+
+  if chosen ~= newer.version then
+    table.insert(
+      notes,
+      `{id} {newer.version} was packed for jess's built-in package {newer.builtin}, and this jess carries {running}: a newer jess installs it`
+    )
+  end
+
+  if not runnable then
+    fail(`no release of {id} as an application runs on this jess; upgrade jess, or install with --resolve to build one from its packages`)
+  end
+
+  return runnable
+end
+
+--- The packed workspace `examined` is, held to what its publisher's manifest says of it: the same
+--- built-in package, default, targets, commands, and every package pinned to the same version
+--- and digest. A packed workspace that is something other than what the manifest describes is
+--- refused, whatever its archive's SHA-256.
+local function matches(examined: Examined, offer: ApplicationOffer)
+  local index, entry = examined.index, offer.entry
+  local where = `{offer.listing.id} {entry.version} from {offer.listing.url}`
+  local problems: { string } = {}
+
+  if index.builtin ~= entry.builtin then
+    table.insert(problems, `it was packed for built-in package {index.builtin}, and the manifest says {entry.builtin}`)
+  end
+
+  local default = if index.default then `{index.default.package}:{index.default.target}` else nil
+
+  if default ~= entry.default then
+    table.insert(problems, `its default target is {tostring(default)}, and the manifest says {tostring(entry.default)}`)
+  end
+
+  local targets = [for exported in index.targets => `{exported.package}:{exported.target}`]
+  local listed = table.clone(entry.targets)
+  table.sort(targets)
+  table.sort(listed)
+
+  if table.concat(targets, ' ') ~= table.concat(listed, ' ') then
+    table.insert(problems, `it exports {table.concat(targets, ', ')}, and the manifest says {table.concat(listed, ', ')}`)
+  end
+
+  local declared, stated = {} :: { string }, {} :: { string }
+
+  for name, target in examined.declared do
+    table.insert(declared, `{name}={target}`)
+  end
+
+  for name, target in entry.commands do
+    table.insert(stated, `{name}={target}`)
+  end
+
+  table.sort(declared)
+  table.sort(stated)
+
+  if table.concat(declared, ' ') ~= table.concat(stated, ' ') then
+    table.insert(problems, `its commands are {table.concat(declared, ', ')}, and the manifest says {table.concat(stated, ', ')}`)
+  end
+
+  local held: { [string]: boolean } = {}
+
+  for _, pinned in index.packages do
+    local claimed = entry.packages[pinned.id]
+    held[pinned.id] = true
+
+    if not claimed or claimed.version ~= pinned.version or claimed.contentDigest ~= pinned.digest then
+      table.insert(problems, `it holds {pinned.id} {pinned.version} ({pinned.digest}), which the manifest doesn't pin`)
+    end
+  end
+
+  for id in entry.packages do
+    if not held[id] then table.insert(problems, `the manifest pins {id}, which it doesn't hold`) end
+  end
+
+  if #problems > 0 then
+    fail(`{where}: the packed workspace is not what the manifest describes: {table.concat(problems, '; ')}; nothing was installed`)
+  end
+end
+
+--- Resolves `id` in a workspace of the install's own at `staging`, from its publisher, and packs
+--- every target it declares there. Answers the manifest it came from.
+local function resolved(request: Request, id: string, payload: string): string?
+  local offer = newest(id, wanted(request), request.remote)
+  local version = offer.entry.version
+  local file = `{request.staging}/{WorkspaceFile}`
+  local header = {
+    '# Written by `jess install`: the workspace this install was resolved and packed in.',
+    'manifest_version = 1',
+    '',
+    '[workspace]',
+    'members = []',
+    '',
+    '[dev-dependencies]',
+    `"{id}" = "={version}"`,
+  }
+  host.replace(file, buffer.fromstring(`{table.concat(header, '\n')}\n`))
+  workspaces.sync(workspaces.open(request.staging), {}, {}, false, request.remote)
+
+  local pinned = [for entry in workspaces.describe(workspaces.open(request.staging)).lock.packages if entry.id == id => entry][1]
+
+  if not pinned then fail(`{id} {version} was synced, but the install's workspace doesn't pin it`) end
+
+  local manifest = package.peek(pinned.location).manifest
+  local names: { string } = {}
+
+  for target in manifest.targets do
+    table.insert(names, `{id}:{target}`)
+  end
+
+  table.sort(names)
+
+  if #names == 0 then fail(`{id} {version} declares no targets: there is nothing to install`) end
+
+  local packing = { '', '[pack]', `targets = [{quoted(names)}]` }
+
+  if manifest.defaultTarget then table.insert(packing, `default = "{id}:{manifest.defaultTarget}"`) end
+
+  host.replace(file, buffer.fromstring(`{table.concat(header, '\n')}\n{table.concat(packing, '\n')}\n`))
+  workspaces.pack(workspaces.open(request.staging), payload, request.hostModules)
+
+  return pinned.manifest
+end
+
+--- What one packed workspace installs as: its package, version, and commands. Every package it
+--- holds is opened and held to the digest it pins before anything is decided about it.
+local function examine(payload: string): Examined
+  local size = host.fileSize(payload)
+
+  if not size then fail(`'{payload}' went away while it was being installed`) end
+
+  local image = jsw.open(payload, 0, size :: number)
+
+  for _, offer in image.offers do
+    local opened = image.open(offer.location)
+
+    if opened.digest ~= image.pins[offer.id] then
+      fail(`{offer.id} in the packed workspace is {opened.digest}, not the {image.pins[offer.id]} it pins`)
+    end
+  end
+
+  local described, default = workspaces.describeImage(image), image.index.default
+  local owner: string?
+
+  if default then
+    owner = default.package
+  elseif #described.members == 1 then
+    owner = described.members[1].id
+  else
+    fail('the packed workspace has no default target and exports more than one package\'s: jess install needs one package to name the install')
+  end
+
+  local version: string?
+  local commands: { Command } = {}
+  local named, declared = {} :: { [string]: string }, {} :: { [string]: string }
+
+  for _, member in described.members do
+    if member.id == owner then version = member.version end
+
+    for _, target in member.targets do
+      local full = `{member.id}:{target.id}`
+
+      if target.command then declared[target.command :: string] = full end
+
+      local isDefault = default ~= nil and default.package == member.id and default.target == target.id
+      local name = target.command or (if isDefault then target.id else nil)
+
+      if not name then continue end
+
+      local command = name :: string
+
+      if not plainCommand(command) then fail(`{full}'s command '{command}' can't be a file name everywhere`) end
+
+      if named[command] then fail(`{named[command]} and {full} are both the command '{command}'`) end
+
+      named[command] = full
+      table.insert(commands, table.freeze {
+        name = command,
+        target = full,
+        kind = target.kind,
+        capabilities = table.freeze(table.clone(target.capabilities)),
+      })
+    end
+  end
+
+  if #commands == 0 then
+    fail('the packed workspace exports no command and no default target: there is nothing to put on the PATH')
+  end
+
+  table.sort(commands, byName)
+
+  return table.freeze {
+    id = owner :: string,
+    version = version :: string,
+    commands = commands,
+    index = image.index,
+    declared = declared,
+  }
+end
+
+--- Whether installing `commands` over `previous` asks for anything `previous` wasn't granted: a
+--- command it didn't have, or a capability one of its commands didn't declare.
+local function grows(previous: Ledger?, commands: { Command }): boolean
+  if not previous then return true end
+
+  local before: { [string]: Command } = {}
+
+  for _, command in (previous :: Ledger).commands do
+    before[command.name] = command
+  end
+
+  for _, command in commands do
+    local earlier = before[command.name]
+
+    if not earlier then return true end
+
+    for _, capability in command.capabilities do
+      if not table.find(earlier.capabilities, capability) then return true end
+    end
+  end
+
+  return false
+end
+
+--- Stages what `request` names and says what installing it would do; changes nothing outside
+--- the staging folder.
+local function prepare(request: Request): { [string]: unknown }
+  local payload = `{request.staging}/{Payload}`
+  local ledgers = installed(request.root)
+  local manifest: string?, artifactSha256: string?
+  local offered: ApplicationOffer?
+  local source: string = request.source
+  local notes: { string } = {}
+
+  if request.source == 'package' and not request.resolve then
+    local id = request.name :: string
+    offered = application(request, id, notes)
+
+    if offered then
+      local offer = offered :: ApplicationOffer
+      local before = ledgers[id]
+
+      -- The same archive into the same jess, still where it was written, is what is installed.
+      local present: boolean = before ~= nil
+        and all[
+          for command in (before :: Ledger).commands => installing.digest(executable(request.root, command.name, request.suffix))
+            == (before :: Ledger).executableSha256
+        ]
+
+      if
+        before
+        and present
+        and not request.force
+        and before.artifactSha256 == offer.entry.artifact.sha256
+        and before.runtime == request.runtime
+      then
+        return {
+          package = id,
+          version = before.version,
+          source = before.source,
+          manifest = before.manifest,
+          commands = before.commands,
+          previous = { version = before.version, commands = before.commands },
+          unchanged = true,
+          consent = false,
+          takes = {},
+          notes = notes,
+        }
+      end
+
+      host.replace(payload, publisher.download(offer))
+      manifest, artifactSha256, source = offer.listing.url, offer.entry.artifact.sha256, 'publisher'
+    else
+      table.insert(notes, `no release of {id} carries it as an application; resolving it from its packages`)
+    end
+  end
+
+  if request.source == 'package' and not offered then
+    manifest, source = resolved(request, request.name :: string, payload), 'resolved'
+  elseif request.source == 'workspace' then
+    workspaces.pack(workspaces.discover(request.path :: string), payload, request.hostModules)
+  elseif request.source == 'file' then
+    local image = request.image :: ImageRef
+    host.replace(payload, host.readAt(image.path, image.offset, image.length))
+  end
+
+  local examined = examine(payload)
+
+  if offered then
+    matches(examined, offered :: ApplicationOffer)
+
+    if examined.id ~= request.name then
+      fail(`{request.name} from {manifest}: its packed workspace is named for {examined.id}`)
+    end
+  end
+
+  local id, version, commands = examined.id, examined.version, examined.commands
+  local owned, previous = owners(ledgers), ledgers[id]
+  local takes, refused = {} :: { Take }, {} :: { string }
+
+  for _, command in commands do
+    local owner = owned[command.name]
+    local path = executable(request.root, command.name, request.suffix)
+    local occupant = installing.occupant(path)
+
+    -- Nothing takes a directory's place, `--force` or not: what is in it is someone's.
+    if occupant == 'directory' or occupant == 'other' then
+      fail(`'{path}' is a directory, and jess install never replaces or removes one: move it, or install with another --root`)
+    end
+
+    local mine = if previous and owner == id then changed(path, previous :: Ledger) else nil
+
+    if owner and owner ~= id then
+      table.insert(takes, { name = command.name, kind = 'install' :: 'install', from = owner })
+      table.insert(refused, `'{command.name}' is {owner}'s`)
+    elseif not owner and occupant then
+      table.insert(takes, { name = command.name, kind = 'stray' :: 'stray', from = nil })
+      table.insert(refused, `'{path}' is there, and no install owns it`)
+    elseif mine then
+      table.insert(takes, { name = command.name, kind = 'changed' :: 'changed', from = id })
+      table.insert(refused, mine :: string)
+    end
+  end
+
+  if #refused > 0 and not request.force then
+    fail(`{id} has commands that are taken: {table.concat(refused, '; ')}; --force takes them over`)
+  end
+
+  local data = host.readFile(payload) :: buffer
+  local ledger: Ledger = {
+    package = id,
+    version = version,
+    source = source,
+    manifest = manifest,
+    artifactSha256 = artifactSha256,
+    jswSha256 = bytes().sha256(data),
+    runtime = request.runtime,
+    executableSha256 = nil,
+    commands = commands,
+  }
+  host.replace(`{request.staging}/{LedgerFile}`, buffer.fromstring(encode(ledger)))
+
+  local unchanged = false
+
+  if previous and not request.force then
+    local before = previous :: Ledger
+    local sameNames = table.concat([for command in before.commands => command.name], ' ')
+      == table.concat([for command in commands => command.name], ' ')
+    local present = all[
+      for command in commands => installing.digest(executable(request.root, command.name, request.suffix))
+        == before.executableSha256
+    ]
+    unchanged = before.jswSha256 == ledger.jswSha256 and before.runtime == request.runtime and sameNames and present
+  end
+
+  return {
+    package = id,
+    version = version,
+    source = ledger.source,
+    manifest = manifest,
+    commands = commands,
+    previous = if previous then { version = (previous :: Ledger).version, commands = (previous :: Ledger).commands } else nil,
+    unchanged = unchanged,
+    consent = grows(previous, commands),
+    takes = takes,
+    notes = notes,
+  }
+end
+
+--- `ledger`, holding only the commands `names` doesn't take away.
+local function without(ledger: Ledger, names: { [string]: boolean }): Ledger
+  return table.freeze {
+    package = ledger.package,
+    version = ledger.version,
+    source = ledger.source,
+    manifest = ledger.manifest,
+    artifactSha256 = ledger.artifactSha256,
+    jswSha256 = ledger.jswSha256,
+    runtime = ledger.runtime,
+    executableSha256 = ledger.executableSha256,
+    commands = table.freeze([for command in ledger.commands if not names[command.name] => command]),
+  }
+end
+
+--- Puts the install staged at `staging` in place. Everything is written to `outbox` first: its
+--- executables, and the records of the installs it takes command names from. Then one `publish`
+--- puts each of them in place, moves out the commands an earlier install of it had and this one
+--- doesn't, while each is still the executable that install wrote, and swaps its folder under
+--- `installs` for the staged one; or, when any of that fails, puts everything back as it was.
+--- What it replaced is removed only after all of it is done.
+local function commit(root: string, staging: string, outbox: string, suffix: string): { [string]: unknown }
+  local ledger = readLedger(`{staging}/{LedgerFile}`)
+
+  if not ledger then fail(`'{staging}' holds no staged install`) end
+
+  local staged = ledger :: Ledger
+  local bin, trash = binOf(root), trashOf(root)
+  host.createDir(bin)
+  host.createDir(`{root}/installs`)
+  host.createDir(`{outbox}/bin`)
+  host.createDir(`{outbox}/ledgers`)
+
+  local ledgers = installed(root)
+  local owned, previous = owners(ledgers), ledgers[staged.package]
+  local steps: { Step } = {}
+  local taken: { [string]: { [string]: boolean } } = {}
+
+  for _, command in staged.commands do
+    local owner = owned[command.name]
+
+    if not owner or owner == staged.package then continue end
+
+    taken[owner] = taken[owner] or {}
+    taken[owner][command.name] = true
+  end
+
+  for owner, names in taken do
+    local draft = `{outbox}/ledgers/{owner}.toml`
+    host.replace(draft, buffer.fromstring(encode(without(ledgers[owner], names))))
+    table.insert(steps, { from = draft, to = `{folderOf(root, owner)}/{LedgerFile}` })
+  end
+
+  local removed, kept, keeping = {} :: { string }, {} :: { string }, {} :: { [string]: boolean }
+
+  for _, command in staged.commands do
+    keeping[command.name] = true
+  end
+
+  if previous then
+    for _, command in (previous :: Ledger).commands do
+      local path = executable(root, command.name, suffix)
+
+      if keeping[command.name] or not installing.occupant(path) then continue end
+
+      local why = changed(path, previous :: Ledger)
+
+      if why then
+        table.insert(kept, why :: string)
+        continue
+      end
+
+      table.insert(steps, { to = path })
+      table.insert(removed, command.name)
+    end
+  end
+
+  local first = `{outbox}/bin/{staged.commands[1].name}{suffix}`
+  local sha256 = installing.standalone(`{staging}/{Payload}`, first)
+  local written: { { name: string, path: string } } = {}
+
+  for index, command in staged.commands do
+    local draft = `{outbox}/bin/{command.name}{suffix}`
+    local path = executable(root, command.name, suffix)
+
+    if index > 1 then installing.link(first, draft) end
+
+    table.insert(steps, { from = draft, to = path })
+    table.insert(written, { name = command.name, path = path })
+  end
+
+  local final: Ledger = table.freeze {
+    package = staged.package,
+    version = staged.version,
+    source = staged.source,
+    manifest = staged.manifest,
+    artifactSha256 = staged.artifactSha256,
+    jswSha256 = staged.jswSha256,
+    runtime = staged.runtime,
+    executableSha256 = sha256,
+    commands = staged.commands,
+  }
+  host.replace(`{staging}/{LedgerFile}`, buffer.fromstring(encode(final)))
+  table.insert(steps, { from = staging, to = folderOf(root, staged.package), folder = true })
+  installing.publish(json().encodeTable(steps), trash)
+  installing.emptyTrash(trash)
+
+  return {
+    package = staged.package,
+    version = staged.version,
+    bin = bin,
+    commands = written,
+    removed = removed,
+    kept = kept,
+  }
+end
+
+--- Every install under `root`, and whether each of its executables is still the one written.
+local function list(root: string, suffix: string): { Listed }
+  local ledgers = installed(root)
+  local ids: { string } = {}
+
+  for id in ledgers do
+    table.insert(ids, id)
+  end
+
+  table.sort(ids)
+
+  local report: { Listed } = {}
+
+  for _, id in ids do
+    local ledger = ledgers[id]
+    local commands: { ListedCommand } = {}
+
+    for _, command in ledger.commands do
+      local path = executable(root, command.name, suffix)
+      local state = if not installing.occupant(path)
+        then 'missing'
+        elseif changed(path, ledger) then 'changed'
+        else 'installed'
+      table.insert(commands, { name = command.name, path = path, target = command.target, state = state })
+    end
+
+    table.insert(report, {
+      package = ledger.package,
+      version = ledger.version,
+      source = ledger.source,
+      manifest = ledger.manifest,
+      runtime = ledger.runtime,
+      commands = commands,
+    })
+  end
+
+  return report
+end
+
+--- Removes the installs `names` picks, each by package id or by one of its commands: every
+--- executable of theirs still the one they wrote, and their folders, all of it or none. A command
+--- whose file has changed since, or that something else now stands in for, is left where it is.
+local function uninstall(root: string, names: { string }, suffix: string): { Removed }
+  local ledgers = installed(root)
+  local owned, picked, order = owners(ledgers), {} :: { [string]: boolean }, {} :: { string }
+
+  for _, name in names do
+    local id = if ledgers[name] then name else owned[name]
+
+    if not id then fail(`nothing installed under '{root}' is called '{name}'`) end
+
+    if picked[id :: string] then continue end
+
+    picked[id :: string] = true
+    table.insert(order, id :: string)
+  end
+
+  local steps: { Step } = {}
+  local report: { Removed } = {}
+
+  for _, id in order do
+    local ledger = ledgers[id]
+    local commands, kept = {} :: { string }, {} :: { string }
+
+    for _, command in ledger.commands do
+      local path = executable(root, command.name, suffix)
+
+      if not installing.occupant(path) then continue end
+
+      local why = changed(path, ledger)
+
+      if why then
+        table.insert(kept, why :: string)
+        continue
+      end
+
+      table.insert(steps, { to = path })
+      table.insert(commands, command.name)
+    end
+
+    table.insert(steps, { to = folderOf(root, id), folder = true })
+    table.insert(report, { package = id, version = ledger.version, commands = commands, kept = kept })
+  end
+
+  local trash = trashOf(root)
+  installing.publish(json().encodeTable(steps), trash)
+  installing.emptyTrash(trash)
+
+  return report
+end
+
+return function(dependencies: {
+  host: Host,
+  install: Installing,
+  package: PackageModule,
+  jsw: JswModule,
+  workspaces: WorkspacesModule,
+  publisher: PublisherModule,
+})
+  host, installing, package, jsw = dependencies.host, dependencies.install, dependencies.package, dependencies.jsw
+  workspaces, publisher = dependencies.workspaces, dependencies.publisher
+
+  return {
+    prepare = prepare,
+    commit = commit,
+    list = list,
+    uninstall = uninstall,
+  }
+end

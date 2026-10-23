@@ -1,0 +1,734 @@
+--!strict
+-- jess's reading of the DreamWeave protocol: where a Jess package comes from when nothing local
+-- will do. A publisher is a DreamWeave project whose releases are the package, as its manifest
+-- (protocol schema_version 3 or 4) lists them, found through an index such as AsHyAmS or named
+-- outright as a site or a manifest. The manifest is the authority, and an index only says who
+-- publishes an id: nothing in one is believed beyond who to ask. An archive is handed on only once
+-- its bytes are the ones the manifest describes.
+--
+-- A release may carry the package as a JPK, which `sync` pins, and since schema_version 4 as an
+-- application too, a packed workspace, which `install` installs.
+--
+-- The host's alone: nothing a script requires reaches it. It reads over the network and writes
+-- nothing; what to do with what it found is the caller's.
+
+--- Where to look beyond what is local: nowhere when `offline`; otherwise the publishers named
+--- outright, which are authorities, and the indexes, which only say who publishes an id.
+export type Remote = {
+  read offline: boolean,
+  read indexes: { string },
+  read publishers: { string },
+}
+
+--- The archive of one release as the manifest lists it: a `jpk` or a `jsw` artifact.
+export type ReleaseArtifact = {
+  read filename: string,
+  read size: number,
+  read sha256: string,
+  --- Download URLs, the publisher's own first.
+  read sources: { string },
+}
+
+export type Status = 'available' | 'yanked' | 'deprecated'
+
+--- One release of a package as the manifest of the project publishing it lists it: the release
+--- carries one `jpk` artifact, whose `jess` block says what package it is.
+export type Release = {
+  read version: string,
+  read jessApi: string,
+  read status: Status,
+  read contentDigest: string,
+  read dependencies: { [string]: string },
+  read artifact: ReleaseArtifact,
+}
+
+--- A package an application holds, exactly.
+export type Pinned = { read version: string, read contentDigest: string }
+
+--- One release of a package as an application: the release carries one `jsw` artifact, whose
+--- `jess_workspace` block says what it runs and holds, as the packed workspace's own `jsw.toml`
+--- must say too.
+export type Application = {
+  read version: string,
+  read status: Status,
+  --- The version of jess's built-in package it was packed against.
+  read builtin: string,
+  read default: string?,
+  read targets: { string },
+  read commands: { [string]: string },
+  read packages: { [string]: Pinned },
+  read artifact: ReleaseArtifact,
+}
+
+--- A DreamWeave project manifest that publishes a Jess package: its URL, the project's name, the
+--- package id, the releases that are the package as a JPK, and those that are it as an
+--- application, each newest first.
+export type Listing = {
+  read url: string,
+  read publisher: string,
+  read id: string,
+  read versions: { Release },
+  read applications: { Application },
+}
+
+--- A version of a package a manifest offers, before its archive is downloaded.
+export type RemoteOffer = { read listing: Listing, read entry: Release }
+
+--- A release of a package as an application a manifest offers, before it is downloaded.
+export type ApplicationOffer = { read listing: Listing, read entry: Application }
+
+--- What one sync or install asks of publishers: every manifest, site and index read at most once.
+export type Session = {
+  --- The project manifest at `url`.
+  read listing: (url: string) -> Listing,
+  --- The newest available release of `id` that `accept` takes, from the one publisher of `id`
+  --- named outright or, failing that, indexed; nothing when neither lists one. Two publishers of
+  --- `id` are an error, never a choice. A yanked or deprecated release is never chosen anew.
+  read discover: (id: string, accept: (release: Release) -> boolean) -> RemoteOffer?,
+  --- The same, among the releases that are `id` as an application.
+  read discoverApplication: (
+    id: string,
+    accept: (application: Application) -> boolean
+  ) -> ApplicationOffer?,
+}
+
+--- Anything with an archive to download: what it is of, and the archive.
+type Downloadable = {
+  read listing: { read id: string },
+  read entry: { read version: string, read artifact: ReleaseArtifact },
+}
+
+type HttpResponse = { read status: number, read body: buffer, read url: string }
+type HttpModule = {
+  read get: (
+    url: string,
+    options: { maxBytes: number?, timeoutMs: number? }?
+  ) -> (HttpResponse?, string?, string?),
+}
+type JsonModule = { read decode: (text: string) -> unknown, read null: unknown }
+type BytesModule = { read sha256: (data: buffer | string) -> string }
+
+--- The DreamWeave protocol versions whose manifests this jess reads; 4 added applications.
+local ProtocolVersions, ApplicationVersion = { '3', '4' }, '4'
+local IndexFormat, IndexFormatVersion = 'dreamweave-network-jess-packages', 1
+local ArchiveMediaType, ApplicationMediaType = 'application/vnd.jess.jpk', 'application/vnd.jess.jsw'
+local MaxManifestBytes, MaxIndexBytes = 8 * 1024 * 1024, 64 * 1024 * 1024
+local FetchTimeoutMs, DownloadTimeoutMs = 30000, 300000
+local PackagePattern = '^[%l%d][%l%d%.%-]*$'
+
+local httpModule: HttpModule?, jsonModule: JsonModule?, bytesModule: BytesModule?
+
+local function http(): HttpModule
+  if not httpModule then httpModule = (require :: (string) -> HttpModule) '@jess/http' end
+
+  return httpModule :: HttpModule
+end
+
+local function json(): JsonModule
+  if not jsonModule then jsonModule = (require :: (string) -> JsonModule) '@jess/json' end
+
+  return jsonModule :: JsonModule
+end
+
+local function bytes(): BytesModule
+  if not bytesModule then bytesModule = (require :: (string) -> BytesModule) '@dream/bytes' end
+
+  return bytesModule :: BytesModule
+end
+
+local function fail(message: string): never error(`publisher: {message}`, 0) end
+
+local function plainName(text: string, pattern: string): boolean
+  return string.find(text, pattern) ~= nil and not string.find(text, '..', 1, true)
+end
+
+--- Whether `text` is an exact version as @jess/package reads one: `major.minor.patch`, with the
+--- identifiers of a pre-release after a hyphen.
+local function isVersion(text: string): boolean
+  return string.find(text, '^%d+%.%d+%.%d+$') ~= nil or string.find(text, '^%d+%.%d+%.%d+%-[%w%-]+[%w%-%.]*$') ~= nil
+end
+
+local function isHex64(value: unknown): boolean
+  return type(value) == 'string' and #(value :: string) == 64 and string.find(value :: string, '^%x+$') ~= nil
+end
+
+local function isUrl(value: unknown): boolean
+  return type(value) == 'string' and string.find(value :: string, '^https?://[^/]') ~= nil
+end
+
+local function isTarget(value: unknown): boolean
+  return type(value) == 'string' and string.find(value :: string, '^[%l%d][%l%d%.%-]*:[%l%d][%l%d%._%-]*$') ~= nil
+end
+
+local function reads(version: unknown): boolean
+  return type(version) == 'string' and table.find(ProtocolVersions, version) ~= nil
+end
+
+--- `url` fetched and decoded as a JSON object, within `maxBytes`, or a failure that names it.
+local function fetchJson(url: string, what: string, maxBytes: number): { [string]: unknown }
+  if not isUrl(url) then fail(`{what} '{url}' is not an http(s) URL`) end
+
+  local response, message, kind = http().get(url, { maxBytes = maxBytes, timeoutMs = FetchTimeoutMs })
+
+  if not response then fail(`{what} {url} could not be read: {kind}: {message}`) end
+
+  local answer = response :: HttpResponse
+
+  if answer.status ~= 200 then fail(`{what} {url} answered HTTP {answer.status}`) end
+
+  -- The decoder throws on malformed JSON, with a position and no URL.
+  local ok, document = pcall(json().decode, buffer.tostring(answer.body))
+
+  if not ok then fail(`{what} {url} is not JSON: {document}`) end
+
+  if type(document) ~= 'table' then fail(`{what} {url} is not a JSON object`) end
+
+  return document :: { [string]: unknown }
+end
+
+--- The archive `artifact` describes, a `kind` of `mediaType`: its file name, size, SHA-256 and
+--- sources, the publisher's own first.
+local function archiveOf(
+  artifact: { [string]: unknown },
+  at: string,
+  kind: string,
+  mediaType: string
+): ReleaseArtifact
+  local filename, size, digests = artifact.filename, artifact.size, artifact.digests
+
+  if type(filename) ~= 'string' or string.find(filename, '[/\\]') then fail(`{at}: the artifact's filename must be a file name`) end
+
+  if artifact.media_type ~= mediaType then fail(`{at}: a {kind} artifact's media_type must be {mediaType}`) end
+
+  if type(size) ~= 'number' or size < 1 or size ~= math.floor(size) then fail(`{at}: the artifact's size must be a byte count`) end
+
+  if type(digests) ~= 'table' or not isHex64((digests :: { [string]: unknown }).sha256) then
+    fail(`{at}: the artifact's digests.sha256 must be the archive's SHA-256`)
+  end
+
+  if type(artifact.sources) ~= 'table' then fail(`{at}: the artifact's sources must be a list`) end
+
+  local publisherUrls, mirrorUrls = {} :: { string }, {} :: { string }
+
+  for _, source in artifact.sources :: { unknown } do
+    if type(source) ~= 'table' then fail(`{at}: artifact sources must be objects`) end
+
+    local entry = source :: { [string]: unknown }
+
+    if not isUrl(entry.url) then fail(`{at}: an artifact source url is not an http(s) URL`) end
+
+    if entry.kind == 'publisher' then
+      table.insert(publisherUrls, entry.url :: string)
+    elseif entry.kind == 'mirror' then
+      table.insert(mirrorUrls, entry.url :: string)
+    else
+      fail(`{at}: an artifact source kind must be publisher or mirror`)
+    end
+  end
+
+  table.move(mirrorUrls, 1, #mirrorUrls, #publisherUrls + 1, publisherUrls)
+
+  if #publisherUrls == 0 then fail(`{at}: the artifact has no source`) end
+
+  return table.freeze {
+    filename = filename :: string,
+    size = size :: number,
+    sha256 = (digests :: { [string]: unknown }).sha256 :: string,
+    sources = table.freeze(publisherUrls),
+  }
+end
+
+--- The `jpk` `artifact` of the release `fields` describe: a version of the package its `jess`
+--- block names.
+local function packageRelease(
+  fields: { [string]: unknown },
+  artifact: { [string]: unknown },
+  status: Status,
+  at: string
+): (Release, string)
+  if type(artifact.jess) ~= 'table' then fail(`{at}: a jpk artifact needs a jess block`) end
+
+  local jess = artifact.jess :: { [string]: unknown }
+  local id, jessApi = jess.package, jess.jess_api
+
+  if type(id) ~= 'string' or not plainName(id, PackagePattern) then fail(`{at}: jess.package must be a package id`) end
+
+  if type(jessApi) ~= 'string' then fail(`{at}: jess.jess_api must be a string`) end
+
+  if not isHex64(jess.content_digest) then fail(`{at}: jess.content_digest must be a Jess content digest`) end
+
+  local dependencies: { [string]: string } = {}
+
+  if type(jess.dependencies) ~= 'table' then fail(`{at}: jess.dependencies must be an object`) end
+
+  for dependency, requirement in jess.dependencies :: { [unknown]: unknown } do
+    if type(dependency) ~= 'string' or type(requirement) ~= 'string' then
+      fail(`{at}: jess.dependencies must map package ids to requirements`)
+    end
+
+    dependencies[dependency :: string] = requirement :: string
+  end
+
+  local release: Release = table.freeze {
+    version = fields.version :: string,
+    jessApi = jessApi :: string,
+    status = status,
+    contentDigest = jess.content_digest :: string,
+    dependencies = table.freeze(dependencies),
+    artifact = archiveOf(artifact, at, 'jpk', ArchiveMediaType),
+  }
+
+  return release, id :: string
+end
+
+--- The `jsw` `artifact` of the release `fields` describe: a version of the package its
+--- `jess_workspace` block names, as an application.
+local function applicationRelease(
+  fields: { [string]: unknown },
+  artifact: { [string]: unknown },
+  status: Status,
+  at: string
+): (Application, string)
+  if type(artifact.jess_workspace) ~= 'table' then fail(`{at}: a jsw artifact needs a jess_workspace block`) end
+
+  local block = artifact.jess_workspace :: { [string]: unknown }
+  local id, builtin, default = block.package, block.builtin, block.default
+
+  if type(id) ~= 'string' or not plainName(id, PackagePattern) then
+    fail(`{at}: jess_workspace.package must be a package id`)
+  end
+
+  if type(builtin) ~= 'string' or not isVersion(builtin) then
+    fail(`{at}: jess_workspace.builtin must be the built-in package's exact version`)
+  end
+
+  if default ~= nil and not isTarget(default) then fail(`{at}: jess_workspace.default must be <package>:<target>`) end
+
+  if type(block.targets) ~= 'table' then fail(`{at}: jess_workspace.targets must be a list`) end
+
+  local targets: { string } = {}
+
+  for _, target in block.targets :: { unknown } do
+    if not isTarget(target) then fail(`{at}: jess_workspace.targets must be <package>:<target> names`) end
+
+    table.insert(targets, target :: string)
+  end
+
+  if #targets == 0 then fail(`{at}: jess_workspace.targets must name a target`) end
+
+  if type(block.commands) ~= 'table' then fail(`{at}: jess_workspace.commands must be an object`) end
+
+  local commands: { [string]: string } = {}
+
+  for command, target in block.commands :: { [unknown]: unknown } do
+    if type(command) ~= 'string' or not isTarget(target) then
+      fail(`{at}: jess_workspace.commands must map command names to <package>:<target>`)
+    end
+
+    commands[command :: string] = target :: string
+  end
+
+  if type(block.packages) ~= 'table' then fail(`{at}: jess_workspace.packages must be an object`) end
+
+  local packages: { [string]: Pinned } = {}
+
+  for package, pinned in block.packages :: { [unknown]: unknown } do
+    local entry: { [string]: unknown } = if type(pinned) == 'table' then pinned :: { [string]: unknown } else {}
+    local version = entry.version
+
+    if type(package) ~= 'string' or type(version) ~= 'string' or not isVersion(version) or not isHex64(entry.content_digest) then
+      fail(`{at}: jess_workspace.packages must map package ids to their version and content_digest`)
+    end
+
+    packages[package :: string] = table.freeze { version = version :: string, contentDigest = entry.content_digest :: string }
+  end
+
+  local application: Application = table.freeze {
+    version = fields.version :: string,
+    status = status,
+    builtin = builtin :: string,
+    default = default :: string?,
+    targets = table.freeze(targets),
+    commands = table.freeze(commands),
+    packages = table.freeze(packages),
+    artifact = archiveOf(artifact, at, 'jsw', ApplicationMediaType),
+  }
+
+  return application, id :: string
+end
+
+--- The Jess artifacts of the release `value` describes, in a document of `schemaVersion`: its
+--- `jpk` and its `jsw`, each at most once, and the package they name, which must be one. A
+--- release of something else answers nothing.
+local function releaseOf(value: unknown, at: string, schemaVersion: string): (Release?, Application?, string?)
+  if type(value) ~= 'table' then fail(`{at} is not an object`) end
+
+  local fields = value :: { [string]: unknown }
+
+  if type(fields.artifacts) ~= 'table' then fail(`{at}: artifacts must be a list`) end
+
+  local archive: { [string]: unknown }?, packed: { [string]: unknown }? = nil, nil
+
+  for _, candidate in fields.artifacts :: { unknown } do
+    if type(candidate) ~= 'table' then continue end
+
+    local artifact = candidate :: { [string]: unknown }
+
+    if artifact.format == 'jpk' then
+      if archive then fail(`{at}: two jpk artifacts; a package's release has one`) end
+
+      archive = artifact
+    elseif artifact.format == 'jsw' then
+      if schemaVersion ~= ApplicationVersion then
+        fail(`{at}: a jsw artifact needs schema_version {ApplicationVersion}`)
+      end
+
+      if packed then fail(`{at}: two jsw artifacts; an application's release has one`) end
+
+      packed = artifact
+    end
+  end
+
+  if not archive and not packed then return nil, nil, nil end
+
+  local version, status = fields.version, fields.status
+
+  if type(version) ~= 'string' or not isVersion(version) then
+    fail(`{at}: a package's version must be exact (1.2.3, or 1.2.3-dev.4 for a pre-release)`)
+  end
+
+  if status ~= 'available' and status ~= 'yanked' and status ~= 'deprecated' then
+    fail(`{at}: status must be available, yanked or deprecated`)
+  end
+
+  local settled: Status = if status == 'yanked' then 'yanked' elseif status == 'deprecated' then 'deprecated' else 'available'
+  local release: Release?, application: Application?
+  local id: string?, named: string?
+
+  if archive then release, id = packageRelease(fields, archive, settled, at) end
+
+  if packed then application, named = applicationRelease(fields, packed, settled, at) end
+
+  if id and named and id ~= named then
+    fail(`{at}: its jpk is {id} and its jsw is named for {named}; a release is one package`)
+  end
+
+  return release, application, id or named
+end
+
+--- `document`, fetched from `url`, as the project manifest it has to be: a schema_version this
+--- jess reads, one Jess package across every release that carries a jpk or a jsw artifact,
+--- versions listed once.
+local function listingOf(url: string, document: { [string]: unknown }): Listing
+  local where = `the project manifest {url}`
+
+  if not reads(document.schema_version) or document.document ~= 'project' then
+    fail(`{where} is not a DreamWeave project manifest of schema_version {table.concat(ProtocolVersions, ' or ')}`)
+  end
+
+  local project = document.project
+
+  if type(project) ~= 'table' or type((project :: { [string]: unknown }).name) ~= 'string' then
+    fail(`{where} names no project`)
+  end
+
+  if type(document.releases) ~= 'table' then fail(`{where} has no releases list`) end
+
+  local id: string?
+  local versions, applications = {} :: { Release }, {} :: { Application }
+  local seen: { [string]: boolean } = {}
+
+  for index, value in document.releases :: { unknown } do
+    local release, application, package = releaseOf(value, `{where}: releases[{index}]`, document.schema_version :: string)
+
+    if not package then continue end
+
+    if id and id ~= package then
+      fail(`{where} publishes more than one Jess package ({id}, {tostring(package)}); one project is one package`)
+    end
+
+    id = package
+
+    local version = if release then release.version else (application :: Application).version
+
+    if seen[version] then fail(`{where} lists version {version} twice`) end
+
+    seen[version] = true
+
+    if release then table.insert(versions, release) end
+
+    if application then table.insert(applications, application) end
+  end
+
+  if not id then fail(`{where} publishes no Jess package: no release carries a jpk or jsw artifact`) end
+
+  return table.freeze {
+    url = url,
+    publisher = (project :: { [string]: unknown }).name :: string,
+    id = id :: string,
+    versions = table.freeze(versions),
+    applications = table.freeze(applications),
+  }
+end
+
+--- The manifest at `url`, read and held to its format.
+local function readManifest(url: string): Listing
+  return listingOf(url, fetchJson(url, 'the project manifest', MaxManifestBytes))
+end
+
+--- What a publisher URL names: a site's `dreamweave.json` (or the site, whose index is
+--- `dreamweave.json` under it), whose entries say which project publishes which package, or one
+--- project manifest. Answers package id to manifest URL, and the manifest itself when that is
+--- what was read, so it isn't fetched twice.
+local function readPublisher(url: string): ({ [string]: string }, Listing?)
+  local target = if string.sub(url, -1) == '/' then `{url}dreamweave.json` else url
+  local document = fetchJson(target, 'the publisher', MaxManifestBytes)
+
+  if document.document == 'project' then
+    local listing = listingOf(target, document)
+
+    return { [listing.id] = target }, listing
+  end
+
+  local where = `the site index {target}`
+
+  if not reads(document.schema_version) or document.document ~= 'index' then
+    fail(`{where} is not a DreamWeave site index of schema_version {table.concat(ProtocolVersions, ' or ')}`)
+  end
+
+  if type(document.projects) ~= 'table' then fail(`{where} has no projects list`) end
+
+  local published: { [string]: string } = {}
+
+  for index, value in document.projects :: { unknown } do
+    if type(value) ~= 'table' then fail(`{where}: projects[{index}] is not an object`) end
+
+    local entry = value :: { [string]: unknown }
+    local package, manifest = entry.jess_package, entry.manifest
+
+    if package == nil then continue end
+
+    if type(package) ~= 'string' or not isUrl(manifest) then
+      fail(`{where}: projects[{index}] names a Jess package without a manifest URL`)
+    end
+
+    if published[package :: string] then fail(`{where} lists two projects publishing {package}`) end
+
+    published[package :: string] = manifest :: string
+  end
+
+  return published, nil
+end
+
+--- The sites an index says publish each package id: id to the distinct manifest URLs publishing
+--- it. An index is a cache somebody else keeps; nothing in it is believed beyond who to ask.
+local function readIndex(url: string): { [string]: { string } }
+  local document = fetchJson(url, 'the package index', MaxIndexBytes)
+  local where = `the package index {url}`
+
+  if document.format ~= IndexFormat or document.format_version ~= IndexFormatVersion then
+    fail(`{where} is not a {IndexFormat} document of format_version {IndexFormatVersion}`)
+  end
+
+  if type(document.packages) ~= 'table' then fail(`{where} has no packages list`) end
+
+  local claims: { [string]: { string } } = {}
+
+  for index, value in document.packages :: { unknown } do
+    if type(value) ~= 'table' then fail(`{where}: packages[{index}] is not an object`) end
+
+    local fields = value :: { [string]: unknown }
+    local id, manifestUrl = fields.id, fields.manifest_url
+
+    if type(id) ~= 'string' or not isUrl(manifestUrl) then
+      fail(`{where}: packages[{index}] needs an id and a manifest_url`)
+    end
+
+    local manifests = claims[id :: string] or {}
+
+    if not table.find(manifests, manifestUrl :: string) then table.insert(manifests, manifestUrl :: string) end
+
+    claims[id :: string] = manifests
+  end
+
+  for _, manifests in claims do
+    table.sort(manifests)
+  end
+
+  return claims
+end
+
+--- The archive of `offer`, from the first source whose bytes are the ones the manifest describes.
+local function download(offer: Downloadable): buffer
+  local artifact = offer.entry.artifact
+  local attempts: { string } = {}
+
+  for _, url in artifact.sources do
+    local response, message, kind =
+      http().get(url, { maxBytes = artifact.size, timeoutMs = DownloadTimeoutMs })
+
+    if not response then
+      table.insert(attempts, `{url}: {kind}: {message}`)
+      continue
+    end
+
+    local answer = response :: HttpResponse
+
+    if answer.status ~= 200 then
+      table.insert(attempts, `{url}: HTTP {answer.status}`)
+      continue
+    end
+
+    if buffer.len(answer.body) ~= artifact.size then
+      table.insert(attempts, `{url}: served {buffer.len(answer.body)} bytes, and the manifest says {artifact.size}`)
+      continue
+    end
+
+    local sha256 = bytes().sha256(answer.body)
+
+    if sha256 ~= artifact.sha256 then
+      table.insert(attempts, `{url}: the archive's sha256 is {sha256}, and the manifest says {artifact.sha256}`)
+      continue
+    end
+
+    return answer.body
+  end
+
+  return fail(
+    `{offer.listing.id} {offer.entry.version} could not be downloaded from any source its manifest names:\n  {table.concat(attempts, '\n  ')}`
+  )
+end
+
+--- A session over `remote`: its URLs checked, and nothing read until something is asked for.
+local function session(remote: Remote): Session
+  for _, url in remote.indexes do
+    if not isUrl(url) then fail(`index '{url}' is not an http(s) URL`) end
+  end
+
+  for _, url in remote.publishers do
+    if not isUrl(url) then fail(`publisher '{url}' is not an http(s) URL`) end
+  end
+
+  local listings: { [string]: Listing } = {}
+
+  local function listingAt(url: string): Listing
+    if not listings[url] then listings[url] = readManifest(url) end
+
+    return listings[url]
+  end
+
+  local publishers: { [string]: { [string]: string } } = {}
+
+  --- What the publisher named at `url` publishes, package id to manifest URL.
+  local function publishedBy(url: string): { [string]: string }
+    if not publishers[url] then
+      local published, listing = readPublisher(url)
+
+      if listing then listings[(listing :: Listing).url] = listing :: Listing end
+
+      publishers[url] = published
+    end
+
+    return publishers[url]
+  end
+
+  local indexes: { { [string]: { string } } }?
+
+  --- Every index's claims, read only when something needs them.
+  local function indexed(): { { [string]: { string } } }
+    if not indexes then indexes = [for url in remote.indexes => readIndex(url)] end
+
+    return indexes :: { { [string]: { string } } }
+  end
+
+  --- The listing of the one publisher of `id` whose manifest `offers` something, named outright
+  --- or, failing that, indexed.
+  local function publisherOf(id: string, offers: (listing: Listing) -> boolean): Listing?
+    if remote.offline then return nil end
+
+    local offering: { Listing } = {}
+
+    for _, url in remote.publishers do
+      local manifestUrl = publishedBy(url)[id]
+
+      if manifestUrl then
+        local listing = listingAt(manifestUrl)
+
+        if listing.id == id and offers(listing) then table.insert(offering, listing) end
+      end
+    end
+
+    if #offering > 1 then
+      local urls = [for listing in offering => listing.url]
+      fail(`{id} is published by more than one publisher named here: {table.concat(urls, ', ')}; name one`)
+    end
+
+    if #offering == 1 then return offering[1] end
+
+    local manifests: { string } = {}
+
+    for _, claims in indexed() do
+      for _, url in claims[id] or {} do
+        if not table.find(manifests, url) then table.insert(manifests, url) end
+      end
+    end
+
+    table.sort(manifests)
+
+    if #manifests > 1 then
+      fail(
+        `{id} is published by more than one site: {table.concat(manifests, ', ')}; this jess chooses no publisher for you: name the one you mean with --publisher URL`
+      )
+    end
+
+    if #manifests == 0 then return nil end
+
+    local listing = listingAt(manifests[1])
+
+    return if listing.id == id and offers(listing) then listing else nil
+  end
+
+  local function newest(listing: Listing, accept: (release: Release) -> boolean): Release?
+    for _, entry in listing.versions do
+      if entry.status == 'available' and accept(entry) then return entry end
+    end
+
+    return nil
+  end
+
+  local function newestApplication(listing: Listing, accept: (application: Application) -> boolean): Application?
+    for _, entry in listing.applications do
+      if entry.status == 'available' and accept(entry) then return entry end
+    end
+
+    return nil
+  end
+
+  local function discover(id: string, accept: (release: Release) -> boolean): RemoteOffer?
+    local listing = publisherOf(id, function(listing: Listing): boolean return newest(listing, accept) ~= nil end)
+
+    if not listing then return nil end
+
+    return { listing = listing, entry = newest(listing, accept) :: Release }
+  end
+
+  local function discoverApplication(id: string, accept: (application: Application) -> boolean): ApplicationOffer?
+    local listing = publisherOf(
+      id,
+      function(listing: Listing): boolean return newestApplication(listing, accept) ~= nil end
+    )
+
+    if not listing then return nil end
+
+    return { listing = listing, entry = newestApplication(listing, accept) :: Application }
+  end
+
+  return table.freeze { listing = listingAt, discover = discover, discoverApplication = discoverApplication }
+end
+
+return function()
+  return table.freeze {
+    session = session,
+    download = download,
+  }
+end

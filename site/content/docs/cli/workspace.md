@@ -6,7 +6,7 @@ extra:
   kind: reference
 ---
 
-{{ api_signature(value="jess workspace [--workspace FOLDER | FILE] info | targets | graph [TARGET] | run [TARGET] [--capability NAME]... [--trusted] [-- ARGS...] | test [MEMBER]... | sync [ARTIFACT]... [--package-path FOLDER]... [--publisher URL]... [--index URL]... [--locked] [--offline] | pack --output FILE [--runtime JESS]") }}
+{{ api_signature(value="jess workspace [--workspace FOLDER | FILE] info | targets | graph [TARGET] | run [TARGET] [--capability NAME]... [--trusted] [-- ARGS...] | test [MEMBER]... | sync [ARTIFACT]... [--package-path FOLDER]... [--publisher URL]... [--index URL]... [--locked] [--offline] | pack --output FILE [--runtime JESS | --runtimes FOLDER]") }}
 
 A **workspace** is a set of [Package Sources](@/docs/scripting/packages.md) developed together: a tool and the library it uses, an application and its editor. It saves you assembling `--package` and `--package-path` by hand for every command, and it makes what the members depend on beyond each other the same on every machine. It is a development arrangement and nothing more. A package's identity, its digest, and what its modules may `require` are its own manifest's business, in a workspace or out of one.
 
@@ -271,7 +271,7 @@ Nothing is fetched while something offered or kept will do: a workspace whose pa
 
 ## Publishers and indexes
 
-A **publisher** is a DreamWeave site, and a Jess package on it is a project like any other: one repository whose releases are the package's versions. The project's **manifest** (protocol `schema_version` 3) lists each release with a `jpk` artifact: the package's content digest, the archive's SHA-256, and where the archive downloads from. The manifest is the authority for what it lists; the site's `dreamweave.json` says which project publishes which package. An **index** is somebody's listing of which sites publish which ids, such as the one AsHyAmS publishes at `network-data/jess-packages-v1.json`, which is the default; sync reads it for one thing, who to ask, and believes nothing else in it. Both are documented on the [AsHyAmS site](https://dreamweave-mp.github.io/AsHyAmS/about/packages/).
+A **publisher** is a DreamWeave site, and a Jess package on it is a project like any other: one repository whose releases are the package's versions. The project's **manifest** (protocol `schema_version` 3 or 4) lists each release with a `jpk` artifact: the package's content digest, the archive's SHA-256, and where the archive downloads from. Since version 4 a release may also carry the package as an application, a packed workspace, which [`jess install`](@/docs/cli/install.md#from-a-publisher) installs and sync leaves alone. The manifest is the authority for what it lists; the site's `dreamweave.json` says which project publishes which package. An **index** is somebody's listing of which sites publish which ids, such as the one AsHyAmS publishes at `network-data/jess-packages-v1.json`, which is the default; sync reads it for one thing, who to ask, and believes nothing else in it. Both are documented on the [AsHyAmS site](https://dreamweave-mp.github.io/AsHyAmS/about/packages/).
 
 A package from a publisher is pinned with its publisher:
 
@@ -332,6 +332,7 @@ A kept JPK that isn't the package pinned, even one with the right id and version
 | --- | --- |
 | `--output <FILE>` | Where to write the packed workspace. |
 | `--runtime <JESS>` | Write a [standalone executable](#standalone-executables) instead: this jess executable carrying the packed workspace. |
+| `--runtimes <FOLDER>` | Write the packed workspace, and beside it a standalone executable for every jess runtime in the folder: `jess-Windows-X64.exe` beside `app.jsw` writes `app-Windows-X64.exe`. Each runtime is a jess named `jess-<System>-<Arch>`, as the release archives name them; anything else in the folder is refused. |
 
 Freezes the workspace into a **packed workspace**, a `.jsw`: every target it exports, and every package those targets run, as JPKs, each pinned to its content digest. It resolves each target exactly as `run` would (every layer of its package, over the other members and the packages the lock pins, its entrypoints admitted against what it declares), and keeps what those plans select and nothing else. A member's tests, its dev-dependencies, and the tools the workspace file's `[dev-dependencies]` name stay behind, unless a target the workspace exports needs them.
 
@@ -425,9 +426,9 @@ $ cp app greet && ./greet you
 HELLO, YOU! (hello)
 ```
 
-It runs its default target with every argument it's given, and claims none of them for itself. Named for a target's `command`, or run through a link by that name, it runs that target instead, so one payload can ship as several commands. It needs nothing installed: no jess, no compiler, no network. It doesn't change the folder it runs in or write beside itself, and it runs from wherever it's moved to. `jess workspace --workspace app info` reads what it carries.
+It runs its default target with every argument it's given, and claims none of them for itself. Named for a target's `command`, or run through a link by that name, it runs that target instead, so one payload can ship as several commands. It needs nothing installed: no jess, no compiler, no network. It doesn't change the folder it runs in or write beside itself, and it runs from wherever it's moved to. `jess workspace --workspace app info` reads what it carries. [`jess install`](@/docs/cli/install.md) writes one onto your PATH for each command a packed workspace exports.
 
-The runtime can be any jess executable, for any platform, whatever you're packing on: the release archive for another platform will do, so one machine builds every platform's executable without a compiler for any of them. What the executable carries is the packed workspace, byte for byte, so it reports the same SHA-256 as the `.jsw`. A runtime that already carries a packed workspace, or predates standalone executables, is refused.
+The runtime can be any jess executable, for any platform, whatever you're packing on: the release archive for another platform will do, so one machine builds every platform's executable without a compiler for any of them. What the executable carries is the packed workspace, byte for byte, so it reports the same SHA-256 as the `.jsw`. A runtime that already carries a packed workspace, or predates standalone executables, is refused. `--runtimes` does every platform in one run, from a folder of runtimes such as the [jess image](@/docs/contributing/releasing.md#the-jess-image)'s `/opt/jess/runtimes`, and reports each executable it wrote with its SHA-256.
 
 On Linux and Windows the packed workspace follows the runtime, which is unchanged. Sign a Windows executable afterwards, if you sign at all; Authenticode then covers the packed workspace along with the rest of the file. Bytes added after the signature are outside it, so a signed executable with anything after its signature is refused rather than read, and a runtime that's already signed is refused: sign once, last. `strip` drops what a Linux executable carries, leaving plain jess: strip the runtime before packing, never after.
 
