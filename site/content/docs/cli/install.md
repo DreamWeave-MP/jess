@@ -114,6 +114,7 @@ Running `jess install` again installs the newer release if there is one. The sam
 
 ```text
 ~/.jess/
+  install.lock                  held by the one jess installing or uninstalling here
   bin/                          the commands, one executable per install, the others links to it
   installs/<package id>/
     install.toml                what the install is and where it came from
@@ -142,7 +143,7 @@ capabilities = ["process.environment"]
 
 `source` is `publisher` (a package's own packed workspace, with its `manifest` and the `artifact_sha256` it listed), `resolved` (a package resolved here, with its `manifest`), `file`, or `workspace`; `runtime` the version of the jess the executables carry. A command name belongs to one install. Another install that wants it, a file or link in `bin` no install wrote, or a command of the install's own that has changed since it was written (someone else's now) is refused until `--force` takes it over, and the install that had it no longer does. A directory where a command would go is refused outright, `--force` or not: jess install never replaces or removes one.
 
-Every executable and record is written beside the install root first, and then put in place all together or not at all: if any of it fails, what was put in place is taken out again, what was there is put back, and the error says so. Whatever it replaces is moved aside rather than overwritten, so installing over a program that's running works on every platform, Windows included, and is removed only once everything is in place, or by a later install or uninstall if it was still running.
+One jess at a time installs or uninstalls in a root: it holds `install.lock` from checking what is there, through asking you, to putting the install in place, and another jess that wants the root meanwhile is refused straight away. Every executable and record is written beside the install root first, and then put in place all together or not at all: if any of it fails, what was put in place is taken out again, what was there is put back, and the error says so. That is undoing an error, not surviving a crash: if jess is killed or the machine stops partway, an install can be left half in place, and `jess install --force` of the same thing puts it right. Whatever it replaces is moved aside rather than overwritten, so installing over a program that's running works on every platform, Windows included, and is removed only once everything is in place, or by a later install or uninstall if it was still running.
 
 On macOS, the executables are made on your machine rather than downloaded, so nothing quarantines them, and they are signed ad hoc as packing signs every standalone executable: they run without a Gatekeeper prompt.
 
