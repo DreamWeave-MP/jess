@@ -84,8 +84,8 @@ enum WorkspaceCommand {
         /// The file to write.
         #[arg(long, value_name = "FILE")]
         output: PathBuf,
-        /// Write a standalone executable instead: this jess executable, for any platform but macOS,
-        /// carrying the packed workspace, which runs its default target with every argument.
+        /// Write a standalone executable instead: this jess executable, for any platform, carrying
+        /// the packed workspace, which runs its default target with every argument.
         #[arg(long, value_name = "JESS")]
         runtime: Option<PathBuf>,
     },
