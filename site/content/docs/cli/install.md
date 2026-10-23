@@ -31,7 +31,7 @@ A name that is a file is a file; anything else is a package id.
 | `--index <URL>` | A package index that says who publishes an id (repeatable). Without one, AsHyAmS's; `JESS_REGISTRY_URL` names another. |
 | `--offline` | Ask no publisher, as `JESS_OFFLINE=1` does. A package id then has nowhere to come from. |
 | `--root <DIR>` | The install root. Without it, `JESS_INSTALL_ROOT`, or else `.jess` in your home folder. |
-| `--force` | Take over a command name another install or a stray file has, and install again what is installed already. |
+| `--force` | Take over a command name another install has, a file or link no install wrote, or a command of this install's that has changed since it was written, and install again what is installed already. A directory is never taken over. |
 | `--yes` | Install without asking. Needed when there is no terminal to ask in. |
 | `--list` | List what is installed instead. |
 
@@ -54,6 +54,7 @@ commands:
 - name: showcase
   path: /home/you/.jess/bin/showcase
 removed: []
+kept: []
 warning: /home/you/.jess/bin is not on your PATH; add it to run what you installed by name
 $ greet you
 HELLO, YOU! (hello)
@@ -94,6 +95,7 @@ commands:
 - name: hello
   path: /home/you/.jess/bin/hello
 removed: []
+kept: []
 $ hello world
 hello world from the tool
 ```
@@ -138,9 +140,9 @@ kind = "command"
 capabilities = ["process.environment"]
 ```
 
-`source` is `publisher` (a package's own packed workspace, with its `manifest` and the `artifact_sha256` it listed), `resolved` (a package resolved here, with its `manifest`), `file`, or `workspace`; `runtime` the version of the jess the executables carry. A command name belongs to one install. Another install that wants it, or a file in `bin` no install wrote, is refused until `--force` takes it over, and the install that had it no longer does.
+`source` is `publisher` (a package's own packed workspace, with its `manifest` and the `artifact_sha256` it listed), `resolved` (a package resolved here, with its `manifest`), `file`, or `workspace`; `runtime` the version of the jess the executables carry. A command name belongs to one install. Another install that wants it, a file or link in `bin` no install wrote, or a command of the install's own that has changed since it was written (someone else's now) is refused until `--force` takes it over, and the install that had it no longer does. A directory where a command would go is refused outright, `--force` or not: jess install never replaces or removes one.
 
-Replacing an executable moves the old one aside first, so installing over a program that's running works on every platform, Windows included; what was moved aside is removed by a later install or uninstall, once nothing is running it.
+Every executable and record is written beside the install root first, and then put in place all together or not at all: if any of it fails, what was put in place is taken out again, what was there is put back, and the error says so. Whatever it replaces is moved aside rather than overwritten, so installing over a program that's running works on every platform, Windows included, and is removed only once everything is in place, or by a later install or uninstall if it was still running.
 
 On macOS, the executables are made on your machine rather than downloaded, so nothing quarantines them, and they are signed ad hoc as packing signs every standalone executable: they run without a Gatekeeper prompt.
 
@@ -160,7 +162,7 @@ $ jess install --list
     state: installed
 ```
 
-A command's `state` is `installed` when its executable is still the one written, `missing` when it's gone, and `changed` when something else is there now. Installing again puts it back.
+A command's `state` is `installed` when its executable is still the one written, `missing` when it's gone, and `changed` when something else is there now. Installing again with `--force` puts it back.
 
 ## jess uninstall
 
@@ -171,6 +173,7 @@ $ jess uninstall showcase
   commands:
   - greet
   - showcase
+  kept: []
 ```
 
-Names an install by its package id or by any of its commands, and removes the whole install: every command and its folder under `installs`.
+Names an install by its package id or by any of its commands, and removes the whole install, all of it or none: every command still the executable it wrote, and its folder under `installs`. A command that has changed since, or that a link or directory now stands in for, is someone else's: it stays where it is, listed under `kept` with why, and a warning says so.
