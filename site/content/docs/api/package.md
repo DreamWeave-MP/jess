@@ -6,7 +6,7 @@ extra:
   kind: api
 ---
 
-{{ api_signature(value="require('@jess/package'): { open, pack, resolve, manifest, satisfies }") }}
+{{ api_signature(value="require('@jess/package'): { open, openJpk, pack, resolve, manifest, satisfies }") }}
 
 A [built-in module](@/docs/scripting/built-in-modules.md), typed as `Module__jess_package`. It is the package model [Packages](@/docs/scripting/packages.md) describes, as functions: open a package from either of its forms, pack one, and resolve layers over several into a plan. The container underneath is [`@jess/jpk`](@/docs/api/jpk.md).
 
@@ -51,6 +51,35 @@ src/words.jsl
 tests/run.jsl
 ```
 
+## package.openJpk
+
+{{ api_signature(value="package.openJpk(source: JessJpkSource, label: string) -> JessPackage") }}
+
+Opens a JPK that isn't a file of its own: one in memory, or stored inside another archive, from `source`, `{ size, read }`, the same [source](@/docs/api/jpk.md#jpk-open) `@jess/jpk` reads. It is the same package as the file would be, with the same digest and the same checks, `label` standing in for where it came from in `location` and in every message. A packed workspace opens its packages this way, in place.
+
+```luau
+--!strict
+local package, fs = require '@jess/package', require '@dream/fs'
+local bytes, problem = fs.readFile 'words.jpk'
+assert(bytes, problem)
+
+local held = package.openJpk({
+  size = buffer.len(bytes),
+  read = function(offset: number, length: number): buffer
+    local slice = buffer.create(length)
+    buffer.copy(slice, 0, bytes, offset, length)
+    return slice
+  end,
+}, 'words.jpk, in memory')
+print(held.id, held.kind, held.location)
+print(held.digest == package.open('words.jpk').digest)
+```
+
+```text
+org.example.words	jpk	words.jpk, in memory
+true
+```
+
 ## package.pack
 
 {{ api_signature(value="package.pack(source: string, output: string, options: { version: string? }?) -> JessPackResult") }}
@@ -84,6 +113,8 @@ requested by:
     layer example.tools
     entrypoint @alpha/tools/register
 ```
+
+Besides the packages handed over, a request may offer `candidates`, packages read only as far as their manifests and opened only when a layer or a dependency needs one, never in place of a package handed over and never chosen between. A candidate is opened with `package.open` by its location, or by `request.open` when the request names one: a resolution whose candidates aren't files of their own, such as a packed workspace's, names what opens them, and the rules are the same either way. `request.pins` holds packages with given ids to given digests.
 
 The plan is `{ requested, layers, packages, modules, entrypoints, capabilities }`:
 

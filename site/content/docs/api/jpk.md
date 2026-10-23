@@ -62,11 +62,12 @@ manifest_version = 1
 
 ```
 
-The archive is `{ entries, find, read }`:
+The archive is `{ entries, find, read, source }`:
 
 - `entries` is every file entry, in central-directory order, each `{ path, method, compressedSize, size, crc32, offset }`. `method` is `'stored'`, `'deflate'`, or `'zstd'`.
 - `find(path)` is the entry with that path, or nil.
 - `read(entry | path)` unpacks one entry. Its size and CRC-32 are checked: a corrupt entry is an error (`jpk: 'a.bin' fails its CRC-32`), never wrong bytes.
+- `source(entry | path)` is a stored entry's bytes as a source of their own, `{ size, read }`, read in place from the archive's. Nothing is copied or checked up front, so whoever reads them checks them; an archive stored inside another opens this way, and checks its own entries as it reads them. An entry that isn't stored is an error.
 
 ### Budgets
 
@@ -88,7 +89,7 @@ This is not a sandbox, and the budgets are not a security boundary. They make co
 
 {{ api_signature(value="jpk.write(files: { JessJpkFile }) -> buffer") }}
 
-The canonical archive of `files`, each `{ path, data }`, as described above. A path that isn't canonical, or one given twice, is an error. More than 65535 entries, or an archive past 4 GiB, is an error rather than ZIP64.
+The canonical archive of `files`, each `{ path, data }`, as described above. A file that says `store = true` is stored whatever Zstandard would save: what an archive holds to be read in place with `source` has to be. A path that isn't canonical, or one given twice, is an error. More than 65535 entries, or an archive past 4 GiB, is an error rather than ZIP64.
 
 ## jpk.checkPath
 
