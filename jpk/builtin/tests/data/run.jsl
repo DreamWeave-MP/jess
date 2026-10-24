@@ -290,6 +290,25 @@ suite.describe('encode', function()
     expect(fromYaml.nothing).toBe(yaml.null)
   end)
 
+  -- A document is written in chunks, so millions of lines never need one table past Luau's 2^26
+  -- entries; this one crosses many chunk boundaries and must read as if written whole.
+  suite.it('writes a document of many pieces whole, in order', function()
+    local items: { unknown } = {}
+    local jsonItems: { string }, yamlLines: { string } = {}, {}
+    for index = 1, 5000 do
+      local item = values.map()
+      values.set(item, 'id', index)
+      values.set(item, 'name', `item {index}`)
+      table.insert(items, item)
+      table.insert(jsonItems, `\{"id":{index},"name":"item {index}"}`)
+      table.insert(yamlLines, `- id: {index}\n  name: item {index}\n`)
+    end
+
+    local document = values.array(items)
+    expect(json.encode(document)).toBe(`[{table.concat(jsonItems, ',')}]`)
+    expect(yaml.encode(document)).toBe(table.concat(yamlLines))
+  end)
+
   suite.it('writes a null a decoder read as a null', function()
     expect(json.encode(values.array { json.decode 'null', yaml.decode 'null' })).toBe '[null,null]'
   end)
