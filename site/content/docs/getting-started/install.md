@@ -108,7 +108,7 @@ jess --version
 ```
 
 ```text
-jess 0.2.1
+jess 0.2.2
 ```
 
 Every subcommand takes `--version` too, and `jess help` (or `jess <command> --help`) lists what's there.

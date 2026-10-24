@@ -15,7 +15,7 @@ include = ["/src", "/jpk/builtin", "/README.md", "/LICENSE-MIT", "/LICENSE-APACH
 autotests = false
 
 [workspace.package]
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 rust-version = "1.92"
 authors = ["Dave Corley <corleycomputerrepair@protonmail.ch>"]
