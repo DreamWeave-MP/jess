@@ -51,7 +51,7 @@ Run it:
 
 ```sh
 $ jess run my-scripts/main.jsl
-Hello from jess 0.2.0.
+Hello from jess 0.2.1.
 {"level":"info","target":"main","message":"ready","fields":{},"source":"my-scripts/main.jsl"}
 ```
 
