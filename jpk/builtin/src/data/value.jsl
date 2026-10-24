@@ -205,50 +205,79 @@ local function jsonString(text: string): string
     .. '"'
 end
 
-local function json(value: Value, out: { string })
+-- Writing ----------------------------------------------------------------------------------------------
+
+--- A document's text, written a piece at a time. The pieces are joined into a chunk every
+--- ChunkPieces of them: a Luau table holds at most 2^26 entries ("table overflow" past that), and
+--- a document of millions of lines writes more pieces than that long before its text is too big.
+type Writer = { pieces: { string }, chunks: { string } }
+
+local ChunkPieces = 4096
+
+local function writer(): Writer
+  return { pieces = {}, chunks = {} }
+end
+
+local function write(target: Writer, text: string)
+  local pieces = target.pieces
+  table.insert(pieces, text)
+  if #pieces < ChunkPieces then return end
+
+  table.insert(target.chunks, table.concat(pieces))
+  table.clear(pieces)
+end
+
+--- Everything written, as one string.
+local function written(target: Writer): string
+  if #target.pieces > 0 then
+    table.insert(target.chunks, table.concat(target.pieces))
+    table.clear(target.pieces)
+  end
+
+  return table.concat(target.chunks)
+end
+
+local function json(value: Value, out: Writer)
   local kind = kindOf(value)
   if kind == 'null' or kind == 'none' then
-    table.insert(out, 'null')
+    write(out, 'null')
   elseif kind == 'boolean' then
-    table.insert(out, if value then 'true' else 'false')
+    write(out, if value then 'true' else 'false')
   elseif kind == 'int' then
-    table.insert(out, intText(value))
+    write(out, intText(value))
   elseif kind == 'float' then
     local number = floatOf(value)
-    table.insert(
-      out,
-      if number ~= number or math.abs(number) == math.huge then 'null' else shortest(number, true)
-    )
+    write(out, if number ~= number or math.abs(number) == math.huge then 'null' else shortest(number, true))
   elseif kind == 'string' then
-    table.insert(out, jsonString(value :: string))
+    write(out, jsonString(value :: string))
   elseif kind == 'array' then
-    table.insert(out, '[')
+    write(out, '[')
     for index, item in value :: { Value } do
-      if index > 1 then table.insert(out, ',') end
+      if index > 1 then write(out, ',') end
 
       json(item, out)
     end
 
-    table.insert(out, ']')
+    write(out, ']')
   elseif kind == 'map' then
     local target = value :: Map
-    table.insert(out, '{')
+    write(out, '{')
     for index, key in target.keys do
-      if index > 1 then table.insert(out, ',') end
+      if index > 1 then write(out, ',') end
 
-      table.insert(out, jsonString(key))
-      table.insert(out, ':')
+      write(out, jsonString(key))
+      write(out, ':')
       json(target.values[key], out)
     end
 
-    table.insert(out, '}')
+    write(out, '}')
   else
     local tagged = value :: { tag: string, value: Value }
-    table.insert(out, '{')
-    table.insert(out, jsonString(tagged.tag))
-    table.insert(out, ':')
+    write(out, '{')
+    write(out, jsonString(tagged.tag))
+    write(out, ':')
     json(tagged.value, out)
-    table.insert(out, '}')
+    write(out, '}')
   end
 end
 
@@ -541,7 +570,7 @@ end
 
 --- An emitter writing libyaml's block style, tracking its column and whitespace state.
 type Emitter = {
-  out: { string },
+  out: Writer,
   column: number,
   indent: number,
   indents: { number },
@@ -553,12 +582,12 @@ type Emitter = {
 }
 
 local function put(emitter: Emitter, text: string)
-  table.insert(emitter.out, text)
+  write(emitter.out, text)
   emitter.column += utf8.len(text) or #text
 end
 
 local function putBreak(emitter: Emitter)
-  table.insert(emitter.out, '\n')
+  write(emitter.out, '\n')
   emitter.column = 0
 end
 
@@ -609,7 +638,7 @@ local function writeChar(emitter: Emitter, text: string, at: number): number
   if string.byte(text, at) == 10 then
     putBreak(emitter)
   elseif isBreakAt(text, at) then
-    table.insert(emitter.out, string.sub(text, at, at + width - 1))
+    write(emitter.out, string.sub(text, at, at + width - 1))
     emitter.column = 0
   else
     put(emitter, string.sub(text, at, at + width - 1))
@@ -954,7 +983,7 @@ end
 
 local function yaml(value: Value): string
   local emitter: Emitter = {
-    out = {},
+    out = writer(),
     column = 0,
     indent = -1,
     indents = {},
@@ -967,7 +996,7 @@ local function yaml(value: Value): string
   emitNode(emitter, value, true, false, false)
   -- The document's end: a break unless the last line is already empty.
   writeIndent(emitter)
-  local text = table.concat(emitter.out)
+  local text = written(emitter.out)
   if string.sub(text, -1) ~= '\n' then
     text ..= '\n'
   end
@@ -1273,9 +1302,9 @@ end
 --- can't hold.
 local function encode(value: Value, format: string): string
   if format == 'json' then
-    local out = {}
+    local out = writer()
     json(value, out)
-    return table.concat(out)
+    return written(out)
   end
 
   if format == 'yaml' then return yaml(value) end
