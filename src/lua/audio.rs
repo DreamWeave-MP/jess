@@ -19,12 +19,12 @@ use std::time::Duration;
 use crate::audio::Stream;
 use crate::audio::processor::{Setting, Settings};
 use crate::audio::{
-    AudioConfig, AudioError, BusKey, BusParam, BusSpec, Culled, Curve, Distance, Emitter, Glide, Handedness, Listener,
-    LoopRegion, MAX_VOICE_SENDS, OfflineContext, Pcm, PlaySpec, ProcessorKey, SampleFormat, Tap, VoiceKey, VoiceParam,
-    VoiceSend,
+    AudioConfig, AudioError, BusKey, BusParam, BusSpec, Control, Culled, Curve, DeviceRequest, Distance, Emitter, Glide,
+    Handedness, Listener, LiveContext, LoopRegion, MAX_VOICE_SENDS, OfflineContext, Pcm, PlaySpec, ProcessorKey,
+    SampleFormat, Tap, VoiceKey, VoiceParam, VoiceSend,
 };
 use crate::lua::plan::Functions;
-use crate::lua::{Bytes, Text, error, kind, push_table};
+use crate::lua::{Bytes, Jess, Text, error, guard, kind, push_table};
 use crate::runtime::ResourceHandle;
 use l3i::Runtime;
 use l3i::bind::{Call, StackResults};
@@ -38,6 +38,19 @@ use l3i::value::{Function, Table};
 const MAX_FRAME: f64 = 9_007_199_254_740_992.0;
 
 const PCM_KEYS: &[&str] = &["channels", "format", "rate"];
+const OUTPUT_KEYS: &[&str] = &[
+    "buses",
+    "channels",
+    "commands",
+    "device",
+    "handedness",
+    "period",
+    "physical",
+    "processors",
+    "rate",
+    "speedOfSound",
+    "voices",
+];
 const CONTEXT_KEYS: &[&str] = &[
     "buses",
     "channels",
@@ -85,7 +98,22 @@ const SEND_KEYS: &[&str] = &["bus", "level"];
 const BUS_KEYS: &[&str] = &["gain", "muted", "parent"];
 const BUS_SEND_KEYS: &[&str] = &["at", "level", "tap"];
 
-type Shared = Rc<RefCell<OfflineContext>>;
+/// A context a script holds: one it renders, or one a device does.
+enum Context {
+    Offline(Box<OfflineContext>),
+    Live(Box<LiveContext>),
+}
+
+impl Context {
+    const fn control(&mut self) -> &mut Control {
+        match self {
+            Context::Offline(context) => context.control(),
+            Context::Live(context) => context.control(),
+        }
+    }
+}
+
+type Shared = Rc<RefCell<Context>>;
 
 /// A stream: audio written while it plays.
 #[derive(Clone)]
@@ -444,15 +472,52 @@ fn pcm(call: &Call<'_>, data: &Bytes, options: Option<ValueView<'_>>) -> l3i::Re
     Ok(Owned(LuaAudioPcm(Arc::new(pcm))))
 }
 
-/// `audio.offline({ rate, channels, voices, buses, processors, commands })`.
+/// `audio.offline({ rate, channels, voices, buses, processors, commands, ... })`.
 fn offline(call: &Call<'_>, options: Option<ValueView<'_>>) -> l3i::Result<Owned<LuaAudioContext>> {
-    const FUNCTION: &str = "jess.audio.offline";
+    let (config, _) = context_config(call, options, "jess.audio.offline", CONTEXT_KEYS)?;
+    let context = OfflineContext::new(&config)?;
+    Ok(Owned(LuaAudioContext(Rc::new(RefCell::new(Context::Offline(Box::new(
+        context,
+    )))))))
+}
+
+/// `audio.output({ device, rate, period, channels, voices, ... })`: the platform's default output,
+/// or the null device, rendering a context the script drives like any other.
+fn output(jess: &Jess, call: &Call<'_>, options: Option<ValueView<'_>>) -> l3i::Result<Owned<LuaAudioContext>> {
+    const FUNCTION: &str = "jess.audio.output";
+    guard(jess, FUNCTION, crate::audio::capability::OUTPUT)?;
+    let (config, request) = context_config(call, options, FUNCTION, OUTPUT_KEYS)?;
+    let live = request.open(&config)?;
+    Ok(Owned(LuaAudioContext(Rc::new(RefCell::new(Context::Live(Box::new(live)))))))
+}
+
+/// A context's options, and for an output the device's: its rate (the device's own unless given),
+/// its period, and whether it is the null device.
+fn context_config(
+    call: &Call<'_>,
+    options: Option<ValueView<'_>>,
+    function: &str,
+    keys: &[&str],
+) -> l3i::Result<(AudioConfig, DeviceRequest)> {
     let mut config = AudioConfig::default();
+    let mut request = DeviceRequest::default();
+    let live = keys.contains(&"device");
     call.with_frame(|frame| {
-        let table = table(frame, options, FUNCTION, CONTEXT_KEYS)?;
+        let table = table(frame, options, function, keys)?;
         let table = table.as_ref();
-        if let Some(rate) = optional::<f64>(frame, table, "rate", FUNCTION)? {
+        if let Some(rate) = optional::<f64>(frame, table, "rate", function)? {
             config.rate = rate_of(rate)?;
+            request.rate = Some(config.rate);
+        }
+        if live {
+            if let Some(period) = optional::<f64>(frame, table, "period", function)? {
+                request.period = Some(u32::try_from(whole(period, "period")?).unwrap_or(u32::MAX));
+            }
+            request.null = match optional::<String>(frame, table, "device", function)?.as_deref() {
+                None | Some("default") => false,
+                Some("null") => true,
+                Some(other) => return Err(error(format!("{function}'s device is default or null, not {other:?}"))),
+            };
         }
         for (key, field) in [
             ("channels", &mut config.channels),
@@ -461,25 +526,24 @@ fn offline(call: &Call<'_>, options: Option<ValueView<'_>>) -> l3i::Result<Owned
             ("processors", &mut config.processors),
             ("commands", &mut config.commands),
         ] {
-            if let Some(value) = optional::<f64>(frame, table, key, FUNCTION)? {
+            if let Some(value) = optional::<f64>(frame, table, key, function)? {
                 *field = count(value, key)?;
             }
         }
-        if let Some(physical) = optional::<f64>(frame, table, "physical", FUNCTION)? {
+        if let Some(physical) = optional::<f64>(frame, table, "physical", function)? {
             config.physical = Some(count(physical, "physical")?);
         }
-        if let Some(speed) = optional::<f64>(frame, table, "speedOfSound", FUNCTION)? {
+        if let Some(speed) = optional::<f64>(frame, table, "speedOfSound", function)? {
             config.speed_of_sound = speed;
         }
-        config.handedness = match optional::<String>(frame, table, "handedness", FUNCTION)?.as_deref() {
+        config.handedness = match optional::<String>(frame, table, "handedness", function)?.as_deref() {
             None | Some("right") => Handedness::Right,
             Some("left") => Handedness::Left,
-            Some(other) => return Err(error(format!("{FUNCTION}'s handedness is right or left, not {other:?}"))),
+            Some(other) => return Err(error(format!("{function}'s handedness is right or left, not {other:?}"))),
         };
         Ok(())
     })?;
-    let context = OfflineContext::new(&config)?;
-    Ok(Owned(LuaAudioContext(Rc::new(RefCell::new(context)))))
+    Ok((config, request))
 }
 
 /// `context:play(pcm, { at, bus, sends, gain, pan, rate, offset, loop, loopStart, loopEnd })`.
@@ -678,13 +742,17 @@ fn bus_handle(context: &Shared, key: BusKey) -> Owned<LuaAudioBus> {
     })
 }
 
-pub fn module(runtime: &Runtime) -> l3i::Result<Table> {
+pub fn module(runtime: &Runtime, jess: &Rc<Jess>) -> l3i::Result<Table> {
     let module = Functions::module(runtime, "audio")?;
     module.function("pcm", |call: &Call<'_>, data: Bytes, options: Option<ValueView<'_>>| {
         pcm(call, &data, options)
     })?;
     module.function("offline", |call: &Call<'_>, options: Option<ValueView<'_>>| {
         offline(call, options)
+    })?;
+    let state = Rc::clone(jess);
+    module.function("output", move |call: &Call<'_>, options: Option<ValueView<'_>>| {
+        output(&state, call, options)
     })?;
     module.function("stream", |call: &Call<'_>, options: ValueView<'_>| stream(call, options))?;
     module.function("processors", |call: &Call<'_>| -> l3i::Result<StackResults> {
@@ -785,6 +853,31 @@ fn describe_context(d: &mut ExtensionDescriptor) {
         )
         .untyped();
     context
+        .method(
+            "device",
+            |this: &LuaAudioContext, call: &Call<'_>| -> l3i::Result<StackResults> {
+                let Context::Live(live) = &*this.0.borrow() else {
+                    call.push(&())?;
+                    return Ok(StackResults);
+                };
+                let (info, stats) = (live.info().clone(), live.stats());
+                push_table(call, 0, 10, |frame, table| {
+                    table.raw_set_value(frame, "backend", info.backend.as_str())?;
+                    table.raw_set_value(frame, "rate", &f64::from(info.rate))?;
+                    table.raw_set_value(frame, "channels", &number(info.channels as u64))?;
+                    table.raw_set_value(frame, "period", &f64::from(info.period))?;
+                    table.raw_set_value(frame, "periods", &f64::from(info.periods))?;
+                    table.raw_set_value(frame, "latency", &number(info.latency()))?;
+                    table.raw_set_value(frame, "stopped", &number(stats.stopped))?;
+                    table.raw_set_value(frame, "rerouted", &number(stats.rerouted))?;
+                    table.raw_set_value(frame, "interrupted", &number(stats.interrupted))?;
+                    table.raw_set_value(frame, "failed", &stats.failed)
+                })?;
+                Ok(StackResults)
+            },
+        )
+        .untyped();
+    context
         .method("room", |this: &LuaAudioContext| {
             number(this.0.borrow_mut().control().room() as u64)
         })
@@ -817,8 +910,12 @@ fn describe_context(d: &mut ExtensionDescriptor) {
     context
         .method("render", |this: &LuaAudioContext, frames: f64| -> l3i::Result<NewBuffer> {
             let frames = count(frames, "frames")?;
-            let samples = this.0.borrow_mut().render(frames);
-            Ok(NewBuffer(interleaved_bytes(&samples)))
+            let Context::Offline(context) = &mut *this.0.borrow_mut() else {
+                return Err(error(
+                    "AudioContext:render renders an offline context; a device renders an output",
+                ));
+            };
+            Ok(NewBuffer(interleaved_bytes(&context.render(frames))))
         })
         .untyped();
     context

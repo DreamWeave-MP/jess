@@ -162,6 +162,8 @@ impl Extension for JessExtension {
         for capability in INPUT_CAPABILITIES {
             d.optional_capability(capability);
         }
+        // `jess.audio.output` checks this the same way.
+        d.optional_capability(crate::audio::capability::OUTPUT);
         let module = d.module(MODULE);
         module.doc("Generic native services for Luau applications.");
         for name in MEMBERS {
@@ -234,7 +236,7 @@ impl Extension for JessExtension {
         module.set("interfaces", &modules.interfaces)?;
         module.set("application", &crate::lua::application::module(runtime)?)?;
         module.set("input", &crate::lua::input::module(runtime, &jess)?)?;
-        module.set("audio", &crate::lua::audio::module(runtime)?)?;
+        module.set("audio", &crate::lua::audio::module(runtime, &jess)?)?;
         Ok(())
     }
 }

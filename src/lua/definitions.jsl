@@ -242,6 +242,26 @@ export type AudioStream = {
   handle: (self: AudioStream) -> JessHandle,
 }
 
+--- An output's options: a context's, and the device's.
+export type AudioOutputOptions = AudioContextOptions & { device: ('default' | 'null')?, period: number? }
+
+--- An output device: the platform API it plays through, its rate and channels, the frames it
+--- asks for at a time and how many periods it buffers (`latency`, about, in frames, is how far
+--- what you hear lags `now`), and what has happened to it: `stopped`, `rerouted` to a new default
+--- device, `interrupted` by the system, and whether the engine `failed` on its thread.
+export type AudioDevice = {
+  backend: string,
+  rate: number,
+  channels: number,
+  period: number,
+  periods: number,
+  latency: number,
+  stopped: number,
+  rerouted: number,
+  interrupted: number,
+  failed: boolean,
+}
+
 --- Where the listener is and which way it faces; any field left out stays as it was.
 export type AudioListener = { position: vector?, forward: vector?, up: vector?, velocity: vector? }
 
@@ -360,6 +380,8 @@ export type AudioContext = {
   --- Moves the listener from `at`, changing the fields given. It starts at the origin facing
   --- `-z` with `y` up, still.
   listener: (self: AudioContext, listener: AudioListener, at: number?) -> (),
+  --- The device rendering an output, or nil for an offline context.
+  device: (self: AudioContext) -> AudioDevice?,
   --- How many more commands the queue to the engine has room for.
   room: (self: AudioContext) -> number,
   --- Runs `body`, and sends every command it makes to the engine together: ones not stamped for
@@ -563,6 +585,11 @@ declare jess: {
     pcm: (data: buffer | string, options: { format: AudioSampleFormat, channels: number, rate: number }) -> AudioPcm,
     --- A context the script renders.
     offline: (options: AudioContextOptions?) -> AudioContext,
+    --- A context an output device renders: the default one, or `null`, which plays to nowhere in
+    --- real time. It runs at the device's own rate unless `rate` asks for another, and asks for
+    --- `period` frames at a time as a hint. Needs `audio.output`, and a jess built with the
+    --- audio-device feature.
+    output: (options: AudioOutputOptions?) -> AudioContext,
     --- A stream of `channels` (2) at `rate` (48000) holding `seconds` (1, at most 60) of frames; or,
     --- given a stream's handle, the stream itself, in whatever worker the handle was sent to.
     stream: (options: { channels: number?, rate: number?, seconds: number? } | JessHandle) -> AudioStream,

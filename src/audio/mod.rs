@@ -102,3 +102,10 @@ pub const MAX_PROCESSORS: usize = 4096;
 
 /// The fastest a voice plays its source.
 pub const MAX_PLAYBACK_RATE: f64 = 64.0;
+
+/// The capabilities a script host grants, by the dotted names the script runtime's broker knows
+/// them by. As with input, `jess::audio` enforces none of them; `jess.audio` checks them.
+pub mod capability {
+    /// Opening an output device: making sound people hear. An offline context needs nothing.
+    pub const OUTPUT: &str = "audio.output";
+}
