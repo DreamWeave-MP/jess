@@ -56,6 +56,7 @@ mod graph;
 mod param;
 mod pcm;
 pub mod processor;
+mod resample;
 pub mod spatial;
 pub mod stream;
 #[cfg(test)]

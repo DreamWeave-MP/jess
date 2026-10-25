@@ -8,6 +8,7 @@ use std::f32::consts::FRAC_PI_4;
 use std::sync::Arc;
 
 use crate::audio::param::{Curve, Glide, Param};
+use crate::audio::resample;
 use crate::audio::spatial::{Emitter, Space};
 use crate::audio::stream::Stream;
 use crate::audio::{AudioError, BusKey, MAX_CHANNELS, MAX_PLAYBACK_RATE, MAX_VOICE_SENDS, Pcm, QUANTUM};
@@ -297,27 +298,51 @@ impl Cursor {
         }
     }
 
-    /// The sample under the cursor: on a whole frame the frame itself, so a voice at its source's
-    /// rate copies exactly, and between frames Catmull-Rom through the four around it.
-    #[allow(clippy::cast_precision_loss)]
-    // A 32-bit fraction in an f32 loses only the far bits.
-    fn read(&self, data: &[f32]) -> f32 {
+    /// True when every read lands on a whole source frame: a voice at its source's own rate.
+    const fn exact(&self) -> bool {
+        self.step == ONE && self.position & FRACTION == 0
+    }
+
+    /// The sample under the cursor, through the windowed sinc in [`resample`]: on a whole frame,
+    /// read no faster than the output, the frame itself, so a voice at its source's rate copies
+    /// exactly.
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    // A 32-bit fraction in an f32 loses only the far bits; the stretch is from 1 to 4.
+    fn read(&self, data: &[f32], table: &[f32]) -> f32 {
         let index = to_signed(self.position >> 32);
         let fraction = self.position & FRACTION;
-        if fraction == 0 {
+        if fraction == 0 && self.step <= ONE {
             return self.sample(data, index);
         }
-        let t = fraction as f32 / 4_294_967_296.0;
-        let (before, at, after, beyond) = (
-            self.sample(data, index - 1),
-            self.sample(data, index),
-            self.sample(data, index + 1),
-            self.sample(data, index + 2),
-        );
-        let slope = 0.5 * (after - before);
-        let curve = before - 2.5 * at + 2.0 * after - 0.5 * beyond;
-        let cubic = 0.5 * (beyond - before) + 1.5 * (at - after);
-        ((cubic * t + curve) * t + slope) * t + at
+        let offset = fraction as f32 / 4_294_967_296.0;
+        let stretch = (self.step as f32 / 4_294_967_296.0).clamp(1.0, resample::MAX_STRETCH);
+        let squeeze = 1.0 / stretch;
+        let reach = (resample::HALF as f32 * stretch).ceil() as i64;
+        let (first, last) = (index - reach + 1, index + reach);
+        // The first frame's distance from the point read, in zero crossings of the kernel.
+        let mut distance = (1.0 - reach as f32 - offset) * squeeze;
+        let (mut sum, mut total) = (0.0, 0.0);
+        let (low, high) = match self.looping {
+            Some((start, end)) => (if self.wrapped { start } else { 0 }, end.min(data.len() as u64)),
+            None => (0, data.len() as u64),
+        };
+        if first >= to_signed(low) && last < to_signed(high) {
+            // All of it inside the source and the loop: read the frames as they lie.
+            for sample in &data[first as usize..=last as usize] {
+                let weight = resample::weight(table, distance);
+                sum += weight * sample;
+                total += weight;
+                distance += squeeze;
+            }
+        } else {
+            for frame in first..=last {
+                let weight = resample::weight(table, distance);
+                sum += weight * self.sample(data, frame);
+                total += weight;
+                distance += squeeze;
+            }
+        }
+        sum / total
     }
 
     /// The sample at frame `index`, through the loop: past its end is its start again, and
@@ -415,8 +440,8 @@ impl Spatial {
 }
 
 /// Frames a stream voice's window holds per channel: a block at the fastest a stream plays, and
-/// the frames around it that interpolation reads.
-pub const STREAM_WINDOW: usize = QUANTUM * 4 + 8;
+/// the frames on either side of it that resampling reads.
+pub const STREAM_WINDOW: usize = QUANTUM * 4 + 2 * resample::REACH + 8;
 
 /// What a voice plays.
 pub enum Source {
@@ -447,6 +472,7 @@ impl Source {
 /// `steps` frame by frame while the rate ramps; how many it read before the source ran out.
 fn render_pcm(pcm: &Pcm, cursor: &mut Cursor, scratch: &mut [f32], steps: Option<&[u64]>, frames: usize) -> usize {
     let length = pcm.frames() as u64;
+    let table = resample::table();
     let start = *cursor;
     let mut produced = 0;
     for channel in 0..pcm.channels() {
@@ -457,7 +483,7 @@ fn render_pcm(pcm: &Pcm, cursor: &mut Cursor, scratch: &mut [f32], steps: Option
             if cursor.looping.is_none() && cursor.position >> 32 >= length {
                 break;
             }
-            *sample = cursor.read(data);
+            *sample = cursor.read(data, table);
             produced += 1;
             if let Some(steps) = steps {
                 cursor.step = steps[index];
@@ -482,8 +508,14 @@ impl Reader<'_> {
     /// silence, counted as missed; a finished stream ends where its data does.
     fn render(self, cursor: &mut Cursor, scratch: &mut [f32], steps: Option<&[u64]>, frames: usize) -> usize {
         let channels = self.stream.channels();
-        // Let go of what the cursor has passed, but the frame interpolation still reads.
-        let keep = (cursor.position >> 32).saturating_sub(1);
+        // A voice at the stream's own rate reads the frames it is on; any other reads around them.
+        let reach = if steps.is_none() && cursor.exact() {
+            1
+        } else {
+            resample::REACH as u64
+        };
+        // Let go of what the cursor has passed, but the frames resampling still reads.
+        let keep = (cursor.position >> 32).saturating_sub(reach);
         if keep > *self.base {
             let passed = usize::try_from(keep - *self.base).unwrap_or(usize::MAX).min(*self.filled);
             for channel in 0..channels {
@@ -494,7 +526,7 @@ impl Reader<'_> {
             *self.filled -= passed;
         }
         let travel = steps.map_or(cursor.step * frames as u64, |steps| steps.iter().sum());
-        let last = ((cursor.position + travel) >> 32) + 3;
+        let last = ((cursor.position + travel) >> 32) + reach + 2;
         let wanted = usize::try_from(last.saturating_sub(*self.base))
             .unwrap_or(usize::MAX)
             .min(STREAM_WINDOW);
@@ -511,6 +543,7 @@ impl Reader<'_> {
             *self.filled = wanted;
         }
         let finished = self.stream.finished();
+        let table = resample::table();
         let origin = *self.base << 32;
         let start = Cursor {
             position: cursor.position - origin,
@@ -527,7 +560,7 @@ impl Reader<'_> {
                 if finished && relative.position >> 32 >= data.len() as u64 {
                     break;
                 }
-                *sample = relative.read(data);
+                *sample = relative.read(data, table);
                 produced += 1;
                 if let Some(steps) = steps {
                     relative.step = steps[index];

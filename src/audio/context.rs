@@ -190,6 +190,8 @@ pub struct Control {
 /// [`MAX_BUSES`], more than [`MAX_PROCESSORS`], or no command room.
 pub fn context(config: &AudioConfig) -> Result<(Control, Engine), AudioError> {
     check_layout(config.channels, config.rate)?;
+    // Built here, the first time, so no engine builds it while rendering.
+    crate::audio::resample::table();
     if config
         .physical
         .is_some_and(|physical| physical == 0 || physical > config.voices)

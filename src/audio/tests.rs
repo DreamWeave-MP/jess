@@ -157,6 +157,51 @@ fn a_slower_source_is_interpolated_through_its_own_samples() {
     );
 }
 
+/// A second of a sine at `frequency` in a source at `rate`, played into a 48 kHz context: the
+/// RMS of the output past the first and last tenths, over the source's own RMS.
+fn passed(frequency: f64, rate: u32, playback: f64) -> f64 {
+    #[allow(clippy::cast_possible_truncation)] // Test signals.
+    let tone: Vec<f32> = (0..rate)
+        .map(|frame| (std::f64::consts::TAU * frequency * f64::from(frame) / f64::from(rate)).sin() as f32)
+        .collect();
+    let mut context = mono(AudioConfig::default());
+    let spec = PlaySpec { rate: playback, ..at(0) };
+    context.control().play(&pcm(&tone, rate), &spec).unwrap();
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Whole frames.
+    let frames = (48_000.0 / playback) as usize;
+    let out = context.render(frames);
+    let middle = &out[frames / 10..frames - frames / 10];
+    let energy: f64 = middle.iter().map(|sample| f64::from(*sample).powi(2)).sum();
+    #[allow(clippy::cast_precision_loss)] // A count of samples.
+    let rms = (energy / middle.len() as f64).sqrt();
+    rms / std::f64::consts::FRAC_1_SQRT_2
+}
+
+#[test]
+fn a_faster_source_is_filtered_to_what_the_output_can_hold() {
+    // 96 kHz into 48 kHz: what is under 24 kHz passes, and what is over it doesn't come back as
+    // an alias below. Read straight through every other frame, 36 kHz would be 12 kHz at full level.
+    assert!(
+        (passed(6000.0, 96_000, 1.0) - 1.0).abs() < 0.01,
+        "{}",
+        passed(6000.0, 96_000, 1.0)
+    );
+    assert!(passed(36_000.0, 96_000, 1.0) < 1e-3, "{}", passed(36_000.0, 96_000, 1.0));
+    // A rate above one is the same: a 48 kHz source played at 1.5, where 23 kHz is 34.5.
+    assert!(passed(23_000.0, 48_000, 1.5) < 1e-3, "{}", passed(23_000.0, 48_000, 1.5));
+    assert!(
+        (passed(4000.0, 48_000, 1.5) - 1.0).abs() < 0.01,
+        "{}",
+        passed(4000.0, 48_000, 1.5)
+    );
+    // And upsampling keeps what is there: 44.1 kHz into 48 kHz.
+    assert!(
+        (passed(10_000.0, 44_100, 1.0) - 1.0).abs() < 0.01,
+        "{}",
+        passed(10_000.0, 44_100, 1.0)
+    );
+}
+
 #[test]
 fn a_loop_wraps_without_a_gap() {
     // Intro 0, 1; loop 2..5.

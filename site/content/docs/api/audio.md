@@ -120,7 +120,7 @@ Starts a voice. Options:
 | `priority` | `0` | How much it matters when there are more voices than the context mixes; see [Budgets](#budgets) |
 | `culled` | `advance` | What it does while it isn't mixed: `advance`, `pause`, or `stop` |
 
-A source at a different rate from the context is resampled; at the same rate and `rate = 1` it plays sample for sample. Mono mixes into any output, stereo into mono (averaged), and otherwise the channel counts must match.
+A source at a different rate from the context is resampled; at the same rate and `rate = 1` it plays sample for sample. A source read faster than the context plays it, by its rate or its `rate`, is filtered first, so nothing too high for the output folds back as a lower tone. Mono mixes into any output, stereo into mono (averaged), and otherwise the channel counts must match.
 
 {{ api_signature(value="context:render(frames: number) -> buffer") }}
 
