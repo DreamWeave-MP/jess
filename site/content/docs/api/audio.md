@@ -6,7 +6,7 @@ extra:
   kind: api
 ---
 
-{{ api_signature(value="require('@jess/audio'): { pcm, stream, offline, processors, frames, seconds, tempo, readWav, loadWav, writeWav }") }}
+{{ api_signature(value="require('@jess/audio'): { pcm, stream, offline, output, processors, frames, seconds, tempo, readWav, loadWav, writeWav }") }}
 
 `@jess/audio` is audio for scripts: the built-in package's Luau over `jess.audio`, the native half. The native side owns samples, voices, the sample clock, and the mix. What a file's bytes are and which frame a second lands on are Luau's, so WAV reading and writing and the time helpers live here, and a format that needs a native codec arrives as PCM bytes the same way.
 
@@ -81,6 +81,18 @@ end
 A context the script renders. Defaults: 48000 frames per second, 2 channels, 256 voices, 64 buses (the master included), 256 processors, and room for 4096 commands waiting for their frame. `speedOfSound` (343) and `handedness` (`right`) describe the world's space; see [Space](#space).
 
 `voices` counts voices playing or stamped for later; `commands` bounds the queue to the engine. Every count is fixed when the context is made, so the engine never allocates while it mixes. Running out of one is an error at the call that ran out (`all 256 voices are playing or scheduled`, `the audio command queue is full`), never a sound quietly not played.
+
+{{ api_signature(value="audio.output(options: AudioOutputOptions?) -> AudioContext") }}
+
+A context an output device renders: the platform's default output, or with `device = 'null'` the null device, which plays to nowhere in real time (for tests, and machines with no sound). It takes a context's options, runs at the device's own rate unless `rate` asks for another, and asks for `period` frames at a time as a hint. Everything else is the same as an offline context, except `render`, which is the device's: the script plays into it and the device's thread mixes as time passes, whether or not the script is running.
+
+An output needs the `audio.output` capability, and a jess built with the `audio-device` feature; without the feature it says so. An offline context needs neither. Dropping the context stops the device, and so does the end of the generation of the script that opened it.
+
+{{ api_signature(value="context:device() -> AudioDevice?") }}
+
+The device rendering an output, or nil for an offline context: its `backend` (the platform API, such as `PulseAudio`, `WASAPI`, `Core Audio`, or `Null`), `rate`, `channels`, the frames it asks for at a time (`period`) and how many it buffers (`periods`), `latency` (about how many frames what you hear lags `now`), and what has happened to it: `stopped`, `rerouted` to a new default device, `interrupted` by the system, and whether the engine `failed` on its thread.
+
+See [Audio Engine](@/docs/contributing/audio-engine.md) for how the device and the engine meet.
 
 {{ api_signature(value="context:play(source: AudioPcm | AudioStream, options: AudioPlayOptions?) -> AudioVoice") }}
 
