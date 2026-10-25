@@ -160,6 +160,39 @@ suite.describe('voices', function()
     expect(function() audio.pcm(buffer.create(3), { format = 's16', channels = 1, rate = 8000 }) end).toThrow "aren't whole frames"
     expect(function() audio.offline { channels = 9 } end).toThrow 'channel count is 1 to 8'
   end)
+
+  suite.it('refuse a misspelled or mistyped option however deep it sits', function()
+    local click = audio.pcm(floats { 1 }, { format = 'f32', channels = 1, rate = 48000 })
+    local context = audio.offline { channels = 1 }
+    local room = context:bus()
+    local here = vector.create(0, 0, 1)
+    expect(function() context:play(click, ({ gain = 'loud' } :: unknown) :: audio.PlayOptions) end).toThrow 'gain'
+    expect(function() context:play(click, ({ [1] = 2 } :: unknown) :: audio.PlayOptions) end).toThrow 'option 1'
+    expect(function() context:play(click, ({ place = 5 } :: unknown) :: audio.PlayOptions) end).toThrow 'takes a table'
+    expect(function() context:listener(({ pos = here } :: unknown) :: audio.Listener) end).toThrow 'pos'
+
+    expect(function()
+      context:play(click, ({ place = { posiiton = here } } :: unknown) :: audio.PlayOptions)
+    end).toThrow 'posiiton'
+
+    expect(function()
+      context:play(click, ({ place = { position = here, cone = { wide = 1 } } } :: unknown) :: audio.PlayOptions)
+    end).toThrow 'wide'
+
+    expect(function()
+      context:play(click, ({ place = { distance = 'far' } } :: unknown) :: audio.PlayOptions)
+    end).toThrow 'none, inverse, linear, or exponential'
+
+    expect(function()
+      context:play(click, ({ sends = { { level = 0.5 } } } :: unknown) :: audio.PlayOptions)
+    end).toThrow 'each send names its bus'
+
+    expect(function()
+      context:play(click, ({ sends = { { bus = room, amount = 1 } } } :: unknown) :: audio.PlayOptions)
+    end).toThrow 'amount'
+
+    expect(context:stats().allocated).toBe(0)
+  end)
 end)
 
 --- A mono source of `values` at 48000 frames per second.
