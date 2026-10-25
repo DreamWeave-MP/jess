@@ -45,6 +45,7 @@
 
 #![warn(missing_docs)]
 
+pub mod backend;
 mod bus;
 mod context;
 pub mod dsp;
@@ -60,6 +61,7 @@ pub mod stream;
 mod tests;
 mod voice;
 
+pub use backend::{DeviceInfo, DeviceRequest, DeviceStats, LiveContext};
 pub use bus::{BusKey, BusParam, BusSpec, Tap};
 pub use context::{AudioConfig, AudioStats, Control, Meter, OfflineContext, VoiceState, context};
 pub use engine::{CONTROL_QUANTUM, Engine};
