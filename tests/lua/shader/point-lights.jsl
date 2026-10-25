@@ -7,7 +7,11 @@ local Light = shader.struct('Light', { color = shader.vec4, position = shader.ve
 
 return shader.program {
   attributes = { normal = shader.vec3, position = shader.vec3, uv = shader.vec2 },
-  pass = { lightCount = shader.uint, lights = shader.array(Light, 8), viewProjection = shader.mat4 },
+  pass = {
+    lightCount = shader.uint,
+    lights = shader.array(Light, 8),
+    viewProjection = shader.mat4,
+  },
   material = { cutoff = shader.float, diffuse = shader.texture2d },
 
   vertex = function(input)

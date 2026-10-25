@@ -214,7 +214,9 @@ local textures = shader.program {
       comparedIn = tostring(
         shader.sampleCompare(material.cascades, input.pass.compare, input.direction.xy, 1, 0.5)
       ),
-      comparedAtZero = tostring(shader.sampleCompareLevel(material.shadow, input.direction.xy, 0.5)),
+      comparedAtZero = tostring(
+        shader.sampleCompareLevel(material.shadow, input.direction.xy, 0.5)
+      ),
       depth = tostring(shader.load(material.shadow, shader.vec2u(0), 0)),
       handles = { tostring(material.decals), tostring(material.fog), tostring(material.sky) },
       layered = tostring(shader.sample(material.decals, input.direction.xy, input.draw.layer)),

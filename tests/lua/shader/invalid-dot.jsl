@@ -1,5 +1,5 @@
 --!strict
--- A dot product of a Vec3f and a Vec4f: it fails at line 20, where it's written.
+-- A dot product of a Vec3f and a Vec4f: it fails at line 22, where it's written.
 local shader = require '@jess/shader'
 
 return shader.program {
@@ -13,7 +13,9 @@ return shader.program {
   },
 
   vertex = function(input)
-    return { position = shader.vec4(input.attributes.position, 1.0), normal = input.attributes.normal }
+    local vertex = input.attributes
+
+    return { position = shader.vec4(vertex.position, 1.0), normal = vertex.normal }
   end,
 
   fragment = function(input)

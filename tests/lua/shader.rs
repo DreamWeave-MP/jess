@@ -239,7 +239,7 @@ fn an_invalid_dot_fails_at_the_line_that_wrote_it() {
     let file = path.display().to_string();
     assert_eq!(
         error,
-        format!("{file}:20 ({file}): dot(Vec3f, Vec4f) is invalid: expected two vectors of the same type")
+        format!("{file}:22 ({file}): dot(Vec3f, Vec4f) is invalid: expected two vectors of the same type")
     );
 }
 
