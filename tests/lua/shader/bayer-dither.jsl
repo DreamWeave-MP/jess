@@ -2,7 +2,7 @@
 -- Port of S3ctor's bayerDither.omwfx to the staged @jess/shader surface.
 -- The .omwfx controls are static, so they are ordinary Luau constants here and disappear while
 -- the shader graph is built. A source texture stands in for omw_GetLastShader until pass-specific
--- sceneColor/previousPass semantics are bindable by the renderer.
+-- pass inputs are bindable by the renderer.
 local shader = require '@jess/shader'
 
 type Expr = ShaderExpr
@@ -187,7 +187,11 @@ local function build(mode: number, ditherSize: number): ShaderProgram
       uv = shader.vec2,
     },
 
-    textures = {
+    pass = {
+      viewportSize = shader.vec2,
+    },
+
+    material = {
       source = shader.texture2d,
     },
 
@@ -199,8 +203,8 @@ local function build(mode: number, ditherSize: number): ShaderProgram
     end,
 
     fragment = function(input)
-      local color = shader.sample(input.source, input.uv)
-      local screenPos = input.uv * input.viewportSize
+      local color = shader.sample(input.material.source, input.uv)
+      local screenPos = input.uv * input.pass.viewportSize
 
       local function brighten(result: Expr): Expr
         return shader.vec4(result.xyz * BRIGHTNESS_MULT, result.w)

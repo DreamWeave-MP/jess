@@ -3,8 +3,11 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::shader::expression::{Expression, ExpressionId, Literal, Semantic, SourceOrigin, Swizzle};
-use crate::shader::interface::{Attribute, AttributeId, Rate};
+use crate::shader::expression::{Expression, ExpressionId, Literal, Place, SourceOrigin, Step, Swizzle};
+use crate::shader::interface::{
+    Attribute, AttributeId, DataType, Field, Frequency, Rate, Resource, ResourceId, ResourceKind, StructDecl, StructId,
+    Uniform, UniformId,
+};
 use crate::shader::program::{Declaration, Program};
 use crate::shader::types::Type;
 use crate::shader::validate::{self, DeclarationKind, ValidationError, ValidationErrorKind};
@@ -124,20 +127,108 @@ pub struct Site<'a> {
 }
 
 impl Site<'_> {
-    /// Declares a parameter (a value, a `Texture2D`, or a `Sampler`) and returns its value.
+    /// The program so far, for a frontend that looks up what it has declared.
+    #[must_use]
+    pub fn program(&self) -> &Program {
+        &self.builder.program
+    }
+
+    /// Declares a struct `name` of `fields`, which may name only the structs declared before it.
     ///
     /// # Errors
     ///
-    /// The first problem with the declaration: an invalid name, a name already declared, or a
-    /// type a parameter cannot have.
-    pub fn parameter(&mut self, name: &str, ty: Type) -> Result<Value, ValidationError> {
-        self.check_declaration(DeclarationKind::Parameter, &self.builder.program.parameters, name, ty)?;
-        let program = &mut self.builder.program;
-        let parameter = match &self.origin {
-            Some(origin) => program.parameter_at(name, ty, origin.clone()),
-            None => program.parameter(name, ty),
+    /// The first problem with the declaration: an invalid name, no fields, or a field that is badly
+    /// named, named twice, or of a type no buffer holds.
+    pub fn structure(&mut self, name: &str, fields: Vec<Field>) -> Result<StructId, ValidationError> {
+        let declaration = StructDecl {
+            name: name.to_owned(),
+            fields,
+            origin: self.origin.clone(),
         };
-        Ok(self.push(Expression::Parameter(parameter), ty))
+        let problem = validate::struct_errors(&self.builder.program.structs, &declaration)
+            .into_iter()
+            .next();
+        if let Some(kind) = problem {
+            return Err(self.error(kind));
+        }
+        Ok(self.builder.program.structure(declaration))
+    }
+
+    /// Declares a member `name` of `ty` in the uniform block `frequency` binds. [`load`](Site::load)
+    /// reads it.
+    ///
+    /// # Errors
+    ///
+    /// The first problem with the declaration: an invalid name, a name the frequency has already, or
+    /// a type no buffer holds.
+    pub fn uniform(&mut self, frequency: Frequency, name: &str, ty: DataType) -> Result<UniformId, ValidationError> {
+        let program = &self.builder.program;
+        let kind = DeclarationKind::Uniform(frequency);
+        let mut problems = validate::binding_errors(kind, binding_names(program, frequency, None), name);
+        problems.extend(validate::data_type_errors(kind, name, ty, &program.structs));
+        if let Some(kind) = problems.into_iter().next() {
+            return Err(self.error(kind));
+        }
+        let uniform = Uniform {
+            name: name.to_owned(),
+            frequency,
+            ty,
+            origin: self.origin.clone(),
+        };
+        Ok(self.builder.program.uniform(uniform))
+    }
+
+    /// Declares a texture or sampler `name` that `frequency` binds. A texture and a sampler may
+    /// share a name; nothing else the frequency binds may.
+    ///
+    /// # Errors
+    ///
+    /// An invalid name, or a name the frequency has already.
+    pub fn resource(&mut self, frequency: Frequency, name: &str, kind: ResourceKind) -> Result<ResourceId, ValidationError> {
+        let program = &self.builder.program;
+        let names = binding_names(program, frequency, Some(kind));
+        let problem = validate::binding_errors(validate::resource_kind(frequency, kind), names, name)
+            .into_iter()
+            .next();
+        if let Some(problem) = problem {
+            return Err(self.error(problem));
+        }
+        let resource = Resource {
+            name: name.to_owned(),
+            frequency,
+            kind,
+            origin: self.origin.clone(),
+        };
+        Ok(self.builder.program.resource(resource))
+    }
+
+    /// The uniform value at `place`, read at this site. `indices` are the values of its index
+    /// steps, in order: [`Place`] names them by expression, and each must be one of this program's.
+    ///
+    /// # Errors
+    ///
+    /// A value from another program, or a place that doesn't lead to a value: a member or field
+    /// that isn't declared, an index that isn't an `Int` or `UInt` or is past a constant end, or a
+    /// struct or array where a value should be.
+    pub fn load(&mut self, place: Place, indices: &[Value]) -> Result<Value, ValidationError> {
+        for index in indices {
+            self.own(*index)?;
+        }
+        let index_type = |id: ExpressionId| {
+            let index = indices.iter().find(|index| index.expression == id);
+            index.map_or(Type::Bool, |index| index.ty)
+        };
+        let ty = validate::place_type(&self.builder.program, &place, index_type).map_err(|problem| {
+            self.error(ValidationErrorKind::InvalidPlace {
+                expression: self.next(),
+                problem,
+            })
+        })?;
+        debug_assert_eq!(
+            place.steps().iter().filter(|step| matches!(step, Step::Index(_))).count(),
+            indices.len()
+        );
+        Ok(self.push(Expression::Load(place), ty))
     }
 
     /// Declares a vertex attribute, per vertex or per instance. [`read_attribute`](Site::read_attribute)
@@ -226,13 +317,6 @@ impl Site<'_> {
     /// A `Bool` constant.
     pub fn bool(&mut self, value: bool) -> Value {
         self.push(Expression::Literal(Literal::Bool(value)), Type::Bool)
-    }
-
-    /// A value the renderer provides. The pass-specific semantics (`sceneColor`, `sceneDepth`,
-    /// `previousPass`) are accepted here and rejected by [`ProgramBuilder::finish`], as the
-    /// lowering cannot bind them yet.
-    pub fn semantic(&mut self, semantic: Semantic) -> Value {
-        self.push(Expression::Semantic(semantic), semantic.ty())
     }
 
     /// `left + right`.
@@ -364,14 +448,24 @@ impl Site<'_> {
     ///
     /// # Errors
     ///
-    /// A value from another program, or operands that are not `(Texture2D, Sampler, Vec2f)`.
-    pub fn sample(&mut self, texture: Value, sampler: Value, coordinates: Value) -> Result<Value, ValidationError> {
+    /// Coordinates from another program, or a texture, sampler, and coordinates that are not a
+    /// `Texture2D`, a `Sampler`, and a `Vec2f`.
+    pub fn sample(
+        &mut self,
+        texture: ResourceId,
+        sampler: ResourceId,
+        coordinates: Value,
+    ) -> Result<Value, ValidationError> {
+        self.own(coordinates)?;
+        let id = self.next();
+        let program = &self.builder.program;
+        let ty = validate::sample_type(program, id, texture, sampler, coordinates.ty).map_err(|kind| self.error(kind))?;
         let expression = Expression::Sample {
-            texture: texture.expression,
-            sampler: sampler.expression,
+            texture,
+            sampler,
             coordinates: coordinates.expression,
         };
-        self.operation(expression, &[texture, sampler, coordinates])
+        Ok(self.push(expression, ty))
     }
 
     /// A `target` vector (`Vec2f`, `Vec3f`, or `Vec4f`) from floats and smaller vectors whose
@@ -492,4 +586,17 @@ impl Site<'_> {
             ty,
         }
     }
+}
+
+/// The names a `frequency` binds that a new uniform member (`kind` `None`) or resource of `kind`
+/// may not take: every uniform member's, and every resource's of the same kind, or of any kind for
+/// a uniform member.
+fn binding_names(program: &Program, frequency: Frequency, kind: Option<ResourceKind>) -> impl Iterator<Item = &str> {
+    let uniforms = program.uniforms_of(frequency).map(|(_, uniform)| uniform.name.as_str());
+    let resources = program
+        .resources
+        .iter()
+        .filter(move |resource| resource.frequency == frequency && kind.is_none_or(|kind| resource.kind == kind))
+        .map(|resource| resource.name.as_str());
+    uniforms.chain(resources)
 }

@@ -1,5 +1,5 @@
 --!strict
--- A vertex position and one flat color from a parameter.
+-- A vertex position through the camera and one flat color from the material.
 local shader = require '@jess/shader'
 
 return shader.program {
@@ -7,17 +7,26 @@ return shader.program {
     position = shader.vec3,
   },
 
-  parameters = {
+  pass = {
+    projection = shader.mat4,
+    view = shader.mat4,
+  },
+
+  material = {
     tint = shader.vec4,
+  },
+
+  draw = {
+    model = shader.mat4,
   },
 
   vertex = function(input)
     local localPosition = shader.vec4(input.attributes.position, 1.0)
 
     return {
-      position = input.projection * input.view * input.model * localPosition,
+      position = input.pass.projection * input.pass.view * input.draw.model * localPosition,
     }
   end,
 
-  fragment = function(input) return input.tint end,
+  fragment = function(input) return input.material.tint end,
 }

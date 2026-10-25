@@ -106,6 +106,15 @@ pub enum Element {
     Struct(StructId),
 }
 
+impl From<Element> for DataType {
+    fn from(element: Element) -> DataType {
+        match element {
+            Element::Value(ty) => DataType::Value(ty),
+            Element::Struct(id) => DataType::Struct(id),
+        }
+    }
+}
+
 /// The type of something a buffer holds: a struct field or a uniform member.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[allow(variant_size_differences)] // an id beside a one-byte type: a few bytes either way

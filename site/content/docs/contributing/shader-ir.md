@@ -42,27 +42,18 @@ Exactly what a first renderer needs:
 | `Vec2f`, `Vec3f`, `Vec4f` | float vectors |
 | `Vec2i`..`Vec4i`, `Vec2u`..`Vec4u` | signed and unsigned integer vectors; varyings of them pass flat |
 | `Mat3f`, `Mat4f` | column-major float matrices |
-| `Texture2D`, `Sampler` | resources, never values: only a parameter has these types |
 
-Not the entire WGSL type system. If a first-party shader needs another type, it gets added then.
+Not the entire WGSL type system. If a first-party shader needs another type, it gets added then. Structs, arrays, textures, and samplers aren't values at all: a program declares them (see [Layout](#layout)), and expressions read the values in them.
 
 ## Expressions
 
 Expressions live in an arena and name each other by `ExpressionId`. Ids only point backwards: an operand always comes before the expression that reads it. The arena is already in dependency order, so validation, folding, and lowering are single passes over a vector. No recursion, no boxed trees, no visitor.
 
-The leaves are literals, declared parameters, attributes, varyings, and semantics. The operations are `sample`, `+ - * /`, `min`, `max`, `clamp`, `dot`, `cross`, `normalize`, `length`, `mix`, vector constructors, and swizzles. `*` covers matrix × vector and matrix × matrix. `min`, `max`, and `clamp` take a scalar of a vector's kind where the vector is expected, and `mix` a `Float` amount, because every shader author writes `clamp(color, 0.0, 1.0)` and WGSL refusing it helps nobody. Integer vectors get the same arithmetic, constructors, and swizzles as float vectors; what only makes sense for floats (`normalize`, `length`, `floor`, `mix`, `cross`) refuses them.
+The leaves are literals, attributes, varyings, and loads of uniform values. The operations are `sample`, `+ - * /`, `min`, `max`, `clamp`, `dot`, `cross`, `normalize`, `length`, `mix`, vector constructors, and swizzles. `*` covers matrix × vector and matrix × matrix. `min`, `max`, and `clamp` take a scalar of a vector's kind where the vector is expected, and `mix` a `Float` amount, because every shader author writes `clamp(color, 0.0, 1.0)` and WGSL refusing it helps nobody. Integer vectors get the same arithmetic, constructors, and swizzles as float vectors; what only makes sense for floats (`normalize`, `length`, `floor`, `mix`, `cross`) refuses them.
 
-Semantics are values the renderer provides, named by what they mean rather than where they live:
+A load reads a value through a `Place`: a frequency's uniform block, then fields and indices down to one value, `pass.lights[i].color` being the pass block, member `lights`, element `i`, field `color`. An index is an `Int` or `UInt` expression, so a place can depend on what the program computes; a load whose place has an index is computed once, like any other operation, and one without is written where it's read. `sample` names its texture and sampler by the resources the program declared, never by a value.
 
-| Semantic | Type | Lowered |
-| --- | --- | --- |
-| `model`, `view`, `projection` | `Mat4f` | yes |
-| `cameraPosition` | `Vec3f` | yes |
-| `viewportSize` | `Vec2f` | yes |
-| `time` | `Float` | yes |
-| `sceneColor`, `sceneDepth`, `previousPass` | `Texture2D` | not yet |
-
-The pass inputs exist in the IR so the render graph can grow into them. Until the lowering can bind them, validation says so instead of generating something that half works.
+Nothing is built in. There's no model matrix, no camera, no time: a program that wants one declares it, as a uniform member some frequency binds, and so the IR holds no notion of what a camera is.
 
 ## Validation
 
@@ -74,10 +65,11 @@ sample(Texture2D, Sampler, Vec3f) is invalid: expected sample(Texture2D, Sampler
 fragment output 0 is Vec3f: expected Vec4f
 varying "uv" is read by the fragment stage but never written by the vertex stage
 attribute "position" is read in the fragment stage: pass it through a varying
-semantic sceneColor is not supported by the WGSL lowering yet
+a load reads element 8 of an array of 4
+uniform material.weights is an array of elements 4 bytes apart: a uniform array's elements must be a multiple of 16 bytes apart, so give it 16-byte elements (a Vec4f, a struct), or read it from a storage buffer
 ```
 
-It checks declarations (names, duplicates, and types their kind can't have, such as a `Bool` parameter, which no uniform buffer can hold), references to anything undeclared or from another program, operand types, which stage reads what (attributes are vertex-only, varyings fragment-only, and `sample` needs the fragment stage's derivatives), the stage interface, and output types. Constant arithmetic that WGSL would reject while compiling (integer overflow, integer division by zero, a non-finite float) is rejected here first, along with NaN and infinite literals, which WGSL can't write at all.
+It checks declarations (names, duplicates, and types their kind can't have, such as a `Bool` uniform member, which no buffer can hold, or a uniform array whose elements aren't 16 bytes apart), references to anything undeclared or from another program, every load's place, operand types, which stage reads what (attributes are vertex-only, varyings fragment-only, and `sample` needs the fragment stage's derivatives), the stage interface, and output types. Constant arithmetic that WGSL would reject while compiling (integer overflow, integer division by zero, a non-finite float) is rejected here first, along with NaN and infinite literals, which WGSL can't write at all.
 
 Errors are collected, not thrown one at a time. An expression whose operand already failed is left untyped and not reported again, so one bad `dot` is one error, not one per expression downstream of it. Expressions no stage reads aren't checked. They aren't lowered either.
 
@@ -85,7 +77,7 @@ naga validating the output is a test, not a diagnostic. If naga ever rejects a p
 
 ## Source Attribution
 
-Every expression and declaration can carry a `SourceOrigin`: owner, file, line, and column. `push_at`, `parameter_at`, and `varying_at` record one, as does an `origin` on a declaration such as an `Attribute`; plain `push` doesn't. Origins are stored sparsely beside the arena, so native Rust that never records one pays nothing for them.
+Every expression and declaration can carry a `SourceOrigin`: owner, file, line, and column. `push_at` and `varying_at` record one, as does an `origin` on a declaration such as an `Attribute` or a `Uniform`; plain `push` doesn't. Origins are stored sparsely beside the arena, so native Rust that never records one pays nothing for them.
 
 Errors carry the origin of the expression or declaration at fault:
 
@@ -117,29 +109,29 @@ One module writes all WGSL, with one naming scheme:
 
 | What | WGSL name |
 | --- | --- |
-| value parameter `color` | `parameters.p_color` |
-| texture and sampler `diffuse` | `t_diffuse`, `s_diffuse` |
+| uniform member `color` of the material | `u_material.f_color`, of struct `MaterialUniforms` |
+| struct `Light`, declared third | `S2_Light`, its fields `f_color`, ... |
+| texture and sampler `diffuse` of the material | `t_material_diffuse`, `s_material_diffuse` |
 | attribute `uv` | `input.a_uv`; per instance, `input.i_uv` |
 | matrix attribute `transform` at location 3 | its columns, `input.m3_transform` to `input.m6_transform` |
 | varying `uv` | `input.v_uv` |
-| semantic `cameraPosition` | `semantics.camera_position` |
 | fragment output 0 | `color0` |
 | temporaries | `e0`, `e1`, ... per entry point, in arena order |
 
 Every non-leaf expression a stage reads becomes one `let`. The entry points are `vertex_main` and `fragment_main`. The same program always lowers to the same bytes.
 
-Bindings belong to jess, never the author. Semantics are one uniform block at `@group(0) @binding(0)`, holding only the semantics the program reads. Value parameters are one uniform block at `@group(1) @binding(0)`, in declaration order, and textures and samplers follow in `@group(1)`. Vertex inputs get locations in declaration order. `WgslModule` reports all of it, including each uniform member's offset and size under WGSL's layout rules (a `Vec3f` aligns to 16 bytes, a `Mat3f` is three padded 16-byte columns), so the renderer never has to rediscover the layout from the source.
+Bindings and layouts belong to jess, never the author, and the lowering writes out what [Layout](#layout) decided: each frequency's block at binding 0 of its group, its textures and samplers after it, struct and block members in memory order, with `@align` and `@size` wherever jess's 16-byte rule differs from what WGSL would pick by itself. `WgslModule` carries the `ProgramLayout`, so the renderer never has to rediscover a layout from the source.
 
 The fragment half of the textured, lit golden:
 
 ```wgsl
 @fragment
 fn fragment_main(input: VertexOutput) -> FragmentOutput {
-    let e0 = textureSample(t_diffuse, s_diffuse, input.v_uv);
+    let e0 = textureSample(t_material_diffuse, s_material_diffuse, input.v_uv);
     let e1 = normalize(input.v_normal);
-    let e2 = dot(e1, parameters.p_lightDirection);
+    let e2 = dot(e1, u_material.f_lightDirection);
     let e3 = max(e2, 0.0);
-    let e4 = e3 + parameters.p_ambient;
+    let e4 = e3 + u_material.f_ambient;
     let e5 = e0.xyz;
     let e6 = e5 * e4;
     let e7 = clamp(e6, vec3<f32>(0.0), vec3<f32>(1.0));

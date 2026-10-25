@@ -6,8 +6,20 @@ local shader = require '@jess/shader'
 
 local observed: { [string]: any } = {}
 
+local Camera = shader.struct('Camera', {
+  position = shader.vec3,
+  projection = shader.mat4,
+  view = shader.mat4,
+})
+
+local Light = shader.struct('Light', {
+  color = shader.vec3,
+  direction = shader.vec3,
+})
+
 local lit = shader.program {
   attributes = {
+    light = shader.uint,
     normal = shader.vec3,
     position = shader.vec3,
     uv = shader.vec2,
@@ -18,20 +30,30 @@ local lit = shader.program {
     transform = shader.mat4,
   },
 
-  parameters = {
-    normalMatrix = shader.mat3,
-    lightDirection = shader.vec3,
-    ambient = shader.float,
-    tint = shader.vec4,
-    pointSampler = shader.sampler,
+  pass = {
+    camera = Camera,
+    lights = shader.array(Light, 4),
+    time = shader.float,
+    viewportSize = shader.vec2,
   },
 
-  textures = {
+  material = {
+    ambient = shader.float,
     diffuse = shader.texture2d,
+    normalMatrix = shader.mat3,
+    pointSampler = shader.sampler,
+    tint = shader.vec4,
+  },
+
+  draw = {
+    model = shader.mat4,
   },
 
   vertex = function(input)
-    local clip = input.projection * input.view * input.model * shader.vec4(input.attributes.position, 1.0)
+    local camera = input.pass.camera
+    local placed = input.instance.transform * shader.vec4(input.attributes.position, 1.0)
+    local clip = camera.projection * camera.view * input.draw.model * placed
+    local lights = input.pass.lights
     observed.vertex = {
       input = tostring(input),
       attributes = tostring(input.attributes),
@@ -39,12 +61,23 @@ local lit = shader.program {
       position = tostring(input.attributes.position),
       transform = tostring(input.instance.transform),
       shade = tostring(input.instance.shade),
-      placed = tostring(input.instance.transform * shader.vec4(input.attributes.position, 1.0)),
+      placed = tostring(placed),
       clip = tostring(clip),
-      matrix = tostring(input.projection * input.view),
+      matrix = tostring(camera.projection * camera.view),
       sameRead = input.attributes.position == input.attributes.position,
       differentValues = input.attributes.position == input.attributes.normal,
-      texture = tostring(input.diffuse),
+      sameUniform = camera.view == input.pass.camera.view,
+      places = {
+        pass = tostring(input.pass),
+        camera = tostring(camera),
+        lights = tostring(lights),
+        light = tostring(lights[0]),
+        length = #lights,
+        constantIndex = tostring(lights[3].color),
+        valueIndex = tostring(lights[input.attributes.light].direction),
+      },
+      texture = tostring(input.material.diffuse),
+      sampler = tostring(input.material.pointSampler),
       integers = {
         cell = tostring(shader.vec3i(1, -2, 3)),
         count = tostring(shader.uint(7)),
@@ -57,42 +90,44 @@ local lit = shader.program {
 
     return {
       position = clip,
-      normal = input.normalMatrix * input.attributes.normal,
+      normal = input.material.normalMatrix * input.attributes.normal,
       uv = input.attributes.uv,
     }
   end,
 
   fragment = function(input)
-    local diffuse = shader.sample(input.diffuse, input.uv)
-    local facing = shader.dot(shader.normalize(input.normal), input.lightDirection)
-    local light = shader.max(facing, 0.0) + input.ambient
-    local lit = shader.clamp(diffuse.xyz * light, 0.0, 1.0)
+    local material = input.material
+    local light = input.pass.lights[0]
+    local diffuse = shader.sample(material.diffuse, input.uv)
+    local facing = shader.dot(shader.normalize(input.normal), light.direction)
+    local brightness = shader.max(facing, 0.0) + material.ambient
+    local lit = shader.clamp(diffuse.xyz * light.color * brightness, 0.0, 1.0)
     observed.fragment = {
       input = tostring(input),
       diffuse = tostring(diffuse),
       facing = tostring(facing),
-      light = tostring(light),
+      brightness = tostring(brightness),
       swizzles = {
         tostring(diffuse.x),
         tostring(diffuse.xy),
         tostring(diffuse.zyx),
         tostring(diffuse.wzyx),
       },
-      mixed = tostring(shader.mix(diffuse.xyz, input.tint.xyz, 0.5)),
-      length = tostring(shader.length(input.lightDirection)),
+      mixed = tostring(shader.mix(diffuse.xyz, material.tint.xyz, 0.5)),
+      length = tostring(shader.length(light.direction)),
       floor = tostring(shader.floor(diffuse.xyz * 3.5)),
-      cross = tostring(shader.cross(input.normal, input.lightDirection)),
-      min = tostring(shader.min(diffuse, input.tint)),
+      cross = tostring(shader.cross(input.normal, light.direction)),
+      min = tostring(shader.min(diffuse, material.tint)),
       splat = tostring(shader.vec3(0.5)),
-      fromParts = tostring(shader.vec4(diffuse.xy, 1.0, input.ambient)),
+      fromParts = tostring(shader.vec4(diffuse.xy, 1.0, material.ambient)),
       numberFirst = tostring(2.0 * diffuse),
       divided = tostring(diffuse / 2.0),
       subtracted = tostring(1.0 - diffuse.x),
       constant = tostring(shader.float(0.25)),
-      explicitSampler = tostring(shader.sample(input.diffuse, input.pointSampler, input.uv)),
-      time = tostring(input.time),
-      camera = tostring(input.cameraPosition),
-      viewport = tostring(input.viewportSize),
+      explicitSampler = tostring(shader.sample(material.diffuse, material.pointSampler, input.uv)),
+      time = tostring(input.pass.time),
+      camera = tostring(input.pass.camera.position),
+      viewport = tostring(input.pass.viewportSize),
     }
 
     return shader.vec4(lit, diffuse.w)
@@ -110,8 +145,9 @@ local function describe(program: ShaderProgram): { [string]: any }
     tostring = tostring(program),
     attributes = program.attributes,
     instance = program.instance,
-    parameters = program.parameters,
-    textures = program.textures,
+    pass = program.pass,
+    material = program.material,
+    draw = program.draw,
     varyings = program.varyings,
   }
 end
@@ -134,6 +170,9 @@ return {
     vec2u = tostring(shader.vec2u),
     vec3u = tostring(shader.vec3u),
     vec4u = tostring(shader.vec4u),
+    struct = tostring(Camera),
+    array = tostring(shader.array(Light, 4)),
+    valueArray = tostring(shader.array(shader.vec4, 16)),
   },
   lit = describe(lit),
   constant = describe(constant),

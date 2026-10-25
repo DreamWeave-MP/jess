@@ -4,7 +4,7 @@ use std::fmt;
 use std::ops::Deref;
 use std::sync::Arc;
 
-use crate::shader::interface::AttributeId;
+use crate::shader::interface::{AttributeId, Frequency, ResourceId};
 use crate::shader::types::Type;
 
 arena_id!(
@@ -14,11 +14,6 @@ arena_id!(
     /// already in dependency order. Validation rejects an operand that does not.
     ExpressionId,
     "expression's position in the arena"
-);
-arena_id!(
-    /// A parameter declared with [`Program::parameter`](crate::shader::Program::parameter).
-    ParameterId,
-    "parameter's position in declaration order"
 );
 arena_id!(
     /// A varying declared with [`Program::varying`](crate::shader::Program::varying).
@@ -96,78 +91,6 @@ impl Literal {
             Literal::Vec4f(values) => values,
             _ => &[],
         }
-    }
-}
-
-/// A value the renderer provides, named by what it means rather than where it is bound.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Semantic {
-    /// The object's model-to-world matrix (`Mat4f`).
-    Model,
-    /// The camera's world-to-view matrix (`Mat4f`).
-    View,
-    /// The camera's view-to-clip matrix (`Mat4f`).
-    Projection,
-    /// The camera position in world space (`Vec3f`).
-    CameraPosition,
-    /// The viewport size in pixels (`Vec2f`).
-    ViewportSize,
-    /// Seconds since the renderer started (`Float`).
-    Time,
-    /// The color the pass reads from the scene (`Texture2D`). Pass-specific.
-    SceneColor,
-    /// The depth the pass reads from the scene (`Texture2D`). Pass-specific.
-    SceneDepth,
-    /// The previous pass's output (`Texture2D`). Pass-specific.
-    PreviousPass,
-}
-
-impl Semantic {
-    /// Every semantic, in declaration order.
-    pub const ALL: [Semantic; 9] = [
-        Semantic::Model,
-        Semantic::View,
-        Semantic::Projection,
-        Semantic::CameraPosition,
-        Semantic::ViewportSize,
-        Semantic::Time,
-        Semantic::SceneColor,
-        Semantic::SceneDepth,
-        Semantic::PreviousPass,
-    ];
-
-    /// The semantic's type.
-    #[must_use]
-    pub fn ty(self) -> Type {
-        match self {
-            Semantic::Model | Semantic::View | Semantic::Projection => Type::Mat4f,
-            Semantic::CameraPosition => Type::Vec3f,
-            Semantic::ViewportSize => Type::Vec2f,
-            Semantic::Time => Type::Float,
-            Semantic::SceneColor | Semantic::SceneDepth | Semantic::PreviousPass => Type::Texture2D,
-        }
-    }
-
-    /// The Jess name of the semantic, as errors print it.
-    #[must_use]
-    pub fn name(self) -> &'static str {
-        match self {
-            Semantic::Model => "model",
-            Semantic::View => "view",
-            Semantic::Projection => "projection",
-            Semantic::CameraPosition => "cameraPosition",
-            Semantic::ViewportSize => "viewportSize",
-            Semantic::Time => "time",
-            Semantic::SceneColor => "sceneColor",
-            Semantic::SceneDepth => "sceneDepth",
-            Semantic::PreviousPass => "previousPass",
-        }
-    }
-}
-
-impl fmt::Display for Semantic {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.name())
     }
 }
 
@@ -304,27 +227,111 @@ impl Deref for Operands {
     }
 }
 
+/// The most steps a [`Place`] can take.
+pub const MAX_PLACE_STEPS: usize = 8;
+/// The most of a [`Place`]'s steps that can be indices.
+pub const MAX_PLACE_INDICES: usize = 4;
+
+/// Where a place starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PlaceRoot {
+    /// A frequency's uniform block; the first step names one of its members.
+    Uniform(Frequency),
+}
+
+/// One step into a struct or an array.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Step {
+    /// A uniform block's member, by its position among the frequency's members, or a struct's
+    /// field, by its position among the struct's fields.
+    Field(u32),
+    /// An array's element at an `Int` or `UInt` index, counted from 0.
+    Index(ExpressionId),
+}
+
+/// A value in a buffer: a root, then fields and indices down to one value. `pass.lights[i].color`
+/// is the pass's uniform block, member `lights`, element `i`, field `color`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Place {
+    /// Where the place starts.
+    pub root: PlaceRoot,
+    steps: [Step; MAX_PLACE_STEPS],
+    count: u8,
+}
+
+impl Place {
+    /// A place of `steps` from `root`; `None` with more than [`MAX_PLACE_STEPS`] steps, or more
+    /// than [`MAX_PLACE_INDICES`] indices among them.
+    #[must_use]
+    pub fn new(root: PlaceRoot, steps: &[Step]) -> Option<Place> {
+        let indices = steps.iter().filter(|step| matches!(step, Step::Index(_))).count();
+        if steps.len() > MAX_PLACE_STEPS || indices > MAX_PLACE_INDICES {
+            return None;
+        }
+        let mut place = Place {
+            root,
+            steps: [Step::Field(0); MAX_PLACE_STEPS],
+            #[allow(clippy::cast_possible_truncation)] // at most MAX_PLACE_STEPS
+            count: steps.len() as u8,
+        };
+        place.steps[..steps.len()].copy_from_slice(steps);
+        Some(place)
+    }
+
+    /// The place one step further in; `None` past the limits of [`Place::new`].
+    #[must_use]
+    pub fn then(&self, step: Step) -> Option<Place> {
+        let mut steps = self.steps().to_vec();
+        steps.push(step);
+        Place::new(self.root, &steps)
+    }
+
+    /// The steps, in order.
+    #[must_use]
+    pub fn steps(&self) -> &[Step] {
+        &self.steps[..self.count as usize]
+    }
+
+    /// The index expressions, in order.
+    #[must_use]
+    pub fn indices(&self) -> Operands {
+        let mut operands = Operands::from_short_slice(&[]);
+        for step in self.steps() {
+            if let Step::Index(index) = step {
+                operands.ids[operands.count as usize] = *index;
+                operands.count += 1;
+            }
+        }
+        operands
+    }
+
+    fn rewrite_indices(&mut self, mut rewrite: impl FnMut(&mut ExpressionId)) {
+        for step in &mut self.steps[..self.count as usize] {
+            if let Step::Index(index) = step {
+                rewrite(index);
+            }
+        }
+    }
+}
+
 /// A node in a [`Program`](crate::shader::Program)'s expression arena.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Expression {
     /// A constant.
     Literal(Literal),
-    /// A declared parameter's value, texture, or sampler.
-    Parameter(ParameterId),
+    /// A value in a uniform block.
+    Load(Place),
     /// A declared vertex attribute, per vertex or per instance. Vertex stage only.
     Attribute(AttributeId),
     /// A declared varying, as the vertex stage wrote it and the rasterizer interpolated it.
     /// Fragment stage only.
     Varying(VaryingId),
-    /// A value the renderer provides.
-    Semantic(Semantic),
-    /// A texture read: `Texture2D`, `Sampler`, `Vec2f` coordinates, to `Vec4f`. Fragment stage
-    /// only.
+    /// A texture read at `Vec2f` coordinates, to `Vec4f`. Fragment stage only.
     Sample {
-        /// The `Texture2D`.
-        texture: ExpressionId,
-        /// The `Sampler`.
-        sampler: ExpressionId,
+        /// A `Texture2D`.
+        texture: ResourceId,
+        /// A `Sampler`.
+        sampler: ResourceId,
         /// The `Vec2f` coordinates.
         coordinates: ExpressionId,
     },
@@ -382,16 +389,9 @@ impl Expression {
     #[must_use]
     pub fn operands(&self) -> Operands {
         let ids: &[ExpressionId] = match self {
-            Expression::Literal(_)
-            | Expression::Parameter(_)
-            | Expression::Attribute(_)
-            | Expression::Varying(_)
-            | Expression::Semantic(_) => &[],
-            Expression::Sample {
-                texture,
-                sampler,
-                coordinates,
-            } => &[*texture, *sampler, *coordinates],
+            Expression::Literal(_) | Expression::Attribute(_) | Expression::Varying(_) => &[],
+            Expression::Load(place) => return place.indices(),
+            Expression::Sample { coordinates, .. } => &[*coordinates],
             Expression::Add(left, right)
             | Expression::Subtract(left, right)
             | Expression::Multiply(left, right)
@@ -411,20 +411,9 @@ impl Expression {
     /// Calls `rewrite` on every operand, in order.
     pub(crate) fn rewrite_operands(&mut self, mut rewrite: impl FnMut(&mut ExpressionId)) {
         match self {
-            Expression::Literal(_)
-            | Expression::Parameter(_)
-            | Expression::Attribute(_)
-            | Expression::Varying(_)
-            | Expression::Semantic(_) => {}
-            Expression::Sample {
-                texture,
-                sampler,
-                coordinates,
-            } => {
-                rewrite(texture);
-                rewrite(sampler);
-                rewrite(coordinates);
-            }
+            Expression::Literal(_) | Expression::Attribute(_) | Expression::Varying(_) => {}
+            Expression::Load(place) => place.rewrite_indices(rewrite),
+            Expression::Sample { coordinates, .. } => rewrite(coordinates),
             Expression::Add(left, right)
             | Expression::Subtract(left, right)
             | Expression::Multiply(left, right)
@@ -447,17 +436,16 @@ impl Expression {
         }
     }
 
-    /// Whether the expression reads no other expression.
+    /// Whether the lowering writes the expression where it is read instead of computing it once:
+    /// literals, attributes, varyings, and uniform values reached without an index. Each reads no
+    /// other expression.
     #[must_use]
     pub fn is_leaf(&self) -> bool {
-        matches!(
-            self,
-            Expression::Literal(_)
-                | Expression::Parameter(_)
-                | Expression::Attribute(_)
-                | Expression::Varying(_)
-                | Expression::Semantic(_)
-        )
+        match self {
+            Expression::Literal(_) | Expression::Attribute(_) | Expression::Varying(_) => true,
+            Expression::Load(place) => place.indices().is_empty(),
+            _ => false,
+        }
     }
 
     /// The Jess name of the operation, as errors print it: `+`, `dot`, `sample`.
@@ -465,10 +453,9 @@ impl Expression {
     pub fn operation(&self) -> &'static str {
         match self {
             Expression::Literal(_) => "literal",
-            Expression::Parameter(_) => "parameter",
+            Expression::Load(_) => "load",
             Expression::Attribute(_) => "attribute",
             Expression::Varying(_) => "varying",
-            Expression::Semantic(_) => "semantic",
             Expression::Sample { .. } => "sample",
             Expression::Add(..) => "+",
             Expression::Subtract(..) => "-",

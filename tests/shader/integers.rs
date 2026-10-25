@@ -1,10 +1,10 @@
 //! Integer vectors: the same arithmetic, constructors, and swizzles as float vectors, a scalar of
 //! the vector's own kind broadcast against it, and nothing that only makes sense for floats.
 
-use super::common::assert_valid_wgsl;
+use super::common::{assert_valid_wgsl, read};
 
 use jess::shader::wgsl;
-use jess::shader::{ProgramBuilder, Rate, Swizzle, Type, ValidationErrorKind};
+use jess::shader::{Frequency, ProgramBuilder, Rate, Swizzle, Type, ValidationErrorKind};
 
 #[test]
 fn integer_vectors_compute_and_pass_flat() {
@@ -14,8 +14,8 @@ fn integer_vectors_compute_and_pass_flat() {
     let position = site.read_attribute(position);
     let ids = site.attribute(Rate::Vertex, "ids", Type::Vec4u).unwrap();
     let ids = site.read_attribute(ids);
-    let offset = site.parameter("offset", Type::Vec3i).unwrap();
-    let scale = site.parameter("scale", Type::UInt).unwrap();
+    let offset = read(&mut site, Frequency::Material, "offset", Type::Vec3i);
+    let scale = read(&mut site, Frequency::Material, "scale", Type::UInt);
     site.set_position(position).unwrap();
 
     let one = site.int(1);
@@ -45,17 +45,20 @@ fn integer_vectors_compute_and_pass_flat() {
     assert_valid_wgsl(&module);
     for line in [
         "@location(1) a_ids: vec4<u32>",
-        "p_offset: vec3<i32>",
+        "f_offset: vec3<i32>",
         "@interpolate(flat) v_cell: vec3<i32>",
         "clamp(e0, vec3<i32>(0i), vec3<i32>(7i))",
-        "max(e4, vec2<u32>(parameters.p_scale))",
-        "vec4<i32>(parameters.p_offset, 1i)",
-        "vec3<u32>(parameters.p_scale)",
+        "max(e4, vec2<u32>(u_material.f_scale))",
+        "vec4<i32>(u_material.f_offset, 1i)",
+        "vec3<u32>(u_material.f_scale)",
     ] {
         assert!(module.source.contains(line), "no {line:?} in:\n{}", module.source);
     }
     let layout: Vec<(u32, u32)> = module
-        .parameters
+        .layout
+        .group(Frequency::Material)
+        .uniform
+        .as_ref()
         .unwrap()
         .members
         .iter()
@@ -68,8 +71,8 @@ fn integer_vectors_compute_and_pass_flat() {
 fn float_only_operations_refuse_integers() {
     let mut builder = ProgramBuilder::new();
     let mut site = builder.site();
-    let cells = site.parameter("cells", Type::Vec3i).unwrap();
-    let count = site.parameter("count", Type::UInt).unwrap();
+    let cells = read(&mut site, Frequency::Material, "cells", Type::Vec3i);
+    let count = read(&mut site, Frequency::Material, "count", Type::UInt);
     let half = site.float(0.5).unwrap();
 
     let refusals = [

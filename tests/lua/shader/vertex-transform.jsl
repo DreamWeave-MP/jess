@@ -1,6 +1,6 @@
 --!strict
--- The handoff's success test: the model, view, and projection semantics, a vertex color passed
--- to the fragment stage, and a tint.
+-- The handoff's success test: the model, view, and projection matrices, a vertex color passed to
+-- the fragment stage, and a tint.
 local shader = require '@jess/shader'
 
 return shader.program {
@@ -9,16 +9,30 @@ return shader.program {
     position = shader.vec3,
   },
 
-  parameters = {
+  pass = {
+    projection = shader.mat4,
+    view = shader.mat4,
+  },
+
+  material = {
     tint = shader.vec4,
   },
 
+  draw = {
+    model = shader.mat4,
+  },
+
   vertex = function(input)
+    local pass = input.pass
+
     return {
-      position = input.projection * input.view * input.model * shader.vec4(input.attributes.position, 1.0),
+      position = pass.projection
+        * pass.view
+        * input.draw.model
+        * shader.vec4(input.attributes.position, 1.0),
       color = input.attributes.color,
     }
   end,
 
-  fragment = function(input) return input.color * input.tint end,
+  fragment = function(input) return input.color * input.material.tint end,
 }

@@ -1,13 +1,13 @@
 //! A shader program: its declarations, its expression arena, and what each stage outputs.
 
-use crate::shader::expression::{Expression, ExpressionId, ParameterId, SourceOrigin, VaryingId};
+use crate::shader::expression::{Expression, ExpressionId, SourceOrigin, VaryingId};
 use crate::shader::interface::{
     Attribute, AttributeId, Frequency, Resource, ResourceId, StructDecl, StructId, Uniform, UniformId,
 };
 use crate::shader::layout::ProgramLayout;
 use crate::shader::types::Type;
 
-/// A named, typed parameter or varying.
+/// A named, typed varying.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Declaration {
     /// The name the author gave it. The lowering derives every backend name from it.
@@ -21,10 +21,10 @@ pub struct Declaration {
 /// A vertex stage and a fragment stage over one expression arena.
 ///
 /// The vertex stage reads the declared attributes and writes the clip position and any varyings;
-/// the fragment stage reads those varyings and writes color outputs. Parameters, textures,
-/// samplers, and semantics are resources the lowering binds, and attributes come from the vertex
-/// buffers [`layout`](crate::shader::layout) describes: the author never picks a bind group,
-/// binding, or location.
+/// the fragment stage reads those varyings and writes color outputs. Uniform members, textures, and
+/// samplers are bound per [`Frequency`], and attributes come from vertex buffers, all where
+/// [`layout`](crate::shader::layout) says: the author never picks a bind group, binding, or
+/// location.
 ///
 /// Expressions are appended and never removed, so an [`ExpressionId`] stays valid for the
 /// program's lifetime; [`fold_constants`](Program::fold_constants) rewrites nodes in place.
@@ -37,7 +37,6 @@ pub struct Program {
     pub(crate) attributes: Vec<Attribute>,
     pub(crate) uniforms: Vec<Uniform>,
     pub(crate) resources: Vec<Resource>,
-    pub(crate) parameters: Vec<Declaration>,
     pub(crate) varyings: Vec<Declaration>,
     pub(crate) position: Option<ExpressionId>,
     pub(crate) varying_writes: Vec<(VaryingId, ExpressionId)>,
@@ -69,17 +68,6 @@ impl Program {
     /// Declares a texture or sampler a frequency binds.
     pub fn resource(&mut self, resource: Resource) -> ResourceId {
         ResourceId::at(push(&mut self.resources, resource))
-    }
-
-    /// Declares a parameter: a value (`Int`, `UInt`, `Float`, a vector, or a matrix), a
-    /// `Texture2D`, or a `Sampler`.
-    pub fn parameter(&mut self, name: &str, ty: Type) -> ParameterId {
-        ParameterId::at(push_declaration(&mut self.parameters, name, ty, None))
-    }
-
-    /// [`parameter`](Program::parameter), recording where it was declared.
-    pub fn parameter_at(&mut self, name: &str, ty: Type, origin: SourceOrigin) -> ParameterId {
-        ParameterId::at(push_declaration(&mut self.parameters, name, ty, Some(origin)))
     }
 
     /// Declares a value the vertex stage passes to the fragment stage: `Int`, `UInt` (both
@@ -192,12 +180,6 @@ impl Program {
     pub fn origin(&self, id: ExpressionId) -> Option<&SourceOrigin> {
         let position = self.origins.binary_search_by_key(&id, |(origin_id, _)| *origin_id).ok()?;
         Some(&self.origins[position].1)
-    }
-
-    /// The declared parameters, in order.
-    #[must_use]
-    pub fn parameters(&self) -> &[Declaration] {
-        &self.parameters
     }
 
     /// The declared varyings, in order.

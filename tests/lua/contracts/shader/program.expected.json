@@ -7,13 +7,15 @@
           "type": "Vec3f"
         }
       ],
+      "draw": {},
       "instance": {},
-      "parameters": {},
-      "textures": {},
-      "tostring": "ShaderProgram(1 attribute, 0 parameters, 0 textures, 0 varyings)",
+      "material": {},
+      "pass": {},
+      "tostring": "ShaderProgram(1 attribute, 0 uniforms, 0 textures, 0 varyings)",
       "varyings": {}
     },
     "fragment": {
+      "brightness": "ShaderExpr(Float)",
       "camera": "ShaderExpr(Vec3f)",
       "constant": "ShaderExpr(Float)",
       "cross": "ShaderExpr(Vec3f)",
@@ -25,7 +27,6 @@
       "fromParts": "ShaderExpr(Vec4f)",
       "input": "ShaderInput(fragment)",
       "length": "ShaderExpr(Float)",
-      "light": "ShaderExpr(Float)",
       "min": "ShaderExpr(Vec4f)",
       "mixed": "ShaderExpr(Vec3f)",
       "numberFirst": "ShaderExpr(Vec4f)",
@@ -43,6 +44,10 @@
     "lit": {
       "attributes": [
         {
+          "name": "light",
+          "type": "UInt"
+        },
+        {
           "name": "normal",
           "type": "Vec3f"
         },
@@ -55,6 +60,12 @@
           "type": "Vec2f"
         }
       ],
+      "draw": [
+        {
+          "name": "model",
+          "type": "Mat4f"
+        }
+      ],
       "instance": [
         {
           "name": "shade",
@@ -65,28 +76,47 @@
           "type": "Mat4f"
         }
       ],
-      "parameters": [
+      "material": [
         {
           "name": "ambient",
           "type": "Float"
         },
         {
-          "name": "lightDirection",
-          "type": "Vec3f"
+          "name": "diffuse",
+          "type": "Texture2D"
         },
         {
           "name": "normalMatrix",
           "type": "Mat3f"
         },
         {
+          "name": "pointSampler",
+          "type": "Sampler"
+        },
+        {
           "name": "tint",
           "type": "Vec4f"
         }
       ],
-      "textures": [
-        "diffuse"
+      "pass": [
+        {
+          "name": "camera",
+          "type": "Camera"
+        },
+        {
+          "name": "lights",
+          "type": "Light[4]"
+        },
+        {
+          "name": "time",
+          "type": "Float"
+        },
+        {
+          "name": "viewportSize",
+          "type": "Vec2f"
+        }
       ],
-      "tostring": "ShaderProgram(5 attributes, 4 parameters, 1 texture, 2 varyings)",
+      "tostring": "ShaderProgram(6 attributes, 8 uniforms, 1 texture, 2 varyings)",
       "varyings": [
         {
           "name": "normal",
@@ -100,13 +130,16 @@
     },
     "sameModule": true,
     "types": {
+      "array": "Light[4]",
       "float": "Float",
       "int": "Int",
       "mat3": "Mat3f",
       "mat4": "Mat4f",
       "sampler": "Sampler",
+      "struct": "Camera",
       "texture2d": "Texture2D",
       "uint": "UInt",
+      "valueArray": "Vec4f[16]",
       "vec2": "Vec2f",
       "vec2i": "Vec2i",
       "vec2u": "Vec2u",
@@ -133,10 +166,21 @@
       },
       "matrix": "ShaderExpr(Mat4f)",
       "placed": "ShaderExpr(Vec4f)",
+      "places": {
+        "camera": "ShaderPlace(Camera)",
+        "constantIndex": "ShaderExpr(Vec3f)",
+        "length": 4,
+        "light": "ShaderPlace(Light)",
+        "lights": "ShaderPlace(Light[4])",
+        "pass": "ShaderPlace(pass)",
+        "valueIndex": "ShaderExpr(Vec3f)"
+      },
       "position": "ShaderExpr(Vec3f)",
       "sameRead": true,
+      "sameUniform": true,
+      "sampler": "ShaderSampler(Sampler)",
       "shade": "ShaderExpr(Vec4u)",
-      "texture": "ShaderExpr(Texture2D)",
+      "texture": "ShaderTexture(Texture2D)",
       "transform": "ShaderExpr(Mat4f)"
     }
   }

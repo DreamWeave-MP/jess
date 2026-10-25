@@ -6,15 +6,22 @@ extra:
   kind: api
 ---
 
-{{ api_signature(value="jess.shader: { program, float, int, uint, vec2, vec3, vec4, vec2i, vec3i, vec4i, vec2u, vec3u, vec4u, mat3, mat4, texture2d, sampler, min, max, clamp, dot, cross, normalize, length, floor, mix, sample }") }}
+{{ api_signature(value="jess.shader: { program, struct, array, float, int, uint, vec2, vec3, vec4, vec2i, vec3i, vec4i, vec2u, vec3u, vec4u, mat3, mat4, texture2d, sampler, min, max, clamp, dot, cross, normalize, length, floor, mix, sample }") }}
 
 A shader, written in Luau. `require("@jess/shader")` is the same table as `jess.shader`, and a shader module is an ordinary Luau module that runs once and returns a `ShaderProgram`.
 
 The vertex and fragment functions you hand `shader.program` don't run on the GPU, and they don't run per frame. Each runs exactly once, while `shader.program` does, to write the program down: `shader.dot(normal, light)` computes nothing, it appends one typed `dot` expression and hands back a value naming it. What comes out is a validated program in jess's own shader IR, which jess lowers to whatever the backend wants. You never write WGSL, and you never see a binding index.
 
+A program declares everything it reads. Nothing is built in: no camera, no model matrix, no time. A program that wants a camera declares one, and so does every other program that wants one, which is what a shared module of declarations is for.
+
 ```luau
 --!strict
 local shader = require '@jess/shader'
+
+local Camera = shader.struct('Camera', {
+  projection = shader.mat4,
+  view = shader.mat4,
+})
 
 local program = shader.program {
   attributes = {
@@ -23,35 +30,41 @@ local program = shader.program {
     uv = shader.vec2,
   },
 
-  parameters = {
-    tint = shader.vec4,
+  pass = {
+    camera = Camera,
     lightDirection = shader.vec3,
   },
 
-  textures = {
+  material = {
+    tint = shader.vec4,
     diffuse = shader.texture2d,
   },
 
+  draw = {
+    model = shader.mat4,
+  },
+
   vertex = function(input)
-    local vertex = input.attributes
+    local camera, vertex = input.pass.camera, input.attributes
+    local world = input.draw.model * shader.vec4(vertex.position, 1)
 
     return {
-      position = input.projection * input.view * input.model * shader.vec4(vertex.position, 1),
+      position = camera.projection * camera.view * world,
       normal = vertex.normal,
       uv = vertex.uv,
     }
   end,
 
   fragment = function(input)
-    local albedo = shader.sample(input.diffuse, input.uv)
+    local albedo = shader.sample(input.material.diffuse, input.uv)
     local facing =
-      shader.dot(shader.normalize(input.normal), shader.normalize(input.lightDirection))
+      shader.dot(shader.normalize(input.normal), shader.normalize(input.pass.lightDirection))
 
-    return albedo * shader.max(facing, 0) * input.tint
+    return albedo * shader.max(facing, 0) * input.material.tint
   end,
 }
 
-print(program) -- ShaderProgram(3 attributes, 2 parameters, 1 texture, 2 varyings)
+print(program) -- ShaderProgram(3 attributes, 4 uniforms, 1 texture, 2 varyings)
 
 return program
 ```
@@ -59,7 +72,6 @@ return program
 {% usage_note(title="What this is, today") %}
 - This is the authoring half. Nothing draws with a `ShaderProgram` yet: the renderer that takes one is a later piece of work, and this page will say so when it isn't.
 - The expression set is the one the first real materials need, and no more: arithmetic, the functions below, vector construction, swizzles, and texture sampling. There's no negation, comparison, or control flow. They arrive when a renderer needs them, not because GLSL has them.
-- The pass inputs (`sceneColor`, `sceneDepth`, `previousPass`) are names the input knows and the lowering can't bind yet. Reading one is an error when the program finishes, not a quiet nothing.
 {% end %}
 
 ## shader.program
@@ -71,14 +83,13 @@ Builds and validates a program.
 - **Parameters:** `spec`, a table:
   - `attributes`: names to [types](#types). What each vertex has, read from its vertex buffer: see [Attributes](#attributes).
   - `instance`: names to types. What each instance has, read from the instance buffer.
-  - `parameters`: names to [types](#types). Values the renderer sets at run time without recompiling anything: `float`, the vectors, the matrices, and `sampler`.
-  - `textures`: names to `shader.texture2d`. Each texture is declared with a sampler of the same name, which [sample](#shader-sample) uses.
+  - `pass`, `material`, `draw`: names to types. What each pass, material, and draw binds: values, structs, and arrays, textures, and samplers. See [Bindings](#bindings).
   - `vertex`: a function taking the vertex [input](#shaderinput). It returns a table: `position`, the clip-space `Vec4f`, and any other named values, which become the fragment stage's inputs.
   - `fragment`: a function taking the fragment input. It returns the color, a `Vec4f`.
 - **Returns:** the [ShaderProgram](#shaderprogram).
-- **Order:** attributes are declared sorted by name, then instance attributes, parameters, and textures, each sorted by name; `vertex` runs; what it returned is passed along, sorted by name; `fragment` runs; the whole program is validated. A Luau table has no order, so jess doesn't pretend yours does: the same module always builds the same program.
-- **Names:** a parameter, texture, or vertex output can't be named like a semantic input, `attributes`, or `instance`, and a vertex output can't be named like a parameter or a texture, because the input couldn't tell them apart. Attributes live under their own names (`input.attributes.uv`), so a vertex output *can* share one: `uv = input.attributes.uv`.
-- **Errors:** see [Errors](#errors). Also `unknown jess.shader.program option '<key>': expected attributes, fragment, instance, parameters, textures, or vertex`, `shader.program needs a vertex function, not nil`, `parameters.<name> must be a shader type such as shader.vec4, not <kind>`, `parameter "<name>" is a Texture2D: textures are declared in textures`, `the vertex function's table has no position`, and `the fragment function returned <kind>: expected a shader value, the Vec4f color`.
+- **Order:** attributes are declared sorted by name, then instance attributes, then what the pass, the material, and the draw bind, each sorted by name; `vertex` runs; what it returned is passed along, sorted by name; `fragment` runs; the whole program is validated. A Luau table has no order, so jess doesn't pretend yours does: the same module always builds the same program.
+- **Names:** every declaration lives under its own name (`input.attributes.uv`, `input.material.tint`), so names only clash within one table. A vertex output can't be named `attributes`, `instance`, `pass`, `material`, or `draw`, because the fragment input couldn't tell it apart from the namespace.
+- **Errors:** see [Errors](#errors). Also `unknown jess.shader.program option '<key>': expected attributes, draw, fragment, instance, material, pass, or vertex`, `shader.program needs a vertex function, not nil`, `material.<name> must be a shader type such as shader.vec4, not <kind>`, `attributes.<name> must be a value type such as shader.vec3, not Texture2D`, `the vertex function's table has no position`, and `the fragment function returned <kind>: expected a shader value, the Vec4f color`.
 
 `shader.program` validates the program and leaves it as you wrote it. It doesn't fold constants: that rewrites the program, and rewriting is the consumer's decision.
 
@@ -88,15 +99,10 @@ What `vertex` and `fragment` are called with. Every name is one of these, and a 
 
 | Names | In | Type |
 | --- | --- | --- |
-| Your `parameters` | both | As declared. |
-| Your `textures` | both | `Texture2D`. Sampling is fragment-only. |
 | `attributes` | `vertex` | Your `attributes`, by name: `input.attributes.position`. |
 | `instance` | `vertex` | Your `instance` attributes, by name: `input.instance.transform`. |
+| `pass`, `material`, `draw` | both | What each binds, by name: `input.material.tint`. See [Bindings](#bindings). |
 | What `vertex` returned, except `position` | `fragment` | The type of the value returned. |
-| `model`, `view`, `projection` | both | `Mat4f`: model-to-world, world-to-view, view-to-clip. |
-| `cameraPosition` | both | `Vec3f`, in world space. |
-| `viewportSize` | both | `Vec2f`, in pixels. |
-| `time` | both | `Float`, seconds since the renderer started. |
 
 The fragment function has no attributes: `input.attributes` there fails with `the attributes are only readable in the vertex function; return what the fragment function needs from them, to pass it as a varying`, which is also the fix.
 
@@ -106,18 +112,20 @@ local shader = require '@jess/shader'
 
 shader.program {
   attributes = { position = shader.vec3 },
-  parameters = { fogDensity = shader.float },
+  pass = { time = shader.float },
+  material = { fogDensity = shader.float },
+  draw = { model = shader.mat4 },
   vertex = function(input)
     local position = input.attributes.position
-    print(position, input.model, input.fogDensity)
+    print(position, input.draw.model, input.material.fogDensity)
 
-    return { position = shader.vec4(position, 1), depth = position.z }
+    return { position = input.draw.model * shader.vec4(position, 1), depth = position.z }
   end,
 
   fragment = function(input)
-    print(input.depth, input.time, input)
+    print(input.depth, input.pass.time, input)
 
-    return shader.vec4(input.depth * input.fogDensity)
+    return shader.vec4(input.depth * input.material.fogDensity)
   end,
 }
 -- ShaderExpr(Vec3f)  ShaderExpr(Mat4f)  ShaderExpr(Float)
@@ -131,7 +139,7 @@ shader.program {
 - **Types:** `float`, `int`, `uint`, their vectors, and `mat3` and `mat4`. A matrix takes one vertex location per column on the way in, and you read it whole.
 - **Layout:** jess packs each rate's attributes into one buffer record, in declaration order (sorted by name), with no padding, and reports where every one is. Whatever fills the vertex and instance buffers writes them from that, so nobody counts bytes by hand.
 - **Limit:** the attributes of both rates take at most 16 locations together.
-- **Errors:** `the attributes have no "normals": they have normal, position`; `the instance attributes have no "transform": the program declares none`; `attribute "diffuse" cannot be Texture2D: expected Int, UInt, Float, a vector, or a matrix`; and, when the program finishes, `the attributes take 20 locations: at most 16`.
+- **Errors:** `the attributes have no "normals": they have normal, position`; `the instance attributes have no "transform": the program declares none`; and, when the program finishes, `the attributes take 20 locations: at most 16`.
 
 ```luau
 --!strict
@@ -140,11 +148,12 @@ local shader = require '@jess/shader'
 local grass = shader.program {
   attributes = { position = shader.vec3 },
   instance = { transform = shader.mat4, tint = shader.vec4 },
+  pass = { viewProjection = shader.mat4 },
   vertex = function(input)
     local placed = input.instance.transform * shader.vec4(input.attributes.position, 1)
     print(input.attributes, input.instance.transform)
 
-    return { position = input.projection * input.view * placed, tint = input.instance.tint }
+    return { position = input.pass.viewProjection * placed, tint = input.instance.tint }
   end,
 
   fragment = function(input) return input.tint end,
@@ -158,14 +167,80 @@ end
 -- transform  Mat4f
 ```
 
+## Bindings
+
+Everything else a program reads is bound by one of three frequencies, which say how often it changes and so who supplies it:
+
+| Frequency | Bound | For |
+| --- | --- | --- |
+| `pass` | Once per pass | What every draw in it shares: a camera, a light list, a shadow map, the previous pass's output. |
+| `material` | With the material | What every draw of one material shares: a tint, a texture, a roughness. |
+| `draw` | Per draw | What one draw has alone: its transform, its own lookup table. |
+
+Each frequency's table names what it binds:
+
+- **Values, structs, and arrays** are its uniform block's members. A value is `shader.vec4` and the rest; a struct is a type from [shader.struct](#shader-struct); an array is a type from [shader.array](#shader-array). Change one, and nothing recompiles: it's data.
+- **`shader.texture2d`** is a texture, declared with a sampler of the same name, which [sample](#shader-sample) uses.
+- **`shader.sampler`** is a sampler of its own, for `sample`'s three-argument form.
+
+Reading goes one step at a time. `input.pass.camera` is the camera; `.view` is its view matrix, a value. An array is indexed from 0 by a number or by a shader value, `#` is its length, and an element is a value or a struct to go on into: `input.pass.lights[i].color`. A step that reaches a value reads it; a texture or sampler is a handle for `sample`. Until then it's a `ShaderPlace`, which isn't a value: `input.pass.camera + 1` fails with `+: expected a shader value, not Camera, a struct: read one of its fields`.
+
+Where it all lives is jess's decision, never yours. Each frequency is one bind group, its uniform block first and its textures and samplers after it, and every member is laid out by its alignment, largest first, so nothing pads what follows it. The layout is reported with the lowered program, so whatever writes the buffers writes them from that. One rule of the layout shows: in a uniform block, an array's elements must be a multiple of 16 bytes apart, so a `shader.array(shader.float, 4)` there fails when the program finishes, with `uniform material.weights is an array of elements 4 bytes apart`. Use `shader.vec4` elements, or a struct.
+
+- **Errors:** `the material has no "tnit": it has diffuse, tint`; `Light has no field "colour": it has color, direction`; `Light[4] has no element 4: its elements are 0 to 3`; `Light[4] is indexed by a number or a shader value, not string`; `Camera has no length: only an array does`.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+local Light = shader.struct('Light', { color = shader.vec3, direction = shader.vec3 })
+
+shader.program {
+  attributes = { position = shader.vec3, normal = shader.vec3 },
+  pass = { lights = shader.array(Light, 4), viewProjection = shader.mat4 },
+  vertex = function(input)
+    local position = shader.vec4(input.attributes.position, 1)
+
+    return { position = input.pass.viewProjection * position, normal = input.attributes.normal }
+  end,
+
+  fragment = function(input)
+    local lights = input.pass.lights
+    print(lights, #lights, lights[0], lights[0].color)
+
+    local light = lights[0]
+    local facing = shader.max(shader.dot(shader.normalize(input.normal), light.direction), 0)
+
+    return shader.vec4(light.color * facing, 1)
+  end,
+}
+-- ShaderPlace(Light[4])  4  ShaderPlace(Light)  ShaderExpr(Vec3f)
+```
+
+### shader.struct
+
+{{ api_signature(value="shader.struct(name: string, fields: { [string]: ShaderType }) -> ShaderType") }}
+
+A struct type: named fields of values, structs, and arrays. The name is what errors and reflection call it. A struct is a type, not a declaration: a program declares it where it's used, so one module can hold the structs a dozen programs share.
+
+- **Errors:** `shader.struct takes a name and a table of fields, not number`; `Bad.tex is a Texture2D: textures and samplers are bound, not held in a struct or array`.
+
+### shader.array
+
+{{ api_signature(value="shader.array(element: ShaderType, length: number) -> ShaderType") }}
+
+An array type: `length` values or structs, at least one. An array holds no arrays: put one in a struct to nest it.
+
+- **Errors:** `shader.array's length must be a whole number of at least 1, not 0`; `shader.array's element is an array: an array holds values or structs, not arrays`.
+
 ## ShaderExpr
 
 A symbolic value in the program under construction: an expression, its type, and the program it belongs to. It isn't a number and it isn't a GPU value; there's nothing in it to read.
 
-- **Operators:** `+`, `-`, `*`, `/`, between two values of one numeric type, or a vector and a scalar of its kind (a `Vec3f` and a `Float`, a `Vec2u` and a `UInt`). `+` and `-` also take two matrices of one size; `*` also takes a matrix and a `Float`, a matrix and a vector of its size, or two matrices of one size. `input.projection * input.view * input.model * position` multiplies left to right, as Luau evaluates it.
+- **Operators:** `+`, `-`, `*`, `/`, between two values of one numeric type, or a vector and a scalar of its kind (a `Vec3f` and a `Float`, a `Vec2u` and a `UInt`). `+` and `-` also take two matrices of one size; `*` also takes a matrix and a `Float`, a matrix and a vector of its size, or two matrices of one size. `projection * view * model * position` multiplies left to right, as Luau evaluates it.
 - **Numbers:** a Luau number where a value goes is a `Float` constant, on either side: `2 * color`, `shader.max(facing, 0)`. Integers are spelled `shader.int(3)` and `shader.uint(3)`, so `2 * cell` is a `Float` times whatever `cell` is, and fails for an integer vector.
 - **Swizzles:** `.x`, `.xy`, `.zyx`, `.wzyx`: one to four of `x`, `y`, `z`, and `w`, giving a scalar or a vector of the same kind. They're the only names a value has.
-- **`==`:** whether two handles name the same expression. Reading `input.tint` twice gives equal values.
+- **`==`:** whether two handles name the same expression. Reading `input.material.tint` twice gives equal values.
 - **`tostring`:** `ShaderExpr(Vec4f)`.
 - **Lifetime:** a value belongs to one `shader.program` call. Used after that call returns, it fails with `this shader program is finished: its values belong to a shader.program call that has returned`; used inside another program, with `expression <n> belongs to another shader program`.
 
@@ -175,13 +250,13 @@ local shader = require '@jess/shader'
 
 shader.program {
   attributes = { position = shader.vec3 },
-  parameters = { tint = shader.vec4 },
+  material = { tint = shader.vec4 },
   vertex = function(input) return { position = shader.vec4(input.attributes.position, 1) } end,
   fragment = function(input)
-    local tint = input.tint
+    local tint = input.material.tint
     print(tint.xyz, tint.w, tint.zyx.xy)
     print(2 * tint, tint / 2, 1 - tint.w)
-    print(tint == input.tint, tint == tint.xyzw)
+    print(tint == input.material.tint, tint == tint.xyzw)
 
     return shader.vec4(tint.xyz * 0.5, tint.w)
   end,
@@ -195,17 +270,19 @@ shader.program {
 
 {{ api_signature(value="shader.float, shader.int, shader.uint, shader.vec2, shader.vec3, shader.vec4, shader.vec2i, shader.vec3i, shader.vec4i, shader.vec2u, shader.vec3u, shader.vec4u, shader.mat3, shader.mat4, shader.texture2d, shader.sampler: ShaderType") }}
 
-A `ShaderType` is what `parameters` and `textures` declare, and `tostring` gives its name as errors spell it.
+A `ShaderType` is what attributes and bindings declare, and `tostring` gives its name as errors spell it.
 
 | Member | Type | Declares |
 | --- | --- | --- |
-| `shader.float`, `shader.int`, `shader.uint` | `Float`, `Int`, `UInt` | A parameter. |
-| `shader.vec2`, `shader.vec3`, `shader.vec4` | `Vec2f`, `Vec3f`, `Vec4f` | A parameter. |
-| `shader.vec2i`, `shader.vec3i`, `shader.vec4i` | `Vec2i`, `Vec3i`, `Vec4i` | A parameter: signed integers. |
-| `shader.vec2u`, `shader.vec3u`, `shader.vec4u` | `Vec2u`, `Vec3u`, `Vec4u` | A parameter: unsigned integers. |
-| `shader.mat3`, `shader.mat4` | `Mat3f`, `Mat4f` | A parameter. Column-major. |
-| `shader.texture2d` | `Texture2D` | A texture, in `textures`. |
-| `shader.sampler` | `Sampler` | A parameter: a sampler of its own, for [sample](#shader-sample)'s three-argument form. |
+| `shader.float`, `shader.int`, `shader.uint` | `Float`, `Int`, `UInt` | An attribute, a uniform member, a field, or an element. |
+| `shader.vec2`, `shader.vec3`, `shader.vec4` | `Vec2f`, `Vec3f`, `Vec4f` | The same. |
+| `shader.vec2i`, `shader.vec3i`, `shader.vec4i` | `Vec2i`, `Vec3i`, `Vec4i` | The same: signed integers. |
+| `shader.vec2u`, `shader.vec3u`, `shader.vec4u` | `Vec2u`, `Vec3u`, `Vec4u` | The same: unsigned integers. |
+| `shader.mat3`, `shader.mat4` | `Mat3f`, `Mat4f` | The same. Column-major. |
+| `shader.texture2d` | `Texture2D` | A texture and its sampler, in `pass`, `material`, or `draw`. |
+| `shader.sampler` | `Sampler` | A sampler of its own, for [sample](#shader-sample)'s three-argument form. |
+| [shader.struct](#shader-struct)`(...)` | its name | A uniform member, a field, or an element. |
+| [shader.array](#shader-array)`(...)` | `Element[length]` | A uniform member or a field. |
 
 The vector types, `float`, `int`, and `uint` are also constructors, inside a stage function:
 
@@ -213,13 +290,15 @@ The vector types, `float`, `int`, and `uint` are also constructors, inside a sta
 
 - `shader.vec2`, `shader.vec3`, `shader.vec4` take floats and smaller vectors whose sizes add up to theirs (`shader.vec4(position, 1)`, `shader.vec4(uv, 0, 1)`), or one `Float` to repeat (`shader.vec3(0.5)`). The integer vectors take integers the same way, and a number among them is that vector's integer: `shader.vec3i(1, -2, 3)`, `shader.vec2u(shader.uint(1))`. A number that isn't whole, or is out of range, fails: `shader.vec3i: 1.5 is not an Int: expected a whole number from -2147483648 to 2147483647`.
 - `shader.float(0.25)` is a `Float` constant, for when a bare number has nothing beside it to make it one, and `shader.int(-3)` and `shader.uint(7)` are the integer constants.
-- The matrices, `texture2d`, and `sampler` can't be constructed: `Mat4f(Float) is invalid: expected a vector target`.
+- The matrices can't be constructed yet: `Mat4f(Float) is invalid: expected a vector target`. Nor can a texture, a sampler, a struct, or an array: `Camera can't be constructed: it is declared, and read from the input`.
 
 ```luau
 --!strict
 local shader = require '@jess/shader'
 
 print(shader.vec4, shader.mat3, shader.texture2d) -- Vec4f  Mat3f  Texture2D
+print(shader.struct('Fog', { density = shader.float }), shader.array(shader.vec4, 8))
+-- Fog  Vec4f[8]
 
 shader.program {
   attributes = { position = shader.vec3, uv = shader.vec2 },
@@ -258,7 +337,7 @@ local shader = require '@jess/shader'
 
 shader.program {
   attributes = { position = shader.vec3, normal = shader.vec3 },
-  parameters = {
+  material = {
     warm = shader.vec3,
     cool = shader.vec3,
     lightDirection = shader.vec3,
@@ -271,11 +350,12 @@ shader.program {
   end,
 
   fragment = function(input)
+    local material = input.material
     local normal = shader.normalize(input.normal)
-    local facing = shader.dot(normal, input.lightDirection)
-    local shade = shader.mix(input.cool, input.warm, shader.clamp(facing, 0, 1))
-    print(facing, shade, shader.length(input.normal), shader.cross(normal, input.lightDirection))
-    print(shader.min(shade, 0.8), shader.max(input.warm, input.cool))
+    local facing = shader.dot(normal, material.lightDirection)
+    local shade = shader.mix(material.cool, material.warm, shader.clamp(facing, 0, 1))
+    print(facing, shade, shader.length(input.normal), shader.cross(normal, material.lightDirection))
+    print(shader.min(shade, 0.8), shader.max(material.warm, material.cool))
 
     return shader.vec4(shade, 1)
   end,
@@ -286,14 +366,14 @@ shader.program {
 
 ### shader.sample
 
-{{ api_signature(value="shader.sample(texture: ShaderExpr, coordinates: ShaderExpr) -> ShaderExpr") }}
-{{ api_signature(value="shader.sample(texture: ShaderExpr, sampler: ShaderExpr, coordinates: ShaderExpr) -> ShaderExpr") }}
+{{ api_signature(value="shader.sample(texture: ShaderTexture, coordinates: ShaderExpr) -> ShaderExpr") }}
+{{ api_signature(value="shader.sample(texture: ShaderTexture, sampler: ShaderSampler, coordinates: ShaderExpr) -> ShaderExpr") }}
 
 Reads a texture at `Vec2f` coordinates, to a `Vec4f`.
 
-With two arguments, the texture is one of the program's `textures`, and the sampler is the one declared with it. With three, the sampler is whatever you pass: a `shader.sampler` parameter. The forms differ by how many arguments you give, not by jess guessing what the second one is.
+With two arguments, the sampler is the one declared with the texture. With three, it's whatever sampler you pass: one a frequency binds on its own. The forms differ by how many arguments you give, not by jess guessing what the second one is.
 
-- **Errors:** `sample(texture, uv) takes a texture from this program's textures, whose sampler comes with it; anything else needs its sampler: sample(texture, sampler, uv)`; operands that aren't `(Texture2D, Sampler, Vec2f)`; and, when the program finishes, `sample is used in the vertex stage: textures are sampled in the fragment stage`.
+- **Errors:** `shader.sample: expected a texture, such as input.material.diffuse, not a Vec4f value`; `shader.sample: expected a sampler, not a Vec4f value`; coordinates that aren't a `Vec2f`; and, when the program finishes, `sample is used in the vertex stage: textures are sampled in the fragment stage`.
 
 ```luau
 --!strict
@@ -301,21 +381,28 @@ local shader = require '@jess/shader'
 
 local program = shader.program {
   attributes = { position = shader.vec3, uv = shader.vec2 },
-  parameters = { pixelated = shader.sampler },
-  textures = { diffuse = shader.texture2d },
+  material = { diffuse = shader.texture2d, pixelated = shader.sampler },
   vertex = function(input)
     return { position = shader.vec4(input.attributes.position, 1), uv = input.attributes.uv }
   end,
 
   fragment = function(input)
-    local smooth = shader.sample(input.diffuse, input.uv)
-    local blocky = shader.sample(input.diffuse, input.pixelated, input.uv)
+    local material = input.material
+    print(material.diffuse, material.pixelated)
+
+    local smooth = shader.sample(material.diffuse, input.uv)
+    local blocky = shader.sample(material.diffuse, material.pixelated, input.uv)
 
     return shader.mix(smooth, blocky, 0.5)
   end,
 }
 
-print(program.textures[1], #program.parameters) -- diffuse  0
+for _, binding in program.material do
+  print(binding.name, binding.type)
+end
+-- ShaderTexture(Texture2D)  ShaderSampler(Sampler)
+-- diffuse  Texture2D
+-- pixelated  Sampler
 ```
 
 ## ShaderProgram
@@ -326,11 +413,10 @@ What `shader.program` returns and a shader module hands back: finished, validate
 | --- | --- | --- |
 | `attributes` | `{ { name: string, type: string } }` | The per-vertex attributes, sorted by name. |
 | `instance` | `{ { name: string, type: string } }` | The per-instance attributes, sorted by name. |
-| `parameters` | `{ { name: string, type: string } }` | The value parameters, sorted by name. Textures and samplers aren't in it. |
-| `textures` | `{ string }` | The texture names, sorted. |
+| `pass`, `material`, `draw` | `{ { name: string, type: string } }` | What each frequency binds, sorted by name: `Vec4f`, `Camera`, `Light[4]`, `Texture2D`, `Sampler`. A texture's own sampler is part of the texture. |
 | `varyings` | `{ { name: string, type: string } }` | What `vertex` passes to `fragment`, sorted by name. |
 
-`tostring(program)` counts them, both kinds of attribute together: `ShaderProgram(3 attributes, 2 parameters, 1 texture, 2 varyings)`.
+`tostring(program)` counts them, both kinds of attribute together and the uniform members of every frequency together: `ShaderProgram(3 attributes, 4 uniforms, 1 texture, 2 varyings)`.
 
 ```luau
 --!strict
@@ -338,23 +424,25 @@ local shader = require '@jess/shader'
 
 local program = shader.program {
   attributes = { position = shader.vec3, color = shader.vec4 },
-  parameters = { tint = shader.vec4 },
+  material = { tint = shader.vec4 },
   vertex = function(input)
-    return { position = shader.vec4(input.attributes.position, 1), color = input.attributes.color }
+    local vertex = input.attributes
+
+    return { position = shader.vec4(vertex.position, 1), color = vertex.color }
   end,
-  fragment = function(input) return input.color * input.tint end,
+  fragment = function(input) return input.color * input.material.tint end,
 }
 
-for _, parameter in program.parameters do
-  print(parameter.name, parameter.type) -- tint  Vec4f
+for _, binding in program.material do
+  print(binding.name, binding.type) -- tint  Vec4f
 end
 
 for _, varying in program.varyings do
   print(varying.name, varying.type) -- color  Vec4f
 end
 
-print(#program.textures, program)
--- 0  ShaderProgram(2 attributes, 1 parameter, 0 textures, 1 varying)
+print(#program.pass, program)
+-- 0  ShaderProgram(2 attributes, 1 uniform, 0 textures, 1 varying)
 ```
 
 ## Errors
@@ -371,14 +459,16 @@ local shader = require '@jess/shader'
 print(pcall(function()
   return shader.program {
     attributes = { position = shader.vec3, normal = shader.vec3 },
-    parameters = { tint = shader.vec4 },
+    material = { tint = shader.vec4 },
     vertex = function(input)
       local vertex = input.attributes
 
       return { position = shader.vec4(vertex.position, 1), normal = vertex.normal }
     end,
 
-    fragment = function(input) return shader.vec4(shader.dot(input.normal, input.tint)) end,
+    fragment = function(input)
+      return shader.vec4(shader.dot(input.normal, input.material.tint))
+    end,
   }
 end))
 
@@ -386,8 +476,9 @@ end))
 print(pcall(function()
   return shader.program {
     attributes = { position = shader.vec3 },
+    pass = { cameraPosition = shader.vec3 },
     vertex = function(input) return { position = input.attributes.position } end,
-    fragment = function(input) return input.cameraPosition end,
+    fragment = function(input) return input.pass.cameraPosition end,
   }
 end))
 ```
@@ -395,10 +486,10 @@ end))
 And this is `jess run shaders/errors.jsl`:
 
 ```text
-false	shaders/errors.jsl:15 (shaders/errors.jsl): dot(Vec3f, Vec4f) is invalid: expected two vectors of the same type
+false	shaders/errors.jsl:16 (shaders/errors.jsl): dot(Vec3f, Vec4f) is invalid: expected two vectors of the same type
 false	shaders/errors.jsl: the shader program is invalid
-shaders/errors.jsl:23 (shaders/errors.jsl): the vertex position is Vec3f: expected Vec4f
-shaders/errors.jsl:24 (shaders/errors.jsl): fragment output 0 is Vec3f: expected Vec4f
+shaders/errors.jsl:26 (shaders/errors.jsl): the vertex position is Vec3f: expected Vec4f
+shaders/errors.jsl:27 (shaders/errors.jsl): fragment output 0 is Vec3f: expected Vec4f
 ```
 
 Each location is `file:line`, then the module that called `shader.program` in parentheses, which differs when a helper module builds part of the program. There's no column: Luau doesn't record one, and jess doesn't make one up. The line is that of the nearest Luau function on the call stack, so a call through `pcall` still points at your source.
@@ -407,7 +498,7 @@ Nothing here is a WGSL error. If the backend ever rejects what jess generated, t
 
 ## Types under `--!strict`
 
-`require("@jess/shader")` is typed as `ShaderModule` (its stub in the folder `jess luau-types` writes is `return jess.shader`), so a shader module type-checks with no annotations: `input` is a `ShaderInput`, every name on it a `ShaderExpr`, and a misspelled function or a value used as a plain number is an error in your editor before it's one at run time. What the checker can't see is a value's shader type: `Vec3f` and `Vec4f` are both `ShaderExpr` to Luau, and the difference is reported when the module runs, at the line.
+`require("@jess/shader")` is typed as `ShaderModule` (its stub in the folder `jess luau-types` writes is `return jess.shader`), so a shader module type-checks with no annotations: `input` is a `ShaderInput`, every name on it a `ShaderExpr`, and a misspelled function or a value used as a plain number is an error in your editor before it's one at run time. What the checker can't see is a value's shader type, or whether a name a binding has is a value, a struct, an array, or a texture: to Luau they're all `ShaderExpr`, indexable and measurable, and the difference is reported when the module runs, at the line.
 
 ## Loading a shader module
 

@@ -2,13 +2,23 @@
 
 use std::sync::Arc;
 
+use super::common;
+
 use jess::shader::{
-    Attribute, DeclarationKind, Expression, ExpressionId, Literal, Program, Rate, Semantic, SourceOrigin, Swizzle, Type,
+    Attribute, DataType, DeclarationKind, Element, Expression, ExpressionId, Field, Frequency, Literal, Place, PlaceProblem,
+    PlaceRoot, Program, Rate, Resource, ResourceId, ResourceKind, SourceOrigin, Step, StructDecl, Swizzle, Type, Uniform,
     ValidationError, ValidationErrorKind, wgsl,
 };
 
 fn float(program: &mut Program, value: f32) -> ExpressionId {
     program.push(Expression::Literal(Literal::Float(value)))
+}
+
+/// Declares a material texture `name` and the sampler declared with it.
+fn declare_texture(program: &mut Program, name: &str) -> (ResourceId, ResourceId) {
+    let texture = program.resource(Resource::new(Frequency::Material, name, ResourceKind::Texture2D));
+    let sampler = program.resource(Resource::new(Frequency::Material, name, ResourceKind::Sampler));
+    (texture, sampler)
 }
 
 /// A valid vertex stage, so each test only breaks what it means to.
@@ -61,10 +71,7 @@ fn dot_of_different_sizes_is_invalid() {
 #[test]
 fn sampling_with_vec3_coordinates_is_invalid() {
     let mut program = with_position();
-    let texture = program.parameter("diffuse", Type::Texture2D);
-    let sampler = program.parameter("diffuse", Type::Sampler);
-    let texture = program.push(Expression::Parameter(texture));
-    let sampler = program.push(Expression::Parameter(sampler));
+    let (texture, sampler) = declare_texture(&mut program, "diffuse");
     let coordinates = program.push(Expression::Literal(Literal::Vec3f([0.5, 0.5, 0.0])));
     let color = program.push(Expression::Sample {
         texture,
@@ -80,19 +87,65 @@ fn sampling_with_vec3_coordinates_is_invalid() {
 }
 
 #[test]
-fn a_texture_is_not_a_value() {
+fn sampling_takes_a_texture_then_a_sampler() {
     let mut program = with_position();
-    let texture = program.parameter("diffuse", Type::Texture2D);
-    let texture = program.push(Expression::Parameter(texture));
-    let one = float(&mut program, 1.0);
-    let sum = program.push(Expression::Add(texture, one));
-    program.push_fragment_output(sum);
+    let (texture, sampler) = declare_texture(&mut program, "diffuse");
+    let coordinates = program.push(Expression::Literal(Literal::Vec2f([0.5, 0.5])));
+    let color = program.push(Expression::Sample {
+        texture: sampler,
+        sampler: texture,
+        coordinates,
+    });
+    program.push_fragment_output(color);
+
+    assert_eq!(
+        messages(&program),
+        ["sample(Sampler, Texture2D, Vec2f) is invalid: expected sample(Texture2D, Sampler, Vec2f)"]
+    );
+}
+
+#[test]
+fn a_load_leads_to_a_value() {
+    let mut program = with_position();
+    let light = program.structure(StructDecl::new(
+        "Light",
+        vec![Field::new("color", DataType::Value(Type::Vec3f))],
+    ));
+    program.uniform(Uniform::new(Frequency::Pass, "light", DataType::Struct(light)));
+    let weights = DataType::Array {
+        element: Element::Value(Type::Vec4f),
+        length: 4,
+    };
+    program.uniform(Uniform::new(Frequency::Pass, "weights", weights));
+    let eight = program.push(Expression::Literal(Literal::UInt(8)));
+    let half = float(&mut program, 0.5);
+    let place = |steps: &[Step]| Place::new(PlaceRoot::Uniform(Frequency::Pass), steps).unwrap();
+    let places = [
+        place(&[]),
+        place(&[Step::Field(0)]),
+        place(&[Step::Field(0), Step::Field(1)]),
+        place(&[Step::Field(0), Step::Index(eight)]),
+        place(&[Step::Field(1), Step::Field(0)]),
+        place(&[Step::Field(1), Step::Index(eight)]),
+        place(&[Step::Field(1), Step::Index(half)]),
+        place(&[Step::Field(2)]),
+    ];
+    for place in places {
+        let load = program.push(Expression::Load(place));
+        program.push_fragment_output(load);
+    }
 
     assert_eq!(
         messages(&program),
         [
-            "Texture2D + Float is invalid: expected two values of the same numeric type, a vector and a scalar of its kind, \
-             or two matrices of the same size"
+            "a load names a uniform block, not one of its members",
+            "a load ends at a struct or an array, not a value: read one of its fields or elements",
+            "a load reads field 1 of Light, which it doesn't have",
+            "a load indexes something that is not an array",
+            "a load takes a field of something that is not a struct",
+            "a load reads element 8 of an array of 4",
+            "a load indexes an array with a Float: expected an Int or UInt",
+            "a load reads member 2 of the pass uniforms, which is not declared",
         ]
     );
 }
@@ -128,15 +181,23 @@ fn a_program_needs_a_position() {
 #[test]
 fn undefined_references_are_reported() {
     let mut other = Program::new();
-    other.parameter("color", Type::Vec4f);
-    let foreign_parameter = other.parameter("tint", Type::Vec4f);
+    common::uniform(&mut other, Frequency::Material, "color", Type::Vec4f);
+    let foreign_uniform = common::uniform(&mut other, Frequency::Material, "tint", Type::Vec4f);
+    let (foreign_texture, _) = declare_texture(&mut other, "diffuse");
     other.attribute(Attribute::new(Rate::Vertex, "position", Type::Vec4f));
     let foreign_input = other.attribute(Attribute::new(Rate::Vertex, "normal", Type::Vec4f));
     let foreign_varying = other.varying("uv", Type::Vec4f);
 
     let mut program = with_position();
-    let parameter = program.push(Expression::Parameter(foreign_parameter));
-    program.push_fragment_output(parameter);
+    let uniform = program.push(Expression::Load(foreign_uniform));
+    program.push_fragment_output(uniform);
+    let coordinates = program.push(Expression::Literal(Literal::Vec2f([0.5, 0.5])));
+    let texel = program.push(Expression::Sample {
+        texture: foreign_texture,
+        sampler: foreign_texture,
+        coordinates,
+    });
+    program.push_fragment_output(texel);
     let input = program.push(Expression::Attribute(foreign_input));
     program.write_varying(foreign_varying, input);
 
@@ -147,9 +208,16 @@ fn undefined_references_are_reported() {
                 expression: input,
                 varying: foreign_varying
             },
-            ValidationErrorKind::UndefinedParameter {
-                expression: parameter,
-                parameter: foreign_parameter
+            ValidationErrorKind::InvalidPlace {
+                expression: uniform,
+                problem: PlaceProblem::UndefinedMember {
+                    frequency: Frequency::Material,
+                    member: 1
+                }
+            },
+            ValidationErrorKind::UndefinedResource {
+                expression: texel,
+                resource: foreign_texture
             },
             ValidationErrorKind::UndefinedAttribute {
                 expression: input,
@@ -220,11 +288,8 @@ fn inputs_belong_to_their_stage() {
     let mut program = Program::new();
     let position = program.attribute(Attribute::new(Rate::Vertex, "position", Type::Vec4f));
     let uv = program.varying("uv", Type::Vec2f);
-    let texture = program.parameter("diffuse", Type::Texture2D);
-    let sampler = program.parameter("diffuse", Type::Sampler);
+    let (texture, sampler) = declare_texture(&mut program, "diffuse");
     let position = program.push(Expression::Attribute(position));
-    let texture = program.push(Expression::Parameter(texture));
-    let sampler = program.push(Expression::Parameter(sampler));
     let read_uv = program.push(Expression::Varying(uv));
     let texel = program.push(Expression::Sample {
         texture,
@@ -251,10 +316,7 @@ fn inputs_belong_to_their_stage() {
     );
 
     let mut program = with_position();
-    let texture = program.parameter("diffuse", Type::Texture2D);
-    let sampler = program.parameter("diffuse", Type::Sampler);
-    let texture = program.push(Expression::Parameter(texture));
-    let sampler = program.push(Expression::Parameter(sampler));
+    let (texture, sampler) = declare_texture(&mut program, "diffuse");
     let coordinates = program.push(Expression::Literal(Literal::Vec2f([0.5, 0.5])));
     let texel = program.push(Expression::Sample {
         texture,
@@ -270,57 +332,93 @@ fn inputs_belong_to_their_stage() {
 }
 
 #[test]
-fn pass_semantics_are_not_lowered_yet() {
-    let mut program = with_position();
-    let scene = program.push_at(Expression::Semantic(Semantic::SceneColor), origin(20, 3));
-    let sampler = program.parameter("scene", Type::Sampler);
-    let sampler = program.push(Expression::Parameter(sampler));
-    let coordinates = program.push(Expression::Literal(Literal::Vec2f([0.5, 0.5])));
-    let color = program.push(Expression::Sample {
-        texture: scene,
-        sampler,
-        coordinates,
-    });
-    program.push_fragment_output(color);
-
-    assert_eq!(
-        messages(&program),
-        ["shaders/lit.jsl:20:3 (@test/viewer): semantic sceneColor is not supported by the WGSL lowering yet"]
-    );
-}
-
-#[test]
 fn declarations_are_checked() {
+    // Past the two structs the program declares: an id the program doesn't have.
+    let mut other = Program::new();
+    let density = || vec![Field::new("density", DataType::Value(Type::Float))];
+    other.structure(StructDecl::new("Haze", density()));
+    other.structure(StructDecl::new("Mist", density()));
+    let foreign = other.structure(StructDecl::new("Fog", density()));
+
     let mut program = with_position();
-    program.parameter("1st", Type::Float);
-    program.parameter("tint", Type::Vec4f);
-    program.parameter("tint", Type::Vec3f);
-    program.parameter("tint", Type::Texture2D);
-    program.parameter("visible", Type::Bool);
-    program.attribute(Attribute::new(Rate::Vertex, "diffuse", Type::Texture2D));
+    program.structure(StructDecl::new("Empty", Vec::new()));
+    let color = Field::new("color", DataType::Value(Type::Vec3f));
+    program.structure(StructDecl::new("Light", vec![color.clone(), color]));
+    program.attribute(Attribute::new(Rate::Vertex, "flag", Type::Bool));
+    let value = |ty: Type| DataType::Value(ty);
+    let declared = [
+        (Frequency::Material, "1st", value(Type::Float)),
+        (Frequency::Material, "tint", value(Type::Vec4f)),
+        (Frequency::Material, "tint", value(Type::Vec3f)),
+        (Frequency::Material, "visible", value(Type::Bool)),
+        (Frequency::Pass, "tint", value(Type::Vec4f)),
+        (
+            Frequency::Material,
+            "lights",
+            DataType::Array {
+                element: Element::Value(Type::Vec4f),
+                length: 0,
+            },
+        ),
+        (Frequency::Material, "fog", DataType::Struct(foreign)),
+        (
+            Frequency::Material,
+            "weights",
+            DataType::Array {
+                element: Element::Value(Type::Float),
+                length: 4,
+            },
+        ),
+    ];
+    for (frequency, name, ty) in declared {
+        program.uniform(Uniform::new(frequency, name, ty));
+    }
+    program.resource(Resource::new(Frequency::Material, "tint", ResourceKind::Texture2D));
+    declare_texture(&mut program, "diffuse");
     program.varying("transform", Type::Mat4f);
     program.varying("light-direction", Type::Vec3f);
 
+    let material = DeclarationKind::Uniform(Frequency::Material);
     assert_eq!(
         kinds(&program),
         [
-            ValidationErrorKind::InvalidName {
-                kind: DeclarationKind::Parameter,
-                name: "1st".to_owned()
+            ValidationErrorKind::EmptyStruct {
+                name: "Empty".to_owned()
             },
             ValidationErrorKind::DuplicateName {
-                kind: DeclarationKind::Parameter,
-                name: "tint".to_owned()
-            },
-            ValidationErrorKind::UnsupportedDeclarationType {
-                kind: DeclarationKind::Parameter,
-                name: "visible".to_owned(),
-                ty: Type::Bool,
+                kind: DeclarationKind::Field,
+                name: "color".to_owned()
             },
             ValidationErrorKind::UnsupportedDeclarationType {
                 kind: DeclarationKind::Attribute(Rate::Vertex),
-                name: "diffuse".to_owned(),
-                ty: Type::Texture2D,
+                name: "flag".to_owned(),
+                ty: Type::Bool,
+            },
+            ValidationErrorKind::InvalidName {
+                kind: material,
+                name: "1st".to_owned()
+            },
+            ValidationErrorKind::DuplicateName {
+                kind: material,
+                name: "tint".to_owned()
+            },
+            ValidationErrorKind::UnsupportedDeclarationType {
+                kind: material,
+                name: "visible".to_owned(),
+                ty: Type::Bool,
+            },
+            ValidationErrorKind::EmptyArray {
+                kind: material,
+                name: "lights".to_owned()
+            },
+            ValidationErrorKind::UndefinedStruct {
+                kind: material,
+                name: "fog".to_owned(),
+                structure: foreign
+            },
+            ValidationErrorKind::DuplicateName {
+                kind: DeclarationKind::Texture(Frequency::Material),
+                name: "tint".to_owned()
             },
             ValidationErrorKind::UnsupportedDeclarationType {
                 kind: DeclarationKind::Varying,
@@ -330,6 +428,10 @@ fn declarations_are_checked() {
             ValidationErrorKind::InvalidName {
                 kind: DeclarationKind::Varying,
                 name: "light-direction".to_owned()
+            },
+            ValidationErrorKind::UniformArrayStride {
+                path: "material.weights".to_owned(),
+                stride: 4
             },
         ]
     );
@@ -381,7 +483,8 @@ fn operand_rules_are_checked() {
     let pair = program.push(Expression::Literal(Literal::Vec2f([1.0, 2.0])));
     let triple = program.push(Expression::Literal(Literal::Vec3f([1.0, 2.0, 3.0])));
     let quad = program.push(Expression::Literal(Literal::Vec4f([1.0, 2.0, 3.0, 4.0])));
-    let model = program.push(Expression::Semantic(Semantic::Model));
+    let model = common::uniform(&mut program, Frequency::Draw, "model", Type::Mat4f);
+    let model = program.push(Expression::Load(model));
     let expressions = [
         Expression::Min(integer, scalar),
         Expression::Multiply(model, triple),

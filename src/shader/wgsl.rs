@@ -1,21 +1,23 @@
 //! Lowering a validated [`Program`] to one WGSL module.
 //!
-//! Every backend name comes from here and follows one scheme: `p_` parameters (fields of the
-//! `parameters` uniform), `t_`/`s_` textures and samplers, `a_` per-vertex and `i_` per-instance attributes
-//! (a matrix attribute's columns are `mN_name`, N its location), `v_` varyings,
-//! `colorN` fragment outputs, `semantics.snake_case` semantics, and `eN` temporaries numbered
-//! from 0 in each entry point, in arena order. Every non-leaf expression a stage reads becomes one
-//! `let`; leaves (literals, parameters, attributes, semantics) are written in place.
+//! Every backend name comes from here and follows one scheme: `u_pass`, `u_material`, and
+//! `u_draw` the uniform blocks (of structs `PassUniforms`, `MaterialUniforms`, `DrawUniforms`),
+//! `SN_Name` the declared structs (N their declaration position), `f_` struct fields and uniform
+//! members, `t_frequency_name`/`s_frequency_name` textures and samplers, `a_` per-vertex and `i_`
+//! per-instance attributes (a matrix attribute's columns are `mN_name`, N its location), `v_`
+//! varyings, `colorN` fragment outputs, and `eN` temporaries numbered from 0 in each entry point,
+//! in arena order. Every non-leaf expression a stage reads becomes one `let`; leaves (literals,
+//! attributes, varyings, and uniform values reached without an index) are written in place.
 //!
-//! Bindings are Jess's: semantics are one uniform block at `@group(0) @binding(0)`; value
-//! parameters are one uniform block at `@group(1) @binding(0)`, followed in `@group(1)` by every
-//! texture and sampler parameter in declaration order.
+//! Bindings and layouts are [`layout`](crate::shader::layout)'s, written out: each frequency's
+//! uniform block at binding 0 of its group, its resources after it, every struct and block member
+//! in memory order, with `@align` and `@size` wherever Jess's rule differs from WGSL's own.
 
 use std::fmt::Write as _;
 
-use crate::shader::expression::{Expression, ExpressionId, Literal, ParameterId, Semantic};
-use crate::shader::interface::{AttributeId, Rate};
-use crate::shader::layout::{Extent, ProgramLayout, value_extent};
+use crate::shader::expression::{Expression, ExpressionId, Literal, Place, PlaceRoot, Step};
+use crate::shader::interface::{AttributeId, DataType, Element, Frequency, Rate, ResourceId, ResourceKind};
+use crate::shader::layout::{MemberLayout, ProgramLayout, StructLayout, value_extent};
 use crate::shader::program::Program;
 use crate::shader::types::Type;
 use crate::shader::validate::{Analysis, FRAGMENT, VERTEX, ValidationError, analyze};
@@ -24,62 +26,14 @@ use crate::shader::validate::{Analysis, FRAGMENT, VERTEX, ValidationError, analy
 pub const VERTEX_ENTRY_POINT: &str = "vertex_main";
 /// The fragment entry point's name.
 pub const FRAGMENT_ENTRY_POINT: &str = "fragment_main";
-/// The bind group holding the semantics uniform block.
-pub const SEMANTIC_GROUP: u32 = 0;
-/// The bind group holding the parameters uniform block, textures, and samplers.
-pub const PARAMETER_GROUP: u32 = 1;
 
-/// One member of a uniform block, where the renderer writes its bytes.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct UniformMember<Source> {
-    /// What the member holds.
-    pub source: Source,
-    /// Its type.
-    pub ty: Type,
-    /// Its byte offset in the block.
-    pub offset: u32,
-    /// Its size in bytes. A `Mat3f` is three columns of 16 bytes, the last 4 of each padding.
-    pub size: u32,
-}
-
-/// A uniform buffer the lowering declared.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct UniformBlock<Source> {
-    /// Its bind group.
-    pub group: u32,
-    /// Its binding in the group.
-    pub binding: u32,
-    /// The buffer size it needs, in bytes.
-    pub size: u32,
-    /// Its members, in offset order.
-    pub members: Vec<UniformMember<Source>>,
-}
-
-/// A texture or sampler parameter's binding.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ResourceBinding {
-    /// Its bind group.
-    pub group: u32,
-    /// Its binding in the group.
-    pub binding: u32,
-    /// The parameter.
-    pub parameter: ParameterId,
-    /// `Texture2D` or `Sampler`.
-    pub ty: Type,
-}
-
-/// A lowered program: the WGSL, and every binding and location the renderer must match.
+/// A lowered program: the WGSL, and every binding, layout, and location the renderer must match.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WgslModule {
     /// The WGSL source, with entry points [`VERTEX_ENTRY_POINT`] and [`FRAGMENT_ENTRY_POINT`].
     pub source: String,
-    /// The semantics the program reads, if any, in [`Semantic`] order.
-    pub semantics: Option<UniformBlock<Semantic>>,
-    /// The value parameters, if any, in declaration order.
-    pub parameters: Option<UniformBlock<ParameterId>>,
-    /// Every texture and sampler parameter, in declaration order.
-    pub resources: Vec<ResourceBinding>,
-    /// Where everything the program declares lives, its vertex buffers among it.
+    /// Where everything the program declares lives: uniform blocks, structs, bindings, and vertex
+    /// buffers.
     pub layout: ProgramLayout,
     /// How many color targets the fragment stage writes.
     pub fragment_outputs: u32,
@@ -106,9 +60,8 @@ pub fn lower(program: &Program) -> Result<WgslModule, Vec<ValidationError>> {
         temporaries: vec![0; program.expressions.len()],
     };
 
-    let semantics = lowering.semantics_block();
-    let parameters = lowering.parameters_block();
-    let resources = lowering.resources(parameters.is_some());
+    lowering.structs();
+    lowering.bindings();
     lowering.vertex_input_struct();
     lowering.vertex_output_struct();
     lowering.fragment_output_struct();
@@ -117,9 +70,6 @@ pub fn lower(program: &Program) -> Result<WgslModule, Vec<ValidationError>> {
 
     Ok(WgslModule {
         source: lowering.source,
-        semantics,
-        parameters,
-        resources,
         layout,
         fragment_outputs: output_count,
     })
@@ -142,84 +92,102 @@ struct Lowering<'a> {
 }
 
 impl Lowering<'_> {
-    fn semantics_block(&mut self) -> Option<UniformBlock<Semantic>> {
-        let mut used = [false; Semantic::ALL.len()];
-        for (index, expression) in self.program.expressions.iter().enumerate() {
-            if let Expression::Semantic(semantic) = expression
-                && self.analysis.stages[index] != 0
-            {
-                used[*semantic as usize] = true;
-            }
+    /// Every declared struct, in declaration order, which is dependency order.
+    fn structs(&mut self) {
+        let (program, layout) = (self.program, self.layout);
+        for (index, declaration) in program.structs.iter().enumerate() {
+            emit!(self, "struct {} {{\n", struct_name(program, index));
+            let members = declaration.fields.iter().map(|field| (field.name.as_str(), field.ty));
+            self.members(&members.collect::<Vec<_>>(), &layout.structs[index]);
+            emit!(self, "}}\n\n");
         }
-        let semantics = Semantic::ALL.into_iter().filter(|semantic| used[*semantic as usize]);
-        let block = uniform_block(SEMANTIC_GROUP, 0, semantics.map(|semantic| (semantic, semantic.ty())))?;
-
-        emit!(self, "struct Semantics {{\n");
-        for member in &block.members {
-            emit!(self, "    {}: {},\n", semantic_field(member.source), wgsl_type(member.ty));
-        }
-        emit!(
-            self,
-            "}}\n\n@group({}) @binding({}) var<uniform> semantics: Semantics;\n\n",
-            block.group,
-            block.binding
-        );
-        Some(block)
     }
 
-    fn parameters_block(&mut self) -> Option<UniformBlock<ParameterId>> {
-        let values = self
-            .program
-            .parameters
-            .iter()
-            .enumerate()
-            .filter(|(_, declaration)| !declaration.ty.is_resource());
-        let block = uniform_block(
-            PARAMETER_GROUP,
-            0,
-            values.map(|(index, declaration)| (ParameterId::at(index), declaration.ty)),
-        )?;
-
-        emit!(self, "struct Parameters {{\n");
-        for member in &block.members {
-            let name = &self.program.parameters[member.source.index()].name;
-            emit!(self, "    p_{name}: {},\n", wgsl_type(member.ty));
+    /// The members of a struct or uniform block, in memory order.
+    fn members(&mut self, members: &[(&str, DataType)], layout: &StructLayout) {
+        for &position in &layout.order {
+            let (name, ty) = members[position as usize];
+            let placed = layout.members[position as usize];
+            emit!(self, "    ");
+            self.member_attributes(ty, placed);
+            emit!(self, "f_{name}: {},\n", self.data_type(ty));
         }
-        emit!(
-            self,
-            "}}\n\n@group({}) @binding({}) var<uniform> parameters: Parameters;\n",
-            block.group,
-            block.binding
-        );
-        Some(block)
     }
 
-    fn resources(&mut self, has_parameters: bool) -> Vec<ResourceBinding> {
-        let mut binding = u32::from(has_parameters);
-        let mut resources = Vec::new();
-        for (index, declaration) in self.program.parameters.iter().enumerate() {
-            if !declaration.ty.is_resource() {
-                continue;
+    /// `@align` and `@size` where Jess's layout differs from what WGSL would pick by itself.
+    fn member_attributes(&mut self, ty: DataType, placed: MemberLayout) {
+        let natural = match ty {
+            DataType::Value(_) => return,
+            DataType::Struct(id) => self.layout.structure(id).map(|layout| (layout.align, layout.size)),
+            DataType::Array { element, length } => {
+                let align = match element {
+                    Element::Value(ty) => value_extent(ty).map(|extent| extent.align),
+                    Element::Struct(id) => self.layout.structure(id).map(|layout| layout.align),
+                };
+                align.map(|align| (align, self.layout.element_stride(element) * length))
             }
-            let prefix = if declaration.ty == Type::Texture2D { 't' } else { 's' };
-            emit!(
-                self,
-                "@group({PARAMETER_GROUP}) @binding({binding}) var {prefix}_{}: {};\n",
-                declaration.name,
-                wgsl_type(declaration.ty)
-            );
-            resources.push(ResourceBinding {
-                group: PARAMETER_GROUP,
-                binding,
-                parameter: ParameterId::at(index),
-                ty: declaration.ty,
-            });
-            binding += 1;
+        };
+        let Some((align, size)) = natural else {
+            return;
+        };
+        if placed.align != align {
+            emit!(self, "@align({}) ", placed.align);
         }
-        if has_parameters || !resources.is_empty() {
-            emit!(self, "\n");
+        if placed.size != size {
+            emit!(self, "@size({}) ", placed.size);
         }
-        resources
+    }
+
+    fn data_type(&self, ty: DataType) -> String {
+        match ty {
+            DataType::Value(ty) => wgsl_type(ty).to_owned(),
+            DataType::Struct(id) => struct_name(self.program, id.index()),
+            DataType::Array { element, length } => {
+                let element = match element {
+                    Element::Value(ty) => wgsl_type(ty).to_owned(),
+                    Element::Struct(id) => struct_name(self.program, id.index()),
+                };
+                format!("array<{element}, {length}>")
+            }
+        }
+    }
+
+    /// Each frequency's uniform block and resources, at the bindings the layout gave them.
+    fn bindings(&mut self) {
+        let (program, layout) = (self.program, self.layout);
+        for group in &layout.groups {
+            let frequency = group.frequency;
+            if let Some(block) = &group.uniform {
+                emit!(self, "struct {} {{\n", block_name(frequency));
+                let members = program
+                    .uniforms_of(frequency)
+                    .map(|(_, uniform)| (uniform.name.as_str(), uniform.ty));
+                self.members(&members.collect::<Vec<_>>(), block);
+                emit!(
+                    self,
+                    "}}\n\n@group({}) @binding(0) var<uniform> u_{frequency}: {};\n\n",
+                    frequency.group(),
+                    block_name(frequency)
+                );
+            }
+            for binding in &group.resources {
+                let resource = &program.resources[binding.resource.index()];
+                let (prefix, ty) = match resource.kind {
+                    ResourceKind::Texture2D => ('t', "texture_2d<f32>"),
+                    ResourceKind::Sampler => ('s', "sampler"),
+                };
+                emit!(
+                    self,
+                    "@group({}) @binding({}) var {prefix}_{frequency}_{}: {ty};\n",
+                    binding.group,
+                    binding.binding,
+                    resource.name
+                );
+            }
+            if !group.resources.is_empty() {
+                emit!(self, "\n");
+            }
+        }
     }
 
     fn vertex_input_struct(&mut self) {
@@ -368,8 +336,15 @@ impl Lowering<'_> {
                 sampler,
                 coordinates,
             } => {
-                self.call("textureSample", &[texture, sampler, coordinates], None);
+                emit!(self, "textureSample(");
+                self.resource(texture);
+                emit!(self, ", ");
+                self.resource(sampler);
+                emit!(self, ", ");
+                self.operand(coordinates);
+                emit!(self, ")");
             }
+            Expression::Load(place) => self.place(&place),
             Expression::Add(left, right)
             | Expression::Subtract(left, right)
             | Expression::Multiply(left, right)
@@ -392,11 +367,7 @@ impl Lowering<'_> {
                 self.operand(vector);
                 emit!(self, ".{swizzle}");
             }
-            Expression::Literal(_)
-            | Expression::Parameter(_)
-            | Expression::Attribute(_)
-            | Expression::Varying(_)
-            | Expression::Semantic(_) => self.operand(id),
+            Expression::Literal(_) | Expression::Attribute(_) | Expression::Varying(_) => self.operand(id),
         }
     }
 
@@ -425,19 +396,57 @@ impl Lowering<'_> {
         let program = self.program;
         match program.expressions[id.index()] {
             Expression::Literal(literal) => self.literal(literal),
-            Expression::Parameter(parameter) => {
-                let declaration = &program.parameters[parameter.index()];
-                match declaration.ty {
-                    Type::Texture2D => emit!(self, "t_{}", declaration.name),
-                    Type::Sampler => emit!(self, "s_{}", declaration.name),
-                    _ => emit!(self, "parameters.p_{}", declaration.name),
-                }
-            }
+            Expression::Load(place) if place.indices().is_empty() => self.place(&place),
             Expression::Attribute(attribute) => self.attribute(attribute),
             Expression::Varying(varying) => emit!(self, "input.v_{}", program.varyings[varying.index()].name),
-            Expression::Semantic(semantic) => emit!(self, "semantics.{}", semantic_field(semantic)),
             _ => emit!(self, "e{}", self.temporaries[id.index()]),
         }
+    }
+
+    /// A uniform value: its block, then a field or an index per step.
+    fn place(&mut self, place: &Place) {
+        let program = self.program;
+        let PlaceRoot::Uniform(frequency) = place.root;
+        emit!(self, "u_{frequency}");
+        let mut current: Option<DataType> = None;
+        for step in place.steps() {
+            match *step {
+                Step::Field(position) => {
+                    // Validation resolved every step: the first names a member, the rest struct fields.
+                    let (name, ty) = match current {
+                        None => program
+                            .uniforms_of(frequency)
+                            .nth(position as usize)
+                            .map(|(_, uniform)| (uniform.name.as_str(), uniform.ty)),
+                        Some(DataType::Struct(id)) => program.structs[id.index()]
+                            .fields
+                            .get(position as usize)
+                            .map(|field| (field.name.as_str(), field.ty)),
+                        Some(_) => None,
+                    }
+                    .unwrap_or(("", DataType::Value(Type::Bool)));
+                    emit!(self, ".f_{name}");
+                    current = Some(ty);
+                }
+                Step::Index(index) => {
+                    emit!(self, "[");
+                    self.operand(index);
+                    emit!(self, "]");
+                    if let Some(DataType::Array { element, .. }) = current {
+                        current = Some(element.into());
+                    }
+                }
+            }
+        }
+    }
+
+    fn resource(&mut self, resource: ResourceId) {
+        let declaration = &self.program.resources[resource.index()];
+        let prefix = match declaration.kind {
+            ResourceKind::Texture2D => 't',
+            ResourceKind::Sampler => 's',
+        };
+        emit!(self, "{prefix}_{}_{}", declaration.frequency, declaration.name);
     }
 
     /// An attribute read: the input field, or a matrix rebuilt from its columns.
@@ -479,50 +488,17 @@ impl Lowering<'_> {
     }
 }
 
-fn uniform_block<Source>(
-    group: u32,
-    binding: u32,
-    members: impl Iterator<Item = (Source, Type)>,
-) -> Option<UniformBlock<Source>> {
-    let mut block = UniformBlock {
-        group,
-        binding,
-        size: 0,
-        members: Vec::new(),
-    };
-    let mut end = 0u32;
-    let mut block_alignment = 1;
-    for (source, ty) in members {
-        // Validation rejects `Bool` parameters, the only value type without a layout.
-        let Extent { align: alignment, size } = value_extent(ty)?;
-        let offset = end.next_multiple_of(alignment);
-        block.members.push(UniformMember {
-            source,
-            ty,
-            offset,
-            size,
-        });
-        end = offset + size;
-        block_alignment = block_alignment.max(alignment);
-    }
-    if block.members.is_empty() {
-        return None;
-    }
-    block.size = end.next_multiple_of(block_alignment);
-    Some(block)
+/// The WGSL name of the struct declared at `index`: `S3_Light`.
+fn struct_name(program: &Program, index: usize) -> String {
+    format!("S{index}_{}", program.structs[index].name)
 }
 
-fn semantic_field(semantic: Semantic) -> &'static str {
-    match semantic {
-        Semantic::Model => "model",
-        Semantic::View => "view",
-        Semantic::Projection => "projection",
-        Semantic::CameraPosition => "camera_position",
-        Semantic::ViewportSize => "viewport_size",
-        Semantic::Time => "time",
-        Semantic::SceneColor => "scene_color",
-        Semantic::SceneDepth => "scene_depth",
-        Semantic::PreviousPass => "previous_pass",
+/// The WGSL struct a frequency's uniform block is.
+fn block_name(frequency: Frequency) -> &'static str {
+    match frequency {
+        Frequency::Pass => "PassUniforms",
+        Frequency::Material => "MaterialUniforms",
+        Frequency::Draw => "DrawUniforms",
     }
 }
 
@@ -551,7 +527,5 @@ fn wgsl_type(ty: Type) -> &'static str {
         Type::Vec4u => "vec4<u32>",
         Type::Mat3f => "mat3x3<f32>",
         Type::Mat4f => "mat4x4<f32>",
-        Type::Texture2D => "texture_2d<f32>",
-        Type::Sampler => "sampler",
     }
 }

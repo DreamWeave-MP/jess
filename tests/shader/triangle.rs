@@ -6,8 +6,8 @@
 use super::common;
 
 use jess::shader::layout::VertexBufferLayout;
-use jess::shader::wgsl::{self, FRAGMENT_ENTRY_POINT, PARAMETER_GROUP, VERTEX_ENTRY_POINT, WgslModule};
-use jess::shader::{Attribute, Expression, Literal, Program, Rate, Type};
+use jess::shader::wgsl::{self, FRAGMENT_ENTRY_POINT, VERTEX_ENTRY_POINT, WgslModule};
+use jess::shader::{Attribute, Expression, Frequency, Literal, Program, Rate, Type};
 
 const SIZE: u32 = 64;
 const CLEAR: [u8; 4] = [0, 0, 255, 255];
@@ -17,7 +17,7 @@ fn triangle_program() -> Program {
     let mut program = Program::new();
     let position = program.attribute(Attribute::new(Rate::Vertex, "position", Type::Vec2f));
     let transform = program.attribute(Attribute::new(Rate::Instance, "transform", Type::Mat4f));
-    let color = program.parameter("color", Type::Vec4f);
+    let color = common::uniform(&mut program, Frequency::Material, "color", Type::Vec4f);
     let position = program.push(Expression::Attribute(position));
     let depth = program.push(Expression::Literal(Literal::Float(0.0)));
     let one = program.push(Expression::Literal(Literal::Float(1.0)));
@@ -25,7 +25,7 @@ fn triangle_program() -> Program {
     let transform = program.push(Expression::Attribute(transform));
     let clip = program.push(Expression::Multiply(transform, local));
     program.set_position(clip);
-    let color = program.push(Expression::Parameter(color));
+    let color = program.push(Expression::Load(color));
     let unchanged = program.push(Expression::Multiply(color, one));
     program.push_fragment_output(unchanged);
     program
@@ -73,7 +73,7 @@ fn shader_ir_draws_instanced_triangles() {
     assert_eq!(pixel(SIZE - 1, SIZE - 1), CLEAR, "a corner is the clear color");
 }
 
-/// Draws `module` with nothing but what the lowering reported: its attributes, its parameter
+/// Draws `module` with nothing but what the lowering reported: its vertex buffers, its material
 /// block, and its entry points.
 #[allow(clippy::too_many_lines)] // one wgpu setup, top to bottom
 fn render(adapter: &wgpu::Adapter, module: &WgslModule) -> Vec<u8> {
@@ -83,12 +83,13 @@ fn render(adapter: &wgpu::Adapter, module: &WgslModule) -> Vec<u8> {
         source: wgpu::ShaderSource::Wgsl(module.source.as_str().into()),
     });
 
-    let parameters = module.parameters.as_ref().unwrap();
-    assert_eq!((parameters.group, parameters.binding), (PARAMETER_GROUP, 0));
+    let material = module.layout.group(Frequency::Material);
+    let parameters = material.uniform.as_ref().unwrap();
+    assert_eq!(Frequency::Material.group(), 1);
     let parameters_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("parameters"),
         entries: &[wgpu::BindGroupLayoutEntry {
-            binding: parameters.binding,
+            binding: 0,
             visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
@@ -111,13 +112,13 @@ fn render(adapter: &wgpu::Adapter, module: &WgslModule) -> Vec<u8> {
         label: Some("parameters"),
         layout: &parameters_layout,
         entries: &[wgpu::BindGroupEntry {
-            binding: parameters.binding,
+            binding: 0,
             resource: color_buffer.as_entire_binding(),
         }],
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("triangle"),
-        // The program reads no semantics, so group 0 is a gap.
+        // The program binds nothing per pass, so group 0 is a gap.
         bind_group_layouts: &[None, Some(&parameters_layout)],
         immediate_size: 0,
     });
@@ -223,7 +224,7 @@ fn render(adapter: &wgpu::Adapter, module: &WgslModule) -> Vec<u8> {
             multiview_mask: None,
         });
         pass.set_pipeline(&pipeline);
-        pass.set_bind_group(PARAMETER_GROUP, &parameters_group, &[]);
+        pass.set_bind_group(Frequency::Material.group(), &parameters_group, &[]);
         pass.set_vertex_buffer(0, vertex_buffer.slice(..));
         pass.set_vertex_buffer(1, instance_buffer.slice(..));
         pass.draw(0..3, 0..2);

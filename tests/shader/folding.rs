@@ -1,6 +1,8 @@
 //! Trivial constant folding: constant arithmetic, constant vectors, and identities. Nothing else.
 
-use jess::shader::{Attribute, Expression, ExpressionId, Literal, Program, Rate, Semantic, Type, ValidationErrorKind};
+use super::common::uniform;
+
+use jess::shader::{Attribute, Expression, ExpressionId, Frequency, Literal, Program, Rate, Type, ValidationErrorKind};
 
 fn literal(program: &mut Program, literal: Literal) -> ExpressionId {
     program.push(Expression::Literal(literal))
@@ -98,8 +100,8 @@ type Build = fn(ExpressionId, ExpressionId) -> Expression;
 #[test]
 fn identities_fold_to_their_operand() {
     let color = |program: &mut Program| {
-        let color = program.parameter("color", Type::Vec4f);
-        program.push(Expression::Parameter(color))
+        let color = uniform(program, Frequency::Material, "color", Type::Vec4f);
+        program.push(Expression::Load(color))
     };
     let cases: [(Literal, Build, bool); 6] = [
         (Literal::Float(1.0), |value, one| Expression::Multiply(value, one), true),
@@ -130,7 +132,8 @@ fn identities_fold_to_their_operand() {
 #[test]
 fn an_identity_that_changes_the_type_does_not_fold() {
     let mut program = fragment(|program| {
-        let transform = program.push(Expression::Semantic(Semantic::Model));
+        let transform = uniform(program, Frequency::Draw, "model", Type::Mat4f);
+        let transform = program.push(Expression::Load(transform));
         let ones = literal(program, Literal::Vec4f([1.0; 4]));
         program.push(Expression::Multiply(transform, ones))
     });

@@ -1,34 +1,41 @@
 //! A typed shader IR that lowers to WGSL.
 //!
-//! A [`Program`] is an arena of [`Expression`]s over a declared interface (see [`layout`]), plus a
-//! vertex stage (clip position and varyings) and a fragment stage (color outputs). Expressions name
-//! parameters, attributes, varyings, and [`Semantic`] inputs by what they mean; [`wgsl::lower`]
-//! picks every binding and location. [`Program::validate`] reports mistakes in Jess terms, with the
+//! A [`Program`] is an arena of [`Expression`]s over a declared interface, plus a vertex stage
+//! (clip position and varyings) and a fragment stage (color outputs). The interface is everything
+//! the program reads, named by what it is and how often it changes: vertex attributes per vertex
+//! or per instance, and per [`Frequency`] the uniform members, textures, and samplers each pass,
+//! material, or draw binds. Nothing is built in; [`layout`] decides where all of it lives, and
+//! [`wgsl::lower`] writes that out. [`Program::validate`] reports mistakes in Jess terms, with the
 //! author's [`SourceOrigin`] when one was recorded, before any backend sees the program.
 //! [`Program::fold_constants`] folds constant arithmetic and trivial identities, and nothing more.
 //!
 //! WGSL is backend output, not the interface: nothing here takes WGSL or exposes a GPU API.
 //!
 //! ```
-//! use jess::shader::{Attribute, Expression, Literal, Program, Rate, Semantic, Type, wgsl};
+//! use jess::shader::{
+//!     Attribute, DataType, Expression, Frequency, Literal, Place, PlaceRoot, Program, Rate, Step, Type, Uniform,
+//!     wgsl,
+//! };
 //!
 //! let mut program = Program::new();
 //! let position = program.attribute(Attribute::new(Rate::Vertex, "position", Type::Vec3f));
-//! let color = program.parameter("color", Type::Vec4f);
+//! program.uniform(Uniform::new(Frequency::Pass, "projection", DataType::Value(Type::Mat4f)));
+//! program.uniform(Uniform::new(Frequency::Material, "color", DataType::Value(Type::Vec4f)));
+//! let member = |frequency| Place::new(PlaceRoot::Uniform(frequency), &[Step::Field(0)]).unwrap();
 //!
 //! let position = program.push(Expression::Attribute(position));
 //! let one = program.push(Expression::Literal(Literal::Float(1.0)));
 //! let local = program.push(Expression::construct(Type::Vec4f, &[position, one]).unwrap());
-//! let projection = program.push(Expression::Semantic(Semantic::Projection));
+//! let projection = program.push(Expression::Load(member(Frequency::Pass)));
 //! let clip = program.push(Expression::Multiply(projection, local));
 //! program.set_position(clip);
 //!
-//! let color = program.push(Expression::Parameter(color));
+//! let color = program.push(Expression::Load(member(Frequency::Material)));
 //! program.push_fragment_output(color);
 //!
 //! program.fold_constants()?;
 //! let module = wgsl::lower(&program)?;
-//! assert!(module.source.contains("let e1 = semantics.projection * e0;"));
+//! assert!(module.source.contains("let e1 = u_pass.f_projection * e0;"));
 //! # Ok::<(), Vec<jess::shader::ValidationError>>(())
 //! ```
 //!
@@ -38,25 +45,28 @@
 //! cross into another builder. The same program:
 //!
 //! ```
-//! use jess::shader::{ProgramBuilder, Rate, Semantic, Type, wgsl};
+//! use jess::shader::{DataType, Frequency, Place, PlaceRoot, ProgramBuilder, Rate, Step, Type, wgsl};
 //!
 //! let mut builder = ProgramBuilder::new();
 //! let mut site = builder.site();
 //! let position = site.attribute(Rate::Vertex, "position", Type::Vec3f)?;
 //! let position = site.read_attribute(position);
-//! let color = site.parameter("color", Type::Vec4f)?;
+//! site.uniform(Frequency::Pass, "projection", DataType::Value(Type::Mat4f))?;
+//! site.uniform(Frequency::Material, "color", DataType::Value(Type::Vec4f))?;
+//! let member = |frequency| Place::new(PlaceRoot::Uniform(frequency), &[Step::Field(0)]).unwrap();
 //!
 //! let one = site.float(1.0)?;
 //! let local = site.construct(Type::Vec4f, &[position, one])?;
-//! let projection = site.semantic(Semantic::Projection);
+//! let projection = site.load(member(Frequency::Pass), &[])?;
 //! let clip = site.multiply(projection, local)?;
 //! assert_eq!(clip.ty(), Type::Vec4f);
 //! site.set_position(clip)?;
+//! let color = site.load(member(Frequency::Material), &[])?;
 //! site.output(color)?;
 //!
 //! let program = builder.finish().map_err(|mut errors| errors.remove(0))?;
 //! let module = wgsl::lower(&program).map_err(|mut errors| errors.remove(0))?;
-//! assert!(module.source.contains("let e1 = semantics.projection * e0;"));
+//! assert!(module.source.contains("let e1 = u_pass.f_projection * e0;"));
 //! # Ok::<(), jess::shader::ValidationError>(())
 //! ```
 
@@ -97,7 +107,8 @@ pub mod wgsl;
 
 pub use build::{ProgramBuilder, Site, Value};
 pub use expression::{
-    Component, Expression, ExpressionId, Literal, Operands, ParameterId, Semantic, SourceOrigin, Swizzle, VaryingId,
+    Component, Expression, ExpressionId, Literal, MAX_PLACE_INDICES, MAX_PLACE_STEPS, Operands, Place, PlaceRoot,
+    SourceOrigin, Step, Swizzle, VaryingId,
 };
 pub use interface::{
     Attribute, AttributeId, DataType, Element, Field, Frequency, Rate, Resource, ResourceId, ResourceKind, StructDecl,
@@ -105,4 +116,6 @@ pub use interface::{
 };
 pub use program::{Declaration, Program};
 pub use types::{Scalar, Type};
-pub use validate::{DeclarationKind, MAX_ATTRIBUTE_LOCATIONS, MAX_FRAGMENT_OUTPUTS, ValidationError, ValidationErrorKind};
+pub use validate::{
+    DeclarationKind, MAX_ATTRIBUTE_LOCATIONS, MAX_FRAGMENT_OUTPUTS, PlaceProblem, ValidationError, ValidationErrorKind,
+};

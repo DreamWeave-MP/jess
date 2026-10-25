@@ -9,7 +9,7 @@ use jess::lua::l3i::Runtime;
 use jess::lua::scripts::load_module;
 use jess::lua::shader::LuaShaderProgram;
 use jess::shader::wgsl::{self, WgslModule};
-use jess::shader::{Program, Type};
+use jess::shader::{DataType, Frequency, Program, ResourceKind, Type};
 
 use super::common;
 
@@ -61,15 +61,36 @@ fn attributes(program: &Program) -> Vec<(&str, Type)> {
         .collect()
 }
 
+/// The uniform members `frequency` binds, as declared.
+fn uniforms(program: &Program, frequency: Frequency) -> Vec<(&str, DataType)> {
+    program
+        .uniforms_of(frequency)
+        .map(|(_, uniform)| (uniform.name.as_str(), uniform.ty))
+        .collect()
+}
+
+/// The textures and samplers `frequency` binds.
+fn resources(program: &Program, frequency: Frequency) -> Vec<(&str, ResourceKind)> {
+    program
+        .resources()
+        .iter()
+        .filter(|resource| resource.frequency == frequency)
+        .map(|resource| (resource.name.as_str(), resource.kind))
+        .collect()
+}
+
 #[test]
 fn solid_color_lowers_to_valid_wgsl() {
     let runtime = common::runtime();
     let (program, module) = lowered(&runtime, "solid-color.jsl");
-    assert_eq!(declared(program.parameters()), [("tint", Type::Vec4f)]);
+    assert_eq!(
+        uniforms(&program, Frequency::Material),
+        [("tint", DataType::Value(Type::Vec4f))]
+    );
     assert_eq!(attributes(&program), [("position", Type::Vec3f)]);
     assert_eq!(program.varyings(), []);
     assert_eq!(module.fragment_outputs, 1);
-    assert!(module.source.contains("parameters.p_tint"), "{}", module.source);
+    assert!(module.source.contains("u_material.f_tint"), "{}", module.source);
 }
 
 #[test]
@@ -80,13 +101,13 @@ fn vertex_transform_passes_a_varying_and_keeps_luau_evaluation_order() {
     assert_eq!(declared(program.varyings()), [("color", Type::Vec4f)]);
     // Luau multiplies left to right: the matrix products come first.
     assert!(
-        module.source.contains("semantics.projection * semantics.view"),
+        module.source.contains("u_pass.f_projection * u_pass.f_view"),
         "{}",
         module.source
     );
     assert!(module.source.contains("output.v_color = input.a_color;"), "{}", module.source);
     assert!(
-        module.source.contains("input.v_color * parameters.p_tint"),
+        module.source.contains("input.v_color * u_material.f_tint"),
         "{}",
         module.source
     );
@@ -97,13 +118,15 @@ fn textured_samples_with_the_sampler_declared_with_the_texture() {
     let runtime = common::runtime();
     let (program, module) = lowered(&runtime, "textured.jsl");
     assert_eq!(
-        declared(program.parameters()),
-        [("diffuse", Type::Texture2D), ("diffuse", Type::Sampler)]
+        resources(&program, Frequency::Material),
+        [("diffuse", ResourceKind::Texture2D), ("diffuse", ResourceKind::Sampler)]
     );
     assert_eq!(declared(program.varyings()), [("uv", Type::Vec2f)]);
-    assert_eq!(module.resources.len(), 2);
+    assert_eq!(module.layout.group(Frequency::Material).resources.len(), 2);
     assert!(
-        module.source.contains("textureSample(t_diffuse, s_diffuse, input.v_uv)"),
+        module
+            .source
+            .contains("textureSample(t_material_diffuse, s_material_diffuse, input.v_uv)"),
         "{}",
         module.source
     );
@@ -114,16 +137,18 @@ fn bayer_dither_port_builds_every_static_mode_and_lowers_to_valid_wgsl() {
     let runtime = common::runtime();
     let (program, module) = lowered(&runtime, "bayer-dither.jsl");
     assert_eq!(
-        declared(program.parameters()),
-        [("source", Type::Texture2D), ("source", Type::Sampler)]
+        resources(&program, Frequency::Material),
+        [("source", ResourceKind::Texture2D), ("source", ResourceKind::Sampler)]
     );
     assert_eq!(declared(program.varyings()), [("uv", Type::Vec2f)]);
     assert!(
-        module.source.contains("textureSample(t_source, s_source, input.v_uv)"),
+        module
+            .source
+            .contains("textureSample(t_material_source, s_material_source, input.v_uv)"),
         "{}",
         module.source
     );
-    assert!(module.source.contains("semantics.viewport_size"), "{}", module.source);
+    assert!(module.source.contains("u_pass.f_viewportSize"), "{}", module.source);
     assert!(module.source.contains("floor("), "{}", module.source);
 }
 
@@ -131,16 +156,25 @@ fn bayer_dither_port_builds_every_static_mode_and_lowers_to_valid_wgsl() {
 fn directional_lighting_lowers_to_valid_wgsl() {
     let runtime = common::runtime();
     let (program, module) = lowered(&runtime, "directional-lit.jsl");
-    // Parameters are declared sorted by name, then the textures with their samplers.
+    // What the material binds is declared sorted by name: uniform members, then the texture with
+    // its sampler.
     assert_eq!(
-        declared(program.parameters()),
+        uniforms(&program, Frequency::Material),
         [
-            ("ambient", Type::Float),
-            ("lightDirection", Type::Vec3f),
-            ("normalMatrix", Type::Mat3f),
-            ("diffuse", Type::Texture2D),
-            ("diffuse", Type::Sampler),
+            ("ambient", DataType::Value(Type::Float)),
+            ("lightDirection", DataType::Value(Type::Vec3f)),
+            ("normalMatrix", DataType::Value(Type::Mat3f)),
         ]
+    );
+    assert_eq!(
+        resources(&program, Frequency::Material),
+        [("diffuse", ResourceKind::Texture2D), ("diffuse", ResourceKind::Sampler)]
+    );
+    assert_eq!(program.structs()[0].name, "Camera");
+    assert!(
+        module
+            .source
+            .contains("u_pass.f_camera.f_projection * u_pass.f_camera.f_view")
     );
     assert_eq!(declared(program.varyings()), [("normal", Type::Vec3f), ("uv", Type::Vec2f)]);
     for expected in ["normalize(", "dot(", "max(", "clamp(", ".xyz", ".w"] {

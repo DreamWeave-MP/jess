@@ -516,13 +516,14 @@ export type AudioContext = {
   group: (self: AudioContext, body: () -> ()) -> (),
 }
 
---- A shader type, from `jess.shader` (`float`, `int`, `uint`, `vec2`..`vec4`, `vec2i`..`vec4i`,
---- `vec2u`..`vec4u`, `mat3`, `mat4`, `texture2d`, `sampler`): what a program's `parameters` and
---- `textures` declare (`tint = shader.vec4`). Called, the vector types build a vector from values
+--- A shader type, from `jess.shader`: a value type (`float`, `int`, `uint`, `vec2`..`vec4`,
+--- `vec2i`..`vec4i`, `vec2u`..`vec4u`, `mat3`, `mat4`), `texture2d` and `sampler`, or a struct
+--- or array type from `shader.struct` and `shader.array`. It's what a program's attributes and
+--- bindings declare (`tint = shader.vec4`). Called, the vector types build a vector from values
 --- and numbers whose sizes add up to theirs, or from one number repeated
 --- (`shader.vec4(position, 1)`); a number in an integer vector is that vector's integer, and must
 --- be whole. `shader.float(0.5)`, `shader.int(-3)`, and `shader.uint(7)` are constants; the other
---- types can't be constructed. `tostring` gives the type's name (`Vec4f`).
+--- types can't be constructed. `tostring` gives the type's name (`Vec4f`, `Light`, `Light[8]`).
 declare extern type ShaderType with
   __call: (self: ShaderType, ...ShaderExpr | number) -> ShaderExpr
   __tostring: (self: ShaderType) -> string
@@ -531,15 +532,20 @@ end
 --- A symbolic, typed value in the shader program under construction: not a number, and not a GPU
 --- value. Operators append expressions to the program and return new values; a bare number
 --- beside one is a `Float`. `.x`, `.xyz`, `.zyx`: a swizzle of one to four of `x`, `y`, `z`, and
---- `w`, the only names a value has. A mistake fails at the line that made it, with the types
---- involved. `tostring` gives `ShaderExpr(Vec4f)`, and `==` whether two handles name one
---- expression. A value is only usable while its `shader.program` call runs.
+--- `w`. A mistake fails at the line that made it, with the types involved. `tostring` gives
+--- `ShaderExpr(Vec4f)`, and `==` whether two handles name one expression. A value is only usable
+--- while its `shader.program` call runs.
+---
+--- The checker sees every name a binding has as one of these, as it sees every value's shader
+--- type as this one: a struct, an array, and a texture are indexed, measured, and sampled through
+--- it, and which one a name is gets checked when the module runs.
 declare extern type ShaderExpr with
-  [string]: ShaderExpr
+  [string | number | ShaderExpr]: ShaderExpr
   __add: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr
   __sub: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr
   __mul: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr
   __div: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr
+  __len: (self: ShaderExpr) -> number
   __eq: (self: ShaderExpr, other: ShaderExpr) -> boolean
   __tostring: (self: ShaderExpr) -> string
 end
@@ -552,30 +558,54 @@ declare extern type ShaderAttributes with
   __tostring: (self: ShaderAttributes) -> string
 end
 
---- A stage function's input. Every name is a declared parameter or texture, a semantic input
---- (`model`, `view`, `projection`: `Mat4f`; `cameraPosition`: `Vec3f`; `viewportSize`: `Vec2f`;
---- `time`: `Float`), or, in the fragment function, a value the vertex function returned. In the
---- vertex function, `attributes` and `instance` are the declared attributes. A name it doesn't
---- have is an error listing the ones it does.
+--- What one frequency binds (`input.pass`, `input.material`, `input.draw`), a struct member, or
+--- an array, on the way to a value. Indexing it by name, or an array by a number or shader value
+--- (from 0), goes one step in; `#` is an array's length. A step that reaches a value reads it, and
+--- a texture or sampler is its handle. `tostring` gives `ShaderPlace(material)`.
+declare extern type ShaderPlace with
+  [string | number | ShaderExpr]: ShaderExpr
+  __len: (self: ShaderPlace) -> number
+  __tostring: (self: ShaderPlace) -> string
+end
+
+--- A declared texture, with the sampler declared with it, for `shader.sample`.
+declare extern type ShaderTexture with
+  __tostring: (self: ShaderTexture) -> string
+end
+
+--- A sampler declared on its own, for `shader.sample`'s three-argument form.
+declare extern type ShaderSampler with
+  __tostring: (self: ShaderSampler) -> string
+end
+
+--- A stage function's input. `pass`, `material`, and `draw` are what each frequency binds;
+--- `attributes` and `instance`, in the vertex function, the declared attributes; in the fragment
+--- function every other name is a value the vertex function returned. A name it doesn't have is
+--- an error listing the ones it does.
 declare extern type ShaderInput with
   attributes: ShaderAttributes
   instance: ShaderAttributes
+  pass: ShaderPlace
+  material: ShaderPlace
+  draw: ShaderPlace
   [string]: ShaderExpr
   __tostring: (self: ShaderInput) -> string
 end
 
 --- A finished, validated shader program: what a shader module returns, for jess to lower to the
---- backend. `tostring` gives `ShaderProgram(3 attributes, 2 parameters, 1 texture, 2 varyings)`.
+--- backend. `tostring` gives `ShaderProgram(3 attributes, 2 uniforms, 1 texture, 2 varyings)`.
 declare extern type ShaderProgram with
   --- The per-vertex attributes, sorted by name, each with its type's name (`Vec3f`).
   attributes: { { name: string, type: string } }
   --- The per-instance attributes, the same way.
   instance: { { name: string, type: string } }
-  --- The value parameters (not the textures and samplers), sorted by name, each with its type's
-  --- name (`Vec4f`).
-  parameters: { { name: string, type: string } }
-  --- The texture names, each declared with a sampler of the same name.
-  textures: { string }
+  --- What the pass binds, sorted by name, each with its type's name (`Vec4f`, `Camera`,
+  --- `Light[8]`, `Texture2D`, `Sampler`).
+  pass: { { name: string, type: string } }
+  --- What the material binds, the same way.
+  material: { { name: string, type: string } }
+  --- What each draw binds, the same way.
+  draw: { { name: string, type: string } }
   --- What the vertex function returned besides `position`, sorted by name, as the fragment
   --- function reads it.
   varyings: { { name: string, type: string } }
@@ -584,16 +614,17 @@ end
 
 --- What `shader.program` takes. `attributes` and `instance` are what each vertex and each
 --- instance has (`Int`, `UInt`, `Float`, vectors, and matrices), read from its vertex buffers.
---- `parameters` are values (`float`, the vectors, the matrices, and `sampler`), `textures` are
---- `texture2d`, each declared with a sampler of the same name; all are declared sorted by name.
---- A parameter or texture may not be named like a semantic input, `attributes`, or `instance`.
---- `vertex` returns `position` (a `Vec4f`) and the values to pass to the fragment stage, each
---- named; `fragment` returns the `Vec4f` color. Both run once, while `shader.program` runs.
+--- `pass`, `material`, and `draw` are what each frequency binds: values, structs, and arrays in
+--- its uniform block, `texture2d` (each declared with a sampler of the same name), and `sampler`.
+--- All are declared sorted by name. `vertex` returns `position` (a `Vec4f`) and the values to pass
+--- to the fragment stage, each named; `fragment` returns the `Vec4f` color. Both run once, while
+--- `shader.program` runs.
 export type ShaderProgramSpec = {
   attributes: { [string]: ShaderType }?,
   instance: { [string]: ShaderType }?,
-  parameters: { [string]: ShaderType }?,
-  textures: { [string]: ShaderType }?,
+  pass: { [string]: ShaderType }?,
+  material: { [string]: ShaderType }?,
+  draw: { [string]: ShaderType }?,
   vertex: (input: ShaderInput) -> { [string]: ShaderExpr },
   fragment: (input: ShaderInput) -> ShaderExpr,
 }
@@ -623,7 +654,11 @@ export type ShaderModule = {
   mat4: ShaderType,
   texture2d: ShaderType,
   sampler: ShaderType,
-  --- Builds a program: declares the parameters and textures, runs `vertex` and passes what it
+  --- A struct type: named fields of value, struct, and array types, laid out by jess.
+  struct: (name: string, fields: { [string]: ShaderType }) -> ShaderType,
+  --- An array type: `length` (at least 1) values or structs.
+  array: (element: ShaderType, length: number) -> ShaderType,
+  --- Builds a program: declares the attributes and bindings, runs `vertex` and passes what it
   --- returned to the fragment stage, runs `fragment`, then validates the whole program, listing
   --- every problem with its line.
   program: (spec: ShaderProgramSpec) -> ShaderProgram,
@@ -642,8 +677,9 @@ export type ShaderModule = {
   floor: (value: ShaderExpr | number) -> ShaderExpr,
   --- `start + (finish - start) * amount`, per component.
   mix: (start: ShaderExpr | number, finish: ShaderExpr | number, amount: ShaderExpr | number) -> ShaderExpr,
-  --- A texture read, a `Vec4f`: a texture from `textures` with the sampler declared with it and
-  --- `Vec2f` coordinates, or any texture, a sampler, and coordinates. Fragment stage only.
+  --- A texture read, a `Vec4f`: a declared texture with the sampler declared with it and `Vec2f`
+  --- coordinates, or a texture, a sampler declared on its own, and coordinates. Fragment stage
+  --- only.
   sample: ((texture: ShaderExpr, coordinates: ShaderExpr) -> ShaderExpr) & ((texture: ShaderExpr, sampler: ShaderExpr, coordinates: ShaderExpr) -> ShaderExpr),
 }
 

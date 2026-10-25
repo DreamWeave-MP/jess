@@ -8,7 +8,7 @@ return shader.program {
     position = shader.vec3,
   },
 
-  parameters = {
+  material = {
     tint = shader.vec4,
   },
 
@@ -17,7 +17,7 @@ return shader.program {
   end,
 
   fragment = function(input)
-    local facing = shader.dot(shader.normalize(input.normal), input.tint)
+    local facing = shader.dot(shader.normalize(input.normal), input.material.tint)
 
     return shader.vec4(facing)
   end,

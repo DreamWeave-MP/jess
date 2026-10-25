@@ -15,10 +15,12 @@ pub enum Scalar {
     Float,
 }
 
-/// Every type a shader expression, parameter, vertex input, or varying can have.
+/// Every type a shader value can have: scalars, vectors of two to four floats, signed integers, or
+/// unsigned integers, and float matrices.
 ///
-/// Vectors hold two to four floats, signed integers, or unsigned integers; matrices are float
-/// only.
+/// Structs, arrays, textures, and samplers are not values. A program declares them in its
+/// interface and reads them through [`Place`](crate::shader::Place)s and texture operations, which
+/// always produce one of these.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Type {
     /// A boolean.
@@ -51,10 +53,6 @@ pub enum Type {
     Mat3f,
     /// A 4×4 float matrix, column-major.
     Mat4f,
-    /// A sampled 2D float texture. Only a parameter can have this type.
-    Texture2D,
-    /// A filtering sampler. Only a parameter can have this type.
-    Sampler,
 }
 
 impl Type {
@@ -87,19 +85,18 @@ impl Type {
         Type::vector(Scalar::Float, u8::try_from(count).ok()?)
     }
 
-    /// What a scalar, vector, or matrix is made of; `None` for a resource.
+    /// What a scalar, vector, or matrix is made of; a matrix is made of floats.
     #[must_use]
-    pub fn scalar(self) -> Option<Scalar> {
+    pub fn scalar(self) -> Scalar {
         match self {
-            Type::Bool => Some(Scalar::Bool),
-            Type::Int | Type::Vec2i | Type::Vec3i | Type::Vec4i => Some(Scalar::Int),
-            Type::UInt | Type::Vec2u | Type::Vec3u | Type::Vec4u => Some(Scalar::UInt),
-            Type::Float | Type::Vec2f | Type::Vec3f | Type::Vec4f | Type::Mat3f | Type::Mat4f => Some(Scalar::Float),
-            Type::Texture2D | Type::Sampler => None,
+            Type::Bool => Scalar::Bool,
+            Type::Int | Type::Vec2i | Type::Vec3i | Type::Vec4i => Scalar::Int,
+            Type::UInt | Type::Vec2u | Type::Vec3u | Type::Vec4u => Scalar::UInt,
+            Type::Float | Type::Vec2f | Type::Vec3f | Type::Vec4f | Type::Mat3f | Type::Mat4f => Scalar::Float,
         }
     }
 
-    /// How many components a scalar (1) or vector (2 to 4) has; 0 for matrices and resources.
+    /// How many components a scalar (1) or vector (2 to 4) has; 0 for a matrix.
     #[must_use]
     pub fn components(self) -> u8 {
         match self {
@@ -107,7 +104,7 @@ impl Type {
             Type::Vec2f | Type::Vec2i | Type::Vec2u => 2,
             Type::Vec3f | Type::Vec3i | Type::Vec3u => 3,
             Type::Vec4f | Type::Vec4i | Type::Vec4u => 4,
-            Type::Mat3f | Type::Mat4f | Type::Texture2D | Type::Sampler => 0,
+            Type::Mat3f | Type::Mat4f => 0,
         }
     }
 
@@ -117,7 +114,7 @@ impl Type {
         if !self.is_vector() {
             return None;
         }
-        Type::vector(self.scalar()?, 1)
+        Type::vector(self.scalar(), 1)
     }
 
     /// A matrix's column type; `None` for anything else.
@@ -133,7 +130,7 @@ impl Type {
     /// How many float components a `Float` or float vector has; 0 for every other type.
     #[must_use]
     pub fn float_components(self) -> u8 {
-        if self.scalar() == Some(Scalar::Float) {
+        if self.scalar() == Scalar::Float {
             self.components()
         } else {
             0
@@ -170,12 +167,6 @@ impl Type {
         self.is_numeric_scalar() || self.is_vector()
     }
 
-    /// Whether this is `Texture2D` or `Sampler`: a bound resource, not a value.
-    #[must_use]
-    pub fn is_resource(self) -> bool {
-        matches!(self, Type::Texture2D | Type::Sampler)
-    }
-
     /// The Jess name of the type, as errors print it.
     #[must_use]
     pub fn name(self) -> &'static str {
@@ -195,8 +186,6 @@ impl Type {
             Type::Vec4u => "Vec4u",
             Type::Mat3f => "Mat3f",
             Type::Mat4f => "Mat4f",
-            Type::Texture2D => "Texture2D",
-            Type::Sampler => "Sampler",
         }
     }
 }

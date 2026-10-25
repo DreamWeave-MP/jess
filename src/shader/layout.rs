@@ -36,8 +36,7 @@ pub struct Extent {
     pub size: u32,
 }
 
-/// A value type's alignment and size in a buffer; `None` for `Bool` and resources, which no
-/// buffer holds.
+/// A value type's alignment and size in a buffer; `None` for `Bool`, which no buffer holds.
 #[must_use]
 pub fn value_extent(ty: Type) -> Option<Extent> {
     let (align, size) = match ty {
@@ -47,7 +46,7 @@ pub fn value_extent(ty: Type) -> Option<Extent> {
         Type::Vec4f | Type::Vec4i | Type::Vec4u => (16, 16),
         Type::Mat3f => (16, 48),
         Type::Mat4f => (16, 64),
-        Type::Bool | Type::Texture2D | Type::Sampler => return None,
+        Type::Bool => return None,
     };
     Some(Extent { align, size })
 }
@@ -296,6 +295,12 @@ impl ProgramLayout {
     #[must_use]
     pub fn structure(&self, id: StructId) -> Option<&StructLayout> {
         self.structs.get(id.index())
+    }
+
+    /// The bytes from one element of an array of `element` to the next.
+    #[must_use]
+    pub fn element_stride(&self, element: Element) -> u32 {
+        element_stride(element, &self.structs)
     }
 
     /// The bind group `frequency` has.
