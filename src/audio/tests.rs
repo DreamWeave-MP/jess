@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use crate::audio::processor::{Block, Gain, ParamInfo, Processor, Tail};
 use crate::audio::{
-    AudioConfig, AudioError, BusKey, BusParam, BusSpec, Curve, Distance, Emitter, Glide, Listener, LoopRegion, Meter,
-    OfflineContext, Pcm, PlaySpec, QUANTUM, Tap, VoiceParam, VoiceSend, VoiceState,
+    AudioConfig, AudioError, BusKey, BusParam, BusSpec, Culled, Curve, Distance, Emitter, Glide, Listener, LoopRegion,
+    Meter, OfflineContext, Pcm, PlaySpec, QUANTUM, Tap, VoiceParam, VoiceSend, VoiceState,
 };
 
 /// Counts allocations and frees on a thread while it is armed, so a test can prove the render
@@ -956,6 +956,107 @@ fn rendering_voices_in_space_never_allocates() {
     assert_eq!(
         allocations(|| {
             for _ in 0..10 {
+                engine.render(&mut out);
+            }
+        }),
+        0
+    );
+}
+
+fn budget(physical: usize) -> OfflineContext {
+    mono(AudioConfig {
+        physical: Some(physical),
+        ..AudioConfig::default()
+    })
+}
+
+#[test]
+fn a_budget_mixes_the_loudest_voices_and_culls_the_rest() {
+    let tone = pcm(&[1.0; 64], 48_000);
+    let mut context = budget(3);
+    for index in 1..=6u8 {
+        let spec = PlaySpec {
+            gain: f32::from(index) / 10.0,
+            ..at(0)
+        };
+        context.control().play(&tone, &spec).unwrap();
+    }
+    let out = context.render(4);
+    assert!((out[0] - 1.5).abs() < 1e-6, "0.4 + 0.5 + 0.6: {}", out[0]);
+    assert_eq!(context.control().stats().culled, 3);
+}
+
+#[test]
+fn priority_keeps_a_quiet_voice_over_louder_ones() {
+    let tone = pcm(&[1.0; 64], 48_000);
+    let mut context = budget(1);
+    let dialogue = PlaySpec {
+        gain: 0.1,
+        priority: 10.0,
+        ..at(0)
+    };
+    context.control().play(&tone, &dialogue).unwrap();
+    for _ in 0..4 {
+        context.control().play(&tone, &at(0)).unwrap();
+    }
+    assert!((context.render(1)[0] - 0.1).abs() < 1e-6);
+}
+
+#[test]
+fn a_culled_voice_keeps_time_or_holds_its_place_or_is_gone() {
+    let ramp: Vec<f32> = (0..1000u16).map(f32::from).collect();
+    let ramp = pcm(&ramp, 48_000);
+    let loud = pcm(&[100.0; 200], 48_000);
+    for (culled, expected) in [
+        (Culled::Advance, Some(301.0)),
+        (Culled::Pause, Some(100.0)),
+        (Culled::Stop, None),
+    ] {
+        let mut context = budget(1);
+        let spec = PlaySpec { culled, ..at(0) };
+        let voice = context.control().play(&ramp, &spec).unwrap();
+        context.render(100);
+        // Something that matters more takes the only place for two hundred frames, and is let go on
+        // the frame after, when the culled voice comes back.
+        let urgent = PlaySpec {
+            priority: 1.0,
+            ..PlaySpec::default()
+        };
+        context.control().play(&loud, &urgent).unwrap();
+        context.render(201);
+        let out = context.render(1);
+        if let Some(frame) = expected {
+            assert!((out[0] - frame).abs() < 1e-3, "{culled:?}: {}", out[0]);
+            continue;
+        }
+        assert_eq!(out[0], 0.0);
+        assert_eq!(context.control().state(voice), VoiceState::Ended);
+        assert_eq!(context.control().stats().stolen, 1);
+    }
+}
+
+#[test]
+fn choosing_voices_over_a_budget_never_allocates() {
+    let tone = pcm(&[0.5; 3000], 48_000);
+    let mut context = OfflineContext::new(&AudioConfig {
+        physical: Some(8),
+        ..AudioConfig::default()
+    })
+    .unwrap();
+    for index in 0..100u16 {
+        let spec = PlaySpec {
+            gain: f32::from(index % 7) / 7.0,
+            priority: f32::from(index % 3),
+            culled: if index % 5 == 0 { Culled::Stop } else { Culled::Advance },
+            ..at(u64::from(index) * 3)
+        };
+        context.control().play(&tone, &spec).unwrap();
+    }
+    let mut out = vec![0.0; 2 * 256];
+    let (_, engine) = context.parts();
+    assert_eq!(
+        allocations(|| {
+            for _ in 0..20 {
                 engine.render(&mut out);
             }
         }),

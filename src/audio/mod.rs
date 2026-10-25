@@ -67,7 +67,7 @@ pub use param::{Curve, Glide};
 pub use pcm::{Pcm, SampleFormat};
 pub use processor::{Processor, ProcessorKey};
 pub use spatial::{Distance, Emitter, Handedness, Listener};
-pub use voice::{LoopRegion, PlaySpec, VoiceKey, VoiceParam, VoiceSend};
+pub use voice::{Culled, LoopRegion, PlaySpec, VoiceKey, VoiceParam, VoiceSend};
 
 /// The most frames the engine mixes at once. A command's frame can split a block anywhere.
 pub const QUANTUM: usize = 128;

@@ -21,7 +21,7 @@ use crate::audio::bus::{Bus, BusSend};
 use crate::audio::param::{Glide, Param};
 use crate::audio::processor::{Block, Processor, ProcessorKey, Tail};
 use crate::audio::spatial::{Emitter, Listener, Space};
-use crate::audio::voice::{Voice, VoiceKey};
+use crate::audio::voice::{Culled, Voice, VoiceKey};
 use crate::audio::{BusKey, BusParam, BusSpec, LoopRegion, MAX_CHANNELS, Pcm, PlaySpec, QUANTUM, Tap, VoiceParam};
 
 /// What the control side asks of the engine.
@@ -178,6 +178,10 @@ pub struct Counters {
     pub(crate) pending: AtomicU64,
     /// Commands taken from the queue, counting a group as its members and one more.
     pub(crate) received: AtomicU64,
+    /// Voices live but not mixed in the last block.
+    pub(crate) culled: AtomicU64,
+    /// Voices ended for not being mixed, all told.
+    pub(crate) stolen: AtomicU64,
     /// Each bus's meter, by slot.
     pub(crate) meters: Box<[BusMeter]>,
 }
@@ -228,6 +232,8 @@ pub struct Capacity {
     pub buses: usize,
     pub processors: usize,
     pub commands: usize,
+    /// Voices mixed at once; the rest wait their turn.
+    pub physical: usize,
 }
 
 impl Capacity {
@@ -342,6 +348,11 @@ pub struct Engine {
     /// A group held back until its members fit the pending list.
     deferred: Option<Vec<Stamped>>,
     received: u64,
+    physical: usize,
+    /// Each live voice's priority, loudness, and slot, for choosing which are mixed.
+    ranks: Box<[(f32, f32, u32)]>,
+    culled: u64,
+    stolen: u64,
     now: u64,
     late: u64,
     nonfinite: u64,
@@ -390,6 +401,10 @@ impl Engine {
             space,
             deferred: None,
             received: 0,
+            physical: capacity.physical.max(1),
+            ranks: vec![(0.0, 0.0, 0); capacity.voices].into_boxed_slice(),
+            culled: 0,
+            stolen: 0,
             now: 0,
             late: 0,
             nonfinite: 0,
@@ -817,11 +832,32 @@ impl Engine {
                 mix[channel * QUANTUM..channel * QUANTUM + frames].fill(0.0);
             }
         }
+        self.choose();
         for slot in 0..self.voices.len() {
             let Some(voice) = self.voices[slot].as_mut() else {
                 continue;
             };
-            voice.hear(&self.space, self.channels);
+            if !voice.audible {
+                let keeps = match voice.culled {
+                    Culled::Advance => voice.skip(frames),
+                    Culled::Pause => true,
+                    Culled::Stop => false,
+                };
+                if keeps {
+                    continue;
+                }
+                if voice.culled == Culled::Stop {
+                    self.stolen += 1;
+                }
+                if let Some(ended) = self.voices[slot].take() {
+                    let voice = VoiceKey {
+                        slot: u32::try_from(slot).unwrap_or(u32::MAX),
+                        generation: ended.generation,
+                    };
+                    self.send(Feedback::VoiceEnded { voice, pcm: ended.pcm });
+                }
+                continue;
+            }
             let rendered = voice.render(&mut self.scratch, &mut self.steps, frames);
             let levels = voice.levels(rendered, &mut self.envelope, self.channels);
             let bus = voice.bus as usize;
@@ -927,6 +963,51 @@ impl Engine {
         }
     }
 
+    /// Works out where every voice in space is, and marks the voices this block mixes: all of
+    /// them while they fit the budget, else the ones that matter most, by priority and then by
+    /// loudness. A voice already mixed holds its place against one only a little louder, so voices
+    /// near the line don't flap in and out.
+    fn choose(&mut self) {
+        let mut count = 0;
+        for (slot, voice) in self.voices.iter_mut().enumerate() {
+            let Some(voice) = voice.as_mut() else {
+                continue;
+            };
+            voice.hear(&self.space, self.channels);
+            let held = if voice.audible { 1.25 } else { 1.0 };
+            self.ranks[count] = (
+                voice.priority,
+                voice.loudness() * held,
+                u32::try_from(slot).unwrap_or(u32::MAX),
+            );
+            count += 1;
+        }
+        if count <= self.physical {
+            for voice in self.voices.iter_mut().flatten() {
+                voice.audible = true;
+            }
+            self.culled = 0;
+            return;
+        }
+        let ranks = &mut self.ranks[..count];
+        ranks.select_nth_unstable_by(self.physical - 1, |first, second| {
+            second
+                .0
+                .total_cmp(&first.0)
+                .then(second.1.total_cmp(&first.1))
+                .then(first.2.cmp(&second.2))
+        });
+        for voice in self.voices.iter_mut().flatten() {
+            voice.audible = false;
+        }
+        for &(_, _, slot) in &ranks[..self.physical] {
+            if let Some(voice) = self.voices[slot as usize].as_mut() {
+                voice.audible = true;
+            }
+        }
+        self.culled = (count - self.physical) as u64;
+    }
+
     /// Meters `frames` of bus slot `slot` as it leaves the bus, after its gain.
     fn meter(&self, slot: usize, frames: usize) {
         let stride = self.channels * QUANTUM;
@@ -982,6 +1063,8 @@ impl Engine {
         self.counters.nonfinite.store(self.nonfinite, Ordering::Relaxed);
         self.counters.pending.store(self.pending.len() as u64, Ordering::Relaxed);
         self.counters.received.store(self.received, Ordering::Release);
+        self.counters.culled.store(self.culled, Ordering::Relaxed);
+        self.counters.stolen.store(self.stolen, Ordering::Relaxed);
     }
 }
 

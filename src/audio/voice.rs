@@ -59,6 +59,44 @@ pub struct PlaySpec {
     /// Where it is, if it's in space: then distance, direction, and motion set its level, pan,
     /// and pitch, and `pan` is not used.
     pub spatial: Option<Emitter>,
+    /// How much it matters when there are more voices than the context mixes: higher keeps its
+    /// place over lower, whatever their levels.
+    pub priority: f32,
+    /// What happens to it while it isn't mixed.
+    pub culled: Culled,
+}
+
+/// What a voice does while the context has more voices than it mixes and it isn't among them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Culled {
+    /// Keeps time, silently: when it is mixed again it is where it would have been. A looping
+    /// machine's hum doesn't restart for having been out of earshot.
+    #[default]
+    Advance,
+    /// Holds its place until it is mixed again.
+    Pause,
+    /// Ends: a one-shot that didn't make the cut is gone.
+    Stop,
+}
+
+impl Culled {
+    /// The name scripts use.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Culled::Advance => "advance",
+            Culled::Pause => "pause",
+            Culled::Stop => "stop",
+        }
+    }
+
+    /// The behaviour called `name`.
+    #[must_use]
+    pub fn named(name: &str) -> Option<Culled> {
+        [Culled::Advance, Culled::Pause, Culled::Stop]
+            .into_iter()
+            .find(|culled| culled.name() == name)
+    }
 }
 
 /// A voice's send: the bus, and the level relative to the voice's own gain.
@@ -83,6 +121,8 @@ impl Default for PlaySpec {
             sends: [None; MAX_VOICE_SENDS],
             fade: 0,
             spatial: None,
+            priority: 0.0,
+            culled: Culled::Advance,
         }
     }
 }
@@ -205,6 +245,19 @@ struct Cursor {
 }
 
 impl Cursor {
+    /// Moves `frames` steps along at once, through the loop, without reading anything.
+    fn skip(&mut self, frames: u64) {
+        self.position += self.step * frames;
+        let Some((start, end)) = self.looping else {
+            return;
+        };
+        if self.position >> 32 >= end {
+            let (loop_start, length) = (start << 32, (end - start) << 32);
+            self.position = loop_start + (self.position - loop_start) % length;
+            self.wrapped = true;
+        }
+    }
+
     fn advance(&mut self) {
         self.position += self.step;
         let Some((start, end)) = self.looping else {
@@ -348,6 +401,10 @@ pub struct Voice {
     /// Frames left of the fade a stop began; the voice ends when it runs out.
     ending: Option<u64>,
     spatial: Option<Spatial>,
+    pub(crate) priority: f32,
+    pub(crate) culled: Culled,
+    /// Mixed this block: the context mixes every voice, or this one made the cut.
+    pub(crate) audible: bool,
     /// The output's rate, for working out the step when the rate changes.
     output_rate: u32,
 }
@@ -380,11 +437,44 @@ impl Voice {
             rate: Param::new(spec.rate),
             ending: None,
             spatial: spec.spatial.map(Spatial::new),
+            priority: spec.priority,
+            culled: spec.culled,
+            audible: true,
             output_rate,
             pcm,
         };
         voice.cursor.step = voice.step(spec.rate);
         voice
+    }
+
+    /// How loud it would be mixed: its gain times what space gives it, for ranking voices when
+    /// there are more than the context mixes.
+    #[allow(clippy::cast_possible_truncation)] // A level.
+    pub(crate) fn loudness(&self) -> f32 {
+        let gain = (self.gain.value() as f32).abs();
+        self.spatial
+            .as_ref()
+            .map_or(gain, |spatial| gain * spatial.to.0.max(spatial.to.1))
+    }
+
+    /// Keeps time for `frames` frames without mixing anything: its ramps, its fade, and its place in
+    /// its source all move on. False once it has run out.
+    pub(crate) fn skip(&mut self, frames: usize) -> bool {
+        let frames = frames as u64;
+        if let Some(left) = self.ending.as_mut() {
+            if *left <= frames {
+                return false;
+            }
+            *left -= frames;
+        }
+        self.gain.advance(frames);
+        self.pan.advance(frames);
+        if !self.rate.steady() {
+            self.rate.advance(frames);
+            self.cursor.step = self.step(self.rate.value());
+        }
+        self.cursor.skip(frames);
+        self.cursor.looping.is_some() || self.cursor.position >> 32 < self.pcm.frames() as u64
     }
 
     /// Moves a voice in space; a voice that wasn't in space stays out of it.

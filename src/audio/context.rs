@@ -26,6 +26,9 @@ pub struct AudioConfig {
     pub channels: usize,
     /// Voices that can play or wait to start at once.
     pub voices: usize,
+    /// Voices mixed at once, if fewer than `voices`: the rest are culled, by priority and then by
+    /// loudness, until there is room for them.
+    pub physical: Option<usize>,
     /// Buses, the master included.
     pub buses: usize,
     /// Processors on all buses together.
@@ -47,6 +50,7 @@ impl Default for AudioConfig {
             rate: 48_000,
             channels: 2,
             voices: 256,
+            physical: None,
             buses: 64,
             processors: 256,
             commands: 4096,
@@ -92,6 +96,10 @@ pub struct AudioStats {
     pub nonfinite: u64,
     /// Commands the engine holds for a later frame.
     pub pending: u64,
+    /// Voices live but not mixed in the last block, for want of room.
+    pub culled: u64,
+    /// Voices that ended for not being mixed, all told.
+    pub stolen: u64,
 }
 
 /// A bus's level over a stretch of output: the peak sample's magnitude and the RMS, linear.
@@ -176,6 +184,15 @@ pub struct Control {
 /// [`MAX_BUSES`], more than [`MAX_PROCESSORS`], or no command room.
 pub fn context(config: &AudioConfig) -> Result<(Control, Engine), AudioError> {
     check_layout(config.channels, config.rate)?;
+    if config
+        .physical
+        .is_some_and(|physical| physical == 0 || physical > config.voices)
+    {
+        return Err(AudioError::Capacity(
+            "a context's physical voice count",
+            config.physical.unwrap_or(0),
+        ));
+    }
     if config.voices == 0 || config.voices > MAX_VOICES {
         return Err(AudioError::Capacity("a context's voice count", config.voices));
     }
@@ -193,6 +210,7 @@ pub fn context(config: &AudioConfig) -> Result<(Control, Engine), AudioError> {
         buses: config.buses,
         processors: config.processors,
         commands: config.commands,
+        physical: config.physical.unwrap_or(config.voices),
     };
     let (commands, receive) = sync_channel(config.commands);
     let (send, feedback) = sync_channel(capacity.feedback());
@@ -907,6 +925,8 @@ impl Control {
             late: self.counters.late.load(Ordering::Relaxed),
             nonfinite: self.counters.nonfinite.load(Ordering::Relaxed),
             pending: self.counters.pending.load(Ordering::Relaxed),
+            culled: self.counters.culled.load(Ordering::Relaxed),
+            stolen: self.counters.stolen.load(Ordering::Relaxed),
         }
     }
 
