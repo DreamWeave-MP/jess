@@ -620,14 +620,117 @@ declare extern type ShaderInput with
   __tostring: (self: ShaderInput) -> string
 end
 
+--- What a GPU buffer is for: its vertices, its indices, a uniform block, or a storage buffer.
+export type GpuBufferUsage = 'vertex' | 'index' | 'uniform' | 'storage'
+
+--- What a texture is for: sampled by shaders, drawn into, or both.
+export type GpuTextureUsage = 'sampled' | 'target'
+
+--- A texel format: its channels, their bits, and how a shader reads them.
+export type GpuTextureFormat =
+  | 'rgba8Unorm'
+  | 'rgba8UnormSrgb'
+  | 'bgra8Unorm'
+  | 'bgra8UnormSrgb'
+  | 'rgba16Float'
+  | 'r8Unorm'
+  | 'rg8Unorm'
+  | 'r16Float'
+  | 'rg16Float'
+  | 'r32Float'
+  | 'rg32Float'
+  | 'rgba32Float'
+  | 'r32Uint'
+  | 'rgba8Uint'
+  | 'rgba32Uint'
+  | 'r32Sint'
+  | 'rgba32Sint'
+  | 'depth24Plus'
+  | 'depth32Float'
+
+--- One image, layers of them, six cube faces, or a volume.
+export type GpuTextureShape = '2d' | '2dArray' | 'cube' | '3d'
+
+--- A comparison a comparison sampler makes between a reference and what it reads.
+export type GpuCompare =
+  | 'never'
+  | 'less'
+  | 'equal'
+  | 'lessEqual'
+  | 'greater'
+  | 'notEqual'
+  | 'greaterEqual'
+  | 'always'
+
+--- Bytes on the GPU. `write` copies a Luau `buffer` or string, or `length` bytes of it from
+--- `from`, into the buffer at `offset`, before the next work the GPU is given; `read` waits for
+--- everything submitted so far and returns `length` bytes from `offset` (the rest of the buffer
+--- by default) as a new `buffer`. Offsets and lengths are multiples of 4. `tostring` gives
+--- `GpuBuffer(16 bytes, vertex, storage)`.
+declare extern type GpuBuffer with
+  size: number
+  usage: { GpuBufferUsage }
+  function write(self, offset: number, bytes: buffer | string, from: number?, length: number?): ()
+  function read(self, offset: number?, length: number?): buffer
+  __tostring: (self: GpuBuffer) -> string
+end
+
+--- An image on the GPU. `write` replaces every texel of one mip `level` of one `layer` (an array's
+--- layer, a cube's face), rows packed tightly, top row first; `read` returns them the same way,
+--- once everything submitted so far is done. Both default to level 0 of layer 0. `tostring`
+--- gives `GpuTexture(2×2 rgba8Unorm, 2d)`.
+declare extern type GpuTexture with
+  width: number
+  height: number
+  format: GpuTextureFormat
+  shape: GpuTextureShape
+  layers: number
+  mips: number
+  function write(self, bytes: buffer | string, level: number?, layer: number?): ()
+  function read(self, level: number?, layer: number?): buffer
+  __tostring: (self: GpuTexture) -> string
+end
+
+--- How shaders read a texture between and past its texels. `tostring` gives
+--- `GpuSampler(linear)`, or `GpuSampler(nearest, comparing)` for a comparison sampler.
+declare extern type GpuSampler with
+  __tostring: (self: GpuSampler) -> string
+end
+
+--- What `GpuDevice:texture` makes. `layers` is a `2dArray`'s and `depth` a `3d` texture's; `mips`
+--- is 1 by default, `shape` `2d`.
+export type GpuTextureDesc = {
+  width: number,
+  height: number,
+  format: GpuTextureFormat,
+  usage: GpuTextureUsage | { GpuTextureUsage },
+  shape: GpuTextureShape?,
+  layers: number?,
+  depth: number?,
+  mips: number?,
+}
+
+--- What `GpuDevice:sampler` makes: `nearest` filters and `clamp` addressing by default, and a
+--- filtering sampler unless it names a `compare`.
+export type GpuSamplerDesc = {
+  filter: ('nearest' | 'linear')?,
+  mipmapFilter: ('nearest' | 'linear')?,
+  address: ('clamp' | 'repeat' | 'mirror')?,
+  compare: GpuCompare?,
+}
+
 --- The GPU a script draws and computes with: the adapter's `name`, the `backend` API wgpu reaches it
 --- through (`vulkan`, `metal`, `dx12`, `gl`), its `kind` (`discrete`, `integrated`, `virtual`,
---- `cpu`, `other`), and its `limits`. `tostring` gives `GpuDevice(name, backend)`.
+--- `cpu`, `other`), and its `limits`. `buffer`, `texture`, and `sampler` make resources on it.
+--- `tostring` gives `GpuDevice(name, backend)`.
 declare extern type GpuDevice with
   name: string
   backend: string
   kind: string
   limits: { textureSize: number, textureLayers: number, bufferSize: number, workgroups: number }
+  function buffer(self, size: number, usage: GpuBufferUsage | { GpuBufferUsage }): GpuBuffer
+  function texture(self, desc: GpuTextureDesc): GpuTexture
+  function sampler(self, desc: GpuSamplerDesc?): GpuSampler
   __tostring: (self: GpuDevice) -> string
 end
 

@@ -14,6 +14,8 @@ pub const DEVICE_CAPABILITY: &str = "gpu.device";
 
 #[cfg(feature = "gpu")]
 mod device;
+#[cfg(feature = "gpu")]
+mod resources;
 
 #[cfg(feature = "gpu")]
 pub use device::describe;
