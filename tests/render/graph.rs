@@ -642,7 +642,7 @@ fn a_graph_that_reaches_no_imported_target_is_rejected() {
     );
     assert_eq!(
         error.to_string(),
-        "graph \"offscreen\" stores nothing into an imported target, so every pass would be culled"
+        "graph \"offscreen\" stores nothing into an imported resource, so every pass would be culled"
     );
     assert_eq!(
         compile_error(&RenderGraph::new("empty")),
@@ -1221,4 +1221,296 @@ fn every_format_clears_with_its_own_kind_of_value() {
         TextureFormat::R32Float.sample_kind(),
         jess::render::SampleKind::UnfilterableFloat
     );
+}
+
+fn compute(name: &str) -> Pass {
+    Pass::new(PassKind::Compute, PassMetadata::new(name, OWNER))
+}
+
+fn copy(name: &str) -> Pass {
+    Pass::new(PassKind::Copy, PassMetadata::new(name, OWNER))
+}
+
+const ZERO: LoadOp = LoadOp::Clear(ClearValue::Zero);
+
+/// GPU culling and picking: a compute pass counts what is visible into a transient buffer, a
+/// second compacts instances into an imported one, the scene draws from it with ids in a target,
+/// and a copy reads the id under the cursor back into another imported buffer.
+#[test]
+fn compute_and_copy_passes_order_cull_and_alias_buffers() {
+    let mut graph = RenderGraph::new("culling");
+    let counts = graph.add_buffer("counts", 64).unwrap();
+    let scratch = graph.add_buffer("scratch", 64).unwrap();
+    let unused = graph.add_buffer("unused", 256).unwrap();
+    let instances = graph.import_buffer("instances", 4096).unwrap();
+    let ids = graph
+        .add_render_target("ids", TextureFormat::R32Uint, TargetSize::VIEWPORT)
+        .unwrap();
+    let output = graph
+        .import_render_target("output", TextureFormat::Bgra8UnormSrgb, TargetSize::VIEWPORT)
+        .unwrap();
+    let picked = graph.import_buffer("picked", 256).unwrap();
+
+    graph
+        .add_pass(compute("count").write(PassOutput::storage(counts, ZERO, StoreOp::Store)))
+        .unwrap();
+    graph
+        .add_pass(compute("compact").read(counts, ReadUsage::Buffer).write(PassOutput::storage(
+            instances,
+            LoadOp::DontCare,
+            StoreOp::Store,
+        )))
+        .unwrap();
+    graph
+        .add_pass(compute("unobserved").write(PassOutput::storage(unused, ZERO, StoreOp::Store)))
+        .unwrap();
+    graph
+        .add_pass(
+            compute("histogram")
+                .read(instances, ReadUsage::Buffer)
+                .write(PassOutput::storage(scratch, ZERO, StoreOp::Store)),
+        )
+        .unwrap();
+    graph
+        .add_pass(
+            mesh("scene")
+                .read(instances, ReadUsage::Buffer)
+                .read(scratch, ReadUsage::Buffer)
+                .write(store_color(output))
+                .write(PassOutput::color(
+                    ids,
+                    LoadOp::Clear(ClearValue::Uint([0; 4])),
+                    StoreOp::Store,
+                )),
+        )
+        .unwrap();
+    graph
+        .add_pass(
+            copy("pick")
+                .read(ids, ReadUsage::Copy)
+                .write(PassOutput::copy(picked, LoadOp::DontCare, StoreOp::Store)),
+        )
+        .unwrap();
+
+    let compiled = graph.compile().unwrap();
+    assert_eq!(order(&compiled), ["count", "compact", "histogram", "scene", "pick"]);
+    assert_eq!(names(&compiled, compiled.culled()), ["unobserved"]);
+    let groups: Vec<Vec<String>> = compiled
+        .alias_groups()
+        .iter()
+        .map(|group| resource_names(&graph, group))
+        .collect();
+    assert_eq!(groups, [vec!["counts", "scratch"], vec!["ids"]], "buffers of one size share");
+    assert_eq!(graph.resource(counts).unwrap().kind(), ResourceKind::Buffer);
+    assert_eq!(graph.resource(counts).unwrap().bytes(), Some(64));
+    assert_eq!(graph.resource(ids).unwrap().bytes(), None);
+    assert_golden("compute", &compiled.to_string());
+}
+
+#[test]
+fn buffers_have_a_size_in_whole_words() {
+    let mut graph = RenderGraph::new("buffers");
+    for bytes in [0, 6] {
+        let error = graph.add_buffer("odd", bytes).unwrap_err();
+        assert_eq!(
+            error,
+            GraphError::InvalidBufferSize {
+                resource: "odd".to_owned(),
+                bytes
+            }
+        );
+    }
+    assert_eq!(
+        graph.import_buffer("odd", 6).unwrap_err().to_string(),
+        "buffer \"odd\" has invalid size 6: expected a nonzero multiple of 4 bytes"
+    );
+    graph.add_buffer("words", 8).unwrap();
+    assert_eq!(
+        graph.add_buffer("words", 8),
+        Err(GraphError::DuplicateResource {
+            resource: "words".to_owned()
+        })
+    );
+}
+
+#[test]
+fn each_kind_of_pass_reads_and_writes_its_own_way() {
+    let mut graph = RenderGraph::new("kinds");
+    let buffer = graph.add_buffer("buffer", 16).unwrap();
+    let color = graph
+        .add_render_target("color", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .unwrap();
+    let depth = graph
+        .add_depth_target("depth", TextureFormat::Depth24Plus, TargetSize::VIEWPORT)
+        .unwrap();
+
+    let error = graph.add_pass(compute("drawsColor").write(store_color(color))).unwrap_err();
+    assert_eq!(
+        error,
+        GraphError::PassCantWrite {
+            pass: "drawsColor".to_owned(),
+            kind: PassKind::Compute,
+            attachment: Attachment::Color,
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "compute pass \"drawsColor\" can't write through a color attachment"
+    );
+
+    let error = graph
+        .add_pass(
+            compute("testsDepth")
+                .read(depth, ReadUsage::DepthTest)
+                .write(PassOutput::storage(buffer, ZERO, StoreOp::Store)),
+        )
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "compute pass \"testsDepth\" can't read anything as its depth-test attachment"
+    );
+
+    assert!(matches!(
+        graph.add_pass(mesh("copiesIn").read(buffer, ReadUsage::Copy).write(store_color(color))),
+        Err(GraphError::PassCantRead {
+            kind: PassKind::Mesh,
+            usage: ReadUsage::Copy,
+            ..
+        })
+    ));
+    assert!(matches!(
+        graph.add_pass(mesh("storesBuffer").write(PassOutput::storage(buffer, ZERO, StoreOp::Store))),
+        Err(GraphError::PassCantWrite {
+            attachment: Attachment::Storage,
+            ..
+        })
+    ));
+
+    let error = graph
+        .add_pass(compute("storesColor").write(PassOutput::storage(color, LoadOp::DontCare, StoreOp::Store)))
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "pass \"storesColor\" writes render target \"color\" through a storage attachment, which only a buffer allows"
+    );
+    assert_eq!(
+        graph
+            .add_pass(
+                mesh("samplesBuffer")
+                    .read(buffer, ReadUsage::Texture)
+                    .write(store_color(color))
+            )
+            .unwrap_err()
+            .to_string(),
+        "pass \"samplesBuffer\" reads buffer \"buffer\" as a color texture, which only a render target allows"
+    );
+
+    let error = graph
+        .add_pass(compute("onesBuffer").write(PassOutput::storage(buffer, BLACK, StoreOp::Store)))
+        .unwrap_err();
+    assert_eq!(
+        error,
+        GraphError::BufferClearValue {
+            pass: "onesBuffer".to_owned(),
+            resource: "buffer".to_owned(),
+            clear: ClearValue::Color([0.0, 0.0, 0.0, 1.0]),
+        }
+    );
+    assert!(matches!(
+        graph.add_pass(mesh("zeroColor").write(PassOutput::color(color, ZERO, StoreOp::Store))),
+        Err(GraphError::ClearValueMismatch {
+            clear: ClearValue::Zero,
+            ..
+        })
+    ));
+
+    graph
+        .add_pass(
+            compute("samplesDepth")
+                .read(depth, ReadUsage::DepthTexture)
+                .read(color, ReadUsage::Texture)
+                .write(PassOutput::storage(buffer, ZERO, StoreOp::Store)),
+        )
+        .unwrap();
+}
+
+#[test]
+fn a_copy_copies_one_resource_into_one_it_fits() {
+    let mut graph = RenderGraph::new("copies");
+    let small = graph.add_buffer("small", 16).unwrap();
+    let large = graph.add_buffer("large", 64).unwrap();
+    let color = graph
+        .add_render_target("color", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .unwrap();
+    let half = graph
+        .add_render_target("half", TextureFormat::Rgba8Unorm, TargetSize::Relative { scale: 0.5 })
+        .unwrap();
+    let ids = graph
+        .add_render_target("ids", TextureFormat::R32Uint, TargetSize::VIEWPORT)
+        .unwrap();
+    let depth = graph
+        .add_depth_target("depth", TextureFormat::Depth24Plus, TargetSize::VIEWPORT)
+        .unwrap();
+    let dont_care = |resource| PassOutput::copy(resource, LoadOp::DontCare, StoreOp::Store);
+    let invalid = |pass: &str, problem: &str| GraphError::InvalidCopy {
+        pass: pass.to_owned(),
+        problem: problem.to_owned(),
+    };
+
+    assert_eq!(
+        graph.add_pass(copy("nothing").write(dont_care(large))),
+        Err(invalid("nothing", "expected one source and one destination"))
+    );
+    assert_eq!(
+        graph.add_pass(
+            copy("both")
+                .read(small, ReadUsage::Copy)
+                .read(color, ReadUsage::Copy)
+                .write(dont_care(large))
+        ),
+        Err(invalid("both", "expected one source and one destination"))
+    );
+    assert_eq!(
+        graph
+            .add_pass(copy("shrink").read(large, ReadUsage::Copy).write(dont_care(small)))
+            .unwrap_err()
+            .to_string(),
+        "copy pass \"shrink\" is invalid: \"large\" holds 64 bytes and \"small\" only 16"
+    );
+    assert_eq!(
+        graph.add_pass(copy("halve").read(color, ReadUsage::Copy).write(dont_care(half))),
+        Err(invalid(
+            "halve",
+            "\"color\" is viewport Rgba8Unorm and \"half\" is viewport*0.5 Rgba8Unorm: expected the same format and size"
+        ))
+    );
+    assert!(matches!(
+        graph.add_pass(copy("reinterpret").read(color, ReadUsage::Copy).write(dont_care(ids))),
+        Err(GraphError::InvalidCopy { .. })
+    ));
+    assert_eq!(
+        graph.add_pass(copy("depthOut").read(depth, ReadUsage::Copy).write(dont_care(large))),
+        Err(invalid(
+            "depthOut",
+            "Depth24Plus has no layout in a buffer: the backend chooses it"
+        ))
+    );
+    assert_eq!(
+        graph.add_pass(
+            copy("cleared")
+                .read(small, ReadUsage::Copy)
+                .write(PassOutput::copy(large, ZERO, StoreOp::Store))
+        ),
+        Err(invalid(
+            "cleared",
+            "the copy writes its destination, so clearing it first is wasted: load it or don't care"
+        ))
+    );
+
+    graph
+        .add_pass(copy("grow").read(small, ReadUsage::Copy).write(dont_care(large)))
+        .unwrap();
+    graph
+        .add_pass(copy("readBack").read(ids, ReadUsage::Copy).write(dont_care(small)))
+        .unwrap();
 }

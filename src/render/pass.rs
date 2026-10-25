@@ -1,14 +1,14 @@
-//! Passes and the ways they touch targets.
+//! Passes and the ways they touch targets and buffers.
 
 use std::fmt;
 
 use crate::render::graph::{ResourceId, ResourceKind};
 use crate::render::target::TextureFormat;
 
-/// What a pass draws.
+/// What a pass does.
 ///
-/// A backend picks its pipeline shape from this. Compute passes are not modeled yet; the enum is
-/// non-exhaustive so adding them breaks no one.
+/// A backend picks its pipeline shape from this, and the kind limits what the pass may read and
+/// write: [`PassKind::reads`] and [`PassKind::writes`].
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum PassKind {
@@ -16,6 +16,10 @@ pub enum PassKind {
     Mesh,
     /// Draws one triangle over its attachments, for post-processing and composition.
     Fullscreen,
+    /// Runs a compute program, writing buffers.
+    Compute,
+    /// Copies one resource into another: a target into a buffer to read back, say.
+    Copy,
 }
 
 impl PassKind {
@@ -25,6 +29,30 @@ impl PassKind {
         match self {
             Self::Mesh => "mesh",
             Self::Fullscreen => "fullscreen",
+            Self::Compute => "compute",
+            Self::Copy => "copy",
+        }
+    }
+
+    /// Whether a pass of this kind may read a resource as `usage`. Drawing passes read anything
+    /// but a copy's source; compute passes read textures and buffers; a copy reads its source.
+    #[must_use]
+    pub const fn reads(self, usage: ReadUsage) -> bool {
+        match self {
+            Self::Mesh | Self::Fullscreen => !matches!(usage, ReadUsage::Copy),
+            Self::Compute => matches!(usage, ReadUsage::Texture | ReadUsage::DepthTexture | ReadUsage::Buffer),
+            Self::Copy => matches!(usage, ReadUsage::Copy),
+        }
+    }
+
+    /// Whether a pass of this kind may write through `attachment`. Drawing passes write color and
+    /// depth attachments; compute passes write storage; a copy writes its destination.
+    #[must_use]
+    pub const fn writes(self, attachment: Attachment) -> bool {
+        match self {
+            Self::Mesh | Self::Fullscreen => matches!(attachment, Attachment::Color | Attachment::Depth),
+            Self::Compute => matches!(attachment, Attachment::Storage),
+            Self::Copy => matches!(attachment, Attachment::Copy),
         }
     }
 }
@@ -87,7 +115,7 @@ impl PassMetadata {
     }
 }
 
-/// How a pass reads a target.
+/// How a pass reads a resource.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum ReadUsage {
     /// Sampled as a color texture. Render targets only.
@@ -96,16 +124,28 @@ pub enum ReadUsage {
     DepthTexture,
     /// Bound as the pass's read-only depth attachment for depth testing. Depth targets only.
     DepthTest,
+    /// Read by its shaders as a storage buffer. Buffers only.
+    Buffer,
+    /// Copied from. Any resource; only a copy pass reads this way.
+    Copy,
 }
 
 impl ReadUsage {
-    /// The kind of target this read is allowed on.
+    /// The kind of resource this read is allowed on, or `None` for any.
     #[must_use]
-    pub const fn target_kind(self) -> ResourceKind {
+    pub const fn target_kind(self) -> Option<ResourceKind> {
         match self {
-            Self::Texture => ResourceKind::RenderTarget,
-            Self::DepthTexture | Self::DepthTest => ResourceKind::DepthTarget,
+            Self::Texture => Some(ResourceKind::RenderTarget),
+            Self::DepthTexture | Self::DepthTest => Some(ResourceKind::DepthTarget),
+            Self::Buffer => Some(ResourceKind::Buffer),
+            Self::Copy => None,
         }
+    }
+
+    /// Whether this read is allowed on a resource of `kind`.
+    #[must_use]
+    pub fn allows(self, kind: ResourceKind) -> bool {
+        self.target_kind().is_none_or(|allowed| allowed == kind)
     }
 
     /// The usage's description, as errors print it.
@@ -115,36 +155,51 @@ impl ReadUsage {
             Self::Texture => "a color texture",
             Self::DepthTexture => "a depth texture",
             Self::DepthTest => "its depth-test attachment",
+            Self::Buffer => "a storage buffer",
+            Self::Copy => "a copy's source",
         }
     }
 }
 
-/// A target a pass reads.
+/// A resource a pass reads.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct PassInput {
-    /// The target read.
+    /// The resource read.
     pub resource: ResourceId,
     /// How it is read.
     pub usage: ReadUsage,
 }
 
-/// Which attachment slot a pass writes a target through.
+/// How a pass writes a resource: the attachment slot a target is bound to, a storage binding, or
+/// a copy's destination.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum Attachment {
     /// A color attachment. Render targets only.
     Color,
     /// The depth attachment. Depth targets only; a pass has at most one.
     Depth,
+    /// A storage buffer its shaders write. Buffers only.
+    Storage,
+    /// A copy's destination. Any resource; only a copy pass writes this way.
+    Copy,
 }
 
 impl Attachment {
-    /// The kind of target this attachment accepts.
+    /// The kind of resource this attachment accepts, or `None` for any.
     #[must_use]
-    pub const fn target_kind(self) -> ResourceKind {
+    pub const fn target_kind(self) -> Option<ResourceKind> {
         match self {
-            Self::Color => ResourceKind::RenderTarget,
-            Self::Depth => ResourceKind::DepthTarget,
+            Self::Color => Some(ResourceKind::RenderTarget),
+            Self::Depth => Some(ResourceKind::DepthTarget),
+            Self::Storage => Some(ResourceKind::Buffer),
+            Self::Copy => None,
         }
+    }
+
+    /// Whether this attachment accepts a resource of `kind`.
+    #[must_use]
+    pub fn allows(self, kind: ResourceKind) -> bool {
+        self.target_kind().is_none_or(|allowed| allowed == kind)
     }
 
     /// The attachment's name, as errors print it.
@@ -153,11 +208,13 @@ impl Attachment {
         match self {
             Self::Color => "color",
             Self::Depth => "depth",
+            Self::Storage => "storage",
+            Self::Copy => "copy",
         }
     }
 }
 
-/// The value a [`LoadOp::Clear`] fills a target with.
+/// The value a [`LoadOp::Clear`] fills a resource with.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ClearValue {
     /// RGBA for float and normalized color formats. Components must be finite.
@@ -168,10 +225,12 @@ pub enum ClearValue {
     Sint([i32; 4]),
     /// Depth for depth formats, within `0.0..=1.0`.
     Depth(f32),
+    /// Zeros: the only value a buffer clears to, and not one a target does.
+    Zero,
 }
 
 impl ClearValue {
-    /// Whether this value is the right kind for `format`.
+    /// Whether this value is the right kind for a target of `format`.
     #[must_use]
     pub const fn fits(self, format: TextureFormat) -> bool {
         match self {
@@ -179,6 +238,7 @@ impl ClearValue {
             Self::Uint(_) => format.is_uint(),
             Self::Sint(_) => format.is_sint(),
             Self::Depth(_) => format.is_depth(),
+            Self::Zero => false,
         }
     }
 
@@ -187,13 +247,13 @@ impl ClearValue {
     pub fn is_valid(self) -> bool {
         match self {
             Self::Color(color) => color.iter().all(|component| component.is_finite()),
-            Self::Uint(_) | Self::Sint(_) => true,
+            Self::Uint(_) | Self::Sint(_) | Self::Zero => true,
             Self::Depth(depth) => (0.0..=1.0).contains(&depth),
         }
     }
 }
 
-/// What a written target holds when its pass starts.
+/// What a written resource holds when its pass starts.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LoadOp {
     /// Filled with a value. Replaces the previous contents.
@@ -201,11 +261,11 @@ pub enum LoadOp {
     /// The previous writer's contents. The pass depends on them, so something must have stored
     /// them: an earlier writer, or the host for an imported target.
     Load,
-    /// Undefined. The pass promises to overwrite every pixel it cares about.
+    /// Undefined. The pass promises to overwrite every pixel or byte it cares about.
     DontCare,
 }
 
-/// What happens to a written target's contents when its pass ends.
+/// What happens to a written resource's contents when its pass ends.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum StoreOp {
     /// Kept for later passes and, for imported targets, the host.
@@ -214,12 +274,12 @@ pub enum StoreOp {
     Discard,
 }
 
-/// A target a pass writes.
+/// A resource a pass writes.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PassOutput {
-    /// The target written.
+    /// The resource written.
     pub resource: ResourceId,
-    /// The attachment slot it is bound to.
+    /// How it is written.
     pub attachment: Attachment,
     /// What it holds when the pass starts.
     pub load: LoadOp,
@@ -249,18 +309,40 @@ impl PassOutput {
             store,
         }
     }
+
+    /// A storage buffer write, by a compute pass.
+    #[must_use]
+    pub const fn storage(resource: ResourceId, load: LoadOp, store: StoreOp) -> Self {
+        Self {
+            resource,
+            attachment: Attachment::Storage,
+            load,
+            store,
+        }
+    }
+
+    /// A copy's destination.
+    #[must_use]
+    pub const fn copy(resource: ResourceId, load: LoadOp, store: StoreOp) -> Self {
+        Self {
+            resource,
+            attachment: Attachment::Copy,
+            load,
+            store,
+        }
+    }
 }
 
-/// One step of a render graph: what it draws, what it reads, and what it writes.
+/// One step of a render graph: what it does, what it reads, and what it writes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Pass {
     /// Name, owner, and declaration site.
     pub metadata: PassMetadata,
-    /// What the pass draws.
+    /// What the pass does.
     pub kind: PassKind,
-    /// Targets read, in declaration order.
+    /// Resources read, in declaration order.
     pub inputs: Vec<PassInput>,
-    /// Targets written, in declaration order. A pass writes at least one.
+    /// Resources written, in declaration order. A pass writes at least one.
     pub outputs: Vec<PassOutput>,
 }
 

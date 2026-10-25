@@ -3,7 +3,7 @@
 use std::fmt;
 
 use crate::render::graph::{ResourceId, ResourceKind};
-use crate::render::pass::{Attachment, ClearValue, ReadUsage};
+use crate::render::pass::{Attachment, ClearValue, PassKind, ReadUsage};
 use crate::render::target::{TargetSize, TextureFormat};
 
 /// Why registering a target or pass, or compiling a graph, failed.
@@ -45,6 +45,13 @@ pub enum GraphError {
         resource: String,
         /// The size it was given.
         size: TargetSize,
+    },
+    /// A buffer's size is zero or not a multiple of 4.
+    InvalidBufferSize {
+        /// The buffer.
+        resource: String,
+        /// The size it was given, in bytes.
+        bytes: u64,
     },
     /// A pass writes nothing, so it can have no effect.
     NoOutputs {
@@ -104,6 +111,42 @@ pub enum GraphError {
         format: TextureFormat,
         /// The clear value.
         clear: ClearValue,
+    },
+    /// A pass clears a buffer with a value other than zero.
+    BufferClearValue {
+        /// The pass.
+        pass: String,
+        /// The buffer.
+        resource: String,
+        /// The clear value.
+        clear: ClearValue,
+    },
+    /// A pass reads a resource in a way its kind of pass can't: a compute pass reading a depth
+    /// test, say.
+    PassCantRead {
+        /// The pass.
+        pass: String,
+        /// What kind of pass it is.
+        kind: PassKind,
+        /// How it reads.
+        usage: ReadUsage,
+    },
+    /// A pass writes a resource in a way its kind of pass can't: a compute pass writing a color
+    /// attachment, say.
+    PassCantWrite {
+        /// The pass.
+        pass: String,
+        /// What kind of pass it is.
+        kind: PassKind,
+        /// How it writes.
+        attachment: Attachment,
+    },
+    /// A copy pass that doesn't copy one resource into one it fits.
+    InvalidCopy {
+        /// The pass.
+        pass: String,
+        /// What is wrong.
+        problem: String,
     },
     /// A pass clears a target with a value out of range.
     InvalidClearValue {
@@ -165,7 +208,7 @@ pub enum GraphError {
         /// The cycle in execution order, starting and ending with its earliest-registered pass.
         passes: Vec<String>,
     },
-    /// No pass stores into an imported target, so every pass would be culled.
+    /// No pass stores into an imported resource, so every pass would be culled.
     NoImportedOutput {
         /// The graph.
         graph: String,
@@ -173,6 +216,7 @@ pub enum GraphError {
 }
 
 impl fmt::Display for GraphError {
+    #[allow(clippy::too_many_lines)] // one arm per error
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyResourceName => formatter.write_str("a target was registered with an empty name"),
@@ -184,6 +228,10 @@ impl fmt::Display for GraphError {
                 write!(formatter, "{kind} \"{resource}\" can't have format {format}")
             }
             Self::InvalidSize { resource, size } => write!(formatter, "target \"{resource}\" has invalid size {size}"),
+            Self::InvalidBufferSize { resource, bytes } => write!(
+                formatter,
+                "buffer \"{resource}\" has invalid size {bytes}: expected a nonzero multiple of 4 bytes"
+            ),
             Self::NoOutputs { pass } => write!(formatter, "pass \"{pass}\" writes nothing"),
             Self::UnknownResource { pass, resource } => {
                 write!(
@@ -206,7 +254,7 @@ impl fmt::Display for GraphError {
                 formatter,
                 "pass \"{pass}\" reads {kind} \"{resource}\" as {}, which only a {} allows",
                 usage.description(),
-                usage.target_kind()
+                usage.target_kind().map_or("", ResourceKind::name)
             ),
             Self::IncompatibleWrite {
                 pass,
@@ -217,7 +265,7 @@ impl fmt::Display for GraphError {
                 formatter,
                 "pass \"{pass}\" writes {kind} \"{resource}\" through a {} attachment, which only a {} allows",
                 attachment.name(),
-                attachment.target_kind()
+                attachment.target_kind().map_or("", ResourceKind::name)
             ),
             Self::ClearValueMismatch {
                 pass,
@@ -227,6 +275,27 @@ impl fmt::Display for GraphError {
             } => {
                 write!(formatter, "pass \"{pass}\" clears \"{resource}\" ({format}) with {clear:?}")
             }
+            Self::BufferClearValue { pass, resource, clear } => {
+                write!(
+                    formatter,
+                    "pass \"{pass}\" clears buffer \"{resource}\" with {clear:?}: a buffer clears to Zero"
+                )
+            }
+            Self::PassCantRead { pass, kind, usage } => {
+                write!(
+                    formatter,
+                    "{kind} pass \"{pass}\" can't read anything as {}",
+                    usage.description()
+                )
+            }
+            Self::PassCantWrite { pass, kind, attachment } => {
+                write!(
+                    formatter,
+                    "{kind} pass \"{pass}\" can't write through a {} attachment",
+                    attachment.name()
+                )
+            }
+            Self::InvalidCopy { pass, problem } => write!(formatter, "copy pass \"{pass}\" is invalid: {problem}"),
             Self::InvalidClearValue { pass, resource, clear } => {
                 write!(formatter, "pass \"{pass}\" clears \"{resource}\" with out-of-range {clear:?}")
             }
@@ -242,7 +311,7 @@ impl fmt::Display for GraphError {
                     "pass \"{pass}\" binds attachments \"{first}\" and \"{second}\" of different sizes"
                 )
             }
-            Self::UnusedResource { resource } => write!(formatter, "no pass uses target \"{resource}\""),
+            Self::UnusedResource { resource } => write!(formatter, "no pass uses \"{resource}\""),
             Self::ReadWithoutWriter { pass, resource } => {
                 write!(formatter, "pass \"{pass}\" reads \"{resource}\", which no pass writes")
             }
@@ -262,7 +331,7 @@ impl fmt::Display for GraphError {
             Self::NoImportedOutput { graph } => {
                 write!(
                     formatter,
-                    "graph \"{graph}\" stores nothing into an imported target, so every pass would be culled"
+                    "graph \"{graph}\" stores nothing into an imported resource, so every pass would be culled"
                 )
             }
         }

@@ -314,6 +314,7 @@ fn clear_color(clear: ClearValue) -> wgpu::Color {
         ClearValue::Uint(values) => color(values.map(f64::from)),
         ClearValue::Sint(values) => color(values.map(f64::from)),
         ClearValue::Depth(depth) => color([f64::from(depth); 4]),
+        ClearValue::Zero => wgpu::Color::TRANSPARENT,
     }
 }
 

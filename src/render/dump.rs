@@ -3,7 +3,7 @@
 use std::fmt;
 
 use crate::render::compile::CompiledGraph;
-use crate::render::graph::ResourceId;
+use crate::render::graph::{ResourceDesc, ResourceId};
 
 impl fmt::Display for CompiledGraph<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -59,7 +59,7 @@ impl CompiledGraph<'_> {
         writeln!(formatter)
     }
 
-    /// One row per target, in registration order: name, format, size, origin, then the passes
+    /// One row per resource, in registration order: name, format, size, origin, then the passes
     /// that bound its lifetime.
     fn write_resources(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let resources = self.graph.resources();
@@ -67,13 +67,19 @@ impl CompiledGraph<'_> {
             return Ok(());
         }
 
-        let sizes: Vec<String> = resources.iter().map(|resource| resource.size.to_string()).collect();
-        let name_width = resources.iter().map(|resource| resource.name.len()).max().unwrap_or(0);
-        let format_width = resources
+        let formats: Vec<&str> = resources
             .iter()
-            .map(|resource| resource.format.name().len())
-            .max()
-            .unwrap_or(0);
+            .map(|resource| resource.format().map_or("buffer", |format| format.name()))
+            .collect();
+        let sizes: Vec<String> = resources
+            .iter()
+            .map(|resource| match resource.desc {
+                ResourceDesc::Texture { size, .. } => size.to_string(),
+                ResourceDesc::Buffer { bytes } => format!("{bytes} bytes"),
+            })
+            .collect();
+        let name_width = resources.iter().map(|resource| resource.name.len()).max().unwrap_or(0);
+        let format_width = formats.iter().map(|format| format.len()).max().unwrap_or(0);
         let size_width = sizes.iter().map(String::len).max().unwrap_or(0);
         let origin_width = resources
             .iter()
@@ -88,7 +94,7 @@ impl CompiledGraph<'_> {
                 formatter,
                 "    {:<name_width$}  {:<format_width$}  {:<size_width$}  {:<origin_width$}  ",
                 resource.name,
-                resource.format,
+                formats[index],
                 sizes[index],
                 resource.origin.name(),
             )?;

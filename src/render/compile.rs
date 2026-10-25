@@ -59,8 +59,8 @@ impl Lifetime {
     }
 }
 
-/// Transient targets that can share one allocation: same kind, format, and size, with pairwise
-/// disjoint lifetimes.
+/// Transient resources that can share one allocation: targets of the same format and size, or
+/// buffers of the same size, with pairwise disjoint lifetimes.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct AliasGroup {
     /// The members, in order of first use.
@@ -454,13 +454,13 @@ impl RenderGraph {
     }
 }
 
-/// First-fit over transient targets in order of first use: each joins the earliest group with
+/// First-fit over transient resources in order of first use: each joins the earliest group with
 /// the same descriptor whose last member is done before it starts.
 ///
-/// The descriptor is kind, format, and size, because that is everything a target's allocation
-/// depends on today. Anything that later changes an allocation (sample count, storage or copy
-/// usage, mip levels, array layers) must join this comparison when it's added, or two targets
-/// the backend can't share memory between will be put in one group.
+/// The descriptor is a target's format and size, or a buffer's size, because that is everything
+/// an allocation depends on today. Anything that later changes one (sample count, mip levels,
+/// array layers) must join [`ResourceDesc`](crate::render::ResourceDesc) when it's added, or two resources the backend can't
+/// share memory between will be put in one group.
 fn alias_groups(resources: &[Resource], lifetimes: &[Option<Lifetime>]) -> Vec<AliasGroup> {
     let mut candidates: Vec<(Lifetime, usize)> = lifetimes
         .iter()
@@ -476,10 +476,7 @@ fn alias_groups(resources: &[Resource], lifetimes: &[Option<Lifetime>]) -> Vec<A
         let resource = &resources[index];
         let fitting = groups.iter().zip(&group_ends).position(|(group, &end)| {
             let member = &resources[group.resources[0].0];
-            end < lifetime.first
-                && member.kind == resource.kind
-                && member.format == resource.format
-                && member.size == resource.size
+            end < lifetime.first && member.desc == resource.desc
         });
 
         let Some(fitting) = fitting else {
