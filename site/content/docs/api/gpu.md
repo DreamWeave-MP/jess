@@ -1,6 +1,6 @@
 ---
 title: 'jess.gpu'
-description: 'The GPU in front of the script: the device jess opens on it, the buffers, textures, and samplers made on it, and the pipelines that draw and compute with them.'
+description: 'The GPU in front of the script: the device jess opens on it, the buffers, textures, and samplers made on it, the pipelines that draw and compute with them, and the draw sets kept on it.'
 weight: 47
 extra:
   kind: api
@@ -296,3 +296,52 @@ print(string.unpack('<ffff', buffer.tostring(values:read())))
 ```
 
 The last number is `string.unpack`'s: where it stopped reading.
+
+## Draw sets
+
+### GpuDevice:drawSet
+
+{{ api_signature(value="device:drawSet(desc: GpuDrawSetDesc): GpuDrawSet") }}
+
+Keeps a draw on the device: a render pipeline, its `material` and `draw` bind groups, its `vertices`, `instances`, and `indices` (with `indexFormat`), `count` and `instanceCount`, and the `tags` passes choose it by. The fields are a draw's, as `GpuDevice:render` takes them, without `pass`: a draw set is drawn with the pass group of whichever pass takes it, so one camera block serves every set a pass draws. It is checked when it is made, the way a pass checks a draw, and drawn from the next frame on by every draw pass whose tags it carries, until it is removed.
+
+## GpuDrawSet
+
+| Member | Type | Holds |
+| --- | --- | --- |
+| `count` | `number` | How many vertices, or indices, it draws. Setting it checks it fits the buffers. |
+| `instanceCount` | `number` | How many instances; at least 1, and no more than its instance buffer holds. |
+| `visible` | `boolean` | Whether passes draw it. |
+| `tags` | `{ string }` | What the passes that take it look for. |
+| `added` | `boolean` | Whether it is on the device. |
+| `add()`, `remove()` | `() -> ()`, `() -> boolean` | Puts it on the device, or takes it off, saying whether it was there. Both are harmless twice. |
+
+Changing a set changes nothing else: what it draws is read again at every frame, so nothing is rebuilt.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+local program = shader.program {
+  attributes = { position = shader.vec2 },
+  pass = { tint = shader.vec4 },
+  vertex = function(input)
+    return { position = shader.vec4(input.attributes.position, 0, 1) }
+  end,
+  fragment = function(input) return input.pass.tint end,
+}
+
+local device = jess.gpu.device()
+local pipeline = device:pipeline(program, { colors = { 'rgba8Unorm' } })
+local quad = device:drawSet {
+  pipeline = pipeline,
+  vertices = device:buffer(48, 'vertex'),
+  count = 6,
+  tags = { 'opaque' },
+}
+
+quad.count = 3
+quad.visible = false
+print(quad, quad:remove(), quad.added)
+-- GpuDrawSet(3 vertices, opaque, hidden)  true  false
+```

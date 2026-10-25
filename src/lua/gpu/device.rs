@@ -7,13 +7,14 @@ use l3i::bind::{Call, StackResults};
 use l3i::extension::{ExtensionDescriptor, TagPolicy};
 use l3i::userdata::{Owned, Userdata};
 
-use crate::gpu::Gpu;
+use crate::gpu::{DrawSets, Gpu};
 use crate::lua::{error, push_table};
 
-/// The GPU a runtime opened, shared by every handle to it.
+/// The GPU a runtime opened, shared by every handle to it, and the draw sets made on it.
 #[derive(Clone, Debug)]
 pub struct LuaGpuDevice {
     pub(crate) gpu: Rc<Gpu>,
+    pub(crate) sets: Rc<DrawSets>,
 }
 
 // SAFETY: an `Rc` to plain Rust state; the destructor never touches the Lua API.
@@ -23,18 +24,22 @@ unsafe impl Userdata for LuaGpuDevice {
 
 /// The device a runtime opened, once it has.
 #[derive(Clone, Debug, Default)]
-pub struct Opened(Rc<RefCell<Option<Rc<Gpu>>>>);
+pub struct Opened(Rc<RefCell<Option<LuaGpuDevice>>>);
 
 impl Opened {
     /// The runtime's device, opened on the first call.
     pub fn device(&self) -> l3i::Result<Owned<LuaGpuDevice>> {
         let mut opened = self.0.borrow_mut();
-        if let Some(gpu) = &*opened {
-            return Ok(Owned(LuaGpuDevice { gpu: gpu.clone() }));
+        if let Some(device) = &*opened {
+            return Ok(Owned(device.clone()));
         }
-        let gpu = Rc::new(Gpu::headless().map_err(|problem| error(format!("jess.gpu.device: {problem}")))?);
-        *opened = Some(gpu.clone());
-        Ok(Owned(LuaGpuDevice { gpu }))
+        let gpu = Gpu::headless().map_err(|problem| error(format!("jess.gpu.device: {problem}")))?;
+        let device = LuaGpuDevice {
+            gpu: Rc::new(gpu),
+            sets: Rc::new(DrawSets::new()),
+        };
+        *opened = Some(device.clone());
+        Ok(Owned(device))
     }
 }
 
@@ -72,10 +77,12 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .untyped();
     super::resources::device_methods(&mut device);
     super::pipeline::device_methods(&mut device);
+    super::draw_set::device_methods(&mut device);
     crate::lua::plan::metamethod(&mut device, "__tostring", |this: &LuaGpuDevice| {
         let info = this.gpu.info();
         format!("GpuDevice({}, {})", info.name, info.backend)
     });
     super::resources::describe(d);
     super::pipeline::describe(d);
+    super::draw_set::describe(d);
 }

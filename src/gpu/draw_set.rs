@@ -209,6 +209,13 @@ impl DrawSets {
         removed
     }
 
+    /// Whether it holds `set`.
+    #[must_use]
+    pub fn contains(&self, set: &Arc<DrawSet>) -> bool {
+        let sets = self.sets.lock().unwrap_or_else(PoisonError::into_inner);
+        sets.iter().any(|held| Arc::ptr_eq(held, set))
+    }
+
     /// How many sets it holds.
     #[must_use]
     pub fn len(&self) -> usize {

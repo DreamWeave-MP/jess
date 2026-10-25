@@ -98,12 +98,12 @@ const COMPARES: [&str; 8] = [
     "always",
 ];
 
-fn gpu_error(function: &str, problem: &GpuError) -> l3i::Error {
+pub fn gpu_error(function: &str, problem: &GpuError) -> l3i::Error {
     error(format!("{function}: {problem}"))
 }
 
 /// `view` as a table, or the error naming `what` it should have been.
-fn table<'v>(function: &str, what: &str, view: ValueView<'v>) -> l3i::Result<TableView<'v>> {
+pub fn table<'v>(function: &str, what: &str, view: ValueView<'v>) -> l3i::Result<TableView<'v>> {
     if !view.is_table() {
         return Err(error(format!("{function}: {what} is a table, not {}", shown(view))));
     }
@@ -111,7 +111,7 @@ fn table<'v>(function: &str, what: &str, view: ValueView<'v>) -> l3i::Result<Tab
 }
 
 /// [`table`], taking only `keys`.
-fn options<'v>(
+pub fn options<'v>(
     frame: &Frame<'_>,
     function: &str,
     what: &str,
@@ -124,7 +124,7 @@ fn options<'v>(
 }
 
 /// A boolean field, or `default` where it is nil.
-fn flag(frame: &Frame<'_>, function: &str, table: &TableView<'_>, key: &str, default: bool) -> l3i::Result<bool> {
+pub fn flag(frame: &Frame<'_>, function: &str, table: &TableView<'_>, key: &str, default: bool) -> l3i::Result<bool> {
     let view = table.raw_get(frame, key)?;
     if view.is_nil() {
         return Ok(default);
@@ -136,7 +136,7 @@ fn flag(frame: &Frame<'_>, function: &str, table: &TableView<'_>, key: &str, def
 }
 
 /// A finite number.
-fn number(function: &str, what: &str, view: ValueView<'_>) -> l3i::Result<f64> {
+pub fn number(function: &str, what: &str, view: ValueView<'_>) -> l3i::Result<f64> {
     let value = (view.is_number() || view.is_integer())
         .then(|| view.read::<f64>().ok())
         .flatten()
@@ -287,7 +287,7 @@ fn named_format(frame: &Frame<'_>, function: &str, table: &TableView<'_>) -> l3i
 }
 
 /// The frequency named `name`.
-fn frequency_of(function: &str, view: ValueView<'_>) -> l3i::Result<Frequency> {
+pub fn frequency_of(function: &str, view: ValueView<'_>) -> l3i::Result<Frequency> {
     let found = view
         .is_string()
         .then(|| view.read::<&str>().ok())
@@ -309,7 +309,7 @@ enum Held {
 }
 
 /// What `slot`, named `name`, is, as errors name it.
-fn slot_name(slot: Slot, name: &str) -> String {
+pub fn slot_name(slot: Slot, name: &str) -> String {
     match slot {
         Slot::Uniform(_) => "the uniform block".to_owned(),
         Slot::Resource(_, kind) if kind.is_sampler() => format!("{name}'s sampler"),
@@ -462,7 +462,7 @@ fn target(frame: &Frame<'_>, function: &str, what: &str, view: ValueView<'_>) ->
 }
 
 /// What a target of `format` is cleared to: a depth, or four channels of its kind.
-fn clear_value(
+pub fn clear_value(
     frame: &Frame<'_>,
     function: &str,
     what: &str,
@@ -510,7 +510,7 @@ fn clear_value(
 }
 
 /// The bind groups a draw or dispatch gives, by frequency.
-fn groups(frame: &Frame<'_>, function: &str, table: &TableView<'_>) -> l3i::Result<[Option<Arc<BindGroup>>; 3]> {
+pub fn groups(frame: &Frame<'_>, function: &str, table: &TableView<'_>) -> l3i::Result<[Option<Arc<BindGroup>>; 3]> {
     let mut groups = [None, None, None];
     for frequency in Frequency::ALL {
         let view = table.raw_get(frame, frequency.name())?;
@@ -529,7 +529,12 @@ fn groups(frame: &Frame<'_>, function: &str, table: &TableView<'_>) -> l3i::Resu
 }
 
 /// A buffer field, if it is given.
-fn buffer_field(frame: &Frame<'_>, function: &str, table: &TableView<'_>, key: &str) -> l3i::Result<Option<Arc<Buffer>>> {
+pub fn buffer_field(
+    frame: &Frame<'_>,
+    function: &str,
+    table: &TableView<'_>,
+    key: &str,
+) -> l3i::Result<Option<Arc<Buffer>>> {
     let view = table.raw_get(frame, key)?;
     if view.is_nil() {
         return Ok(None);
@@ -540,7 +545,7 @@ fn buffer_field(frame: &Frame<'_>, function: &str, table: &TableView<'_>, key: &
 }
 
 /// The pipeline a draw or dispatch runs.
-fn pipeline_field(frame: &Frame<'_>, function: &str, table: &TableView<'_>) -> l3i::Result<Rc<Pipeline>> {
+pub fn pipeline_field(frame: &Frame<'_>, function: &str, table: &TableView<'_>) -> l3i::Result<Rc<Pipeline>> {
     let view = table.raw_get(frame, "pipeline")?;
     receiver::<LuaGpuPipeline>(view)
         .map(|pipeline| pipeline.pipeline.clone())

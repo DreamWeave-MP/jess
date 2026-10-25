@@ -455,3 +455,102 @@ fn pipeline_errors_name_the_mistake() {
         assert!(error.contains(expected), "{script}: {error}");
     }
 }
+
+/// A draw set made from Luau is kept on its device until it is removed; its count, instance
+/// count, and visibility change in place, checked as a pass checks a draw.
+#[cfg(feature = "gpu")]
+#[test]
+fn a_script_keeps_draw_sets() {
+    let Some(runtime) = gpu_runtime("a_script_keeps_draw_sets") else {
+        return;
+    };
+    runtime
+        .exec(
+            r"
+            local shader = require('@jess/shader')
+            local program = shader.program({
+              attributes = { position = shader.vec2 },
+              pass = { tint = shader.vec4 },
+              material = { color = shader.vec4 },
+              vertex = function(input)
+                return { position = shader.vec4(input.attributes.position, 0.5, 1) }
+              end,
+              fragment = function(input) return input.material.color * input.pass.tint end,
+            })
+            local device = jess.gpu.device()
+            local pipeline = device:pipeline(program, { colors = { 'rgba8Unorm' } })
+            local color = device:buffer(16, 'uniform')
+            local material = pipeline:bind('material', { [0] = color })
+            local vertices = device:buffer(48, 'vertex')
+
+            local set = device:drawSet({
+              pipeline = pipeline,
+              material = material,
+              vertices = vertices,
+              count = 6,
+              tags = { 'opaque', 'shadow' },
+            })
+            assert(set.count == 6 and set.instanceCount == 1 and set.visible and set.added)
+            assert(table.concat(set.tags, ' ') == 'opaque shadow')
+            assert(tostring(set) == 'GpuDrawSet(6 vertices, opaque shadow)', tostring(set))
+
+            set.count = 3
+            set.visible = false
+            assert(set.count == 3 and not set.visible)
+            assert(tostring(set) == 'GpuDrawSet(3 vertices, opaque shadow, hidden)', tostring(set))
+
+            assert(set:remove() and not set.added and not set:remove())
+            set:add()
+            set:add()
+            assert(set.added)
+        ",
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+
+    let prelude = r"
+            local shader = require('@jess/shader')
+            local device = jess.gpu.device()
+            local program = shader.program({
+              attributes = { position = shader.vec2 },
+              material = { color = shader.vec4 },
+              vertex = function(input) return { position = shader.vec4(input.attributes.position, 0, 1) } end,
+              fragment = function(input) return input.material.color end,
+            })
+            local pipeline = device:pipeline(program, { colors = { 'rgba8Unorm' } })
+            local material = pipeline:bind('material', { [0] = device:buffer(16, 'uniform') })
+            local vertices = device:buffer(48, 'vertex')
+            local set = device:drawSet({ pipeline = pipeline, material = material, vertices = vertices, count = 6 })
+        ";
+    for (script, expected) in [
+        ("device:drawSet(1)", "GpuDevice:drawSet takes a table, not number"),
+        (
+            "device:drawSet({ pipeline = pipeline, pass = material, count = 1 })",
+            "unknown GpuDevice:drawSet option 'pass'",
+        ),
+        (
+            "device:drawSet({ pipeline = pipeline, vertices = vertices, count = 6 })",
+            "GpuDevice:drawSet: the draw set is invalid: its program binds a material group, and the draw gives none",
+        ),
+        (
+            "device:drawSet({ pipeline = device:pipeline(shader.compute({ workgroupSize = 1, \
+             compute = function() end })), count = 1 })",
+            "GpuDevice:drawSet: the pipeline computes: a draw set draws, so it needs a render pipeline",
+        ),
+        (
+            "device:drawSet({ pipeline = pipeline, material = material, vertices = vertices, count = 6, tags = { 1 } })",
+            "GpuDevice:drawSet: a tag is a string, not 1",
+        ),
+        (
+            "set.count = 7",
+            "GpuDrawSet.count: the draw set is invalid: 7 vertices of 8 bytes run past its 48-byte vertex buffer",
+        ),
+        (
+            "set.instanceCount = 0",
+            "GpuDrawSet.instanceCount: the draw set is invalid: at least one instance",
+        ),
+        ("set.visible = 1", "GpuDrawSet.visible: visible is a boolean, not 1"),
+    ] {
+        let error = runtime.exec(&format!("{prelude}\n{script}")).unwrap_err().to_string();
+        assert!(error.contains(expected), "{script}: {error}");
+    }
+}

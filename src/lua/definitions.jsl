@@ -797,11 +797,41 @@ export type GpuDispatch = {
   draw: GpuBindGroup?,
 }
 
+--- A draw kept on its device, which every plan's draw passes take by its `tags`, frame after frame,
+--- with the pass's own pass group. `count`, `instanceCount`, and `visible` change it in place, from
+--- the next frame on; `remove` takes it off the device, `add` puts it back, and `added` says which.
+--- `tostring` gives `GpuDrawSet(6 vertices, opaque)`.
+declare extern type GpuDrawSet with
+  count: number
+  instanceCount: number
+  visible: boolean
+  tags: { string }
+  added: boolean
+  function add(self): ()
+  function remove(self): boolean
+  __tostring: (self: GpuDrawSet) -> string
+end
+
+--- What `GpuDevice:drawSet` keeps: a draw without its pass group, which is the pass's, and the tags
+--- passes choose it by.
+export type GpuDrawSetDesc = {
+  pipeline: GpuPipeline,
+  count: number,
+  instanceCount: number?,
+  material: GpuBindGroup?,
+  draw: GpuBindGroup?,
+  vertices: GpuBuffer?,
+  instances: GpuBuffer?,
+  indices: GpuBuffer?,
+  indexFormat: ('u16' | 'u32')?,
+  tags: { string }?,
+}
+
 --- The GPU a script draws and computes with: the adapter's `name`, the `backend` API wgpu reaches it
 --- through (`vulkan`, `metal`, `dx12`, `gl`), its `kind` (`discrete`, `integrated`, `virtual`,
 --- `cpu`, `other`), and its `limits`. `buffer`, `texture`, and `sampler` make resources on it,
---- `pipeline` makes a program ready to draw or compute, and `render` and `dispatch` submit work.
---- `tostring` gives `GpuDevice(name, backend)`.
+--- `pipeline` makes a program ready to draw or compute, `render` and `dispatch` submit work, and
+--- `drawSet` keeps a draw on the device. `tostring` gives `GpuDevice(name, backend)`.
 declare extern type GpuDevice with
   name: string
   backend: string
@@ -813,6 +843,7 @@ declare extern type GpuDevice with
   function pipeline(self, program: ShaderProgram, state: GpuPipelineState?): GpuPipeline
   function render(self, pass: GpuPass): ()
   function dispatch(self, work: GpuDispatch): ()
+  function drawSet(self, desc: GpuDrawSetDesc): GpuDrawSet
   __tostring: (self: GpuDevice) -> string
 end
 
