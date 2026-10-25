@@ -9,6 +9,8 @@ local fs = require '@dream/fs'
 export type Canary = {
   name: string,
   path: string,
+  --- Whether this jess, on this machine, can run it at all; every canary can without one.
+  available: (() -> boolean)?,
   run: (scale: number) -> number,
 }
 
@@ -45,6 +47,7 @@ local Canaries: { Canary } = {
   require './canaries/math' :: Canary,
   require './canaries/safeenv' :: Canary,
   require './canaries/vector' :: Canary,
+  require './canaries/gpu' :: Canary,
 }
 
 local function fail(message: string): never error(`bench: {message}`, 0) end
@@ -254,6 +257,11 @@ local function runCanaries(startAt: number): number
 
   for _, canary in Canaries do
     if next(selected) and not selected[canary.name] then continue end
+
+    if canary.available and not canary.available() then
+      print(`bench: {canary.name} skipped: this jess has no GPU to run it on`)
+      continue
+    end
 
     print(`bench: {canary.name}`)
     for _ = 1, warmup do canary.run(scale) end
