@@ -172,6 +172,145 @@ impl Processor for Compressor {
     }
 }
 
+/// Holds a bus under a ceiling, looking ahead so it starts turning down before a peak arrives.
+///
+/// Its output lags its input by `lookahead` (fixed when it's made), which it reports as latency.
+/// Every sample out is at most `ceiling` decibels: the gain falls to what the loudest sample in
+/// the lookahead needs, at once, and climbs back over `release` seconds.
+#[derive(Debug)]
+pub struct Limiter {
+    rate: u32,
+    /// The lookahead in frames.
+    ahead: usize,
+    /// Each channel's delay line, `ahead + 1` frames long.
+    lines: Box<[f32]>,
+    write: usize,
+    /// The gains the frames in the lookahead need, the smallest first: frame and gain.
+    window: Box<[(u64, f32)]>,
+    head: usize,
+    count: usize,
+    frame: u64,
+    ceiling: f32,
+    release: f64,
+    climb: f32,
+    gain: f32,
+}
+
+impl Limiter {
+    const PARAMS: &'static [ParamInfo] = &[
+        ParamInfo {
+            name: "ceiling",
+            min: -24.0,
+            max: 0.0,
+            default: -0.3,
+        },
+        ParamInfo {
+            name: "release",
+            min: 0.001,
+            max: 2.0,
+            default: 0.05,
+        },
+    ];
+
+    /// The longest lookahead one can be made with, in seconds.
+    pub const LONGEST: f64 = 0.05;
+
+    /// A limiter over `channels` channels at `rate`, looking `lookahead` seconds ahead.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Seconds checked in range.
+    pub fn new(rate: u32, channels: usize, lookahead: f64) -> Limiter {
+        let ahead = (lookahead.clamp(0.0, Limiter::LONGEST) * f64::from(rate)).round() as usize;
+        let mut limiter = Limiter {
+            rate,
+            ahead,
+            lines: vec![0.0; (ahead + 1) * channels].into_boxed_slice(),
+            write: 0,
+            window: vec![(0, 1.0); ahead + 1].into_boxed_slice(),
+            head: 0,
+            count: 0,
+            frame: 0,
+            ceiling: linear(-0.3),
+            release: 0.05,
+            climb: 0.0,
+            gain: 1.0,
+        };
+        limiter.climb = smoothing(limiter.release, rate);
+        limiter
+    }
+
+    /// Adds the gain `frame` needs to the window, and drops what the lookahead has passed.
+    fn admit(&mut self, frame: u64, need: f32) {
+        let capacity = self.window.len();
+        // Gains at least as large as this one can never be the smallest again.
+        while self.count > 0 && self.window[(self.head + self.count - 1) % capacity].1 >= need {
+            self.count -= 1;
+        }
+        self.window[(self.head + self.count) % capacity] = (frame, need);
+        self.count += 1;
+        while self.window[self.head].0 + (self.ahead as u64) < frame {
+            self.head = (self.head + 1) % capacity;
+            self.count -= 1;
+        }
+    }
+}
+
+impl Processor for Limiter {
+    fn kind(&self) -> &'static str {
+        "limiter"
+    }
+
+    fn params(&self) -> &'static [ParamInfo] {
+        Limiter::PARAMS
+    }
+
+    #[allow(clippy::cast_possible_truncation)] // Ranged on the control side.
+    fn set(&mut self, index: usize, value: f64) {
+        if index == 0 {
+            self.ceiling = linear(value as f32);
+            return;
+        }
+        self.release = value;
+        self.climb = smoothing(value, self.rate);
+    }
+
+    fn value(&self, index: usize) -> f64 {
+        if index == 0 {
+            return f64::from(decibels(self.ceiling));
+        }
+        self.release
+    }
+
+    fn latency(&self) -> u64 {
+        self.ahead as u64
+    }
+
+    fn tail(&self) -> crate::audio::processor::Tail {
+        crate::audio::processor::Tail::Frames(self.ahead as u64)
+    }
+
+    fn process(&mut self, block: &mut Block<'_>, _key: Option<&[f32]>) {
+        let length = self.ahead + 1;
+        for index in 0..block.frames {
+            let peak = (0..block.channels).fold(0.0f32, |peak, channel| {
+                peak.max(block.samples[channel * QUANTUM + index].abs())
+            });
+            let need = if peak > self.ceiling { self.ceiling / peak } else { 1.0 };
+            self.admit(self.frame, need);
+            let smallest = self.window[self.head].1;
+            // Down at once to what is coming; back up only as fast as the release lets it.
+            self.gain = smallest.min(smallest + self.climb * (self.gain - smallest));
+            let read = (self.write + 1) % length;
+            for channel in 0..block.channels {
+                let line = &mut self.lines[channel * length..(channel + 1) * length];
+                line[self.write] = block.samples[channel * QUANTUM + index];
+                block.samples[channel * QUANTUM + index] = line[read] * self.gain;
+            }
+            self.write = read;
+            self.frame += 1;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,6 +342,35 @@ mod tests {
             (run(&mut compressor, 0.01, None) - 0.01).abs() < 1e-6,
             "below the threshold passes"
         );
+    }
+
+    #[test]
+    fn a_limiter_keeps_every_sample_under_its_ceiling_and_reports_its_lookahead() {
+        let mut limiter = Limiter::new(48_000, 2, 0.001);
+        limiter.set(1, 0.001);
+        assert_eq!(limiter.latency(), 48);
+        let mut samples = vec![0.0f32; 2 * QUANTUM];
+        let mut out = Vec::new();
+        for block in 0..4 {
+            for frame in 0..QUANTUM {
+                let level = if block == 1 && frame == 60 { 4.0 } else { 0.5 };
+                samples[frame] = level;
+                samples[QUANTUM + frame] = -level;
+            }
+            let mut view = Block {
+                samples: &mut samples,
+                channels: 2,
+                frames: QUANTUM,
+            };
+            limiter.process(&mut view, None);
+            out.extend_from_slice(&samples[..QUANTUM]);
+        }
+        let ceiling = linear(-0.3);
+        assert!(out.iter().all(|sample| sample.abs() <= ceiling + 1e-6));
+        // The peak comes out 48 frames late, held to the ceiling.
+        assert!((out[QUANTUM + 60 + 48] - ceiling).abs() < 1e-5, "{}", out[QUANTUM + 60 + 48]);
+        assert!(out[QUANTUM + 60 + 47] < 0.5, "turned down ahead of it");
+        assert!((out[4 * QUANTUM - 1] - 0.5).abs() < 0.05, "and back up after");
     }
 
     #[test]
