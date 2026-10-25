@@ -6,7 +6,7 @@ extra:
   kind: api
 ---
 
-{{ api_signature(value="require('@jess/audio'): { pcm, offline, frames, seconds, readWav, loadWav, writeWav }") }}
+{{ api_signature(value="require('@jess/audio'): { pcm, offline, processors, frames, seconds, readWav, loadWav, writeWav }") }}
 
 `@jess/audio` is audio for scripts: the built-in package's Luau over `jess.audio`, the native half. The native side owns samples, voices, the sample clock, and the mix. What a file's bytes are and which frame a second lands on are Luau's, so WAV reading and writing and the time helpers live here, and a format that needs a native codec arrives as PCM bytes the same way.
 
@@ -31,11 +31,11 @@ PCM from interleaved bytes: `channels` samples per frame (1 to 8), each stored a
 
 ## Contexts
 
-{{ api_signature(value="audio.offline(options: { rate: number?, channels: number?, voices: number?, commands: number? }?) -> AudioContext") }}
+{{ api_signature(value="audio.offline(options: { rate: number?, channels: number?, voices: number?, buses: number?, processors: number?, commands: number? }?) -> AudioContext") }}
 
-A context the script renders. Defaults: 48000 frames per second, 2 channels, 256 voices, and room for 4096 commands waiting for their frame.
+A context the script renders. Defaults: 48000 frames per second, 2 channels, 256 voices, 64 buses (the master included), 256 processors, and room for 4096 commands waiting for their frame.
 
-`voices` counts voices playing or stamped for later; `commands` bounds the queue to the engine. Both are fixed when the context is made, so the engine never allocates while it mixes. Running out of either is an error at the call that ran out (`all 256 voices are playing or scheduled`, `the audio command queue is full`), never a sound quietly not played.
+`voices` counts voices playing or stamped for later; `commands` bounds the queue to the engine. Every count is fixed when the context is made, so the engine never allocates while it mixes. Running out of one is an error at the call that ran out (`all 256 voices are playing or scheduled`, `the audio command queue is full`), never a sound quietly not played.
 
 {{ api_signature(value="context:play(pcm: AudioPcm, options: AudioPlayOptions?) -> AudioVoice") }}
 
@@ -50,6 +50,8 @@ Starts a voice. Options:
 | `offset` | `0` | The source frame to start from |
 | `loop` | `false` | Loop from `loopEnd` back to `loopStart`, without a gap |
 | `loopStart`, `loopEnd` | `0`, the source's end | The loop region, in source frames, the end exclusive |
+| `bus` | the master | The bus it plays into |
+| `sends` | none | Up to two `{ bus, level }`: buses it also plays into, at `level` (1) times its own gain |
 
 A source at a different rate from the context is resampled; at the same rate and `rate = 1` it plays sample for sample. Mono mixes into any output, stereo into mono (averaged), and otherwise the channel counts must match.
 
@@ -74,6 +76,58 @@ The next frame the engine renders. Anything stamped for it or later lands on its
 {{ api_signature(value="voice:state() -> 'scheduled' | 'playing' | 'ended'") }}
 
 A stop or change stamped for a frame is carried out on that frame. One sent before the voice has started applies from its first frame: a voice stopped before its start never plays, and one whose gain is set before it starts starts at that gain. Both return whether the voice was still live; on an ended voice they do nothing.
+
+{{ api_signature(value="voice:send(bus: AudioBus, level: number, at: number?) -> boolean") }}
+
+Changes the level of a send the voice started with. A voice's sends are fixed when it starts; their levels aren't.
+
+## Buses
+
+A bus is where voices and other buses sum. Each block, a bus runs its processors over what it summed, applies its gain and mute, and adds the result into its parent and into each bus it sends to. Every bus has a parent, so they make a tree under the master bus, which is the output; sends add more paths, and any route that would feed a bus back into itself is refused when it's asked for, not discovered while mixing.
+
+{{ api_signature(value="context:master() -> AudioBus") }}
+{{ api_signature(value="context:bus(options: { parent: AudioBus?, gain: number?, muted: boolean? }?) -> AudioBus") }}
+
+A new bus under `parent` (the master), at `gain` (1). Voices can play into it at once. A handle from another context is an error.
+
+{{ api_signature(value="bus:set(param: 'gain' | 'mute', value: number, at: number?) -> boolean") }}
+{{ api_signature(value="bus:route(parent: AudioBus, at: number?)") }}
+
+`gain` is linear; `mute` is on for anything but 0. `route` moves the bus under another parent on frame `at`.
+
+{{ api_signature(value="bus:send(target: AudioBus, options: { level: number?, tap: ('post' | 'pre')?, at: number? }?)") }}
+{{ api_signature(value="bus:unsend(target: AudioBus, at: number?) -> boolean") }}
+
+A send adds the bus into `target` as well as its parent, at `level` (1). It taps after the bus's gain and mute (`post`), or before them (`pre`), so a muted bus still feeds the room it sends to. A bus has up to four sends; sending to a target again changes the one there.
+
+Many voices and buses sending to one bus are one input to it: a reverb on a shared bus runs once over everything sent there, not once per route.
+
+{{ api_signature(value="bus:remove(at: number?) -> boolean") }}
+
+Removes the bus. It has to be quiet first: a voice playing or sending into it, or a bus routed into it, makes `remove` an error that counts them (`the bus still has 2 voices and 0 buses routed into it`). A removed bus keeps running its processors until their tails have rung out, so a reverb's decay isn't cut off, then goes with them. The master is never removed.
+
+{{ api_signature(value="bus:live() -> boolean") }}
+{{ api_signature(value="bus:meter() -> { peak: number, rms: number }") }}
+{{ api_signature(value="bus:latency() -> number") }}
+
+`meter` is what the bus put out after its gain since the last read: the largest sample's magnitude and the RMS, linear, across its channels. Reading starts the next measurement. `latency` is how many frames the bus's output lags the voices that reach it, along the path whose processors delay them most. Paths of different latency summing into one bus are where compensation would line them up; the engine reports the number and doesn't yet compensate.
+
+## Processors
+
+{{ api_signature(value="bus:insert(kind: string, settings: { [string]: number | string }?) -> AudioProcessor") }}
+
+Puts a processor of `kind` in the bus's chain, last or at `index` (from 1), made with `settings`: its parameters by name, and whatever the kind is made with. A bus runs up to 16. `audio.processors()` lists the kinds:
+
+| Kind | Parameters | Does |
+| --- | --- | --- |
+| `gain` | `gain` (-64 to 64, 1) | Multiplies the bus: a trim before the rest of the chain |
+
+{{ api_signature(value="processor:set(param: string, value: number, at: number?) -> boolean") }}
+{{ api_signature(value="processor:remove(at: number?) -> boolean") }}
+{{ api_signature(value="processor:kind() -> string") }}
+{{ api_signature(value="processor:live() -> boolean") }}
+
+A name the processor doesn't have, or a value outside its range, is an error naming what it does take.
 
 ## Time
 
