@@ -22,9 +22,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::shader::{
-    AttributeId, BinaryOperator, Builtin, DataType, Element, Field, Frequency, Function as ShaderFunction, Place, PlaceRoot,
-    Program, ProgramBuilder, Rate, ResourceId, ResourceKind, Scalar, Site, SourceOrigin, Step, StructId, Swizzle, Type,
-    UnaryOperator, ValidationError, Value,
+    AttributeId, BinaryOperator, Builtin, DataType, Element, Field, Frequency, Function as ShaderFunction, LocalId, Place,
+    PlaceRoot, Program, ProgramBuilder, Rate, ResourceId, ResourceKind, Scalar, Site, SourceOrigin, Stage, Step, StructId,
+    Swizzle, Type, UnaryOperator, ValidationError, Value,
 };
 use l3i::Runtime;
 use l3i::bind::{ArgView, Call, StackResults};
@@ -93,22 +93,6 @@ fn call_site(call: &Call<'_>) -> (String, u32) {
         level += 1;
     }
     ("?".to_owned(), 0)
-}
-
-/// Which stage function is running, and so which names its input has.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Stage {
-    Vertex,
-    Fragment,
-}
-
-impl Stage {
-    const fn name(self) -> &'static str {
-        match self {
-            Self::Vertex => "vertex",
-            Self::Fragment => "fragment",
-        }
-    }
 }
 
 /// One program under construction: the builder, gone once the program is finished, and what the
@@ -329,6 +313,20 @@ unsafe impl Userdata for LuaShaderBuiltins {
     const NAME: &'static str = "jess.shader.Builtins";
 }
 
+/// `shader.var(initial)`: a value the stage function keeps, read with `.value` as of then and stored
+/// into with `:set`.
+#[derive(Clone, Debug)]
+pub struct LuaShaderVar {
+    build: Rc<RefCell<Build>>,
+    local: LocalId,
+    ty: Type,
+}
+
+// SAFETY: an `Rc` to plain Rust state; the destructor never touches the Lua API.
+unsafe impl Userdata for LuaShaderVar {
+    const NAME: &'static str = "jess.shader.Var";
+}
+
 /// Somewhere in what a frequency binds that isn't a value yet: `input.material`, a struct member,
 /// an array. Indexing it goes one step further in; a step that reaches a value reads it.
 #[derive(Clone, Debug)]
@@ -421,6 +419,13 @@ fn at_site<R>(
     })?;
     let origin = info.origin(call);
     body(&mut builder.at(origin), info)
+}
+
+/// Builds `stage`'s body from here on.
+fn enter(build: &Rc<RefCell<Build>>, stage: Stage) -> l3i::Result<()> {
+    let mut build = build.borrow_mut();
+    let builder = build.builder.as_mut().expect("a program under construction has its builder");
+    builder.site().enter(stage).map_err(invalid)
 }
 
 /// A shader value that raised `problem`.
@@ -657,6 +662,9 @@ fn shader_kind(view: ValueView<'_>) -> String {
     if l3i::userdata::receiver::<LuaShaderSampler>(view).is_some() {
         return "a sampler, which shader.sample takes".to_owned();
     }
+    if l3i::userdata::receiver::<LuaShaderVar>(view).is_some() {
+        return "a shader.var: read its value with .value".to_owned();
+    }
     if let Some(place) = l3i::userdata::receiver::<LuaShaderPlace>(view) {
         return match &place.at {
             None => format!("the {}: read one of its members", place.frequency),
@@ -665,6 +673,88 @@ fn shader_kind(view: ValueView<'_>) -> String {
         };
     }
     kind(view).to_owned()
+}
+
+/// `shader.var`, `shader.when`, `shader.loop`, and `shader.discard`: the statements of a stage
+/// function, built where it calls them.
+fn statements(module: &Functions<'_>, shader: &Rc<Shader>) -> l3i::Result<()> {
+    let state = shader.clone();
+    module.function(
+        "var",
+        move |call: &Call<'_>, initial: ValueView<'_>| -> l3i::Result<Owned<LuaShaderVar>> {
+            let build = state.build_for("var", &[initial])?;
+            let (local, ty) = at_site(call, &build, |site, _| {
+                let initial = operand(site, "shader.var", initial)?;
+                Ok((site.var(initial).map_err(invalid)?, initial.ty()))
+            })?;
+            Ok(Owned(LuaShaderVar { build, local, ty }))
+        },
+    )?;
+    let state = shader.clone();
+    module.function(
+        "when",
+        move |call: &Call<'_>,
+              condition: ValueView<'_>,
+              accept: ValueView<'_>,
+              reject: Option<ValueView<'_>>|
+              -> l3i::Result<()> {
+            let build = state.build_for("when", &[condition])?;
+            let accept = branch(accept, "shader.when", "what runs where the condition holds")?;
+            let reject = reject
+                .filter(|reject| !reject.is_nil())
+                .map(|reject| branch(reject, "shader.when", "what runs where it doesn't"))
+                .transpose()?;
+            at_site(call, &build, |site, _| {
+                let condition = operand(site, "shader.when", condition)?;
+                site.begin_if(condition).map_err(invalid)
+            })?;
+            run(call, &accept, ())?;
+            if let Some(reject) = reject {
+                at_site(call, &build, |site, _| site.begin_else().map_err(invalid))?;
+                run(call, &reject, ())?;
+            }
+            at_site(call, &build, |site, _| site.end_if().map_err(invalid))
+        },
+    )?;
+    let state = shader.clone();
+    module.function(
+        "loop",
+        move |call: &Call<'_>, count: ValueView<'_>, body: ValueView<'_>| -> l3i::Result<()> {
+            let build = state.build_for("loop", &[count])?;
+            let body = branch(body, "shader.loop", "what runs each time, given the index")?;
+            // A number count is a UInt: `shader.loop(4, ...)`.
+            let index = at_site(call, &build, |site, _| {
+                let count = operand_of(site, "shader.loop", count, Scalar::UInt)?;
+                site.begin_loop(count).map_err(invalid)
+            })?;
+            run(call, &body, (expression(&build, index),))?;
+            at_site(call, &build, |site, _| site.end_loop().map_err(invalid))
+        },
+    )?;
+    let state = shader.clone();
+    module.function("discard", move |call: &Call<'_>| -> l3i::Result<()> {
+        let build = state.build_for("discard", &[])?;
+        at_site(call, &build, |site, _| site.discard().map_err(invalid))
+    })?;
+    Ok(())
+}
+
+/// A function `operation` runs as `what`.
+fn branch(function: ValueView<'_>, operation: &str, what: &str) -> l3i::Result<Function> {
+    if !function.is_function() {
+        return Err(error(format!(
+            "{operation} takes a function for {what}, not {}",
+            kind(function)
+        )));
+    }
+    Function::from_value(l3i::value::Value::store(function)?)
+}
+
+/// Runs a statement's Luau function, ignoring what it returns.
+fn run(call: &Call<'_>, function: &Function, args: impl l3i::call::PushArgs) -> l3i::Result<()> {
+    function
+        .invoke_with(call, args, |_, _| Ok(()))
+        .map_err(crate::lua::callback_error)
 }
 
 /// The texture functions of `jess.shader`, by what each reads.
@@ -1525,6 +1615,7 @@ fn construct_program(call: &Call<'_>, build: &Rc<RefCell<Build>>, spec: Spec) ->
         origin
     };
 
+    enter(build, Stage::Vertex)?;
     let input = LuaShaderInput {
         build: build.clone(),
         stage: Stage::Vertex,
@@ -1545,6 +1636,7 @@ fn construct_program(call: &Call<'_>, build: &Rc<RefCell<Build>>, spec: Spec) ->
         }
     }
 
+    enter(build, Stage::Fragment)?;
     let input = LuaShaderInput {
         build: build.clone(),
         stage: Stage::Fragment,
@@ -1685,6 +1777,7 @@ pub(crate) fn module(runtime: &Runtime, _jess: &Rc<Jess>) -> l3i::Result<Table> 
     module.function("array", move |element: ValueView<'_>, length: ValueView<'_>| {
         array(&state, element, length)
     })?;
+    statements(&module, &shader)?;
     for function in TextureFunction::ALL {
         module.function(function.name(), move |call: &Call<'_>, args: ArgView<'_>| {
             texture_function(call, function, args)
@@ -1772,6 +1865,32 @@ pub fn describe(d: &mut ExtensionDescriptor) {
     crate::lua::plan::metamethod(&mut builtins, "__index", builtin);
     crate::lua::plan::metamethod(&mut builtins, "__tostring", |this: &LuaShaderBuiltins| {
         format!("ShaderBuiltins({})", this.stage.name())
+    });
+
+    let mut var = d.userdata::<LuaShaderVar>(LuaShaderVar::NAME);
+    var.tag(TagPolicy::Never)
+        .doc("A value a stage function keeps and changes: `.value` reads it as of then, `:set` stores into it.");
+    arithmetic_metamethods(&mut var);
+    var.getter(
+        "value",
+        |this: &LuaShaderVar, call: &Call<'_>| -> l3i::Result<Owned<LuaShaderExpr>> {
+            let value = at_site(call, &this.build, |site, _| site.read_local(this.local).map_err(invalid))?;
+            Ok(self::expression(&this.build, value))
+        },
+    )
+    .untyped();
+    var.method(
+        "set",
+        |this: &LuaShaderVar, call: &Call<'_>, value: ValueView<'_>| -> l3i::Result<()> {
+            at_site(call, &this.build, |site, _| {
+                let value = operand_of(site, "ShaderVar:set", value, this.ty.scalar())?;
+                site.store(this.local, value).map_err(invalid)
+            })
+        },
+    )
+    .untyped();
+    crate::lua::plan::metamethod(&mut var, "__tostring", |this: &LuaShaderVar| {
+        format!("ShaderVar({})", this.ty)
     });
 
     describe_bindings(d);

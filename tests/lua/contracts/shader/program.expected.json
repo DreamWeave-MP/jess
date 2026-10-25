@@ -14,6 +14,25 @@
       "tostring": "ShaderProgram(1 attribute, 0 uniforms, 0 textures, 0 varyings)",
       "varyings": {}
     },
+    "flow": {
+      "attributes": [
+        {
+          "name": "position",
+          "type": "Vec4f"
+        }
+      ],
+      "draw": {},
+      "instance": {},
+      "material": [
+        {
+          "name": "count",
+          "type": "UInt"
+        }
+      ],
+      "pass": {},
+      "tostring": "ShaderProgram(1 attribute, 1 uniform, 0 textures, 0 varyings)",
+      "varyings": {}
+    },
     "fragment": {
       "brightness": "ShaderExpr(Float)",
       "builtins": {
@@ -175,6 +194,13 @@
       "shadowHandle": "ShaderTexture(DepthTexture2D)",
       "size": "ShaderExpr(Vec3u)",
       "volume": "ShaderExpr(Vec4f)"
+    },
+    "statements": {
+      "counted": "ShaderVar(UInt)",
+      "flag": "ShaderVar(Bool)",
+      "index": "ShaderExpr(UInt)",
+      "value": "ShaderExpr(Vec4f)",
+      "var": "ShaderVar(Vec4f)"
     },
     "textures": {
       "attributes": [

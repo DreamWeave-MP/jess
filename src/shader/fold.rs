@@ -3,6 +3,7 @@
 //! handing it noise.
 
 use crate::shader::expression::{BinaryOperator, Expression, ExpressionId, Literal};
+use crate::shader::flow::Statement;
 use crate::shader::program::Program;
 use crate::shader::types::Type;
 use crate::shader::validate::{ValidationError, analyze};
@@ -149,7 +150,35 @@ impl Program {
         for output in &mut self.fragment_outputs {
             *output = forward[output.index()];
         }
+        for body in &mut self.bodies {
+            forward_statements(body, &forward);
+        }
         Ok(folded)
+    }
+}
+
+/// Points every value a statement reads at what it folded to. A placed expression stays placed, as
+/// what it folded to is visible wherever it was.
+fn forward_statements(block: &mut [Statement], forward: &[ExpressionId]) {
+    for statement in block {
+        match statement {
+            Statement::Emit(_) | Statement::Discard { .. } => {}
+            Statement::Store { value, .. } => *value = forward[value.index()],
+            Statement::If {
+                condition,
+                accept,
+                reject,
+                ..
+            } => {
+                *condition = forward[condition.index()];
+                forward_statements(accept, forward);
+                forward_statements(reject, forward);
+            }
+            Statement::Loop { count, body, .. } => {
+                *count = forward[count.index()];
+                forward_statements(body, forward);
+            }
+        }
     }
 }
 

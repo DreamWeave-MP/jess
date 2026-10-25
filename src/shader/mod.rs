@@ -97,6 +97,7 @@ macro_rules! arena_id {
 
 mod build;
 mod expression;
+mod flow;
 mod fold;
 mod interface;
 pub mod layout;
@@ -110,6 +111,7 @@ pub use expression::{
     BinaryOperator, Builtin, Component, Expression, ExpressionId, Function, Literal, MAX_PLACE_INDICES, MAX_PLACE_STEPS,
     Operands, Place, PlaceRoot, SampleLevel, SourceOrigin, Step, Swizzle, TextureQuery, UnaryOperator, VaryingId,
 };
+pub use flow::{Local, LocalId, LocalKind, Stage, Statement};
 pub use interface::{
     Attribute, AttributeId, DataType, Element, Field, Frequency, Rate, Resource, ResourceId, ResourceKind, StructDecl,
     StructId, Uniform, UniformId,

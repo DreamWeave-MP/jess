@@ -6,7 +6,7 @@ extra:
   kind: api
 ---
 
-{{ api_signature(value="jess.shader: { program, struct, array, float, int, uint, vec2, vec3, vec4, vec2i, vec3i, vec4i, vec2u, vec3u, vec4u, mat3, mat4, texture2d, texture2dArray, textureCube, texture3d, texture2di, texture2du, depthTexture2d, depthTexture2dArray, depthTextureCube, sampler, comparisonSampler, min, max, clamp, abs, sign, floor, ceil, round, trunc, fract, sqrt, inverseSqrt, exp, exp2, log, log2, pow, sin, cos, tan, asin, acos, atan, atan2, radians, degrees, saturate, step, smoothstep, mix, dot, cross, length, distance, normalize, reflect, refract, transpose, determinant, dpdx, dpdy, fwidth, equal, notEqual, less, lessEqual, greater, greaterEqual, logicalAnd, logicalOr, logicalNot, select, bitAnd, bitOr, bitXor, bitNot, shiftLeft, shiftRight, sample, sampleLevel, sampleBias, sampleCompare, sampleCompareLevel, load, dimensions, levels, layers }") }}
+{{ api_signature(value="jess.shader: { program, struct, array, float, int, uint, vec2, vec3, vec4, vec2i, vec3i, vec4i, vec2u, vec3u, vec4u, mat3, mat4, texture2d, texture2dArray, textureCube, texture3d, texture2di, texture2du, depthTexture2d, depthTexture2dArray, depthTextureCube, sampler, comparisonSampler, min, max, clamp, abs, sign, floor, ceil, round, trunc, fract, sqrt, inverseSqrt, exp, exp2, log, log2, pow, sin, cos, tan, asin, acos, atan, atan2, radians, degrees, saturate, step, smoothstep, mix, dot, cross, length, distance, normalize, reflect, refract, transpose, determinant, dpdx, dpdy, fwidth, equal, notEqual, less, lessEqual, greater, greaterEqual, logicalAnd, logicalOr, logicalNot, select, bitAnd, bitOr, bitXor, bitNot, shiftLeft, shiftRight, var, when, loop, discard, sample, sampleLevel, sampleBias, sampleCompare, sampleCompareLevel, load, dimensions, levels, layers }") }}
 
 A shader, written in Luau. `require("@jess/shader")` is the same table as `jess.shader`, and a shader module is an ordinary Luau module that runs once and returns a `ShaderProgram`.
 
@@ -71,7 +71,7 @@ return program
 
 {% usage_note(title="What this is, today") %}
 - This is the authoring half. Nothing draws with a `ShaderProgram` yet: the renderer that takes one is a later piece of work, and this page will say so when it isn't.
-- The expression set is the one the first real materials need, and no more: arithmetic, the functions below, comparisons and `select`, vector construction, swizzles, and texture sampling. There's no control flow yet. They arrive when a renderer needs them, not because GLSL has them.
+- The expression set is the one real materials need, and no more: arithmetic, WGSL's functions, comparisons and `select`, construction and conversion, swizzles, texture reads, and [statements](#statements): vars, `when`, bounded loops, and `discard`. There are no storage buffers or compute stage yet.
 {% end %}
 
 ## shader.program
@@ -665,6 +665,66 @@ shader.program {
   end,
 }
 -- ShaderTexture(DepthTexture2D)  ShaderExpr(Float)
+```
+
+## Statements
+
+{{ api_signature(value="shader.var(initial: ShaderExpr | number | boolean) -> ShaderVar") }}
+{{ api_signature(value="shader.when(condition: ShaderExpr | boolean, accept: () -> (), reject: (() -> ())?)") }}
+{{ api_signature(value="shader.loop(count: ShaderExpr | number, body: (index: ShaderExpr) -> ())") }}
+{{ api_signature(value="shader.discard()") }}
+
+Everything above computes a value. These four do something instead, in the stage function that calls them, and in the order it calls them:
+
+- **`shader.var(initial)`** is a value the function keeps and changes: a `ShaderVar` of `initial`'s type. `.value` reads it as of where you read it, and `:set(value)` stores into it from there on. A Luau `local` is a name for one value; a `ShaderVar` is a place a value can change in.
+- **`shader.when(condition, accept, reject)`** runs `accept` where the `Bool` condition holds and `reject`, if there is one, where it doesn't. A Luau `if` decides once, while the program is built; `shader.when` decides per vertex or fragment, on the GPU.
+- **`shader.loop(count, body)`** runs `body` `count` times, giving it the index from 0. The count is an `Int` or `UInt` (a number is a `UInt`), fixed before the first pass, and nothing can change the index, so a loop always ends. A Luau `for` unrolls at build time, which is the right tool when the count is known then; `shader.loop` is for a count the GPU reads, such as how many lights a pass binds.
+- **`shader.discard()`** throws the fragment away: it writes nothing. Fragment function only.
+
+Every value is computed where the call that made it ran, which has consequences jess checks:
+
+- A value made inside `accept`, `reject`, or `body` exists only inside it. Reading it after fails when the program finishes, with `a value computed inside a shader.when or shader.loop is read after it: keep it in a shader.var declared before`.
+- A value made in the vertex function isn't one the fragment function can read, and neither is a var: `a shader.var of the vertex function is used in the fragment function`. Return it from the vertex function, and it arrives as a varying.
+- Fragments are shaded in small groups that share their neighbours' values to take derivatives, and `sample`, `sampleBias`, `sampleCompare`, `dpdx`, `dpdy`, and `fwidth` all take one. Where a `shader.when` or `shader.loop` is decided by something that varies per fragment, some of the group may not be there to ask, so jess refuses a derivative inside one: `sample is used where fragments may take different paths, ...: sample before the shader.when or shader.loop, or sample at a level with sampleLevel`. Something every fragment agrees on, a uniform or a constant, decides a path they all take, and anything goes inside.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+local Light = shader.struct('Light', { color = shader.vec4, position = shader.vec4 })
+
+shader.program {
+  attributes = { normal = shader.vec3, position = shader.vec3, uv = shader.vec2 },
+  pass = { lightCount = shader.uint, lights = shader.array(Light, 8) },
+  material = { cutoff = shader.float, diffuse = shader.texture2d },
+  vertex = function(input)
+    local vertex = input.attributes
+
+    return {
+      position = shader.vec4(vertex.position, 1),
+      normal = vertex.normal,
+      uv = vertex.uv,
+      world = vertex.position,
+    }
+  end,
+
+  fragment = function(input)
+    local albedo = shader.sample(input.material.diffuse, input.uv)
+    shader.when(shader.less(albedo.w, input.material.cutoff), shader.discard)
+
+    local light = shader.var(shader.vec3(0))
+    shader.loop(input.pass.lightCount, function(index)
+      local source = input.pass.lights[index]
+      local toward = shader.normalize(source.position.xyz - input.world)
+      local facing = shader.max(shader.dot(shader.normalize(input.normal), toward), 0)
+      light:set(light.value + source.color.xyz * facing)
+    end)
+    print(light, light.value)
+
+    return shader.vec4(albedo.xyz * light.value, albedo.w)
+  end,
+}
+-- ShaderVar(Vec3f)  ShaderExpr(Vec3f)
 ```
 
 ## ShaderProgram

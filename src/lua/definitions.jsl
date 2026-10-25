@@ -596,6 +596,15 @@ declare extern type ShaderBuiltins with
   __tostring: (self: ShaderBuiltins) -> string
 end
 
+--- A value a stage function keeps and changes, from `shader.var`: `.value` reads it as of where
+--- it is read, and `:set` stores a value of its type into it from there on. `tostring` gives
+--- `ShaderVar(Vec3f)`.
+declare extern type ShaderVar with
+  value: ShaderExpr
+  function set(self, value: ShaderExpr | number | boolean): ()
+  __tostring: (self: ShaderVar) -> string
+end
+
 --- A stage function's input. `pass`, `material`, and `draw` are what each frequency binds;
 --- `builtin` the values the pipeline gives the stage; `attributes` and `instance`, in the vertex
 --- function, the declared attributes; in the fragment function every other name is a value the
@@ -750,6 +759,16 @@ export type ShaderModule = {
   smoothstep: (low: ShaderExpr | number, high: ShaderExpr | number, value: ShaderExpr | number) -> ShaderExpr,
   --- `start + (finish - start) * amount`, per component.
   mix: (start: ShaderExpr | number, finish: ShaderExpr | number, amount: ShaderExpr | number) -> ShaderExpr,
+  --- A var of the stage function running, holding `initial` and of its type.
+  var: (initial: ShaderExpr | number | boolean) -> ShaderVar,
+  --- Runs `accept` where the `Bool` condition holds, and `reject` where it doesn't; a value
+  --- computed in either exists only inside it, so keep what outlives it in a `shader.var`.
+  when: (condition: ShaderExpr | boolean, accept: () -> (), reject: (() -> ())?) -> (),
+  --- Runs `body` `count` times (an `Int` or `UInt`, a number being a `UInt`), given its index
+  --- from 0.
+  loop: (count: ShaderExpr | number, body: (index: ShaderExpr) -> ()) -> (),
+  --- Throws the fragment away where it runs: it writes nothing. Fragment function only.
+  discard: () -> (),
   --- Comparisons of two scalars of one type, to a `Bool`: `equal` and `notEqual` any scalars, the
   --- rest `Int`, `UInt`, or `Float`.
   equal: (left: ShaderExpr | number | boolean, right: ShaderExpr | number | boolean) -> ShaderExpr,

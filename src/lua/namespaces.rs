@@ -16,12 +16,13 @@ pub struct Namespace {
 }
 
 /// Every jess userdata type, by its `Userdata::NAME` and the name the definitions use.
-const TYPES: [(&str, &str); 11] = [
+const TYPES: [(&str, &str); 12] = [
     ("jess.shader.Type", "ShaderType"),
     ("jess.shader.Expr", "ShaderExpr"),
     ("jess.shader.Input", "ShaderInput"),
     ("jess.shader.Attributes", "ShaderAttributes"),
     ("jess.shader.Builtins", "ShaderBuiltins"),
+    ("jess.shader.Var", "ShaderVar"),
     ("jess.shader.Place", "ShaderPlace"),
     ("jess.shader.Texture", "ShaderTexture"),
     ("jess.shader.Sampler", "ShaderSampler"),

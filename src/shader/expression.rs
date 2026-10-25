@@ -4,6 +4,7 @@ use std::fmt;
 use std::ops::Deref;
 use std::sync::Arc;
 
+use crate::shader::flow::LocalId;
 use crate::shader::interface::{AttributeId, Frequency, ResourceId};
 use crate::shader::types::Type;
 
@@ -789,6 +790,8 @@ pub enum Expression {
     Attribute(AttributeId),
     /// A value the pipeline gives the stage that has it.
     Builtin(Builtin),
+    /// A local's value as of here. It is computed where it is placed, so it must be placed.
+    Local(LocalId),
     /// A declared varying, as the vertex stage wrote it and the rasterizer interpolated it.
     /// Fragment stage only.
     Varying(VaryingId),
@@ -907,6 +910,7 @@ impl Expression {
             Expression::Literal(_)
             | Expression::Attribute(_)
             | Expression::Builtin(_)
+            | Expression::Local(_)
             | Expression::Varying(_)
             | Expression::TextureQuery {
                 query: TextureQuery::Dimensions(None) | TextureQuery::Levels | TextureQuery::Layers,
@@ -952,7 +956,11 @@ impl Expression {
     /// Calls `rewrite` on every operand, in order.
     pub(crate) fn rewrite_operands(&mut self, mut rewrite: impl FnMut(&mut ExpressionId)) {
         match self {
-            Expression::Literal(_) | Expression::Attribute(_) | Expression::Builtin(_) | Expression::Varying(_) => {}
+            Expression::Literal(_)
+            | Expression::Attribute(_)
+            | Expression::Builtin(_)
+            | Expression::Local(_)
+            | Expression::Varying(_) => {}
             Expression::Load(place) => place.rewrite_indices(rewrite),
             Expression::Sample {
                 coordinates,
@@ -1032,6 +1040,7 @@ impl Expression {
             Expression::Load(_) | Expression::TextureLoad { .. } => "load",
             Expression::Attribute(_) => "attribute",
             Expression::Builtin(builtin) => builtin.name(),
+            Expression::Local(_) => "local",
             Expression::Varying(_) => "varying",
             Expression::Sample { level, .. } => level.operation(),
             Expression::SampleCompare { level_zero: false, .. } => "sampleCompare",

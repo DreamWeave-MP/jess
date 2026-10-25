@@ -55,6 +55,14 @@ A load reads a value through a `Place`: a frequency's uniform block, then fields
 
 Nothing else is built in. There's no model matrix, no camera, no time: a program that wants one declares it, as a uniform member some frequency binds, and so the IR holds no notion of what a camera is.
 
+## Statements
+
+Each stage has a body: a list of `Statement`s that run in order before it writes its outputs. `Emit(id)` computes an expression at that point; `Store` writes a local; `If` and `Loop` hold blocks of their own; `Discard` ends a fragment. A local is a `Var` or a loop's index, declared per stage and zero until something stores into it. A loop counts its index from 0 to an `Int` or `UInt` count computed before the first pass, and nothing stores into the index, so every loop ends.
+
+Where an expression is emitted is where its value exists: in that block and the blocks inside it, after it, in that stage. An expression no statement emits is computed at the top of whichever stage reads it, as every expression was before bodies existed, and may read only others like it; native code that never calls `Site::enter` builds that way. A `Local` read is computed where it is placed, because a local's value depends on what was stored before.
+
+Uniformity is checked here too. Derivatives come from a fragment's neighbours, so WGSL requires every derivative (implicit-level sampling, `dpdx`, `dpdy`, `fwidth`) to sit in control flow every fragment of a draw agrees on, and naga doesn't check it yet. Validation computes which fragment values are uniform (constants and uniform members, and what is computed only from them; a local only if every store into it is uniform and on a uniform path) and refuses a derivative under an `If` or `Loop` decided by anything else.
+
 ## Validation
 
 `Program::validate` returns every problem it finds, in Jess terms, as a typed `ValidationErrorKind`:
@@ -118,8 +126,9 @@ One module writes all WGSL, with one naming scheme:
 | built-in values | `vertex_index`, `instance_index`, and `front_facing`, entry point parameters only when the stage reads them; the fragment position is `input.position` |
 | fragment output 0 | `color0` |
 | temporaries | `e0`, `e1`, ... per entry point, in arena order |
+| locals | `l0`, `l1`, ..., declared at the top of their stage's entry point; a loop is `for (lN = 0u; lN < count; lN = lN + 1u)` |
 
-Every non-leaf expression a stage reads becomes one `let`. The entry points are `vertex_main` and `fragment_main`. The same program always lowers to the same bytes.
+Every non-leaf expression a stage reads becomes one `let`, where its stage's body emits it. The entry points are `vertex_main` and `fragment_main`. The same program always lowers to the same bytes.
 
 Bindings and layouts belong to jess, never the author, and the lowering writes out what [Layout](#layout) decided: each frequency's block at binding 0 of its group, its textures and samplers after it, struct and block members in memory order, with `@align` and `@size` wherever jess's 16-byte rule differs from what WGSL would pick by itself. `WgslModule` carries the `ProgramLayout`, so the renderer never has to rediscover a layout from the source.
 

@@ -1,6 +1,7 @@
 //! A shader program: its declarations, its expression arena, and what each stage outputs.
 
 use crate::shader::expression::{Expression, ExpressionId, SourceOrigin, VaryingId};
+use crate::shader::flow::{Local, LocalId, Stage, Statement};
 use crate::shader::interface::{
     Attribute, AttributeId, Frequency, Resource, ResourceId, StructDecl, StructId, Uniform, UniformId,
 };
@@ -41,6 +42,9 @@ pub struct Program {
     pub(crate) position: Option<ExpressionId>,
     pub(crate) varying_writes: Vec<(VaryingId, ExpressionId)>,
     pub(crate) fragment_outputs: Vec<ExpressionId>,
+    pub(crate) locals: Vec<Local>,
+    /// Each stage's statements, by [`Stage`] order.
+    pub(crate) bodies: [Vec<Statement>; Stage::ALL.len()],
 }
 
 impl Program {
@@ -122,6 +126,28 @@ impl Program {
         let location = u32::try_from(self.fragment_outputs.len()).expect("more than u32::MAX fragment outputs");
         self.fragment_outputs.push(expression);
         location
+    }
+
+    /// Declares a local of a stage body, for a [`Statement::Store`] or a [`Statement::Loop`].
+    pub fn local(&mut self, local: Local) -> LocalId {
+        LocalId::at(push(&mut self.locals, local))
+    }
+
+    /// `stage`'s statements, run before it writes its outputs.
+    pub fn body_mut(&mut self, stage: Stage) -> &mut Vec<Statement> {
+        &mut self.bodies[stage as usize]
+    }
+
+    /// `stage`'s statements.
+    #[must_use]
+    pub fn body(&self, stage: Stage) -> &[Statement] {
+        &self.bodies[stage as usize]
+    }
+
+    /// The declared locals, in order.
+    #[must_use]
+    pub fn locals(&self) -> &[Local] {
+        &self.locals
     }
 
     /// The declared structs, in order.

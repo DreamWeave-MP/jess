@@ -7,6 +7,7 @@ use crate::shader::expression::{
     BinaryOperator, Builtin, Expression, ExpressionId, Function, Literal, Place, SampleLevel, SourceOrigin, Step, Swizzle,
     TextureQuery, UnaryOperator,
 };
+use crate::shader::flow::{Local, LocalId, LocalKind, Stage, Statement};
 use crate::shader::interface::{
     Attribute, AttributeId, DataType, Field, Frequency, Rate, Resource, ResourceId, ResourceKind, StructDecl, StructId,
     Uniform, UniformId,
@@ -67,6 +68,28 @@ impl Value {
 pub struct ProgramBuilder {
     token: u64,
     program: Program,
+    /// The stage being built, once one is entered.
+    stage: Option<Stage>,
+    /// The `if`s and loops open, innermost last.
+    open: Vec<Open>,
+}
+
+/// An `if` or loop under construction.
+#[derive(Debug)]
+enum Open {
+    If {
+        condition: ExpressionId,
+        accept: Vec<Statement>,
+        /// `Some` once the else began.
+        reject: Option<Vec<Statement>>,
+        origin: Option<SourceOrigin>,
+    },
+    Loop {
+        index: LocalId,
+        count: ExpressionId,
+        body: Vec<Statement>,
+        origin: Option<SourceOrigin>,
+    },
 }
 
 impl Default for ProgramBuilder {
@@ -82,6 +105,8 @@ impl ProgramBuilder {
         ProgramBuilder {
             token: NEXT_PROGRAM.fetch_add(1, Ordering::Relaxed),
             program: Program::new(),
+            stage: None,
+            open: Vec::new(),
         }
     }
 
@@ -116,6 +141,14 @@ impl ProgramBuilder {
     /// a vertex input read in the fragment stage, a position that is not a `Vec4f`, or a semantic
     /// the lowering cannot bind yet.
     pub fn finish(self) -> Result<Program, Vec<ValidationError>> {
+        if !self.open.is_empty() {
+            return Err(vec![ValidationError {
+                kind: ValidationErrorKind::Unbalanced {
+                    problem: "a shader.when or shader.loop is still open",
+                },
+                origin: None,
+            }]);
+        }
         self.program.validate()?;
         Ok(self.program)
     }
@@ -782,6 +815,256 @@ impl Site<'_> {
     }
 
     /// The id the next pushed expression gets.
+    /// Builds `stage`'s body from here on: every operation is computed where it is created, in
+    /// whatever `if` or loop is open. Before the first `enter`, operations are placed nowhere and
+    /// computed at the top of whichever stage reads them.
+    ///
+    /// # Errors
+    ///
+    /// An `if` or loop still open.
+    pub fn enter(&mut self, stage: Stage) -> Result<(), ValidationError> {
+        if !self.builder.open.is_empty() {
+            return Err(self.unbalanced("a shader.when or shader.loop is still open"));
+        }
+        self.builder.stage = Some(stage);
+        Ok(())
+    }
+
+    /// Declares a var of the current stage holding `initial`, and its type.
+    ///
+    /// # Errors
+    ///
+    /// A value from another program, or no stage entered.
+    pub fn var(&mut self, initial: Value) -> Result<LocalId, ValidationError> {
+        self.own(initial)?;
+        let stage = self.stage()?;
+        let local = self.builder.program.local(Local {
+            ty: initial.ty,
+            stage,
+            kind: LocalKind::Var,
+            origin: self.origin.clone(),
+        });
+        self.statement(Statement::Store {
+            local,
+            value: initial.expression,
+            origin: self.origin.clone(),
+        });
+        Ok(local)
+    }
+
+    /// A local's value as of here.
+    ///
+    /// # Errors
+    ///
+    /// No stage entered, or a local this program doesn't have, or one of another stage.
+    pub fn read_local(&mut self, local: LocalId) -> Result<Value, ValidationError> {
+        let ty = self.local_of(local, None)?;
+        Ok(self.push(Expression::Local(local), ty))
+    }
+
+    /// Stores `value` into a var, from here on.
+    ///
+    /// # Errors
+    ///
+    /// A value from another program, no stage entered, a local that isn't a var of this stage, or
+    /// a value of another type.
+    pub fn store(&mut self, local: LocalId, value: Value) -> Result<(), ValidationError> {
+        self.own(value)?;
+        let declared = self.local_of(local, Some(LocalKind::Var))?;
+        if declared != value.ty {
+            return Err(self.error(ValidationErrorKind::StoreType {
+                declared,
+                stored: value.ty,
+            }));
+        }
+        self.statement(Statement::Store {
+            local,
+            value: value.expression,
+            origin: self.origin.clone(),
+        });
+        Ok(())
+    }
+
+    /// Opens an `if` on a `Bool`: what follows runs where it holds, until
+    /// [`begin_else`](Site::begin_else) or [`end_if`](Site::end_if).
+    ///
+    /// # Errors
+    ///
+    /// A value from another program, no stage entered, or a condition that isn't a `Bool`.
+    pub fn begin_if(&mut self, condition: Value) -> Result<(), ValidationError> {
+        self.own(condition)?;
+        self.stage()?;
+        if condition.ty != Type::Bool {
+            return Err(self.error(ValidationErrorKind::ConditionType { found: condition.ty }));
+        }
+        self.builder.open.push(Open::If {
+            condition: condition.expression,
+            accept: Vec::new(),
+            reject: None,
+            origin: self.origin.clone(),
+        });
+        Ok(())
+    }
+
+    /// Switches the open `if` to what runs where its condition doesn't hold.
+    ///
+    /// # Errors
+    ///
+    /// No `if` open, or one already switched.
+    pub fn begin_else(&mut self) -> Result<(), ValidationError> {
+        match self.builder.open.last_mut() {
+            Some(Open::If {
+                reject: reject @ None, ..
+            }) => {
+                *reject = Some(Vec::new());
+                Ok(())
+            }
+            _ => Err(self.unbalanced("an else with no shader.when open")),
+        }
+    }
+
+    /// Closes the open `if`.
+    ///
+    /// # Errors
+    ///
+    /// No `if` open.
+    pub fn end_if(&mut self) -> Result<(), ValidationError> {
+        let Some(Open::If {
+            condition,
+            accept,
+            reject,
+            origin,
+        }) = self.builder.open.pop_if(|open| matches!(open, Open::If { .. }))
+        else {
+            return Err(self.unbalanced("an end of a shader.when that isn't open"));
+        };
+        self.statement(Statement::If {
+            condition,
+            accept,
+            reject: reject.unwrap_or_default(),
+            origin,
+        });
+        Ok(())
+    }
+
+    /// Opens a loop that runs what follows `count` times, until [`end_loop`](Site::end_loop),
+    /// and returns its index, counting from 0, of the count's type.
+    ///
+    /// # Errors
+    ///
+    /// A value from another program, no stage entered, or a count that isn't an `Int` or `UInt`.
+    pub fn begin_loop(&mut self, count: Value) -> Result<Value, ValidationError> {
+        self.own(count)?;
+        let stage = self.stage()?;
+        if !(count.ty.is_integer() && count.ty.is_scalar()) {
+            return Err(self.error(ValidationErrorKind::LoopCountType {
+                count: count.ty,
+                index: count.ty,
+            }));
+        }
+        let index = self.builder.program.local(Local {
+            ty: count.ty,
+            stage,
+            kind: LocalKind::LoopIndex,
+            origin: self.origin.clone(),
+        });
+        self.builder.open.push(Open::Loop {
+            index,
+            count: count.expression,
+            body: Vec::new(),
+            origin: self.origin.clone(),
+        });
+        Ok(self.push(Expression::Local(index), count.ty))
+    }
+
+    /// Closes the open loop.
+    ///
+    /// # Errors
+    ///
+    /// No loop open.
+    pub fn end_loop(&mut self) -> Result<(), ValidationError> {
+        let Some(Open::Loop {
+            index,
+            count,
+            body,
+            origin,
+        }) = self.builder.open.pop_if(|open| matches!(open, Open::Loop { .. }))
+        else {
+            return Err(self.unbalanced("an end of a shader.loop that isn't open"));
+        };
+        self.statement(Statement::Loop {
+            index,
+            count,
+            body,
+            origin,
+        });
+        Ok(())
+    }
+
+    /// Throws the fragment away here: it writes no output.
+    ///
+    /// # Errors
+    ///
+    /// No stage entered, or the vertex stage.
+    pub fn discard(&mut self) -> Result<(), ValidationError> {
+        if self.stage()? == Stage::Vertex {
+            return Err(self.error(ValidationErrorKind::DiscardInVertex));
+        }
+        self.statement(Statement::Discard {
+            origin: self.origin.clone(),
+        });
+        Ok(())
+    }
+
+    /// The stage being built, for a statement that needs one.
+    fn stage(&self) -> Result<Stage, ValidationError> {
+        self.builder
+            .stage
+            .ok_or_else(|| self.unbalanced("a statement outside the vertex and fragment functions"))
+    }
+
+    /// A local's type, if it is one of the current stage, and of `kind` if one is asked for.
+    fn local_of(&self, local: LocalId, kind: Option<LocalKind>) -> Result<Type, ValidationError> {
+        let stage = self.stage()?;
+        let Some(declared) = self.builder.program.locals.get(local.index()) else {
+            return Err(self.error(ValidationErrorKind::UndefinedLocal { local }));
+        };
+        if declared.stage != stage {
+            return Err(self.error(ValidationErrorKind::LocalInOtherStage {
+                kind: declared.kind,
+                declared: declared.stage,
+                used: stage,
+            }));
+        }
+        if let Some(expected) = kind
+            && declared.kind != expected
+        {
+            return Err(self.error(ValidationErrorKind::LocalKindMismatch { expected }));
+        }
+        Ok(declared.ty)
+    }
+
+    /// Appends `statement` to the open block: the innermost `if` or loop, or the stage's body.
+    fn statement(&mut self, statement: Statement) {
+        let builder = &mut *self.builder;
+        let block = match builder.open.last_mut() {
+            Some(Open::If {
+                reject: Some(reject), ..
+            }) => reject,
+            Some(Open::If { accept, .. }) => accept,
+            Some(Open::Loop { body, .. }) => body,
+            None => match builder.stage {
+                Some(stage) => builder.program.body_mut(stage),
+                None => return,
+            },
+        };
+        block.push(statement);
+    }
+
+    fn unbalanced(&self, problem: &'static str) -> ValidationError {
+        self.error(ValidationErrorKind::Unbalanced { problem })
+    }
+
     fn next(&self) -> ExpressionId {
         ExpressionId::at(self.builder.program.expressions.len())
     }
@@ -853,6 +1136,10 @@ impl Site<'_> {
             Some(origin) => program.push_at(expression, origin.clone()),
             None => program.push(expression),
         };
+        // A leaf is written where it is read; anything else is computed where it was made.
+        if !expression.is_leaf() {
+            self.statement(Statement::Emit(id));
+        }
         Value {
             program: self.builder.token,
             expression: id,

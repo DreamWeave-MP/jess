@@ -114,6 +114,21 @@ fn vertex_transform_passes_a_varying_and_keeps_luau_evaluation_order() {
 }
 
 #[test]
+fn point_lights_loop_and_discard_in_the_fragment_body() {
+    let runtime = common::runtime();
+    let (program, module) = lowered(&runtime, "point-lights.jsl");
+    assert_eq!(program.locals().len(), 2, "the light var and the loop's index");
+    for line in [
+        "    if e2 {\n        discard;\n    }\n",
+        "    for (l1 = 0u; l1 < u_pass.f_lightCount; l1 = l1 + 1u) {\n",
+        "        let e5 = u_pass.f_lights[e4].f_position;\n",
+        "    l0 = vec3<f32>(0.0, 0.0, 0.0);\n",
+    ] {
+        assert!(module.source.contains(line), "no {line:?} in:\n{}", module.source);
+    }
+}
+
+#[test]
 fn textured_samples_with_the_sampler_declared_with_the_texture() {
     let runtime = common::runtime();
     let (program, module) = lowered(&runtime, "textured.jsl");

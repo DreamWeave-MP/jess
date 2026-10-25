@@ -230,6 +230,40 @@ local textures = shader.program {
   end,
 }
 
+local flow = shader.program {
+  attributes = { position = shader.vec4 },
+  material = { count = shader.uint },
+  vertex = function(input)
+    local kept = shader.var(input.attributes.position)
+    kept:set(kept.value * 2)
+
+    return { position = kept.value }
+  end,
+
+  fragment = function(input)
+    local color = shader.var(shader.vec4(0))
+    local index: ShaderExpr? = nil
+    shader.loop(input.material.count, function(each)
+      index = each
+      color:set(color.value + 0.25)
+    end)
+    shader.when(
+      shader.greater(input.builtin.position.x, 10),
+      function() color:set(shader.vec4(1)) end,
+      shader.discard
+    )
+    observed.flow = {
+      var = tostring(color),
+      value = tostring(color.value),
+      index = tostring(index),
+      flag = tostring(shader.var(true)),
+      counted = tostring(shader.var(shader.uint(3))),
+    }
+
+    return color.value
+  end,
+}
+
 local function describe(program: ShaderProgram): { [string]: any }
   return {
     tostring = tostring(program),
@@ -275,6 +309,8 @@ return {
   },
   lit = describe(lit),
   constant = describe(constant),
+  flow = describe(flow),
+  statements = observed.flow,
   textures = describe(textures),
   sampled = observed.textures,
   vertex = observed.vertex,

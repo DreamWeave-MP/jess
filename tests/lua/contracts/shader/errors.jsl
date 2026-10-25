@@ -15,6 +15,8 @@ local Camera = shader.struct('Camera', { projection = shader.mat4, view = shader
 local Light = shader.struct('Light', { color = shader.vec3, direction = shader.vec3 })
 
 local captured: ShaderExpr?
+local doubled: ShaderExpr? = nil
+local kept: ShaderVar? = nil
 
 local finished = shader.program {
   material = { tint = shader.vec4 },
@@ -106,6 +108,30 @@ return {
     compareColor = inFragment(
       function(input) return shader.vec4(shader.sampleCompare(input.material.diffuse, shader.vec2(0.5), 0)) end
     ),
+    setType = inFragment(function(input)
+      local color = shader.var(input.material.tint)
+      color:set(1)
+
+      return color.value
+    end),
+    whenFunction = inFragment(function(input)
+      shader.when(true, 1 :: any)
+
+      return input.material.tint
+    end),
+    loopCount = inFragment(function(input)
+      shader.loop(1.5, function() end)
+
+      return input.material.tint
+    end),
+    discardInVertex = build {
+      vertex = function()
+        shader.discard()
+
+        return { position = shader.vec4(1.0) }
+      end,
+      fragment = white,
+    },
     notASampler = inFragment(
       function(input)
         return shader.sample(input.material.diffuse, input.material.tint, input.material.light.xy)
@@ -174,6 +200,53 @@ return {
       attributes = { position = shader.vec4 },
       vertex = function(input) return { position = shader.dpdx(input.attributes.position) } end,
       fragment = white,
+    },
+
+    outOfScope = inFragment(function(input)
+      local inside: ShaderExpr? = nil
+      shader.when(shader.greater(input.material.tint.x, 0), function()
+        inside = input.material.tint * 2
+      end)
+      assert(inside)
+
+      return inside
+    end),
+
+    otherStage = build {
+      attributes = { position = shader.vec4 },
+      material = { tint = shader.vec4 },
+      vertex = function(input)
+        doubled = input.material.tint * 2
+
+        return { position = input.attributes.position }
+      end,
+      fragment = function() return doubled :: ShaderExpr end,
+    },
+
+    varInOtherStage = build {
+      attributes = { position = shader.vec4 },
+      vertex = function(input)
+        kept = shader.var(input.attributes.position)
+
+        return { position = input.attributes.position }
+      end,
+      fragment = function() return (kept :: ShaderVar).value end,
+    },
+
+    nonUniform = build {
+      attributes = { uv = shader.vec2 },
+      material = { diffuse = shader.texture2d },
+      vertex = function(input)
+        return { position = shader.vec4(input.attributes.uv, 0, 1), uv = input.attributes.uv }
+      end,
+      fragment = function(input)
+        local color = shader.var(shader.vec4(0))
+        shader.when(shader.greater(input.uv.x, 0.5), function()
+          color:set(shader.sample(input.material.diffuse, input.uv))
+        end)
+
+        return color.value
+      end,
     },
 
     uniformStride = build {

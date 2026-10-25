@@ -18,6 +18,7 @@ use std::fmt::Write as _;
 use crate::shader::expression::{
     Builtin, Expression, ExpressionId, Function, Literal, Place, PlaceRoot, SampleLevel, Step, TextureQuery,
 };
+use crate::shader::flow::{Stage, Statement};
 use crate::shader::interface::{AttributeId, DataType, Element, Frequency, Rate, ResourceId, ResourceKind};
 use crate::shader::layout::{MemberLayout, ProgramLayout, StructLayout, value_extent};
 use crate::shader::program::Program;
@@ -60,6 +61,7 @@ pub fn lower(program: &Program) -> Result<WgslModule, Vec<ValidationError>> {
         layout: &layout,
         source: String::with_capacity(1024 + program.expressions.len() * 48),
         temporaries: vec![0; program.expressions.len()],
+        next: 0,
     };
 
     lowering.structs();
@@ -77,6 +79,9 @@ pub fn lower(program: &Program) -> Result<WgslModule, Vec<ValidationError>> {
     })
 }
 
+/// One level of a body's indentation.
+const INDENT: &str = "    ";
+
 /// Writes to the output. Writing to a `String` cannot fail.
 macro_rules! emit {
     ($lowering:expr, $($format:tt)*) => {
@@ -91,6 +96,8 @@ struct Lowering<'a> {
     source: String,
     /// Each non-leaf expression's temporary number in the entry point being written.
     temporaries: Vec<u32>,
+    /// The next temporary number.
+    next: u32,
 }
 
 impl Lowering<'_> {
@@ -283,7 +290,7 @@ impl Lowering<'_> {
         parameters.extend(self.builtin_parameters(VERTEX));
         let parameters = parameters.join(", ");
         emit!(self, "@vertex\nfn {VERTEX_ENTRY_POINT}({parameters}) -> VertexOutput {{\n");
-        self.temporaries_for(VERTEX);
+        self.stage_body(Stage::Vertex, VERTEX);
         emit!(self, "    var output: VertexOutput;\n    output.position = ");
         let program = self.program;
         // Validation guarantees the position exists.
@@ -309,7 +316,7 @@ impl Lowering<'_> {
         parameters.extend(self.builtin_parameters(FRAGMENT));
         let parameters = parameters.join(", ");
         emit!(self, "@fragment\nfn {FRAGMENT_ENTRY_POINT}({parameters}){result} {{\n");
-        self.temporaries_for(FRAGMENT);
+        self.stage_body(Stage::Fragment, FRAGMENT);
         if outputs > 0 {
             emit!(self, "    var output: FragmentOutput;\n");
             for location in 0..outputs {
@@ -340,20 +347,79 @@ impl Lowering<'_> {
             .collect()
     }
 
-    /// One `let eN` per non-leaf expression `stage` reads, in arena order, which is dependency
-    /// order.
-    fn temporaries_for(&mut self, stage: u8) {
-        let mut next = 0;
-        for index in 0..self.program.expressions.len() {
-            let expression = &self.program.expressions[index];
-            if self.analysis.stages[index] & stage == 0 || expression.is_leaf() {
-                continue;
+    /// A stage's locals, then a `let eN` per non-leaf expression it reads that no statement
+    /// places, in arena order (which is dependency order), then its statements.
+    fn stage_body(&mut self, stage: Stage, bit: u8) {
+        self.next = 0;
+        let program = self.program;
+        for (index, local) in program.locals.iter().enumerate() {
+            if local.stage == stage {
+                emit!(self, "    var l{index}: {};\n", wgsl_type(local.ty));
             }
-            self.temporaries[index] = next;
-            emit!(self, "    let e{next} = ");
-            self.operation(ExpressionId::at(index));
-            emit!(self, ";\n");
-            next += 1;
+        }
+        for index in 0..program.expressions.len() {
+            if self.analysis.placed[index].is_none() {
+                self.temporary(ExpressionId::at(index), bit, 1);
+            }
+        }
+        self.statements(program.body(stage), bit, 1);
+    }
+
+    /// `let eN = ...;` for `id`, if `bit`'s stage reads it and it isn't a leaf, written where
+    /// it is read.
+    fn temporary(&mut self, id: ExpressionId, bit: u8, depth: usize) {
+        if self.analysis.stages[id.index()] & bit == 0 || self.program.expressions[id.index()].is_leaf() {
+            return;
+        }
+        self.temporaries[id.index()] = self.next;
+        emit!(self, "{}let e{} = ", INDENT.repeat(depth), self.next);
+        self.operation(id);
+        emit!(self, ";\n");
+        self.next += 1;
+    }
+
+    fn statements(&mut self, block: &[Statement], bit: u8, depth: usize) {
+        let indent = INDENT.repeat(depth);
+        for statement in block {
+            match statement {
+                Statement::Emit(id) => self.temporary(*id, bit, depth),
+                Statement::Store { local, value, .. } => {
+                    emit!(self, "{indent}l{} = ", local.index());
+                    self.operand(*value);
+                    emit!(self, ";\n");
+                }
+                Statement::If {
+                    condition,
+                    accept,
+                    reject,
+                    ..
+                } => {
+                    emit!(self, "{indent}if ");
+                    self.operand(*condition);
+                    emit!(self, " {{\n");
+                    self.statements(accept, bit, depth + 1);
+                    if !reject.is_empty() {
+                        emit!(self, "{indent}}} else {{\n");
+                        self.statements(reject, bit, depth + 1);
+                    }
+                    emit!(self, "{indent}}}\n");
+                }
+                Statement::Loop { index, count, body, .. } => {
+                    // Validation made the index and count one integer type.
+                    let (zero, one) = if self.program.locals[index.index()].ty == Type::Int {
+                        ("0i", "1i")
+                    } else {
+                        ("0u", "1u")
+                    };
+                    let index = format!("l{}", index.index());
+                    emit!(self, "{indent}for ({index} = {zero}; {index} < ");
+                    self.operand(*count);
+                    emit!(self, "; {index} = {index} + {one}) {{\n");
+                    self.statements(body, bit, depth + 1);
+                    emit!(self, "{indent}}}\n");
+                }
+                Statement::Discard { .. } => emit!(self, "{indent}discard;\n"),
+            }
         }
     }
 
@@ -399,6 +465,7 @@ impl Lowering<'_> {
                 self.texture_call(function, &[texture], &expression);
             }
             Expression::Load(place) => self.place(&place),
+            Expression::Local(local) => emit!(self, "l{}", local.index()),
             // Parenthesized: `--1.0` is WGSL's decrement, not the negation of `-1.0`.
             Expression::Unary(operator, value) => {
                 emit!(self, "{}(", operator.symbol());

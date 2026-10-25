@@ -1,0 +1,38 @@
+--!strict
+-- Point lights summed in a loop over a uniform count, and an alpha test that discards: what a
+-- stage body does besides compute.
+local shader = require '@jess/shader'
+
+local Light = shader.struct('Light', { color = shader.vec4, position = shader.vec4 })
+
+return shader.program {
+  attributes = { normal = shader.vec3, position = shader.vec3, uv = shader.vec2 },
+  pass = { lightCount = shader.uint, lights = shader.array(Light, 8), viewProjection = shader.mat4 },
+  material = { cutoff = shader.float, diffuse = shader.texture2d },
+
+  vertex = function(input)
+    local vertex = input.attributes
+
+    return {
+      position = input.pass.viewProjection * shader.vec4(vertex.position, 1),
+      normal = vertex.normal,
+      uv = vertex.uv,
+      world = vertex.position,
+    }
+  end,
+
+  fragment = function(input)
+    local albedo = shader.sample(input.material.diffuse, input.uv)
+    shader.when(shader.less(albedo.w, input.material.cutoff), shader.discard)
+
+    local light = shader.var(shader.vec3(0))
+    local normal = shader.normalize(input.normal)
+    shader.loop(input.pass.lightCount, function(index)
+      local source = input.pass.lights[index]
+      local toward = shader.normalize(source.position.xyz - input.world)
+      light:set(light.value + source.color.xyz * shader.max(shader.dot(normal, toward), 0))
+    end)
+
+    return shader.vec4(albedo.xyz * light.value, albedo.w)
+  end,
+}

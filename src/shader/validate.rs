@@ -6,6 +6,7 @@ use crate::shader::expression::{
     BinaryOperator, Builtin, Expression, ExpressionId, Function, Literal, Place, PlaceRoot, SampleLevel, SourceOrigin, Step,
     Swizzle, TextureQuery, UnaryOperator, VaryingId,
 };
+use crate::shader::flow::{self, LocalId, LocalKind, Placements, Stage, Statement};
 use crate::shader::fold::{Arithmetic, evaluate};
 use crate::shader::interface::{
     Attribute, AttributeId, DataType, Element, Frequency, Rate, ResourceId, ResourceKind, StructDecl, StructId,
@@ -258,6 +259,86 @@ pub enum ValidationErrorKind {
         /// `dpdx`, `dpdy`, or `fwidth`.
         function: Function,
     },
+    /// A statement places an expression a second time, or one not in the program.
+    Misplaced {
+        /// The expression.
+        expression: ExpressionId,
+    },
+    /// A value is read in a stage other than the one whose body computes it.
+    ReadInOtherStage {
+        /// The value.
+        expression: ExpressionId,
+        /// The stage that computes it.
+        computed: Stage,
+        /// The stage that reads it.
+        read: Stage,
+    },
+    /// A value computed inside a [`Statement::If`] or [`Statement::Loop`] is read outside it.
+    ReadOutOfScope {
+        /// The value.
+        expression: ExpressionId,
+    },
+    /// An expression no statement places reads one a statement does.
+    UnplacedReadsPlaced {
+        /// The unplaced expression.
+        expression: ExpressionId,
+        /// The placed one it reads.
+        operand: ExpressionId,
+    },
+    /// A statement or expression names a local that is not declared.
+    UndefinedLocal {
+        /// The local.
+        local: LocalId,
+    },
+    /// A local is used in a stage other than the one that declares it.
+    LocalInOtherStage {
+        /// The local's kind.
+        kind: LocalKind,
+        /// The stage that declares it.
+        declared: Stage,
+        /// The stage that uses it.
+        used: Stage,
+    },
+    /// A store into a loop's index, or a loop over a var.
+    LocalKindMismatch {
+        /// What the statement needs.
+        expected: LocalKind,
+    },
+    /// A var is stored a value of another type.
+    StoreType {
+        /// The var's type.
+        declared: Type,
+        /// The stored value's.
+        stored: Type,
+    },
+    /// An if's condition is not a `Bool`.
+    ConditionType {
+        /// Its type.
+        found: Type,
+    },
+    /// A loop's count is not an `Int` or `UInt`, or its index is not of the count's type.
+    LoopCountType {
+        /// The count's type.
+        count: Type,
+        /// The index's.
+        index: Type,
+    },
+    /// The vertex body discards.
+    DiscardInVertex,
+    /// A derivative is taken where fragments may disagree on the path to it.
+    NonUniformDerivative {
+        /// The expression.
+        expression: ExpressionId,
+        /// Its Jess name: `sample`, `dpdx`, ...
+        operation: &'static str,
+        /// What to do instead.
+        instead: &'static str,
+    },
+    /// A builder's statements don't nest: an else, end, or statement where none fits.
+    Unbalanced {
+        /// What doesn't fit.
+        problem: &'static str,
+    },
     /// The vertex stage has no position.
     MissingPosition,
     /// The vertex position is not a `Vec4f`.
@@ -447,6 +528,63 @@ impl fmt::Display for ValidationErrorKind {
                 "{} is used in the vertex stage: derivatives are taken in the fragment stage",
                 function.name()
             ),
+            ValidationErrorKind::Misplaced { expression } => write!(
+                formatter,
+                "expression {} is placed twice, or isn't in the program",
+                expression.index()
+            ),
+            ValidationErrorKind::ReadInOtherStage { computed, read, .. } => write!(
+                formatter,
+                "a value computed in the {computed} function is read in the {read} function: return it from \
+                 the vertex function, to pass it as a varying"
+            ),
+            ValidationErrorKind::ReadOutOfScope { .. } => formatter.write_str(
+                "a value computed inside a shader.when or shader.loop is read after it: keep it in a \
+                 shader.var declared before",
+            ),
+            ValidationErrorKind::UnplacedReadsPlaced { expression, operand } => write!(
+                formatter,
+                "expression {} is placed in no stage body but reads expression {}, which is: place it too",
+                expression.index(),
+                operand.index()
+            ),
+            ValidationErrorKind::UndefinedLocal { local } => {
+                write!(formatter, "local {} is not declared", local.index())
+            }
+            ValidationErrorKind::LocalInOtherStage { kind, declared, used } => write!(
+                formatter,
+                "{} of the {declared} function is used in the {used} function",
+                local_noun(*kind)
+            ),
+            ValidationErrorKind::LocalKindMismatch { expected } => match expected {
+                LocalKind::Var => formatter.write_str("a loop's index is stored into: only a shader.var is"),
+                LocalKind::LoopIndex => formatter.write_str("a loop counts with a shader.var: it needs an index of its own"),
+            },
+            ValidationErrorKind::StoreType { declared, stored } => {
+                write!(formatter, "a shader.var of {declared} is set to a {stored}")
+            }
+            ValidationErrorKind::ConditionType { found } => {
+                write!(formatter, "shader.when's condition is a {found}: expected a Bool")
+            }
+            ValidationErrorKind::LoopCountType { count, index } if count == index => {
+                write!(formatter, "shader.loop's count is a {count}: expected an Int or UInt")
+            }
+            ValidationErrorKind::LoopCountType { count, index } => {
+                write!(
+                    formatter,
+                    "a loop counts to a {count} with a {index} index: expected one type"
+                )
+            }
+            ValidationErrorKind::DiscardInVertex => {
+                formatter.write_str("shader.discard is used in the vertex function: only a fragment is discarded")
+            }
+            ValidationErrorKind::NonUniformDerivative { operation, instead, .. } => write!(
+                formatter,
+                "{operation} is used where fragments may take different paths, in a shader.when or \
+                 shader.loop decided by a value that varies per fragment, and derivatives need them all: \
+                 {instead}"
+            ),
+            ValidationErrorKind::Unbalanced { problem } => write!(formatter, "the statements don't nest: {problem}"),
             ValidationErrorKind::MissingPosition => formatter.write_str("the vertex stage has no position"),
             ValidationErrorKind::PositionType { found } => {
                 write!(formatter, "the vertex position is {found}: expected Vec4f")
@@ -561,6 +699,9 @@ pub struct Analysis {
     pub(crate) stages: Vec<u8>,
     /// Every reachable expression's type; `None` for unreachable ones.
     pub(crate) types: Vec<Option<Type>>,
+    /// Per expression: the stage and block whose body computes it, or `None` for one no
+    /// statement places.
+    pub(crate) placed: Vec<Option<(Stage, u32)>>,
 }
 
 impl Program {
@@ -579,14 +720,26 @@ impl Program {
 pub fn analyze(program: &Program) -> Result<Analysis, Vec<ValidationError>> {
     let mut errors = Vec::new();
     check_declarations(program, &mut errors);
-    let stages = mark_stages(program, &mut errors);
+    let placements = flow::place(program);
+    for &expression in &placements.misplaced {
+        errors.push(ValidationError {
+            kind: ValidationErrorKind::Misplaced { expression },
+            origin: program.origin(expression).cloned(),
+        });
+    }
+    let stages = mark_stages(program, &placements, &mut errors);
     let mut varyings_read = vec![false; program.varyings.len()];
     let types = infer_types(program, &stages, &mut varyings_read, &mut errors);
+    check_flow(program, &placements, &stages, &types, &mut errors);
     check_outputs(program, &types, &varyings_read, &mut errors);
     if !errors.is_empty() {
         return Err(errors);
     }
-    Ok(Analysis { stages, types })
+    Ok(Analysis {
+        stages,
+        types,
+        placed: placements.placed,
+    })
 }
 
 fn check_declarations(program: &Program, errors: &mut Vec<ValidationError>) {
@@ -858,7 +1011,7 @@ fn is_valid_name(name: &str) -> bool {
 
 /// Marks which stages reach each expression, walking the arena backwards: operands always come
 /// first, so one reverse pass visits every reader before what it reads.
-fn mark_stages(program: &Program, errors: &mut Vec<ValidationError>) -> Vec<u8> {
+fn mark_stages(program: &Program, placements: &Placements, errors: &mut Vec<ValidationError>) -> Vec<u8> {
     let count = program.expressions.len();
     let mut stages = vec![0u8; count];
     let mut mark_root = |expression: ExpressionId, stage: u8, errors: &mut Vec<ValidationError>| {
@@ -910,6 +1063,9 @@ fn mark_stages(program: &Program, errors: &mut Vec<ValidationError>) -> Vec<u8> 
     }
     for &output in &program.fragment_outputs {
         mark_root(output, FRAGMENT, errors);
+    }
+    for used in &placements.uses {
+        mark_root(used.expression, stage_bit(used.stage), errors);
     }
 
     for index in (0..count).rev() {
@@ -1019,6 +1175,23 @@ fn infer(
                 return Err(ValidationErrorKind::BuiltinInStage { expression: id, builtin });
             }
             builtin.ty()
+        }
+        Expression::Local(local) => {
+            let Some(declared) = program.locals.get(local.index()) else {
+                return Err(ValidationErrorKind::UndefinedLocal { local });
+            };
+            let other = match declared.stage {
+                Stage::Vertex => Stage::Fragment,
+                Stage::Fragment => Stage::Vertex,
+            };
+            if stage & stage_bit(other) != 0 {
+                return Err(ValidationErrorKind::LocalInOtherStage {
+                    kind: declared.kind,
+                    declared: declared.stage,
+                    used: other,
+                });
+            }
+            declared.ty
         }
         Expression::Varying(varying) => {
             let Some(declaration) = program.varyings.get(varying.index()) else {
@@ -1319,6 +1492,7 @@ pub fn operation_type(id: ExpressionId, expression: &Expression, operands: &[Typ
     let ty = match *expression {
         Expression::Literal(_)
         | Expression::Attribute(_)
+        | Expression::Local(_)
         | Expression::Builtin(_)
         | Expression::Varying(_)
         | Expression::Load(_)
@@ -1613,6 +1787,200 @@ fn multiply(left: Type, right: Type) -> Option<Type> {
         (Type::Mat4f, Type::Vec4f) | (Type::Vec4f, Type::Mat4f) => Some(Type::Vec4f),
         _ => None,
     }
+}
+
+/// The bit of `stage` in an expression's stage marks.
+fn stage_bit(stage: Stage) -> u8 {
+    match stage {
+        Stage::Vertex => VERTEX,
+        Stage::Fragment => FRAGMENT,
+    }
+}
+
+/// What a local of `kind` is called in errors.
+fn local_noun(kind: LocalKind) -> &'static str {
+    match kind {
+        LocalKind::Var => "a shader.var",
+        LocalKind::LoopIndex => "a loop's index",
+    }
+}
+
+/// Checks that every value is read where it exists, that every statement is well-formed, and that
+/// derivatives are taken only where every fragment agrees on the path.
+fn check_flow(
+    program: &Program,
+    placements: &Placements,
+    stages: &[u8],
+    types: &[Option<Type>],
+    errors: &mut Vec<ValidationError>,
+) {
+    // A read in `block` of `stage` sees what that stage computes in `block` or around it.
+    let read = |operand: ExpressionId, stage: Stage, block: u32, origin: Option<SourceOrigin>, errors: &mut Vec<_>| {
+        let Some(Some((computed, home))) = placements.placed.get(operand.index()).copied() else {
+            return;
+        };
+        let kind = if computed != stage {
+            ValidationErrorKind::ReadInOtherStage {
+                expression: operand,
+                computed,
+                read: stage,
+            }
+        } else if !placements.sees(home, block) {
+            ValidationErrorKind::ReadOutOfScope { expression: operand }
+        } else {
+            return;
+        };
+        errors.push(ValidationError { kind, origin });
+    };
+    for (index, expression) in program.expressions.iter().enumerate() {
+        if stages[index] == 0 {
+            continue;
+        }
+        let id = ExpressionId::at(index);
+        for &operand in expression.operands().iter() {
+            match placements.placed[index] {
+                Some((stage, block)) => read(operand, stage, block, program.origin(id).cloned(), errors),
+                None if placements.placed.get(operand.index()).copied().flatten().is_some() => {
+                    errors.push(ValidationError {
+                        kind: ValidationErrorKind::UnplacedReadsPlaced { expression: id, operand },
+                        origin: program.origin(id).cloned(),
+                    });
+                }
+                None => {}
+            }
+        }
+    }
+    for used in &placements.uses {
+        read(used.expression, used.stage, used.block, used.origin.clone(), errors);
+    }
+    let vertex = Placements::top(Stage::Vertex);
+    let outputs = program
+        .position
+        .iter()
+        .chain(program.varying_writes.iter().map(|(_, expression)| expression))
+        .map(|&expression| (expression, Stage::Vertex, vertex))
+        .chain(
+            program
+                .fragment_outputs
+                .iter()
+                .map(|&expression| (expression, Stage::Fragment, Placements::top(Stage::Fragment))),
+        );
+    for (expression, stage, block) in outputs {
+        read(expression, stage, block, program.origin(expression).cloned(), errors);
+    }
+
+    for stage in Stage::ALL {
+        check_statements(program, stage, &program.bodies[stage as usize], types, errors);
+    }
+    check_uniformity(program, stages, errors);
+}
+
+fn check_statements(
+    program: &Program,
+    stage: Stage,
+    block: &[Statement],
+    types: &[Option<Type>],
+    errors: &mut Vec<ValidationError>,
+) {
+    let type_of = |expression: &ExpressionId| types.get(expression.index()).copied().flatten();
+    let report = |errors: &mut Vec<ValidationError>, kind: ValidationErrorKind, origin: &Option<SourceOrigin>| {
+        errors.push(ValidationError {
+            kind,
+            origin: origin.clone(),
+        });
+    };
+    // The local a statement names, if it is one of this stage of the kind the statement needs.
+    let local_of = |local: LocalId, expected: LocalKind| {
+        let Some(declared) = program.locals.get(local.index()) else {
+            return Err(ValidationErrorKind::UndefinedLocal { local });
+        };
+        if declared.stage != stage {
+            return Err(ValidationErrorKind::LocalInOtherStage {
+                kind: declared.kind,
+                declared: declared.stage,
+                used: stage,
+            });
+        }
+        if declared.kind != expected {
+            return Err(ValidationErrorKind::LocalKindMismatch { expected });
+        }
+        Ok(declared.ty)
+    };
+    for statement in block {
+        match statement {
+            Statement::Emit(_) => {}
+            Statement::Store { local, value, origin } => match local_of(*local, LocalKind::Var) {
+                Err(kind) => report(errors, kind, origin),
+                Ok(declared) => {
+                    if let Some(stored) = type_of(value)
+                        && stored != declared
+                    {
+                        report(errors, ValidationErrorKind::StoreType { declared, stored }, origin);
+                    }
+                }
+            },
+            Statement::If {
+                condition,
+                accept,
+                reject,
+                origin,
+            } => {
+                if let Some(found) = type_of(condition)
+                    && found != Type::Bool
+                {
+                    report(errors, ValidationErrorKind::ConditionType { found }, origin);
+                }
+                check_statements(program, stage, accept, types, errors);
+                check_statements(program, stage, reject, types, errors);
+            }
+            Statement::Loop {
+                index,
+                count,
+                body,
+                origin,
+            } => {
+                match (local_of(*index, LocalKind::LoopIndex), type_of(count)) {
+                    (Err(kind), _) => report(errors, kind, origin),
+                    (Ok(index), Some(count)) if !(count.is_integer() && count.is_scalar()) || index != count => {
+                        let index = if count.is_integer() { index } else { count };
+                        report(errors, ValidationErrorKind::LoopCountType { count, index }, origin);
+                    }
+                    _ => {}
+                }
+                check_statements(program, stage, body, types, errors);
+            }
+            Statement::Discard { origin } => {
+                if stage == Stage::Vertex {
+                    report(errors, ValidationErrorKind::DiscardInVertex, origin);
+                }
+            }
+        }
+    }
+}
+
+/// Reports every derivative the fragment body takes where fragments may disagree on the path.
+fn check_uniformity(program: &Program, stages: &[u8], errors: &mut Vec<ValidationError>) {
+    let reachable: Vec<bool> = stages.iter().map(|stage| stage & FRAGMENT != 0).collect();
+    let (uniform, _) = flow::uniform_locals(program, &reachable);
+    let known = |expression: ExpressionId| uniform.get(expression.index()).copied().unwrap_or(false);
+    flow::walk(&program.bodies[Stage::Fragment as usize], &known, &mut |statement, agreed| {
+        let Statement::Emit(id) = statement else {
+            return;
+        };
+        if agreed || !reachable.get(id.index()).copied().unwrap_or(false) {
+            return;
+        }
+        if let Some((operation, instead)) = flow::derivative(&program.expressions[id.index()]) {
+            errors.push(ValidationError {
+                kind: ValidationErrorKind::NonUniformDerivative {
+                    expression: *id,
+                    operation,
+                    instead,
+                },
+                origin: program.origin(*id).cloned(),
+            });
+        }
+    });
 }
 
 fn check_outputs(program: &Program, types: &[Option<Type>], varyings_read: &[bool], errors: &mut Vec<ValidationError>) {
