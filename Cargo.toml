@@ -11,7 +11,7 @@ repository.workspace = true
 homepage.workspace = true
 license.workspace = true
 readme.workspace = true
-include = ["/src", "/jpk/builtin", "/README.md", "/LICENSE-MIT", "/LICENSE-APACHE"]
+include = ["/src", "/jpk/builtin", "/vendor/miniaudio", "/build.rs", "/README.md", "/LICENSE-MIT", "/LICENSE-APACHE"]
 autotests = false
 
 [workspace.package]
@@ -33,6 +33,8 @@ default = []
 # Real device backends are opt-in; the native kernel stays headless by default.
 linux-evdev = ["dep:evdev"]
 gilrs = ["dep:gilrs"]
+# An audio output device, through miniaudio's device layer (vendor/miniaudio), compiled with cc.
+audio-device = ["dep:cc"]
 
 [dependencies]
 clap = { version = "^4.5", features = ["derive", "env", "wrap_help"] }
@@ -56,6 +58,10 @@ evdev = { version = "^0.13", optional = true }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 gilrs = { version = "^0.11", optional = true }
+
+[build-dependencies]
+# Compiles the audio device's C, the same crate l3i builds Luau with.
+cc = { version = "^1.2", optional = true }
 
 
 [dev-dependencies]
