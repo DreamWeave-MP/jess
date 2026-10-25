@@ -4,7 +4,10 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::Arc;
 
-use crate::audio::{AudioConfig, AudioError, LoopRegion, OfflineContext, Pcm, PlaySpec, QUANTUM, VoiceParam, VoiceState};
+use crate::audio::{
+    AudioConfig, AudioError, BusKey, BusParam, BusSpec, LoopRegion, OfflineContext, Pcm, PlaySpec, QUANTUM, VoiceParam,
+    VoiceState,
+};
 
 /// Counts allocations and frees on a thread while it is armed, so a test can prove the render
 /// path makes none. Every other allocation passes straight through to the system allocator.
@@ -298,4 +301,101 @@ fn rendering_never_allocates_or_frees() {
     assert_eq!(counted, 0);
     control.collect();
     assert_eq!(control.stats().allocated, 0, "every voice ended and came back");
+}
+
+fn bus(context: &mut OfflineContext, parent: BusKey, gain: f32) -> BusKey {
+    let spec = BusSpec {
+        parent,
+        gain,
+        ..BusSpec::default()
+    };
+    context.control().add_bus(&spec).unwrap()
+}
+
+fn into(bus: BusKey, frame: u64) -> PlaySpec {
+    PlaySpec { bus, ..at(frame) }
+}
+
+#[test]
+fn voices_sum_through_nested_buses_at_each_bus_s_gain() {
+    let click = pcm(&[1.0], 48_000);
+    let mut context = mono(AudioConfig::default());
+    let music = bus(&mut context, BusKey::MASTER, 0.5);
+    let strings = bus(&mut context, music, 0.5);
+    let effects = bus(&mut context, BusKey::MASTER, 2.0);
+    context.control().play(&click, &into(strings, 0)).unwrap();
+    context.control().play(&click, &into(music, 1)).unwrap();
+    context.control().play(&click, &into(effects, 1)).unwrap();
+    context.control().play(&click, &at(2)).unwrap();
+    assert_eq!(context.render(3), [0.25, 2.5, 1.0]);
+}
+
+#[test]
+fn bus_gain_and_mute_change_on_their_frame() {
+    let tone = pcm(&[1.0; 8], 48_000);
+    let mut context = mono(AudioConfig::default());
+    let group = bus(&mut context, BusKey::MASTER, 1.0);
+    context.control().play(&tone, &into(group, 0)).unwrap();
+    context.control().set_bus(group, BusParam::Gain, 0.5, Some(2)).unwrap();
+    context.control().set_bus(group, BusParam::Mute, 1.0, Some(4)).unwrap();
+    context.control().set_bus(group, BusParam::Mute, 0.0, Some(6)).unwrap();
+    context
+        .control()
+        .set_bus(BusKey::MASTER, BusParam::Gain, 4.0, Some(7))
+        .unwrap();
+    assert_eq!(context.render(8), [1.0, 1.0, 0.5, 0.5, 0.0, 0.0, 0.5, 2.0]);
+}
+
+#[test]
+fn rerouting_moves_a_bus_on_its_frame_and_a_loop_is_refused() {
+    let tone = pcm(&[1.0; 4], 48_000);
+    let mut context = mono(AudioConfig::default());
+    let quiet = bus(&mut context, BusKey::MASTER, 0.25);
+    let group = bus(&mut context, BusKey::MASTER, 1.0);
+    context.control().play(&tone, &into(group, 0)).unwrap();
+    context.control().route_bus(group, quiet, Some(2)).unwrap();
+    assert_eq!(context.render(4), [1.0, 1.0, 0.25, 0.25]);
+
+    assert_eq!(context.control().route_bus(quiet, group, None), Err(AudioError::Cycle));
+    assert_eq!(context.control().route_bus(group, group, None), Err(AudioError::Cycle));
+    assert_eq!(
+        context.control().route_bus(BusKey::MASTER, group, None),
+        Err(AudioError::Master)
+    );
+}
+
+#[test]
+fn a_bus_is_removed_only_once_nothing_routes_into_it() {
+    let tone = pcm(&[1.0; 4], 48_000);
+    let mut context = mono(AudioConfig {
+        buses: 3,
+        ..AudioConfig::default()
+    });
+    let outer = bus(&mut context, BusKey::MASTER, 1.0);
+    let inner = bus(&mut context, outer, 1.0);
+    assert_eq!(
+        context.control().add_bus(&BusSpec::default()),
+        Err(AudioError::BusesExhausted(3))
+    );
+    let voice = context.control().play(&tone, &into(inner, 0)).unwrap();
+    assert_eq!(
+        context.control().remove_bus(inner, None),
+        Err(AudioError::BusInUse { voices: 1, buses: 0 })
+    );
+    assert_eq!(
+        context.control().remove_bus(outer, None),
+        Err(AudioError::BusInUse { voices: 0, buses: 1 })
+    );
+    context.control().stop(voice, None).unwrap();
+    context.render(1);
+    assert!(context.control().remove_bus(inner, None).unwrap());
+    assert!(!context.control().bus_live(inner));
+    assert_eq!(context.control().play(&tone, &into(inner, 0)), Err(AudioError::StaleBus));
+    context.render(1);
+    assert!(context.control().remove_bus(outer, None).unwrap());
+    context.render(1);
+    let reused = bus(&mut context, BusKey::MASTER, 1.0);
+    assert_ne!(reused, outer, "a reused slot is a new bus");
+    assert!(!context.control().set_bus(outer, BusParam::Gain, 0.0, None).unwrap());
+    assert_eq!(context.control().remove_bus(BusKey::MASTER, None), Err(AudioError::Master));
 }

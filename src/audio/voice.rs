@@ -3,7 +3,7 @@
 use std::f32::consts::FRAC_PI_4;
 use std::sync::Arc;
 
-use crate::audio::{AudioError, MAX_PLAYBACK_RATE, Pcm, QUANTUM};
+use crate::audio::{AudioError, BusKey, MAX_PLAYBACK_RATE, Pcm, QUANTUM};
 
 /// One fractional frame in the 32.32 fixed point a voice's position is kept in. Positions are
 /// integers so that a render is the same on every machine, however long it runs.
@@ -43,6 +43,8 @@ pub struct PlaySpec {
     pub offset: u64,
     /// Where to loop, if anywhere.
     pub looping: Option<LoopRegion>,
+    /// The bus it plays into.
+    pub bus: BusKey,
 }
 
 impl Default for PlaySpec {
@@ -54,6 +56,7 @@ impl Default for PlaySpec {
             rate: 1.0,
             offset: 0,
             looping: None,
+            bus: BusKey::MASTER,
         }
     }
 }
@@ -222,6 +225,8 @@ impl Cursor {
 pub struct Voice {
     pub(crate) generation: u32,
     pub(crate) pcm: Arc<Pcm>,
+    /// The slot of the bus it plays into.
+    pub(crate) bus: u32,
     cursor: Cursor,
     gain: f32,
     pan: f32,
@@ -233,6 +238,7 @@ impl Voice {
     pub(crate) fn new(generation: u32, pcm: Arc<Pcm>, spec: &PlaySpec, output_rate: u32) -> Voice {
         let mut voice = Voice {
             generation,
+            bus: spec.bus.slot,
             cursor: Cursor {
                 position: spec.offset << 32,
                 step: 0,

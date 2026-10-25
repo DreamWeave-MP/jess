@@ -4,10 +4,11 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 
-use crate::audio::engine::{Command, Counters, Engine, Feedback, Stamped};
+use crate::audio::engine::{Capacity, Command, Counters, Engine, Feedback, Stamped};
+use crate::audio::graph::Graph;
 use crate::audio::pcm::check_layout;
 use crate::audio::voice::VoiceKey;
-use crate::audio::{AudioError, MAX_VOICES, Pcm, PlaySpec, VoiceParam};
+use crate::audio::{AudioError, BusKey, BusParam, BusSpec, MAX_BUSES, MAX_VOICES, Pcm, PlaySpec, VoiceParam};
 
 /// How to make a context.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -18,6 +19,8 @@ pub struct AudioConfig {
     pub channels: usize,
     /// Voices that can play or wait to start at once.
     pub voices: usize,
+    /// Buses, the master included.
+    pub buses: usize,
     /// Commands that can wait for the engine at once, in the queue and again in the engine's
     /// list of commands stamped for later.
     pub commands: usize,
@@ -29,6 +32,7 @@ impl Default for AudioConfig {
             rate: 48_000,
             channels: 2,
             voices: 256,
+            buses: 64,
             commands: 4096,
         }
     }
@@ -79,10 +83,12 @@ struct Slot {
     generation: u32,
     busy: bool,
     start: Option<u64>,
+    /// The slot of the bus the voice plays into.
+    bus: u32,
 }
 
-/// The application side of a context: it starts, stops, and changes voices by sending the
-/// engine commands, and hears back which voices ended. It never touches the engine's state.
+/// The application side of a context: it starts, stops, and changes voices and buses by sending
+/// the engine commands, and hears back what ended. It never touches the engine's state.
 #[derive(Debug)]
 pub struct Control {
     rate: u32,
@@ -94,6 +100,7 @@ pub struct Control {
     /// Free slots, the next one at the end, the most recently freed first: a script that plays the
     /// same voices gets the same slots, and so the same mix order.
     free: Vec<u32>,
+    graph: Graph,
     sequence: u64,
     counters: Arc<Counters>,
 }
@@ -103,36 +110,39 @@ pub struct Control {
 /// # Errors
 ///
 /// [`AudioError::Rate`] or [`AudioError::Channels`] out of range, and
-/// [`AudioError::Capacity`] for no voices, more than [`MAX_VOICES`], or no command room.
+/// [`AudioError::Capacity`] for no voices or more than [`MAX_VOICES`], no buses or more than
+/// [`MAX_BUSES`], or no command room.
 pub fn context(config: &AudioConfig) -> Result<(Control, Engine), AudioError> {
     check_layout(config.channels, config.rate)?;
     if config.voices == 0 || config.voices > MAX_VOICES {
         return Err(AudioError::Capacity("a context's voice count", config.voices));
     }
+    if config.buses == 0 || config.buses > MAX_BUSES {
+        return Err(AudioError::Capacity("a context's bus count", config.buses));
+    }
     if config.commands == 0 {
         return Err(AudioError::Capacity("a context's command capacity", 0));
     }
     let (commands, receive) = sync_channel(config.commands);
-    // Every voice ends once and its slot is reused only after this is read, so a queue the size of
-    // the pool never fills.
-    let (send, feedback) = sync_channel(config.voices);
+    // Each voice and bus ends once, and its slot is reused only after the control side reads that;
+    // each command replaces at most one order. So a queue of their sum never fills.
+    let (send, feedback) = sync_channel(config.voices + config.buses + config.commands);
     let counters = Arc::new(Counters::default());
-    let engine = Engine::new(
-        config.rate,
-        config.channels,
-        config.voices,
-        config.commands,
-        receive,
-        send,
-        Arc::clone(&counters),
-    );
-    let slots = (0..config.voices)
-        .map(|_| Slot {
+    let capacity = Capacity {
+        voices: config.voices,
+        buses: config.buses,
+        commands: config.commands,
+    };
+    let engine = Engine::new(config.rate, config.channels, &capacity, receive, send, Arc::clone(&counters));
+    let slots = vec![
+        Slot {
             generation: 0,
             busy: false,
             start: None,
-        })
-        .collect();
+            bus: 0,
+        };
+        config.voices
+    ];
     let free = (0..u32::try_from(config.voices).unwrap_or(u32::MAX)).rev().collect();
     let control = Control {
         rate: config.rate,
@@ -142,6 +152,7 @@ pub fn context(config: &AudioConfig) -> Result<(Control, Engine), AudioError> {
         feedback,
         slots,
         free,
+        graph: Graph::new(config.buses),
         sequence: 0,
         counters,
     };
@@ -173,11 +184,12 @@ impl Control {
     /// # Errors
     ///
     /// A spec the source can't play ([`AudioError::Parameter`], [`AudioError::LoopRegion`],
-    /// [`AudioError::Layout`]), [`AudioError::VoicesExhausted`], [`AudioError::QueueFull`], or
-    /// [`AudioError::Disconnected`].
+    /// [`AudioError::Layout`]), [`AudioError::StaleBus`], [`AudioError::VoicesExhausted`],
+    /// [`AudioError::QueueFull`], or [`AudioError::Disconnected`].
     pub fn play(&mut self, pcm: &Arc<Pcm>, spec: &PlaySpec) -> Result<VoiceKey, AudioError> {
         spec.check(pcm, self.channels)?;
         self.collect();
+        self.graph.check_live(spec.bus)?;
         let Some(slot) = self.free.pop() else {
             return Err(AudioError::VoicesExhausted(self.slots.len()));
         };
@@ -197,6 +209,7 @@ impl Control {
         let entry = &mut self.slots[slot as usize];
         entry.busy = true;
         entry.start = spec.at;
+        entry.bus = spec.bus.slot;
         Ok(voice)
     }
 
@@ -228,7 +241,7 @@ impl Control {
         if !self.is_live(voice) {
             return Ok(false);
         }
-        self.send(at, Command::Set { voice, param, value })?;
+        self.send(at, Command::SetVoice { voice, param, value })?;
         Ok(true)
     }
 
@@ -244,6 +257,104 @@ impl Control {
         }
     }
 
+    /// Makes a bus under `spec.parent`. It exists from the next frame rendered: voices can play
+    /// into it at once.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::Parameter`] for a gain that isn't finite, [`AudioError::StaleBus`] for a
+    /// parent that isn't live, [`AudioError::BusesExhausted`], [`AudioError::QueueFull`], or
+    /// [`AudioError::Disconnected`].
+    pub fn add_bus(&mut self, spec: &BusSpec) -> Result<BusKey, AudioError> {
+        BusParam::Gain.check(f64::from(spec.gain))?;
+        self.collect();
+        self.graph.check_live(spec.parent)?;
+        let Some(bus) = self.graph.add(spec.parent) else {
+            return Err(AudioError::BusesExhausted(self.graph.capacity()));
+        };
+        let sent = self.graph.order().and_then(|order| {
+            // A bus is never stamped for later: a voice may be sent to it straight away.
+            self.send(None, Command::AddBus { bus, spec: *spec, order })
+        });
+        if let Err(error) = sent {
+            self.graph.unadd(bus);
+            return Err(error);
+        }
+        Ok(bus)
+    }
+
+    /// Removes a bus at frame `at`, or at the next frame rendered. True if it was live; removing
+    /// a removed bus does nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::Master`] for the master bus, [`AudioError::BusInUse`] while a voice or a
+    /// bus is routed into it, [`AudioError::QueueFull`], or [`AudioError::Disconnected`].
+    pub fn remove_bus(&mut self, bus: BusKey, at: Option<u64>) -> Result<bool, AudioError> {
+        if bus == BusKey::MASTER {
+            return Err(AudioError::Master);
+        }
+        self.collect();
+        if !self.graph.is_live(bus) {
+            return Ok(false);
+        }
+        let voices = self.slots.iter().filter(|slot| slot.busy && slot.bus == bus.slot).count();
+        let buses = self.graph.children(bus);
+        if voices > 0 || buses > 0 {
+            return Err(AudioError::BusInUse { voices, buses });
+        }
+        self.send(at, Command::RemoveBus { bus })?;
+        self.graph.mark_removing(bus);
+        Ok(true)
+    }
+
+    /// Routes a bus into `parent` from frame `at`, or from the next frame rendered.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::Master`] for the master bus, [`AudioError::StaleBus`] for either bus not
+    /// live, [`AudioError::Cycle`] when `parent` is fed by `bus`, [`AudioError::QueueFull`], or
+    /// [`AudioError::Disconnected`].
+    pub fn route_bus(&mut self, bus: BusKey, parent: BusKey, at: Option<u64>) -> Result<(), AudioError> {
+        if bus == BusKey::MASTER {
+            return Err(AudioError::Master);
+        }
+        self.collect();
+        self.graph.check_live(bus)?;
+        self.graph.check_live(parent)?;
+        let order = self.graph.route(bus, parent)?;
+        self.send(
+            at,
+            Command::RouteBus {
+                bus,
+                parent: parent.slot,
+                order,
+            },
+        )
+    }
+
+    /// Sets a bus's parameter at frame `at`, or at the next frame rendered. True if the bus was
+    /// live.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::Parameter`], [`AudioError::QueueFull`], or [`AudioError::Disconnected`].
+    pub fn set_bus(&mut self, bus: BusKey, param: BusParam, value: f64, at: Option<u64>) -> Result<bool, AudioError> {
+        let value = param.check(value)?;
+        self.collect();
+        if !self.graph.is_live(bus) {
+            return Ok(false);
+        }
+        self.send(at, Command::SetBus { bus, param, value })?;
+        Ok(true)
+    }
+
+    /// True while `bus` is live: made, and not removed.
+    pub fn bus_live(&mut self, bus: BusKey) -> bool {
+        self.collect();
+        self.graph.is_live(bus)
+    }
+
     /// The engine's counters as of its last render.
     pub fn stats(&mut self) -> AudioStats {
         self.collect();
@@ -257,19 +368,25 @@ impl Control {
         }
     }
 
-    /// Reads what the engine sent back: ended voices free their slots, and their PCM is dropped
-    /// here rather than on the render thread.
+    /// Reads what the engine sent back: ended voices and buses free their slots, and the memory
+    /// the engine let go of is dropped here rather than on the render thread.
     pub fn collect(&mut self) {
-        while let Ok(Feedback::Ended { voice, pcm, .. }) = self.feedback.try_recv() {
-            drop(pcm);
-            let slot = &mut self.slots[voice.slot as usize];
-            if slot.generation != voice.generation || !slot.busy {
-                continue;
+        while let Ok(feedback) = self.feedback.try_recv() {
+            match feedback {
+                Feedback::VoiceEnded { voice, pcm } => {
+                    drop(pcm);
+                    let slot = &mut self.slots[voice.slot as usize];
+                    if slot.generation != voice.generation || !slot.busy {
+                        continue;
+                    }
+                    slot.generation = slot.generation.wrapping_add(1);
+                    slot.busy = false;
+                    slot.start = None;
+                    self.free.push(voice.slot);
+                }
+                Feedback::BusEnded { bus } => self.graph.ended(bus),
+                Feedback::Order(order) => drop(order),
             }
-            slot.generation = slot.generation.wrapping_add(1);
-            slot.busy = false;
-            slot.start = None;
-            self.free.push(voice.slot);
         }
     }
 

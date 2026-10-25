@@ -45,14 +45,17 @@
 
 #![warn(missing_docs)]
 
+mod bus;
 mod context;
 mod engine;
 mod error;
+mod graph;
 mod pcm;
 #[cfg(test)]
 mod tests;
 mod voice;
 
+pub use bus::{BusKey, BusParam, BusSpec};
 pub use context::{AudioConfig, AudioStats, Control, OfflineContext, VoiceState, context};
 pub use engine::Engine;
 pub use error::AudioError;
@@ -70,6 +73,9 @@ pub const MAX_RATE: u32 = 384_000;
 
 /// The most voices one context holds.
 pub const MAX_VOICES: usize = 65_536;
+
+/// The most buses one context holds, the master included.
+pub const MAX_BUSES: usize = 4096;
 
 /// The fastest a voice plays its source.
 pub const MAX_PLAYBACK_RATE: f64 = 64.0;

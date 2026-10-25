@@ -36,6 +36,21 @@ pub enum AudioError {
     Disconnected,
     /// A voice handle from a voice that already ended, or another context.
     StaleVoice,
+    /// A bus handle from a bus that was removed, or another context.
+    StaleBus,
+    /// Every bus slot is taken.
+    BusesExhausted(usize),
+    /// A bus still being routed to can't be removed.
+    BusInUse {
+        /// Voices playing into it, or waiting to start there.
+        voices: usize,
+        /// Buses summing into it.
+        buses: usize,
+    },
+    /// The routing would feed a bus back into itself.
+    Cycle,
+    /// The master bus is the output: it has no parent and stays.
+    Master,
     /// A source whose channels the context can't mix into its output.
     Layout {
         /// The source's channels.
@@ -91,6 +106,14 @@ impl fmt::Display for AudioError {
             ),
             AudioError::Disconnected => f.write_str("the audio engine is gone"),
             AudioError::StaleVoice => f.write_str("the voice has ended or belongs to another context"),
+            AudioError::StaleBus => f.write_str("the bus was removed or belongs to another context"),
+            AudioError::BusesExhausted(buses) => write!(f, "all {buses} buses are in use"),
+            AudioError::BusInUse { voices, buses } => write!(
+                f,
+                "the bus still has {voices} voices and {buses} buses routed into it; stop or reroute them first"
+            ),
+            AudioError::Cycle => f.write_str("that routing would feed a bus back into itself"),
+            AudioError::Master => f.write_str("the master bus is the output: it has no parent and can't be removed"),
             AudioError::Layout { source, output } => write!(
                 f,
                 "a {source}-channel source doesn't mix into a {output}-channel output; mono goes anywhere, stereo goes to mono, and otherwise the counts must match"
