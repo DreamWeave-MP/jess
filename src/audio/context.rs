@@ -5,6 +5,7 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 
 use crate::audio::bus::BusSend;
+use crate::audio::delays::Delays;
 use crate::audio::engine::{Capacity, Command, Counters, Engine, Feedback, Stamped};
 use crate::audio::graph::Graph;
 use crate::audio::param::Glide;
@@ -174,6 +175,10 @@ pub struct Control {
     sequence: u64,
     counters: Arc<Counters>,
     listener: Listener,
+    /// The delays last sent to the engine, as `(from, to, frames)`.
+    delays: Vec<(u32, u32, u64)>,
+    /// The graph changed in a way the engine's delays may not match yet.
+    uncompensated: bool,
 }
 
 /// An engine and its control side, connected; the engine goes to whatever renders it.
@@ -279,6 +284,8 @@ pub fn context(config: &AudioConfig) -> Result<(Control, Engine), AudioError> {
         sequence: 0,
         counters,
         listener: Listener::default(),
+        delays: Vec::new(),
+        uncompensated: false,
     };
     Ok((control, engine))
 }
@@ -506,6 +513,7 @@ impl Control {
             self.graph.unadd(bus);
             return Err(error);
         }
+        self.compensate(None);
         Ok(bus)
     }
 
@@ -563,7 +571,9 @@ impl Control {
                 parent: parent.slot,
                 order,
             },
-        )
+        )?;
+        self.compensate(at);
+        Ok(())
     }
 
     /// Sets a bus's parameter at frame `at`, or at the next frame rendered, at once or, for its
@@ -635,7 +645,11 @@ impl Control {
         if result.is_err() && added {
             self.graph.unsend(bus, target);
         }
-        result
+        result?;
+        if added {
+            self.compensate(at);
+        }
+        Ok(())
     }
 
     /// Removes the send from `bus` to `target` at frame `at`, or at the next frame rendered.
@@ -661,6 +675,7 @@ impl Control {
                 order: Some(order),
             },
         )?;
+        self.compensate(at);
         Ok(true)
     }
 
@@ -715,6 +730,9 @@ impl Control {
             return Err(error);
         }
         self.processors[slot as usize] = entry;
+        if entry.latency > 0 {
+            self.compensate(None);
+        }
         Ok(key)
     }
 
@@ -730,7 +748,11 @@ impl Control {
             return Ok(false);
         }
         self.send(at, Command::Unmount { processor })?;
+        let latency = self.processors[processor.slot as usize].latency;
         self.release_processor(processor.slot);
+        if latency > 0 {
+            self.compensate(at);
+        }
         Ok(true)
     }
 
@@ -842,15 +864,37 @@ impl Control {
     pub fn latency(&mut self, bus: BusKey) -> Result<u64, AudioError> {
         self.collect();
         self.graph.check_live(bus)?;
-        let processors = &self.processors;
-        let latencies = self.graph.latencies(|bus| {
-            processors
-                .iter()
-                .filter(|slot| slot.mounted && slot.bus == bus)
-                .map(|slot| slot.latency)
-                .sum()
-        });
-        Ok(latencies[bus.slot as usize])
+        Ok(self.graph.latencies(&self.own_latencies())[bus.slot as usize])
+    }
+
+    /// The latency each bus's own processors add, by slot.
+    fn own_latencies(&self) -> Vec<u64> {
+        let mut own = vec![0; self.graph.capacity()];
+        for slot in self.processors.iter().filter(|slot| slot.mounted) {
+            own[slot.bus as usize] += slot.latency;
+        }
+        own
+    }
+
+    /// Sends the engine the delays that line up every path into each bus with its latest, from
+    /// frame `at`, if they changed. When the queue has no room for them, the next command that
+    /// collects sends them.
+    fn compensate(&mut self, at: Option<u64>) {
+        let own = self.own_latencies();
+        let wanted = if own.iter().all(|latency| *latency == 0) {
+            Vec::new()
+        } else {
+            self.graph.compensation(&own)
+        };
+        if wanted == self.delays {
+            self.uncompensated = false;
+            return;
+        }
+        let delays = Box::new(Delays::new(&wanted, self.channels));
+        self.uncompensated = self.send(at, Command::Compensate(delays)).is_err();
+        if !self.uncompensated {
+            self.delays = wanted;
+        }
     }
 
     /// What `bus` has put out, after its gain, since the last time it was read: the peak sample's
@@ -973,6 +1017,7 @@ impl Control {
                 }
                 Feedback::BusEnded { bus } => {
                     self.graph.ended(bus);
+                    self.uncompensated = true;
                     // The next bus in the slot starts its own measurement.
                     let meter = &self.counters.meters[bus.slot as usize];
                     meter.peak.store(0, Ordering::Relaxed);
@@ -991,8 +1036,12 @@ impl Control {
                     self.free_processors.push(processor.slot);
                 }
                 Feedback::Order(order) => drop(order),
+                Feedback::Delays(delays) => drop(delays),
                 Feedback::Spent(group) => drop(group),
             }
+        }
+        if self.uncompensated {
+            self.compensate(None);
         }
     }
 

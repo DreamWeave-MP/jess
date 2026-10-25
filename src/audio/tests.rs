@@ -651,6 +651,91 @@ fn latency_adds_up_along_the_longest_path_to_each_bus() {
     assert_eq!(context.control().latency(BusKey::MASTER), Ok(10));
 }
 
+/// Delays what it hears by its length, and says so.
+struct Late {
+    ring: Vec<f32>,
+    next: usize,
+}
+
+fn late(frames: usize) -> Box<dyn Processor> {
+    Box::new(Late {
+        ring: vec![0.0; frames],
+        next: 0,
+    })
+}
+
+impl Processor for Late {
+    fn kind(&self) -> &'static str {
+        "late"
+    }
+
+    fn params(&self) -> &'static [ParamInfo] {
+        &[]
+    }
+
+    fn set(&mut self, _index: usize, _value: f64) {}
+
+    fn value(&self, _index: usize) -> f64 {
+        0.0
+    }
+
+    fn latency(&self) -> u64 {
+        self.ring.len() as u64
+    }
+
+    fn process(&mut self, block: &mut Block<'_>, _key: Option<&[f32]>) {
+        for sample in block.channel(0) {
+            std::mem::swap(sample, &mut self.ring[self.next]);
+            self.next = (self.next + 1) % self.ring.len();
+        }
+    }
+}
+
+#[test]
+fn paths_of_different_latency_line_up_where_they_meet() {
+    let click = pcm(&[0.5], 48_000);
+    let render = |sizes: &[usize]| {
+        let mut context = mono(AudioConfig::default());
+        let slow = bus(&mut context, BusKey::MASTER, 1.0);
+        let plain = bus(&mut context, BusKey::MASTER, 1.0);
+        let room = bus(&mut context, BusKey::MASTER, 1.0);
+        let lookahead = context.control().mount(late(3), slow, None).unwrap();
+        // The room hears the slow bus and the plain one, so it lines them up too, and the master
+        // waits for the room.
+        context.control().send_bus(slow, room, 1.0, Tap::PostFader, None).unwrap();
+        context.control().send_bus(plain, room, 1.0, Tap::PostFader, None).unwrap();
+        for target in [slow, plain, BusKey::MASTER] {
+            context.control().play(&click, &into(target, 1)).unwrap();
+        }
+        // Without the slow bus's processor nothing waits, from the frame it goes.
+        context.control().unmount(lookahead, Some(20)).unwrap();
+        for target in [slow, plain, BusKey::MASTER] {
+            context.control().play(&click, &into(target, 30)).unwrap();
+        }
+        let mut out = Vec::new();
+        for size in sizes.iter().cycle() {
+            if out.len() >= 40 {
+                break;
+            }
+            let mut block = vec![0.0; *size];
+            let (_, engine) = context.parts();
+            assert_eq!(allocations(|| engine.render(&mut block)), 0);
+            out.extend(block);
+        }
+        out.truncate(40);
+        assert_eq!(context.control().latency(BusKey::MASTER), Ok(0));
+        out
+    };
+    let out = render(&[40]);
+    let mut expected = [0.0; 40];
+    // Each click reaches the master on its own, and the slow and plain ones again through the
+    // room: five halves, all on the frame the slowest path arrives.
+    expected[4] = 2.5;
+    expected[30] = 2.5;
+    assert_eq!(out, expected);
+    assert_eq!(render(&[1, 3, 7, 128]), out);
+}
+
 #[test]
 fn a_meter_reads_what_its_bus_put_out_since_it_was_last_read() {
     let ramp = pcm(&[0.5, -1.0, 0.5, -1.0], 48_000);

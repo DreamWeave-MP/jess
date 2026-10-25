@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 
 use crate::audio::bus::{Bus, BusSend};
+use crate::audio::delays::Delays;
 use crate::audio::param::{Glide, Param};
 use crate::audio::processor::{Block, Processor, ProcessorKey, Tail};
 use crate::audio::spatial::{Emitter, Listener, Space};
@@ -118,6 +119,8 @@ pub enum Command {
         key: Option<u32>,
         order: Option<Box<[u32]>>,
     },
+    /// The delays that line up paths of different latency, replacing the ones there.
+    Compensate(Box<Delays>),
 }
 
 impl std::fmt::Debug for Stamped {
@@ -158,6 +161,8 @@ pub enum Feedback {
     },
     /// An order the engine replaced, to drop.
     Order(Box<[u32]>),
+    /// Delays the engine replaced, to drop.
+    Delays(Box<Delays>),
     /// A group's list, emptied, to drop.
     Spent(Vec<Stamped>),
 }
@@ -239,7 +244,7 @@ pub struct Capacity {
 impl Capacity {
     /// The feedback the engine can owe at once: each voice, bus, and processor ends once and its
     /// slot is reused only after the control side reads that, and each command replaces at most
-    /// one order.
+    /// one order or one set of delays.
     pub const fn feedback(&self) -> usize {
         // A group sends its spent list back as well as whatever its members do.
         self.voices + self.buses + self.processors + 2 * self.commands
@@ -332,6 +337,8 @@ pub struct Engine {
     processors: Box<[Option<Mounted>]>,
     /// Bus slots, each before every bus it feeds; slots of removed buses are skipped.
     order: Box<[u32]>,
+    /// The delays that line up paths of different latency.
+    delays: Box<Delays>,
     /// One block of every bus: `channels × QUANTUM` samples per slot, channel after channel.
     mixes: Box<[f32]>,
     /// Commands stamped for a later frame, latest first, so the next is at the end.
@@ -392,6 +399,7 @@ impl Engine {
             buses,
             processors: std::iter::repeat_with(|| None).take(capacity.processors).collect(),
             order: Box::new([0]),
+            delays: Box::default(),
             mixes: vec![0.0; capacity.buses * channels * QUANTUM].into_boxed_slice(),
             pending: Vec::with_capacity(capacity.commands),
             scratch: vec![0.0; MAX_CHANNELS * QUANTUM].into_boxed_slice(),
@@ -688,6 +696,11 @@ impl Engine {
                     self.reorder(order);
                 }
             }
+            Command::Compensate(mut delays) => {
+                delays.inherit(&self.delays);
+                let old = std::mem::replace(&mut self.delays, delays);
+                self.send(Feedback::Delays(old));
+            }
         }
     }
 
@@ -900,6 +913,11 @@ impl Engine {
                 });
             }
         }
+        // What voices added straight into a bus waits for what reaches it the latest way round.
+        for line in self.delays.inputs() {
+            let to = line.to as usize;
+            line.process(&mut self.mixes[to * stride..(to + 1) * stride], frames);
+        }
         self.mix_buses(frames);
     }
 
@@ -1036,10 +1054,23 @@ impl Engine {
         self.counters.meters[slot].add(peak, energy, (frames * self.channels) as u64);
     }
 
-    /// Adds `frames` of bus slot `from` into bus slot `to`, at `gain`.
+    /// Adds `frames` of bus slot `from` into bus slot `to`, at `gain`, through the delay that
+    /// lines the edge up with the latest path into `to`, if it has one.
     fn add(&mut self, from: usize, to: usize, gain: f32, frames: usize) {
         let stride = self.channels * QUANTUM;
-        let (from, to) = two(&mut self.mixes, stride, from, to);
+        let line = self
+            .delays
+            .line(u32::try_from(from).unwrap_or(u32::MAX), u32::try_from(to).unwrap_or(u32::MAX));
+        let (mut from, to) = two(&mut self.mixes, stride, from, to);
+        if let Some(line) = line {
+            let delayed = &mut self.scratch[..stride];
+            for channel in 0..self.channels {
+                let range = channel * QUANTUM..channel * QUANTUM + frames;
+                delayed[range.clone()].copy_from_slice(&from[range]);
+            }
+            line.process(delayed, frames);
+            from = &*delayed;
+        }
         for channel in 0..self.channels {
             let range = channel * QUANTUM..channel * QUANTUM + frames;
             for (out, sample) in to[range.clone()].iter_mut().zip(&from[range]) {

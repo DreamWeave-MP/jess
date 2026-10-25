@@ -47,7 +47,7 @@ Buses form a tree under the master bus, with sends adding more paths and sidecha
 
 Each block, voices add into their buses, then the buses are walked in order: processors, pre-fader sends, gain and mute, meter, post-fader sends, parent. A removed bus keeps running its processors for as long as their tails say (a reverb's decay, a delay's echoes), then goes with them.
 
-Each bus reports latency: the processor latency along the longest path into it. Compensation is designed but not built. Where paths of different latency sum into one bus, the control side would insert delays on the shorter paths, sized from the same longest-path walk, as engine-owned delay lines it allocates when the graph changes. The latency already flows through every graph change, so adding it won't replace anything.
+Each bus reports latency: the processor latency along the longest path into it. Where paths of different latency meet, they are lined up. The same longest-path walk gives each bus the time its latest path arrives, and every other way in waits for that: each edge from a bus to its parent or a send by the difference, and what voices add into the bus directly (which arrives with no latency at all) by the whole of it. The control side works the delays out whenever the routing or a processor's latency changes, allocates their lines, and sends them stamped with the change's own frame. The engine moves each line's history into its replacement, so a line that keeps its length plays on without a seam, and sends the old set back to be dropped. A delay that changes length can't be seamless: one that grows plays silence where it has no history, and one that shrinks skips. A processor hearing a sidechain key hears it as it left its bus, uncompensated.
 
 ## Voices
 
@@ -84,7 +84,6 @@ A live context belongs to the Luau runtime that opened it, not to the script's h
 
 These are designed for, but not built:
 
-- **Latency compensation**, as above.
 - **Capture.** The `audio.capture` capability is reserved, and miniaudio's duplex devices are the path.
 - **Pitch-preserving time stretch.** It would be a processor, never a playback rate.
 - **HRTF and binaural rendering.** It would be another voice stage after pan, chosen per voice.

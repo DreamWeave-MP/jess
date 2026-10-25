@@ -7,6 +7,7 @@
 
 use std::collections::BTreeSet;
 
+use crate::audio::delays::INPUT;
 use crate::audio::{AudioError, BusKey, MAX_SENDS};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -205,22 +206,52 @@ impl Graph {
     }
 
     /// How many frames each bus's output lags the voices that reach it by the longest way round,
-    /// by slot, given what each bus's own processors add (`own`). A bus summing paths of
-    /// different latency is where compensation would delay the shorter ones to match.
-    pub fn latencies(&self, own: impl Fn(u32) -> u64) -> Vec<u64> {
+    /// by slot, given what each bus's own processors add (`own`, by slot). Compensation makes
+    /// every path into a bus as late as its latest, so this is also how late each bus is.
+    pub fn latencies(&self, own: &[u64]) -> Vec<u64> {
+        self.timing(own).1
+    }
+
+    /// The delays that line up every path into each bus with its latest, as `(from, to,
+    /// frames)`: on a bus's own input ([`INPUT`]) for what voices add there directly, and on each
+    /// edge from a bus to its parent or a send.
+    pub fn compensation(&self, own: &[u64]) -> Vec<(u32, u32, u64)> {
+        let (arrival, output) = self.timing(own);
+        let mut wanted = Vec::new();
+        for (slot, node) in self.nodes.iter().enumerate() {
+            if node.state == State::Free {
+                continue;
+            }
+            let from = u32::try_from(slot).unwrap_or(u32::MAX);
+            if arrival[slot] > 0 {
+                wanted.push((INPUT, from, arrival[slot]));
+            }
+            for target in node.signal() {
+                let behind = arrival[target as usize] - output[slot];
+                if behind > 0 {
+                    wanted.push((from, target, behind));
+                }
+            }
+        }
+        wanted.sort_unstable();
+        wanted
+    }
+
+    /// When the latest path reaches each bus, and when its output leaves, by slot.
+    fn timing(&self, own: &[u64]) -> (Vec<u64>, Vec<u64>) {
         let mut arrival = vec![0u64; self.nodes.len()];
         let mut output = vec![0u64; self.nodes.len()];
         let Ok(order) = self.order() else {
-            return output;
+            return (arrival, output);
         };
         for slot in order {
-            let done = arrival[slot as usize] + own(slot);
+            let done = arrival[slot as usize] + own[slot as usize];
             output[slot as usize] = done;
             for target in self.nodes[slot as usize].signal() {
                 arrival[target as usize] = arrival[target as usize].max(done);
             }
         }
-        output
+        (arrival, output)
     }
 
     /// Every bus not yet free in an order where each comes before everything it feeds, the

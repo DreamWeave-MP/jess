@@ -48,6 +48,7 @@
 pub mod backend;
 mod bus;
 mod context;
+mod delays;
 pub mod dsp;
 mod engine;
 mod error;

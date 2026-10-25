@@ -195,7 +195,7 @@ Removes the bus. It has to be quiet first: a voice playing or sending into it, o
 {{ api_signature(value="bus:meter() -> { peak: number, rms: number }") }}
 {{ api_signature(value="bus:latency() -> number") }}
 
-`meter` is what the bus put out after its gain since the last read: the largest sample's magnitude and the RMS, linear, across its channels. Reading starts the next measurement. `latency` is how many frames the bus's output lags the voices that reach it, along the path whose processors delay them most. Paths of different latency summing into one bus are where compensation would line them up; the engine reports the number and doesn't yet compensate.
+`meter` is what the bus put out after its gain since the last read: the largest sample's magnitude and the RMS, linear, across its channels. Reading starts the next measurement. `latency` is how many frames the bus's output lags the voices that reach it, along the path whose processors delay them most. Where paths of different latency meet, the engine lines them up: every path into a bus, and what voices play into it directly, waits for the latest, so a voice heard through a limited group and through a dry one stays one voice. A sidechain key is heard as it left its bus, without waiting.
 
 ## Processors
 
