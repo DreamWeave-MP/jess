@@ -65,6 +65,8 @@ Space is a stage of the voice, not a separate system: the listener and each voic
 
 A stream is a ring of interleaved frames in atomics, one writer and one reader, with no lock and no unsafe code. A voice reads it through a small window, so a stream resamples and interpolates like any source. A dry ring plays silence and counts it. A stream handle crosses to a worker as a `JessHandle`, found again through a registry of weak references, so a worker can decode or generate into a stream the main script plays.
 
+A feed (`src/audio/feed.rs`) keeps a stream full from a decoder on a thread of its own, so music plays on through anything the script does: a long frame, a level loading, a breakpoint. The thread waits for room, decodes a block into the ring, and goes round, back to a loop's start when the decoder runs out if it loops. It knows no formats, only a `Decode` trait the binding implements over l3i's decoders. It ends when the decoder does, when it fails (finishing the stream and saying why), when it is stopped, or when nothing but the feed holds the stream any more, and it checks for the last two every 50 ms, so stopping one never waits longer than that and a block's decoding.
+
 ## Devices
 
 The `audio-device` feature builds miniaudio's device layer (`vendor/miniaudio`, 0.11.25, unmodified) behind a C shim of a dozen functions (`src/audio/backend/device.c`). Rust never sees a miniaudio structure. The device runs at its own rate unless asked otherwise, so jess resamples rather than miniaudio. Stops, reroutes to a new default device, and interruptions are counted.
