@@ -6,7 +6,7 @@ extra:
   kind: api
 ---
 
-{{ api_signature(value="require('@jess/audio'): { pcm, offline, processors, frames, seconds, tempo, readWav, loadWav, writeWav }") }}
+{{ api_signature(value="require('@jess/audio'): { pcm, stream, offline, processors, frames, seconds, tempo, readWav, loadWav, writeWav }") }}
 
 `@jess/audio` is audio for scripts: the built-in package's Luau over `jess.audio`, the native half. The native side owns samples, voices, the sample clock, and the mix. What a file's bytes are and which frame a second lands on are Luau's, so WAV reading and writing and the time helpers live here, and a format that needs a native codec arrives as PCM bytes the same way.
 
@@ -29,6 +29,51 @@ PCM from interleaved bytes: `channels` samples per frame (1 to 8), each stored a
 {{ api_signature(value="pcm:channels() -> number") }}
 {{ api_signature(value="pcm:frames() -> number") }}
 
+## Streams
+
+A stream is audio written while it plays: a bounded ring of interleaved frames that one writer fills while one voice plays it. Luau generating a sound, a worker decoding a file, anything that has audio a little at a time writes it, learns how much fit, and keeps ahead of the engine. The engine never waits for it and never calls it: when the ring runs dry the voice plays silence, counts the frames as `missed`, and carries on with whatever comes next.
+
+{{ api_signature(value="audio.stream(options: { channels: number?, rate: number?, seconds: number? }) -> AudioStream") }}
+{{ api_signature(value="audio.stream(handle: JessHandle) -> AudioStream") }}
+
+A stream of `channels` (2) at `rate` (48000) frames per second holding `seconds` (1, at most 60) of audio. Given a handle from `stream:handle()`, the same stream, wherever the handle was sent: a worker opens the stream the main script plays, and writes it.
+
+{{ api_signature(value="stream:write(samples: buffer) -> number") }}
+{{ api_signature(value="stream:room() -> number") }}
+{{ api_signature(value="stream:wait(frames: number, timeout: number?) -> boolean") }}
+{{ api_signature(value="stream:finish()") }}
+{{ api_signature(value="stream:stats() -> { written: number, read: number, room: number, missed: number, finished: boolean }") }}
+{{ api_signature(value="stream:handle() -> JessHandle") }}
+
+`write` takes interleaved 32-bit floats and writes as many whole frames as there is room for, returning how many. `wait` waits until there is room for `frames`, or `timeout` seconds pass; it sleeps exactly as long as playing at the stream's rate takes to make the room, so it is for a worker feeding a device, and in an offline context (where room comes only from rendering) it waits out its timeout. `finish` says the writer is done: the voice plays what is left and ends. A stream has one writer at a time and one voice: playing it again is an error.
+
+A stream plays once, from wherever its writer is: no `offset`, no `loop`, and a `rate` of at most 4. It is resampled to the context's rate like any source.
+
+```luau
+--!strict
+local audio = require '@jess/audio'
+
+local rate = 48000
+local context = audio.offline { channels = 1, rate = rate }
+local stream = audio.stream { channels = 1, rate = rate, seconds = 0.1 }
+context:play(stream)
+
+-- A tone generated a block at a time, ahead of what the engine has played.
+local frame = 0
+for _ = 1, 100 do
+  local room = stream:room()
+  local chunk = buffer.create(room * 4)
+  for index = 0, room - 1 do
+    buffer.writef32(chunk, index * 4, 0.2 * math.sin(2 * math.pi * 330 * (frame + index) / rate))
+  end
+
+  frame += stream:write(chunk)
+  context:render(1024)
+end
+```
+
+`stream:stats().missed` is `0` afterwards: the generator never fell behind.
+
 ## Contexts
 
 {{ api_signature(value="audio.offline(options: { rate: number?, channels: number?, voices: number?, buses: number?, processors: number?, commands: number?, speedOfSound: number?, handedness: ('right' | 'left')?, physical: number? }?) -> AudioContext") }}
@@ -37,7 +82,7 @@ A context the script renders. Defaults: 48000 frames per second, 2 channels, 256
 
 `voices` counts voices playing or stamped for later; `commands` bounds the queue to the engine. Every count is fixed when the context is made, so the engine never allocates while it mixes. Running out of one is an error at the call that ran out (`all 256 voices are playing or scheduled`, `the audio command queue is full`), never a sound quietly not played.
 
-{{ api_signature(value="context:play(pcm: AudioPcm, options: AudioPlayOptions?) -> AudioVoice") }}
+{{ api_signature(value="context:play(source: AudioPcm | AudioStream, options: AudioPlayOptions?) -> AudioVoice") }}
 
 Starts a voice. Options:
 
