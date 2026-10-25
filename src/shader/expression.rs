@@ -441,7 +441,7 @@ impl UnaryOperator {
     }
 }
 
-/// A built-in function.
+/// A built-in function. Its name is the one Luau and WGSL both give it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Function {
     /// The smaller of two values, per component.
@@ -450,34 +450,179 @@ pub enum Function {
     Max,
     /// `value` clamped to `low..=high`, per component.
     Clamp,
+    /// The absolute value, per component.
+    Abs,
+    /// -1, 0, or 1, per component, as the value is negative, zero, or positive.
+    Sign,
+    /// The greatest integer no larger than a float, per component.
+    Floor,
+    /// The least integer no smaller than a float, per component.
+    Ceil,
+    /// The nearest integer, per component; halves round to even.
+    Round,
+    /// A float with its fraction dropped, per component: toward zero.
+    Trunc,
+    /// `x - floor(x)`, per component.
+    Fract,
+    /// The square root, per component.
+    Sqrt,
+    /// One over the square root, per component.
+    InverseSqrt,
+    /// `e` to the power, per component.
+    Exp,
+    /// 2 to the power, per component.
+    Exp2,
+    /// The natural logarithm, per component.
+    Log,
+    /// The base-2 logarithm, per component.
+    Log2,
+    /// `base` to the power `exponent`, per component.
+    Pow,
+    /// The sine of radians, per component.
+    Sin,
+    /// The cosine of radians, per component.
+    Cos,
+    /// The tangent of radians, per component.
+    Tan,
+    /// The arcsine, in radians, per component.
+    Asin,
+    /// The arccosine, in radians, per component.
+    Acos,
+    /// The arctangent, in radians, per component.
+    Atan,
+    /// The angle of the point `(x, y)`, `atan2(y, x)`, in radians from -π to π, per component.
+    Atan2,
+    /// Degrees in radians, per component.
+    Radians,
+    /// Radians in degrees, per component.
+    Degrees,
+    /// A float clamped to `0..=1`, per component.
+    Saturate,
+    /// 0 where `x < edge`, else 1, per component.
+    Step,
+    /// 0 at `low`, 1 at `high`, a Hermite curve between, per component.
+    Smoothstep,
+    /// `start + (end - start) * amount`, per component.
+    Mix,
     /// The dot product of two vectors of one type.
     Dot,
     /// The cross product of two `Vec3f`.
     Cross,
-    /// A vector scaled to length 1.
-    Normalize,
     /// A vector's length, or a float's absolute value.
     Length,
-    /// The greatest integer no larger than a float or each component of a float vector.
-    Floor,
-    /// `start + (end - start) * amount`, per component.
-    Mix,
+    /// The length of the difference of two floats or float vectors.
+    Distance,
+    /// A vector scaled to length 1.
+    Normalize,
+    /// `incident` reflected about the plane of `normal`, a unit vector.
+    Reflect,
+    /// `incident` refracted through the plane of `normal` at the ratio of indices `eta`.
+    Refract,
+    /// A matrix's rows as its columns.
+    Transpose,
+    /// A matrix's determinant.
+    Determinant,
+    /// How fast a value changes across the screen horizontally. Fragment stage only.
+    Dpdx,
+    /// How fast a value changes across the screen vertically. Fragment stage only.
+    Dpdy,
+    /// `abs(dpdx(value)) + abs(dpdy(value))`. Fragment stage only.
+    Fwidth,
 }
 
 impl Function {
-    /// The function's name, as errors and WGSL write it.
+    /// Every function, in the order the docs list them.
+    pub const ALL: [Function; 42] = [
+        Function::Min,
+        Function::Max,
+        Function::Clamp,
+        Function::Abs,
+        Function::Sign,
+        Function::Floor,
+        Function::Ceil,
+        Function::Round,
+        Function::Trunc,
+        Function::Fract,
+        Function::Sqrt,
+        Function::InverseSqrt,
+        Function::Exp,
+        Function::Exp2,
+        Function::Log,
+        Function::Log2,
+        Function::Pow,
+        Function::Sin,
+        Function::Cos,
+        Function::Tan,
+        Function::Asin,
+        Function::Acos,
+        Function::Atan,
+        Function::Atan2,
+        Function::Radians,
+        Function::Degrees,
+        Function::Saturate,
+        Function::Step,
+        Function::Smoothstep,
+        Function::Mix,
+        Function::Dot,
+        Function::Cross,
+        Function::Length,
+        Function::Distance,
+        Function::Normalize,
+        Function::Reflect,
+        Function::Refract,
+        Function::Transpose,
+        Function::Determinant,
+        Function::Dpdx,
+        Function::Dpdy,
+        Function::Fwidth,
+    ];
+
+    /// The function's name, as Luau, errors, and WGSL write it.
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
             Function::Min => "min",
             Function::Max => "max",
             Function::Clamp => "clamp",
+            Function::Abs => "abs",
+            Function::Sign => "sign",
+            Function::Floor => "floor",
+            Function::Ceil => "ceil",
+            Function::Round => "round",
+            Function::Trunc => "trunc",
+            Function::Fract => "fract",
+            Function::Sqrt => "sqrt",
+            Function::InverseSqrt => "inverseSqrt",
+            Function::Exp => "exp",
+            Function::Exp2 => "exp2",
+            Function::Log => "log",
+            Function::Log2 => "log2",
+            Function::Pow => "pow",
+            Function::Sin => "sin",
+            Function::Cos => "cos",
+            Function::Tan => "tan",
+            Function::Asin => "asin",
+            Function::Acos => "acos",
+            Function::Atan => "atan",
+            Function::Atan2 => "atan2",
+            Function::Radians => "radians",
+            Function::Degrees => "degrees",
+            Function::Saturate => "saturate",
+            Function::Step => "step",
+            Function::Smoothstep => "smoothstep",
+            Function::Mix => "mix",
             Function::Dot => "dot",
             Function::Cross => "cross",
-            Function::Normalize => "normalize",
             Function::Length => "length",
-            Function::Floor => "floor",
-            Function::Mix => "mix",
+            Function::Distance => "distance",
+            Function::Normalize => "normalize",
+            Function::Reflect => "reflect",
+            Function::Refract => "refract",
+            Function::Transpose => "transpose",
+            Function::Determinant => "determinant",
+            Function::Dpdx => "dpdx",
+            Function::Dpdy => "dpdy",
+            Function::Fwidth => "fwidth",
         }
     }
 
@@ -485,10 +630,24 @@ impl Function {
     #[must_use]
     pub fn arity(self) -> usize {
         match self {
-            Function::Normalize | Function::Length | Function::Floor => 1,
-            Function::Min | Function::Max | Function::Dot | Function::Cross => 2,
-            Function::Clamp | Function::Mix => 3,
+            Function::Min
+            | Function::Max
+            | Function::Pow
+            | Function::Atan2
+            | Function::Step
+            | Function::Dot
+            | Function::Cross
+            | Function::Distance
+            | Function::Reflect => 2,
+            Function::Clamp | Function::Smoothstep | Function::Mix | Function::Refract => 3,
+            _ => 1,
         }
+    }
+
+    /// Whether it reads the fragment stage's derivatives, which the vertex stage has none of.
+    #[must_use]
+    pub fn needs_derivatives(self) -> bool {
+        matches!(self, Function::Dpdx | Function::Dpdy | Function::Fwidth)
     }
 }
 

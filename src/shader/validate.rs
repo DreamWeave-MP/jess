@@ -240,6 +240,13 @@ pub enum ValidationErrorKind {
         /// The sample.
         expression: ExpressionId,
     },
+    /// The vertex stage takes a derivative, which only the fragment stage has.
+    DerivativeInVertex {
+        /// The call.
+        expression: ExpressionId,
+        /// `dpdx`, `dpdy`, or `fwidth`.
+        function: Function,
+    },
     /// The vertex stage has no position.
     MissingPosition,
     /// The vertex position is not a `Vec4f`.
@@ -411,6 +418,11 @@ impl fmt::Display for ValidationErrorKind {
             ValidationErrorKind::SampleInVertex { .. } => {
                 formatter.write_str("sample is used in the vertex stage: textures are sampled in the fragment stage")
             }
+            ValidationErrorKind::DerivativeInVertex { function, .. } => write!(
+                formatter,
+                "{} is used in the vertex stage: derivatives are taken in the fragment stage",
+                function.name()
+            ),
             ValidationErrorKind::MissingPosition => formatter.write_str("the vertex stage has no position"),
             ValidationErrorKind::PositionType { found } => {
                 write!(formatter, "the vertex position is {found}: expected Vec4f")
@@ -926,6 +938,7 @@ fn infer_types(
 
 /// What a vector constructor's target must be.
 pub const CONSTRUCT_TARGET: &str = "a vector or matrix target";
+const FLOAT: &str = "a Float or float vector";
 const ARITHMETIC: &str = "two values of the same numeric type, or a vector and a scalar of its kind";
 const ADD_SUBTRACT: &str =
     "two values of the same numeric type, a vector and a scalar of its kind, or two matrices of the same size";
@@ -991,6 +1004,12 @@ fn infer(
         }
         Expression::Sample { .. } if stage & VERTEX != 0 => {
             return Err(ValidationErrorKind::SampleInVertex { expression: id });
+        }
+        Expression::Call { function, .. } if function.needs_derivatives() && stage & VERTEX != 0 => {
+            return Err(ValidationErrorKind::DerivativeInVertex {
+                expression: id,
+                function,
+            });
         }
         Expression::Sample { texture, sampler, .. } => sample_type(program, id, texture, sampler, operands[0])?,
         _ => operation_type(id, expression, operands)?,
@@ -1262,6 +1281,9 @@ pub fn operation_type(id: ExpressionId, expression: &Expression, operands: &[Typ
 /// The type of calling `function` with arguments of the types `operands`, as many as it takes,
 /// or what it accepts.
 fn function_type(function: Function, operands: &[Type]) -> Result<Type, &'static str> {
+    let float = |ty: Type| ty.float_components() > 0;
+    // Its type, or a Float where `value` is a float vector: what WGSL is given splatted.
+    let float_beside = |ty: Type, value: Type| ty == value || (ty == Type::Float && value.is_float_vector());
     let ty = match function {
         Function::Min | Function::Max => arithmetic(operands[0], operands[1]).ok_or(ARITHMETIC)?,
         Function::Clamp => {
@@ -1271,6 +1293,99 @@ fn function_type(function: Function, operands: &[Type]) -> Result<Type, &'static
                 return Err("a numeric value and two bounds of its type, or a vector and two scalars of its kind");
             }
             value
+        }
+        Function::Abs => {
+            if !operands[0].is_numeric() {
+                return Err("a numeric scalar or vector");
+            }
+            operands[0]
+        }
+        Function::Sign => {
+            if !operands[0].is_numeric() || operands[0].scalar() == Scalar::UInt {
+                return Err("a signed or float scalar or vector");
+            }
+            operands[0]
+        }
+        Function::Floor
+        | Function::Ceil
+        | Function::Round
+        | Function::Trunc
+        | Function::Fract
+        | Function::Sqrt
+        | Function::InverseSqrt
+        | Function::Exp
+        | Function::Exp2
+        | Function::Log
+        | Function::Log2
+        | Function::Sin
+        | Function::Cos
+        | Function::Tan
+        | Function::Asin
+        | Function::Acos
+        | Function::Atan
+        | Function::Radians
+        | Function::Degrees
+        | Function::Saturate
+        | Function::Dpdx
+        | Function::Dpdy
+        | Function::Fwidth => {
+            if !float(operands[0]) {
+                return Err(FLOAT);
+            }
+            operands[0]
+        }
+        Function::Pow | Function::Atan2 | Function::Step => {
+            let (left, right) = (operands[0], operands[1]);
+            let value = if left.is_float_vector() { left } else { right };
+            if !float(value) || !float_beside(left, value) || !float_beside(right, value) {
+                return Err("two Floats or float vectors of the same type, or a float vector and a Float");
+            }
+            value
+        }
+        Function::Smoothstep => {
+            let (low, high, value) = (operands[0], operands[1], operands[2]);
+            if !float(value) || !float_beside(low, value) || !float_beside(high, value) {
+                return Err("two edges and a Float or float vector, each edge of its type or a Float");
+            }
+            value
+        }
+        Function::Mix => {
+            let (start, end, amount) = (operands[0], operands[1], operands[2]);
+            if start != end || !float(start) || (amount != start && amount != Type::Float) {
+                return Err("two Floats or float vectors of the same type, and an amount of that type or Float");
+            }
+            start
+        }
+        Function::Dot
+        | Function::Cross
+        | Function::Length
+        | Function::Distance
+        | Function::Normalize
+        | Function::Reflect
+        | Function::Refract => return geometric_type(function, operands),
+        Function::Transpose | Function::Determinant => {
+            if !operands[0].is_matrix() {
+                return Err("a matrix");
+            }
+            if function == Function::Determinant {
+                Type::Float
+            } else {
+                operands[0]
+            }
+        }
+    };
+    Ok(ty)
+}
+
+/// The type of calling a vector function, `dot` to `refract`, or what it accepts.
+fn geometric_type(function: Function, operands: &[Type]) -> Result<Type, &'static str> {
+    let float = |ty: Type| ty.float_components() > 0;
+    let ty = match function {
+        Function::Length => {
+            if !float(operands[0]) {
+                return Err(FLOAT);
+            }
+            Type::Float
         }
         Function::Dot => operands[0]
             .component()
@@ -1282,29 +1397,31 @@ fn function_type(function: Function, operands: &[Type]) -> Result<Type, &'static
             }
             Type::Vec3f
         }
+        Function::Distance => {
+            if operands[0] != operands[1] || !float(operands[0]) {
+                return Err("two Floats or float vectors of the same type");
+            }
+            Type::Float
+        }
         Function::Normalize => {
             if !operands[0].is_float_vector() {
                 return Err("a float vector");
             }
             operands[0]
         }
-        Function::Length | Function::Floor => {
-            if operands[0].float_components() == 0 {
-                return Err("a Float or float vector");
+        Function::Reflect => {
+            if operands[0] != operands[1] || !operands[0].is_float_vector() {
+                return Err("two float vectors of the same type");
             }
-            if function == Function::Length {
-                Type::Float
-            } else {
-                operands[0]
-            }
+            operands[0]
         }
-        Function::Mix => {
-            let (start, end, amount) = (operands[0], operands[1], operands[2]);
-            if start != end || start.float_components() == 0 || (amount != start && amount != Type::Float) {
-                return Err("two Floats or float vectors of the same type, and an amount of that type or Float");
+        Function::Refract => {
+            if operands[0] != operands[1] || !operands[0].is_float_vector() || operands[2] != Type::Float {
+                return Err("two float vectors of the same type and a Float");
             }
-            start
+            operands[0]
         }
+        _ => unreachable!("{} is not a vector function", function.name()),
     };
     Ok(ty)
 }

@@ -33,6 +33,15 @@
         "less": "ShaderExpr(Bool)",
         "negated": "ShaderExpr(Bool)"
       },
+      "math": {
+        "absolute": "ShaderExpr(Int)",
+        "angle": "ShaderExpr(Float)",
+        "powered": "ShaderExpr(Vec4f)",
+        "smooth": "ShaderExpr(Float)",
+        "stepped": "ShaderExpr(Vec3f)",
+        "transposed": "ShaderExpr(Mat3f)",
+        "width": "ShaderExpr(Vec2f)"
+      },
       "min": "ShaderExpr(Vec4f)",
       "mixed": "ShaderExpr(Vec3f)",
       "numberFirst": "ShaderExpr(Vec4f)",

@@ -677,8 +677,53 @@ export type ShaderModule = {
   --- A vector scaled to length 1, and a vector's length (a `Float`'s absolute value).
   normalize: (value: ShaderExpr | number) -> ShaderExpr,
   length: (value: ShaderExpr | number) -> ShaderExpr,
-  --- The greatest integer no larger than a float or each component of a float vector.
+  --- The distance between two points, `incident` reflected about the plane of a unit `normal`,
+  --- and refracted through it at the ratio of indices `eta`.
+  distance: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr,
+  reflect: (incident: ShaderExpr, normal: ShaderExpr) -> ShaderExpr,
+  refract: (incident: ShaderExpr, normal: ShaderExpr, eta: ShaderExpr | number) -> ShaderExpr,
+  --- A matrix's rows as its columns, and its determinant.
+  transpose: (matrix: ShaderExpr) -> ShaderExpr,
+  determinant: (matrix: ShaderExpr) -> ShaderExpr,
+  --- How fast a `Float` or float vector changes across the screen: horizontally, vertically,
+  --- and the sum of both sizes. Fragment stage only.
+  dpdx: (value: ShaderExpr) -> ShaderExpr,
+  dpdy: (value: ShaderExpr) -> ShaderExpr,
+  fwidth: (value: ShaderExpr) -> ShaderExpr,
+  --- The absolute value of a number, and its sign (-1, 0, or 1) of an `Int` or `Float`, per
+  --- component.
+  abs: (value: ShaderExpr | number) -> ShaderExpr,
+  sign: (value: ShaderExpr | number) -> ShaderExpr,
+  --- A `Float` or float vector rounded, per component: down, up, to the nearest integer (halves
+  --- to even), and toward zero; and what `floor` drops.
   floor: (value: ShaderExpr | number) -> ShaderExpr,
+  ceil: (value: ShaderExpr | number) -> ShaderExpr,
+  round: (value: ShaderExpr | number) -> ShaderExpr,
+  trunc: (value: ShaderExpr | number) -> ShaderExpr,
+  fract: (value: ShaderExpr | number) -> ShaderExpr,
+  --- Roots, powers, and logarithms of a `Float` or float vector, per component.
+  sqrt: (value: ShaderExpr | number) -> ShaderExpr,
+  inverseSqrt: (value: ShaderExpr | number) -> ShaderExpr,
+  exp: (value: ShaderExpr | number) -> ShaderExpr,
+  exp2: (value: ShaderExpr | number) -> ShaderExpr,
+  log: (value: ShaderExpr | number) -> ShaderExpr,
+  log2: (value: ShaderExpr | number) -> ShaderExpr,
+  pow: (base: ShaderExpr | number, exponent: ShaderExpr | number) -> ShaderExpr,
+  --- Trigonometry in radians, per component; `atan2(y, x)` is the angle of the point `(x, y)`.
+  sin: (value: ShaderExpr | number) -> ShaderExpr,
+  cos: (value: ShaderExpr | number) -> ShaderExpr,
+  tan: (value: ShaderExpr | number) -> ShaderExpr,
+  asin: (value: ShaderExpr | number) -> ShaderExpr,
+  acos: (value: ShaderExpr | number) -> ShaderExpr,
+  atan: (value: ShaderExpr | number) -> ShaderExpr,
+  atan2: (y: ShaderExpr | number, x: ShaderExpr | number) -> ShaderExpr,
+  radians: (degrees: ShaderExpr | number) -> ShaderExpr,
+  degrees: (radians: ShaderExpr | number) -> ShaderExpr,
+  --- A `Float` or float vector clamped to `0..1`; 0 below `edge` and 1 from it; and a smooth
+  --- curve from 0 at `low` to 1 at `high`. Edges may be a `Float` beside a vector.
+  saturate: (value: ShaderExpr | number) -> ShaderExpr,
+  step: (edge: ShaderExpr | number, value: ShaderExpr | number) -> ShaderExpr,
+  smoothstep: (low: ShaderExpr | number, high: ShaderExpr | number, value: ShaderExpr | number) -> ShaderExpr,
   --- `start + (finish - start) * amount`, per component.
   mix: (start: ShaderExpr | number, finish: ShaderExpr | number, amount: ShaderExpr | number) -> ShaderExpr,
   --- Comparisons of two scalars of one type, to a `Bool`: `equal` and `notEqual` any scalars, the

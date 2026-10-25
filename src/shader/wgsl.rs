@@ -362,8 +362,18 @@ impl Lowering<'_> {
                 reject,
             } => self.call("select", &[reject, accept, condition], None),
             Expression::Call { function, arguments } => {
-                // WGSL's min, max, and clamp take no scalar beside a vector, which Jess's do.
-                let splat = matches!(function, Function::Min | Function::Max | Function::Clamp).then(|| self.type_of(id));
+                // WGSL takes no scalar beside a vector in these, which Jess does.
+                let splat = matches!(
+                    function,
+                    Function::Min
+                        | Function::Max
+                        | Function::Clamp
+                        | Function::Pow
+                        | Function::Atan2
+                        | Function::Step
+                        | Function::Smoothstep
+                )
+                .then(|| self.type_of(id));
                 self.call(function.name(), &arguments, splat);
             }
             Expression::Construct { target, components } => self.call(wgsl_type(target), &components, None),

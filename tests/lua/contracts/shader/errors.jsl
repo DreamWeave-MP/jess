@@ -57,6 +57,10 @@ return {
     matrix = inFragment(function() return shader.mat4(1.0) end),
     floatOfVector = inFragment(function(input) return shader.float(input.material.tint) end),
     swizzle = inFragment(function(input) return input.material.light.xyzw end),
+    sign = inFragment(function() return shader.vec4(shader.float(shader.sign(shader.uint(3)))) end),
+    smoothstep = inFragment(
+      function(input) return shader.smoothstep(input.material.light, 1, input.material.tint) end
+    ),
     notWhole = inFragment(function() return shader.vec4(shader.vec3i(1.5, 2, 3).x) end),
     uintRange = inFragment(function() return shader.vec4(shader.uint(-1)) end),
     integerFloat = inFragment(function() return shader.vec4(shader.vec2i(1, 2) * 2) end),
@@ -123,6 +127,12 @@ return {
           position = shader.vec4(shader.sample(input.material.diffuse, input.attributes.uv).xyz, 1.0),
         }
       end,
+      fragment = white,
+    },
+
+    derivativeInVertex = build {
+      attributes = { position = shader.vec4 },
+      vertex = function(input) return { position = shader.dpdx(input.attributes.position) } end,
       fragment = white,
     },
 

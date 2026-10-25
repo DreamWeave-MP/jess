@@ -324,18 +324,37 @@ shader.program {
 
 ## Functions
 
-Each takes shader values or numbers and returns a new value. They're only usable inside a stage function: `shader.dot is only usable inside shader.program's vertex or fragment function`.
+Each takes shader values or numbers and returns a new value. They're only usable inside a stage function: `shader.dot is only usable inside shader.program's vertex or fragment function`. The names are WGSL's, and so is what each computes.
 
 | Function | Takes | Gives |
 | --- | --- | --- |
 | `shader.min(a, b)`, `shader.max(a, b)` | Two values of one numeric type, or a vector and a scalar of its kind. | The smaller or larger, per component. |
 | `shader.clamp(value, low, high)` | A value and two bounds of its type, or a vector and two scalars of its kind. | `value` kept within `low..high`, per component. |
+| `shader.abs(value)` | An `Int`, `UInt`, `Float`, or a vector of one. | The absolute value, per component. |
+| `shader.sign(value)` | An `Int`, `Float`, or a vector of one. | -1, 0, or 1, per component. |
+| `shader.floor`, `ceil`, `round`, `trunc` | A `Float` or float vector. | Each component rounded down, up, to the nearest integer (a half to the even one), or toward zero. |
+| `shader.fract(value)` | A `Float` or float vector. | `value - floor(value)`. |
+| `shader.sqrt`, `inverseSqrt`, `exp`, `exp2`, `log`, `log2` | A `Float` or float vector. | The root, one over it, `e` or 2 to the power, or the natural or base-2 logarithm, per component. |
+| `shader.pow(base, exponent)` | Two `Float`s or float vectors of one type, or a float vector and a `Float`. | `base` to the power `exponent`, per component. |
+| `shader.sin`, `cos`, `tan`, `asin`, `acos`, `atan` | A `Float` or float vector, in radians. | The function, per component; the inverses give radians. |
+| `shader.atan2(y, x)` | As `pow`. | The angle of the point `(x, y)`, from -π to π. |
+| `shader.radians(degrees)`, `shader.degrees(radians)` | A `Float` or float vector. | The angle in the other unit. |
+| `shader.saturate(value)` | A `Float` or float vector. | `clamp(value, 0, 1)`. |
+| `shader.step(edge, value)` | As `pow`. | 0 where `value < edge`, else 1, per component. |
+| `shader.smoothstep(low, high, value)` | A `Float` or float vector, and two edges of its type or `Float`s. | 0 at `low`, 1 at `high`, and a smooth curve between. |
 | `shader.mix(start, finish, amount)` | Two `Float`s or vectors of one type, and an amount of that type or `Float`. | `start + (finish - start) * amount`. |
 | `shader.dot(a, b)` | Two vectors of one type. | Their component: a `Float`, `Int`, or `UInt`. |
 | `shader.cross(a, b)` | Two `Vec3f`. | A `Vec3f`. |
-| `shader.normalize(value)` | A float vector. | The vector at length 1. |
 | `shader.length(value)` | A `Float` or a vector. | A `Float`. |
-| `shader.floor(value)` | A `Float` or float vector. | The greatest integer no larger than each component, with the same type. |
+| `shader.distance(a, b)` | Two `Float`s or float vectors of one type. | `length(a - b)`. |
+| `shader.normalize(value)` | A float vector. | The vector at length 1. |
+| `shader.reflect(incident, normal)` | Two float vectors of one type; `normal` at length 1. | `incident` reflected about the plane `normal` faces out of. |
+| `shader.refract(incident, normal, eta)` | Two float vectors of one type, and a `Float`. | `incident` bent through that plane at the ratio of refractive indices `eta`, or zero where it reflects entirely. |
+| `shader.transpose(matrix)` | A matrix. | Its rows as its columns. |
+| `shader.determinant(matrix)` | A matrix. | A `Float`. |
+| `shader.dpdx`, `dpdy`, `fwidth` | A `Float` or float vector. Fragment stage only. | How fast the value changes from one pixel to the next across the screen, down it, or the sum of both as absolute values. |
+
+A `Float` beside a vector in `pow`, `atan2`, `step`, and `smoothstep` counts for every component: `shader.step(0.5, color.xyz)`. A derivative in the vertex stage fails when the program finishes: `dpdx is used in the vertex stage: derivatives are taken in the fragment stage`.
 
 ```luau
 --!strict
@@ -362,12 +381,14 @@ shader.program {
     local shade = shader.mix(material.cool, material.warm, shader.clamp(facing, 0, 1))
     print(facing, shade, shader.length(input.normal), shader.cross(normal, material.lightDirection))
     print(shader.min(shade, 0.8), shader.max(material.warm, material.cool))
+    print(shader.smoothstep(0.2, 0.8, facing), shader.step(0.5, shade), shader.fwidth(facing))
 
     return shader.vec4(shade, 1)
   end,
 }
 -- ShaderExpr(Float)  ShaderExpr(Vec3f)  ShaderExpr(Float)  ShaderExpr(Vec3f)
 -- ShaderExpr(Vec3f)  ShaderExpr(Vec3f)
+-- ShaderExpr(Float)  ShaderExpr(Vec3f)  ShaderExpr(Float)
 ```
 
 ### Comparisons and choice

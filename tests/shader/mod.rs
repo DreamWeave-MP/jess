@@ -6,6 +6,7 @@ mod builder;
 mod common;
 mod conversions;
 mod folding;
+mod functions;
 mod integers;
 mod layout;
 mod logic;

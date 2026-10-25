@@ -518,12 +518,9 @@ impl Ternary {
     }
 }
 
-/// The `jess.shader` functions of two operands, by the name the module gives them.
-const BINARY_FUNCTIONS: [Binary; 17] = [
-    Binary::Function(ShaderFunction::Min),
-    Binary::Function(ShaderFunction::Max),
-    Binary::Function(ShaderFunction::Dot),
-    Binary::Function(ShaderFunction::Cross),
+/// The `jess.shader` operators of two operands that are functions, by the name the module gives
+/// them; the built-in functions come from [`ShaderFunction::ALL`].
+const BINARY_OPERATORS: [Binary; 13] = [
     Binary::Operator(BinaryOperator::Equal),
     Binary::Operator(BinaryOperator::NotEqual),
     Binary::Operator(BinaryOperator::Less),
@@ -539,21 +536,11 @@ const BINARY_FUNCTIONS: [Binary; 17] = [
     Binary::Operator(BinaryOperator::ShiftRight),
 ];
 
-/// The `jess.shader` functions of one operand.
-const UNARY_FUNCTIONS: [Unary; 5] = [
-    Unary::Function(ShaderFunction::Normalize),
-    Unary::Function(ShaderFunction::Length),
-    Unary::Function(ShaderFunction::Floor),
-    Unary::Operator(UnaryOperator::Not),
-    Unary::Operator(UnaryOperator::BitNot),
-];
+/// The `jess.shader` operators of one operand that are functions.
+const UNARY_OPERATORS: [Unary; 2] = [Unary::Operator(UnaryOperator::Not), Unary::Operator(UnaryOperator::BitNot)];
 
-/// The `jess.shader` functions of three operands.
-const TERNARY_FUNCTIONS: [Ternary; 3] = [
-    Ternary::Function(ShaderFunction::Clamp),
-    Ternary::Function(ShaderFunction::Mix),
-    Ternary::Select,
-];
+/// The `jess.shader` choice of three operands.
+const TERNARY_OPERATORS: [Ternary; 1] = [Ternary::Select];
 
 fn binary(
     call: &Call<'_>,
@@ -1471,7 +1458,12 @@ pub(crate) fn module(runtime: &Runtime, _jess: &Rc<Jess>) -> l3i::Result<Table> 
             sample(call, texture, second, third)
         },
     )?;
-    for operation in BINARY_FUNCTIONS {
+    let functions = |arity: usize| {
+        ShaderFunction::ALL
+            .into_iter()
+            .filter(move |function| function.arity() == arity)
+    };
+    for operation in BINARY_OPERATORS.into_iter().chain(functions(2).map(Binary::Function)) {
         let state = shader.clone();
         module.function(
             operation.name(),
@@ -1481,14 +1473,14 @@ pub(crate) fn module(runtime: &Runtime, _jess: &Rc<Jess>) -> l3i::Result<Table> 
             },
         )?;
     }
-    for operation in UNARY_FUNCTIONS {
+    for operation in UNARY_OPERATORS.into_iter().chain(functions(1).map(Unary::Function)) {
         let state = shader.clone();
         module.function(operation.name(), move |call: &Call<'_>, value: ValueView<'_>| {
             let build = state.build_for(operation.name(), &[value])?;
             unary(call, &build, operation, value)
         })?;
     }
-    for operation in TERNARY_FUNCTIONS {
+    for operation in TERNARY_OPERATORS.into_iter().chain(functions(3).map(Ternary::Function)) {
         let state = shader.clone();
         module.function(
             operation.name(),

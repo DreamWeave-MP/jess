@@ -142,6 +142,15 @@ local lit = shader.program {
       time = tostring(input.pass.time),
       camera = tostring(input.pass.camera.position),
       viewport = tostring(input.pass.viewportSize),
+      math = {
+        smooth = tostring(shader.smoothstep(0.2, 0.8, facing)),
+        stepped = tostring(shader.step(0.5, diffuse.xyz)),
+        angle = tostring(shader.atan2(input.uv.y, input.uv.x)),
+        width = tostring(shader.fwidth(input.uv)),
+        transposed = tostring(shader.transpose(material.normalMatrix)),
+        absolute = tostring(shader.abs(shader.int(-2))),
+        powered = tostring(shader.pow(diffuse, 2)),
+      },
       logic = {
         less = tostring(shader.less(facing, 0.5)),
         both = tostring(shader.logicalAnd(true, shader.greater(facing, 0))),
