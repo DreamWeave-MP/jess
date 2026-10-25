@@ -76,7 +76,7 @@ pub enum DeviceKind {
 }
 
 impl DeviceKind {
-    /// The kind's name, as `jess.render` reports it.
+    /// The kind's name, as `jess.gpu` reports it.
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
@@ -260,7 +260,7 @@ impl Gpu {
     }
 }
 
-/// What `jess.render` calls the API wgpu reaches an adapter through.
+/// What `jess.gpu` calls the API wgpu reaches an adapter through.
 fn backend_name(backend: wgpu::Backend) -> &'static str {
     match backend {
         wgpu::Backend::Vulkan => "vulkan",
