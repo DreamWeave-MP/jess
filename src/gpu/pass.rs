@@ -246,14 +246,15 @@ fn group_problem(draw: &Draw<'_>) -> Option<String> {
 /// What is wrong with a draw's buffers, if anything.
 fn buffer_problem(draw: &Draw<'_>) -> Option<String> {
     let [vertex_stride, instance_stride] = draw.pipeline.strides;
-    for (name, buffer, stride, count) in [
+    for (name, plural, buffer, stride, count) in [
         (
             "vertex",
+            "vertices",
             draw.vertices,
             vertex_stride,
             if draw.indices.is_some() { 0 } else { draw.count },
         ),
-        ("instance", draw.instances, instance_stride, draw.instance_count),
+        ("instance", "instances", draw.instances, instance_stride, draw.instance_count),
     ] {
         match buffer {
             None if stride > 0 => {
@@ -271,7 +272,7 @@ fn buffer_problem(draw: &Draw<'_>) -> Option<String> {
             }
             Some(buffer) if buffer.size() < u64::from(stride) * u64::from(count) => {
                 return Some(format!(
-                    "{count} {name}s of {stride} bytes run past its {}-byte {name} buffer",
+                    "{count} {plural} of {stride} bytes run past its {}-byte {name} buffer",
                     buffer.size()
                 ));
             }
