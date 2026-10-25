@@ -150,6 +150,7 @@
     },
     "sameModule": true,
     "sampled": {
+      "bias": "ShaderExpr(Vec4f)",
       "cube": "ShaderExpr(Vec4f)",
       "explicit": "ShaderExpr(Vec4f)",
       "handles": [
@@ -157,8 +158,16 @@
         "ShaderTexture(Texture3D)",
         "ShaderTexture(TextureCube)"
       ],
+      "id": "ShaderExpr(Vec4u)",
+      "idHandle": "ShaderTexture(Texture2Du)",
+      "layerTexel": "ShaderExpr(Vec4f)",
       "layered": "ShaderExpr(Vec4f)",
+      "layers": "ShaderExpr(UInt)",
+      "level": "ShaderExpr(Vec4f)",
+      "levelSize": "ShaderExpr(Vec2u)",
+      "levels": "ShaderExpr(UInt)",
       "numberLayer": "ShaderExpr(Vec4f)",
+      "size": "ShaderExpr(Vec3u)",
       "volume": "ShaderExpr(Vec4f)"
     },
     "textures": {
@@ -185,6 +194,10 @@
           "type": "Texture3D"
         },
         {
+          "name": "ids",
+          "type": "Texture2Du"
+        },
+        {
           "name": "sky",
           "type": "TextureCube"
         }
@@ -195,7 +208,7 @@
           "type": "Sampler"
         }
       ],
-      "tostring": "ShaderProgram(1 attribute, 1 uniform, 3 textures, 1 varying)",
+      "tostring": "ShaderProgram(1 attribute, 1 uniform, 4 textures, 1 varying)",
       "varyings": [
         {
           "name": "direction",
@@ -213,6 +226,8 @@
       "struct": "Camera",
       "texture2d": "Texture2D",
       "texture2dArray": "Texture2DArray",
+      "texture2di": "Texture2Di",
+      "texture2du": "Texture2Du",
       "texture3d": "Texture3D",
       "textureCube": "TextureCube",
       "uint": "UInt",

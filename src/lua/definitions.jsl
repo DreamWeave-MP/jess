@@ -518,8 +518,9 @@ export type AudioContext = {
 
 --- A shader type, from `jess.shader`: a value type (`float`, `int`, `uint`, `vec2`..`vec4`,
 --- `vec2i`..`vec4i`, `vec2u`..`vec4u`, `mat3`, `mat4`), a texture (`texture2d`, `texture2dArray`,
---- `textureCube`, `texture3d`) or `sampler`, or a struct or array type from `shader.struct` and
---- `shader.array`. It's what a program's attributes and bindings declare (`tint = shader.vec4`).
+--- `textureCube`, `texture3d`, and the integer `texture2di` and `texture2du`) or `sampler`, or a
+--- struct or array type from `shader.struct` and `shader.array`. It's what a program's attributes
+--- and bindings declare (`tint = shader.vec4`).
 --- Called, the vector types build a vector from values and numbers whose sizes add up to theirs,
 --- or from one number repeated (`shader.vec4(position, 1)`); a number in an integer vector is
 --- that vector's integer, and must be whole. `shader.float(0.5)`, `shader.int(-3)`, and
@@ -672,6 +673,8 @@ export type ShaderModule = {
   texture2dArray: ShaderType,
   textureCube: ShaderType,
   texture3d: ShaderType,
+  texture2di: ShaderType,
+  texture2du: ShaderType,
   sampler: ShaderType,
   --- A struct type: named fields of value, struct, and array types, laid out by jess.
   struct: (name: string, fields: { [string]: ShaderType }) -> ShaderType,
@@ -771,6 +774,20 @@ export type ShaderModule = {
   --- `texture3d`), or a texture, a sampler declared on its own, and coordinates. An array texture
   --- takes its layer last, an `Int` or `UInt`. Fragment stage only.
   sample: ((texture: ShaderExpr, coordinates: ShaderExpr, layer: (ShaderExpr | number)?) -> ShaderExpr) & ((texture: ShaderExpr, sampler: ShaderExpr, coordinates: ShaderExpr, layer: (ShaderExpr | number)?) -> ShaderExpr),
+  --- `sample` at the `Float` mip level given last (0 the largest), in either stage; and at the
+  --- level `sample` would pick, moved by the `Float` bias given last, in the fragment stage. A
+  --- sampler and a layer go where they go in `sample`.
+  sampleLevel: (texture: ShaderExpr, ...ShaderExpr | number) -> ShaderExpr,
+  sampleBias: (texture: ShaderExpr, ...ShaderExpr | number) -> ShaderExpr,
+  --- One texel, without a sampler: integer coordinates, then a layer for an array texture, then
+  --- the `Int` or `UInt` mip level. A `Vec4f`, or a `Vec4i` or `Vec4u` from an integer texture.
+  --- Not a cube.
+  load: (texture: ShaderExpr, ...ShaderExpr | number) -> ShaderExpr,
+  --- A texture's size in texels (a `Vec2u`, or a `Vec3u` for a 3D texture) of the level given or
+  --- the largest, its mip levels, and an array texture's layers.
+  dimensions: (texture: ShaderExpr, level: (ShaderExpr | number)?) -> ShaderExpr,
+  levels: (texture: ShaderExpr) -> ShaderExpr,
+  layers: (texture: ShaderExpr) -> ShaderExpr,
 }
 
 declare jess: {

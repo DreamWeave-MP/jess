@@ -125,11 +125,11 @@ struct Build {
 enum Member {
     /// A uniform member, at its position among the frequency's members.
     Uniform { position: u32, descriptor: Descriptor },
-    /// A texture and the sampler declared with it.
+    /// A texture and the sampler declared with it, which an integer texture has none of.
     Texture {
         kind: ResourceKind,
         texture: ResourceId,
-        sampler: ResourceId,
+        sampler: Option<ResourceId>,
     },
     /// A sampler of its own.
     Sampler(ResourceId),
@@ -347,13 +347,14 @@ unsafe impl Userdata for LuaShaderPlace {
     const NAME: &'static str = "jess.shader.Place";
 }
 
-/// A declared texture, with the sampler declared with it: what `shader.sample` reads.
+/// A declared texture, with the sampler declared with it (an integer texture has none): what
+/// `shader.sample` and the other texture functions read.
 #[derive(Clone, Debug)]
 pub struct LuaShaderTexture {
     build: Rc<RefCell<Build>>,
     kind: ResourceKind,
     texture: ResourceId,
-    sampler: ResourceId,
+    sampler: Option<ResourceId>,
 }
 
 // SAFETY: an `Rc` to plain Rust state; the destructor never touches the Lua API.
@@ -664,50 +665,173 @@ fn shader_kind(view: ValueView<'_>) -> String {
     kind(view).to_owned()
 }
 
-/// `shader.sample(texture, uv)` with the sampler declared with the texture, or
-/// `shader.sample(texture, sampler, uv)` with a sampler declared on its own; an array texture
-/// takes its layer last, `shader.sample(layers, uv, layer)`.
-fn sample(
-    call: &Call<'_>,
-    texture: ValueView<'_>,
-    second: ValueView<'_>,
-    third: Option<ValueView<'_>>,
-    fourth: Option<ValueView<'_>>,
-) -> l3i::Result<Owned<LuaShaderExpr>> {
-    let Some(texture) = l3i::userdata::receiver::<LuaShaderTexture>(texture) else {
+/// The texture functions of `jess.shader`, by what each reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TextureFunction {
+    Sample,
+    SampleBias,
+    SampleLevel,
+    Load,
+    Dimensions,
+    Levels,
+    Layers,
+}
+
+impl TextureFunction {
+    const ALL: [TextureFunction; 7] = [
+        TextureFunction::Sample,
+        TextureFunction::SampleBias,
+        TextureFunction::SampleLevel,
+        TextureFunction::Load,
+        TextureFunction::Dimensions,
+        TextureFunction::Levels,
+        TextureFunction::Layers,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            TextureFunction::Sample => "sample",
+            TextureFunction::SampleBias => "sampleBias",
+            TextureFunction::SampleLevel => "sampleLevel",
+            TextureFunction::Load => "load",
+            TextureFunction::Dimensions => "dimensions",
+            TextureFunction::Levels => "levels",
+            TextureFunction::Layers => "layers",
+        }
+    }
+
+    fn samples(self) -> bool {
+        matches!(
+            self,
+            TextureFunction::Sample | TextureFunction::SampleBias | TextureFunction::SampleLevel
+        )
+    }
+
+    /// What a texture of `kind` takes after itself and any sampler, in order, as errors name
+    /// them; `None` where the count isn't fixed (a size takes a level or not).
+    fn values(self, kind: ResourceKind) -> Option<Vec<&'static str>> {
+        let mut values = Vec::new();
+        match self {
+            TextureFunction::Dimensions => return None,
+            TextureFunction::Levels | TextureFunction::Layers => return Some(values),
+            _ => values.push("coordinates"),
+        }
+        if kind.is_array() {
+            values.push("a layer");
+        }
+        match self {
+            TextureFunction::SampleBias => values.push("a bias"),
+            TextureFunction::SampleLevel | TextureFunction::Load => values.push("a level"),
+            _ => {}
+        }
+        Some(values)
+    }
+}
+
+/// `shader.sample(texture, [sampler,] coordinates, [layer])` and the other texture functions: a
+/// sampling function uses the sampler declared with the texture unless it is given one second,
+/// and an array texture takes its layer after the coordinates.
+fn texture_function(call: &Call<'_>, function: TextureFunction, args: ArgView<'_>) -> l3i::Result<Owned<LuaShaderExpr>> {
+    let name = function.name();
+    let views: Vec<ValueView<'_>> = (0..args.len()).map(|index| args.get(index)).collect();
+    let texture = views.first().copied().and_then(l3i::userdata::receiver::<LuaShaderTexture>);
+    let Some(texture) = texture else {
+        let found = views.first().map_or_else(|| "nothing".to_owned(), |view| shader_kind(*view));
         return Err(error(format!(
-            "shader.sample: expected a texture, such as input.material.diffuse, not {}",
-            shader_kind(texture)
+            "shader.{name}: expected a texture, such as input.material.diffuse, not {found}"
         )));
     };
-    // A sampler second means the coordinates are third; anything else is the coordinates.
-    let sampler = l3i::userdata::receiver::<LuaShaderSampler>(second);
-    let (sampler, coordinates, layer) = match (sampler, third) {
-        (Some(sampler), Some(coordinates)) => {
-            if !Rc::ptr_eq(&sampler.build, &texture.build) {
-                return Err(error("shader.sample: the sampler belongs to another shader program"));
-            }
-            (sampler.sampler, coordinates, fourth)
+    let mut rest = &views[1..];
+    let mut sampler = None;
+    if function.samples()
+        && let Some(given) = rest.first().copied().and_then(l3i::userdata::receiver::<LuaShaderSampler>)
+    {
+        if !Rc::ptr_eq(&given.build, &texture.build) {
+            return Err(error(format!("shader.{name}: the sampler belongs to another shader program")));
         }
-        (Some(_), None) => return Err(error("shader.sample: expected coordinates after the sampler")),
-        (None, Some(_)) if fourth.is_some() || !texture.kind.is_array() => {
+        sampler = Some(given.sampler);
+        rest = &rest[1..];
+    }
+    if let Some(values) = function.values(texture.kind) {
+        // One value too many, where a sampler could go, is a sampler that isn't one.
+        if function.samples() && sampler.is_none() && rest.len() == values.len() + 1 {
             return Err(error(format!(
-                "shader.sample: expected a sampler, not {}",
-                shader_kind(second)
+                "shader.{name}: expected a sampler, not {}",
+                shader_kind(rest[0])
             )));
         }
-        (None, layer) => (texture.sampler, second, layer),
+        if rest.len() != values.len() {
+            return Err(error(format!(
+                "shader.{name}: a {} takes {}, not {}",
+                texture.kind.name(),
+                phrase_list(&values),
+                plural(rest.len(), "value")
+            )));
+        }
+    }
+    if function == TextureFunction::Dimensions && rest.len() > 1 {
+        return Err(error(format!(
+            "shader.{name}: a {} takes a level or nothing, not {}",
+            texture.kind.name(),
+            plural(rest.len(), "value")
+        )));
+    }
+    let sampler = match sampler.or(texture.sampler) {
+        Some(sampler) => sampler,
+        None if function.samples() => {
+            return Err(error(format!(
+                "shader.{name}: a {} isn't sampled: read its texels with shader.load",
+                texture.kind.name()
+            )));
+        }
+        None => texture.texture,
     };
     let build = texture.build.clone();
+    let layered = texture.kind.is_array();
     let value = at_site(call, &build, |site, _| {
-        let coordinates = operand(site, "sample", coordinates)?;
-        // A number layer is a UInt: `shader.sample(layers, uv, 2)`.
-        let layer = layer
-            .map(|layer| operand_of(site, "sample", layer, Scalar::UInt))
-            .transpose()?;
-        site.sample(texture.texture, sampler, coordinates, layer).map_err(invalid)
+        // A number layer or load level is a UInt; a number bias or sample level is a Float.
+        let value = |site: &mut Site<'_>, position: usize, scalar: Scalar| operand_of(site, name, rest[position], scalar);
+        let coordinates = |site: &mut Site<'_>| value(site, 0, Scalar::Float);
+        let layer = |site: &mut Site<'_>| layered.then(|| value(site, 1, Scalar::UInt)).transpose();
+        let last = rest.len().saturating_sub(1);
+        let texel = texture.texture;
+        let result = match function {
+            TextureFunction::Sample => {
+                let (coordinates, layer) = (coordinates(site)?, layer(site)?);
+                site.sample(texel, sampler, coordinates, layer)
+            }
+            TextureFunction::SampleBias => {
+                let (coordinates, layer, bias) = (coordinates(site)?, layer(site)?, value(site, last, Scalar::Float)?);
+                site.sample_bias(texel, sampler, coordinates, layer, bias)
+            }
+            TextureFunction::SampleLevel => {
+                let (coordinates, layer, level) = (coordinates(site)?, layer(site)?, value(site, last, Scalar::Float)?);
+                site.sample_level(texel, sampler, coordinates, layer, level)
+            }
+            TextureFunction::Load => {
+                let (coordinates, layer, level) = (coordinates(site)?, layer(site)?, value(site, last, Scalar::UInt)?);
+                site.load_texel(texel, coordinates, layer, level)
+            }
+            TextureFunction::Dimensions => {
+                let level = rest.first().map(|_| value(site, 0, Scalar::UInt)).transpose()?;
+                site.dimensions(texel, level)
+            }
+            TextureFunction::Levels => site.levels(texel),
+            TextureFunction::Layers => site.layers(texel),
+        };
+        result.map_err(invalid)
     })?;
     Ok(expression(&build, value))
+}
+
+/// `a`, `a and b`, `a, b, and c`.
+fn phrase_list(items: &[&str]) -> String {
+    match items {
+        [] => "nothing".to_owned(),
+        [only] => (*only).to_owned(),
+        [first, second] => format!("{first} and {second}"),
+        [init @ .., last] => format!("{}, and {last}", init.join(", ")),
+    }
 }
 
 /// The `jess.shader` members that are types, as `shader.<name>`.
@@ -729,8 +853,10 @@ const TYPE_DESCRIPTORS: [(&str, Type); 14] = [
 ];
 
 /// The `jess.shader` members that declare textures and samplers.
-const RESOURCE_DESCRIPTORS: [(&str, ResourceKind); 5] = [
+const RESOURCE_DESCRIPTORS: [(&str, ResourceKind); 7] = [
     ("texture2d", ResourceKind::Texture2D),
+    ("texture2di", ResourceKind::Texture2Di),
+    ("texture2du", ResourceKind::Texture2Du),
     ("texture2dArray", ResourceKind::Texture2DArray),
     ("textureCube", ResourceKind::TextureCube),
     ("texture3d", ResourceKind::Texture3D),
@@ -1322,7 +1448,11 @@ fn declare_groups(site: &mut Site<'_>, info: &mut Info, groups: [Vec<(String, De
             let member = match descriptor {
                 Descriptor::Resource(kind) if kind.is_texture() => {
                     let texture = site.resource(frequency, &name, kind).map_err(invalid)?;
-                    let sampler = site.resource(frequency, &name, ResourceKind::Sampler).map_err(invalid)?;
+                    let sampler = if kind.is_integer() {
+                        None
+                    } else {
+                        Some(site.resource(frequency, &name, ResourceKind::Sampler).map_err(invalid)?)
+                    };
                     Member::Texture { kind, texture, sampler }
                 }
                 Descriptor::Resource(_) => {
@@ -1529,14 +1659,11 @@ pub(crate) fn module(runtime: &Runtime, _jess: &Rc<Jess>) -> l3i::Result<Table> 
     module.function("array", move |element: ValueView<'_>, length: ValueView<'_>| {
         array(&state, element, length)
     })?;
-    module.function(
-        "sample",
-        move |call: &Call<'_>,
-              texture: ValueView<'_>,
-              second: ValueView<'_>,
-              third: Option<ValueView<'_>>,
-              fourth: Option<ValueView<'_>>| sample(call, texture, second, third, fourth),
-    )?;
+    for function in TextureFunction::ALL {
+        module.function(function.name(), move |call: &Call<'_>, args: ArgView<'_>| {
+            texture_function(call, function, args)
+        })?;
+    }
     let functions = |arity: usize| {
         ShaderFunction::ALL
             .into_iter()

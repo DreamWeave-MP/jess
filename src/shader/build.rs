@@ -4,7 +4,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::shader::expression::{
-    BinaryOperator, Builtin, Expression, ExpressionId, Function, Literal, Place, SourceOrigin, Step, Swizzle, UnaryOperator,
+    BinaryOperator, Builtin, Expression, ExpressionId, Function, Literal, Place, SampleLevel, SourceOrigin, Step, Swizzle,
+    TextureQuery, UnaryOperator,
 };
 use crate::shader::interface::{
     Attribute, AttributeId, DataType, Field, Frequency, Rate, Resource, ResourceId, ResourceKind, StructDecl, StructId,
@@ -494,15 +495,15 @@ impl Site<'_> {
         self.call(Function::Mix, &[start, end, amount])
     }
 
-    /// A texture read, to `Vec4f`, at `coordinates` and, in an array texture, in `layer`.
-    /// Sampling in the vertex stage is rejected by [`ProgramBuilder::finish`], which knows the
-    /// stages.
+    /// A float texture read, to `Vec4f`, at `coordinates` and, in an array texture, in `layer`,
+    /// at the mip level the fragment stage's derivatives pick. Sampling in the vertex stage is
+    /// rejected by [`ProgramBuilder::finish`], which knows the stages.
     ///
     /// # Errors
     ///
     /// Values from another program, or a texture, sampler, coordinates, and layer that don't
-    /// fit: a `Sampler`, the coordinates [`ResourceKind::coordinates`] gives, and a layer for
-    /// an array texture only.
+    /// fit: a float texture, a `Sampler`, the coordinates [`ResourceKind::coordinates`] gives,
+    /// and a layer for an array texture only.
     pub fn sample(
         &mut self,
         texture: ResourceId,
@@ -510,20 +511,141 @@ impl Site<'_> {
         coordinates: Value,
         layer: Option<Value>,
     ) -> Result<Value, ValidationError> {
-        self.own(coordinates)?;
-        if let Some(layer) = layer {
-            self.own(layer)?;
-        }
-        let id = self.next();
-        let program = &self.builder.program;
-        let ty = validate::sample_type(program, id, texture, sampler, coordinates.ty, layer.map(|layer| layer.ty))
-            .map_err(|kind| self.error(kind))?;
+        self.sample_at(texture, sampler, coordinates, layer, SampleLevel::Implicit, None)
+    }
+
+    /// [`sample`](Site::sample) at the level the derivatives pick, offset by a `Float` `bias`.
+    /// Fragment stage only.
+    ///
+    /// # Errors
+    ///
+    /// As [`sample`](Site::sample), and a bias that isn't a `Float`.
+    pub fn sample_bias(
+        &mut self,
+        texture: ResourceId,
+        sampler: ResourceId,
+        coordinates: Value,
+        layer: Option<Value>,
+        bias: Value,
+    ) -> Result<Value, ValidationError> {
+        self.sample_at(
+            texture,
+            sampler,
+            coordinates,
+            layer,
+            SampleLevel::Bias(bias.expression),
+            Some(bias),
+        )
+    }
+
+    /// [`sample`](Site::sample) at the `Float` mip `level` given, 0 the largest. Any stage.
+    ///
+    /// # Errors
+    ///
+    /// As [`sample`](Site::sample), and a level that isn't a `Float`.
+    pub fn sample_level(
+        &mut self,
+        texture: ResourceId,
+        sampler: ResourceId,
+        coordinates: Value,
+        layer: Option<Value>,
+        level: Value,
+    ) -> Result<Value, ValidationError> {
+        self.sample_at(
+            texture,
+            sampler,
+            coordinates,
+            layer,
+            SampleLevel::Explicit(level.expression),
+            Some(level),
+        )
+    }
+
+    fn sample_at(
+        &mut self,
+        texture: ResourceId,
+        sampler: ResourceId,
+        coordinates: Value,
+        layer: Option<Value>,
+        level: SampleLevel,
+        level_value: Option<Value>,
+    ) -> Result<Value, ValidationError> {
         let expression = Expression::Sample {
             texture,
             sampler,
             coordinates: coordinates.expression,
             layer: layer.map(|layer| layer.expression),
+            level,
         };
+        let values: Vec<Value> = [Some(coordinates), layer, level_value].into_iter().flatten().collect();
+        self.texture_operation(expression, &values)
+    }
+
+    /// One texel of a texture that isn't a cube, read without a sampler: at integer
+    /// `coordinates`, in `layer` of an array texture, in the `Int` or `UInt` mip `level`. It reads
+    /// as a `Vec4f`, or as a `Vec4i` or `Vec4u` from an integer texture.
+    ///
+    /// # Errors
+    ///
+    /// Values from another program, a cube, or coordinates, a layer, or a level that don't fit.
+    pub fn load_texel(
+        &mut self,
+        texture: ResourceId,
+        coordinates: Value,
+        layer: Option<Value>,
+        level: Value,
+    ) -> Result<Value, ValidationError> {
+        let expression = Expression::TextureLoad {
+            texture,
+            coordinates: coordinates.expression,
+            layer: layer.map(|layer| layer.expression),
+            level: level.expression,
+        };
+        let values: Vec<Value> = [Some(coordinates), layer, Some(level)].into_iter().flatten().collect();
+        self.texture_operation(expression, &values)
+    }
+
+    /// A texture's size in texels, a `Vec2u` (a `Vec3u` for a 3D texture), of the `Int` or
+    /// `UInt` mip `level` given, or of the largest.
+    ///
+    /// # Errors
+    ///
+    /// A level from another program or not an integer, or a resource that isn't a texture.
+    pub fn dimensions(&mut self, texture: ResourceId, level: Option<Value>) -> Result<Value, ValidationError> {
+        let query = TextureQuery::Dimensions(level.map(|level| level.expression));
+        let values: Vec<Value> = level.into_iter().collect();
+        self.texture_operation(Expression::TextureQuery { texture, query }, &values)
+    }
+
+    /// How many mip levels a texture has, a `UInt`.
+    ///
+    /// # Errors
+    ///
+    /// A resource that isn't a texture.
+    pub fn levels(&mut self, texture: ResourceId) -> Result<Value, ValidationError> {
+        let query = TextureQuery::Levels;
+        self.texture_operation(Expression::TextureQuery { texture, query }, &[])
+    }
+
+    /// How many layers an array texture has, a `UInt`.
+    ///
+    /// # Errors
+    ///
+    /// A resource that isn't an array texture.
+    pub fn layers(&mut self, texture: ResourceId) -> Result<Value, ValidationError> {
+        let query = TextureQuery::Layers;
+        self.texture_operation(Expression::TextureQuery { texture, query }, &[])
+    }
+
+    /// A texture read or query of `values`, its operands in order, typed against the program's
+    /// resources.
+    fn texture_operation(&mut self, expression: Expression, values: &[Value]) -> Result<Value, ValidationError> {
+        for value in values {
+            self.own(*value)?;
+        }
+        let id = self.next();
+        let types: Vec<Type> = values.iter().map(|value| value.ty).collect();
+        let ty = validate::texture_type(&self.builder.program, id, &expression, &types).map_err(|kind| self.error(kind))?;
         Ok(self.push(expression, ty))
     }
 

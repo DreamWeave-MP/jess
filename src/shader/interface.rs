@@ -229,7 +229,8 @@ impl Uniform {
     }
 }
 
-/// What a resource is. Every texture holds filterable floats and samples to a `Vec4f`.
+/// What a resource is. Every texture but the integer ones holds filterable floats and samples to
+/// a `Vec4f`; the integer ones are only loaded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ResourceKind {
     /// A 2D texture, sampled at `Vec2f` coordinates.
@@ -241,6 +242,10 @@ pub enum ResourceKind {
     TextureCube,
     /// A 3D texture, sampled at `Vec3f` coordinates.
     Texture3D,
+    /// A 2D texture of signed integers, loaded to a `Vec4i`.
+    Texture2Di,
+    /// A 2D texture of unsigned integers, loaded to a `Vec4u`.
+    Texture2Du,
     /// A filtering sampler.
     Sampler,
 }
@@ -254,6 +259,8 @@ impl ResourceKind {
             ResourceKind::Texture2DArray => "Texture2DArray",
             ResourceKind::TextureCube => "TextureCube",
             ResourceKind::Texture3D => "Texture3D",
+            ResourceKind::Texture2Di => "Texture2Di",
+            ResourceKind::Texture2Du => "Texture2Du",
             ResourceKind::Sampler => "Sampler",
         }
     }
@@ -264,14 +271,44 @@ impl ResourceKind {
         self != ResourceKind::Sampler
     }
 
-    /// The coordinates a texture is sampled at; `None` for a sampler.
+    /// The coordinates a float texture is sampled at; `None` for an integer texture, which isn't
+    /// sampled, and a sampler.
     #[must_use]
     pub fn coordinates(self) -> Option<Type> {
         match self {
             ResourceKind::Texture2D | ResourceKind::Texture2DArray => Some(Type::Vec2f),
             ResourceKind::TextureCube | ResourceKind::Texture3D => Some(Type::Vec3f),
-            ResourceKind::Sampler => None,
+            ResourceKind::Texture2Di | ResourceKind::Texture2Du | ResourceKind::Sampler => None,
         }
+    }
+
+    /// How many dimensions a texture's texels are addressed in: 3 for a 3D texture, else 2 (a
+    /// cube's faces are square); 0 for a sampler.
+    #[must_use]
+    pub fn dimensions(self) -> u8 {
+        match self {
+            ResourceKind::Texture3D => 3,
+            ResourceKind::Sampler => 0,
+            _ => 2,
+        }
+    }
+
+    /// What one texel reads as: `Vec4f`, or `Vec4i` or `Vec4u` for an integer texture; `None` for
+    /// a sampler.
+    #[must_use]
+    pub fn texel(self) -> Option<Type> {
+        match self {
+            ResourceKind::Texture2Di => Some(Type::Vec4i),
+            ResourceKind::Texture2Du => Some(Type::Vec4u),
+            ResourceKind::Sampler => None,
+            _ => Some(Type::Vec4f),
+        }
+    }
+
+    /// Whether it is an integer texture, which is loaded and never sampled.
+    #[must_use]
+    pub fn is_integer(self) -> bool {
+        matches!(self, ResourceKind::Texture2Di | ResourceKind::Texture2Du)
     }
 
     /// Whether it is an array texture, read in a layer.

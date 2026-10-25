@@ -452,8 +452,8 @@ fn finish_reports_whole_program_mistakes_with_origins() {
         [
             "shaders/lit.jsl:9:2 (@test/viewer): attribute \"color\" is read in the fragment stage: pass it \
              through a varying",
-            "shaders/lit.jsl:25:4 (@test/viewer): sample is used in the vertex stage: textures are sampled in the \
-             fragment stage",
+            "shaders/lit.jsl:25:4 (@test/viewer): sample is used in the vertex stage, which has no derivatives to \
+             pick a mip level with: sample at a level with sampleLevel",
             "shaders/lit.jsl:3:1 (@test/viewer): the vertex position is Vec3f: expected Vec4f",
         ]
     );

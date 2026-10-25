@@ -3,8 +3,8 @@
 use std::fmt;
 
 use crate::shader::expression::{
-    BinaryOperator, Builtin, Expression, ExpressionId, Function, Literal, Place, PlaceRoot, SourceOrigin, Step, Swizzle,
-    UnaryOperator, VaryingId,
+    BinaryOperator, Builtin, Expression, ExpressionId, Function, Literal, Place, PlaceRoot, SampleLevel, SourceOrigin, Step,
+    Swizzle, TextureQuery, UnaryOperator, VaryingId,
 };
 use crate::shader::fold::{Arithmetic, evaluate};
 use crate::shader::interface::{
@@ -153,18 +153,16 @@ pub enum ValidationErrorKind {
         /// The resource.
         resource: ResourceId,
     },
-    /// A sample's texture, sampler, or coordinates are not what sampling takes.
-    InvalidSample {
-        /// The sample.
+    /// A texture read or query is given what its texture doesn't take.
+    InvalidTexture {
+        /// The read or query.
         expression: ExpressionId,
-        /// What its texture is.
-        texture: ResourceKind,
-        /// What its sampler is.
-        sampler: ResourceKind,
-        /// Its coordinates' type.
-        coordinates: Type,
-        /// Its layer's type, if it has one.
-        layer: Option<Type>,
+        /// Its Jess name: `sample`, `load`, `dimensions`, ...
+        operation: &'static str,
+        /// What it was given: the resources' kinds, then the values' types.
+        arguments: Vec<&'static str>,
+        /// What it takes.
+        expected: String,
     },
     /// An expression reads an attribute that was never declared.
     UndefinedAttribute {
@@ -244,10 +242,12 @@ pub enum ValidationErrorKind {
         /// The varying's name.
         varying: String,
     },
-    /// The vertex stage samples a texture; sampling needs the fragment stage's derivatives.
+    /// The vertex stage samples a texture at a level the fragment stage's derivatives pick.
     SampleInVertex {
         /// The sample.
         expression: ExpressionId,
+        /// `sample` or `sampleBias`.
+        operation: &'static str,
     },
     /// The vertex stage takes a derivative, which only the fragment stage has.
     DerivativeInVertex {
@@ -353,22 +353,16 @@ impl fmt::Display for ValidationErrorKind {
                 expression.index(),
                 resource.index()
             ),
-            ValidationErrorKind::InvalidSample {
-                texture,
-                sampler,
-                coordinates,
-                layer,
+            ValidationErrorKind::InvalidTexture {
+                operation,
+                arguments,
+                expected,
                 ..
-            } => {
-                let layer = layer.map(|layer| format!(", {layer}")).unwrap_or_default();
-                write!(
-                    formatter,
-                    "sample({}, {}, {coordinates}{layer}) is invalid: expected {}",
-                    texture.name(),
-                    sampler.name(),
-                    sample_signature(*texture)
-                )
-            }
+            } => write!(
+                formatter,
+                "{operation}({}) is invalid: expected {expected}",
+                arguments.join(", ")
+            ),
             ValidationErrorKind::UndefinedAttribute { expression, attribute } => write!(
                 formatter,
                 "expression {} reads attribute {}, which is not declared",
@@ -441,9 +435,11 @@ impl fmt::Display for ValidationErrorKind {
                 formatter,
                 "varying {varying:?} is read in the vertex stage, which only writes varyings"
             ),
-            ValidationErrorKind::SampleInVertex { .. } => {
-                formatter.write_str("sample is used in the vertex stage: textures are sampled in the fragment stage")
-            }
+            ValidationErrorKind::SampleInVertex { operation, .. } => write!(
+                formatter,
+                "{operation} is used in the vertex stage, which has no derivatives to pick a mip level with: \
+                 sample at a level with sampleLevel"
+            ),
             ValidationErrorKind::DerivativeInVertex { function, .. } => write!(
                 formatter,
                 "{} is used in the vertex stage: derivatives are taken in the fragment stage",
@@ -756,10 +752,8 @@ pub fn data_type_errors(
 /// The declaration kind of a resource of `kind` that `frequency` binds.
 pub fn resource_kind(frequency: Frequency, kind: ResourceKind) -> DeclarationKind {
     match kind {
-        ResourceKind::Texture2D | ResourceKind::Texture2DArray | ResourceKind::TextureCube | ResourceKind::Texture3D => {
-            DeclarationKind::Texture(frequency)
-        }
         ResourceKind::Sampler => DeclarationKind::Sampler(frequency),
+        _ => DeclarationKind::Texture(frequency),
     }
 }
 
@@ -1037,8 +1031,11 @@ fn infer(
             varyings_read[varying.index()] = true;
             declaration.ty
         }
-        Expression::Sample { .. } if stage & VERTEX != 0 => {
-            return Err(ValidationErrorKind::SampleInVertex { expression: id });
+        Expression::Sample { level, .. } if level.needs_derivatives() && stage & VERTEX != 0 => {
+            return Err(ValidationErrorKind::SampleInVertex {
+                expression: id,
+                operation: level.operation(),
+            });
         }
         Expression::Call { function, .. } if function.needs_derivatives() && stage & VERTEX != 0 => {
             return Err(ValidationErrorKind::DerivativeInVertex {
@@ -1046,8 +1043,8 @@ fn infer(
                 function,
             });
         }
-        Expression::Sample { texture, sampler, .. } => {
-            sample_type(program, id, texture, sampler, operands[0], operands.get(1).copied())?
+        Expression::Sample { .. } | Expression::TextureLoad { .. } | Expression::TextureQuery { .. } => {
+            texture_type(program, id, expression, operands)?
         }
         _ => operation_type(id, expression, operands)?,
     };
@@ -1109,23 +1106,56 @@ pub fn place_type(
     }
 }
 
-/// How a texture of `kind` is sampled, as errors print it.
-fn sample_signature(kind: ResourceKind) -> String {
-    let Some(coordinates) = kind.coordinates() else {
-        return "sample(a texture, a Sampler, its coordinates)".to_owned();
-    };
+/// What a texture read or query of a texture of `kind` takes, as errors print it.
+fn texture_signature(kind: ResourceKind, expression: &Expression) -> String {
     let layer = if kind.is_array() { ", an Int or UInt layer" } else { "" };
-    format!("sample({}, Sampler, {coordinates}{layer})", kind.name())
+    match *expression {
+        Expression::Sample { level, .. } => {
+            let operation = level.operation();
+            if kind.is_integer() {
+                return format!("a float texture: a {} is read with load", kind.name());
+            }
+            let Some(coordinates) = kind.coordinates() else {
+                return format!("{operation}(a texture, a Sampler, its coordinates)");
+            };
+            let tail = match level {
+                SampleLevel::Implicit => "",
+                SampleLevel::Bias(_) => ", a Float bias",
+                SampleLevel::Explicit(_) => ", a Float level",
+            };
+            format!("{operation}({}, Sampler, {coordinates}{layer}{tail})", kind.name())
+        }
+        Expression::TextureLoad { .. } if kind == ResourceKind::TextureCube => {
+            "a texture that isn't a cube: a cube is only sampled".to_owned()
+        }
+        Expression::TextureLoad { .. } if kind.is_texture() => {
+            let coordinates = if kind.dimensions() == 3 {
+                "Vec3i or Vec3u"
+            } else {
+                "Vec2i or Vec2u"
+            };
+            format!("load({}, {coordinates}{layer}, an Int or UInt level)", kind.name())
+        }
+        Expression::TextureLoad { .. } => "load(a texture, its texel coordinates, a level)".to_owned(),
+        Expression::TextureQuery {
+            query: TextureQuery::Dimensions(_),
+            ..
+        } => "a texture, and maybe an Int or UInt level".to_owned(),
+        Expression::TextureQuery {
+            query: TextureQuery::Layers,
+            ..
+        } => "a Texture2DArray".to_owned(),
+        _ => "a texture".to_owned(),
+    }
 }
 
-/// The type of sampling `texture` with `sampler` at `coordinates`, or what is wrong with it.
-pub fn sample_type(
+/// The type of a texture read or query, `expression`, whose value operands have the types
+/// `operands` (coordinates, then layer, then level), or what is wrong with it.
+pub fn texture_type(
     program: &Program,
     id: ExpressionId,
-    texture: ResourceId,
-    sampler: ResourceId,
-    coordinates: Type,
-    layer: Option<Type>,
+    expression: &Expression,
+    operands: &[Type],
 ) -> Result<Type, ValidationErrorKind> {
     let kind = |resource: ResourceId| {
         let found = program.resources.get(resource.index()).map(|declared| declared.kind);
@@ -1134,19 +1164,60 @@ pub fn sample_type(
             resource,
         })
     };
-    let (texture, sampler) = (kind(texture)?, kind(sampler)?);
+    let integer = |ty: &Type| ty.is_integer() && ty.is_scalar();
     // An array texture takes one integer layer, and no other texture takes any.
-    let layered = texture.is_array() == layer.is_some() && layer.is_none_or(|layer| layer.is_integer() && layer.is_scalar());
-    if sampler != ResourceKind::Sampler || texture.coordinates() != Some(coordinates) || !layered {
-        return Err(ValidationErrorKind::InvalidSample {
-            expression: id,
+    let layered = |texture: ResourceKind, layer: Option<ExpressionId>| {
+        texture.is_array() == layer.is_some() && layer.is_none_or(|_| integer(&operands[1]))
+    };
+    let (texture, resources, ty) = match *expression {
+        Expression::Sample {
             texture,
             sampler,
-            coordinates,
             layer,
-        });
-    }
-    Ok(Type::Vec4f)
+            level,
+            ..
+        } => {
+            let (texture, sampler) = (kind(texture)?, kind(sampler)?);
+            let level = level.expression().map(|_| operands[operands.len() - 1]);
+            let fits = sampler == ResourceKind::Sampler
+                && texture.coordinates() == Some(operands[0])
+                && layered(texture, layer)
+                && level.is_none_or(|level| level == Type::Float);
+            (texture, vec![texture.name(), sampler.name()], fits.then_some(Type::Vec4f))
+        }
+        Expression::TextureLoad { texture, layer, .. } => {
+            let texture = kind(texture)?;
+            let coordinates = operands[0];
+            let fits = texture != ResourceKind::TextureCube
+                && coordinates.is_integer()
+                && coordinates.components() == texture.dimensions()
+                && layered(texture, layer)
+                && integer(&operands[operands.len() - 1]);
+            (texture, vec![texture.name()], texture.texel().filter(|_| fits))
+        }
+        Expression::TextureQuery { texture, query } => {
+            let texture = kind(texture)?;
+            let ty = match query {
+                TextureQuery::Dimensions(_) if texture.is_texture() && operands.iter().all(integer) => {
+                    Type::vector(Scalar::UInt, texture.dimensions())
+                }
+                TextureQuery::Levels if texture.is_texture() => Some(Type::UInt),
+                TextureQuery::Layers if texture.is_array() => Some(Type::UInt),
+                _ => None,
+            };
+            (texture, vec![texture.name()], ty)
+        }
+        _ => unreachable!("{} is not a texture operation", expression.operation()),
+    };
+    ty.ok_or_else(|| ValidationErrorKind::InvalidTexture {
+        expression: id,
+        operation: expression.operation(),
+        arguments: resources
+            .into_iter()
+            .chain(operands.iter().map(|operand| operand.name()))
+            .collect(),
+        expected: texture_signature(texture, expression),
+    })
 }
 
 /// The type of `literal`, or the error for a NaN or infinite one.
@@ -1214,7 +1285,9 @@ pub fn operation_type(id: ExpressionId, expression: &Expression, operands: &[Typ
         | Expression::Builtin(_)
         | Expression::Varying(_)
         | Expression::Load(_)
-        | Expression::Sample { .. } => unreachable!("typed by their declarations, not their operands"),
+        | Expression::Sample { .. }
+        | Expression::TextureLoad { .. }
+        | Expression::TextureQuery { .. } => unreachable!("typed by their declarations, not their operands"),
         Expression::Binary(operator, ..) => {
             let (left, right) = (operands[0], operands[1]);
             let (ty, expected) = match operator {

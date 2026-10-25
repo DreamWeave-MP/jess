@@ -15,7 +15,9 @@
 
 use std::fmt::Write as _;
 
-use crate::shader::expression::{Builtin, Expression, ExpressionId, Function, Literal, Place, PlaceRoot, Step};
+use crate::shader::expression::{
+    Builtin, Expression, ExpressionId, Function, Literal, Place, PlaceRoot, SampleLevel, Step, TextureQuery,
+};
 use crate::shader::interface::{AttributeId, DataType, Element, Frequency, Rate, ResourceId, ResourceKind};
 use crate::shader::layout::{MemberLayout, ProgramLayout, StructLayout, value_extent};
 use crate::shader::program::Program;
@@ -174,6 +176,8 @@ impl Lowering<'_> {
                 let resource = &program.resources[binding.resource.index()];
                 let ty = match resource.kind {
                     ResourceKind::Texture2D => "texture_2d<f32>",
+                    ResourceKind::Texture2Di => "texture_2d<i32>",
+                    ResourceKind::Texture2Du => "texture_2d<u32>",
                     ResourceKind::Texture2DArray => "texture_2d_array<f32>",
                     ResourceKind::TextureCube => "texture_cube<f32>",
                     ResourceKind::Texture3D => "texture_3d<f32>",
@@ -357,23 +361,25 @@ impl Lowering<'_> {
     fn operation(&mut self, id: ExpressionId) {
         let expression = self.program.expressions[id.index()];
         match expression {
+            // WGSL takes a texture function's operands in Jess's order: coordinates, layer, level.
             Expression::Sample {
-                texture,
-                sampler,
-                coordinates,
-                layer,
+                texture, sampler, level, ..
             } => {
-                emit!(self, "textureSample(");
-                self.resource(texture);
-                emit!(self, ", ");
-                self.resource(sampler);
-                emit!(self, ", ");
-                self.operand(coordinates);
-                if let Some(layer) = layer {
-                    emit!(self, ", ");
-                    self.operand(layer);
-                }
-                emit!(self, ")");
+                let function = match level {
+                    SampleLevel::Implicit => "textureSample",
+                    SampleLevel::Bias(_) => "textureSampleBias",
+                    SampleLevel::Explicit(_) => "textureSampleLevel",
+                };
+                self.texture_call(function, &[texture, sampler], &expression);
+            }
+            Expression::TextureLoad { texture, .. } => self.texture_call("textureLoad", &[texture], &expression),
+            Expression::TextureQuery { texture, query } => {
+                let function = match query {
+                    TextureQuery::Dimensions(_) => "textureDimensions",
+                    TextureQuery::Levels => "textureNumLevels",
+                    TextureQuery::Layers => "textureNumLayers",
+                };
+                self.texture_call(function, &[texture], &expression);
             }
             Expression::Load(place) => self.place(&place),
             // Parenthesized: `--1.0` is WGSL's decrement, not the negation of `-1.0`.
@@ -487,6 +493,23 @@ impl Lowering<'_> {
                 }
             }
         }
+    }
+
+    /// `function(resources, operands)`: a texture function of the resources, then the
+    /// expression's value operands.
+    fn texture_call(&mut self, function: &str, resources: &[ResourceId], expression: &Expression) {
+        emit!(self, "{function}(");
+        for (position, resource) in resources.iter().enumerate() {
+            if position > 0 {
+                emit!(self, ", ");
+            }
+            self.resource(*resource);
+        }
+        for operand in expression.operands().iter() {
+            emit!(self, ", ");
+            self.operand(*operand);
+        }
+        emit!(self, ")");
     }
 
     fn resource(&mut self, resource: ResourceId) {

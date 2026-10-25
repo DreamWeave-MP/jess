@@ -6,8 +6,8 @@ use super::common;
 
 use jess::shader::{
     Attribute, BinaryOperator, DataType, DeclarationKind, Element, Expression, ExpressionId, Field, Frequency, Function,
-    Literal, Place, PlaceProblem, PlaceRoot, Program, Rate, Resource, ResourceId, ResourceKind, SourceOrigin, Step,
-    StructDecl, Swizzle, Type, Uniform, ValidationError, ValidationErrorKind, wgsl,
+    Literal, Place, PlaceProblem, PlaceRoot, Program, Rate, Resource, ResourceId, ResourceKind, SampleLevel, SourceOrigin,
+    Step, StructDecl, Swizzle, Type, Uniform, ValidationError, ValidationErrorKind, wgsl,
 };
 
 fn float(program: &mut Program, value: f32) -> ExpressionId {
@@ -78,6 +78,7 @@ fn sampling_with_vec3_coordinates_is_invalid() {
         sampler,
         coordinates,
         layer: None,
+        level: SampleLevel::Implicit,
     });
     program.push_fragment_output(color);
 
@@ -97,6 +98,7 @@ fn sampling_takes_a_texture_then_a_sampler() {
         sampler: texture,
         coordinates,
         layer: None,
+        level: SampleLevel::Implicit,
     });
     program.push_fragment_output(color);
 
@@ -199,6 +201,7 @@ fn undefined_references_are_reported() {
         sampler: foreign_texture,
         coordinates,
         layer: None,
+        level: SampleLevel::Implicit,
     });
     program.push_fragment_output(texel);
     let input = program.push(Expression::Attribute(foreign_input));
@@ -299,6 +302,7 @@ fn inputs_belong_to_their_stage() {
         sampler,
         coordinates: read_uv,
         layer: None,
+        level: SampleLevel::Implicit,
     });
     let displaced = program.push(Expression::Binary(BinaryOperator::Add, position, texel));
     program.set_position(displaced);
@@ -327,12 +331,15 @@ fn inputs_belong_to_their_stage() {
         sampler,
         coordinates,
         layer: None,
+        level: SampleLevel::Implicit,
     });
     let tint = program.varying("tint", Type::Vec4f);
     program.write_varying(tint, texel);
     assert_eq!(
         messages(&program),
-        ["sample is used in the vertex stage: textures are sampled in the fragment stage"]
+        [
+            "sample is used in the vertex stage, which has no derivatives to pick a mip level with: sample at a level with sampleLevel"
+        ]
     );
 }
 

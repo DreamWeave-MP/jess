@@ -651,6 +651,79 @@ impl Function {
     }
 }
 
+/// How a sample picks its mip level.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SampleLevel {
+    /// From the fragment stage's derivatives. Fragment stage only.
+    Implicit,
+    /// From the derivatives, offset by a `Float` bias. Fragment stage only.
+    Bias(ExpressionId),
+    /// The `Float` level given, 0 the largest. Any stage.
+    Explicit(ExpressionId),
+}
+
+impl SampleLevel {
+    /// The Jess name of a sample that picks its level this way: `sample`, `sampleBias`, or
+    /// `sampleLevel`.
+    #[must_use]
+    pub fn operation(self) -> &'static str {
+        match self {
+            SampleLevel::Implicit => "sample",
+            SampleLevel::Bias(_) => "sampleBias",
+            SampleLevel::Explicit(_) => "sampleLevel",
+        }
+    }
+
+    /// The bias or level, if there is one.
+    #[must_use]
+    pub fn expression(self) -> Option<ExpressionId> {
+        match self {
+            SampleLevel::Implicit => None,
+            SampleLevel::Bias(level) | SampleLevel::Explicit(level) => Some(level),
+        }
+    }
+
+    /// Whether it needs the fragment stage's derivatives.
+    #[must_use]
+    pub fn needs_derivatives(self) -> bool {
+        !matches!(self, SampleLevel::Explicit(_))
+    }
+}
+
+/// What a texture query asks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TextureQuery {
+    /// The size in texels, a `Vec2u` (a `Vec3u` for a 3D texture), of the `Int` or `UInt` mip
+    /// level given, or of the largest.
+    Dimensions(Option<ExpressionId>),
+    /// How many mip levels it has, a `UInt`.
+    Levels,
+    /// How many layers an array texture has, a `UInt`.
+    Layers,
+}
+
+impl TextureQuery {
+    /// The Jess name of the query: `dimensions`, `levels`, or `layers`.
+    #[must_use]
+    pub fn operation(self) -> &'static str {
+        match self {
+            TextureQuery::Dimensions(_) => "dimensions",
+            TextureQuery::Levels => "levels",
+            TextureQuery::Layers => "layers",
+        }
+    }
+}
+
+/// A texture read's operands in order: its coordinates, its layer, and its level.
+fn texture_operands(coordinates: ExpressionId, layer: Option<ExpressionId>, level: Option<ExpressionId>) -> Operands {
+    let mut operands = Operands::from_short_slice(&[coordinates]);
+    for id in [layer, level].into_iter().flatten() {
+        operands.ids[operands.count as usize] = id;
+        operands.count += 1;
+    }
+    operands
+}
+
 /// A value the pipeline gives a stage rather than a buffer: which vertex or instance this is,
 /// and where the fragment is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -719,9 +792,9 @@ pub enum Expression {
     /// A declared varying, as the vertex stage wrote it and the rasterizer interpolated it.
     /// Fragment stage only.
     Varying(VaryingId),
-    /// A texture read through a sampler, to `Vec4f`. Fragment stage only.
+    /// A float texture read through a sampler, to `Vec4f`.
     Sample {
-        /// A texture.
+        /// A float texture.
         texture: ResourceId,
         /// A `Sampler`.
         sampler: ResourceId,
@@ -729,6 +802,28 @@ pub enum Expression {
         coordinates: ExpressionId,
         /// The layer of an array texture, an `Int` or `UInt`; `None` for any other.
         layer: Option<ExpressionId>,
+        /// How it picks a mip level.
+        level: SampleLevel,
+    },
+    /// One texel of a texture that isn't a cube, read without a sampler, to `Vec4f`, `Vec4i`, or
+    /// `Vec4u` as the texture holds.
+    TextureLoad {
+        /// The texture.
+        texture: ResourceId,
+        /// The texel's integer coordinates, a `Vec2i` or `Vec2u` (a `Vec3i` or `Vec3u` in a 3D
+        /// texture).
+        coordinates: ExpressionId,
+        /// The layer of an array texture, an `Int` or `UInt`; `None` for any other.
+        layer: Option<ExpressionId>,
+        /// The mip level, an `Int` or `UInt`.
+        level: ExpressionId,
+    },
+    /// What a texture is: its size, its mip levels, or its layers.
+    TextureQuery {
+        /// The texture.
+        texture: ResourceId,
+        /// What is asked.
+        query: TextureQuery,
     },
     /// An operator on one value.
     Unary(UnaryOperator, ExpressionId),
@@ -791,18 +886,31 @@ impl Expression {
     #[must_use]
     pub fn operands(&self) -> Operands {
         let ids: &[ExpressionId] = match self {
-            Expression::Literal(_) | Expression::Attribute(_) | Expression::Builtin(_) | Expression::Varying(_) => &[],
+            Expression::Literal(_)
+            | Expression::Attribute(_)
+            | Expression::Builtin(_)
+            | Expression::Varying(_)
+            | Expression::TextureQuery {
+                query: TextureQuery::Dimensions(None) | TextureQuery::Levels | TextureQuery::Layers,
+                ..
+            } => &[],
             Expression::Load(place) => return place.indices(),
             Expression::Sample {
                 coordinates,
-                layer: None,
+                layer,
+                level,
                 ..
-            } => &[*coordinates],
-            Expression::Sample {
+            } => return texture_operands(*coordinates, *layer, level.expression()),
+            Expression::TextureLoad {
                 coordinates,
-                layer: Some(layer),
+                layer,
+                level,
                 ..
-            } => &[*coordinates, *layer],
+            } => return texture_operands(*coordinates, *layer, Some(*level)),
+            Expression::TextureQuery {
+                query: TextureQuery::Dimensions(Some(level)),
+                ..
+            } => &[*level],
             Expression::Unary(_, value) | Expression::Convert { value, .. } => &[*value],
             Expression::Binary(_, left, right) => &[*left, *right],
             Expression::Select {
@@ -822,10 +930,32 @@ impl Expression {
         match self {
             Expression::Literal(_) | Expression::Attribute(_) | Expression::Builtin(_) | Expression::Varying(_) => {}
             Expression::Load(place) => place.rewrite_indices(rewrite),
-            Expression::Sample { coordinates, layer, .. } => {
+            Expression::Sample {
+                coordinates,
+                layer,
+                level,
+                ..
+            } => {
                 rewrite(coordinates);
-                if let Some(layer) = layer {
-                    rewrite(layer);
+                layer.iter_mut().for_each(&mut rewrite);
+                match level {
+                    SampleLevel::Implicit => {}
+                    SampleLevel::Bias(level) | SampleLevel::Explicit(level) => rewrite(level),
+                }
+            }
+            Expression::TextureLoad {
+                coordinates,
+                layer,
+                level,
+                ..
+            } => {
+                rewrite(coordinates);
+                layer.iter_mut().for_each(&mut rewrite);
+                rewrite(level);
+            }
+            Expression::TextureQuery { query, .. } => {
+                if let TextureQuery::Dimensions(Some(level)) = query {
+                    rewrite(level);
                 }
             }
             Expression::Unary(_, value) | Expression::Convert { value, .. } => rewrite(value),
@@ -865,11 +995,12 @@ impl Expression {
     pub fn operation(&self) -> &'static str {
         match self {
             Expression::Literal(_) => "literal",
-            Expression::Load(_) => "load",
+            Expression::Load(_) | Expression::TextureLoad { .. } => "load",
             Expression::Attribute(_) => "attribute",
             Expression::Builtin(builtin) => builtin.name(),
             Expression::Varying(_) => "varying",
-            Expression::Sample { .. } => "sample",
+            Expression::Sample { level, .. } => level.operation(),
+            Expression::TextureQuery { query, .. } => query.operation(),
             Expression::Unary(operator, _) => operator.name(),
             Expression::Binary(operator, ..) => operator.name(),
             Expression::Select { .. } => "select",

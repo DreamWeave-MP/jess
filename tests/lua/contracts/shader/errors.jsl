@@ -80,6 +80,24 @@ return {
       vertex = vertex,
       fragment = function(input) return shader.sample(input.material.decals, shader.vec2(0.5)) end,
     },
+    sampleIntegers = build {
+      material = { ids = shader.texture2du },
+      vertex = vertex,
+      fragment = function(input) return shader.sample(input.material.ids, shader.vec2(0.5)) end,
+    },
+    loadCube = build {
+      material = { sky = shader.textureCube },
+      vertex = vertex,
+      fragment = function(input)
+        return shader.load(input.material.sky, shader.vec2u(0), 0)
+      end,
+    },
+    levelAsLayer = inFragment(
+      function(input) return shader.sampleLevel(input.material.diffuse, shader.vec2(0.5), 0, 1) end
+    ),
+    dimensionsOfTwo = inFragment(
+      function(input) return shader.vec4(shader.float(shader.dimensions(input.material.diffuse, 0, 1).x)) end
+    ),
     notASampler = inFragment(
       function(input)
         return shader.sample(input.material.diffuse, input.material.tint, input.material.light.xy)

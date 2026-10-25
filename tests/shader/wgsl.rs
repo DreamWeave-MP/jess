@@ -7,7 +7,7 @@ use jess::shader::layout::{MemberLayout, ResourceBinding};
 use jess::shader::wgsl;
 use jess::shader::{
     Attribute, BinaryOperator, Expression, ExpressionId, Frequency, Function, Literal, Program, Rate, Resource,
-    ResourceKind, Swizzle, Type,
+    ResourceKind, SampleLevel, Swizzle, Type,
 };
 
 fn float(program: &mut Program, value: f32) -> ExpressionId {
@@ -75,6 +75,7 @@ fn textured_lit() -> Program {
         sampler,
         coordinates: uv,
         layer: None,
+        level: SampleLevel::Implicit,
     });
     let normal = program.push(Expression::Varying(world_normal));
     let unit_normal = program.push(Expression::call(Function::Normalize, &[normal]).unwrap());

@@ -6,7 +6,7 @@ extra:
   kind: api
 ---
 
-{{ api_signature(value="jess.shader: { program, struct, array, float, int, uint, vec2, vec3, vec4, vec2i, vec3i, vec4i, vec2u, vec3u, vec4u, mat3, mat4, texture2d, texture2dArray, textureCube, texture3d, sampler, min, max, clamp, abs, sign, floor, ceil, round, trunc, fract, sqrt, inverseSqrt, exp, exp2, log, log2, pow, sin, cos, tan, asin, acos, atan, atan2, radians, degrees, saturate, step, smoothstep, mix, dot, cross, length, distance, normalize, reflect, refract, transpose, determinant, dpdx, dpdy, fwidth, equal, notEqual, less, lessEqual, greater, greaterEqual, logicalAnd, logicalOr, logicalNot, select, bitAnd, bitOr, bitXor, bitNot, shiftLeft, shiftRight, sample }") }}
+{{ api_signature(value="jess.shader: { program, struct, array, float, int, uint, vec2, vec3, vec4, vec2i, vec3i, vec4i, vec2u, vec3u, vec4u, mat3, mat4, texture2d, texture2dArray, textureCube, texture3d, texture2di, texture2du, sampler, min, max, clamp, abs, sign, floor, ceil, round, trunc, fract, sqrt, inverseSqrt, exp, exp2, log, log2, pow, sin, cos, tan, asin, acos, atan, atan2, radians, degrees, saturate, step, smoothstep, mix, dot, cross, length, distance, normalize, reflect, refract, transpose, determinant, dpdx, dpdy, fwidth, equal, notEqual, less, lessEqual, greater, greaterEqual, logicalAnd, logicalOr, logicalNot, select, bitAnd, bitOr, bitXor, bitNot, shiftLeft, shiftRight, sample, sampleLevel, sampleBias, load, dimensions, levels, layers }") }}
 
 A shader, written in Luau. `require("@jess/shader")` is the same table as `jess.shader`, and a shader module is an ordinary Luau module that runs once and returns a `ShaderProgram`.
 
@@ -222,7 +222,7 @@ Everything else a program reads is bound by one of three frequencies, which say 
 Each frequency's table names what it binds:
 
 - **Values, structs, and arrays** are its uniform block's members. A value is `shader.vec4` and the rest; a struct is a type from [shader.struct](#shader-struct); an array is a type from [shader.array](#shader-array). Change one, and nothing recompiles: it's data.
-- **`shader.texture2d`**, **`shader.texture2dArray`**, **`shader.textureCube`**, and **`shader.texture3d`** are textures, each declared with a sampler of the same name, which [sample](#shader-sample) uses.
+- **`shader.texture2d`**, **`shader.texture2dArray`**, **`shader.textureCube`**, and **`shader.texture3d`** are textures, each declared with a sampler of the same name, which [sample](#shader-sample) uses. **`shader.texture2di`** and **`shader.texture2du`** are textures of integers, with no sampler, which [load](#levels-texels-and-sizes) reads.
 - **`shader.sampler`** is a sampler of its own, for `sample`'s three-argument form.
 
 Reading goes one step at a time. `input.pass.camera` is the camera; `.view` is its view matrix, a value. An array is indexed from 0 by a number or by a shader value, `#` is its length, and an element is a value or a struct to go on into: `input.pass.lights[i].color`. A step that reaches a value reads it; a texture or sampler is a handle for `sample`. Until then it's a `ShaderPlace`, which isn't a value: `input.pass.camera + 1` fails with `+: expected a shader value, not Camera, a struct: read one of its fields`.
@@ -310,7 +310,7 @@ shader.program {
 
 ## Types
 
-{{ api_signature(value="shader.float, shader.int, shader.uint, shader.vec2, shader.vec3, shader.vec4, shader.vec2i, shader.vec3i, shader.vec4i, shader.vec2u, shader.vec3u, shader.vec4u, shader.mat3, shader.mat4, shader.texture2d, shader.texture2dArray, shader.textureCube, shader.texture3d, shader.sampler: ShaderType") }}
+{{ api_signature(value="shader.float, shader.int, shader.uint, shader.vec2, shader.vec3, shader.vec4, shader.vec2i, shader.vec3i, shader.vec4i, shader.vec2u, shader.vec3u, shader.vec4u, shader.mat3, shader.mat4, shader.texture2d, shader.texture2dArray, shader.textureCube, shader.texture3d, shader.texture2di, shader.texture2du, shader.sampler: ShaderType") }}
 
 A `ShaderType` is what attributes and bindings declare, and `tostring` gives its name as errors spell it.
 
@@ -325,6 +325,7 @@ A `ShaderType` is what attributes and bindings declare, and `tostring` gives its
 | `shader.texture2dArray` | `Texture2DArray` | The same: layers of 2D textures of one size. |
 | `shader.textureCube` | `TextureCube` | The same: six square faces, an environment or a sky. |
 | `shader.texture3d` | `Texture3D` | The same: a volume. |
+| `shader.texture2di`, `shader.texture2du` | `Texture2Di`, `Texture2Du` | A 2D texture of signed or unsigned integers, read with [load](#levels-texels-and-sizes), declared with no sampler. |
 | `shader.sampler` | `Sampler` | A sampler of its own, for [sample](#shader-sample)'s three-argument form. |
 | [shader.struct](#shader-struct)`(...)` | its name | A uniform member, a field, or an element. |
 | [shader.array](#shader-array)`(...)` | `Element[length]` | A uniform member or a field. |
@@ -522,7 +523,7 @@ Reads a texture to a `Vec4f`, at the coordinates its kind takes:
 
 Without a sampler, it's the one declared with the texture. With one, it's whatever sampler you pass: one a frequency binds on its own. A sampler is a handle, so jess tells it from coordinates by what it is, not by how many arguments there are.
 
-- **Errors:** `shader.sample: expected a texture, such as input.material.diffuse, not a Vec4f value`; `shader.sample: expected a sampler, not a Vec4f value`; coordinates or a layer the texture doesn't take, `sample(TextureCube, Sampler, Vec2f) is invalid: expected sample(TextureCube, Sampler, Vec3f)`; and, when the program finishes, `sample is used in the vertex stage: textures are sampled in the fragment stage`.
+- **Errors:** `shader.sample: expected a texture, such as input.material.diffuse, not a Vec4f value`; `shader.sample: expected a sampler, not a Vec4f value`; coordinates or a layer the texture doesn't take, `sample(TextureCube, Sampler, Vec2f) is invalid: expected sample(TextureCube, Sampler, Vec3f)`; and, when the program finishes, `sample is used in the vertex stage, which has no derivatives to pick a mip level with: sample at a level with sampleLevel`, which is also the fix.
 
 ```luau
 --!strict
@@ -580,6 +581,53 @@ shader.program {
   end,
 }
 -- ShaderTexture(TextureCube)  ShaderExpr(Vec4f)  ShaderExpr(Vec4f)
+```
+
+### Levels, texels, and sizes
+
+{{ api_signature(value="shader.sampleLevel(texture: ShaderTexture, sampler: ShaderSampler?, coordinates: ShaderExpr, layer: (ShaderExpr | number)?, level: ShaderExpr | number) -> ShaderExpr") }}
+{{ api_signature(value="shader.sampleBias(texture: ShaderTexture, sampler: ShaderSampler?, coordinates: ShaderExpr, layer: (ShaderExpr | number)?, bias: ShaderExpr | number) -> ShaderExpr") }}
+{{ api_signature(value="shader.load(texture: ShaderTexture, coordinates: ShaderExpr, layer: (ShaderExpr | number)?, level: ShaderExpr | number) -> ShaderExpr") }}
+{{ api_signature(value="shader.dimensions(texture: ShaderTexture, level: (ShaderExpr | number)?) -> ShaderExpr") }}
+{{ api_signature(value="shader.levels(texture: ShaderTexture) -> ShaderExpr") }}
+{{ api_signature(value="shader.layers(texture: ShaderTexture) -> ShaderExpr") }}
+
+`sample` picks a mip level from how fast its coordinates change across the screen, which only the fragment stage knows. The rest pick otherwise, or read without a sampler at all:
+
+| Function | Reads | Stage |
+| --- | --- | --- |
+| `shader.sampleLevel` | As `sample`, at the `Float` mip level given last: 0 is the largest, 1 half its size. | Either. |
+| `shader.sampleBias` | As `sample`, at the level it would pick, moved by the `Float` bias given last: -1 is sharper. | Fragment. |
+| `shader.load` | One texel, without a sampler or filtering: at integer coordinates (a `Vec2i` or `Vec2u`, a `Vec3i` or `Vec3u` in a 3D texture), in a layer for an array texture, in the `Int` or `UInt` level given last. A `Vec4f`, or a `Vec4i` or `Vec4u` from an integer texture. Not a cube: a cube is only sampled. | Either. |
+| `shader.dimensions` | The size in texels, a `Vec2u` (a `Vec3u` for a 3D texture), of the level given, or of the largest. | Either. |
+| `shader.levels`, `shader.layers` | How many mip levels a texture has, and how many layers an array texture has: `UInt`s. | Either. |
+
+The integer textures, `shader.texture2di` and `shader.texture2du`, hold signed and unsigned integers that no sampler can filter, so they're declared without one, and `load` is how they're read: `shader.sample: a Texture2Du isn't sampled: read its texels with shader.load`. A number given as a layer or a load's level is a `UInt`; as a bias or a sample's level, a `Float`.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+shader.program {
+  attributes = { uv = shader.vec2 },
+  material = { height = shader.texture2d, ids = shader.texture2du },
+  vertex = function(input)
+    local uv = input.attributes.uv
+    local height = shader.sampleLevel(input.material.height, uv, 0).x
+
+    return { position = shader.vec4(uv, height, 1), uv = uv }
+  end,
+
+  fragment = function(input)
+    local material = input.material
+    local size = shader.dimensions(material.ids)
+    local id = shader.load(material.ids, shader.vec2u(input.uv * shader.vec2(size)), 0)
+    print(size, id, shader.levels(material.height), shader.sampleBias(material.height, input.uv, -1))
+
+    return shader.vec4(shader.float(id.x) / 255)
+  end,
+}
+-- ShaderExpr(Vec2u)  ShaderExpr(Vec4u)  ShaderExpr(UInt)  ShaderExpr(Vec4f)
 ```
 
 ## ShaderProgram
