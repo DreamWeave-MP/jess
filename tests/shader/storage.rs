@@ -218,3 +218,22 @@ fn atomic_storage_is_reached_only_through_atomics() {
         assert!(module.source.contains(expected), "{expected} in:\n{}", module.source);
     }
 }
+
+#[test]
+fn an_atomic_buffer_is_kept_out_of_the_vertex_stage() {
+    let mut builder = ProgramBuilder::new();
+    let mut site = builder.site();
+    let counts = site
+        .storage(Frequency::Pass, "counts", Element::Value(Type::UInt), Access::Atomic)
+        .unwrap();
+    site.enter(Stage::Vertex).unwrap();
+    let zero = site.uint(0);
+    let error = site
+        .atomic(AtomicOp::Add, element(counts, zero, &[]), zero, &[zero])
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "storage buffer \"counts\" is atomic and used in the vertex function, which may only read storage buffers \
+         declared to be read"
+    );
+}

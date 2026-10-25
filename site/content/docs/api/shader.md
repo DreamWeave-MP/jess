@@ -326,7 +326,7 @@ An array type: `length` values or structs, at least one. An array holds no array
 
 A storage buffer: as many `element`s, values or structs, as the buffer bound to it holds. A uniform block is small and fixed; a storage buffer is however long the data is, a particle per element or a light per element, and the stages may write it.
 
-- **Access:** `'read'`, the default, or `'readWrite'`. The vertex function only reads buffers declared `'read'`, which is WGSL's rule: `storage buffer "sums" is readWrite and used in the vertex function, which may only read storage buffers declared to be read`.
+- **Access:** `'read'`, the default, `'readWrite'`, or `'atomic'` (below). The vertex function only reads buffers declared `'read'`, which is WGSL's rule: `storage buffer "sums" is readWrite and used in the vertex function, which may only read storage buffers declared to be read`.
 - **Reading:** index it from 0, by a number or a shader value, and go on into the element: `input.material.particles[i].position`. There's no range to check while the program is built; WGSL keeps a read past the end inside the buffer.
 - **Length:** `shader.arrayLength(buffer)` is a `UInt` value of how many elements are bound. Luau's `#` gives a number, which the length isn't until the GPU runs.
 - **Writing:** `shader.write(place, key, value)` writes `value` at `place[key]` in a `readWrite` buffer, where `place[key]` is a value: `shader.write(input.pass.counts, i, n)`, `shader.write(particles[i], 'position', p)`. A write is a statement, run where the call is.

@@ -304,6 +304,7 @@ impl Site<'_> {
                 }),
                 Some(buffer) if stage == Stage::Vertex => Some(ValidationErrorKind::StorageInVertex {
                     name: buffer.name.clone(),
+                    access: buffer.access,
                 }),
                 _ => None,
             },

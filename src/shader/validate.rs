@@ -366,10 +366,12 @@ pub enum ValidationErrorKind {
         /// What doesn't fit.
         problem: &'static str,
     },
-    /// A `ReadWrite` storage buffer is used in the vertex stage, which WGSL forbids.
+    /// A `ReadWrite` or `Atomic` storage buffer is used in the vertex stage, which WGSL forbids.
     StorageInVertex {
         /// The buffer's name.
         name: String,
+        /// How it is declared.
+        access: Access,
     },
     /// An `Atomic` storage buffer holds something other than `Int`s or `UInt`s.
     AtomicElement {
@@ -663,10 +665,11 @@ impl fmt::Display for ValidationErrorKind {
                  {instead}"
             ),
             ValidationErrorKind::Unbalanced { problem } => write!(formatter, "the statements don't nest: {problem}"),
-            ValidationErrorKind::StorageInVertex { name } => write!(
+            ValidationErrorKind::StorageInVertex { name, access } => write!(
                 formatter,
-                "storage buffer {name:?} is readWrite and used in the vertex function, which may only read \
-                 storage buffers declared to be read"
+                "storage buffer {name:?} is {} and used in the vertex function, which may only read storage \
+                 buffers declared to be read",
+                access.name()
             ),
             ValidationErrorKind::AtomicElement { name } => write!(
                 formatter,
@@ -1627,6 +1630,7 @@ fn read_write_in_vertex(program: &Program, root: PlaceRoot, stage: u8) -> Result
     match program.storage.get(storage.index()) {
         Some(buffer) if buffer.access.writes() && stage & VERTEX != 0 => Err(ValidationErrorKind::StorageInVertex {
             name: buffer.name.clone(),
+            access: buffer.access,
         }),
         _ => Ok(()),
     }
@@ -2258,6 +2262,7 @@ fn write_error(
             Some(buffer) if stage == Stage::Vertex => {
                 return Some(ValidationErrorKind::StorageInVertex {
                     name: buffer.name.clone(),
+                    access: buffer.access,
                 });
             }
             _ => {}
