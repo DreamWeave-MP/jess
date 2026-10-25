@@ -47,6 +47,7 @@
 
 mod bus;
 mod context;
+pub mod dsp;
 mod engine;
 mod error;
 mod graph;
