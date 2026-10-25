@@ -398,4 +398,68 @@ suite.describe('a voice budget', function()
   end)
 end)
 
+suite.describe('procedural audio', function()
+  suite.it('plays what Luau generates a chunk ahead, the same as if it were all there at once', function()
+    local rate = 16000
+    local function sample(frame: number): number return 0.25 * math.sin(2 * math.pi * 220 * frame / rate) end
+
+    local length = 8000
+    local whole = buffer.create(length * 4)
+    for frame = 0, length - 1 do
+      buffer.writef32(whole, frame * 4, sample(frame))
+    end
+
+    local reference = audio.offline { channels = 1, rate = 48000 }
+    reference:play(audio.pcm(whole, { format = 'f32', channels = 1, rate = rate }), { at = 0 })
+    local expected = buffer.tostring(reference:render(30000))
+
+    local context = audio.offline { channels = 1, rate = 48000 }
+    local stream = audio.stream { channels = 1, rate = rate, seconds = 0.05 }
+    context:play(stream, { at = 0 })
+    expect(function() context:play(stream) end).toThrow 'plays once'
+    local generated, chunks = 0, {}
+    while #chunks < 30 do
+      -- The generator fills whatever room there is, then the engine renders a block of time.
+      local room = math.min(stream:room(), length - generated)
+      if room > 0 then
+        local chunk = buffer.create(room * 4)
+        for index = 0, room - 1 do
+          buffer.writef32(chunk, index * 4, sample(generated + index))
+        end
+
+        generated += stream:write(chunk)
+      end
+
+      if generated == length then stream:finish() end
+
+      table.insert(chunks, buffer.tostring(context:render(1000)))
+    end
+
+    expect(table.concat(chunks) == expected).toBe(true)
+    expect(stream:stats().missed).toBe(0)
+  end)
+
+  suite.it('plays silence when the generator falls behind, and finds itself from a handle', function()
+    local context = audio.offline { channels = 1 }
+    local stream = audio.stream { channels = 1, rate = 48000, seconds = 0.01 }
+    local voice = context:play(stream)
+    expect(stream:write(buffer.create(4 * 100))).toBe(100)
+    context:render(200)
+    expect(stream:stats().missed >= 100).toBe(true)
+    -- Full, it has room again only as the engine plays: offline, only as it renders.
+    expect(stream:write(buffer.create(4 * 1000))).toBe(480)
+    expect(stream:wait(10, 0)).toBe(false)
+    context:render(10)
+    expect(stream:wait(10, 0)).toBe(true)
+
+    local again = audio.stream(stream:handle())
+    again:finish()
+    expect(stream:stats().finished).toBe(true)
+    context:render(600)
+    expect(voice:state()).toBe 'ended'
+    expect(function() stream:write(buffer.create(3)) end).toThrow 'whole number'
+    expect(function() context:play(audio.stream { channels = 1 }, { loop = true }) end).toThrow 'no loop for a stream'
+  end)
+end)
+
 return suite

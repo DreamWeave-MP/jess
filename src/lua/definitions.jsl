@@ -2,6 +2,12 @@
 
 declare extern type JessNull with end
 
+--- A handle to a native resource that may cross domain and worker boundaries in a message: its
+--- `kind`, in the vocabulary of whatever made it.
+declare extern type JessHandle with
+  kind: string
+end
+
 --- The handlers `jess.context.bind` takes, by phase name. Each gets the phase's payload: seconds
 --- for `update`, `fixedUpdate`, and `lateUpdate`, the event for `event`, nothing for `startup` and
 --- `shutdown`.
@@ -216,6 +222,26 @@ export type AudioContextOptions = {
   physical: number?,
 }
 
+--- A stream: a bounded ring of interleaved frames that one writer fills, from any worker, while
+--- one voice plays it. The voice plays silence where the writer has fallen behind (`missed`
+--- counts it), and ends once the writer has finished and everything written has played.
+export type AudioStream = {
+  channels: (self: AudioStream) -> number,
+  rate: (self: AudioStream) -> number,
+  --- Frames there is room for now.
+  room: (self: AudioStream) -> number,
+  --- Writes as many whole frames of interleaved 32-bit floats as fit, and returns how many.
+  write: (self: AudioStream, samples: buffer) -> number,
+  --- Waits until there is room for `frames`, or `timeout` seconds pass (forever without one);
+  --- true if there is. It sleeps as long as playing at the stream's rate takes to make the room.
+  wait: (self: AudioStream, frames: number, timeout: number?) -> boolean,
+  --- Says the writer is done: once played to its end, the voice ends.
+  finish: (self: AudioStream) -> (),
+  stats: (self: AudioStream) -> { written: number, read: number, room: number, missed: number, finished: boolean },
+  --- A handle to send a worker, which opens the same stream with `jess.audio.stream`.
+  handle: (self: AudioStream) -> JessHandle,
+}
+
 --- Where the listener is and which way it faces; any field left out stays as it was.
 export type AudioListener = { position: vector?, forward: vector?, up: vector?, velocity: vector? }
 
@@ -322,7 +348,8 @@ export type AudioContext = {
   channels: (self: AudioContext) -> number,
   --- The next frame the engine renders. A command stamped for it or later lands on its frame.
   now: (self: AudioContext) -> number,
-  play: (self: AudioContext, pcm: AudioPcm, options: AudioPlayOptions?) -> AudioVoice,
+  --- Starts a voice playing decoded audio or a stream (which plays once, with no offset or loop).
+  play: (self: AudioContext, source: AudioPcm | AudioStream, options: AudioPlayOptions?) -> AudioVoice,
   --- The master bus: the output. It has no parent and is never removed.
   master: (self: AudioContext) -> AudioBus,
   --- A bus under `parent` (the master), at `gain` (1), muted or not; voices can play into it at once.
@@ -536,6 +563,9 @@ declare jess: {
     pcm: (data: buffer | string, options: { format: AudioSampleFormat, channels: number, rate: number }) -> AudioPcm,
     --- A context the script renders.
     offline: (options: AudioContextOptions?) -> AudioContext,
+    --- A stream of `channels` (2) at `rate` (48000) holding `seconds` (1, at most 60) of frames; or,
+    --- given a stream's handle, the stream itself, in whatever worker the handle was sent to.
+    stream: (options: { channels: number?, rate: number?, seconds: number? } | JessHandle) -> AudioStream,
     --- The processor kinds `AudioBus:insert` makes.
     processors: () -> { string },
   },

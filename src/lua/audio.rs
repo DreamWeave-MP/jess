@@ -14,7 +14,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
+use crate::audio::Stream;
 use crate::audio::processor::{Setting, Settings};
 use crate::audio::{
     AudioConfig, AudioError, BusKey, BusParam, BusSpec, Culled, Curve, Distance, Emitter, Glide, Handedness, Listener,
@@ -23,6 +25,7 @@ use crate::audio::{
 };
 use crate::lua::plan::Functions;
 use crate::lua::{Bytes, Text, error, kind, push_table};
+use crate::runtime::ResourceHandle;
 use l3i::Runtime;
 use l3i::bind::{Call, StackResults};
 use l3i::convert::{NewBuffer, Vector3};
@@ -61,6 +64,7 @@ const PLACE_KEYS: &[&str] = &[
 ];
 const CONE_KEYS: &[&str] = &["inner", "outer", "outside"];
 const LISTENER_KEYS: &[&str] = &["forward", "position", "up", "velocity"];
+const STREAM_KEYS: &[&str] = &["channels", "rate", "seconds"];
 const PLAY_KEYS: &[&str] = &[
     "at",
     "bus",
@@ -82,6 +86,114 @@ const BUS_KEYS: &[&str] = &["gain", "muted", "parent"];
 const BUS_SEND_KEYS: &[&str] = &["at", "level", "tap"];
 
 type Shared = Rc<RefCell<OfflineContext>>;
+
+/// A stream: audio written while it plays.
+#[derive(Clone)]
+pub struct LuaAudioStream(Arc<Stream>);
+
+// SAFETY: shared Rust state; the destructor never touches the Lua API.
+unsafe impl Userdata for LuaAudioStream {
+    const NAME: &'static str = "jess.audio.Stream";
+}
+
+/// The kind of handle a stream crosses to a worker as.
+const STREAM_HANDLE: &str = "audio.stream";
+
+/// `audio.stream({ channels, rate, seconds })`, or `audio.stream(handle)` for a stream another
+/// worker made.
+fn stream(call: &Call<'_>, options: ValueView<'_>) -> l3i::Result<Owned<LuaAudioStream>> {
+    const FUNCTION: &str = "jess.audio.stream";
+    if let Some(handle) = l3i::userdata::receiver::<ResourceHandle>(options) {
+        if handle.kind != STREAM_HANDLE {
+            return Err(error(format!(
+                "{FUNCTION} opens an {STREAM_HANDLE} handle, not a {}",
+                handle.kind
+            )));
+        }
+        let found = Stream::find(handle.id).ok_or_else(|| error(format!("{FUNCTION}: the stream is gone")))?;
+        return Ok(Owned(LuaAudioStream(found)));
+    }
+    let (channels, rate, seconds) = call.with_frame(|frame| {
+        let table = table_of(frame, options, FUNCTION, STREAM_KEYS)?;
+        let channels = optional::<f64>(frame, Some(&table), "channels", FUNCTION)?.unwrap_or(2.0);
+        let rate = optional::<f64>(frame, Some(&table), "rate", FUNCTION)?.unwrap_or(48_000.0);
+        let seconds = optional::<f64>(frame, Some(&table), "seconds", FUNCTION)?.unwrap_or(1.0);
+        Ok((channels, rate, seconds))
+    })?;
+    let stream = Stream::new(count(channels, "channels")?, rate_of(rate)?, seconds)?;
+    Ok(Owned(LuaAudioStream(stream)))
+}
+
+/// Interleaved 32-bit floats from a buffer, whole samples of it.
+fn floats(data: &[u8]) -> Vec<f32> {
+    let (samples, _) = data.as_chunks::<4>();
+    samples.iter().map(|bytes| f32::from_le_bytes(*bytes)).collect()
+}
+
+fn describe_stream(d: &mut ExtensionDescriptor) {
+    let mut stream = d.userdata::<LuaAudioStream>(LuaAudioStream::NAME);
+    stream
+        .tag(TagPolicy::Never)
+        .doc("A stream: a bounded ring of frames one writer fills while one voice plays it.");
+    stream
+        .method("channels", |this: &LuaAudioStream| number(this.0.channels() as u64))
+        .untyped();
+    stream
+        .method("rate", |this: &LuaAudioStream| f64::from(this.0.rate()))
+        .untyped();
+    stream.method("room", |this: &LuaAudioStream| number(this.0.room())).untyped();
+    stream
+        .method("write", |this: &LuaAudioStream, samples: Bytes| -> l3i::Result<f64> {
+            if !samples.0.len().is_multiple_of(4) {
+                return Err(error(
+                    "AudioStream:write takes interleaved 32-bit floats: a whole number of them",
+                ));
+            }
+            Ok(number(this.0.write(&floats(&samples.0))? as u64))
+        })
+        .untyped();
+    stream
+        .method(
+            "wait",
+            |this: &LuaAudioStream, frames: f64, timeout: Option<f64>| -> l3i::Result<bool> {
+                let frames = whole(frames, "frames")?;
+                let timeout = timeout.unwrap_or(f64::INFINITY);
+                if timeout.is_nan() || timeout < 0.0 {
+                    return Err(error(format!(
+                        "AudioStream:wait takes a timeout in seconds from 0, not {timeout}"
+                    )));
+                }
+                let timeout = Duration::try_from_secs_f64(timeout).unwrap_or(Duration::MAX);
+                Ok(this.0.wait(frames, timeout))
+            },
+        )
+        .untyped();
+    stream.method("finish", |this: &LuaAudioStream| this.0.finish()).untyped();
+    stream
+        .method(
+            "stats",
+            |this: &LuaAudioStream, call: &Call<'_>| -> l3i::Result<StackResults> {
+                let stats = this.0.stats();
+                push_table(call, 0, 5, |frame, table| {
+                    table.raw_set_value(frame, "written", &number(stats.written))?;
+                    table.raw_set_value(frame, "read", &number(stats.read))?;
+                    table.raw_set_value(frame, "room", &number(stats.room))?;
+                    table.raw_set_value(frame, "missed", &number(stats.missed))?;
+                    table.raw_set_value(frame, "finished", &stats.finished)
+                })?;
+                Ok(StackResults)
+            },
+        )
+        .untyped();
+    stream
+        .method("handle", |this: &LuaAudioStream| {
+            Owned(ResourceHandle {
+                kind: STREAM_HANDLE.to_owned(),
+                id: this.0.id(),
+            })
+        })
+        .untyped();
+}
 
 /// Decoded audio, shared by every voice that plays it.
 #[derive(Clone)]
@@ -372,7 +484,7 @@ fn offline(call: &Call<'_>, options: Option<ValueView<'_>>) -> l3i::Result<Owned
 
 /// `context:play(pcm, { at, bus, sends, gain, pan, rate, offset, loop, loopStart, loopEnd })`.
 #[allow(clippy::cast_possible_truncation)] // Gain and pan are f32 in the engine; range is checked there.
-fn play_spec(call: &Call<'_>, context: &Shared, pcm: &Pcm, options: Option<ValueView<'_>>) -> l3i::Result<PlaySpec> {
+fn play_spec(call: &Call<'_>, context: &Shared, frames: u64, options: Option<ValueView<'_>>) -> l3i::Result<PlaySpec> {
     const FUNCTION: &str = "AudioContext:play";
     let mut spec = PlaySpec::default();
     call.with_frame(|frame| {
@@ -426,7 +538,7 @@ fn play_spec(call: &Call<'_>, context: &Shared, pcm: &Pcm, options: Option<Value
         if looping {
             spec.looping = Some(LoopRegion {
                 start: start.map_or(Ok(0), |start| whole(start, "loopStart"))?,
-                end: end.map_or_else(|| Ok(pcm.frames() as u64), |end| whole(end, "loopEnd"))?,
+                end: end.map_or_else(|| Ok(frames), |end| whole(end, "loopEnd"))?,
             });
         }
         Ok(())
@@ -574,6 +686,7 @@ pub fn module(runtime: &Runtime) -> l3i::Result<Table> {
     module.function("offline", |call: &Call<'_>, options: Option<ValueView<'_>>| {
         offline(call, options)
     })?;
+    module.function("stream", |call: &Call<'_>, options: ValueView<'_>| stream(call, options))?;
     module.function("processors", |call: &Call<'_>| -> l3i::Result<StackResults> {
         l3i::stack::push_list(call, crate::audio::processor::KINDS.iter(), |frame, kind| {
             frame.push(*kind)?;
@@ -591,6 +704,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
     describe_voice(d);
     describe_bus(d);
     describe_processor(d);
+    describe_stream(d);
 }
 
 fn describe_pcm(d: &mut ExtensionDescriptor) {
@@ -631,14 +745,23 @@ fn describe_context(d: &mut ExtensionDescriptor) {
              source: ValueView<'_>,
              options: Option<ValueView<'_>>|
              -> l3i::Result<Owned<LuaAudioVoice>> {
+                if let Some(stream) = l3i::userdata::receiver::<LuaAudioStream>(source) {
+                    let stream = Arc::clone(&stream.0);
+                    let spec = play_spec(call, &this.0, 0, options)?;
+                    let key = this.0.borrow_mut().control().play_stream(&stream, &spec)?;
+                    return Ok(Owned(LuaAudioVoice {
+                        context: Rc::clone(&this.0),
+                        key,
+                    }));
+                }
                 let Some(source) = l3i::userdata::receiver::<LuaAudioPcm>(source) else {
                     return Err(error(format!(
-                        "AudioContext:play takes a Pcm from jess.audio.pcm, not {}",
+                        "AudioContext:play takes a Pcm from jess.audio.pcm or a Stream from jess.audio.stream, not {}",
                         kind(source)
                     )));
                 };
                 let source = Arc::clone(&source.0);
-                let spec = play_spec(call, &this.0, &source, options)?;
+                let spec = play_spec(call, &this.0, source.frames() as u64, options)?;
                 let key = this.0.borrow_mut().control().play(&source, &spec)?;
                 Ok(Owned(LuaAudioVoice {
                     context: Rc::clone(&this.0),
