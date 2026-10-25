@@ -1127,3 +1127,38 @@ fn rendering_a_stream_never_allocates() {
         0
     );
 }
+
+#[test]
+fn a_stream_written_from_another_thread_arrives_whole_and_in_order() {
+    const FRAMES: u16 = 40_000;
+    let mut context = mono(AudioConfig::default());
+    let stream = Stream::new(1, 48_000, 0.01).unwrap();
+    let voice = context.control().play_stream(&stream, &at(0)).unwrap();
+    let id = stream.id();
+    let writer = std::thread::spawn(move || {
+        // The writer has only the id, as a worker has only a handle.
+        let stream = Stream::find(id).unwrap();
+        let ramp: Vec<f32> = (0..FRAMES).map(f32::from).collect();
+        let mut written = 0;
+        while written < ramp.len() {
+            assert!(stream.wait(64, std::time::Duration::from_secs(10)));
+            written += stream.write(&ramp[written..(written + 64).min(ramp.len())]).unwrap();
+        }
+        stream.finish();
+    });
+    let mut out = Vec::new();
+    while context.control().state(voice) != VoiceState::Ended {
+        // Keep behind the writer, as a device's buffer would.
+        let stats = stream.stats();
+        if !stats.finished && stats.written - stats.read < 200 {
+            std::thread::yield_now();
+            continue;
+        }
+        out.extend(context.render(64));
+    }
+    writer.join().unwrap();
+    let played: Vec<f32> = out.into_iter().take(usize::from(FRAMES)).collect();
+    let expected: Vec<f32> = (0..FRAMES).map(f32::from).collect();
+    assert_eq!(played, expected);
+    assert_eq!(stream.stats().missed, 0);
+}
