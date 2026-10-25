@@ -14,7 +14,7 @@ pub enum Curve {
     #[default]
     Linear,
     /// The same ratio every frame: even steps in decibels, for gains and frequencies. Both ends
-    /// are above zero; a ramp from zero starts at [`Param::FLOOR`].
+    /// are above zero; a ramp from zero or below starts at 1e-5, -100 dB.
     Exponential,
 }
 
