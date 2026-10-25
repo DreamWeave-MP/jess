@@ -150,6 +150,19 @@ fn particles_read_one_storage_buffer_and_write_another() {
 }
 
 #[test]
+fn integrate_is_a_compute_program() {
+    let runtime = common::runtime();
+    let (program, module) = lowered(&runtime, "integrate.jsl");
+    assert_eq!(program.workgroup_size(), Some([64, 1, 1]));
+    for line in [
+        "@compute @workgroup_size(64, 1, 1)\nfn compute_main(@builtin(global_invocation_id) global_invocation_id: vec3<u32>) {",
+        "arrayLength(&b_pass_positions)",
+    ] {
+        assert!(module.source.contains(line), "no {line:?} in:\n{}", module.source);
+    }
+}
+
+#[test]
 fn textured_samples_with_the_sampler_declared_with_the_texture() {
     let runtime = common::runtime();
     let (program, module) = lowered(&runtime, "textured.jsl");

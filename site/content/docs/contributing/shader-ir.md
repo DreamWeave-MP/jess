@@ -57,7 +57,7 @@ Nothing else is built in. There's no model matrix, no camera, no time: a program
 
 ## Statements
 
-Each stage has a body: a list of `Statement`s that run in order before it writes its outputs. `Emit(id)` computes an expression at that point; `Store` writes a local; `If` and `Loop` hold blocks of their own; `Discard` ends a fragment. A local is a `Var` or a loop's index, declared per stage and zero until something stores into it. A loop counts its index from 0 to an `Int` or `UInt` count computed before the first pass, and nothing stores into the index, so every loop ends.
+A program is a vertex and a fragment stage, or a compute program (`Program::compute`, with a workgroup size): one compute stage, run per invocation, with no attributes, varyings, or outputs, which reads and writes storage buffers and takes no derivatives. Each stage has a body: a list of `Statement`s that run in order before it writes its outputs. `Emit(id)` computes an expression at that point; `Store` writes a local; `If` and `Loop` hold blocks of their own; `Discard` ends a fragment. A local is a `Var` or a loop's index, declared per stage and zero until something stores into it. A loop counts its index from 0 to an `Int` or `UInt` count computed before the first pass, and nothing stores into the index, so every loop ends.
 
 Where an expression is emitted is where its value exists: in that block and the blocks inside it, after it, in that stage. An expression no statement emits is computed at the top of whichever stage reads it, as every expression was before bodies existed, and may read only others like it; native code that never calls `Site::enter` builds that way. A `Local` read is computed where it is placed, because a local's value depends on what was stored before.
 
@@ -129,7 +129,7 @@ One module writes all WGSL, with one naming scheme:
 | temporaries | `e0`, `e1`, ... per entry point, in arena order |
 | locals | `l0`, `l1`, ..., declared at the top of their stage's entry point; a loop is `for (lN = 0u; lN < count; lN = lN + 1u)` |
 
-Every non-leaf expression a stage reads becomes one `let`, where its stage's body emits it. The entry points are `vertex_main` and `fragment_main`. The same program always lowers to the same bytes.
+Every non-leaf expression a stage reads becomes one `let`, where its stage's body emits it. The entry points are `vertex_main` and `fragment_main`, or a compute program's one, `compute_main`, with its `@workgroup_size`. The same program always lowers to the same bytes.
 
 Bindings and layouts belong to jess, never the author, and the lowering writes out what [Layout](#layout) decided: each frequency's block at binding 0 of its group, its textures and samplers after it, its storage buffers after them, struct and block members in memory order, with `@align` and `@size` wherever jess's 16-byte rule differs from what WGSL would pick by itself. `WgslModule` carries the `ProgramLayout`, so the renderer never has to rediscover a layout from the source.
 

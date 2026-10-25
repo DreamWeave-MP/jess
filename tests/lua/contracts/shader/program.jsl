@@ -291,6 +291,24 @@ local buffers = shader.program {
   end,
 }
 
+local integrate = shader.compute {
+  workgroupSize = { 8, 8 },
+  pass = { cells = shader.storage(shader.float, 'readWrite'), width = shader.uint },
+  compute = function(input)
+    local cell = input.builtin.globalInvocationId
+    local index = cell.y * input.pass.width + cell.x
+    shader.write(input.pass.cells, index, input.pass.cells[index] * 0.5)
+    observed.compute = {
+      input = tostring(input),
+      builtin = tostring(input.builtin),
+      global = tostring(cell),
+      inGroup = tostring(input.builtin.localInvocationIndex),
+      workgroup = tostring(input.builtin.workgroupId),
+      count = tostring(input.builtin.numWorkgroups),
+    }
+  end,
+}
+
 local function describe(program: ShaderProgram): { [string]: any }
   return {
     tostring = tostring(program),
@@ -340,6 +358,10 @@ return {
   constant = describe(constant),
   flow = describe(flow),
   buffers = describe(buffers),
+  integrate = describe(integrate),
+  integrateSize = integrate.workgroupSize,
+  litSize = lit.workgroupSize == nil,
+  computed = observed.compute,
   storage = observed.storage,
   statements = observed.flow,
   textures = describe(textures),

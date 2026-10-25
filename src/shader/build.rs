@@ -99,12 +99,23 @@ impl Default for ProgramBuilder {
 }
 
 impl ProgramBuilder {
-    /// A builder for an empty program.
+    /// A builder for an empty program of a vertex and a fragment stage.
     #[must_use]
     pub fn new() -> ProgramBuilder {
+        ProgramBuilder::of(Program::new())
+    }
+
+    /// A builder for an empty compute program, run in workgroups of `workgroup_size`
+    /// invocations.
+    #[must_use]
+    pub fn compute(workgroup_size: [u32; 3]) -> ProgramBuilder {
+        ProgramBuilder::of(Program::compute(workgroup_size))
+    }
+
+    fn of(program: Program) -> ProgramBuilder {
         ProgramBuilder {
             token: NEXT_PROGRAM.fetch_add(1, Ordering::Relaxed),
-            program: Program::new(),
+            program,
             stage: None,
             open: Vec::new(),
         }
@@ -1095,10 +1106,11 @@ impl Site<'_> {
     ///
     /// # Errors
     ///
-    /// No stage entered, or the vertex stage.
+    /// No stage entered, or a stage other than the fragment.
     pub fn discard(&mut self) -> Result<(), ValidationError> {
-        if self.stage()? == Stage::Vertex {
-            return Err(self.error(ValidationErrorKind::DiscardInVertex));
+        let stage = self.stage()?;
+        if stage != Stage::Fragment {
+            return Err(self.error(ValidationErrorKind::DiscardOutsideFragment { stage }));
         }
         self.statement(Statement::Discard {
             origin: self.origin.clone(),

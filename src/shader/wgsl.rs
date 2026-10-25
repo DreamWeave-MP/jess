@@ -23,17 +23,21 @@ use crate::shader::interface::{Access, AttributeId, DataType, Element, Frequency
 use crate::shader::layout::{MemberLayout, ProgramLayout, StructLayout, value_extent};
 use crate::shader::program::Program;
 use crate::shader::types::Type;
-use crate::shader::validate::{Analysis, FRAGMENT, VERTEX, ValidationError, analyze};
+use crate::shader::validate::{Analysis, COMPUTE, FRAGMENT, VERTEX, ValidationError, analyze};
 
 /// The vertex entry point's name.
 pub const VERTEX_ENTRY_POINT: &str = "vertex_main";
 /// The fragment entry point's name.
 pub const FRAGMENT_ENTRY_POINT: &str = "fragment_main";
 
+/// The compute entry point's name.
+pub const COMPUTE_ENTRY_POINT: &str = "compute_main";
+
 /// A lowered program: the WGSL, and every binding, layout, and location the renderer must match.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WgslModule {
-    /// The WGSL source, with entry points [`VERTEX_ENTRY_POINT`] and [`FRAGMENT_ENTRY_POINT`].
+    /// The WGSL source, with entry points [`VERTEX_ENTRY_POINT`] and [`FRAGMENT_ENTRY_POINT`], or
+    /// [`COMPUTE_ENTRY_POINT`] for a compute program.
     pub source: String,
     /// Where everything the program declares lives: uniform blocks, structs, bindings, and vertex
     /// buffers.
@@ -66,11 +70,15 @@ pub fn lower(program: &Program) -> Result<WgslModule, Vec<ValidationError>> {
 
     lowering.structs();
     lowering.bindings();
-    lowering.vertex_input_struct();
-    lowering.vertex_output_struct();
-    lowering.fragment_output_struct();
-    lowering.vertex_entry_point();
-    lowering.fragment_entry_point();
+    if let Some(size) = program.workgroup_size {
+        lowering.compute_entry_point(size);
+    } else {
+        lowering.vertex_input_struct();
+        lowering.vertex_output_struct();
+        lowering.fragment_output_struct();
+        lowering.vertex_entry_point();
+        lowering.fragment_entry_point();
+    }
 
     Ok(WgslModule {
         source: lowering.source,
@@ -347,6 +355,16 @@ impl Lowering<'_> {
             }
             emit!(self, "    return output;\n");
         }
+        emit!(self, "}}\n");
+    }
+
+    fn compute_entry_point(&mut self, [x, y, z]: [u32; 3]) {
+        let parameters = self.builtin_parameters(COMPUTE).join(", ");
+        emit!(
+            self,
+            "@compute @workgroup_size({x}, {y}, {z})\nfn {COMPUTE_ENTRY_POINT}({parameters}) {{\n"
+        );
+        self.stage_body(Stage::Compute, COMPUTE);
         emit!(self, "}}\n");
     }
 
@@ -735,6 +753,11 @@ fn builtin_name(builtin: Builtin) -> &'static str {
         Builtin::InstanceIndex => "instance_index",
         Builtin::Position => "input.position",
         Builtin::FrontFacing => "front_facing",
+        Builtin::GlobalInvocationId => "global_invocation_id",
+        Builtin::LocalInvocationId => "local_invocation_id",
+        Builtin::LocalInvocationIndex => "local_invocation_index",
+        Builtin::WorkgroupId => "workgroup_id",
+        Builtin::NumWorkgroups => "num_workgroups",
     }
 }
 

@@ -112,15 +112,21 @@ The entries below are the decisions behind what the fixtures and the neighbourin
 - **Class:** design.
 - **Decision:** pinned in `shader/program` (`flow`, `statements`) and `shader/errors` (`setType`, `whenFunction`, `loopCount`, `discardInVertex`, `outOfScope`, `otherStage`, `varInOtherStage`, `nonUniform`).
 
+### 18. A compute program is one function, and draws nothing
+
+- **What:** `shader.compute { workgroupSize, pass, material, draw, compute }` builds a program of one stage, run once per invocation of a dispatch. It binds what a vertex and fragment program binds, has no attributes or varyings, returns nothing from `compute`, and writes what it computes to storage buffers. `input.builtin` gives the invocation ids; `workgroupSize` is a number or one to three in a table, checked against WebGPU's limits when the program finishes.
+- **Class:** design.
+- **Decision:** pinned in `shader/program` (`integrate`, `integrateSize`, `litSize`, `computed`) and `shader/errors` (`noWorkgroup`, `bigWorkgroup`, `computeAttributes`, `computeBuiltin`, `computeReturns`, `computeKey`).
+
 ## Modules
 
-### 18. jess's members are `@jess/<name>`
+### 19. jess's members are `@jess/<name>`
 
 - **What:** `require("@jess/shader")` is `jess.shader`, because a shader module starts with that line, and so is every other member table (`@jess/context` is `jess.context`, `@jess/worker` is `jess.worker`). `require` is typed to return the member's type for these names and `any` for a path.
 - **Class:** addition.
 - **Decision:** pinned in `shader/program` (`sameModule`) and in `tests/lua/contracts.rs` (`only_generic_members_are_installed`), which checks each member against its `require`.
 
-### 19. `@jess/log`, `@jess/test`, `@jess/jpk`, and `@jess/package` are built-in modules written in Luau
+### 20. `@jess/log`, `@jess/test`, `@jess/jpk`, and `@jess/package` are built-in modules written in Luau
 
 - **What:** they are modules jess ships, embedded in the binary, installed through the runtime plan like the native `@dream/*` modules (`src/lua/stdlib.rs`), frozen, and typed in the definitions. `@jess/` is jess's namespace: a `@jess/` name that isn't a member, a built-in module, or an export of the built-in package is `module not found`, never a file lookup, so no file can stand in for one. `@jess/log` writes through one native sink the host selects (`set_log_sink`); scripts can't reach it.
 - **Class:** addition.
@@ -128,19 +134,19 @@ The entries below are the decisions behind what the fixtures and the neighbourin
 
 ## Domains
 
-### 20. `jess.input` binds to the domain's service, and checks capabilities only there
+### 21. `jess.input` binds to the domain's service, and checks capabilities only there
 
 - **What:** under a `ScriptDomain` that carries an input service (the host attaches one), `jess.input.runtime()` is the application's live input: the host ticks it, and `tick` and `advance` are refused. Anywhere else each runtime keeps a headless runtime of its own, which is what the input fixture drives. Every runtime method checks its capability (`input.actions`, `input.observe`, `input.configure`) through the broker when the script runs under a domain; outside any domain the grant is the runtime's, what the command line or a target's declaration gave it.
 - **Class:** addition. The fixture runs outside any domain, with the host-script grant.
 - **Decision:** pinned in the kernel tests (`tests/lua/kernel.rs`: `the_application_kernel_end_to_end`, `granted_asks_the_broker_under_a_domain`) and in `tests/lua/lua_api.rs`; the denial is the broker's, `capability 'input.actions' denied to domain#1 gen#1 context#2`, as `pcall` reads it.
 
-### 21. A worker shares the domain's services only when its spawner says `shareServices = true`
+### 22. A worker shares the domain's services only when its spawner says `shareServices = true`
 
 - **What:** `jess.worker.spawn` takes `shareServices`, a boolean: `true` gives the worker every service its domain carries, so its `jess.input.runtime()` is the application's; absent or `false`, the worker has none and its runtime is its own. A script can't name a Rust type, so the choice is all or nothing; the worker's capabilities still say what it may do with what it sees.
 - **Class:** addition. The unknown-option message names the option (`expected capabilities, name, shareServices, or source`).
 - **Decision:** pinned in the kernel tests (`the_application_kernel_end_to_end`).
 
-### 22. Under a domain with a log stream, `@jess/log` writes there, attributed
+### 23. Under a domain with a log stream, `@jess/log` writes there, attributed
 
 - **What:** a `ScriptDomain` given `DomainSpec::logs` collects every `@jess/log` record its contexts and workers write, as a `jess::runtime::LogRecord` carrying the runtime's attribution (domain, generation, context or worker); the runtime's own sink doesn't see them. A worker's records go there whether or not it shares any service. Without a stream, and outside any domain, `@jess/log` writes where it always did.
 - **Class:** addition.

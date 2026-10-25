@@ -40,6 +40,9 @@ use crate::lua::{Jess, error, kind, push_table};
 /// What `shader.program` takes.
 const PROGRAM_KEYS: &[&str] = &["attributes", "draw", "fragment", "instance", "material", "pass", "vertex"];
 
+/// What `shader.compute` takes.
+const COMPUTE_KEYS: &[&str] = &["compute", "draw", "material", "pass", "workgroupSize"];
+
 /// The names a stage input answers with a namespace of declarations, by the attribute rate they
 /// read.
 const NAMESPACES: [(&str, Rate); 2] = [("attributes", Rate::Vertex), ("instance", Rate::Instance)];
@@ -184,6 +187,7 @@ impl Info {
         match stage {
             Stage::Vertex => names.extend(NAMESPACES.iter().map(|(name, _)| *name)),
             Stage::Fragment => names.extend(self.varyings.keys().map(String::as_str)),
+            Stage::Compute => {}
         }
         names.sort_unstable();
         names
@@ -1255,6 +1259,12 @@ fn input(this: &LuaShaderInput, call: &Call<'_>, key: ValueView<'_>) -> l3i::Res
                 rate_phrase(*rate)
             )));
         }
+        if stage == Stage::Compute {
+            return Err(error(format!(
+                "a compute program has no {}: it reads storage buffers",
+                rate_phrase(*rate)
+            )));
+        }
         call.push(&Owned(LuaShaderAttributes {
             build: this.build.clone(),
             rate: *rate,
@@ -1499,11 +1509,10 @@ fn builtin(this: &LuaShaderBuiltins, call: &Call<'_>, key: ValueView<'_>) -> l3i
         return Err(error(format!("the {stage} builtins are indexed by name, not {}", kind(key))));
     }
     let name = key.read::<&str>()?;
-    let in_vertex = this.stage == Stage::Vertex;
     let Some(position) = Builtin::ALL.iter().position(|builtin| builtin.name() == name) else {
         let names: Vec<&str> = Builtin::ALL
             .iter()
-            .filter(|builtin| builtin.in_vertex() == in_vertex)
+            .filter(|builtin| builtin.stage() == this.stage)
             .map(|builtin| builtin.name())
             .collect();
         return Err(error(format!(
@@ -1512,9 +1521,11 @@ fn builtin(this: &LuaShaderBuiltins, call: &Call<'_>, key: ValueView<'_>) -> l3i
         )));
     };
     let builtin = Builtin::ALL[position];
-    if builtin.in_vertex() != in_vertex {
-        let other = if in_vertex { "fragment" } else { "vertex" };
-        return Err(error(format!("builtin {name} is only readable in the {other} function")));
+    if builtin.stage() != this.stage {
+        return Err(error(format!(
+            "builtin {name} is only readable in the {} function",
+            builtin.stage()
+        )));
     }
     let value = at_site(call, &this.build, |site, info| {
         Ok(*info.builtins[position].get_or_insert_with(|| site.builtin(builtin)))
@@ -1581,13 +1592,10 @@ fn bindings(frame: &Frame<'_>, table: ValueView<'_>, what: &str) -> l3i::Result<
     Ok(declared)
 }
 
-/// A program spec's `vertex` or `fragment` function.
-fn stage_function(function: ValueView<'_>, what: &str) -> l3i::Result<Function> {
+/// A program spec's `vertex`, `fragment`, or `compute` function.
+fn stage_function(function: ValueView<'_>, operation: &str, what: &str) -> l3i::Result<Function> {
     if !function.is_function() {
-        return Err(error(format!(
-            "shader.program needs a {what} function, not {}",
-            kind(function)
-        )));
+        return Err(error(format!("{operation} needs a {what} function, not {}", kind(function))));
     }
     Function::from_value(l3i::value::Value::store(function)?)
 }
@@ -1642,8 +1650,13 @@ struct Spec {
     attributes: [Vec<(String, Type)>; 2],
     /// The `pass`, `material`, and `draw` declarations, by frequency.
     groups: [Vec<(String, Descriptor)>; 3],
-    vertex: Function,
-    fragment: Function,
+    stages: Stages,
+}
+
+/// What a program runs: a vertex and a fragment function, or a compute function.
+enum Stages {
+    Render { vertex: Function, fragment: Function },
+    Compute { workgroup_size: [u32; 3], compute: Function },
 }
 
 /// The struct a descriptor came from, declared in the program if it isn't already, with every
@@ -1742,28 +1755,15 @@ fn declare_groups(site: &mut Site<'_>, info: &mut Info, groups: [Vec<(String, De
 
 /// Builds the program: declares, runs the vertex function and passes what it returned, runs the
 /// fragment function and outputs what it returned, then validates.
-fn construct_program(call: &Call<'_>, build: &Rc<RefCell<Build>>, spec: Spec) -> l3i::Result<Finished> {
-    let Spec {
-        attributes,
-        groups,
-        vertex,
-        fragment,
-    } = spec;
-    let declared_at = {
-        let Build { builder, info } = &mut *build.borrow_mut();
-        let origin = info.origin(call);
-        let builder = builder.as_mut().expect("a program under construction has its builder");
-        let mut site = builder.at(origin.clone());
-        for (rate, declared) in Rate::ALL.into_iter().zip(attributes) {
-            for (name, ty) in declared {
-                let attribute = site.attribute(rate, &name, ty).map_err(invalid)?;
-                info.attributes[rate as usize].insert(name, (attribute, None));
-            }
-        }
-        declare_groups(&mut site, info, groups)?;
-        origin
-    };
-
+/// Runs the vertex function, passes what it returned, then runs the fragment function and takes
+/// its color.
+fn render_stages(
+    call: &Call<'_>,
+    build: &Rc<RefCell<Build>>,
+    vertex: &Function,
+    fragment: &Function,
+    declared_at: &SourceOrigin,
+) -> l3i::Result<()> {
     enter(build, Stage::Vertex)?;
     let input = LuaShaderInput {
         build: build.clone(),
@@ -1775,11 +1775,11 @@ fn construct_program(call: &Call<'_>, build: &Rc<RefCell<Build>>, spec: Spec) ->
     {
         let Build { builder, info } = &mut *build.borrow_mut();
         let builder = builder.as_mut().expect("a program under construction has its builder");
-        let at = origin_of(builder, position, &declared_at);
+        let at = origin_of(builder, position, declared_at);
         builder.at(at).set_position(position).map_err(invalid)?;
         for (name, value) in outputs {
             output_name_taken(&name)?;
-            let at = origin_of(builder, value, &declared_at);
+            let at = origin_of(builder, value, declared_at);
             let read = builder.at(at).pass(&name, value).map_err(invalid)?;
             info.varyings.insert(name, read);
         }
@@ -1802,12 +1802,64 @@ fn construct_program(call: &Call<'_>, build: &Rc<RefCell<Build>>, spec: Spec) ->
                 })
         })
         .map_err(crate::lua::callback_error)?;
+    let Build { builder, .. } = &mut *build.borrow_mut();
+    let builder = builder.as_mut().expect("a program under construction has its builder");
+    let at = origin_of(builder, output, declared_at);
+    builder.at(at).output(output).map_err(invalid)?;
+    Ok(())
+}
+
+/// Runs the compute function, which returns nothing: it writes what it computes to storage
+/// buffers.
+fn compute_stage(call: &Call<'_>, build: &Rc<RefCell<Build>>, compute: &Function) -> l3i::Result<()> {
+    enter(build, Stage::Compute)?;
+    let input = LuaShaderInput {
+        build: build.clone(),
+        stage: Stage::Compute,
+    };
+    compute
+        .invoke_with(call, (Owned(input),), |_, returned| {
+            if returned.is_nil() {
+                return Ok(());
+            }
+            Err(error(format!(
+                "the compute function returned {}: it returns nothing, and writes what it computes to \
+                 storage buffers",
+                kind(returned)
+            )))
+        })
+        .map_err(crate::lua::callback_error)
+}
+
+fn construct_program(call: &Call<'_>, build: &Rc<RefCell<Build>>, spec: Spec) -> l3i::Result<Finished> {
+    let Spec {
+        attributes,
+        groups,
+        stages,
+    } = spec;
+    let declared_at = {
+        let Build { builder, info } = &mut *build.borrow_mut();
+        let origin = info.origin(call);
+        let builder = builder.as_mut().expect("a program under construction has its builder");
+        let mut site = builder.at(origin.clone());
+        for (rate, declared) in Rate::ALL.into_iter().zip(attributes) {
+            for (name, ty) in declared {
+                let attribute = site.attribute(rate, &name, ty).map_err(invalid)?;
+                info.attributes[rate as usize].insert(name, (attribute, None));
+            }
+        }
+        declare_groups(&mut site, info, groups)?;
+        origin
+    };
+
+    match &stages {
+        Stages::Render { vertex, fragment } => render_stages(call, build, vertex, fragment, &declared_at)?,
+        Stages::Compute { compute, .. } => compute_stage(call, build, compute)?,
+    }
 
     let (builder, owner, groups) = {
         let Build { builder, info } = &mut *build.borrow_mut();
-        let mut taken = builder.take().expect("a program under construction has its builder");
-        let at = origin_of(&taken, output, &declared_at);
-        taken.at(at).output(output).map_err(invalid)?;
+        let taken = builder.take().expect("a program under construction has its builder");
         let groups = info.groups.clone().map(|members| {
             let reflect = |(name, member): (String, Member)| {
                 let ty = match member {
@@ -1853,12 +1905,91 @@ fn program(shader: &Rc<Shader>, call: &Call<'_>, spec: ValueView<'_>) -> l3i::Re
         Ok(Spec {
             attributes,
             groups,
-            vertex: stage_function(table.raw_get(frame, "vertex")?, "vertex")?,
-            fragment: stage_function(table.raw_get(frame, "fragment")?, "fragment")?,
+            stages: Stages::Render {
+                vertex: stage_function(table.raw_get(frame, "vertex")?, "shader.program", "vertex")?,
+                fragment: stage_function(table.raw_get(frame, "fragment")?, "shader.program", "fragment")?,
+            },
         })
     })?;
+    run_program(shader, call, owner, spec)
+}
+
+/// `shader.compute { workgroupSize, pass, material, draw, compute }`.
+fn compute(shader: &Rc<Shader>, call: &Call<'_>, spec: ValueView<'_>) -> l3i::Result<Owned<LuaShaderProgram>> {
+    if !spec.is_table() {
+        return Err(error(format!("shader.compute takes a table, not {}", kind(spec))));
+    }
+    let owner: Arc<str> = Arc::from(call_site(call).0);
+    let spec = call.with_frame(|frame| {
+        crate::lua::check_options(frame, spec, "jess.shader.compute", COMPUTE_KEYS)?;
+        let table = spec.as_table()?;
+        let [pass, material, draw] = GROUPS.map(|(name, _)| name);
+        let groups = [
+            bindings(frame, table.raw_get(frame, pass)?, pass)?,
+            bindings(frame, table.raw_get(frame, material)?, material)?,
+            bindings(frame, table.raw_get(frame, draw)?, draw)?,
+        ];
+        Ok(Spec {
+            attributes: [Vec::new(), Vec::new()],
+            groups,
+            stages: Stages::Compute {
+                workgroup_size: workgroup_size(frame, table.raw_get(frame, "workgroupSize")?)?,
+                compute: stage_function(table.raw_get(frame, "compute")?, "shader.compute", "compute")?,
+            },
+        })
+    })?;
+    run_program(shader, call, owner, spec)
+}
+
+/// A compute spec's `workgroupSize`: a number, or a table of one to three, the rest 1.
+fn workgroup_size(frame: &Frame<'_>, size: ValueView<'_>) -> l3i::Result<[u32; 3]> {
+    let refuse = || {
+        error(format!(
+            "shader.compute needs a workgroupSize of one to three whole numbers, such as {{ 64 }} or {{ 8, 8 }}, \
+             not {}",
+            kind(size)
+        ))
+    };
+    let whole = |value: ValueView<'_>| -> l3i::Result<u32> {
+        let number = value
+            .read::<f64>()
+            .ok()
+            .filter(|number| number.fract() == 0.0 && *number >= 0.0);
+        // Whole and not negative; WebGPU's limits are validation's to report.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        number.map(|number| number.min(f64::from(u32::MAX)) as u32).ok_or_else(refuse)
+    };
+    if size.is_number() || size.is_integer() {
+        return Ok([whole(size)?, 1, 1]);
+    }
+    if !size.is_table() {
+        return Err(refuse());
+    }
+    let table = size.as_table()?;
+    let mut dimensions = [1; 3];
+    let mut count = 0;
+    for (key, dimension) in (1..).zip(dimensions.iter_mut()) {
+        let value = table.raw_get_index(frame, key)?;
+        if value.is_nil() {
+            break;
+        }
+        *dimension = whole(value)?;
+        count += 1;
+    }
+    if count == 0 || !table.raw_get_index(frame, 4)?.is_nil() {
+        return Err(refuse());
+    }
+    Ok(dimensions)
+}
+
+/// Builds the program a spec describes, as the current program while its functions run.
+fn run_program(shader: &Rc<Shader>, call: &Call<'_>, owner: Arc<str>, spec: Spec) -> l3i::Result<Owned<LuaShaderProgram>> {
+    let builder = match &spec.stages {
+        Stages::Render { .. } => ProgramBuilder::new(),
+        Stages::Compute { workgroup_size, .. } => ProgramBuilder::compute(*workgroup_size),
+    };
     let build = Rc::new(RefCell::new(Build {
-        builder: Some(ProgramBuilder::new()),
+        builder: Some(builder),
         info: Info::new(owner),
     }));
     shader.current.borrow_mut().push(build.clone());
@@ -1917,6 +2048,10 @@ pub(crate) fn module(runtime: &Runtime, _jess: &Rc<Jess>) -> l3i::Result<Table> 
     let state = shader.clone();
     module.function("program", move |call: &Call<'_>, spec: ValueView<'_>| {
         program(&state, call, spec)
+    })?;
+    let state = shader.clone();
+    module.function("compute", move |call: &Call<'_>, spec: ValueView<'_>| {
+        compute(&state, call, spec)
     })?;
     let state = shader.clone();
     module.function("struct", move |call: &Call<'_>, name: &str, fields: ValueView<'_>| {
@@ -2148,6 +2283,22 @@ fn describe_program(d: &mut ExtensionDescriptor) {
             push_declarations(call, this.0.program.varyings())
         })
         .untyped();
+    program
+        .getter(
+            "workgroupSize",
+            |this: &LuaShaderProgram, call: &Call<'_>| -> l3i::Result<StackResults> {
+                let Some(size) = this.0.program.workgroup_size() else {
+                    call.push(&())?;
+                    return Ok(StackResults);
+                };
+                l3i::stack::push_list(call, size.iter(), |frame, dimension| {
+                    frame.push(&f64::from(*dimension))?;
+                    Ok(())
+                })?;
+                Ok(StackResults)
+            },
+        )
+        .untyped();
     crate::lua::plan::metamethod(&mut program, "__tostring", |this: &LuaShaderProgram| {
         let textures = this
             .0
@@ -2160,12 +2311,16 @@ fn describe_program(d: &mut ExtensionDescriptor) {
                     .any(|(_, kind)| kind.is_texture() && kind.name() == ty)
             })
             .count();
+        let program = &this.0.program;
+        let (uniforms, textures) = (plural(program.uniforms().len(), "uniform"), plural(textures, "texture"));
+        let buffers = plural(program.storage_buffers().len(), "storage buffer");
+        if let Some([x, y, z]) = program.workgroup_size() {
+            return format!("ShaderProgram(compute {x}×{y}×{z}, {uniforms}, {textures}, {buffers})");
+        }
         format!(
-            "ShaderProgram({}, {}, {}, {})",
-            plural(this.0.program.attributes().len(), "attribute"),
-            plural(this.0.program.uniforms().len(), "uniform"),
-            plural(textures, "texture"),
-            plural(this.0.program.varyings().len(), "varying")
+            "ShaderProgram({}, {uniforms}, {textures}, {})",
+            plural(program.attributes().len(), "attribute"),
+            plural(program.varyings().len(), "varying")
         )
     });
 }

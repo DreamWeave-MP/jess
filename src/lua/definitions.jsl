@@ -621,8 +621,11 @@ declare extern type ShaderInput with
 end
 
 --- A finished, validated shader program: what a shader module returns, for jess to lower to the
---- backend. `tostring` gives `ShaderProgram(3 attributes, 2 uniforms, 1 texture, 2 varyings)`.
+--- backend. `tostring` gives `ShaderProgram(3 attributes, 2 uniforms, 1 texture, 2 varyings)`, or
+--- for a compute program `ShaderProgram(compute 64×1×1, 1 uniform, 0 textures, 2 storage buffers)`.
 declare extern type ShaderProgram with
+  --- A compute program's workgroup size, `{ x, y, z }`; `nil` for a vertex and fragment program.
+  workgroupSize: { number }?
   --- The per-vertex attributes, sorted by name, each with its type's name (`Vec3f`).
   attributes: { { name: string, type: string } }
   --- The per-instance attributes, the same way.
@@ -655,6 +658,15 @@ export type ShaderProgramSpec = {
   draw: { [string]: ShaderType }?,
   vertex: (input: ShaderInput) -> { [string]: ShaderExpr },
   fragment: (input: ShaderInput) -> ShaderExpr,
+}
+
+--- What `shader.compute` takes.
+export type ShaderComputeSpec = {
+  workgroupSize: number | { number },
+  pass: { [string]: ShaderType }?,
+  material: { [string]: ShaderType }?,
+  draw: { [string]: ShaderType }?,
+  compute: (input: ShaderInput) -> (),
 }
 
 --- The arguments after the script's name, as strings, for a script `jess run` runs from a file;
@@ -705,6 +717,10 @@ export type ShaderModule = {
   --- Writes `value` at `place[key]`, which must reach a value, in a `readWrite` storage buffer:
   --- `shader.write(input.pass.counts, i, n)`, `shader.write(particles[i], 'position', p)`.
   write: (place: ShaderPlace | ShaderExpr, key: string | number | ShaderExpr, value: ShaderExpr | number | boolean) -> (),
+  --- Builds a compute program: declares the bindings, runs `compute`, which returns nothing and
+  --- writes what it computes to storage buffers, then validates the program. `workgroupSize` is
+  --- how many invocations run together: a number, or one to three in a table, the rest 1.
+  compute: (spec: ShaderComputeSpec) -> ShaderProgram,
   --- Builds a program: declares the attributes and bindings, runs `vertex` and passes what it
   --- returned to the fragment stage, runs `fragment`, then validates the whole program, listing
   --- every problem with its line.

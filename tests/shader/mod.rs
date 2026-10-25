@@ -5,6 +5,7 @@ mod bindings;
 mod builder;
 mod builtins;
 mod common;
+mod compute;
 mod conversions;
 mod folding;
 mod functions;

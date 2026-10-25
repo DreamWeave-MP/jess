@@ -23,6 +23,8 @@ pub const MAX_ATTRIBUTE_LOCATIONS: u32 = 16;
 
 pub const VERTEX: u8 = 1;
 pub const FRAGMENT: u8 = 2;
+/// The compute stage's bit in an expression's stage marks.
+pub const COMPUTE: u8 = 4;
 
 /// What kind of thing a declaration declares.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -228,12 +230,14 @@ pub enum ValidationErrorKind {
         /// The attribute's name.
         attribute: String,
     },
-    /// A stage reads a built-in value only the other stage has.
+    /// A stage reads a built-in value only another stage has.
     BuiltinInStage {
         /// The reader.
         expression: ExpressionId,
         /// The value.
         builtin: Builtin,
+        /// The stage reading it.
+        read: Stage,
     },
     /// The attributes take more than [`MAX_ATTRIBUTE_LOCATIONS`] locations.
     TooManyAttributeLocations {
@@ -247,21 +251,25 @@ pub enum ValidationErrorKind {
         /// The varying's name.
         varying: String,
     },
-    /// The vertex stage samples a texture at a level the fragment stage's derivatives pick.
-    SampleInVertex {
+    /// A stage other than the fragment samples at a level the fragment stage's derivatives pick.
+    SampleOutsideFragment {
         /// The sample.
         expression: ExpressionId,
         /// `sample`, `sampleBias`, or `sampleCompare`.
         operation: &'static str,
-        /// What the vertex stage can do instead.
+        /// What the stage can do instead.
         instead: &'static str,
+        /// The stage.
+        stage: Stage,
     },
-    /// The vertex stage takes a derivative, which only the fragment stage has.
-    DerivativeInVertex {
+    /// A stage other than the fragment takes a derivative, which only the fragment stage has.
+    DerivativeOutsideFragment {
         /// The call.
         expression: ExpressionId,
         /// `dpdx`, `dpdy`, or `fwidth`.
         function: Function,
+        /// The stage.
+        stage: Stage,
     },
     /// A statement places an expression a second time, or one not in the program.
     Misplaced {
@@ -327,8 +335,23 @@ pub enum ValidationErrorKind {
         /// The index's.
         index: Type,
     },
-    /// The vertex body discards.
-    DiscardInVertex,
+    /// A body other than the fragment's discards.
+    DiscardOutsideFragment {
+        /// The stage.
+        stage: Stage,
+    },
+    /// A compute program has something only a vertex and fragment program has.
+    ComputeHas {
+        /// What it has.
+        what: &'static str,
+    },
+    /// A vertex and fragment program has compute statements.
+    RenderHasCompute,
+    /// A compute program's workgroup size is out of WebGPU's limits.
+    WorkgroupSize {
+        /// The size.
+        size: [u32; 3],
+    },
     /// A derivative is taken where fragments may disagree on the path to it.
     NonUniformDerivative {
         /// The expression.
@@ -526,18 +549,12 @@ impl fmt::Display for ValidationErrorKind {
                 formatter,
                 "attribute {attribute:?} is read in the fragment stage: pass it through a varying"
             ),
-            ValidationErrorKind::BuiltinInStage { builtin, .. } => {
-                let (reader, owner) = if builtin.in_vertex() {
-                    ("fragment", "vertex")
-                } else {
-                    ("vertex", "fragment")
-                };
-                write!(
-                    formatter,
-                    "builtin {} is read in the {reader} stage: only the {owner} stage has it",
-                    builtin.name()
-                )
-            }
+            ValidationErrorKind::BuiltinInStage { builtin, read, .. } => write!(
+                formatter,
+                "builtin {} is read in the {read} stage: only the {} stage has it",
+                builtin.name(),
+                builtin.stage()
+            ),
             ValidationErrorKind::TooManyAttributeLocations { count } => write!(
                 formatter,
                 "the attributes take {count} locations: at most {MAX_ATTRIBUTE_LOCATIONS}"
@@ -546,14 +563,19 @@ impl fmt::Display for ValidationErrorKind {
                 formatter,
                 "varying {varying:?} is read in the vertex stage, which only writes varyings"
             ),
-            ValidationErrorKind::SampleInVertex { operation, instead, .. } => write!(
+            ValidationErrorKind::SampleOutsideFragment {
+                operation,
+                instead,
+                stage,
+                ..
+            } => write!(
                 formatter,
-                "{operation} is used in the vertex stage, which has no derivatives to pick a mip level with: \
+                "{operation} is used in the {stage} stage, which has no derivatives to pick a mip level with: \
                  {instead}"
             ),
-            ValidationErrorKind::DerivativeInVertex { function, .. } => write!(
+            ValidationErrorKind::DerivativeOutsideFragment { function, stage, .. } => write!(
                 formatter,
-                "{} is used in the vertex stage: derivatives are taken in the fragment stage",
+                "{} is used in the {stage} stage: derivatives are taken in the fragment stage",
                 function.name()
             ),
             ValidationErrorKind::Misplaced { expression } => write!(
@@ -603,9 +625,22 @@ impl fmt::Display for ValidationErrorKind {
                     "a loop counts to a {count} with a {index} index: expected one type"
                 )
             }
-            ValidationErrorKind::DiscardInVertex => {
-                formatter.write_str("shader.discard is used in the vertex function: only a fragment is discarded")
+            ValidationErrorKind::DiscardOutsideFragment { stage } => write!(
+                formatter,
+                "shader.discard is used in the {stage} function: only a fragment is discarded"
+            ),
+            ValidationErrorKind::ComputeHas { what } => write!(
+                formatter,
+                "a compute program has no {what}: it runs one function, compute, per invocation"
+            ),
+            ValidationErrorKind::RenderHasCompute => {
+                formatter.write_str("a vertex and fragment program has compute statements: they belong to a compute program")
             }
+            ValidationErrorKind::WorkgroupSize { size: [x, y, z] } => write!(
+                formatter,
+                "a workgroup of {x}×{y}×{z} is invalid: expected each size at least 1, x and y at most 256, z \
+                 at most 64, and at most 256 invocations in all"
+            ),
             ValidationErrorKind::NonUniformDerivative { operation, instead, .. } => write!(
                 formatter,
                 "{operation} is used where fragments may take different paths, in a shader.when or \
@@ -772,6 +807,7 @@ impl Program {
 pub fn analyze(program: &Program) -> Result<Analysis, Vec<ValidationError>> {
     let mut errors = Vec::new();
     check_declarations(program, &mut errors);
+    check_kind(program, &mut errors);
     let placements = flow::place(program);
     for &expression in &placements.misplaced {
         errors.push(ValidationError {
@@ -1102,10 +1138,11 @@ fn mark_stages(program: &Program, placements: &Placements, errors: &mut Vec<Vali
 
     match program.position {
         Some(position) => mark_root(position, VERTEX, errors),
-        None => errors.push(ValidationError {
+        None if program.workgroup_size.is_none() => errors.push(ValidationError {
             kind: ValidationErrorKind::MissingPosition,
             origin: None,
         }),
+        None => {}
     }
     let mut written = vec![false; program.varyings.len()];
     for &(varying, expression) in &program.varying_writes {
@@ -1258,9 +1295,13 @@ fn infer(
             declaration.ty
         }
         Expression::Builtin(builtin) => {
-            let other = if builtin.in_vertex() { FRAGMENT } else { VERTEX };
-            if stage & other != 0 {
-                return Err(ValidationErrorKind::BuiltinInStage { expression: id, builtin });
+            let foreign = stage & !stage_bit(builtin.stage());
+            if foreign != 0 {
+                return Err(ValidationErrorKind::BuiltinInStage {
+                    expression: id,
+                    builtin,
+                    read: stage_of(foreign),
+                });
             }
             builtin.ty()
         }
@@ -1278,24 +1319,27 @@ fn infer(
             varyings_read[varying.index()] = true;
             declaration.ty
         }
-        Expression::Sample { level, .. } if level.needs_derivatives() && stage & VERTEX != 0 => {
-            return Err(ValidationErrorKind::SampleInVertex {
+        Expression::Sample { level, .. } if level.needs_derivatives() && stage & !FRAGMENT != 0 => {
+            return Err(ValidationErrorKind::SampleOutsideFragment {
                 expression: id,
                 operation: level.operation(),
                 instead: "sample at a level with sampleLevel",
+                stage: stage_of(stage & !FRAGMENT),
             });
         }
-        Expression::SampleCompare { level_zero: false, .. } if stage & VERTEX != 0 => {
-            return Err(ValidationErrorKind::SampleInVertex {
+        Expression::SampleCompare { level_zero: false, .. } if stage & !FRAGMENT != 0 => {
+            return Err(ValidationErrorKind::SampleOutsideFragment {
                 expression: id,
                 operation: "sampleCompare",
                 instead: "compare in level 0 with sampleCompareLevel",
+                stage: stage_of(stage & !FRAGMENT),
             });
         }
-        Expression::Call { function, .. } if function.needs_derivatives() && stage & VERTEX != 0 => {
-            return Err(ValidationErrorKind::DerivativeInVertex {
+        Expression::Call { function, .. } if function.needs_derivatives() && stage & !FRAGMENT != 0 => {
+            return Err(ValidationErrorKind::DerivativeOutsideFragment {
                 expression: id,
                 function,
+                stage: stage_of(stage & !FRAGMENT),
             });
         }
         Expression::Sample { .. }
@@ -1517,15 +1561,12 @@ fn local_type(program: &Program, local: LocalId, stage: u8) -> Result<Type, Vali
     let Some(declared) = program.locals.get(local.index()) else {
         return Err(ValidationErrorKind::UndefinedLocal { local });
     };
-    let other = match declared.stage {
-        Stage::Vertex => Stage::Fragment,
-        Stage::Fragment => Stage::Vertex,
-    };
-    if stage & stage_bit(other) != 0 {
+    let foreign = stage & !stage_bit(declared.stage);
+    if foreign != 0 {
         return Err(ValidationErrorKind::LocalInOtherStage {
             kind: declared.kind,
             declared: declared.stage,
-            used: other,
+            used: stage_of(foreign),
         });
     }
     Ok(declared.ty)
@@ -1906,12 +1947,53 @@ fn multiply(left: Type, right: Type) -> Option<Type> {
     }
 }
 
+/// Checks that a compute program has only what one has, and a vertex and fragment program no
+/// compute statements.
+fn check_kind(program: &Program, errors: &mut Vec<ValidationError>) {
+    let mut report = |kind| errors.push(ValidationError { kind, origin: None });
+    let Some(size) = program.workgroup_size else {
+        if !program.bodies[Stage::Compute as usize].is_empty() {
+            report(ValidationErrorKind::RenderHasCompute);
+        }
+        return;
+    };
+    let [x, y, z] = size;
+    let invocations = u64::from(x) * u64::from(y) * u64::from(z);
+    if size.contains(&0) || x > 256 || y > 256 || z > 64 || invocations > 256 {
+        report(ValidationErrorKind::WorkgroupSize { size });
+    }
+    let has = [
+        (!program.attributes.is_empty(), "attributes"),
+        (!program.varyings.is_empty(), "varyings"),
+        (program.position.is_some(), "position"),
+        (!program.fragment_outputs.is_empty(), "fragment outputs"),
+        (
+            !(program.bodies[Stage::Vertex as usize].is_empty() && program.bodies[Stage::Fragment as usize].is_empty()),
+            "vertex or fragment statements",
+        ),
+    ];
+    for (present, what) in has {
+        if present {
+            report(ValidationErrorKind::ComputeHas { what });
+        }
+    }
+}
+
 /// The bit of `stage` in an expression's stage marks.
 fn stage_bit(stage: Stage) -> u8 {
     match stage {
         Stage::Vertex => VERTEX,
         Stage::Fragment => FRAGMENT,
+        Stage::Compute => COMPUTE,
     }
+}
+
+/// The first stage among `bits`, for an error naming one.
+fn stage_of(bits: u8) -> Stage {
+    Stage::ALL
+        .into_iter()
+        .find(|stage| bits & stage_bit(*stage) != 0)
+        .unwrap_or(Stage::Compute)
 }
 
 /// What a local of `kind` is called in errors.
@@ -2072,8 +2154,8 @@ fn check_statements(
                 check_statements(program, stage, body, types, errors);
             }
             Statement::Discard { origin } => {
-                if stage == Stage::Vertex {
-                    report(errors, ValidationErrorKind::DiscardInVertex, origin);
+                if stage != Stage::Fragment {
+                    report(errors, ValidationErrorKind::DiscardOutsideFragment { stage }, origin);
                 }
             }
         }

@@ -4,7 +4,7 @@ use std::fmt;
 use std::ops::Deref;
 use std::sync::Arc;
 
-use crate::shader::flow::LocalId;
+use crate::shader::flow::{LocalId, Stage};
 use crate::shader::interface::{AttributeId, Frequency, ResourceId, StorageId};
 use crate::shader::types::Type;
 
@@ -728,8 +728,8 @@ fn texture_operands(coordinates: ExpressionId, layer: Option<ExpressionId>, leve
     operands
 }
 
-/// A value the pipeline gives a stage rather than a buffer: which vertex or instance this is,
-/// and where the fragment is.
+/// A value the pipeline gives a stage rather than a buffer: which vertex, instance, or
+/// invocation this is, and where the fragment is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Builtin {
     /// The vertex's index in the draw, a `UInt`: with an index buffer, the index it read.
@@ -743,15 +743,32 @@ pub enum Builtin {
     Position,
     /// Whether the fragment belongs to a front-facing triangle, a `Bool`. Fragment stage only.
     FrontFacing,
+    /// The invocation's position among every invocation of the dispatch, a `Vec3u`: its
+    /// workgroup's times the workgroup size, plus its own within it. Compute stage only.
+    GlobalInvocationId,
+    /// The invocation's position within its workgroup, a `Vec3u`. Compute stage only.
+    LocalInvocationId,
+    /// The invocation's position within its workgroup as one `UInt`, `x` fastest. Compute stage
+    /// only.
+    LocalInvocationIndex,
+    /// The workgroup's position among the dispatch's, a `Vec3u`. Compute stage only.
+    WorkgroupId,
+    /// How many workgroups the dispatch has, a `Vec3u`. Compute stage only.
+    NumWorkgroups,
 }
 
 impl Builtin {
     /// Every built-in value.
-    pub const ALL: [Builtin; 4] = [
+    pub const ALL: [Builtin; 9] = [
         Builtin::VertexIndex,
         Builtin::InstanceIndex,
         Builtin::Position,
         Builtin::FrontFacing,
+        Builtin::GlobalInvocationId,
+        Builtin::LocalInvocationId,
+        Builtin::LocalInvocationIndex,
+        Builtin::WorkgroupId,
+        Builtin::NumWorkgroups,
     ];
 
     /// Its name, as Luau and errors write it.
@@ -762,6 +779,11 @@ impl Builtin {
             Builtin::InstanceIndex => "instanceIndex",
             Builtin::Position => "position",
             Builtin::FrontFacing => "frontFacing",
+            Builtin::GlobalInvocationId => "globalInvocationId",
+            Builtin::LocalInvocationId => "localInvocationId",
+            Builtin::LocalInvocationIndex => "localInvocationIndex",
+            Builtin::WorkgroupId => "workgroupId",
+            Builtin::NumWorkgroups => "numWorkgroups",
         }
     }
 
@@ -769,16 +791,23 @@ impl Builtin {
     #[must_use]
     pub fn ty(self) -> Type {
         match self {
-            Builtin::VertexIndex | Builtin::InstanceIndex => Type::UInt,
+            Builtin::VertexIndex | Builtin::InstanceIndex | Builtin::LocalInvocationIndex => Type::UInt,
             Builtin::Position => Type::Vec4f,
             Builtin::FrontFacing => Type::Bool,
+            Builtin::GlobalInvocationId | Builtin::LocalInvocationId | Builtin::WorkgroupId | Builtin::NumWorkgroups => {
+                Type::Vec3u
+            }
         }
     }
 
-    /// Whether the vertex stage has it; otherwise only the fragment stage does.
+    /// The only stage that has it.
     #[must_use]
-    pub fn in_vertex(self) -> bool {
-        matches!(self, Builtin::VertexIndex | Builtin::InstanceIndex)
+    pub fn stage(self) -> Stage {
+        match self {
+            Builtin::VertexIndex | Builtin::InstanceIndex => Stage::Vertex,
+            Builtin::Position | Builtin::FrontFacing => Stage::Fragment,
+            _ => Stage::Compute,
+        }
     }
 }
 

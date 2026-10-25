@@ -47,13 +47,31 @@ pub struct Program {
     pub(crate) locals: Vec<Local>,
     /// Each stage's statements, by [`Stage`] order.
     pub(crate) bodies: [Vec<Statement>; Stage::ALL.len()],
+    /// A compute program's workgroup size; `None` for a vertex and fragment program.
+    pub(crate) workgroup_size: Option<[u32; 3]>,
 }
 
 impl Program {
-    /// An empty program.
+    /// An empty program of a vertex and a fragment stage.
     #[must_use]
     pub fn new() -> Program {
         Program::default()
+    }
+
+    /// An empty compute program: one stage, run once per invocation, in workgroups of
+    /// `workgroup_size` invocations.
+    #[must_use]
+    pub fn compute(workgroup_size: [u32; 3]) -> Program {
+        Program {
+            workgroup_size: Some(workgroup_size),
+            ..Program::default()
+        }
+    }
+
+    /// A compute program's workgroup size; `None` for a vertex and fragment program.
+    #[must_use]
+    pub fn workgroup_size(&self) -> Option<[u32; 3]> {
+        self.workgroup_size
     }
 
     /// Declares a struct. Its fields may only name structs declared before it.

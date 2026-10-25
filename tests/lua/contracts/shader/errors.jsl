@@ -178,6 +178,28 @@ return {
 
       return input.material.tint
     end),
+    noWorkgroup = oracle.message(function() return shader.compute { compute = function() end } :: any end),
+    bigWorkgroup = oracle.message(
+      function() return shader.compute { workgroupSize = { 512 }, compute = function() end } end
+    ),
+    computeAttributes = oracle.message(function()
+      return shader.compute {
+        workgroupSize = 64,
+        compute = function(input) local _ = (input.attributes :: any).position end,
+      }
+    end),
+    computeBuiltin = oracle.message(function()
+      return shader.compute {
+        workgroupSize = 64,
+        compute = function(input) local _ = input.builtin.position end,
+      }
+    end),
+    computeReturns = oracle.message(function()
+      return shader.compute { workgroupSize = 64, compute = function() return 1 end :: any }
+    end),
+    computeKey = oracle.message(
+      function() return shader.compute { workgroupSize = 64, vertex = vertex, compute = function() end } :: any end
+    ),
     storageAccess = oracle.message(function() return shader.storage(shader.float, 'write' :: any) end),
     storageInStruct = oracle.message(
       function() return shader.struct('Bad', { counts = shader.storage(shader.uint) }) end

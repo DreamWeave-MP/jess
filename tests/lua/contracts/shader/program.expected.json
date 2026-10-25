@@ -19,6 +19,14 @@
       "tostring": "ShaderProgram(0 attributes, 0 uniforms, 0 textures, 0 varyings)",
       "varyings": {}
     },
+    "computed": {
+      "builtin": "ShaderBuiltins(compute)",
+      "count": "ShaderExpr(Vec3u)",
+      "global": "ShaderExpr(Vec3u)",
+      "inGroup": "ShaderExpr(UInt)",
+      "input": "ShaderInput(compute)",
+      "workgroup": "ShaderExpr(Vec3u)"
+    },
     "constant": {
       "attributes": [
         {
@@ -99,6 +107,29 @@
       "time": "ShaderExpr(Float)",
       "viewport": "ShaderExpr(Vec2f)"
     },
+    "integrate": {
+      "attributes": {},
+      "draw": {},
+      "instance": {},
+      "material": {},
+      "pass": [
+        {
+          "name": "cells",
+          "type": "Float[] readWrite"
+        },
+        {
+          "name": "width",
+          "type": "UInt"
+        }
+      ],
+      "tostring": "ShaderProgram(compute 8×8×1, 1 uniform, 0 textures, 1 storage buffer)",
+      "varyings": {}
+    },
+    "integrateSize": [
+      8,
+      8,
+      1
+    ],
     "lit": {
       "attributes": [
         {
@@ -186,6 +217,7 @@
         }
       ]
     },
+    "litSize": true,
     "sameModule": true,
     "sampled": {
       "bias": "ShaderExpr(Vec4f)",

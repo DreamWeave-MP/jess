@@ -6,7 +6,7 @@ extra:
   kind: api
 ---
 
-{{ api_signature(value="jess.shader: { program, struct, array, storage, float, int, uint, vec2, vec3, vec4, vec2i, vec3i, vec4i, vec2u, vec3u, vec4u, mat3, mat4, texture2d, texture2dArray, textureCube, texture3d, texture2di, texture2du, depthTexture2d, depthTexture2dArray, depthTextureCube, sampler, comparisonSampler, min, max, clamp, abs, sign, floor, ceil, round, trunc, fract, sqrt, inverseSqrt, exp, exp2, log, log2, pow, sin, cos, tan, asin, acos, atan, atan2, radians, degrees, saturate, step, smoothstep, mix, dot, cross, length, distance, normalize, reflect, refract, transpose, determinant, dpdx, dpdy, fwidth, equal, notEqual, less, lessEqual, greater, greaterEqual, logicalAnd, logicalOr, logicalNot, select, bitAnd, bitOr, bitXor, bitNot, shiftLeft, shiftRight, var, when, loop, discard, write, arrayLength, sample, sampleLevel, sampleBias, sampleCompare, sampleCompareLevel, load, dimensions, levels, layers }") }}
+{{ api_signature(value="jess.shader: { program, compute, struct, array, storage, float, int, uint, vec2, vec3, vec4, vec2i, vec3i, vec4i, vec2u, vec3u, vec4u, mat3, mat4, texture2d, texture2dArray, textureCube, texture3d, texture2di, texture2du, depthTexture2d, depthTexture2dArray, depthTextureCube, sampler, comparisonSampler, min, max, clamp, abs, sign, floor, ceil, round, trunc, fract, sqrt, inverseSqrt, exp, exp2, log, log2, pow, sin, cos, tan, asin, acos, atan, atan2, radians, degrees, saturate, step, smoothstep, mix, dot, cross, length, distance, normalize, reflect, refract, transpose, determinant, dpdx, dpdy, fwidth, equal, notEqual, less, lessEqual, greater, greaterEqual, logicalAnd, logicalOr, logicalNot, select, bitAnd, bitOr, bitXor, bitNot, shiftLeft, shiftRight, var, when, loop, discard, write, arrayLength, sample, sampleLevel, sampleBias, sampleCompare, sampleCompareLevel, load, dimensions, levels, layers }") }}
 
 A shader, written in Luau. `require("@jess/shader")` is the same table as `jess.shader`, and a shader module is an ordinary Luau module that runs once and returns a `ShaderProgram`.
 
@@ -71,7 +71,7 @@ return program
 
 {% usage_note(title="What this is, today") %}
 - This is the authoring half. Nothing draws with a `ShaderProgram` yet: the renderer that takes one is a later piece of work, and this page will say so when it isn't.
-- The expression set is the one real materials need, and no more: arithmetic, WGSL's functions, comparisons and `select`, construction and conversion, swizzles, texture reads, and [statements](#statements): vars, `when`, bounded loops, and `discard`. There's no compute stage yet.
+- The expression set is the one real materials need, and no more: arithmetic, WGSL's functions, comparisons and `select`, construction and conversion, swizzles, texture reads, and [statements](#statements): vars, `when`, bounded loops, and `discard`. A compute program is [shader.compute](#shader-compute).
 {% end %}
 
 ## shader.program
@@ -92,6 +92,44 @@ Builds and validates a program.
 - **Errors:** see [Errors](#errors). Also `unknown jess.shader.program option '<key>': expected attributes, draw, fragment, instance, material, pass, or vertex`, `shader.program needs a vertex function, not nil`, `material.<name> must be a shader type such as shader.vec4, not <kind>`, `attributes.<name> must be a value type such as shader.vec3, not Texture2D`, `the vertex function's table has no position`, and `the fragment function returned <kind>: expected a shader value, the Vec4f color`.
 
 `shader.program` validates the program and leaves it as you wrote it. It doesn't fold constants: that rewrites the program, and rewriting is the consumer's decision.
+
+## shader.compute
+
+{{ api_signature(value="shader.compute(spec: ShaderComputeSpec) -> ShaderProgram") }}
+
+Builds and validates a compute program: one function, run once per invocation of a dispatch, which draws nothing. It reads what the pass, the material, and the draw bind, and writes what it computes to [storage buffers](#shader-storage).
+
+- **Parameters:** `spec`, a table:
+  - `workgroupSize`: how many invocations run together, sharing a core: a number, `{ 64 }`, or up to three, `{ 8, 8 }`, the rest 1. WebGPU allows each at least 1, `x` and `y` at most 256, `z` at most 64, and at most 256 invocations in all.
+  - `pass`, `material`, `draw`: names to types, as in [shader.program](#shader-program).
+  - `compute`: a function taking the compute [input](#shaderinput). It returns nothing.
+- **Input:** `input.pass`, `input.material`, `input.draw`, and `input.builtin`, whose [values](#built-in-values) say which invocation this is. There are no attributes and no varyings: `a compute program has no attributes: it reads storage buffers`.
+- **Errors:** `shader.compute needs a workgroupSize of one to three whole numbers, such as { 64 } or { 8, 8 }, not nil`; `the compute function returned number: it returns nothing, and writes what it computes to storage buffers`; and, when the program finishes, a workgroup outside the limits, or a derivative, which only the fragment stage has: `sample is used in the compute stage, which has no derivatives to pick a mip level with: sample at a level with sampleLevel`.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+local integrate = shader.compute {
+  workgroupSize = { 64 },
+  pass = {
+    positions = shader.storage(shader.vec4, 'readWrite'),
+    step = shader.float,
+    velocities = shader.storage(shader.vec4),
+  },
+
+  compute = function(input)
+    local index = input.builtin.globalInvocationId.x
+    local pass = input.pass
+    shader.when(shader.less(index, shader.arrayLength(pass.positions)), function()
+      shader.write(pass.positions, index, pass.positions[index] + pass.velocities[index] * pass.step)
+    end)
+  end,
+}
+
+print(integrate, table.concat(integrate.workgroupSize :: { number }, ' '))
+-- ShaderProgram(compute 64×1×1, 1 uniform, 0 textures, 2 storage buffers)  64 1 1
+```
 
 ## ShaderInput
 
@@ -143,6 +181,9 @@ shader.program {
 | `instanceIndex` | `vertex` | `UInt` | The instance's index in the draw. |
 | `position` | `fragment` | `Vec4f` | Where the fragment is: `x` and `y` in pixels from the target's top left, at the pixel's centre, `z` its depth, and `w` one over the clip position's `w`. |
 | `frontFacing` | `fragment` | `Bool` | Whether the fragment belongs to a triangle facing the camera. |
+| `globalInvocationId` | `compute` | `Vec3u` | The invocation among every one of the dispatch: its workgroup's position times the workgroup size, plus its own within it. |
+| `localInvocationId`, `localInvocationIndex` | `compute` | `Vec3u`, `UInt` | The invocation within its workgroup, and the same as one number, `x` fastest. |
+| `workgroupId`, `numWorkgroups` | `compute` | `Vec3u` | The workgroup among the dispatch's, and how many the dispatch has. |
 
 A program with no attributes at all can still draw: three vertices and `vertexIndex` make a triangle that covers the target, the usual start of a full-screen pass.
 
@@ -775,7 +816,7 @@ shader.program {
 
 ## ShaderProgram
 
-What `shader.program` returns and a shader module hands back: finished, validated, and read-only.
+What `shader.program` and `shader.compute` return and a shader module hands back: finished, validated, and read-only.
 
 | Field | Type | Holds |
 | --- | --- | --- |
@@ -783,8 +824,9 @@ What `shader.program` returns and a shader module hands back: finished, validate
 | `instance` | `{ { name: string, type: string } }` | The per-instance attributes, sorted by name. |
 | `pass`, `material`, `draw` | `{ { name: string, type: string } }` | What each frequency binds, sorted by name: `Vec4f`, `Camera`, `Light[4]`, `Texture2D`, `Sampler`. A texture's own sampler is part of the texture. |
 | `varyings` | `{ { name: string, type: string } }` | What `vertex` passes to `fragment`, sorted by name. |
+| `workgroupSize` | `{ number }?` | A compute program's workgroup size, `{ x, y, z }`; `nil` for a vertex and fragment program. |
 
-`tostring(program)` counts them, both kinds of attribute together and the uniform members of every frequency together: `ShaderProgram(3 attributes, 4 uniforms, 1 texture, 2 varyings)`.
+`tostring(program)` counts them, both kinds of attribute together and the uniform members of every frequency together: `ShaderProgram(3 attributes, 4 uniforms, 1 texture, 2 varyings)`. A compute program says so, with its workgroup and its storage buffers: `ShaderProgram(compute 64×1×1, 1 uniform, 0 textures, 2 storage buffers)`.
 
 ```luau
 --!strict

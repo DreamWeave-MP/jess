@@ -22,11 +22,13 @@ pub enum Stage {
     Vertex,
     /// Once per fragment.
     Fragment,
+    /// Once per invocation of a dispatch: a compute program's only stage.
+    Compute,
 }
 
 impl Stage {
     /// Every stage, in the order their bodies are kept.
-    pub const ALL: [Stage; 2] = [Stage::Vertex, Stage::Fragment];
+    pub const ALL: [Stage; 3] = [Stage::Vertex, Stage::Fragment, Stage::Compute];
 
     /// The stage's name, as errors print it.
     #[must_use]
@@ -34,6 +36,7 @@ impl Stage {
         match self {
             Stage::Vertex => "vertex",
             Stage::Fragment => "fragment",
+            Stage::Compute => "compute",
         }
     }
 }
@@ -137,7 +140,7 @@ pub struct Use {
 pub struct Placements {
     /// Per expression: the stage and block that compute it, or `None` for one placed nowhere.
     pub(crate) placed: Vec<Option<(Stage, u32)>>,
-    /// Per block: the block it is in. Blocks 0 and 1 are the vertex and fragment bodies.
+    /// Per block: the block it is in. The first are the stage bodies, in [`Stage::ALL`] order.
     parents: Vec<Option<u32>>,
     /// What the statements read, where.
     pub(crate) uses: Vec<Use>,
@@ -276,7 +279,7 @@ pub fn uniformity(program: &Program, reachable: &[bool], locals: &[bool]) -> Vec
         }
         uniform[index] = match expression {
             Expression::Varying(_) | Expression::Attribute(_) => false,
-            Expression::Builtin(builtin) => builtin.in_vertex(),
+            Expression::Builtin(builtin) => builtin.stage() != Stage::Fragment,
             Expression::Local(local) => locals.get(local.index()).copied().unwrap_or(false),
             // Another invocation may write a readWrite buffer between any two reads.
             Expression::Load(Place {
