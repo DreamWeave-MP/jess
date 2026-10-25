@@ -17,8 +17,8 @@ use std::sync::Arc;
 
 use crate::audio::processor::{Setting, Settings};
 use crate::audio::{
-    AudioConfig, AudioError, BusKey, BusParam, BusSpec, LoopRegion, MAX_VOICE_SENDS, OfflineContext, Pcm, PlaySpec,
-    ProcessorKey, SampleFormat, Tap, VoiceKey, VoiceParam, VoiceSend,
+    AudioConfig, AudioError, BusKey, BusParam, BusSpec, Curve, Glide, LoopRegion, MAX_VOICE_SENDS, OfflineContext, Pcm,
+    PlaySpec, ProcessorKey, SampleFormat, Tap, VoiceKey, VoiceParam, VoiceSend,
 };
 use crate::lua::plan::Functions;
 use crate::lua::{Bytes, Text, error, kind, push_table};
@@ -28,7 +28,7 @@ use l3i::convert::NewBuffer;
 use l3i::extension::{ExtensionDescriptor, TagPolicy};
 use l3i::stack::{Frame, Scope, TableView, ValueView};
 use l3i::userdata::{Owned, Userdata};
-use l3i::value::Table;
+use l3i::value::{Function, Table};
 
 /// The largest frame number a Luau number holds exactly.
 const MAX_FRAME: f64 = 9_007_199_254_740_992.0;
@@ -38,6 +38,7 @@ const CONTEXT_KEYS: &[&str] = &["buses", "channels", "commands", "processors", "
 const PLAY_KEYS: &[&str] = &[
     "at",
     "bus",
+    "fade",
     "gain",
     "loop",
     "loopEnd",
@@ -187,6 +188,23 @@ fn bus_field(frame: &Frame<'_>, table: Option<&TableView<'_>>, key: &str, contex
     })
 }
 
+fn voice_param(name: &Text, function: &str) -> l3i::Result<VoiceParam> {
+    VoiceParam::named(&name.0).ok_or_else(|| error(format!("{function} takes gain, pan, or rate, not {:?}", name.0)))
+}
+
+/// A ramp of `frames` frames, `linear` unless `curve` names another.
+fn glide_of(frames: f64, curve: Option<&Text>) -> l3i::Result<Glide> {
+    let curve = match curve {
+        None => Curve::Linear,
+        Some(name) => Curve::named(&name.0)
+            .ok_or_else(|| error(format!("a ramp's curve is linear or exponential, not {:?}", name.0)))?,
+    };
+    Ok(Glide {
+        frames: whole(frames, "a ramp's length")?,
+        curve,
+    })
+}
+
 fn rate_of(rate: f64) -> l3i::Result<u32> {
     u32::try_from(whole(rate, "rate")?).map_err(|_| AudioError::Rate(u32::MAX).into())
 }
@@ -263,6 +281,9 @@ fn play_spec(call: &Call<'_>, context: &Shared, pcm: &Pcm, options: Option<Value
             spec.bus = bus;
         }
         spec.sends = voice_sends(frame, table, context)?;
+        if let Some(fade) = optional::<f64>(frame, table, "fade", FUNCTION)? {
+            spec.fade = whole(fade, "fade")?;
+        }
         let looping = optional::<bool>(frame, table, "loop", FUNCTION)?.unwrap_or(false);
         let start = optional::<f64>(frame, table, "loopStart", FUNCTION)?;
         let end = optional::<f64>(frame, table, "loopEnd", FUNCTION)?;
@@ -497,6 +518,26 @@ fn describe_context(d: &mut ExtensionDescriptor) {
         .method("master", |this: &LuaAudioContext| bus_handle(&this.0, BusKey::MASTER))
         .untyped();
     context
+        .method("room", |this: &LuaAudioContext| {
+            number(this.0.borrow_mut().control().room() as u64)
+        })
+        .untyped();
+    context
+        .method(
+            "group",
+            |this: &LuaAudioContext, call: &Call<'_>, body: Function| -> l3i::Result<()> {
+                this.0.borrow_mut().control().begin_group()?;
+                // The body runs with no borrow held: it plays and sets through this context.
+                let ran = body.invoke::<(), _>(call, ());
+                // What the body sent before an error still goes, so the control side's record of
+                // voices and buses stays what the engine is told.
+                let sent = this.0.borrow_mut().control().end_group();
+                ran?;
+                Ok(sent?)
+            },
+        )
+        .untyped();
+    context
         .method(
             "bus",
             |this: &LuaAudioContext, call: &Call<'_>, options: Option<ValueView<'_>>| -> l3i::Result<Owned<LuaAudioBus>> {
@@ -538,22 +579,63 @@ fn describe_voice(d: &mut ExtensionDescriptor) {
         .tag(TagPolicy::Never)
         .doc("One playback of a Pcm in a context; once it ends, the handle names nothing.");
     voice
-        .method("stop", |this: &LuaAudioVoice, at: Option<f64>| -> l3i::Result<bool> {
-            let at = frame_option(at)?;
-            Ok(this.context.borrow_mut().control().stop(this.key, at, 0)?)
-        })
+        .method(
+            "stop",
+            |this: &LuaAudioVoice, at: Option<f64>, fade: Option<f64>| -> l3i::Result<bool> {
+                let at = frame_option(at)?;
+                let fade = fade.map_or(Ok(0), |fade| whole(fade, "fade"))?;
+                Ok(this.context.borrow_mut().control().stop(this.key, at, fade)?)
+            },
+        )
         .untyped();
     voice
         .method(
             "set",
             |this: &LuaAudioVoice, name: Text, value: f64, at: Option<f64>| -> l3i::Result<bool> {
-                let Some(param) = VoiceParam::named(&name.0) else {
-                    return Err(error(format!("AudioVoice:set takes gain, pan, or rate, not {:?}", name.0)));
-                };
+                let param = voice_param(&name, "AudioVoice:set")?;
                 let at = frame_option(at)?;
                 Ok(this.context.borrow_mut().control().set(this.key, param, value, at, None)?)
             },
         )
+        .untyped();
+    voice
+        .method(
+            "ramp",
+            |this: &LuaAudioVoice,
+             name: Text,
+             value: f64,
+             frames: f64,
+             at: Option<f64>,
+             curve: Option<Text>|
+             -> l3i::Result<bool> {
+                let param = voice_param(&name, "AudioVoice:ramp")?;
+                let (at, glide) = (frame_option(at)?, glide_of(frames, curve.as_ref())?);
+                Ok(this
+                    .context
+                    .borrow_mut()
+                    .control()
+                    .set(this.key, param, value, at, Some(glide))?)
+            },
+        )
+        .untyped();
+    voice
+        .method(
+            "loop",
+            |this: &LuaAudioVoice, start: f64, stop: f64, at: Option<f64>| -> l3i::Result<bool> {
+                let region = LoopRegion {
+                    start: whole(start, "the loop's start")?,
+                    end: whole(stop, "the loop's stop")?,
+                };
+                let at = frame_option(at)?;
+                Ok(this.context.borrow_mut().control().set_loop(this.key, Some(region), at)?)
+            },
+        )
+        .untyped();
+    voice
+        .method("release", |this: &LuaAudioVoice, at: Option<f64>| -> l3i::Result<bool> {
+            let at = frame_option(at)?;
+            Ok(this.context.borrow_mut().control().set_loop(this.key, None, at)?)
+        })
         .untyped();
     voice
         .method(
@@ -589,6 +671,27 @@ fn describe_bus(d: &mut ExtensionDescriptor) {
                 .borrow_mut()
                 .control()
                 .set_bus(this.key, param, value, at, None)?)
+        },
+    )
+    .untyped();
+    bus.method(
+        "ramp",
+        |this: &LuaAudioBus,
+         name: Text,
+         value: f64,
+         frames: f64,
+         at: Option<f64>,
+         curve: Option<Text>|
+         -> l3i::Result<bool> {
+            if name.0 != "gain" {
+                return Err(error(format!("AudioBus:ramp ramps gain, not {:?}", name.0)));
+            }
+            let (at, glide) = (frame_option(at)?, glide_of(frames, curve.as_ref())?);
+            Ok(this
+                .context
+                .borrow_mut()
+                .control()
+                .set_bus(this.key, BusParam::Gain, value, at, Some(glide))?)
         },
     )
     .untyped();
@@ -699,6 +802,25 @@ fn describe_processor(d: &mut ExtensionDescriptor) {
                     .borrow_mut()
                     .control()
                     .set_processor(this.key, &name.0, value, at, None)?)
+            },
+        )
+        .untyped();
+    processor
+        .method(
+            "ramp",
+            |this: &LuaAudioProcessor,
+             name: Text,
+             value: f64,
+             frames: f64,
+             at: Option<f64>,
+             curve: Option<Text>|
+             -> l3i::Result<bool> {
+                let (at, glide) = (frame_option(at)?, glide_of(frames, curve.as_ref())?);
+                Ok(this
+                    .context
+                    .borrow_mut()
+                    .control()
+                    .set_processor(this.key, &name.0, value, at, Some(glide))?)
             },
         )
         .untyped();

@@ -164,7 +164,13 @@ export type AudioPlayOptions = {
   bus: AudioBus?,
   --- Up to two buses it also sends to, each at a level relative to its own gain (1).
   sends: { { bus: AudioBus, level: number? } }?,
+  --- Frames to fade in over, from silence to `gain` (0).
+  fade: number?,
 }
+
+--- A ramp's shape: a straight line, or the same ratio every frame (both ends above 0), which is
+--- even steps in decibels.
+export type AudioCurve = 'linear' | 'exponential'
 
 --- A bus's level since it was last read, after its gain: the peak sample's magnitude and the
 --- RMS, linear, across its channels.
@@ -180,6 +186,8 @@ export type AudioSendOptions = { level: number?, tap: ('post' | 'pre')?, at: num
 export type AudioBus = {
   --- Sets `gain` (linear) or `mute` (0 off, anything else on).
   set: (self: AudioBus, param: 'gain' | 'mute', value: number, at: number?) -> boolean,
+  --- Ramps the gain to `value` over `frames` frames from `at`, sample by sample.
+  ramp: (self: AudioBus, param: 'gain', value: number, frames: number, at: number?, curve: AudioCurve?) -> boolean,
   --- Routes the bus into another; a route that would loop back into it is an error.
   route: (self: AudioBus, parent: AudioBus, at: number?) -> (),
   --- Adds a send to `target`, or changes the one there; up to four besides the parent.
@@ -201,6 +209,8 @@ export type AudioProcessor = {
   kind: (self: AudioProcessor) -> string,
   --- Sets a parameter by name; a name it doesn't have, or a value out of range, is an error.
   set: (self: AudioProcessor, param: string, value: number, at: number?) -> boolean,
+  --- Ramps a parameter to `value` over `frames` frames from `at`; it moves every 32 frames.
+  ramp: (self: AudioProcessor, param: string, value: number, frames: number, at: number?, curve: AudioCurve?) -> boolean,
   remove: (self: AudioProcessor, at: number?) -> boolean,
   live: (self: AudioProcessor) -> boolean,
 }
@@ -224,8 +234,23 @@ export type AudioVoiceState = 'scheduled' | 'playing' | 'ended'
 --- on; without one, the next frame rendered. Once the voice ends the handle names nothing, and
 --- its commands do nothing and return false.
 export type AudioVoice = {
-  stop: (self: AudioVoice, at: number?) -> boolean,
+  --- Stops it on frame `at`, fading out over `fade` frames first (0).
+  stop: (self: AudioVoice, at: number?, fade: number?) -> boolean,
   set: (self: AudioVoice, param: 'gain' | 'pan' | 'rate', value: number, at: number?) -> boolean,
+  --- Ramps a parameter to `value` over `frames` frames from `at`, sample by sample.
+  ramp: (
+    self: AudioVoice,
+    param: 'gain' | 'pan' | 'rate',
+    value: number,
+    frames: number,
+    at: number?,
+    curve: AudioCurve?
+  ) -> boolean,
+  --- Loops over source frames `start` up to `stop` from `at`: playback reaching `stop` goes on at
+  --- `start`.
+  loop: (self: AudioVoice, start: number, stop: number, at: number?) -> boolean,
+  --- Lets go of the loop from `at`: playback runs on past it, into whatever follows (an outro).
+  release: (self: AudioVoice, at: number?) -> boolean,
   --- Changes the level of a send it started with.
   send: (self: AudioVoice, bus: AudioBus, level: number, at: number?) -> boolean,
   state: (self: AudioVoice) -> AudioVoiceState,
@@ -246,6 +271,11 @@ export type AudioContext = {
   --- Renders `frames` frames and returns them as interleaved 32-bit floats.
   render: (self: AudioContext, frames: number) -> buffer,
   stats: (self: AudioContext) -> AudioStats,
+  --- How many more commands the queue to the engine has room for.
+  room: (self: AudioContext) -> number,
+  --- Runs `body`, and sends every command it makes to the engine together: ones not stamped for
+  --- later are carried out on the same frame. Groups don't nest.
+  group: (self: AudioContext, body: () -> ()) -> (),
 }
 
 --- A shader type, from `jess.shader` (`float`, `vec2`, `vec3`, `vec4`, `mat3`, `mat4`,
