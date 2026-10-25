@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use crate::audio::processor::{Block, Gain, ParamInfo, Processor, Tail};
 use crate::audio::{
-    AudioConfig, AudioError, BusKey, BusParam, BusSpec, Curve, Glide, LoopRegion, Meter, OfflineContext, Pcm, PlaySpec,
-    QUANTUM, Tap, VoiceParam, VoiceSend, VoiceState,
+    AudioConfig, AudioError, BusKey, BusParam, BusSpec, Curve, Distance, Emitter, Glide, Listener, LoopRegion, Meter,
+    OfflineContext, Pcm, PlaySpec, QUANTUM, Tap, VoiceParam, VoiceSend, VoiceState,
 };
 
 /// Counts allocations and frees on a thread while it is armed, so a test can prove the render
@@ -831,4 +831,134 @@ fn a_compressor_listening_to_dialogue_ducks_the_music_while_it_speaks() {
     context.control().unmount(ducker, None).unwrap();
     context.render(30_000);
     assert!(context.control().remove_bus(dialogue, None).unwrap());
+}
+
+fn placed(position: [f64; 3]) -> PlaySpec {
+    PlaySpec {
+        spatial: Some(Emitter {
+            position,
+            ..Emitter::default()
+        }),
+        ..at(0)
+    }
+}
+
+#[test]
+fn a_voice_in_space_pans_toward_its_side_and_fades_with_distance() {
+    let tone = pcm(&[1.0; 256], 48_000);
+    let mut context = OfflineContext::new(&AudioConfig::default()).unwrap();
+    context.control().play(&tone, &placed([2.0, 0.0, 0.0])).unwrap();
+    let out = context.render(4);
+    // Hard right at half its level: inverse distance at twice the reference.
+    assert!(out[0].abs() < 1e-6 && (out[1] - 0.5).abs() < 1e-6, "{out:?}");
+
+    let mut context = OfflineContext::new(&AudioConfig::default()).unwrap();
+    context.control().play(&tone, &placed([0.0, 0.0, -1.0])).unwrap();
+    let out = context.render(4);
+    let half = std::f32::consts::FRAC_1_SQRT_2;
+    assert!(
+        (out[0] - half).abs() < 1e-6 && (out[1] - half).abs() < 1e-6,
+        "ahead: both sides"
+    );
+}
+
+#[test]
+fn a_voice_moved_glides_to_its_new_place_over_a_block() {
+    let tone = pcm(&[1.0; 1024], 48_000);
+    let mut context = OfflineContext::new(&AudioConfig::default()).unwrap();
+    let voice = context.control().play(&tone, &placed([-1.0, 0.0, 0.0])).unwrap();
+    context.render(QUANTUM);
+    let right = Emitter {
+        position: [1.0, 0.0, 0.0],
+        ..Emitter::default()
+    };
+    context.control().place(voice, right, Some(QUANTUM as u64)).unwrap();
+    let out = context.render(QUANTUM * 2);
+    let left: Vec<f32> = out.iter().step_by(2).copied().collect();
+    // From hard left to hard right across the block, without a step anywhere, then settled.
+    assert!((left[0] - 1.0).abs() < 0.02 && left[QUANTUM - 1].abs() < 1e-6);
+    assert!(left.windows(2).take(QUANTUM - 1).all(|pair| pair[1] <= pair[0] + 1e-6));
+    assert!(left[QUANTUM..].iter().all(|sample| sample.abs() < 1e-6));
+}
+
+#[test]
+fn an_approaching_voice_plays_faster_and_a_wall_darkens_it() {
+    let ramp: Vec<f32> = (0..4000u16).map(f32::from).collect();
+    let mut context = mono(AudioConfig::default());
+    let approaching = PlaySpec {
+        spatial: Some(Emitter {
+            position: [0.0, 0.0, -100.0],
+            velocity: [0.0, 0.0, 34.3],
+            distance: Distance::None,
+            ..Emitter::default()
+        }),
+        ..at(0)
+    };
+    context.control().play(&pcm(&ramp, 48_000), &approaching).unwrap();
+    let out = context.render(1001);
+    // A ninth faster: a thousand frames reach a thousand and a ninth of a thousand on.
+    assert!((out[1000] - 1000.0 / 0.9).abs() < 0.5, "{}", out[1000]);
+
+    let fizz: Vec<f32> = (0..4800).map(|frame| if frame % 2 == 0 { 1.0 } else { -1.0 }).collect();
+    let mut context = mono(AudioConfig::default());
+    let behind_a_wall = PlaySpec {
+        spatial: Some(Emitter {
+            distance: Distance::None,
+            lowpass: 500.0,
+            gain: 0.5,
+            ..Emitter::default()
+        }),
+        ..at(0)
+    };
+    context.control().play(&pcm(&fizz, 48_000), &behind_a_wall).unwrap();
+    let out = context.render(4800);
+    assert!(out[2400..].iter().all(|sample| sample.abs() < 0.05), "the highs are gone");
+}
+
+#[test]
+fn turning_the_listener_turns_the_voices_around_it() {
+    let tone = pcm(&[1.0; 1024], 48_000);
+    let mut context = OfflineContext::new(&AudioConfig::default()).unwrap();
+    context.control().play(&tone, &placed([1.0, 0.0, 0.0])).unwrap();
+    let about_face = Listener {
+        forward: [0.0, 0.0, 1.0],
+        ..Listener::default()
+    };
+    context.control().set_listener(about_face, Some(QUANTUM as u64)).unwrap();
+    let out = context.render(QUANTUM * 3);
+    assert!(out[0].abs() < 1e-6, "on the right at first");
+    assert!((out[2 * (QUANTUM * 2 + 10)] - 1.0).abs() < 1e-6, "on the left once turned");
+}
+
+#[test]
+fn rendering_voices_in_space_never_allocates() {
+    let tone = pcm(&[0.5; 2000], 44_100);
+    let mut context = OfflineContext::new(&AudioConfig::default()).unwrap();
+    for index in 0..32u32 {
+        let spec = PlaySpec {
+            spatial: Some(Emitter {
+                position: [f64::from(index) - 16.0, 0.0, -3.0],
+                velocity: [1.0, 0.0, 0.0],
+                lowpass: if index % 2 == 0 { 2000.0 } else { f64::INFINITY },
+                ..Emitter::default()
+            }),
+            ..at(u64::from(index) * 11)
+        };
+        let voice = context.control().play(&tone, &spec).unwrap();
+        let moved = Emitter {
+            position: [0.0, 0.0, -1.0],
+            ..Emitter::default()
+        };
+        context.control().place(voice, moved, Some(500)).unwrap();
+    }
+    let mut out = vec![0.0; 2 * 300];
+    let (_, engine) = context.parts();
+    assert_eq!(
+        allocations(|| {
+            for _ in 0..10 {
+                engine.render(&mut out);
+            }
+        }),
+        0
+    );
 }

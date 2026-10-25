@@ -20,6 +20,7 @@ use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use crate::audio::bus::{Bus, BusSend};
 use crate::audio::param::{Glide, Param};
 use crate::audio::processor::{Block, Processor, ProcessorKey, Tail};
+use crate::audio::spatial::{Emitter, Listener, Space};
 use crate::audio::voice::{Voice, VoiceKey};
 use crate::audio::{BusKey, BusParam, BusSpec, LoopRegion, MAX_CHANNELS, Pcm, PlaySpec, QUANTUM, Tap, VoiceParam};
 
@@ -103,6 +104,13 @@ pub enum Command {
     },
     /// Commands that arrive together, each with its own stamp.
     Group(Vec<Stamped>),
+    /// Moves the listener.
+    Listener(Listener),
+    /// Moves a voice in space.
+    Place {
+        voice: VoiceKey,
+        emitter: Emitter,
+    },
     /// Has a processor listen to a bus, with the order that mixes the bus first; or to its own
     /// bus again, which leaves the order as it is.
     Listen {
@@ -329,6 +337,8 @@ pub struct Engine {
     envelope: Box<[f32]>,
     /// True while a processor parameter ramps, which keeps blocks to [`CONTROL_QUANTUM`].
     ramping: bool,
+    /// The listener, and how the world's space works.
+    space: Space,
     /// A group held back until its members fit the pending list.
     deferred: Option<Vec<Stamped>>,
     received: u64,
@@ -354,6 +364,7 @@ impl Engine {
         rate: u32,
         channels: usize,
         capacity: &Capacity,
+        space: Space,
         commands: Receiver<Stamped>,
         feedback: SyncSender<Feedback>,
         counters: Arc<Counters>,
@@ -376,6 +387,7 @@ impl Engine {
             steps: vec![0; QUANTUM].into_boxed_slice(),
             envelope: vec![0.0; 2 * QUANTUM].into_boxed_slice(),
             ramping: false,
+            space,
             deferred: None,
             received: 0,
             now: 0,
@@ -583,6 +595,19 @@ impl Engine {
                 }
             }
             Command::SendVoice { voice, target, level } => self.send_voice(voice, target, level),
+            Command::Listener(listener) => self.space.listener = listener,
+            Command::Place { voice, emitter } => {
+                if let Some(playing) = self.voices[voice.slot as usize].as_mut()
+                    && playing.generation == voice.generation
+                {
+                    playing.place(emitter);
+                } else if let Some(index) = self.pending_start(voice)
+                    && let Command::Start { spec, .. } = &mut self.pending[index].command
+                    && spec.spatial.is_some()
+                {
+                    spec.spatial = Some(emitter);
+                }
+            }
             Command::Mount {
                 processor,
                 instance,
@@ -796,6 +821,7 @@ impl Engine {
             let Some(voice) = self.voices[slot].as_mut() else {
                 continue;
             };
+            voice.hear(&self.space, self.channels);
             let rendered = voice.render(&mut self.scratch, &mut self.steps, frames);
             let levels = voice.levels(rendered, &mut self.envelope, self.channels);
             let bus = voice.bus as usize;

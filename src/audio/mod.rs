@@ -54,6 +54,7 @@ mod graph;
 mod param;
 mod pcm;
 pub mod processor;
+pub mod spatial;
 #[cfg(test)]
 mod tests;
 mod voice;
@@ -65,6 +66,7 @@ pub use error::AudioError;
 pub use param::{Curve, Glide};
 pub use pcm::{Pcm, SampleFormat};
 pub use processor::{Processor, ProcessorKey};
+pub use spatial::{Distance, Emitter, Handedness, Listener};
 pub use voice::{LoopRegion, PlaySpec, VoiceKey, VoiceParam, VoiceSend};
 
 /// The most frames the engine mixes at once. A command's frame can split a block anywhere.

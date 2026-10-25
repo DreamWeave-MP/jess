@@ -10,6 +10,7 @@ use crate::audio::graph::Graph;
 use crate::audio::param::Glide;
 use crate::audio::pcm::check_layout;
 use crate::audio::processor::{ParamInfo, Processor, ProcessorKey, check_param, param_index};
+use crate::audio::spatial::{Emitter, Handedness, Listener, Space};
 use crate::audio::voice::{VoiceKey, check_level};
 use crate::audio::{
     AudioError, BusKey, BusParam, BusSpec, LoopRegion, MAX_BUSES, MAX_CHAIN, MAX_PROCESSORS, MAX_VOICE_SENDS, MAX_VOICES,
@@ -17,7 +18,7 @@ use crate::audio::{
 };
 
 /// How to make a context.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct AudioConfig {
     /// Output frames per second.
     pub rate: u32,
@@ -32,11 +33,17 @@ pub struct AudioConfig {
     /// Commands that can wait for the engine at once, in the queue and again in the engine's
     /// list of commands stamped for later.
     pub commands: usize,
+    /// The speed of sound in the world's units a second, for Doppler: 343 for metres.
+    pub speed_of_sound: f64,
+    /// Which way the world's axes turn.
+    pub handedness: Handedness,
 }
 
 impl Default for AudioConfig {
     fn default() -> Self {
         AudioConfig {
+            speed_of_sound: 343.0,
+            handedness: Handedness::Right,
             rate: 48_000,
             channels: 2,
             voices: 256,
@@ -187,7 +194,27 @@ pub fn context(config: &AudioConfig) -> Result<(Control, Engine), AudioError> {
     let (commands, receive) = sync_channel(config.commands);
     let (send, feedback) = sync_channel(capacity.feedback());
     let counters = Arc::new(Counters::new(config.buses));
-    let engine = Engine::new(config.rate, config.channels, &capacity, receive, send, Arc::clone(&counters));
+    if !(config.speed_of_sound > 0.0 && config.speed_of_sound.is_finite()) {
+        return Err(AudioError::Parameter {
+            name: "speed of sound",
+            value: config.speed_of_sound,
+            expected: "a finite speed above 0",
+        });
+    }
+    let space = Space {
+        speed: config.speed_of_sound,
+        handedness: config.handedness,
+        ..Space::default()
+    };
+    let engine = Engine::new(
+        config.rate,
+        config.channels,
+        &capacity,
+        space,
+        receive,
+        send,
+        Arc::clone(&counters),
+    );
     let processors = vec![
         ProcessorSlot {
             generation: 0,
@@ -797,6 +824,43 @@ impl Control {
             (energy / samples as f64).sqrt() as f32
         };
         Ok(Meter { peak, rms })
+    }
+
+    /// Moves the listener from frame `at`, or from the next frame rendered. Voices in space glide
+    /// to where it puts them over the block after.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::Parameter`] for vectors that aren't finite, [`AudioError::QueueFull`], or
+    /// [`AudioError::Disconnected`].
+    pub fn set_listener(&mut self, listener: Listener, at: Option<u64>) -> Result<(), AudioError> {
+        let vectors = [listener.position, listener.forward, listener.up, listener.velocity];
+        if !vectors.iter().flatten().all(|value| value.is_finite()) {
+            return Err(AudioError::Parameter {
+                name: "listener",
+                value: f64::NAN,
+                expected: "finite vectors for position, forward, up, and velocity",
+            });
+        }
+        self.collect();
+        self.send(at, Command::Listener(listener))
+    }
+
+    /// Moves a voice in space from frame `at`, or from the next frame rendered. True if the voice
+    /// hadn't ended; a voice that started out of space stays out of it.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::Parameter`] for an emitter the engine can't hear, [`AudioError::QueueFull`],
+    /// or [`AudioError::Disconnected`].
+    pub fn place(&mut self, voice: VoiceKey, emitter: Emitter, at: Option<u64>) -> Result<bool, AudioError> {
+        emitter.check()?;
+        self.collect();
+        if !self.is_live(voice) {
+            return Ok(false);
+        }
+        self.send(at, Command::Place { voice, emitter })?;
+        Ok(true)
     }
 
     /// True while `bus` is live: made, and not removed.

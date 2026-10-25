@@ -1,10 +1,15 @@
 //! Voices: one playback of one [`Pcm`], as the engine renders it.
 
+// Interpolation and mixing are sums of products throughout. `mul_add` is a libm call on a CPU
+// built for without FMA, many times slower than the plain expression.
+#![allow(clippy::suboptimal_flops)]
+
 use std::f32::consts::FRAC_PI_4;
 use std::sync::Arc;
 
 use crate::audio::param::{Curve, Glide, Param};
-use crate::audio::{AudioError, BusKey, MAX_PLAYBACK_RATE, MAX_VOICE_SENDS, Pcm, QUANTUM};
+use crate::audio::spatial::{Emitter, Space};
+use crate::audio::{AudioError, BusKey, MAX_CHANNELS, MAX_PLAYBACK_RATE, MAX_VOICE_SENDS, Pcm, QUANTUM};
 
 /// One fractional frame in the 32.32 fixed point a voice's position is kept in. Positions are
 /// integers so that a render is the same on every machine, however long it runs.
@@ -51,6 +56,9 @@ pub struct PlaySpec {
     pub sends: [Option<VoiceSend>; MAX_VOICE_SENDS],
     /// Frames to fade in over, from silence to `gain`.
     pub fade: u64,
+    /// Where it is, if it's in space: then distance, direction, and motion set its level, pan,
+    /// and pitch, and `pan` is not used.
+    pub spatial: Option<Emitter>,
 }
 
 /// A voice's send: the bus, and the level relative to the voice's own gain.
@@ -74,6 +82,7 @@ impl Default for PlaySpec {
             bus: BusKey::MASTER,
             sends: [None; MAX_VOICE_SENDS],
             fade: 0,
+            spatial: None,
         }
     }
 }
@@ -152,6 +161,9 @@ impl PlaySpec {
         for send in self.sends.iter().flatten() {
             check_level(f64::from(send.level))?;
         }
+        if let Some(emitter) = &self.spatial {
+            emitter.check()?;
+        }
         mixes(pcm.channels(), channels)
     }
 }
@@ -208,8 +220,6 @@ impl Cursor {
     /// rate copies exactly, and between frames Catmull-Rom through the four around it.
     #[allow(clippy::cast_precision_loss)]
     // A 32-bit fraction in an f32 loses only the far bits.
-    // `mul_add` is a libm call on a CPU built for without FMA, many times slower than this.
-    #[allow(clippy::suboptimal_flops)]
     fn read(&self, data: &[f32]) -> f32 {
         let index = to_signed(self.position >> 32);
         let fraction = self.position & FRACTION;
@@ -268,8 +278,6 @@ struct Level<'a> {
     scale: f32,
 }
 
-// `mul_add` is a libm call on a CPU built for without FMA, many times slower than this.
-#[allow(clippy::suboptimal_flops)]
 fn add(out: &mut [f32], from: &[f32], level: Level<'_>) {
     let Some(envelope) = level.envelope else {
         for (out, sample) in out.iter_mut().zip(from) {
@@ -296,6 +304,35 @@ fn coefficients(gain: f32, pan: f32, source: usize, output: usize) -> (f32, f32)
     }
 }
 
+/// What space does to a voice, as of the block being mixed.
+struct Spatial {
+    emitter: Emitter,
+    /// The two coefficients distance, cone, and pan give it at this block's start and end; the
+    /// block moves from one to the other, so a moving voice glides rather than steps.
+    from: (f32, f32),
+    to: (f32, f32),
+    /// True until the first block has been heard: it starts where it is, not from silence.
+    fresh: bool,
+    doppler: f64,
+    /// The one-pole low-pass's coefficient (1 lets everything through) and memory per channel.
+    lowpass: f32,
+    memory: [f32; MAX_CHANNELS],
+}
+
+impl Spatial {
+    const fn new(emitter: Emitter) -> Spatial {
+        Spatial {
+            emitter,
+            from: (0.0, 0.0),
+            to: (0.0, 0.0),
+            fresh: true,
+            doppler: 1.0,
+            lowpass: 1.0,
+            memory: [0.0; MAX_CHANNELS],
+        }
+    }
+}
+
 /// A playing voice, owned by the engine.
 pub struct Voice {
     pub(crate) generation: u32,
@@ -310,6 +347,7 @@ pub struct Voice {
     rate: Param,
     /// Frames left of the fade a stop began; the voice ends when it runs out.
     ending: Option<u64>,
+    spatial: Option<Spatial>,
     /// The output's rate, for working out the step when the rate changes.
     output_rate: u32,
 }
@@ -341,11 +379,43 @@ impl Voice {
             pan: Param::new(f64::from(spec.pan)),
             rate: Param::new(spec.rate),
             ending: None,
+            spatial: spec.spatial.map(Spatial::new),
             output_rate,
             pcm,
         };
         voice.cursor.step = voice.step(spec.rate);
         voice
+    }
+
+    /// Moves a voice in space; a voice that wasn't in space stays out of it.
+    pub(crate) fn place(&mut self, emitter: Emitter) {
+        if let Some(spatial) = self.spatial.as_mut() {
+            spatial.emitter = emitter;
+        }
+    }
+
+    /// Works out what `space` does to the voice over the next block: where its level and pan go
+    /// to, its Doppler shift, and its low-pass. Nothing for a voice not in space.
+    #[allow(clippy::cast_possible_truncation)] // Engine coefficients are f32.
+    pub(crate) fn hear(&mut self, space: &Space, output: usize) {
+        let source = self.pcm.channels();
+        let Some(spatial) = self.spatial.as_mut() else {
+            return;
+        };
+        let heard = space.hear(&spatial.emitter);
+        let target = coefficients(heard.gain as f32, heard.pan as f32, source, output);
+        spatial.from = if spatial.fresh { target } else { spatial.to };
+        spatial.to = target;
+        spatial.fresh = false;
+        spatial.doppler = heard.doppler;
+        let nyquist = f64::from(self.output_rate) / 2.0;
+        spatial.lowpass = if spatial.emitter.lowpass >= nyquist {
+            1.0
+        } else {
+            let omega = std::f64::consts::TAU * spatial.emitter.lowpass / f64::from(self.output_rate);
+            (1.0 - (-omega).exp()) as f32
+        };
+        self.cursor.step = self.step(self.rate.value());
     }
 
     /// Sets a parameter, at once or over `glide`.
@@ -388,10 +458,11 @@ impl Voice {
         self.cursor.wrapped = false;
     }
 
-    /// The fixed-point step for a playback rate.
+    /// The fixed-point step for a playback rate, shifted by Doppler for a voice in space.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // A positive step below 2^64.
     fn step(&self, rate: f64) -> u64 {
-        let ratio = rate * f64::from(self.pcm.rate()) / f64::from(self.output_rate);
+        let doppler = self.spatial.as_ref().map_or(1.0, |spatial| spatial.doppler);
+        let ratio = rate * doppler * f64::from(self.pcm.rate()) / f64::from(self.output_rate);
         ((ratio * 4_294_967_296.0).round() as u64).max(1)
     }
 
@@ -433,6 +504,17 @@ impl Voice {
         if gliding {
             self.cursor.step = self.step(self.rate.value());
         }
+        if let Some(spatial) = self.spatial.as_mut()
+            && spatial.lowpass < 1.0
+        {
+            for channel in 0..self.pcm.channels() {
+                let memory = &mut spatial.memory[channel];
+                for sample in &mut scratch[channel * QUANTUM..channel * QUANTUM + produced] {
+                    *memory += spatial.lowpass * (*sample - *memory);
+                    *sample = *memory;
+                }
+            }
+        }
         // A fade that runs out mid-block renders short, which ends the voice; one that runs out
         // on the block's last frame renders nothing the next time round.
         if let Some(left) = self.ending.as_mut() {
@@ -444,9 +526,25 @@ impl Voice {
     /// The voice's coefficients for the next `frames` frames into an output of `output`
     /// channels, moving its gain and pan along: steady numbers, or, while either ramps, one per
     /// frame written into `envelope`.
-    #[allow(clippy::cast_possible_truncation)] // Engine levels are f32.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)] // Engine levels are f32.
     pub(crate) fn levels(&mut self, frames: usize, envelope: &mut [f32], output: usize) -> Levels {
         let source = self.pcm.channels();
+        if let Some(spatial) = &self.spatial {
+            // Space sets the pan; the voice's gain scales what space gives, frame by frame.
+            let ((first, second), (last_first, last_second)) = (spatial.from, spatial.to);
+            if self.gain.steady() && spatial.from == spatial.to {
+                let gain = self.gain.value() as f32;
+                return Levels::Steady(gain * first, gain * second);
+            }
+            let (gains, seconds) = envelope.split_at_mut(QUANTUM);
+            self.gain.fill(&mut gains[..frames]);
+            for (index, (gain, other)) in gains[..frames].iter_mut().zip(&mut seconds[..frames]).enumerate() {
+                let through = (index + 1) as f32 / frames as f32;
+                *other = *gain * (second + (last_second - second) * through);
+                *gain *= first + (last_first - first) * through;
+            }
+            return Levels::Varying;
+        }
         if self.gain.steady() && self.pan.steady() {
             let (first, second) = coefficients(self.gain.value() as f32, self.pan.value() as f32, source, output);
             return Levels::Steady(first, second);
