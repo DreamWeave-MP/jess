@@ -3,7 +3,7 @@
 use std::fmt;
 
 use crate::render::graph::{ResourceId, ResourceKind};
-use crate::render::target::TargetFormat;
+use crate::render::target::TextureFormat;
 
 /// What a pass draws.
 ///
@@ -171,7 +171,7 @@ pub enum ClearValue {
 impl ClearValue {
     /// Whether this value is the right kind for `format`.
     #[must_use]
-    pub const fn fits(self, format: TargetFormat) -> bool {
+    pub const fn fits(self, format: TextureFormat) -> bool {
         match self {
             Self::Color(_) => !format.is_depth() && !format.is_integer(),
             Self::Uint(_) => format.is_integer(),

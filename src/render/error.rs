@@ -4,7 +4,7 @@ use std::fmt;
 
 use crate::render::graph::{ResourceId, ResourceKind};
 use crate::render::pass::{Attachment, ClearValue, ReadUsage};
-use crate::render::target::{TargetFormat, TargetSize};
+use crate::render::target::{TargetSize, TextureFormat};
 
 /// Why registering a target or pass, or compiling a graph, failed.
 ///
@@ -35,7 +35,7 @@ pub enum GraphError {
         /// The target.
         resource: String,
         /// The format it was given.
-        format: TargetFormat,
+        format: TextureFormat,
         /// The kind it was registered as.
         kind: ResourceKind,
     },
@@ -101,7 +101,7 @@ pub enum GraphError {
         /// The target.
         resource: String,
         /// The target's format.
-        format: TargetFormat,
+        format: TextureFormat,
         /// The clear value.
         clear: ClearValue,
     },

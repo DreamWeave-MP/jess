@@ -48,4 +48,4 @@ pub use graph::{PassId, RenderGraph, Resource, ResourceId, ResourceKind, Resourc
 pub use pass::{
     Attachment, ClearValue, LoadOp, Pass, PassInput, PassKind, PassMetadata, PassOutput, ReadUsage, SourceLocation, StoreOp,
 };
-pub use target::{Extent, TargetFormat, TargetSize};
+pub use target::{Extent, TargetSize, TextureFormat};

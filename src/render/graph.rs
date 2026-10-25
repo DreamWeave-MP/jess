@@ -5,7 +5,7 @@ use std::fmt;
 
 use crate::render::error::GraphError;
 use crate::render::pass::{Attachment, LoadOp, Pass, ReadUsage};
-use crate::render::target::{TargetFormat, TargetSize};
+use crate::render::target::{TargetSize, TextureFormat};
 
 /// A pass in one [`RenderGraph`]. Only meaningful for the graph that returned it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
@@ -100,7 +100,7 @@ pub struct Resource {
     /// Color or depth.
     pub kind: ResourceKind,
     /// Pixel format; a depth format exactly when `kind` is [`ResourceKind::DepthTarget`].
-    pub format: TargetFormat,
+    pub format: TextureFormat,
     /// Size, fixed or relative to the viewport.
     pub size: TargetSize,
     /// Whether the graph or the host owns it.
@@ -143,7 +143,7 @@ impl RenderGraph {
     pub fn add_render_target(
         &mut self,
         name: impl Into<String>,
-        format: TargetFormat,
+        format: TextureFormat,
         size: TargetSize,
     ) -> Result<ResourceId, GraphError> {
         self.add_resource(
@@ -163,7 +163,7 @@ impl RenderGraph {
     pub fn add_depth_target(
         &mut self,
         name: impl Into<String>,
-        format: TargetFormat,
+        format: TextureFormat,
         size: TargetSize,
     ) -> Result<ResourceId, GraphError> {
         self.add_resource(
@@ -183,7 +183,7 @@ impl RenderGraph {
     pub fn import_render_target(
         &mut self,
         name: impl Into<String>,
-        format: TargetFormat,
+        format: TextureFormat,
         size: TargetSize,
     ) -> Result<ResourceId, GraphError> {
         self.add_resource(
@@ -203,7 +203,7 @@ impl RenderGraph {
     pub fn import_depth_target(
         &mut self,
         name: impl Into<String>,
-        format: TargetFormat,
+        format: TextureFormat,
         size: TargetSize,
     ) -> Result<ResourceId, GraphError> {
         self.add_resource(name.into(), ResourceKind::DepthTarget, format, size, ResourceOrigin::Imported)
@@ -213,7 +213,7 @@ impl RenderGraph {
         &mut self,
         name: String,
         kind: ResourceKind,
-        format: TargetFormat,
+        format: TextureFormat,
         size: TargetSize,
         origin: ResourceOrigin,
     ) -> Result<ResourceId, GraphError> {

@@ -2,11 +2,11 @@
 
 use std::fmt;
 
-/// The pixel format of a render or depth target.
+/// The pixel format of a texture: a render or depth target, or one a shader reads.
 ///
 /// Jess owns this list. A backend maps each variant to its own format type; no variant names one.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-pub enum TargetFormat {
+pub enum TextureFormat {
     /// Four 8-bit unsigned normalized channels.
     Rgba8Unorm,
     /// Four 8-bit unsigned normalized channels, sRGB-encoded.
@@ -29,7 +29,7 @@ pub enum TargetFormat {
     Depth32Float,
 }
 
-impl TargetFormat {
+impl TextureFormat {
     /// Whether this is a depth format, which only a depth target may have.
     #[must_use]
     pub const fn is_depth(self) -> bool {
@@ -60,7 +60,7 @@ impl TargetFormat {
     }
 }
 
-impl fmt::Display for TargetFormat {
+impl fmt::Display for TextureFormat {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.pad(self.name())
     }
@@ -196,9 +196,9 @@ mod tests {
 
     #[test]
     fn formats_pad_in_columns() {
-        assert_eq!(format!("{:<10}|", TargetFormat::R8Unorm), "R8Unorm   |");
-        assert!(TargetFormat::Depth24Plus.is_depth());
-        assert!(!TargetFormat::R32Uint.is_depth());
-        assert!(TargetFormat::R32Uint.is_integer());
+        assert_eq!(format!("{:<10}|", TextureFormat::R8Unorm), "R8Unorm   |");
+        assert!(TextureFormat::Depth24Plus.is_depth());
+        assert!(!TextureFormat::R32Uint.is_depth());
+        assert!(TextureFormat::R32Uint.is_integer());
     }
 }

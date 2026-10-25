@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use jess::render::{
     AliasGroup, Attachment, ClearValue, CompiledGraph, Dependency, DependencyKind, GraphError, Lifetime, LoadOp, Pass,
-    PassId, PassKind, PassMetadata, PassOutput, ReadUsage, RenderGraph, ResourceId, ResourceKind, StoreOp, TargetFormat,
-    TargetSize,
+    PassId, PassKind, PassMetadata, PassOutput, ReadUsage, RenderGraph, ResourceId, ResourceKind, StoreOp, TargetSize,
+    TextureFormat,
 };
 
 const OWNER: &str = "@test/viewer";
@@ -69,16 +69,16 @@ struct Standard {
 fn standard_targets() -> Standard {
     let mut graph = RenderGraph::new("mesh.standard");
     let depth = graph
-        .add_depth_target("depth", TargetFormat::Depth32Float, TargetSize::VIEWPORT)
+        .add_depth_target("depth", TextureFormat::Depth32Float, TargetSize::VIEWPORT)
         .unwrap();
     let scene_color = graph
-        .add_render_target("sceneColor", TargetFormat::Rgba16Float, TargetSize::VIEWPORT)
+        .add_render_target("sceneColor", TextureFormat::Rgba16Float, TargetSize::VIEWPORT)
         .unwrap();
     let selection_mask = graph
-        .add_render_target("selectionMask", TargetFormat::R8Unorm, TargetSize::VIEWPORT)
+        .add_render_target("selectionMask", TextureFormat::R8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     let output = graph
-        .import_render_target("output", TargetFormat::Bgra8UnormSrgb, TargetSize::VIEWPORT)
+        .import_render_target("output", TextureFormat::Bgra8UnormSrgb, TargetSize::VIEWPORT)
         .unwrap();
     Standard {
         graph,
@@ -118,10 +118,10 @@ fn standard_graph() -> Standard {
 fn scene_targets(name: &str) -> (RenderGraph, ResourceId, ResourceId) {
     let mut graph = RenderGraph::new(name);
     let scene_color = graph
-        .add_render_target("sceneColor", TargetFormat::Rgba16Float, TargetSize::VIEWPORT)
+        .add_render_target("sceneColor", TextureFormat::Rgba16Float, TargetSize::VIEWPORT)
         .unwrap();
     let output = graph
-        .import_render_target("output", TargetFormat::Bgra8UnormSrgb, TargetSize::VIEWPORT)
+        .import_render_target("output", TextureFormat::Bgra8UnormSrgb, TargetSize::VIEWPORT)
         .unwrap();
     (graph, scene_color, output)
 }
@@ -199,12 +199,12 @@ fn dependencies_fix_the_order_whatever_the_registration_order() {
 fn independent_passes_keep_registration_order() {
     let mut graph = RenderGraph::new("independent");
     let output = graph
-        .import_render_target("output", TargetFormat::Bgra8Unorm, TargetSize::VIEWPORT)
+        .import_render_target("output", TextureFormat::Bgra8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     let mut targets = Vec::new();
     for name in ["c", "a", "b"] {
         let target = graph
-            .add_render_target(name, TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+            .add_render_target(name, TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
             .unwrap();
         graph
             .add_pass(fullscreen(&format!("draw_{name}")).write(store_color(target)))
@@ -315,10 +315,10 @@ fn loading_before_the_first_write_depends_on_registration_order() {
 fn imported_targets_hold_contents_before_the_first_write() {
     let mut graph = RenderGraph::new("overlay");
     let output = graph
-        .import_render_target("output", TargetFormat::Bgra8Unorm, TargetSize::VIEWPORT)
+        .import_render_target("output", TextureFormat::Bgra8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     let background = graph
-        .import_render_target("background", TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .import_render_target("background", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     graph
         .add_pass(
@@ -337,13 +337,13 @@ fn imported_targets_hold_contents_before_the_first_write() {
 fn two_pass_cycles_are_rejected_by_name() {
     let mut graph = RenderGraph::new("pingPong");
     let output = graph
-        .import_render_target("output", TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .import_render_target("output", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     let horizontal = graph
-        .add_render_target("horizontal", TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .add_render_target("horizontal", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     let vertical = graph
-        .add_render_target("vertical", TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .add_render_target("vertical", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     graph
         .add_pass(
@@ -384,16 +384,16 @@ fn two_pass_cycles_are_rejected_by_name() {
 fn longer_cycles_start_at_the_earliest_registered_pass() {
     let mut graph = RenderGraph::new("ring");
     let output = graph
-        .import_render_target("output", TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .import_render_target("output", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     let first = graph
-        .add_render_target("first", TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .add_render_target("first", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     let second = graph
-        .add_render_target("second", TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .add_render_target("second", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     let third = graph
-        .add_render_target("third", TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .add_render_target("third", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     graph
         .add_pass(fullscreen("unrelated").write(PassOutput::color(output, LoadOp::DontCare, StoreOp::Store)))
@@ -436,7 +436,7 @@ fn writing_a_target_after_it_is_read_is_a_cycle() {
     // output. A read sees final contents, so the two wait on each other.
     let (mut graph, scene_color, output) = scene_targets("regrade");
     let tonemapped = graph
-        .add_render_target("tonemapped", TargetFormat::Rgba16Float, TargetSize::VIEWPORT)
+        .add_render_target("tonemapped", TextureFormat::Rgba16Float, TargetSize::VIEWPORT)
         .unwrap();
     graph.add_pass(mesh("opaque").write(store_color(scene_color))).unwrap();
     graph
@@ -630,7 +630,7 @@ fn depth_used_only_inside_its_pass_may_be_discarded() {
 fn a_graph_that_reaches_no_imported_target_is_rejected() {
     let mut graph = RenderGraph::new("offscreen");
     let color = graph
-        .add_render_target("color", TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .add_render_target("color", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     graph.add_pass(mesh("draw").write(store_color(color))).unwrap();
     let error = compile_error(&graph);
@@ -656,7 +656,7 @@ fn a_graph_that_reaches_no_imported_target_is_rejected() {
 fn overwritten_writes_are_culled_and_loaded_ones_kept() {
     let mut graph = RenderGraph::new("overwrite");
     let output = graph
-        .import_render_target("output", TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .import_render_target("output", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     graph.add_pass(fullscreen("background").write(store_color(output))).unwrap();
     graph.add_pass(fullscreen("scene").write(store_color(output))).unwrap();
@@ -685,16 +685,16 @@ fn overwritten_writes_are_culled_and_loaded_ones_kept() {
 fn culling_follows_contents_back_through_the_chain() {
     let mut graph = RenderGraph::new("culling");
     let output = graph
-        .import_render_target("output", TargetFormat::Bgra8UnormSrgb, TargetSize::VIEWPORT)
+        .import_render_target("output", TextureFormat::Bgra8UnormSrgb, TargetSize::VIEWPORT)
         .unwrap();
     let scene = graph
-        .add_render_target("scene", TargetFormat::Rgba16Float, TargetSize::VIEWPORT)
+        .add_render_target("scene", TextureFormat::Rgba16Float, TargetSize::VIEWPORT)
         .unwrap();
     let normals = graph
-        .add_render_target("normals", TargetFormat::Rgba16Float, TargetSize::VIEWPORT)
+        .add_render_target("normals", TextureFormat::Rgba16Float, TargetSize::VIEWPORT)
         .unwrap();
     let normals_view = graph
-        .add_render_target("normalsView", TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .add_render_target("normalsView", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     graph.add_pass(mesh("scene").write(store_color(scene))).unwrap();
     graph.add_pass(mesh("normals").write(store_color(normals))).unwrap();
@@ -727,23 +727,23 @@ fn bloom_graph() -> RenderGraph {
     let half = TargetSize::Relative { scale: 0.5 };
     let mut graph = RenderGraph::new("bloom");
     let depth = graph
-        .add_depth_target("depth", TargetFormat::Depth24Plus, TargetSize::VIEWPORT)
+        .add_depth_target("depth", TextureFormat::Depth24Plus, TargetSize::VIEWPORT)
         .unwrap();
     let scene = graph
-        .add_render_target("scene", TargetFormat::Rgba16Float, TargetSize::VIEWPORT)
+        .add_render_target("scene", TextureFormat::Rgba16Float, TargetSize::VIEWPORT)
         .unwrap();
-    let bright = graph.add_render_target("bright", TargetFormat::Rgba16Float, half).unwrap();
+    let bright = graph.add_render_target("bright", TextureFormat::Rgba16Float, half).unwrap();
     let blur_horizontal = graph
-        .add_render_target("blurHorizontal", TargetFormat::Rgba16Float, half)
+        .add_render_target("blurHorizontal", TextureFormat::Rgba16Float, half)
         .unwrap();
     let blur_vertical = graph
-        .add_render_target("blurVertical", TargetFormat::Rgba16Float, half)
+        .add_render_target("blurVertical", TextureFormat::Rgba16Float, half)
         .unwrap();
     let combined = graph
-        .add_render_target("combined", TargetFormat::Rgba16Float, TargetSize::VIEWPORT)
+        .add_render_target("combined", TextureFormat::Rgba16Float, TargetSize::VIEWPORT)
         .unwrap();
     let output = graph
-        .import_render_target("output", TargetFormat::Bgra8UnormSrgb, TargetSize::VIEWPORT)
+        .import_render_target("output", TextureFormat::Bgra8UnormSrgb, TargetSize::VIEWPORT)
         .unwrap();
 
     graph
@@ -842,38 +842,38 @@ fn targets_used_by_the_same_pass_never_share() {
 fn registration_rejects_malformed_targets() {
     let mut graph = RenderGraph::new("targets");
     graph
-        .add_render_target("color", TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .add_render_target("color", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     assert_eq!(
-        graph.add_render_target("", TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT),
+        graph.add_render_target("", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT),
         Err(GraphError::EmptyResourceName)
     );
     assert_eq!(
-        graph.add_depth_target("color", TargetFormat::Depth32Float, TargetSize::VIEWPORT),
+        graph.add_depth_target("color", TextureFormat::Depth32Float, TargetSize::VIEWPORT),
         Err(GraphError::DuplicateResource {
             resource: "color".to_owned()
         })
     );
 
     let error = graph
-        .add_render_target("depthAsColor", TargetFormat::Depth32Float, TargetSize::VIEWPORT)
+        .add_render_target("depthAsColor", TextureFormat::Depth32Float, TargetSize::VIEWPORT)
         .unwrap_err();
     assert_eq!(
         error.to_string(),
         "render target \"depthAsColor\" can't have format Depth32Float"
     );
     assert_eq!(
-        graph.import_depth_target("colorAsDepth", TargetFormat::R32Float, TargetSize::VIEWPORT),
+        graph.import_depth_target("colorAsDepth", TextureFormat::R32Float, TargetSize::VIEWPORT),
         Err(GraphError::FormatKind {
             resource: "colorAsDepth".to_owned(),
-            format: TargetFormat::R32Float,
+            format: TextureFormat::R32Float,
             kind: ResourceKind::DepthTarget
         })
     );
 
     let empty = TargetSize::Absolute { width: 0, height: 512 };
     assert_eq!(
-        graph.add_render_target("empty", TargetFormat::Rgba8Unorm, empty),
+        graph.add_render_target("empty", TextureFormat::Rgba8Unorm, empty),
         Err(GraphError::InvalidSize {
             resource: "empty".to_owned(),
             size: empty
@@ -881,7 +881,7 @@ fn registration_rejects_malformed_targets() {
     );
     assert!(
         graph
-            .add_render_target("nan", TargetFormat::Rgba8Unorm, TargetSize::Relative { scale: f32::NAN })
+            .add_render_target("nan", TextureFormat::Rgba8Unorm, TargetSize::Relative { scale: f32::NAN })
             .is_err()
     );
     assert_eq!(graph.resources().len(), 1);
@@ -1000,13 +1000,13 @@ fn writes_must_suit_the_target_kind() {
 fn clear_values_must_fit_the_format() {
     let mut graph = RenderGraph::new("clears");
     let color = graph
-        .add_render_target("color", TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .add_render_target("color", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     let picking = graph
-        .add_render_target("picking", TargetFormat::R32Uint, TargetSize::VIEWPORT)
+        .add_render_target("picking", TextureFormat::R32Uint, TargetSize::VIEWPORT)
         .unwrap();
     let depth = graph
-        .add_depth_target("depth", TargetFormat::Depth24Plus, TargetSize::VIEWPORT)
+        .add_depth_target("depth", TextureFormat::Depth24Plus, TargetSize::VIEWPORT)
         .unwrap();
 
     let error = graph
@@ -1017,7 +1017,7 @@ fn clear_values_must_fit_the_format() {
         GraphError::ClearValueMismatch {
             pass: "depthClear".to_owned(),
             resource: "color".to_owned(),
-            format: TargetFormat::Rgba8Unorm,
+            format: TextureFormat::Rgba8Unorm,
             clear: ClearValue::Depth(1.0),
         }
     );
@@ -1029,7 +1029,7 @@ fn clear_values_must_fit_the_format() {
     assert!(matches!(
         graph.add_pass(mesh("floatIds").write(PassOutput::color(picking, BLACK, StoreOp::Store))),
         Err(GraphError::ClearValueMismatch {
-            format: TargetFormat::R32Uint,
+            format: TextureFormat::R32Uint,
             ..
         })
     ));
@@ -1128,12 +1128,12 @@ fn attachments_must_fit_together() {
     let standard = standard_graph();
     let mut graph = standard.graph;
     let shadow = graph
-        .add_depth_target("shadow", TargetFormat::Depth32Float, TargetSize::VIEWPORT)
+        .add_depth_target("shadow", TextureFormat::Depth32Float, TargetSize::VIEWPORT)
         .unwrap();
     let small = graph
         .add_render_target(
             "small",
-            TargetFormat::Rgba8Unorm,
+            TextureFormat::Rgba8Unorm,
             TargetSize::Absolute { width: 256, height: 256 },
         )
         .unwrap();
@@ -1183,7 +1183,7 @@ fn metadata_carries_attribution() {
 
     let mut graph = RenderGraph::new("attributed");
     let output = graph
-        .import_render_target("output", TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .import_render_target("output", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     let id = graph
         .add_pass(Pass::new(PassKind::Fullscreen, metadata.clone()).write(store_color(output)))
