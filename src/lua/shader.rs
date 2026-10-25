@@ -23,9 +23,9 @@ use std::sync::Arc;
 
 use crate::shader::layout::{GroupLayout, MemberLayout, StructLayout};
 use crate::shader::{
-    Access, AttributeId, BinaryOperator, Builtin, DataType, Element, Field, Frequency, Function as ShaderFunction, LocalId,
-    Place, PlaceRoot, Program, ProgramBuilder, Rate, ResourceId, ResourceKind, Scalar, Site, SourceOrigin, Stage, Step,
-    StorageId, StructId, Swizzle, Type, UnaryOperator, ValidationError, Value,
+    Access, AtomicOp, AttributeId, BinaryOperator, Builtin, DataType, Element, Field, Frequency, Function as ShaderFunction,
+    LocalId, Place, PlaceRoot, Program, ProgramBuilder, Rate, ResourceId, ResourceKind, Scalar, Site, SourceOrigin, Stage,
+    Step, StorageId, StructId, Swizzle, Type, UnaryOperator, ValidationError, Value,
 };
 use l3i::Runtime;
 use l3i::bind::{ArgView, Call, StackResults};
@@ -263,6 +263,7 @@ impl Descriptor {
             Descriptor::Array(element, length) => format!("{}[{length}]", element.descriptor().name()),
             Descriptor::Storage(element, Access::Read) => format!("{}[]", element.descriptor().name()),
             Descriptor::Storage(element, Access::ReadWrite) => format!("{}[] readWrite", element.descriptor().name()),
+            Descriptor::Storage(element, Access::Atomic) => format!("{}[] atomic", element.descriptor().name()),
         }
     }
 }
@@ -1142,6 +1143,7 @@ fn storage(shader: &Rc<Shader>, element: ValueView<'_>, access: Option<ValueView
         None => Access::Read,
         Some(access) if access.is_string() && access.read::<&str>()? == "read" => Access::Read,
         Some(access) if access.is_string() && access.read::<&str>()? == "readWrite" => Access::ReadWrite,
+        Some(access) if access.is_string() && access.read::<&str>()? == "atomic" => Access::Atomic,
         Some(access) => {
             let found = if access.is_string() {
                 format!("{:?}", access.read::<&str>()?)
@@ -1149,7 +1151,7 @@ fn storage(shader: &Rc<Shader>, element: ValueView<'_>, access: Option<ValueView
                 kind(access).to_owned()
             };
             return Err(error(format!(
-                "shader.storage's access is 'read' or 'readWrite', not {found}"
+                "shader.storage's access is 'read', 'readWrite', or 'atomic', not {found}"
             )));
         }
     };
@@ -1203,6 +1205,59 @@ fn write(call: &Call<'_>, place: ValueView<'_>, key: ValueView<'_>, value: Value
         let value = operand_of(site, "shader.write", value, ty.scalar())?;
         site.write(place, value, &indices).map_err(invalid)
     })
+}
+
+/// The name Luau calls each atomic update by.
+fn atomic_name(op: AtomicOp) -> &'static str {
+    match op {
+        AtomicOp::Add => "atomicAdd",
+        AtomicOp::Subtract => "atomicSubtract",
+        AtomicOp::Min => "atomicMin",
+        AtomicOp::Max => "atomicMax",
+        AtomicOp::And => "atomicAnd",
+        AtomicOp::Or => "atomicOr",
+        AtomicOp::Xor => "atomicXor",
+        AtomicOp::Exchange => "atomicExchange",
+    }
+}
+
+/// `shader.atomicAdd(buffer, index, value)` and the rest: updates `buffer[index]`, in an atomic
+/// storage buffer, and gives what it held before.
+fn atomic(
+    call: &Call<'_>,
+    op: AtomicOp,
+    place: ValueView<'_>,
+    key: ValueView<'_>,
+    value: ValueView<'_>,
+) -> l3i::Result<Owned<LuaShaderExpr>> {
+    let function = format!("shader.{}", atomic_name(op));
+    let Some(this) = l3i::userdata::receiver::<LuaShaderPlace>(place) else {
+        return Err(error(format!(
+            "{function} takes an atomic storage buffer, such as input.pass.counts, not {}",
+            shader_kind(place)
+        )));
+    };
+    let Some(Descriptor::Storage(element, _)) = &this.at else {
+        return Err(error(format!(
+            "{function} updates an atomic storage buffer, not {}",
+            place_name(this)
+        )));
+    };
+    let Descriptor::Value(ty) = element.descriptor() else {
+        return Err(error(format!(
+            "{function} updates Ints or UInts, not {}",
+            element.descriptor().name()
+        )));
+    };
+    let index = at_site(call, &this.build, |site, _| element_index(site, this, key, None))?;
+    let place = this.place.then(Step::Index(index.expression())).ok_or_else(too_deep)?;
+    let mut indices = this.indices.clone();
+    indices.push(index);
+    let old = at_site(call, &this.build, |site, _| {
+        let value = operand_of(site, &function, value, ty.scalar())?;
+        site.atomic(op, place, value, &indices).map_err(invalid)
+    })?;
+    Ok(expression(&this.build, old))
 }
 
 /// A struct field's position, or the error naming the fields it has.
@@ -2249,6 +2304,14 @@ pub(crate) fn module(runtime: &Runtime, _jess: &Rc<Jess>) -> l3i::Result<Table> 
         "write",
         |call: &Call<'_>, place: ValueView<'_>, key: ValueView<'_>, value: ValueView<'_>| write(call, place, key, value),
     )?;
+    for op in AtomicOp::ALL {
+        module.function(
+            atomic_name(op),
+            move |call: &Call<'_>, place: ValueView<'_>, key: ValueView<'_>, value: ValueView<'_>| {
+                atomic(call, op, place, key, value)
+            },
+        )?;
+    }
     statements(&module, &shader)?;
     for function in TextureFunction::ALL {
         module.function(function.name(), move |call: &Call<'_>, args: ArgView<'_>| {

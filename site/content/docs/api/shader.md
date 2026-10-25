@@ -6,7 +6,7 @@ extra:
   kind: api
 ---
 
-{{ api_signature(value="jess.shader: { program, compute, struct, array, storage, float, int, uint, vec2, vec3, vec4, vec2i, vec3i, vec4i, vec2u, vec3u, vec4u, mat3, mat4, texture2d, texture2dArray, textureCube, texture3d, texture2di, texture2du, depthTexture2d, depthTexture2dArray, depthTextureCube, sampler, comparisonSampler, min, max, clamp, abs, sign, floor, ceil, round, trunc, fract, sqrt, inverseSqrt, exp, exp2, log, log2, pow, sin, cos, tan, asin, acos, atan, atan2, radians, degrees, saturate, step, smoothstep, mix, dot, cross, length, distance, normalize, reflect, refract, transpose, determinant, dpdx, dpdy, fwidth, equal, notEqual, less, lessEqual, greater, greaterEqual, logicalAnd, logicalOr, logicalNot, select, bitAnd, bitOr, bitXor, bitNot, shiftLeft, shiftRight, var, when, loop, discard, write, arrayLength, sample, sampleLevel, sampleBias, sampleCompare, sampleCompareLevel, load, dimensions, levels, layers }") }}
+{{ api_signature(value="jess.shader: { program, compute, struct, array, storage, float, int, uint, vec2, vec3, vec4, vec2i, vec3i, vec4i, vec2u, vec3u, vec4u, mat3, mat4, texture2d, texture2dArray, textureCube, texture3d, texture2di, texture2du, depthTexture2d, depthTexture2dArray, depthTextureCube, sampler, comparisonSampler, min, max, clamp, abs, sign, floor, ceil, round, trunc, fract, sqrt, inverseSqrt, exp, exp2, log, log2, pow, sin, cos, tan, asin, acos, atan, atan2, radians, degrees, saturate, step, smoothstep, mix, dot, cross, length, distance, normalize, reflect, refract, transpose, determinant, dpdx, dpdy, fwidth, equal, notEqual, less, lessEqual, greater, greaterEqual, logicalAnd, logicalOr, logicalNot, select, bitAnd, bitOr, bitXor, bitNot, shiftLeft, shiftRight, var, when, loop, discard, write, arrayLength, atomicAdd, atomicSubtract, atomicMin, atomicMax, atomicAnd, atomicOr, atomicXor, atomicExchange, sample, sampleLevel, sampleBias, sampleCompare, sampleCompareLevel, load, dimensions, levels, layers }") }}
 
 A shader, written in Luau. `require("@jess/shader")` is the same table as `jess.shader`, and a shader module is an ordinary Luau module that runs once and returns a `ShaderProgram`.
 
@@ -320,7 +320,7 @@ An array type: `length` values or structs, at least one. An array holds no array
 
 ### shader.storage
 
-{{ api_signature(value="shader.storage(element: ShaderType, access: ('read' | 'readWrite')?) -> ShaderType") }}
+{{ api_signature(value="shader.storage(element: ShaderType, access: ('read' | 'readWrite' | 'atomic')?) -> ShaderType") }}
 {{ api_signature(value="shader.arrayLength(buffer: ShaderPlace) -> ShaderExpr") }}
 {{ api_signature(value="shader.write(place: ShaderPlace, key: string | number | ShaderExpr, value: ShaderExpr | number | boolean)") }}
 
@@ -331,6 +331,36 @@ A storage buffer: as many `element`s, values or structs, as the buffer bound to 
 - **Length:** `shader.arrayLength(buffer)` is a `UInt` value of how many elements are bound. Luau's `#` gives a number, which the length isn't until the GPU runs.
 - **Writing:** `shader.write(place, key, value)` writes `value` at `place[key]` in a `readWrite` buffer, where `place[key]` is a value: `shader.write(input.pass.counts, i, n)`, `shader.write(particles[i], 'position', p)`. A write is a statement, run where the call is.
 - **Layout:** each element is laid out like a struct, and the layout reports the stride between them, so whatever fills the buffer writes from that.
+- **Atomics:** a buffer declared `'atomic'` holds `shader.int`s or `shader.uint`s that every invocation updates at once. Reading, writing, and `shader.atomicAdd`, `atomicSubtract`, `atomicMin`, `atomicMax`, `atomicAnd`, `atomicOr`, `atomicXor`, and `atomicExchange` are each one atomic operation, and the updates give back what the element held before, so `local slot = shader.atomicAdd(input.pass.counts, 0, 1)` hands every invocation its own slot. Updating anything else is refused: `storage buffer "kept" is updated atomically, but it isn't atomic: declare it shader.storage(shader.uint, 'atomic')`. Another pass reads the same buffer as `shader.storage(shader.uint)`.
+
+{{ api_signature(value="shader.atomicAdd(buffer: ShaderPlace, key: number | ShaderExpr, value: ShaderExpr | number) -> ShaderExpr") }}
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+-- Every even invocation keeps its index, in the slot counts[0] hands it: a compaction.
+local compact = shader.compute {
+  workgroupSize = 64,
+  pass = {
+    counts = shader.storage(shader.uint, 'atomic'),
+    kept = shader.storage(shader.uint, 'readWrite'),
+  },
+  compute = function(input)
+    local index = input.builtin.globalInvocationId.x
+    shader.when(shader.equal(index % shader.uint(2), shader.uint(0)), function()
+      local slot = shader.atomicAdd(input.pass.counts, 0, shader.uint(1))
+      shader.write(input.pass.kept, slot, index)
+    end)
+  end,
+}
+
+for _, binding in compact.layout.pass.bindings do
+  print(binding.name, binding.access)
+end
+-- counts  atomic
+-- kept  readWrite
+```
 
 ```luau
 --!strict

@@ -1113,12 +1113,23 @@ export type ShaderModule = {
   --- which the stages read (`'read'`, the default), or read and write (`'readWrite'`; never in the
   --- vertex function). Index it from 0 by a number or shader value; `shader.arrayLength` says how
   --- many elements are bound.
-  storage: (element: ShaderType, access: ("read" | "readWrite")?) -> ShaderType,
+  storage: (element: ShaderType, access: ("read" | "readWrite" | "atomic")?) -> ShaderType,
   --- How many elements the storage buffer bound holds, a `UInt`.
   arrayLength: (buffer: ShaderPlace | ShaderExpr) -> ShaderExpr,
   --- Writes `value` at `place[key]`, which must reach a value, in a `readWrite` storage buffer:
   --- `shader.write(input.pass.counts, i, n)`, `shader.write(particles[i], 'position', p)`.
   write: (place: ShaderPlace | ShaderExpr, key: string | number | ShaderExpr, value: ShaderExpr | number | boolean) -> (),
+  --- Updates `buffer[key]`, in an `'atomic'` storage buffer, in one atomic operation, and gives
+  --- what it held before: adds `value`, subtracts it, keeps the lesser or greater, ands, ors, or
+  --- exclusive-ors its bits, or replaces it.
+  atomicAdd: (buffer: ShaderPlace, key: number | ShaderExpr, value: ShaderExpr | number) -> ShaderExpr,
+  atomicSubtract: (buffer: ShaderPlace, key: number | ShaderExpr, value: ShaderExpr | number) -> ShaderExpr,
+  atomicMin: (buffer: ShaderPlace, key: number | ShaderExpr, value: ShaderExpr | number) -> ShaderExpr,
+  atomicMax: (buffer: ShaderPlace, key: number | ShaderExpr, value: ShaderExpr | number) -> ShaderExpr,
+  atomicAnd: (buffer: ShaderPlace, key: number | ShaderExpr, value: ShaderExpr | number) -> ShaderExpr,
+  atomicOr: (buffer: ShaderPlace, key: number | ShaderExpr, value: ShaderExpr | number) -> ShaderExpr,
+  atomicXor: (buffer: ShaderPlace, key: number | ShaderExpr, value: ShaderExpr | number) -> ShaderExpr,
+  atomicExchange: (buffer: ShaderPlace, key: number | ShaderExpr, value: ShaderExpr | number) -> ShaderExpr,
   --- Builds a compute program: declares the bindings, runs `compute`, which returns nothing and
   --- writes what it computes to storage buffers, then validates the program. `workgroupSize` is
   --- how many invocations run together: a number, or one to three in a table, the rest 1.

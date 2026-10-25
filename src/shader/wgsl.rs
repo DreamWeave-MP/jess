@@ -221,9 +221,10 @@ impl Lowering<'_> {
                 let buffer = &program.storage[binding.storage.index()];
                 let access = match buffer.access {
                     Access::Read => "read",
-                    Access::ReadWrite => "read_write",
+                    Access::ReadWrite | Access::Atomic => "read_write",
                 };
                 let element = match buffer.element {
+                    Element::Value(ty) if buffer.access == Access::Atomic => format!("atomic<{}>", wgsl_type(ty)),
                     Element::Value(ty) => wgsl_type(ty).to_owned(),
                     Element::Struct(id) => struct_name(program, id.index()),
                 };
@@ -431,12 +432,32 @@ impl Lowering<'_> {
                     self.operand(*value);
                     emit!(self, ";\n");
                 }
+                Statement::Write { place, value, .. } if self.atomic(place) => {
+                    emit!(self, "{indent}atomicStore(&");
+                    self.place(place);
+                    emit!(self, ", ");
+                    self.operand(*value);
+                    emit!(self, ");\n");
+                }
                 Statement::Write { place, value, .. } => {
                     emit!(self, "{indent}");
                     self.place(place);
                     emit!(self, " = ");
                     self.operand(*value);
                     emit!(self, ";\n");
+                }
+                Statement::Atomic {
+                    op,
+                    place,
+                    value,
+                    result,
+                    ..
+                } => {
+                    emit!(self, "{indent}l{} = {}(&", result.index(), op.wgsl());
+                    self.place(place);
+                    emit!(self, ", ");
+                    self.operand(*value);
+                    emit!(self, ");\n");
                 }
                 Statement::If {
                     condition,
@@ -513,6 +534,11 @@ impl Lowering<'_> {
                     TextureQuery::Layers => "textureNumLayers",
                 };
                 self.texture_call(function, &[texture], &expression);
+            }
+            Expression::Load(place) if self.atomic(&place) => {
+                emit!(self, "atomicLoad(&");
+                self.place(&place);
+                emit!(self, ")");
             }
             Expression::Load(place) => self.place(&place),
             Expression::Local(local) => emit!(self, "l{}", local.index()),
@@ -593,6 +619,14 @@ impl Lowering<'_> {
             Expression::Builtin(builtin) => emit!(self, "{}", builtin_name(builtin)),
             Expression::Varying(varying) => emit!(self, "input.v_{}", program.varyings[varying.index()].name),
             _ => emit!(self, "e{}", self.temporaries[id.index()]),
+        }
+    }
+
+    /// Whether `place` is in an atomic storage buffer, which only atomic operations reach.
+    fn atomic(&self, place: &Place) -> bool {
+        match place.root {
+            PlaceRoot::Storage(storage) => self.program.storage[storage.index()].access == Access::Atomic,
+            PlaceRoot::Uniform(_) => false,
         }
     }
 

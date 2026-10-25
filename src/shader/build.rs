@@ -9,7 +9,7 @@ use crate::shader::expression::{
 };
 use crate::shader::flow::{Local, LocalId, LocalKind, Stage, Statement};
 use crate::shader::interface::{
-    Access, Attribute, AttributeId, DataType, Element, Field, Frequency, Rate, Resource, ResourceId, ResourceKind,
+    Access, AtomicOp, Attribute, AttributeId, DataType, Element, Field, Frequency, Rate, Resource, ResourceId, ResourceKind,
     StorageBuffer, StorageId, StructDecl, StructId, Uniform, UniformId,
 };
 use crate::shader::program::{Declaration, Program};
@@ -271,6 +271,9 @@ impl Site<'_> {
             return Err(self.error(problem));
         }
         let mut buffer = StorageBuffer::new(frequency, name, element, access);
+        if let Some(problem) = validate::atomic_element_error(&buffer) {
+            return Err(self.error(problem));
+        }
         buffer.origin.clone_from(&self.origin);
         Ok(self.builder.program.storage_buffer(buffer))
     }
@@ -290,19 +293,8 @@ impl Site<'_> {
         Ok(self.push(Expression::StorageLength(storage), Type::UInt))
     }
 
-    /// Writes `value` at `place`, in a `ReadWrite` storage buffer, from here on. `indices` are the
-    /// values of its index steps, in order, as [`load`](Site::load) takes them.
-    ///
-    /// # Errors
-    ///
-    /// Values from another program, no stage entered, the vertex stage, a place outside a
-    /// `ReadWrite` storage buffer or that doesn't lead to a value, or a value of another type.
-    pub fn write(&mut self, place: Place, value: Value, indices: &[Value]) -> Result<(), ValidationError> {
-        self.own(value)?;
-        for index in indices {
-            self.own(*index)?;
-        }
-        let stage = self.stage()?;
+    /// What is wrong with writing `value` at `place` in `stage`, if anything.
+    fn write_problem(&self, stage: Stage, place: &Place, value: Value, indices: &[Value]) -> Option<ValidationErrorKind> {
         let program = &self.builder.program;
         let target = match place.root {
             PlaceRoot::Uniform(_) => Some(ValidationErrorKind::WriteToUniform),
@@ -316,20 +308,38 @@ impl Site<'_> {
                 _ => None,
             },
         };
-        if let Some(kind) = target {
-            return Err(self.error(kind));
+        if target.is_some() {
+            return target;
         }
         let index_type = |id: ExpressionId| {
             let index = indices.iter().find(|index| index.expression == id);
             index.map_or(Type::Bool, |index| index.ty)
         };
-        let ty = validate::place_type(program, &place, index_type)
-            .map_err(|problem| self.error(ValidationErrorKind::InvalidWrite { problem }))?;
-        if ty != value.ty {
-            return Err(self.error(ValidationErrorKind::WriteType {
+        match validate::place_type(program, place, index_type) {
+            Err(problem) => Some(ValidationErrorKind::InvalidWrite { problem }),
+            Ok(ty) if ty != value.ty => Some(ValidationErrorKind::WriteType {
                 place: ty,
                 value: value.ty,
-            }));
+            }),
+            Ok(_) => None,
+        }
+    }
+
+    /// Writes `value` at `place`, in a `ReadWrite` storage buffer, from here on. `indices` are the
+    /// values of its index steps, in order, as [`load`](Site::load) takes them.
+    ///
+    /// # Errors
+    ///
+    /// Values from another program, no stage entered, the vertex stage, a place outside a
+    /// `ReadWrite` storage buffer or that doesn't lead to a value, or a value of another type.
+    pub fn write(&mut self, place: Place, value: Value, indices: &[Value]) -> Result<(), ValidationError> {
+        self.own(value)?;
+        for index in indices {
+            self.own(*index)?;
+        }
+        let stage = self.stage()?;
+        if let Some(kind) = self.write_problem(stage, &place, value, indices) {
+            return Err(self.error(kind));
         }
         self.statement(Statement::Write {
             place,
@@ -337,6 +347,39 @@ impl Site<'_> {
             origin: self.origin.clone(),
         });
         Ok(())
+    }
+
+    /// Updates the element at `place`, in an `Atomic` storage buffer, with `value` as `op` says, in
+    /// one atomic operation from here on, and returns what it held before. `indices` are as
+    /// [`write`](Site::write) takes them.
+    ///
+    /// # Errors
+    ///
+    /// What [`write`](Site::write) refuses, and a place outside an `Atomic` storage buffer.
+    pub fn atomic(&mut self, op: AtomicOp, place: Place, value: Value, indices: &[Value]) -> Result<Value, ValidationError> {
+        if let Some(kind) = validate::atomic_error(&self.builder.program, &place) {
+            return Err(self.error(kind));
+        }
+        self.own(value)?;
+        let stage = self.stage()?;
+        // A write's checks are an update's: the buffer written, the stage, the place, the type.
+        if let Some(kind) = self.write_problem(stage, &place, value, indices) {
+            return Err(self.error(kind));
+        }
+        let result = self.builder.program.local(Local {
+            ty: value.ty,
+            stage,
+            kind: LocalKind::Var,
+            origin: self.origin.clone(),
+        });
+        self.statement(Statement::Atomic {
+            op,
+            place,
+            value: value.expression,
+            result,
+            origin: self.origin.clone(),
+        });
+        self.read_local(result)
     }
 
     /// The uniform value at `place`, read at this site. `indices` are the values of its index

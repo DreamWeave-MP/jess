@@ -113,7 +113,7 @@ pub use expression::{
 };
 pub use flow::{Local, LocalId, LocalKind, Stage, Statement};
 pub use interface::{
-    Access, Attribute, AttributeId, DataType, Element, Field, Frequency, Rate, Resource, ResourceId, ResourceKind,
+    Access, AtomicOp, Attribute, AttributeId, DataType, Element, Field, Frequency, Rate, Resource, ResourceId, ResourceKind,
     StorageBuffer, StorageId, StructDecl, StructId, Uniform, UniformId,
 };
 pub use program::{Declaration, Program};

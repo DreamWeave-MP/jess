@@ -785,7 +785,7 @@ fn check_use(pass: &Pass, index: usize, name: &str, frequency: Frequency, want: 
             "a texture or depth texture read",
         ),
         Use::Storage(Access::Read) => (reads(&[ReadUsage::Buffer]), "a buffer read"),
-        Use::Storage(Access::ReadWrite) => (stores, "a storage write"),
+        Use::Storage(Access::ReadWrite | Access::Atomic) => (stores, "a storage write"),
     };
     if used {
         return Ok(());

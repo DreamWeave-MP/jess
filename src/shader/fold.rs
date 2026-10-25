@@ -164,7 +164,7 @@ fn forward_statements(block: &mut [Statement], forward: &[ExpressionId]) {
         match statement {
             Statement::Emit(_) | Statement::Discard { .. } => {}
             Statement::Store { value, .. } => *value = forward[value.index()],
-            Statement::Write { place, value, .. } => {
+            Statement::Write { place, value, .. } | Statement::Atomic { place, value, .. } => {
                 place.rewrite_indices(|index| *index = forward[index.index()]);
                 *value = forward[value.index()];
             }

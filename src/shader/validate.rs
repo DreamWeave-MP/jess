@@ -9,8 +9,8 @@ use crate::shader::expression::{
 use crate::shader::flow::{self, LocalId, LocalKind, Placements, Stage, Statement};
 use crate::shader::fold::{Arithmetic, evaluate};
 use crate::shader::interface::{
-    Access, Attribute, AttributeId, DataType, Element, Frequency, Rate, ResourceId, ResourceKind, StorageId, StructDecl,
-    StructId,
+    Access, Attribute, AttributeId, DataType, Element, Frequency, Rate, ResourceId, ResourceKind, StorageBuffer, StorageId,
+    StructDecl, StructId,
 };
 use crate::shader::layout::ProgramLayout;
 use crate::shader::program::{Declaration, Program};
@@ -371,6 +371,21 @@ pub enum ValidationErrorKind {
         /// The buffer's name.
         name: String,
     },
+    /// An `Atomic` storage buffer holds something other than `Int`s or `UInt`s.
+    AtomicElement {
+        /// The buffer's name.
+        name: String,
+    },
+    /// An atomic update's place is in a storage buffer that isn't `Atomic`.
+    AtomicOnPlain {
+        /// The buffer's name, or `None` for a uniform block.
+        name: Option<String>,
+    },
+    /// An atomic update's result is kept in something other than a var of the element's type.
+    AtomicResult {
+        /// The element's type.
+        element: Type,
+    },
     /// A write's place is in a uniform block, which only the host writes.
     WriteToUniform,
     /// A write's place is in a `Read` storage buffer.
@@ -653,6 +668,23 @@ impl fmt::Display for ValidationErrorKind {
                 "storage buffer {name:?} is readWrite and used in the vertex function, which may only read \
                  storage buffers declared to be read"
             ),
+            ValidationErrorKind::AtomicElement { name } => write!(
+                formatter,
+                "atomic storage buffer {name:?} holds something other than Ints or UInts, the only values an \
+                 atomic operation updates"
+            ),
+            ValidationErrorKind::AtomicOnPlain { name: Some(name) } => write!(
+                formatter,
+                "storage buffer {name:?} is updated atomically, but it isn't atomic: declare it \
+                 shader.storage(shader.uint, 'atomic')"
+            ),
+            ValidationErrorKind::AtomicOnPlain { name: None } => {
+                formatter.write_str("a uniform is updated atomically: only an atomic storage buffer is")
+            }
+            ValidationErrorKind::AtomicResult { element } => write!(
+                formatter,
+                "an atomic update keeps what the element held in something other than a var of its type, {element}"
+            ),
             ValidationErrorKind::WriteToUniform => {
                 formatter.write_str("a uniform is written: only a readWrite storage buffer is")
             }
@@ -896,6 +928,7 @@ fn check_declarations(program: &Program, errors: &mut Vec<ValidationError>) {
             );
         let mut kinds = binding_errors(kind, earlier, &buffer.name);
         kinds.extend(data_type_errors(kind, &buffer.name, buffer.element.into(), &program.structs));
+        kinds.extend(atomic_element_error(buffer));
         report(kinds, &buffer.origin);
     }
     check_named(DeclarationKind::Varying, &program.varyings, errors);
@@ -1577,17 +1610,24 @@ fn local_type(program: &Program, local: LocalId, stage: u8) -> Result<Type, Vali
     Ok(declared.ty)
 }
 
-/// The error for a vertex stage (in `stage`'s bits) using a `ReadWrite` storage buffer at `root`.
+/// The error for an atomic storage buffer of anything but `Int`s or `UInt`s, which are all an
+/// atomic operation updates.
+pub fn atomic_element_error(buffer: &StorageBuffer) -> Option<ValidationErrorKind> {
+    let atomic = matches!(buffer.element, Element::Value(Type::Int | Type::UInt));
+    (buffer.access == Access::Atomic && !atomic).then(|| ValidationErrorKind::AtomicElement {
+        name: buffer.name.clone(),
+    })
+}
+
+/// The error for a vertex stage (in `stage`'s bits) using a written storage buffer at `root`.
 fn read_write_in_vertex(program: &Program, root: PlaceRoot, stage: u8) -> Result<(), ValidationErrorKind> {
     let PlaceRoot::Storage(storage) = root else {
         return Ok(());
     };
     match program.storage.get(storage.index()) {
-        Some(buffer) if buffer.access == Access::ReadWrite && stage & VERTEX != 0 => {
-            Err(ValidationErrorKind::StorageInVertex {
-                name: buffer.name.clone(),
-            })
-        }
+        Some(buffer) if buffer.access.writes() && stage & VERTEX != 0 => Err(ValidationErrorKind::StorageInVertex {
+            name: buffer.name.clone(),
+        }),
         _ => Ok(()),
     }
 }
@@ -2128,6 +2168,23 @@ fn check_statements(
                     report(errors, kind, origin);
                 }
             }
+            Statement::Atomic {
+                place,
+                value,
+                result,
+                origin,
+                ..
+            } => {
+                if let Some(kind) = atomic_error(program, place) {
+                    report(errors, kind, origin);
+                } else if let Some(kind) = write_error(program, stage, place, *value, types) {
+                    report(errors, kind, origin);
+                } else if let Some(element) = type_of(value)
+                    && local_of(*result, LocalKind::Var) != Ok(element)
+                {
+                    report(errors, ValidationErrorKind::AtomicResult { element }, origin);
+                }
+            }
             Statement::If {
                 condition,
                 accept,
@@ -2164,6 +2221,20 @@ fn check_statements(
                 }
             }
         }
+    }
+}
+
+/// The error for an atomic update of a place outside an atomic storage buffer.
+pub fn atomic_error(program: &Program, place: &Place) -> Option<ValidationErrorKind> {
+    match place.root {
+        PlaceRoot::Uniform(_) => Some(ValidationErrorKind::AtomicOnPlain { name: None }),
+        PlaceRoot::Storage(storage) => program
+            .storage
+            .get(storage.index())
+            .filter(|buffer| buffer.access != Access::Atomic)
+            .map(|buffer| ValidationErrorKind::AtomicOnPlain {
+                name: Some(buffer.name.clone()),
+            }),
     }
 }
 

@@ -388,6 +388,9 @@ pub enum Access {
     Read,
     /// Read it and write it: never in the vertex stage.
     ReadWrite,
+    /// Read it, write it, and update it in place, every invocation at once, each read, write,
+    /// and update one atomic operation: a buffer of `Int`s or `UInt`s, never in the vertex stage.
+    Atomic,
 }
 
 impl Access {
@@ -397,6 +400,64 @@ impl Access {
         match self {
             Access::Read => "read",
             Access::ReadWrite => "readWrite",
+            Access::Atomic => "atomic",
+        }
+    }
+
+    /// Whether a stage writes the buffer: `ReadWrite` or `Atomic`.
+    #[must_use]
+    pub fn writes(self) -> bool {
+        self != Access::Read
+    }
+}
+
+/// How an atomic update combines what an element holds with a value, as WGSL's `atomic*`
+/// functions do. Each returns what the element held before.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AtomicOp {
+    /// Adds the value.
+    Add,
+    /// Subtracts the value.
+    Subtract,
+    /// Keeps the lesser.
+    Min,
+    /// Keeps the greater.
+    Max,
+    /// Ands the bits.
+    And,
+    /// Ors the bits.
+    Or,
+    /// Exclusive-ors the bits.
+    Xor,
+    /// Replaces it with the value.
+    Exchange,
+}
+
+impl AtomicOp {
+    /// Every operation.
+    pub const ALL: [AtomicOp; 8] = [
+        AtomicOp::Add,
+        AtomicOp::Subtract,
+        AtomicOp::Min,
+        AtomicOp::Max,
+        AtomicOp::And,
+        AtomicOp::Or,
+        AtomicOp::Xor,
+        AtomicOp::Exchange,
+    ];
+
+    /// The WGSL function it is.
+    #[must_use]
+    pub fn wgsl(self) -> &'static str {
+        match self {
+            AtomicOp::Add => "atomicAdd",
+            AtomicOp::Subtract => "atomicSub",
+            AtomicOp::Min => "atomicMin",
+            AtomicOp::Max => "atomicMax",
+            AtomicOp::And => "atomicAnd",
+            AtomicOp::Or => "atomicOr",
+            AtomicOp::Xor => "atomicXor",
+            AtomicOp::Exchange => "atomicExchange",
         }
     }
 }

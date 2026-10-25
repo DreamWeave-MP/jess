@@ -78,7 +78,7 @@
       "shiftTooFar": "$REPO/tests/lua/contracts/shader/errors.jsl:239 ($REPO/tests/lua/contracts/shader/errors.jsl): a shift by 40 is too far: shift by less than 32",
       "sign": "$REPO/tests/lua/contracts/shader/errors.jsl:62 ($REPO/tests/lua/contracts/shader/errors.jsl): sign(UInt) is invalid: expected a signed or float scalar or vector",
       "smoothstep": "$REPO/tests/lua/contracts/shader/errors.jsl:64 ($REPO/tests/lua/contracts/shader/errors.jsl): smoothstep(Vec3f, Float, Vec4f) is invalid: expected two edges and a Float or float vector, each edge of its type or a Float",
-      "storageAccess": "shader.storage's access is 'read' or 'readWrite', not \"write\"",
+      "storageAccess": "shader.storage's access is 'read', 'readWrite', or 'atomic', not \"write\"",
       "storageInStruct": "Bad.counts is a storage buffer: storage buffers are bound, not held in a struct or array",
       "storageLength": "shader.arrayLength takes a storage buffer, such as input.pass.particles, not a Vec4f value",
       "structAsValue": "+: expected a shader value, not Camera, a struct: read one of its fields",

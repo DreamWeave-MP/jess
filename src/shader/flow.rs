@@ -5,7 +5,7 @@
 use std::fmt;
 
 use crate::shader::expression::{Expression, ExpressionId, Place, PlaceRoot, SourceOrigin};
-use crate::shader::interface::Access;
+use crate::shader::interface::AtomicOp;
 use crate::shader::program::Program;
 use crate::shader::types::Type;
 
@@ -93,6 +93,21 @@ pub enum Statement {
         /// What.
         value: ExpressionId,
         /// Where the author wrote it, if known.
+        origin: Option<SourceOrigin>,
+    },
+    /// Updates an element of an [`Atomic`](crate::shader::Access::Atomic) storage buffer with
+    /// `value` as `op` says, in one atomic operation, and stores what it held before into `result`,
+    /// a [`LocalKind::Var`] of the element's type.
+    Atomic {
+        /// How the element and the value combine.
+        op: AtomicOp,
+        /// The element.
+        place: Place,
+        /// What it combines with.
+        value: ExpressionId,
+        /// The var that takes what the element held.
+        result: LocalId,
+        /// Where the author updated it, if known.
         origin: Option<SourceOrigin>,
     },
     /// `accept` where the `Bool` `condition` holds, else `reject`.
@@ -202,7 +217,10 @@ fn place_block(block: &[Statement], stage: Stage, id: u32, placements: &mut Plac
                 _ => placements.misplaced.push(*expression),
             },
             Statement::Store { value, origin, .. } => use_here(*value, origin, placements),
-            Statement::Write { place, value, origin } => {
+            Statement::Write { place, value, origin }
+            | Statement::Atomic {
+                place, value, origin, ..
+            } => {
                 for index in place.indices().iter() {
                     use_here(*index, origin, placements);
                 }
@@ -263,7 +281,11 @@ fn walk_block(
                 walk_block(reject, agreed, uniform, visit);
             }
             Statement::Loop { count, body, .. } => walk_block(body, agreed && uniform(*count), uniform, visit),
-            Statement::Emit(_) | Statement::Store { .. } | Statement::Write { .. } | Statement::Discard { .. } => {}
+            Statement::Emit(_)
+            | Statement::Store { .. }
+            | Statement::Write { .. }
+            | Statement::Atomic { .. }
+            | Statement::Discard { .. } => {}
         }
     }
 }
@@ -281,14 +303,14 @@ pub fn uniformity(program: &Program, reachable: &[bool], locals: &[bool]) -> Vec
             Expression::Varying(_) | Expression::Attribute(_) => false,
             Expression::Builtin(builtin) => builtin.stage() != Stage::Fragment,
             Expression::Local(local) => locals.get(local.index()).copied().unwrap_or(false),
-            // Another invocation may write a readWrite buffer between any two reads.
+            // Another invocation may write a readWrite or atomic buffer between any two reads.
             Expression::Load(Place {
                 root: PlaceRoot::Storage(storage),
                 ..
             }) if program
                 .storage
                 .get(storage.index())
-                .is_none_or(|buffer| buffer.access == Access::ReadWrite) =>
+                .is_none_or(|buffer| buffer.access.writes()) =>
             {
                 false
             }
@@ -311,14 +333,16 @@ pub fn uniform_locals(program: &Program, reachable: &[bool]) -> (Vec<bool>, Vec<
         let mut changed = false;
         let known = |expression: ExpressionId| uniform.get(expression.index()).copied().unwrap_or(false);
         walk(&program.bodies[Stage::Fragment as usize], &known, &mut |statement, agreed| {
-            let (local, value) = match statement {
-                Statement::Store { local, value, .. } => (*local, *value),
-                Statement::Loop { index, count, .. } => (*index, *count),
+            // What an atomic update gives back differs between invocations, whatever its value.
+            let (local, value, varies) = match statement {
+                Statement::Store { local, value, .. } => (*local, *value, false),
+                Statement::Loop { index, count, .. } => (*index, *count, false),
+                Statement::Atomic { result, value, .. } => (*result, *value, true),
                 _ => return,
             };
             if let Some(slot) = locals.get_mut(local.index())
                 && *slot
-                && !(agreed && known(value))
+                && (varies || !(agreed && known(value)))
             {
                 *slot = false;
                 changed = true;

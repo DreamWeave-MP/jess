@@ -5,7 +5,8 @@ use super::common::{assert_valid_wgsl, read};
 
 use jess::shader::wgsl;
 use jess::shader::{
-    Access, Builtin, DataType, Element, Field, Frequency, Place, PlaceRoot, ProgramBuilder, Stage, Step, Type, Value,
+    Access, AtomicOp, Builtin, DataType, Element, Field, Frequency, Place, PlaceRoot, ProgramBuilder, Stage, Step, Type,
+    Value,
 };
 
 /// `buffer[index]`, then `steps`.
@@ -152,4 +153,68 @@ fn storage_is_written_only_where_it_may_be() {
           declared to be read"
         ]
     );
+}
+
+/// An atomic storage buffer is read, written, and updated only through WGSL's atomics, every
+/// update giving back what the element held; nothing else is updated atomically.
+#[test]
+fn atomic_storage_is_reached_only_through_atomics() {
+    let mut builder = ProgramBuilder::compute([64, 1, 1]);
+    let mut site = builder.site();
+    let counts = site
+        .storage(Frequency::Pass, "counts", Element::Value(Type::UInt), Access::Atomic)
+        .unwrap();
+    let kept = site
+        .storage(Frequency::Pass, "kept", Element::Value(Type::UInt), Access::ReadWrite)
+        .unwrap();
+    assert_eq!(
+        site.storage(Frequency::Pass, "levels", Element::Value(Type::Float), Access::Atomic)
+            .unwrap_err()
+            .to_string(),
+        "atomic storage buffer \"levels\" holds something other than Ints or UInts, the only values an atomic \
+         operation updates"
+    );
+
+    site.enter(Stage::Compute).unwrap();
+    let invocation = site.builtin(Builtin::GlobalInvocationId);
+    let index = site.swizzle(invocation, jess::shader::Swizzle::parse("x").unwrap()).unwrap();
+    let zero = site.uint(0);
+    let one = site.uint(1);
+    let slot = site.atomic(AtomicOp::Add, element(counts, zero, &[]), one, &[zero]).unwrap();
+    assert_eq!(slot.ty(), Type::UInt, "an update gives back what the element held");
+    site.atomic(AtomicOp::Max, element(counts, one, &[]), index, &[one]).unwrap();
+    site.write(element(kept, slot, &[]), index, &[slot]).unwrap();
+    let two = site.uint(2);
+    let total = site.load(element(counts, zero, &[]), &[zero]).unwrap();
+    site.write(element(counts, two, &[]), total, &[two]).unwrap();
+
+    let minus = site.int(-1);
+    let refusals = [
+        (
+            site.atomic(AtomicOp::Add, element(kept, zero, &[]), one, &[zero])
+                .unwrap_err(),
+            "storage buffer \"kept\" is updated atomically, but it isn't atomic: declare it \
+             shader.storage(shader.uint, 'atomic')",
+        ),
+        (
+            site.atomic(AtomicOp::Add, element(counts, zero, &[]), minus, &[zero])
+                .unwrap_err(),
+            "a UInt in a storage buffer is written a Int",
+        ),
+    ];
+    for (error, message) in refusals {
+        assert_eq!(error.to_string(), message);
+    }
+
+    let module = wgsl::lower(&builder.finish().unwrap()).unwrap();
+    assert_valid_wgsl(&module);
+    for expected in [
+        "array<atomic<u32>>",
+        "= atomicAdd(&b_pass_counts[",
+        "= atomicMax(&b_pass_counts[",
+        "atomicLoad(&b_pass_counts[",
+        "atomicStore(&b_pass_counts[",
+    ] {
+        assert!(module.source.contains(expected), "{expected} in:\n{}", module.source);
+    }
 }

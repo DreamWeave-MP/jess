@@ -412,7 +412,7 @@ fn layout_entry(binding: u32, slot: Slot, stages: wgpu::ShaderStages) -> wgpu::B
                 has_dynamic_offset: false,
                 min_binding_size: None,
             },
-            if access == Access::ReadWrite {
+            if access.writes() {
                 stages - wgpu::ShaderStages::VERTEX
             } else {
                 stages

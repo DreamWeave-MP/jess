@@ -974,3 +974,55 @@ fn a_script_shows_a_plan_in_a_window() {
         )
         .unwrap_or_else(|error| panic!("{error}"));
 }
+
+/// A compute program compacts what it keeps through an atomic counter: every invocation that
+/// keeps its index takes its own slot from `atomicAdd`.
+#[cfg(feature = "gpu")]
+#[test]
+fn a_script_compacts_through_atomics() {
+    let Some(runtime) = gpu_runtime("a_script_compacts_through_atomics") else {
+        return;
+    };
+    runtime
+        .exec(
+            r"
+            local shader = require('@jess/shader')
+            local compact = shader.compute({
+              workgroupSize = 64,
+              pass = {
+                counts = shader.storage(shader.uint, 'atomic'),
+                kept = shader.storage(shader.uint, 'readWrite'),
+              },
+              compute = function(input)
+                local index = input.builtin.globalInvocationId.x
+                shader.atomicAdd(input.pass.counts, 0, shader.uint(1))
+                shader.atomicMax(input.pass.counts, 1, index)
+                shader.when(shader.equal(index % shader.uint(2), shader.uint(0)), function()
+                  local slot = shader.atomicAdd(input.pass.counts, 2, shader.uint(1))
+                  shader.write(input.pass.kept, slot, index)
+                end)
+              end,
+            })
+            local device = jess.gpu.device()
+            local pipeline = device:pipeline(compact)
+            local counts = device:buffer(16, 'storage')
+            local kept = device:buffer(128 * 4, 'storage')
+            local bindings = {}
+            for _, binding in compact.layout.pass.bindings do
+              bindings[binding.binding] = if binding.name == 'counts' then counts else kept
+            end
+            device:dispatch({ pipeline = pipeline, pass = pipeline:bind('pass', bindings), workgroups = 4 })
+            local total, largest, keptCount = string.unpack('<I4I4I4', buffer.tostring(counts:read(0, 12)))
+            assert(total == 256 and largest == 255 and keptCount == 128, `{total} {largest} {keptCount}`)
+            local sum = 0
+            local bytes = kept:read()
+            for slot = 0, 127 do
+              local index = buffer.readu32(bytes, slot * 4)
+              assert(index % 2 == 0, index)
+              sum += index
+            end
+            assert(sum == 127 * 128, sum)
+        ",
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+}
