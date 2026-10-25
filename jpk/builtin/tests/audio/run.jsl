@@ -380,4 +380,22 @@ suite.describe('effects', function()
   end)
 end)
 
+suite.describe('a voice budget', function()
+  suite.it('mixes the voices that matter most and keeps the rest in time', function()
+    local context = audio.offline { channels = 1, physical = 2 }
+    local tone = constant(1, 256)
+    context:play(tone, { gain = 0.1, priority = 5, at = 0 })
+    context:play(tone, { gain = 0.9, at = 0 })
+    context:play(tone, { gain = 0.5, at = 0, culled = 'stop' })
+    context:play(tone, { gain = 0.2, at = 0 })
+    expect(samples(context:render(1))).toEqual { 1 }
+    local stats = context:stats()
+    expect(stats.culled).toBe(2)
+    expect(stats.stolen).toBe(1)
+    expect(stats.allocated).toBe(3)
+    expect(function() audio.offline { voices = 4, physical = 8 } end).toThrow 'physical voice count'
+    expect(function() context:play(tone, { culled = ('drop' :: unknown) :: 'stop' }) end).toThrow 'advance, pause, or stop'
+  end)
+end)
+
 return suite

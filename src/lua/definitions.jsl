@@ -169,6 +169,12 @@ export type AudioPlayOptions = {
   --- Where it is, if it's in space: then distance, direction, and motion set its level, pan, and
   --- pitch, and `pan` is not used.
   place: AudioPlace?,
+  --- How much it matters when there are more voices than the context mixes (0): higher keeps its
+  --- place over lower, whatever their levels.
+  priority: number?,
+  --- What it does while culled: keeps time silently (`advance`, the default), holds its place
+  --- (`pause`), or ends (`stop`).
+  culled: ('advance' | 'pause' | 'stop')?,
 }
 
 --- A voice's place in space, in the world's own units and axes. Every field is optional: on
@@ -205,6 +211,9 @@ export type AudioContextOptions = {
   commands: number?,
   speedOfSound: number?,
   handedness: ('right' | 'left')?,
+  --- Voices mixed at once, if fewer than `voices`: the rest are culled, by priority and then by
+  --- loudness, until there is room.
+  physical: number?,
 }
 
 --- Where the listener is and which way it faces; any field left out stays as it was.
@@ -263,7 +272,8 @@ export type AudioProcessor = {
 --- What a context's engine has done, as of its last render: `frames` rendered (the clock), voices
 --- `active` in it and `allocated` (playing or waiting to start), commands carried out `late`
 --- (stamped for a frame already rendered), output samples that weren't finite and were written as
---- silence (`nonfinite`), and commands `pending` for a later frame.
+--- silence (`nonfinite`), commands `pending` for a later frame, voices `culled` in the last block
+--- for want of room, and voices `stolen`, ended for it, all told.
 export type AudioStats = {
   frames: number,
   active: number,
@@ -271,6 +281,8 @@ export type AudioStats = {
   late: number,
   nonfinite: number,
   pending: number,
+  culled: number,
+  stolen: number,
 }
 
 export type AudioVoiceState = 'scheduled' | 'playing' | 'ended'

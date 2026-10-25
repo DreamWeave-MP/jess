@@ -17,8 +17,9 @@ use std::sync::Arc;
 
 use crate::audio::processor::{Setting, Settings};
 use crate::audio::{
-    AudioConfig, AudioError, BusKey, BusParam, BusSpec, Curve, Distance, Emitter, Glide, Handedness, Listener, LoopRegion,
-    MAX_VOICE_SENDS, OfflineContext, Pcm, PlaySpec, ProcessorKey, SampleFormat, Tap, VoiceKey, VoiceParam, VoiceSend,
+    AudioConfig, AudioError, BusKey, BusParam, BusSpec, Culled, Curve, Distance, Emitter, Glide, Handedness, Listener,
+    LoopRegion, MAX_VOICE_SENDS, OfflineContext, Pcm, PlaySpec, ProcessorKey, SampleFormat, Tap, VoiceKey, VoiceParam,
+    VoiceSend,
 };
 use crate::lua::plan::Functions;
 use crate::lua::{Bytes, Text, error, kind, push_table};
@@ -39,6 +40,7 @@ const CONTEXT_KEYS: &[&str] = &[
     "channels",
     "commands",
     "handedness",
+    "physical",
     "processors",
     "rate",
     "speedOfSound",
@@ -62,6 +64,7 @@ const LISTENER_KEYS: &[&str] = &["forward", "position", "up", "velocity"];
 const PLAY_KEYS: &[&str] = &[
     "at",
     "bus",
+    "culled",
     "fade",
     "gain",
     "loop",
@@ -70,6 +73,7 @@ const PLAY_KEYS: &[&str] = &[
     "offset",
     "pan",
     "place",
+    "priority",
     "rate",
     "sends",
 ];
@@ -349,6 +353,9 @@ fn offline(call: &Call<'_>, options: Option<ValueView<'_>>) -> l3i::Result<Owned
                 *field = count(value, key)?;
             }
         }
+        if let Some(physical) = optional::<f64>(frame, table, "physical", FUNCTION)? {
+            config.physical = Some(count(physical, "physical")?);
+        }
         if let Some(speed) = optional::<f64>(frame, table, "speedOfSound", FUNCTION)? {
             config.speed_of_sound = speed;
         }
@@ -390,6 +397,16 @@ fn play_spec(call: &Call<'_>, context: &Shared, pcm: &Pcm, options: Option<Value
         spec.sends = voice_sends(frame, table, context)?;
         if let Some(fade) = optional::<f64>(frame, table, "fade", FUNCTION)? {
             spec.fade = whole(fade, "fade")?;
+        }
+        if let Some(priority) = optional::<f64>(frame, table, "priority", FUNCTION)? {
+            if !priority.is_finite() {
+                return Err(error(format!("{FUNCTION}'s priority is a finite number, not {priority}")));
+            }
+            spec.priority = priority as f32;
+        }
+        if let Some(culled) = optional::<String>(frame, table, "culled", FUNCTION)? {
+            spec.culled = Culled::named(&culled)
+                .ok_or_else(|| error(format!("{FUNCTION}'s culled is advance, pause, or stop, not {culled:?}")))?;
         }
         if let Some(table) = table {
             spec.spatial = frame.with_frame(|frame| {
@@ -686,7 +703,9 @@ fn describe_context(d: &mut ExtensionDescriptor) {
             "stats",
             |this: &LuaAudioContext, call: &Call<'_>| -> l3i::Result<StackResults> {
                 let stats = this.0.borrow_mut().control().stats();
-                push_table(call, 0, 6, |frame, table| {
+                push_table(call, 0, 8, |frame, table| {
+                    table.raw_set_value(frame, "culled", &number(stats.culled))?;
+                    table.raw_set_value(frame, "stolen", &number(stats.stolen))?;
                     table.raw_set_value(frame, "frames", &number(stats.frames))?;
                     table.raw_set_value(frame, "active", &number(stats.active))?;
                     table.raw_set_value(frame, "allocated", &number(stats.allocated))?;
