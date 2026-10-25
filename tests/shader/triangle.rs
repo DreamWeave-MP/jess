@@ -7,7 +7,7 @@ use super::common;
 
 use jess::shader::layout::VertexBufferLayout;
 use jess::shader::wgsl::{self, FRAGMENT_ENTRY_POINT, VERTEX_ENTRY_POINT, WgslModule};
-use jess::shader::{Attribute, Expression, Frequency, Literal, Program, Rate, Type};
+use jess::shader::{Attribute, BinaryOperator, Expression, Frequency, Literal, Program, Rate, Type};
 
 const SIZE: u32 = 64;
 const CLEAR: [u8; 4] = [0, 0, 255, 255];
@@ -23,10 +23,10 @@ fn triangle_program() -> Program {
     let one = program.push(Expression::Literal(Literal::Float(1.0)));
     let local = program.push(Expression::construct(Type::Vec4f, &[position, depth, one]).unwrap());
     let transform = program.push(Expression::Attribute(transform));
-    let clip = program.push(Expression::Multiply(transform, local));
+    let clip = program.push(Expression::Binary(BinaryOperator::Multiply, transform, local));
     program.set_position(clip);
     let color = program.push(Expression::Load(color));
-    let unchanged = program.push(Expression::Multiply(color, one));
+    let unchanged = program.push(Expression::Binary(BinaryOperator::Multiply, color, one));
     program.push_fragment_output(unchanged);
     program
 }

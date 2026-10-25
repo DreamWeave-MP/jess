@@ -3,7 +3,9 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::shader::expression::{Expression, ExpressionId, Literal, Place, SourceOrigin, Step, Swizzle};
+use crate::shader::expression::{
+    BinaryOperator, Expression, ExpressionId, Function, Literal, Place, SourceOrigin, Step, Swizzle,
+};
 use crate::shader::interface::{
     Attribute, AttributeId, DataType, Field, Frequency, Rate, Resource, ResourceId, ResourceKind, StructDecl, StructId,
     Uniform, UniformId,
@@ -326,7 +328,10 @@ impl Site<'_> {
     /// A value from another program, operand types the operation does not accept, or constant
     /// arithmetic WGSL would reject.
     pub fn add(&mut self, left: Value, right: Value) -> Result<Value, ValidationError> {
-        self.operation(Expression::Add(left.expression, right.expression), &[left, right])
+        self.operation(
+            Expression::Binary(BinaryOperator::Add, left.expression, right.expression),
+            &[left, right],
+        )
     }
 
     /// `left - right`.
@@ -335,7 +340,10 @@ impl Site<'_> {
     ///
     /// As [`add`](Site::add).
     pub fn subtract(&mut self, left: Value, right: Value) -> Result<Value, ValidationError> {
-        self.operation(Expression::Subtract(left.expression, right.expression), &[left, right])
+        self.operation(
+            Expression::Binary(BinaryOperator::Subtract, left.expression, right.expression),
+            &[left, right],
+        )
     }
 
     /// `left * right`, including matrix × vector and matrix × matrix.
@@ -344,7 +352,10 @@ impl Site<'_> {
     ///
     /// As [`add`](Site::add).
     pub fn multiply(&mut self, left: Value, right: Value) -> Result<Value, ValidationError> {
-        self.operation(Expression::Multiply(left.expression, right.expression), &[left, right])
+        self.operation(
+            Expression::Binary(BinaryOperator::Multiply, left.expression, right.expression),
+            &[left, right],
+        )
     }
 
     /// `left / right`.
@@ -353,7 +364,10 @@ impl Site<'_> {
     ///
     /// As [`add`](Site::add).
     pub fn divide(&mut self, left: Value, right: Value) -> Result<Value, ValidationError> {
-        self.operation(Expression::Divide(left.expression, right.expression), &[left, right])
+        self.operation(
+            Expression::Binary(BinaryOperator::Divide, left.expression, right.expression),
+            &[left, right],
+        )
     }
 
     /// The smaller of two values, per component.
@@ -362,7 +376,7 @@ impl Site<'_> {
     ///
     /// A value from another program, or operand types the operation does not accept.
     pub fn min(&mut self, left: Value, right: Value) -> Result<Value, ValidationError> {
-        self.operation(Expression::Min(left.expression, right.expression), &[left, right])
+        self.call(Function::Min, &[left, right])
     }
 
     /// The larger of two values, per component.
@@ -371,7 +385,7 @@ impl Site<'_> {
     ///
     /// As [`min`](Site::min).
     pub fn max(&mut self, left: Value, right: Value) -> Result<Value, ValidationError> {
-        self.operation(Expression::Max(left.expression, right.expression), &[left, right])
+        self.call(Function::Max, &[left, right])
     }
 
     /// `value` clamped to `low..=high`, per component.
@@ -380,10 +394,7 @@ impl Site<'_> {
     ///
     /// As [`min`](Site::min).
     pub fn clamp(&mut self, value: Value, low: Value, high: Value) -> Result<Value, ValidationError> {
-        self.operation(
-            Expression::Clamp(value.expression, low.expression, high.expression),
-            &[value, low, high],
-        )
+        self.call(Function::Clamp, &[value, low, high])
     }
 
     /// The dot product of two vectors of the same size.
@@ -392,7 +403,7 @@ impl Site<'_> {
     ///
     /// As [`min`](Site::min).
     pub fn dot(&mut self, left: Value, right: Value) -> Result<Value, ValidationError> {
-        self.operation(Expression::Dot(left.expression, right.expression), &[left, right])
+        self.call(Function::Dot, &[left, right])
     }
 
     /// The cross product of two `Vec3f`.
@@ -401,7 +412,7 @@ impl Site<'_> {
     ///
     /// As [`min`](Site::min).
     pub fn cross(&mut self, left: Value, right: Value) -> Result<Value, ValidationError> {
-        self.operation(Expression::Cross(left.expression, right.expression), &[left, right])
+        self.call(Function::Cross, &[left, right])
     }
 
     /// A vector scaled to length 1.
@@ -410,7 +421,7 @@ impl Site<'_> {
     ///
     /// As [`min`](Site::min).
     pub fn normalize(&mut self, value: Value) -> Result<Value, ValidationError> {
-        self.operation(Expression::Normalize(value.expression), &[value])
+        self.call(Function::Normalize, &[value])
     }
 
     /// A vector's length, or a float's absolute value.
@@ -419,7 +430,7 @@ impl Site<'_> {
     ///
     /// As [`min`](Site::min).
     pub fn length(&mut self, value: Value) -> Result<Value, ValidationError> {
-        self.operation(Expression::Length(value.expression), &[value])
+        self.call(Function::Length, &[value])
     }
 
     /// The greatest integer no larger than a float or each component of a float vector.
@@ -428,7 +439,7 @@ impl Site<'_> {
     ///
     /// A value from another program, or an operand that is not a `Float` or float vector.
     pub fn floor(&mut self, value: Value) -> Result<Value, ValidationError> {
-        self.operation(Expression::Floor(value.expression), &[value])
+        self.call(Function::Floor, &[value])
     }
 
     /// `start + (end - start) * amount`, per component.
@@ -437,10 +448,7 @@ impl Site<'_> {
     ///
     /// As [`min`](Site::min).
     pub fn mix(&mut self, start: Value, end: Value, amount: Value) -> Result<Value, ValidationError> {
-        self.operation(
-            Expression::Mix(start.expression, end.expression, amount.expression),
-            &[start, end, amount],
-        )
+        self.call(Function::Mix, &[start, end, amount])
     }
 
     /// A texture read, to `Vec4f`. Sampling in the vertex stage is rejected by
@@ -558,6 +566,13 @@ impl Site<'_> {
         let earlier = earlier.iter().map(|declaration| (declaration.name.as_str(), declaration.ty));
         let first = validate::declaration_errors(kind, earlier, name, ty).into_iter().next();
         first.map_or(Ok(()), |kind| Err(self.error(kind)))
+    }
+
+    /// A call of `function` with `arguments`, typed and pushed.
+    fn call(&mut self, function: Function, arguments: &[Value]) -> Result<Value, ValidationError> {
+        let ids: Vec<ExpressionId> = arguments.iter().map(|argument| argument.expression).collect();
+        let expression = Expression::call(function, &ids).expect("a function takes at most three arguments");
+        self.operation(expression, arguments)
     }
 
     /// Types a non-leaf `expression` over `operands`, then pushes it.

@@ -314,6 +314,83 @@ impl Place {
     }
 }
 
+/// An operator between two values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BinaryOperator {
+    /// `left + right`.
+    Add,
+    /// `left - right`.
+    Subtract,
+    /// `left * right`, including matrix × vector and matrix × matrix.
+    Multiply,
+    /// `left / right`.
+    Divide,
+}
+
+impl BinaryOperator {
+    /// The operator as errors and WGSL write it: `+`.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            BinaryOperator::Add => "+",
+            BinaryOperator::Subtract => "-",
+            BinaryOperator::Multiply => "*",
+            BinaryOperator::Divide => "/",
+        }
+    }
+}
+
+/// A built-in function.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Function {
+    /// The smaller of two values, per component.
+    Min,
+    /// The larger of two values, per component.
+    Max,
+    /// `value` clamped to `low..=high`, per component.
+    Clamp,
+    /// The dot product of two vectors of one type.
+    Dot,
+    /// The cross product of two `Vec3f`.
+    Cross,
+    /// A vector scaled to length 1.
+    Normalize,
+    /// A vector's length, or a float's absolute value.
+    Length,
+    /// The greatest integer no larger than a float or each component of a float vector.
+    Floor,
+    /// `start + (end - start) * amount`, per component.
+    Mix,
+}
+
+impl Function {
+    /// The function's name, as errors and WGSL write it.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Function::Min => "min",
+            Function::Max => "max",
+            Function::Clamp => "clamp",
+            Function::Dot => "dot",
+            Function::Cross => "cross",
+            Function::Normalize => "normalize",
+            Function::Length => "length",
+            Function::Floor => "floor",
+            Function::Mix => "mix",
+        }
+    }
+
+    /// How many arguments it takes.
+    #[must_use]
+    pub fn arity(self) -> usize {
+        match self {
+            Function::Normalize | Function::Length | Function::Floor => 1,
+            Function::Min | Function::Max | Function::Dot | Function::Cross => 2,
+            Function::Clamp | Function::Mix => 3,
+        }
+    }
+}
+
 /// A node in a [`Program`](crate::shader::Program)'s expression arena.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Expression {
@@ -335,32 +412,15 @@ pub enum Expression {
         /// The `Vec2f` coordinates.
         coordinates: ExpressionId,
     },
-    /// `left + right`.
-    Add(ExpressionId, ExpressionId),
-    /// `left - right`.
-    Subtract(ExpressionId, ExpressionId),
-    /// `left * right`, including matrix × vector and matrix × matrix.
-    Multiply(ExpressionId, ExpressionId),
-    /// `left / right`.
-    Divide(ExpressionId, ExpressionId),
-    /// The smaller of two values, per component.
-    Min(ExpressionId, ExpressionId),
-    /// The larger of two values, per component.
-    Max(ExpressionId, ExpressionId),
-    /// `value` clamped to `low..=high`, per component.
-    Clamp(ExpressionId, ExpressionId, ExpressionId),
-    /// The dot product of two vectors of the same size.
-    Dot(ExpressionId, ExpressionId),
-    /// The cross product of two `Vec3f`.
-    Cross(ExpressionId, ExpressionId),
-    /// A vector scaled to length 1.
-    Normalize(ExpressionId),
-    /// A vector's length, or a float's absolute value.
-    Length(ExpressionId),
-    /// The greatest integer no larger than a float or each component of a float vector.
-    Floor(ExpressionId),
-    /// `start + (end - start) * amount`, per component.
-    Mix(ExpressionId, ExpressionId, ExpressionId),
+    /// An operator between two values.
+    Binary(BinaryOperator, ExpressionId, ExpressionId),
+    /// A built-in function.
+    Call {
+        /// The function.
+        function: Function,
+        /// Its arguments, as many as [`Function::arity`].
+        arguments: Operands,
+    },
     /// A float vector from floats and smaller vectors whose sizes add up to the target's, or
     /// from one float repeated.
     Construct {
@@ -385,6 +445,12 @@ impl Expression {
         Operands::new(components).map(|components| Expression::Construct { target, components })
     }
 
+    /// A call of `function`; `None` if there are more than four arguments.
+    #[must_use]
+    pub fn call(function: Function, arguments: &[ExpressionId]) -> Option<Expression> {
+        Operands::new(arguments).map(|arguments| Expression::Call { function, arguments })
+    }
+
     /// The expressions this one reads, in order.
     #[must_use]
     pub fn operands(&self) -> Operands {
@@ -392,16 +458,8 @@ impl Expression {
             Expression::Literal(_) | Expression::Attribute(_) | Expression::Varying(_) => &[],
             Expression::Load(place) => return place.indices(),
             Expression::Sample { coordinates, .. } => &[*coordinates],
-            Expression::Add(left, right)
-            | Expression::Subtract(left, right)
-            | Expression::Multiply(left, right)
-            | Expression::Divide(left, right)
-            | Expression::Min(left, right)
-            | Expression::Max(left, right)
-            | Expression::Dot(left, right)
-            | Expression::Cross(left, right) => &[*left, *right],
-            Expression::Clamp(first, second, third) | Expression::Mix(first, second, third) => &[*first, *second, *third],
-            Expression::Normalize(value) | Expression::Length(value) | Expression::Floor(value) => &[*value],
+            Expression::Binary(_, left, right) => &[*left, *right],
+            Expression::Call { arguments, .. } => return *arguments,
             Expression::Construct { components, .. } => return *components,
             Expression::Swizzle { vector, .. } => &[*vector],
         };
@@ -414,23 +472,11 @@ impl Expression {
             Expression::Literal(_) | Expression::Attribute(_) | Expression::Varying(_) => {}
             Expression::Load(place) => place.rewrite_indices(rewrite),
             Expression::Sample { coordinates, .. } => rewrite(coordinates),
-            Expression::Add(left, right)
-            | Expression::Subtract(left, right)
-            | Expression::Multiply(left, right)
-            | Expression::Divide(left, right)
-            | Expression::Min(left, right)
-            | Expression::Max(left, right)
-            | Expression::Dot(left, right)
-            | Expression::Cross(left, right) => {
+            Expression::Binary(_, left, right) => {
                 rewrite(left);
                 rewrite(right);
             }
-            Expression::Clamp(first, second, third) | Expression::Mix(first, second, third) => {
-                rewrite(first);
-                rewrite(second);
-                rewrite(third);
-            }
-            Expression::Normalize(value) | Expression::Length(value) | Expression::Floor(value) => rewrite(value),
+            Expression::Call { arguments, .. } => arguments.as_mut_slice().iter_mut().for_each(rewrite),
             Expression::Construct { components, .. } => components.as_mut_slice().iter_mut().for_each(rewrite),
             Expression::Swizzle { vector, .. } => rewrite(vector),
         }
@@ -457,19 +503,8 @@ impl Expression {
             Expression::Attribute(_) => "attribute",
             Expression::Varying(_) => "varying",
             Expression::Sample { .. } => "sample",
-            Expression::Add(..) => "+",
-            Expression::Subtract(..) => "-",
-            Expression::Multiply(..) => "*",
-            Expression::Divide(..) => "/",
-            Expression::Min(..) => "min",
-            Expression::Max(..) => "max",
-            Expression::Clamp(..) => "clamp",
-            Expression::Dot(..) => "dot",
-            Expression::Cross(..) => "cross",
-            Expression::Normalize(..) => "normalize",
-            Expression::Length(..) => "length",
-            Expression::Floor(..) => "floor",
-            Expression::Mix(..) => "mix",
+            Expression::Binary(operator, ..) => operator.name(),
+            Expression::Call { function, .. } => function.name(),
             Expression::Construct { target, .. } => target.name(),
             Expression::Swizzle { .. } => "swizzle",
         }

@@ -2,7 +2,7 @@
 //! `x / 1`, `x + 0`, `x - 0`. Nothing else: the backend compiler optimizes; Jess only avoids
 //! handing it noise.
 
-use crate::shader::expression::{Expression, ExpressionId, Literal};
+use crate::shader::expression::{BinaryOperator, Expression, ExpressionId, Literal};
 use crate::shader::program::Program;
 use crate::shader::types::Type;
 use crate::shader::validate::{ValidationError, analyze};
@@ -18,13 +18,16 @@ pub enum Arithmetic {
 
 impl Arithmetic {
     pub(crate) fn of(expression: &Expression) -> Option<(Arithmetic, ExpressionId, ExpressionId)> {
-        match *expression {
-            Expression::Add(left, right) => Some((Arithmetic::Add, left, right)),
-            Expression::Subtract(left, right) => Some((Arithmetic::Subtract, left, right)),
-            Expression::Multiply(left, right) => Some((Arithmetic::Multiply, left, right)),
-            Expression::Divide(left, right) => Some((Arithmetic::Divide, left, right)),
-            _ => None,
-        }
+        let Expression::Binary(operator, left, right) = *expression else {
+            return None;
+        };
+        let arithmetic = match operator {
+            BinaryOperator::Add => Arithmetic::Add,
+            BinaryOperator::Subtract => Arithmetic::Subtract,
+            BinaryOperator::Multiply => Arithmetic::Multiply,
+            BinaryOperator::Divide => Arithmetic::Divide,
+        };
+        Some((arithmetic, left, right))
     }
 }
 

@@ -13,8 +13,8 @@
 //!
 //! ```
 //! use jess::shader::{
-//!     Attribute, DataType, Expression, Frequency, Literal, Place, PlaceRoot, Program, Rate, Step, Type, Uniform,
-//!     wgsl,
+//!     Attribute, BinaryOperator, DataType, Expression, Frequency, Literal, Place, PlaceRoot, Program, Rate, Step,
+//!     Type, Uniform, wgsl,
 //! };
 //!
 //! let mut program = Program::new();
@@ -27,7 +27,7 @@
 //! let one = program.push(Expression::Literal(Literal::Float(1.0)));
 //! let local = program.push(Expression::construct(Type::Vec4f, &[position, one]).unwrap());
 //! let projection = program.push(Expression::Load(member(Frequency::Pass)));
-//! let clip = program.push(Expression::Multiply(projection, local));
+//! let clip = program.push(Expression::Binary(BinaryOperator::Multiply, projection, local));
 //! program.set_position(clip);
 //!
 //! let color = program.push(Expression::Load(member(Frequency::Material)));
@@ -107,8 +107,8 @@ pub mod wgsl;
 
 pub use build::{ProgramBuilder, Site, Value};
 pub use expression::{
-    Component, Expression, ExpressionId, Literal, MAX_PLACE_INDICES, MAX_PLACE_STEPS, Operands, Place, PlaceRoot,
-    SourceOrigin, Step, Swizzle, VaryingId,
+    BinaryOperator, Component, Expression, ExpressionId, Function, Literal, MAX_PLACE_INDICES, MAX_PLACE_STEPS, Operands,
+    Place, PlaceRoot, SourceOrigin, Step, Swizzle, VaryingId,
 };
 pub use interface::{
     Attribute, AttributeId, DataType, Element, Field, Frequency, Rate, Resource, ResourceId, ResourceKind, StructDecl,

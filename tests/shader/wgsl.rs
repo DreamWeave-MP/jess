@@ -6,7 +6,8 @@ use common::{assert_golden, assert_valid_wgsl};
 use jess::shader::layout::{MemberLayout, ResourceBinding};
 use jess::shader::wgsl;
 use jess::shader::{
-    Attribute, Expression, ExpressionId, Frequency, Literal, Program, Rate, Resource, ResourceKind, Swizzle, Type,
+    Attribute, BinaryOperator, Expression, ExpressionId, Frequency, Function, Literal, Program, Rate, Resource,
+    ResourceKind, Swizzle, Type,
 };
 
 fn float(program: &mut Program, value: f32) -> ExpressionId {
@@ -26,9 +27,9 @@ fn clip_position(program: &mut Program, position: ExpressionId) -> ExpressionId 
     let model = read(program, Frequency::Draw, "model", Type::Mat4f);
     let view = read(program, Frequency::Pass, "view", Type::Mat4f);
     let projection = read(program, Frequency::Pass, "projection", Type::Mat4f);
-    let world = program.push(Expression::Multiply(model, local));
-    let eye = program.push(Expression::Multiply(view, world));
-    program.push(Expression::Multiply(projection, eye))
+    let world = program.push(Expression::Binary(BinaryOperator::Multiply, model, local));
+    let eye = program.push(Expression::Binary(BinaryOperator::Multiply, view, world));
+    program.push(Expression::Binary(BinaryOperator::Multiply, projection, eye))
 }
 
 fn solid_color() -> Program {
@@ -62,7 +63,7 @@ fn textured_lit() -> Program {
     program.set_position(clip);
     let normal = program.push(Expression::Attribute(normal));
     let normal_matrix = program.push(Expression::Load(normal_matrix));
-    let transformed = program.push(Expression::Multiply(normal_matrix, normal));
+    let transformed = program.push(Expression::Binary(BinaryOperator::Multiply, normal_matrix, normal));
     program.write_varying(world_normal, transformed);
     let uv = program.push(Expression::Attribute(uv));
     program.write_varying(texture_coordinates, uv);
@@ -75,20 +76,20 @@ fn textured_lit() -> Program {
         coordinates: uv,
     });
     let normal = program.push(Expression::Varying(world_normal));
-    let unit_normal = program.push(Expression::Normalize(normal));
+    let unit_normal = program.push(Expression::call(Function::Normalize, &[normal]).unwrap());
     let light_direction = program.push(Expression::Load(light_direction));
-    let facing = program.push(Expression::Dot(unit_normal, light_direction));
+    let facing = program.push(Expression::call(Function::Dot, &[unit_normal, light_direction]).unwrap());
     let zero = float(&mut program, 0.0);
-    let lambert = program.push(Expression::Max(facing, zero));
+    let lambert = program.push(Expression::call(Function::Max, &[facing, zero]).unwrap());
     let ambient = program.push(Expression::Load(ambient));
-    let light = program.push(Expression::Add(lambert, ambient));
+    let light = program.push(Expression::Binary(BinaryOperator::Add, lambert, ambient));
     let rgb = program.push(Expression::Swizzle {
         vector: diffuse,
         swizzle: Swizzle::parse("xyz").unwrap(),
     });
-    let lit = program.push(Expression::Multiply(rgb, light));
+    let lit = program.push(Expression::Binary(BinaryOperator::Multiply, rgb, light));
     let one = float(&mut program, 1.0);
-    let clamped = program.push(Expression::Clamp(lit, zero, one));
+    let clamped = program.push(Expression::call(Function::Clamp, &[lit, zero, one]).unwrap());
     let alpha = program.push(Expression::Swizzle {
         vector: diffuse,
         swizzle: Swizzle::parse("w").unwrap(),
@@ -115,22 +116,22 @@ fn assorted() -> Program {
     program.write_varying(flat_index, index);
     let offset = program.push(Expression::Load(offset));
     let minimum = program.push(Expression::Literal(Literal::Int(i32::MIN)));
-    let shifted = program.push(Expression::Subtract(offset, minimum));
+    let shifted = program.push(Expression::Binary(BinaryOperator::Subtract, offset, minimum));
     program.write_varying(signed, shifted);
 
     let tint = program.push(Expression::Load(tint));
     let up = program.push(Expression::Literal(Literal::Vec3f([0.0, 0.0, 1.0])));
-    let side = program.push(Expression::Cross(tint, up));
+    let side = program.push(Expression::call(Function::Cross, &[tint, up]).unwrap());
     let time = read(&mut program, Frequency::Pass, "time", Type::Float);
-    let blended = program.push(Expression::Mix(tint, side, time));
-    let magnitude = program.push(Expression::Length(blended));
+    let blended = program.push(Expression::call(Function::Mix, &[tint, side, time]).unwrap());
+    let magnitude = program.push(Expression::call(Function::Length, &[blended]).unwrap());
     let viewport = read(&mut program, Frequency::Pass, "viewportSize", Type::Vec2f);
-    let smallest = program.push(Expression::Min(viewport, magnitude));
+    let smallest = program.push(Expression::call(Function::Min, &[viewport, magnitude]).unwrap());
     let one = float(&mut program, 1.0);
     let first = program.push(Expression::construct(Type::Vec4f, &[blended, one]).unwrap());
     let half = float(&mut program, 0.5);
     let second = program.push(Expression::construct(Type::Vec4f, &[smallest, half, half]).unwrap());
-    let quotient = program.push(Expression::Divide(second, magnitude));
+    let quotient = program.push(Expression::Binary(BinaryOperator::Divide, second, magnitude));
     program.push_fragment_output(first);
     program.push_fragment_output(quotient);
     program
@@ -208,15 +209,15 @@ fn folded_program_matches_golden() {
     let zero = float(&mut program, 0.0);
     let one = float(&mut program, 1.0);
     let clip = program.push(Expression::construct(Type::Vec4f, &[position, zero, one]).unwrap());
-    let scaled = program.push(Expression::Multiply(clip, one));
+    let scaled = program.push(Expression::Binary(BinaryOperator::Multiply, clip, one));
     program.set_position(scaled);
     let half = float(&mut program, 0.5);
     let quarter = float(&mut program, 0.25);
-    let sum = program.push(Expression::Add(half, quarter));
+    let sum = program.push(Expression::Binary(BinaryOperator::Add, half, quarter));
     let gray = program.push(Expression::construct(Type::Vec4f, &[sum]).unwrap());
     let color = program.push(Expression::Load(color));
-    let tinted = program.push(Expression::Multiply(color, gray));
-    let shifted = program.push(Expression::Add(tinted, zero));
+    let tinted = program.push(Expression::Binary(BinaryOperator::Multiply, color, gray));
+    let shifted = program.push(Expression::Binary(BinaryOperator::Add, tinted, zero));
     program.push_fragment_output(shifted);
 
     assert_eq!(program.fold_constants(), Ok(4));
@@ -236,8 +237,8 @@ fn only_reachable_expressions_are_lowered() {
     let mut program = solid_color();
     let before = lowered(&program).source;
     let dead = float(&mut program, 7.0);
-    let doubled = program.push(Expression::Add(dead, dead));
-    program.push(Expression::Normalize(doubled));
+    let doubled = program.push(Expression::Binary(BinaryOperator::Add, dead, dead));
+    program.push(Expression::call(Function::Normalize, &[doubled]).unwrap());
     assert_eq!(lowered(&program).source, before);
 }
 
@@ -258,11 +259,11 @@ fn uniform_members_lie_largest_alignment_first() {
     }
     let position = program.push(Expression::Attribute(position));
     program.set_position(position);
-    let rotated = program.push(Expression::Multiply(reads[3], reads[1]));
-    let scaled = program.push(Expression::Multiply(rotated, reads[0]));
+    let rotated = program.push(Expression::Binary(BinaryOperator::Multiply, reads[3], reads[1]));
+    let scaled = program.push(Expression::Binary(BinaryOperator::Multiply, rotated, reads[0]));
     let faded = program.push(Expression::construct(Type::Vec4f, &[scaled, reads[2]]).unwrap());
     let shifted = program.push(Expression::construct(Type::Vec4f, &[reads[4], reads[4]]).unwrap());
-    let color = program.push(Expression::Add(faded, shifted));
+    let color = program.push(Expression::Binary(BinaryOperator::Add, faded, shifted));
     program.push_fragment_output(color);
 
     let module = lowered(&program);
@@ -287,7 +288,7 @@ fn instance_attributes_follow_the_vertex_attributes_and_matrices_arrive_by_colum
     let one = float(&mut program, 1.0);
     let local = program.push(Expression::construct(Type::Vec4f, &[position, one]).unwrap());
     let transform = program.push(Expression::Attribute(transform));
-    let clip = program.push(Expression::Multiply(transform, local));
+    let clip = program.push(Expression::Binary(BinaryOperator::Multiply, transform, local));
     program.set_position(clip);
     let passed = program.varying("tint", Type::Vec4f);
     let tint = program.push(Expression::Attribute(tint));

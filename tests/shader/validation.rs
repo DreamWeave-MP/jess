@@ -5,9 +5,9 @@ use std::sync::Arc;
 use super::common;
 
 use jess::shader::{
-    Attribute, DataType, DeclarationKind, Element, Expression, ExpressionId, Field, Frequency, Literal, Place, PlaceProblem,
-    PlaceRoot, Program, Rate, Resource, ResourceId, ResourceKind, SourceOrigin, Step, StructDecl, Swizzle, Type, Uniform,
-    ValidationError, ValidationErrorKind, wgsl,
+    Attribute, BinaryOperator, DataType, DeclarationKind, Element, Expression, ExpressionId, Field, Frequency, Function,
+    Literal, Place, PlaceProblem, PlaceRoot, Program, Rate, Resource, ResourceId, ResourceKind, SourceOrigin, Step,
+    StructDecl, Swizzle, Type, Uniform, ValidationError, ValidationErrorKind, wgsl,
 };
 
 fn float(program: &mut Program, value: f32) -> ExpressionId {
@@ -58,7 +58,7 @@ fn dot_of_different_sizes_is_invalid() {
     let mut program = with_position();
     let normal = program.push(Expression::Literal(Literal::Vec3f([0.0, 0.0, 1.0])));
     let light = program.push(Expression::Literal(Literal::Vec4f([0.0, 1.0, 0.0, 0.0])));
-    let facing = program.push_at(Expression::Dot(normal, light), origin(12, 5));
+    let facing = program.push_at(Expression::call(Function::Dot, &[normal, light]).unwrap(), origin(12, 5));
     let color = program.push(Expression::construct(Type::Vec4f, &[facing]).unwrap());
     program.push_fragment_output(color);
 
@@ -232,11 +232,11 @@ fn expressions_from_another_program_are_reported() {
     let mut other = Program::new();
     let mut last = float(&mut other, 1.0);
     for _ in 0..8 {
-        last = other.push(Expression::Add(last, last));
+        last = other.push(Expression::Binary(BinaryOperator::Add, last, last));
     }
 
     let mut program = with_position();
-    let normalized = program.push(Expression::Normalize(last));
+    let normalized = program.push(Expression::call(Function::Normalize, &[last]).unwrap());
     program.push_fragment_output(normalized);
     program.push_fragment_output(last);
 
@@ -296,7 +296,7 @@ fn inputs_belong_to_their_stage() {
         sampler,
         coordinates: read_uv,
     });
-    let displaced = program.push(Expression::Add(position, texel));
+    let displaced = program.push(Expression::Binary(BinaryOperator::Add, position, texel));
     program.set_position(displaced);
     program.write_varying(uv, read_uv);
     program.push_fragment_output(position);
@@ -446,10 +446,10 @@ fn literals_wgsl_cannot_write_are_invalid() {
     let zero = program.push(Expression::Literal(Literal::UInt(0)));
     let seven = program.push(Expression::Literal(Literal::UInt(7)));
     let huge = float(&mut program, 3.0e38);
-    let overflow = program.push(Expression::Add(largest, one));
-    let division = program.push(Expression::Divide(seven, zero));
-    let infinite = program.push(Expression::Multiply(huge, huge));
-    let valid = program.push(Expression::Divide(largest, one));
+    let overflow = program.push(Expression::Binary(BinaryOperator::Add, largest, one));
+    let division = program.push(Expression::Binary(BinaryOperator::Divide, seven, zero));
+    let infinite = program.push(Expression::Binary(BinaryOperator::Multiply, huge, huge));
+    let valid = program.push(Expression::Binary(BinaryOperator::Divide, largest, one));
     let written = [
         (not_a_number, Type::Float),
         (overflow, Type::Int),
@@ -486,15 +486,15 @@ fn operand_rules_are_checked() {
     let model = common::uniform(&mut program, Frequency::Draw, "model", Type::Mat4f);
     let model = program.push(Expression::Load(model));
     let expressions = [
-        Expression::Min(integer, scalar),
-        Expression::Multiply(model, triple),
-        Expression::Divide(model, model),
-        Expression::Cross(quad, quad),
-        Expression::Mix(pair, triple, scalar),
-        Expression::Clamp(triple, pair, scalar),
-        Expression::Length(integer),
-        Expression::Floor(integer),
-        Expression::Normalize(scalar),
+        Expression::call(Function::Min, &[integer, scalar]).unwrap(),
+        Expression::Binary(BinaryOperator::Multiply, model, triple),
+        Expression::Binary(BinaryOperator::Divide, model, model),
+        Expression::call(Function::Cross, &[quad, quad]).unwrap(),
+        Expression::call(Function::Mix, &[pair, triple, scalar]).unwrap(),
+        Expression::call(Function::Clamp, &[triple, pair, scalar]).unwrap(),
+        Expression::call(Function::Length, &[integer]).unwrap(),
+        Expression::call(Function::Floor, &[integer]).unwrap(),
+        Expression::call(Function::Normalize, &[scalar]).unwrap(),
         Expression::construct(Type::Vec4f, &[triple, pair]).unwrap(),
         Expression::construct(Type::Mat3f, &[triple, triple, triple]).unwrap(),
         Expression::Swizzle {
@@ -540,9 +540,9 @@ fn every_independent_mistake_is_reported_once() {
     let mut program = Program::new();
     let normal = program.push(Expression::Literal(Literal::Vec3f([0.0, 0.0, 1.0])));
     let light = program.push(Expression::Literal(Literal::Vec4f([0.0, 1.0, 0.0, 0.0])));
-    let facing = program.push(Expression::Dot(normal, light));
+    let facing = program.push(Expression::call(Function::Dot, &[normal, light]).unwrap());
     // Everything downstream of the bad `dot` is untyped, not reported again.
-    let doubled = program.push(Expression::Add(facing, facing));
+    let doubled = program.push(Expression::Binary(BinaryOperator::Add, facing, facing));
     let color = program.push(Expression::construct(Type::Vec4f, &[doubled]).unwrap());
     program.push_fragment_output(color);
     let wrong = program.push(Expression::Literal(Literal::Vec2f([0.0, 0.0])));
@@ -561,7 +561,7 @@ fn unused_expressions_are_not_checked() {
     let mut program = with_position();
     let normal = program.push(Expression::Literal(Literal::Vec3f([0.0, 0.0, 1.0])));
     let light = program.push(Expression::Literal(Literal::Vec4f([0.0, 1.0, 0.0, 0.0])));
-    program.push(Expression::Dot(normal, light));
+    program.push(Expression::call(Function::Dot, &[normal, light]).unwrap());
     assert_eq!(program.validate(), Ok(()));
 }
 

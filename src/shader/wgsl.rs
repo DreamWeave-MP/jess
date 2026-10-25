@@ -15,7 +15,7 @@
 
 use std::fmt::Write as _;
 
-use crate::shader::expression::{Expression, ExpressionId, Literal, Place, PlaceRoot, Step};
+use crate::shader::expression::{Expression, ExpressionId, Function, Literal, Place, PlaceRoot, Step};
 use crate::shader::interface::{AttributeId, DataType, Element, Frequency, Rate, ResourceId, ResourceKind};
 use crate::shader::layout::{MemberLayout, ProgramLayout, StructLayout, value_extent};
 use crate::shader::program::Program;
@@ -345,23 +345,16 @@ impl Lowering<'_> {
                 emit!(self, ")");
             }
             Expression::Load(place) => self.place(&place),
-            Expression::Add(left, right)
-            | Expression::Subtract(left, right)
-            | Expression::Multiply(left, right)
-            | Expression::Divide(left, right) => {
+            Expression::Binary(_, left, right) => {
                 self.operand(left);
                 emit!(self, " {} ", expression.operation());
                 self.operand(right);
             }
-            Expression::Min(first, second) => self.call("min", &[first, second], Some(self.type_of(id))),
-            Expression::Max(first, second) => self.call("max", &[first, second], Some(self.type_of(id))),
-            Expression::Clamp(value, low, high) => self.call("clamp", &[value, low, high], Some(self.type_of(id))),
-            Expression::Dot(left, right) => self.call("dot", &[left, right], None),
-            Expression::Cross(left, right) => self.call("cross", &[left, right], None),
-            Expression::Normalize(value) => self.call("normalize", &[value], None),
-            Expression::Length(value) => self.call("length", &[value], None),
-            Expression::Floor(value) => self.call("floor", &[value], None),
-            Expression::Mix(start, end, amount) => self.call("mix", &[start, end, amount], None),
+            Expression::Call { function, arguments } => {
+                // WGSL's min, max, and clamp take no scalar beside a vector, which Jess's do.
+                let splat = matches!(function, Function::Min | Function::Max | Function::Clamp).then(|| self.type_of(id));
+                self.call(function.name(), &arguments, splat);
+            }
             Expression::Construct { target, components } => self.call(wgsl_type(target), &components, None),
             Expression::Swizzle { vector, swizzle } => {
                 self.operand(vector);

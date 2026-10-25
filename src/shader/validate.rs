@@ -3,7 +3,7 @@
 use std::fmt;
 
 use crate::shader::expression::{
-    Expression, ExpressionId, Literal, Place, PlaceRoot, SourceOrigin, Step, Swizzle, VaryingId,
+    BinaryOperator, Expression, ExpressionId, Function, Literal, Place, PlaceRoot, SourceOrigin, Step, Swizzle, VaryingId,
 };
 use crate::shader::fold::{Arithmetic, evaluate};
 use crate::shader::interface::{
@@ -1126,66 +1126,25 @@ pub fn operation_type(id: ExpressionId, expression: &Expression, operands: &[Typ
         | Expression::Varying(_)
         | Expression::Load(_)
         | Expression::Sample { .. } => unreachable!("typed by their declarations, not their operands"),
-        Expression::Add(..) | Expression::Subtract(..) => {
+        Expression::Binary(operator, ..) => {
             let (left, right) = (operands[0], operands[1]);
-            if left == right && left.is_matrix() {
-                left
-            } else {
-                arithmetic(left, right).ok_or_else(|| invalid(ADD_SUBTRACT))?
-            }
-        }
-        Expression::Divide(..) | Expression::Min(..) | Expression::Max(..) => {
-            arithmetic(operands[0], operands[1]).ok_or_else(|| invalid(ARITHMETIC))?
-        }
-        Expression::Multiply(..) => multiply(operands[0], operands[1]).ok_or_else(|| invalid(MULTIPLY))?,
-        Expression::Clamp(..) => {
-            let value = operands[0];
-            let accepts = |bound: Type| bound == value || Some(bound) == value.component();
-            if !value.is_numeric() || !accepts(operands[1]) || !accepts(operands[2]) {
-                return Err(invalid(
-                    "a numeric value and two bounds of its type, or a vector and two scalars of its kind",
-                ));
-            }
-            value
-        }
-        Expression::Dot(..) => {
-            let Some(component) = operands[0].component().filter(|_| operands[0] == operands[1]) else {
-                return Err(invalid("two vectors of the same type"));
+            let (ty, expected) = match operator {
+                BinaryOperator::Add | BinaryOperator::Subtract if left == right && left.is_matrix() => (Some(left), ""),
+                BinaryOperator::Add | BinaryOperator::Subtract => (arithmetic(left, right), ADD_SUBTRACT),
+                BinaryOperator::Divide => (arithmetic(left, right), ARITHMETIC),
+                BinaryOperator::Multiply => (multiply(left, right), MULTIPLY),
             };
-            component
+            ty.ok_or_else(|| invalid(expected))?
         }
-        Expression::Cross(..) => {
-            if operands != [Type::Vec3f, Type::Vec3f] {
-                return Err(invalid("two Vec3f"));
+        Expression::Call { function, .. } => {
+            if operands.len() != function.arity() {
+                return Err(invalid(match function.arity() {
+                    1 => "one argument",
+                    2 => "two arguments",
+                    _ => "three arguments",
+                }));
             }
-            Type::Vec3f
-        }
-        Expression::Normalize(..) => {
-            if !operands[0].is_float_vector() {
-                return Err(invalid("a float vector"));
-            }
-            operands[0]
-        }
-        Expression::Length(..) => {
-            if operands[0].float_components() == 0 {
-                return Err(invalid("a Float or float vector"));
-            }
-            Type::Float
-        }
-        Expression::Floor(..) => {
-            if operands[0].float_components() == 0 {
-                return Err(invalid("a Float or float vector"));
-            }
-            operands[0]
-        }
-        Expression::Mix(..) => {
-            let (start, end, amount) = (operands[0], operands[1], operands[2]);
-            if start != end || start.float_components() == 0 || (amount != start && amount != Type::Float) {
-                return Err(invalid(
-                    "two Floats or float vectors of the same type, and an amount of that type or Float",
-                ));
-            }
-            start
+            function_type(function, operands).map_err(invalid)?
         }
         Expression::Construct { target, .. } => {
             let expected = construct_expected(target).ok_or_else(|| invalid(CONSTRUCT_TARGET))?;
@@ -1217,6 +1176,56 @@ pub fn operation_type(id: ExpressionId, expression: &Expression, operands: &[Typ
                     });
                 }
             }
+        }
+    };
+    Ok(ty)
+}
+
+/// The type of calling `function` with arguments of the types `operands`, as many as it takes,
+/// or what it accepts.
+fn function_type(function: Function, operands: &[Type]) -> Result<Type, &'static str> {
+    let ty = match function {
+        Function::Min | Function::Max => arithmetic(operands[0], operands[1]).ok_or(ARITHMETIC)?,
+        Function::Clamp => {
+            let value = operands[0];
+            let accepts = |bound: Type| bound == value || Some(bound) == value.component();
+            if !value.is_numeric() || !accepts(operands[1]) || !accepts(operands[2]) {
+                return Err("a numeric value and two bounds of its type, or a vector and two scalars of its kind");
+            }
+            value
+        }
+        Function::Dot => operands[0]
+            .component()
+            .filter(|_| operands[0] == operands[1])
+            .ok_or("two vectors of the same type")?,
+        Function::Cross => {
+            if operands != [Type::Vec3f, Type::Vec3f] {
+                return Err("two Vec3f");
+            }
+            Type::Vec3f
+        }
+        Function::Normalize => {
+            if !operands[0].is_float_vector() {
+                return Err("a float vector");
+            }
+            operands[0]
+        }
+        Function::Length | Function::Floor => {
+            if operands[0].float_components() == 0 {
+                return Err("a Float or float vector");
+            }
+            if function == Function::Length {
+                Type::Float
+            } else {
+                operands[0]
+            }
+        }
+        Function::Mix => {
+            let (start, end, amount) = (operands[0], operands[1], operands[2]);
+            if start != end || start.float_components() == 0 || (amount != start && amount != Type::Float) {
+                return Err("two Floats or float vectors of the same type, and an amount of that type or Float");
+            }
+            start
         }
     };
     Ok(ty)
