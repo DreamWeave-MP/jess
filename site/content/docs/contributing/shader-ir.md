@@ -39,7 +39,8 @@ Exactly what a first renderer needs:
 | Type | Notes |
 | --- | --- |
 | `Bool`, `Int`, `UInt`, `Float` | 32-bit scalars |
-| `Vec2f`, `Vec3f`, `Vec4f` | float vectors only; nothing needs integer vectors yet |
+| `Vec2f`, `Vec3f`, `Vec4f` | float vectors |
+| `Vec2i`..`Vec4i`, `Vec2u`..`Vec4u` | signed and unsigned integer vectors; varyings of them pass flat |
 | `Mat3f`, `Mat4f` | column-major float matrices |
 | `Texture2D`, `Sampler` | resources, never values: only a parameter has these types |
 
@@ -49,7 +50,7 @@ Not the entire WGSL type system. If a first-party shader needs another type, it 
 
 Expressions live in an arena and name each other by `ExpressionId`. Ids only point backwards: an operand always comes before the expression that reads it. The arena is already in dependency order, so validation, folding, and lowering are single passes over a vector. No recursion, no boxed trees, no visitor.
 
-The leaves are literals, declared parameters, vertex inputs, varyings, and semantics. The operations are `sample`, `+ - * /`, `min`, `max`, `clamp`, `dot`, `cross`, `normalize`, `length`, `mix`, vector constructors, and swizzles. `*` covers matrix × vector and matrix × matrix. `min`, `max`, `clamp`, and `mix` take a `Float` where a vector is expected, because every shader author writes `clamp(color, 0.0, 1.0)` and WGSL refusing it helps nobody.
+The leaves are literals, declared parameters, vertex inputs, varyings, and semantics. The operations are `sample`, `+ - * /`, `min`, `max`, `clamp`, `dot`, `cross`, `normalize`, `length`, `mix`, vector constructors, and swizzles. `*` covers matrix × vector and matrix × matrix. `min`, `max`, and `clamp` take a scalar of a vector's kind where the vector is expected, and `mix` a `Float` amount, because every shader author writes `clamp(color, 0.0, 1.0)` and WGSL refusing it helps nobody. Integer vectors get the same arithmetic, constructors, and swizzles as float vectors; what only makes sense for floats (`normalize`, `length`, `floor`, `mix`, `cross`) refuses them.
 
 Semantics are values the renderer provides, named by what they mean rather than where they live:
 
@@ -68,7 +69,7 @@ The pass inputs exist in the IR so the render graph can grow into them. Until th
 `Program::validate` returns every problem it finds, in Jess terms, as a typed `ValidationErrorKind`:
 
 ```text
-dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size
+dot(Vec3f, Vec4f) is invalid: expected two vectors of the same type
 sample(Texture2D, Sampler, Vec3f) is invalid: expected sample(Texture2D, Sampler, Vec2f)
 fragment output 0 is Vec3f: expected Vec4f
 varying "uv" is read by the fragment stage but never written by the vertex stage
@@ -89,7 +90,7 @@ Every expression and declaration can carry a `SourceOrigin`: owner, file, line, 
 Errors carry the origin of the expression or declaration at fault:
 
 ```text
-shaders/lit.jsl:12:5 (com.example.viewer): dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size
+shaders/lit.jsl:12:5 (com.example.viewer): dot(Vec3f, Vec4f) is invalid: expected two vectors of the same type
 ```
 
 The Luau front end fills these in from the module that built the expression. The IR doesn't know what Luau is; it just refuses to be structurally incapable of pointing at it.

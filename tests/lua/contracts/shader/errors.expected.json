@@ -32,22 +32,25 @@
       "unknown": "unknownName"
     },
     "operations": {
-      "add": "$REPO/tests/lua/contracts/shader/errors.jsl:44 ($REPO/tests/lua/contracts/shader/errors.jsl): Vec4f + Mat4f is invalid: expected two values of the same numeric type, a float vector and a Float, or two matrices of the same size",
+      "add": "$REPO/tests/lua/contracts/shader/errors.jsl:44 ($REPO/tests/lua/contracts/shader/errors.jsl): Vec4f + Mat4f is invalid: expected two values of the same numeric type, a vector and a scalar of its kind, or two matrices of the same size",
       "construct": "$REPO/tests/lua/contracts/shader/errors.jsl:45 ($REPO/tests/lua/contracts/shader/errors.jsl): Vec4f(Vec4f, Float) is invalid: expected floats and float vectors adding up to 4 components, or one Float",
-      "dot": "$REPO/tests/lua/contracts/shader/errors.jsl:43 ($REPO/tests/lua/contracts/shader/errors.jsl): dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size",
-      "floatOfVector": "$REPO/tests/lua/contracts/shader/errors.jsl:47 ($REPO/tests/lua/contracts/shader/errors.jsl): Float(Vec4f) is invalid: expected a Vec2f, Vec3f, or Vec4f target",
-      "foreign": "$REPO/tests/lua/contracts/shader/errors.jsl:49 ($REPO/tests/lua/contracts/shader/errors.jsl): expression 0 belongs to another shader program",
-      "matrix": "$REPO/tests/lua/contracts/shader/errors.jsl:46 ($REPO/tests/lua/contracts/shader/errors.jsl): Mat4f(Float) is invalid: expected a Vec2f, Vec3f, or Vec4f target",
+      "dot": "$REPO/tests/lua/contracts/shader/errors.jsl:43 ($REPO/tests/lua/contracts/shader/errors.jsl): dot(Vec3f, Vec4f) is invalid: expected two vectors of the same type",
+      "floatOfVector": "$REPO/tests/lua/contracts/shader/errors.jsl:47 ($REPO/tests/lua/contracts/shader/errors.jsl): Float(Vec4f) is invalid: expected a vector target",
+      "foreign": "$REPO/tests/lua/contracts/shader/errors.jsl:52 ($REPO/tests/lua/contracts/shader/errors.jsl): expression 0 belongs to another shader program",
+      "integerFloat": "$REPO/tests/lua/contracts/shader/errors.jsl:51 ($REPO/tests/lua/contracts/shader/errors.jsl): Vec2i * Float is invalid: expected two values of the same numeric type, a vector and a scalar of its kind, a matrix and a Float, a matrix and a vector of its size, or two matrices of the same size",
+      "matrix": "$REPO/tests/lua/contracts/shader/errors.jsl:46 ($REPO/tests/lua/contracts/shader/errors.jsl): Mat4f(Float) is invalid: expected a vector target",
       "name": "$REPO/tests/lua/contracts/shader/errors.jsl:28 ($REPO/tests/lua/contracts/shader/errors.jsl): parameter name \"light-dir\" is invalid: expected ASCII letters, digits, and underscores, not starting with a digit",
+      "notWhole": "shader.vec3i: 1.5 is not an Int: expected a whole number from -2147483648 to 2147483647",
       "sampler": "sample(texture, uv) takes a texture from this program's textures, whose sampler comes with it; anything else needs its sampler: sample(texture, sampler, uv)",
-      "swizzle": "$REPO/tests/lua/contracts/shader/errors.jsl:48 ($REPO/tests/lua/contracts/shader/errors.jsl): Vec3f.xyzw is invalid: expected components a Vec3f has"
+      "swizzle": "$REPO/tests/lua/contracts/shader/errors.jsl:48 ($REPO/tests/lua/contracts/shader/errors.jsl): Vec3f.xyzw is invalid: expected components a Vec3f has",
+      "uintRange": "shader.uint: -1 is not a UInt: expected a whole number from 0 to 4294967295"
     },
     "program": {
-      "fragmentType": "$REPO/tests/lua/contracts/shader/errors.jsl: the shader program is invalid\n$REPO/tests/lua/contracts/shader/errors.jsl:60 ($REPO/tests/lua/contracts/shader/errors.jsl): fragment output 0 is Vec3f: expected Vec4f",
-      "position": "$REPO/tests/lua/contracts/shader/errors.jsl: the shader program is invalid\n$REPO/tests/lua/contracts/shader/errors.jsl:63 ($REPO/tests/lua/contracts/shader/errors.jsl): the vertex position is Vec3f: expected Vec4f",
-      "sampleInVertex": "$REPO/tests/lua/contracts/shader/errors.jsl: the shader program is invalid\n$REPO/tests/lua/contracts/shader/errors.jsl:71 ($REPO/tests/lua/contracts/shader/errors.jsl): sample is used in the vertex stage: textures are sampled in the fragment stage",
-      "several": "$REPO/tests/lua/contracts/shader/errors.jsl: the shader program is invalid\n$REPO/tests/lua/contracts/shader/errors.jsl:86 ($REPO/tests/lua/contracts/shader/errors.jsl): sample is used in the vertex stage: textures are sampled in the fragment stage\n$REPO/tests/lua/contracts/shader/errors.jsl:85 ($REPO/tests/lua/contracts/shader/errors.jsl): the vertex position is Vec3f: expected Vec4f\n$REPO/tests/lua/contracts/shader/errors.jsl:89 ($REPO/tests/lua/contracts/shader/errors.jsl): fragment output 0 is Vec3f: expected Vec4f",
-      "unsupportedSemantic": "$REPO/tests/lua/contracts/shader/errors.jsl: the shader program is invalid\n$REPO/tests/lua/contracts/shader/errors.jsl:78 ($REPO/tests/lua/contracts/shader/errors.jsl): semantic sceneColor is not supported by the WGSL lowering yet"
+      "fragmentType": "$REPO/tests/lua/contracts/shader/errors.jsl: the shader program is invalid\n$REPO/tests/lua/contracts/shader/errors.jsl:63 ($REPO/tests/lua/contracts/shader/errors.jsl): fragment output 0 is Vec3f: expected Vec4f",
+      "position": "$REPO/tests/lua/contracts/shader/errors.jsl: the shader program is invalid\n$REPO/tests/lua/contracts/shader/errors.jsl:66 ($REPO/tests/lua/contracts/shader/errors.jsl): the vertex position is Vec3f: expected Vec4f",
+      "sampleInVertex": "$REPO/tests/lua/contracts/shader/errors.jsl: the shader program is invalid\n$REPO/tests/lua/contracts/shader/errors.jsl:74 ($REPO/tests/lua/contracts/shader/errors.jsl): sample is used in the vertex stage: textures are sampled in the fragment stage",
+      "several": "$REPO/tests/lua/contracts/shader/errors.jsl: the shader program is invalid\n$REPO/tests/lua/contracts/shader/errors.jsl:89 ($REPO/tests/lua/contracts/shader/errors.jsl): sample is used in the vertex stage: textures are sampled in the fragment stage\n$REPO/tests/lua/contracts/shader/errors.jsl:88 ($REPO/tests/lua/contracts/shader/errors.jsl): the vertex position is Vec3f: expected Vec4f\n$REPO/tests/lua/contracts/shader/errors.jsl:92 ($REPO/tests/lua/contracts/shader/errors.jsl): fragment output 0 is Vec3f: expected Vec4f",
+      "unsupportedSemantic": "$REPO/tests/lua/contracts/shader/errors.jsl: the shader program is invalid\n$REPO/tests/lua/contracts/shader/errors.jsl:81 ($REPO/tests/lua/contracts/shader/errors.jsl): semantic sceneColor is not supported by the WGSL lowering yet"
     },
     "spec": {
       "attributeName": "argument",

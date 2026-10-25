@@ -516,12 +516,13 @@ export type AudioContext = {
   group: (self: AudioContext, body: () -> ()) -> (),
 }
 
---- A shader type, from `jess.shader` (`float`, `vec2`, `vec3`, `vec4`, `mat3`, `mat4`,
---- `texture2d`, `sampler`): what a program's `parameters` and `textures` declare
---- (`tint = shader.vec4`). Called, the vector types build a vector from values and numbers whose
---- sizes add up to theirs, or from one number repeated (`shader.vec4(position, 1)`), and
---- `shader.float(0.5)` is a `Float` constant; the other types can't be constructed. `tostring`
---- gives the type's name (`Vec4f`).
+--- A shader type, from `jess.shader` (`float`, `int`, `uint`, `vec2`..`vec4`, `vec2i`..`vec4i`,
+--- `vec2u`..`vec4u`, `mat3`, `mat4`, `texture2d`, `sampler`): what a program's `parameters` and
+--- `textures` declare (`tint = shader.vec4`). Called, the vector types build a vector from values
+--- and numbers whose sizes add up to theirs, or from one number repeated
+--- (`shader.vec4(position, 1)`); a number in an integer vector is that vector's integer, and must
+--- be whole. `shader.float(0.5)`, `shader.int(-3)`, and `shader.uint(7)` are constants; the other
+--- types can't be constructed. `tostring` gives the type's name (`Vec4f`).
 declare extern type ShaderType with
   __call: (self: ShaderType, ...ShaderExpr | number) -> ShaderExpr
   __tostring: (self: ShaderType) -> string
@@ -586,12 +587,20 @@ declare arg: { [number]: string }
 --- `jess.shader`, and what `require("@jess/shader")` returns. A shader module runs once and
 --- returns `shader.program { ... }`. Every function takes shader values or numbers (a number is
 --- a `Float`) and fails at its line, in shader terms, when the types don't fit:
---- `dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size`.
+--- `dot(Vec3f, Vec4f) is invalid: expected two vectors of the same type`.
 export type ShaderModule = {
   float: ShaderType,
+  int: ShaderType,
+  uint: ShaderType,
   vec2: ShaderType,
   vec3: ShaderType,
   vec4: ShaderType,
+  vec2i: ShaderType,
+  vec3i: ShaderType,
+  vec4i: ShaderType,
+  vec2u: ShaderType,
+  vec3u: ShaderType,
+  vec4u: ShaderType,
   mat3: ShaderType,
   mat4: ShaderType,
   texture2d: ShaderType,

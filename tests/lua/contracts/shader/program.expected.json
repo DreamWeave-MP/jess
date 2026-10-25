@@ -70,18 +70,34 @@
     "sameModule": true,
     "types": {
       "float": "Float",
+      "int": "Int",
       "mat3": "Mat3f",
       "mat4": "Mat4f",
       "sampler": "Sampler",
       "texture2d": "Texture2D",
+      "uint": "UInt",
       "vec2": "Vec2f",
+      "vec2i": "Vec2i",
+      "vec2u": "Vec2u",
       "vec3": "Vec3f",
-      "vec4": "Vec4f"
+      "vec3i": "Vec3i",
+      "vec3u": "Vec3u",
+      "vec4": "Vec4f",
+      "vec4i": "Vec4i",
+      "vec4u": "Vec4u"
     },
     "vertex": {
       "clip": "ShaderExpr(Vec4f)",
       "differentValues": false,
       "input": "ShaderInput(vertex)",
+      "integers": {
+        "cell": "ShaderExpr(Vec3i)",
+        "count": "ShaderExpr(UInt)",
+        "dot": "ShaderExpr(Int)",
+        "signed": "ShaderExpr(Int)",
+        "splat": "ShaderExpr(Vec2u)",
+        "swizzle": "ShaderExpr(Vec2u)"
+      },
       "matrix": "ShaderExpr(Mat4f)",
       "position": "ShaderExpr(Vec3f)",
       "sameRead": true,

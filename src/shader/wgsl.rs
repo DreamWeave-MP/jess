@@ -99,9 +99,9 @@ pub struct WgslModule {
 pub fn uniform_layout(ty: Type) -> Option<(u32, u32)> {
     match ty {
         Type::Int | Type::UInt | Type::Float => Some((4, 4)),
-        Type::Vec2f => Some((8, 8)),
-        Type::Vec3f => Some((16, 12)),
-        Type::Vec4f => Some((16, 16)),
+        Type::Vec2f | Type::Vec2i | Type::Vec2u => Some((8, 8)),
+        Type::Vec3f | Type::Vec3i | Type::Vec3u => Some((16, 12)),
+        Type::Vec4f | Type::Vec4i | Type::Vec4u => Some((16, 16)),
         Type::Mat3f => Some((16, 48)),
         Type::Mat4f => Some((16, 64)),
         Type::Bool | Type::Texture2D | Type::Sampler => None,
@@ -421,7 +421,7 @@ impl Lowering<'_> {
             if position > 0 {
                 emit!(self, ", ");
             }
-            let splat = splat_to.filter(|ty| ty.is_vector() && self.type_of(argument) == Type::Float);
+            let splat = splat_to.filter(|ty| ty.component() == Some(self.type_of(argument)));
             match splat {
                 Some(ty) => {
                     emit!(self, "{}(", wgsl_type(ty));
@@ -531,6 +531,12 @@ fn wgsl_type(ty: Type) -> &'static str {
         Type::Vec2f => "vec2<f32>",
         Type::Vec3f => "vec3<f32>",
         Type::Vec4f => "vec4<f32>",
+        Type::Vec2i => "vec2<i32>",
+        Type::Vec3i => "vec3<i32>",
+        Type::Vec4i => "vec4<i32>",
+        Type::Vec2u => "vec2<u32>",
+        Type::Vec3u => "vec3<u32>",
+        Type::Vec4u => "vec4<u32>",
         Type::Mat3f => "mat3x3<f32>",
         Type::Mat4f => "mat4x4<f32>",
         Type::Texture2D => "texture_2d<f32>",

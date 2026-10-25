@@ -46,6 +46,9 @@ return {
     matrix = inFragment(function() return shader.mat4(1.0) end),
     floatOfVector = inFragment(function(input) return shader.float(input.tint) end),
     swizzle = inFragment(function(input) return input.light.xyzw end),
+    notWhole = inFragment(function() return shader.vec4(shader.vec3i(1.5, 2, 3).x) end),
+    uintRange = inFragment(function() return shader.vec4(shader.uint(-1)) end),
+    integerFloat = inFragment(function() return shader.vec4(shader.vec2i(1, 2) * 2) end),
     foreign = inFragment(function(input) return shader.min(input.tint, captured :: ShaderExpr) end),
     sampler = inFragment(function(input) return shader.sample(input.tint, input.light.xy) end),
 

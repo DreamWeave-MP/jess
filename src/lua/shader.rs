@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::shader::{Program, ProgramBuilder, Semantic, Site, SourceOrigin, Swizzle, Type, ValidationError, Value};
+use crate::shader::{Program, ProgramBuilder, Scalar, Semantic, Site, SourceOrigin, Swizzle, Type, ValidationError, Value};
 use l3i::Runtime;
 use l3i::bind::{ArgView, Call, StackResults};
 use l3i::debug::DebugScope;
@@ -291,18 +291,39 @@ fn invalid(problem: ValidationError) -> l3i::Error {
 /// An operand of `operation`: a shader value's expression (a value from another program is
 /// refused by the site), or a number, which is a `Float` literal at the operation's origin.
 fn operand(site: &mut Site<'_>, operation: &str, view: ValueView<'_>) -> l3i::Result<Value> {
+    operand_of(site, operation, view, Scalar::Float)
+}
+
+/// [`operand`], with a number as a literal of `scalar`: an integer constructor's numbers are its
+/// integers, and must be whole numbers in its range.
+fn operand_of(site: &mut Site<'_>, operation: &str, view: ValueView<'_>, scalar: Scalar) -> l3i::Result<Value> {
     if let Some(expression) = l3i::userdata::receiver::<LuaShaderExpr>(view) {
         return Ok(expression.value);
     }
-    if view.is_number() || view.is_integer() {
-        #[allow(clippy::cast_possible_truncation)] // Shader floats are f32.
-        let number = view.read::<f64>()? as f32;
-        return site.float(number).map_err(invalid);
+    if !(view.is_number() || view.is_integer()) {
+        return Err(error(format!(
+            "{operation}: expected a shader value or a number, not {}",
+            kind(view)
+        )));
     }
-    Err(error(format!(
-        "{operation}: expected a shader value or a number, not {}",
-        kind(view)
-    )))
+    let number = view.read::<f64>()?;
+    let whole = |low: f64, high: f64, name: &str| {
+        if number.fract() == 0.0 && (low..=high).contains(&number) {
+            return Ok(number);
+        }
+        Err(error(format!(
+            "{operation}: {number} is not {name}: expected a whole number from {low} to {high}"
+        )))
+    };
+    match scalar {
+        // In range and whole, checked above.
+        #[allow(clippy::cast_possible_truncation)]
+        Scalar::Int => Ok(site.int(whole(f64::from(i32::MIN), f64::from(i32::MAX), "an Int")? as i32)),
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        Scalar::UInt => Ok(site.uint(whole(0.0, f64::from(u32::MAX), "a UInt")? as u32)),
+        #[allow(clippy::cast_possible_truncation)] // Shader floats are f32.
+        Scalar::Float | Scalar::Bool => site.float(number as f32).map_err(invalid),
+    }
 }
 
 fn expression(build: &Rc<RefCell<Build>>, value: Value) -> Owned<LuaShaderExpr> {
@@ -491,11 +512,19 @@ fn sample(
 }
 
 /// The `jess.shader` member a type is, as `shader.<name>`.
-const TYPE_DESCRIPTORS: [(&str, Type); 8] = [
+const TYPE_DESCRIPTORS: [(&str, Type); 16] = [
     ("float", Type::Float),
+    ("int", Type::Int),
+    ("uint", Type::UInt),
     ("vec2", Type::Vec2f),
     ("vec3", Type::Vec3f),
     ("vec4", Type::Vec4f),
+    ("vec2i", Type::Vec2i),
+    ("vec3i", Type::Vec3i),
+    ("vec4i", Type::Vec4i),
+    ("vec2u", Type::Vec2u),
+    ("vec3u", Type::Vec3u),
+    ("vec4u", Type::Vec4u),
     ("mat3", Type::Mat3f),
     ("mat4", Type::Mat4f),
     ("texture2d", Type::Texture2D),
@@ -513,18 +542,19 @@ fn descriptor_name(ty: Type) -> &'static str {
 /// or `shader.float(number)`, a `Float` literal. The other types say they can't be constructed.
 fn construct(this: &LuaShaderType, call: &Call<'_>, args: ArgView<'_>) -> l3i::Result<Owned<LuaShaderExpr>> {
     let views: Vec<ValueView<'_>> = (0..args.len()).map(|index| args.get(index)).collect();
-    let operation = this.ty.name();
     let build = this.shader.build_for(descriptor_name(this.ty), &views)?;
+    let operation = format!("shader.{}", descriptor_name(this.ty));
+    let scalar = this.ty.scalar().unwrap_or(Scalar::Float);
     let value = at_site(call, &build, |site, _| {
-        if this.ty == Type::Float
+        if this.ty.is_numeric_scalar()
             && let [only] = views.as_slice()
             && (only.is_number() || only.is_integer())
         {
-            return operand(site, operation, *only);
+            return operand_of(site, &operation, *only, scalar);
         }
         let components = views
             .iter()
-            .map(|view| operand(site, operation, *view))
+            .map(|view| operand_of(site, &operation, *view, scalar))
             .collect::<l3i::Result<Vec<Value>>>()?;
         site.construct(this.ty, &components).map_err(invalid)
     })?;

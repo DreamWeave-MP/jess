@@ -29,6 +29,14 @@ local lit = shader.program {
       sameRead = input.position == input.position,
       differentValues = input.position == input.normal,
       texture = tostring(input.diffuse),
+      integers = {
+        cell = tostring(shader.vec3i(1, -2, 3)),
+        count = tostring(shader.uint(7)),
+        signed = tostring(shader.int(-3) + shader.int(2)),
+        splat = tostring(shader.vec2u(shader.uint(1))),
+        dot = tostring(shader.dot(shader.vec3i(1), shader.vec3i(2))),
+        swizzle = tostring(shader.vec4u(1, 2, 3, 4).wx),
+      },
     }
 
     return {
@@ -99,6 +107,14 @@ return {
     mat4 = tostring(shader.mat4),
     texture2d = tostring(shader.texture2d),
     sampler = tostring(shader.sampler),
+    int = tostring(shader.int),
+    uint = tostring(shader.uint),
+    vec2i = tostring(shader.vec2i),
+    vec3i = tostring(shader.vec3i),
+    vec4i = tostring(shader.vec4i),
+    vec2u = tostring(shader.vec2u),
+    vec3u = tostring(shader.vec3u),
+    vec4u = tostring(shader.vec4u),
   },
   lit = describe(lit),
   constant = describe(constant),

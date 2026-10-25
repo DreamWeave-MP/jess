@@ -54,7 +54,7 @@ fn dot_of_different_sizes_is_invalid() {
 
     assert_eq!(
         messages(&program),
-        ["shaders/lit.jsl:12:5 (@test/viewer): dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size"]
+        ["shaders/lit.jsl:12:5 (@test/viewer): dot(Vec3f, Vec4f) is invalid: expected two vectors of the same type"]
     );
 }
 
@@ -91,7 +91,7 @@ fn a_texture_is_not_a_value() {
     assert_eq!(
         messages(&program),
         [
-            "Texture2D + Float is invalid: expected two values of the same numeric type, a float vector and a Float, \
+            "Texture2D + Float is invalid: expected two values of the same numeric type, a vector and a scalar of its kind, \
              or two matrices of the same size"
         ]
     );
@@ -412,20 +412,20 @@ fn operand_rules_are_checked() {
     assert_eq!(
         messages(&program),
         [
-            "min(Int, Float) is invalid: expected two values of the same numeric type, or a float vector and a Float",
-            "Mat4f * Vec3f is invalid: expected two values of the same numeric type, a float vector and a Float, a \
+            "min(Int, Float) is invalid: expected two values of the same numeric type, or a vector and a scalar of its kind",
+            "Mat4f * Vec3f is invalid: expected two values of the same numeric type, a vector and a scalar of its kind, a \
              matrix and a Float, a matrix and a vector of its size, or two matrices of the same size",
-            "Mat4f / Mat4f is invalid: expected two values of the same numeric type, or a float vector and a Float",
+            "Mat4f / Mat4f is invalid: expected two values of the same numeric type, or a vector and a scalar of its kind",
             "cross(Vec4f, Vec4f) is invalid: expected two Vec3f",
             "mix(Vec2f, Vec3f, Float) is invalid: expected two Floats or float vectors of the same type, and an amount \
              of that type or Float",
-            "clamp(Vec3f, Vec2f, Float) is invalid: expected a numeric value and two bounds of its type, or a float \
-             vector and two Floats",
+            "clamp(Vec3f, Vec2f, Float) is invalid: expected a numeric value and two bounds of its type, or a vector \
+             and two scalars of its kind",
             "length(Int) is invalid: expected a Float or float vector",
             "floor(Int) is invalid: expected a Float or float vector",
             "normalize(Float) is invalid: expected a float vector",
             "Vec4f(Vec3f, Vec2f) is invalid: expected floats and float vectors adding up to 4 components, or one Float",
-            "Mat3f(Vec3f, Vec3f, Vec3f) is invalid: expected a Vec2f, Vec3f, or Vec4f target",
+            "Mat3f(Vec3f, Vec3f, Vec3f) is invalid: expected a vector target",
             "Vec2f.xyz is invalid: expected components a Vec2f has",
             "Float.x is invalid: expected components a Float has",
         ]

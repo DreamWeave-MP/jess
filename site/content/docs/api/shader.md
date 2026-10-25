@@ -6,7 +6,7 @@ extra:
   kind: api
 ---
 
-{{ api_signature(value="jess.shader: { program, float, vec2, vec3, vec4, mat3, mat4, texture2d, sampler, min, max, clamp, dot, cross, normalize, length, floor, mix, sample }") }}
+{{ api_signature(value="jess.shader: { program, float, int, uint, vec2, vec3, vec4, vec2i, vec3i, vec4i, vec2u, vec3u, vec4u, mat3, mat4, texture2d, sampler, min, max, clamp, dot, cross, normalize, length, floor, mix, sample }") }}
 
 A shader, written in Luau. `require("@jess/shader")` is the same table as `jess.shader`, and a shader module is an ordinary Luau module that runs once and returns a `ShaderProgram`.
 
@@ -117,9 +117,9 @@ shader.program {
 
 A symbolic value in the program under construction: an expression, its type, and the program it belongs to. It isn't a number and it isn't a GPU value; there's nothing in it to read.
 
-- **Operators:** `+`, `-`, `*`, `/`, between two values of one numeric type, or a vector and a `Float`. `+` and `-` also take two matrices of one size; `*` also takes a matrix and a `Float`, a matrix and a vector of its size, or two matrices of one size. `input.projection * input.view * input.model * position` multiplies left to right, as Luau evaluates it.
-- **Numbers:** a Luau number where a value goes is a `Float` constant, on either side: `2 * color`, `shader.max(facing, 0)`. There are no integer constants yet.
-- **Swizzles:** `.x`, `.xy`, `.zyx`, `.wzyx`: one to four of `x`, `y`, `z`, and `w`, giving a `Float` or a vector. They're the only names a value has.
+- **Operators:** `+`, `-`, `*`, `/`, between two values of one numeric type, or a vector and a scalar of its kind (a `Vec3f` and a `Float`, a `Vec2u` and a `UInt`). `+` and `-` also take two matrices of one size; `*` also takes a matrix and a `Float`, a matrix and a vector of its size, or two matrices of one size. `input.projection * input.view * input.model * position` multiplies left to right, as Luau evaluates it.
+- **Numbers:** a Luau number where a value goes is a `Float` constant, on either side: `2 * color`, `shader.max(facing, 0)`. Integers are spelled `shader.int(3)` and `shader.uint(3)`, so `2 * cell` is a `Float` times whatever `cell` is, and fails for an integer vector.
+- **Swizzles:** `.x`, `.xy`, `.zyx`, `.wzyx`: one to four of `x`, `y`, `z`, and `w`, giving a scalar or a vector of the same kind. They're the only names a value has.
 - **`==`:** whether two handles name the same expression. Reading `input.tint` twice gives equal values.
 - **`tostring`:** `ShaderExpr(Vec4f)`.
 - **Lifetime:** a value belongs to one `shader.program` call. Used after that call returns, it fails with `this shader program is finished: its values belong to a shader.program call that has returned`; used inside another program, with `expression <n> belongs to another shader program`.
@@ -147,25 +147,27 @@ shader.program {
 
 ## Types
 
-{{ api_signature(value="shader.float, shader.vec2, shader.vec3, shader.vec4, shader.mat3, shader.mat4, shader.texture2d, shader.sampler: ShaderType") }}
+{{ api_signature(value="shader.float, shader.int, shader.uint, shader.vec2, shader.vec3, shader.vec4, shader.vec2i, shader.vec3i, shader.vec4i, shader.vec2u, shader.vec3u, shader.vec4u, shader.mat3, shader.mat4, shader.texture2d, shader.sampler: ShaderType") }}
 
 A `ShaderType` is what `parameters` and `textures` declare, and `tostring` gives its name as errors spell it.
 
 | Member | Type | Declares |
 | --- | --- | --- |
-| `shader.float` | `Float` | A parameter. |
+| `shader.float`, `shader.int`, `shader.uint` | `Float`, `Int`, `UInt` | A parameter. |
 | `shader.vec2`, `shader.vec3`, `shader.vec4` | `Vec2f`, `Vec3f`, `Vec4f` | A parameter. |
+| `shader.vec2i`, `shader.vec3i`, `shader.vec4i` | `Vec2i`, `Vec3i`, `Vec4i` | A parameter: signed integers. |
+| `shader.vec2u`, `shader.vec3u`, `shader.vec4u` | `Vec2u`, `Vec3u`, `Vec4u` | A parameter: unsigned integers. |
 | `shader.mat3`, `shader.mat4` | `Mat3f`, `Mat4f` | A parameter. Column-major. |
 | `shader.texture2d` | `Texture2D` | A texture, in `textures`. |
 | `shader.sampler` | `Sampler` | A parameter: a sampler of its own, for [sample](#shader-sample)'s three-argument form. |
 
-The vector types and `float` are also constructors, inside a stage function:
+The vector types, `float`, `int`, and `uint` are also constructors, inside a stage function:
 
 {{ api_signature(value="shader.vec4(...: ShaderExpr | number) -> ShaderExpr") }}
 
-- `shader.vec2`, `shader.vec3`, `shader.vec4` take floats and smaller vectors whose sizes add up to theirs (`shader.vec4(input.position, 1)`, `shader.vec4(input.uv, 0, 1)`), or one `Float` to repeat (`shader.vec3(0.5)`).
-- `shader.float(0.25)` is a `Float` constant, for when a bare number has nothing beside it to make it one.
-- The matrices, `texture2d`, and `sampler` can't be constructed: `Mat4f(Float) is invalid: expected a Vec2f, Vec3f, or Vec4f target`.
+- `shader.vec2`, `shader.vec3`, `shader.vec4` take floats and smaller vectors whose sizes add up to theirs (`shader.vec4(input.position, 1)`, `shader.vec4(input.uv, 0, 1)`), or one `Float` to repeat (`shader.vec3(0.5)`). The integer vectors take integers the same way, and a number among them is that vector's integer: `shader.vec3i(1, -2, 3)`, `shader.vec2u(shader.uint(1))`. A number that isn't whole, or is out of range, fails: `shader.vec3i: 1.5 is not an Int: expected a whole number from -2147483648 to 2147483647`.
+- `shader.float(0.25)` is a `Float` constant, for when a bare number has nothing beside it to make it one, and `shader.int(-3)` and `shader.uint(7)` are the integer constants.
+- The matrices, `texture2d`, and `sampler` can't be constructed: `Mat4f(Float) is invalid: expected a vector target`.
 
 ```luau
 --!strict
@@ -176,6 +178,7 @@ print(shader.vec4, shader.mat3, shader.texture2d) -- Vec4f  Mat3f  Texture2D
 shader.program {
   vertex = function(input)
     print(shader.vec4(input.position, 1), shader.vec4(input.uv, 0, 1), shader.vec3(0.5))
+    print(shader.vec3i(1, -2, 3), shader.uint(7), shader.vec2u(shader.uint(1)).yx)
 
     return { position = shader.vec4(input.position, 1) }
   end,
@@ -183,6 +186,7 @@ shader.program {
   fragment = function() return shader.vec4(shader.float(0.25)) end,
 }
 -- ShaderExpr(Vec4f)  ShaderExpr(Vec4f)  ShaderExpr(Vec3f)
+-- ShaderExpr(Vec3i)  ShaderExpr(UInt)  ShaderExpr(Vec2u)
 ```
 
 ## Functions
@@ -191,12 +195,12 @@ Each takes shader values or numbers and returns a new value. They're only usable
 
 | Function | Takes | Gives |
 | --- | --- | --- |
-| `shader.min(a, b)`, `shader.max(a, b)` | Two values of one numeric type, or a vector and a `Float`. | The smaller or larger, per component. |
-| `shader.clamp(value, low, high)` | A value and two bounds of its type, or a vector and two `Float`s. | `value` kept within `low..high`, per component. |
+| `shader.min(a, b)`, `shader.max(a, b)` | Two values of one numeric type, or a vector and a scalar of its kind. | The smaller or larger, per component. |
+| `shader.clamp(value, low, high)` | A value and two bounds of its type, or a vector and two scalars of its kind. | `value` kept within `low..high`, per component. |
 | `shader.mix(start, finish, amount)` | Two `Float`s or vectors of one type, and an amount of that type or `Float`. | `start + (finish - start) * amount`. |
-| `shader.dot(a, b)` | Two vectors of one size. | A `Float`. |
+| `shader.dot(a, b)` | Two vectors of one type. | Their component: a `Float`, `Int`, or `UInt`. |
 | `shader.cross(a, b)` | Two `Vec3f`. | A `Vec3f`. |
-| `shader.normalize(value)` | A vector. | The vector at length 1. |
+| `shader.normalize(value)` | A float vector. | The vector at length 1. |
 | `shader.length(value)` | A `Float` or a vector. | A `Float`. |
 | `shader.floor(value)` | A `Float` or float vector. | The greatest integer no larger than each component, with the same type. |
 
@@ -328,7 +332,7 @@ end))
 And this is `jess run shaders/errors.jsl`:
 
 ```text
-false	shaders/errors.jsl:12 (shaders/errors.jsl): dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size
+false	shaders/errors.jsl:12 (shaders/errors.jsl): dot(Vec3f, Vec4f) is invalid: expected two vectors of the same type
 false	shaders/errors.jsl: the shader program is invalid
 shaders/errors.jsl:19 (shaders/errors.jsl): the vertex position is Vec3f: expected Vec4f
 shaders/errors.jsl:20 (shaders/errors.jsl): fragment output 0 is Vec3f: expected Vec4f

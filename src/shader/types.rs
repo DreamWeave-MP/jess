@@ -2,9 +2,23 @@
 
 use std::fmt;
 
+/// What a value's components are made of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Scalar {
+    /// A boolean.
+    Bool,
+    /// A signed 32-bit integer.
+    Int,
+    /// An unsigned 32-bit integer.
+    UInt,
+    /// A 32-bit float.
+    Float,
+}
+
 /// Every type a shader expression, parameter, vertex input, or varying can have.
 ///
-/// Vectors and matrices are `f32` only: nothing the renderer draws needs integer vectors yet.
+/// Vectors hold two to four floats, signed integers, or unsigned integers; matrices are float
+/// only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Type {
     /// A boolean.
@@ -21,6 +35,18 @@ pub enum Type {
     Vec3f,
     /// Four floats.
     Vec4f,
+    /// Two signed integers.
+    Vec2i,
+    /// Three signed integers.
+    Vec3i,
+    /// Four signed integers.
+    Vec4i,
+    /// Two unsigned integers.
+    Vec2u,
+    /// Three unsigned integers.
+    Vec3u,
+    /// Four unsigned integers.
+    Vec4u,
     /// A 3×3 float matrix, column-major.
     Mat3f,
     /// A 4×4 float matrix, column-major.
@@ -32,34 +58,88 @@ pub enum Type {
 }
 
 impl Type {
+    /// The scalar of `scalar` (`size` 1) or the vector of `size` of them (2 to 4); `None` for any
+    /// other size, and for vectors of `Bool`, which nothing needs.
+    #[must_use]
+    pub fn vector(scalar: Scalar, size: u8) -> Option<Type> {
+        let ty = match (scalar, size) {
+            (Scalar::Bool, 1) => Type::Bool,
+            (Scalar::Int, 1) => Type::Int,
+            (Scalar::UInt, 1) => Type::UInt,
+            (Scalar::Float, 1) => Type::Float,
+            (Scalar::Float, 2) => Type::Vec2f,
+            (Scalar::Float, 3) => Type::Vec3f,
+            (Scalar::Float, 4) => Type::Vec4f,
+            (Scalar::Int, 2) => Type::Vec2i,
+            (Scalar::Int, 3) => Type::Vec3i,
+            (Scalar::Int, 4) => Type::Vec4i,
+            (Scalar::UInt, 2) => Type::Vec2u,
+            (Scalar::UInt, 3) => Type::Vec3u,
+            (Scalar::UInt, 4) => Type::Vec4u,
+            _ => return None,
+        };
+        Some(ty)
+    }
+
     /// The vector with `count` float components: `Float` for 1, `Vec2f`..`Vec4f` for 2..4.
     #[must_use]
     pub fn float_vector(count: usize) -> Option<Type> {
-        match count {
-            1 => Some(Type::Float),
-            2 => Some(Type::Vec2f),
-            3 => Some(Type::Vec3f),
-            4 => Some(Type::Vec4f),
-            _ => None,
+        Type::vector(Scalar::Float, u8::try_from(count).ok()?)
+    }
+
+    /// What a scalar, vector, or matrix is made of; `None` for a resource.
+    #[must_use]
+    pub fn scalar(self) -> Option<Scalar> {
+        match self {
+            Type::Bool => Some(Scalar::Bool),
+            Type::Int | Type::Vec2i | Type::Vec3i | Type::Vec4i => Some(Scalar::Int),
+            Type::UInt | Type::Vec2u | Type::Vec3u | Type::Vec4u => Some(Scalar::UInt),
+            Type::Float | Type::Vec2f | Type::Vec3f | Type::Vec4f | Type::Mat3f | Type::Mat4f => Some(Scalar::Float),
+            Type::Texture2D | Type::Sampler => None,
         }
+    }
+
+    /// How many components a scalar (1) or vector (2 to 4) has; 0 for matrices and resources.
+    #[must_use]
+    pub fn components(self) -> u8 {
+        match self {
+            Type::Bool | Type::Int | Type::UInt | Type::Float => 1,
+            Type::Vec2f | Type::Vec2i | Type::Vec2u => 2,
+            Type::Vec3f | Type::Vec3i | Type::Vec3u => 3,
+            Type::Vec4f | Type::Vec4i | Type::Vec4u => 4,
+            Type::Mat3f | Type::Mat4f | Type::Texture2D | Type::Sampler => 0,
+        }
+    }
+
+    /// A vector's component type, the scalar it is made of; `None` for anything else.
+    #[must_use]
+    pub fn component(self) -> Option<Type> {
+        if !self.is_vector() {
+            return None;
+        }
+        Type::vector(self.scalar()?, 1)
     }
 
     /// How many float components a `Float` or float vector has; 0 for every other type.
     #[must_use]
     pub fn float_components(self) -> u8 {
-        match self {
-            Type::Float => 1,
-            Type::Vec2f => 2,
-            Type::Vec3f => 3,
-            Type::Vec4f => 4,
-            _ => 0,
+        if self.scalar() == Some(Scalar::Float) {
+            self.components()
+        } else {
+            0
         }
+    }
+
+    /// Whether this is a vector of any scalar.
+    #[must_use]
+    pub fn is_vector(self) -> bool {
+        self.components() > 1
     }
 
     /// Whether this is `Vec2f`, `Vec3f`, or `Vec4f`.
     #[must_use]
-    pub fn is_vector(self) -> bool {
-        matches!(self, Type::Vec2f | Type::Vec3f | Type::Vec4f)
+    pub fn is_float_vector(self) -> bool {
+        self.float_components() > 1
     }
 
     /// Whether this is `Mat3f` or `Mat4f`.
@@ -72,6 +152,12 @@ impl Type {
     #[must_use]
     pub fn is_numeric_scalar(self) -> bool {
         matches!(self, Type::Int | Type::UInt | Type::Float)
+    }
+
+    /// Whether this is a numeric scalar or a vector: what arithmetic works on per component.
+    #[must_use]
+    pub fn is_numeric(self) -> bool {
+        self.is_numeric_scalar() || self.is_vector()
     }
 
     /// Whether this is `Texture2D` or `Sampler`: a bound resource, not a value.
@@ -91,6 +177,12 @@ impl Type {
             Type::Vec2f => "Vec2f",
             Type::Vec3f => "Vec3f",
             Type::Vec4f => "Vec4f",
+            Type::Vec2i => "Vec2i",
+            Type::Vec3i => "Vec3i",
+            Type::Vec4i => "Vec4i",
+            Type::Vec2u => "Vec2u",
+            Type::Vec3u => "Vec3u",
+            Type::Vec4u => "Vec4u",
             Type::Mat3f => "Mat3f",
             Type::Mat4f => "Mat4f",
             Type::Texture2D => "Texture2D",

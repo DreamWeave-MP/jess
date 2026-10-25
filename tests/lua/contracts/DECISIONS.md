@@ -72,9 +72,9 @@ The entries below are the decisions behind what the fixtures and the neighbourin
 
 ### 11. A number in a shader is a `Float`
 
-- **What:** a Luau number has no `Float`/`Int`/`UInt` type, and `@jess/shader` takes one wherever a shader value goes (`shader.max(facing, 0)`, `2 * color`, `shader.vec4(position, 1)`). It is a `Float` literal, written at the operation's line. `Int` and `UInt` have no spelling: nothing the acceptance shaders do needs one, and the IR has no integer vectors.
+- **What:** a Luau number has no `Float`/`Int`/`UInt` type, and `@jess/shader` takes one wherever a shader value goes (`shader.max(facing, 0)`, `2 * color`, `shader.vec4(position, 1)`). It is a `Float` literal, written at the operation's line. A number is never an `Int` or `UInt` by its value: integers are spelled `shader.int(3)` and `shader.uint(3)`. Inside an integer vector's constructor (`shader.vec3i(1, -2, 3)`) a number is that vector's integer, by where it is written, and must be whole and in range.
 - **Class:** design.
-- **Decision:** pinned in `shader/program` (`constant`, `float`). Integer constants arrive with a consumer, as `shader.int` and `shader.uint`, not by guessing from a number's value.
+- **Decision:** pinned in `shader/program` (`constant`, `float`, `integers`); a number that isn't whole or is out of range is an error naming the constructor (`shader/errors`, `notWhole`, `uintRange`), and a bare number beside an integer vector stays a `Float` (`integerFloat`).
 
 ### 12. A texture comes with its sampler
 
@@ -84,7 +84,7 @@ The entries below are the decisions behind what the fixtures and the neighbourin
 
 ### 13. Shader errors name the line, never a column
 
-- **What:** Luau's debug info records lines. A shader value's origin is the chunk and line of the nearest Luau function on the call stack (so a call through `pcall` still points at Luau source), and the module that called `shader.program` is its owner: `shaders/lit.jsl:12 (shaders/lit.jsl): dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size`. A mistake only the whole program shows (a `Vec3f` position, a texture sampled in the vertex stage) is reported when the program is finished, every problem on its own line under `<owner>: the shader program is invalid`.
+- **What:** Luau's debug info records lines. A shader value's origin is the chunk and line of the nearest Luau function on the call stack (so a call through `pcall` still points at Luau source), and the module that called `shader.program` is its owner: `shaders/lit.jsl:12 (shaders/lit.jsl): dot(Vec3f, Vec4f) is invalid: expected two vectors of the same type`. A mistake only the whole program shows (a `Vec3f` position, a texture sampled in the vertex stage) is reported when the program is finished, every problem on its own line under `<owner>: the shader program is invalid`.
 - **Class:** design.
 - **Decision:** pinned whole in `shader/errors` (`operations`, `program`), line numbers included: moving a line in that fixture is a re-bless.
 

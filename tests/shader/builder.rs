@@ -198,7 +198,7 @@ fn dot_of_different_sizes_fails_at_its_site() {
     let error = builder.at(origin(12, 5)).dot(normal, light).unwrap_err();
     assert_eq!(
         error.to_string(),
-        "shaders/lit.jsl:12:5 (@test/viewer): dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size"
+        "shaders/lit.jsl:12:5 (@test/viewer): dot(Vec3f, Vec4f) is invalid: expected two vectors of the same type"
     );
     assert!(matches!(
         error.kind,
@@ -260,24 +260,24 @@ fn every_operation_is_typed_at_its_site() {
         site.swizzle(scalar, Swizzle::parse("x").unwrap()).unwrap_err().to_string(),
     ];
     let expected = [
-        "min(Int, Float) is invalid: expected two values of the same numeric type, or a float vector and a Float",
-        "Mat4f * Vec3f is invalid: expected two values of the same numeric type, a float vector and a Float, a matrix \
+        "min(Int, Float) is invalid: expected two values of the same numeric type, or a vector and a scalar of its kind",
+        "Mat4f * Vec3f is invalid: expected two values of the same numeric type, a vector and a scalar of its kind, a matrix \
          and a Float, a matrix and a vector of its size, or two matrices of the same size",
-        "Mat4f / Mat4f is invalid: expected two values of the same numeric type, or a float vector and a Float",
+        "Mat4f / Mat4f is invalid: expected two values of the same numeric type, or a vector and a scalar of its kind",
         "cross(Vec4f, Vec4f) is invalid: expected two Vec3f",
         "mix(Vec2f, Vec3f, Float) is invalid: expected two Floats or float vectors of the same type, and an amount of \
          that type or Float",
-        "clamp(Vec3f, Vec2f, Float) is invalid: expected a numeric value and two bounds of its type, or a float vector \
-         and two Floats",
+        "clamp(Vec3f, Vec2f, Float) is invalid: expected a numeric value and two bounds of its type, or a vector \
+         and two scalars of its kind",
         "length(Int) is invalid: expected a Float or float vector",
         "normalize(Float) is invalid: expected a float vector",
         "sample(Texture2D, Texture2D, Vec2f) is invalid: expected sample(Texture2D, Sampler, Vec2f)",
-        "Texture2D + Float is invalid: expected two values of the same numeric type, a float vector and a Float, or two \
+        "Texture2D + Float is invalid: expected two values of the same numeric type, a vector and a scalar of its kind, or two \
          matrices of the same size",
         "Vec4f(Vec3f, Vec2f) is invalid: expected floats and float vectors adding up to 4 components, or one Float",
         "Vec4f(Float, Float, Float, Float, Float) is invalid: expected floats and float vectors adding up to 4 \
          components, or one Float",
-        "Mat3f(Vec3f, Vec3f, Vec3f) is invalid: expected a Vec2f, Vec3f, or Vec4f target",
+        "Mat3f(Vec3f, Vec3f, Vec3f) is invalid: expected a vector target",
         "Vec2f.xyz is invalid: expected components a Vec2f has",
         "Float.x is invalid: expected components a Float has",
     ];
@@ -298,7 +298,7 @@ fn an_origin_without_a_column_prints_the_line_alone() {
     let light = site.literal(Literal::Vec4f([0.0, 1.0, 0.0, 0.0])).unwrap();
     assert_eq!(
         site.dot(normal, light).unwrap_err().to_string(),
-        "shaders/lit.jsl:12 (@test/viewer): dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size"
+        "shaders/lit.jsl:12 (@test/viewer): dot(Vec3f, Vec4f) is invalid: expected two vectors of the same type"
     );
 }
 

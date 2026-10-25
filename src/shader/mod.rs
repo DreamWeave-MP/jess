@@ -75,5 +75,5 @@ pub use expression::{
     VertexInputId,
 };
 pub use program::{Declaration, Program};
-pub use types::Type;
+pub use types::{Scalar, Type};
 pub use validate::{DeclarationKind, MAX_FRAGMENT_OUTPUTS, ValidationError, ValidationErrorKind};

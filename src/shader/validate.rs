@@ -550,11 +550,11 @@ fn infer_types(
 }
 
 /// What a vector constructor's target must be.
-pub const CONSTRUCT_TARGET: &str = "a Vec2f, Vec3f, or Vec4f target";
-const ARITHMETIC: &str = "two values of the same numeric type, or a float vector and a Float";
+pub const CONSTRUCT_TARGET: &str = "a vector target";
+const ARITHMETIC: &str = "two values of the same numeric type, or a vector and a scalar of its kind";
 const ADD_SUBTRACT: &str =
-    "two values of the same numeric type, a float vector and a Float, or two matrices of the same size";
-const MULTIPLY: &str = "two values of the same numeric type, a float vector and a Float, a matrix and a Float, \
+    "two values of the same numeric type, a vector and a scalar of its kind, or two matrices of the same size";
+const MULTIPLY: &str = "two values of the same numeric type, a vector and a scalar of its kind, a matrix and a Float, \
                         a matrix and a vector of its size, or two matrices of the same size";
 
 /// The type of one expression, `Ok(None)` when an operand already failed (so one mistake is
@@ -659,12 +659,18 @@ pub fn constant_out_of_range(
     Ok(())
 }
 
-/// What a vector constructor of `target` accepts; `None` when `target` is not a float vector.
+/// What a vector constructor of `target` accepts; `None` when `target` is not a vector.
 pub fn construct_expected(target: Type) -> Option<&'static str> {
     match target {
         Type::Vec2f => Some("floats and float vectors adding up to 2 components, or one Float"),
         Type::Vec3f => Some("floats and float vectors adding up to 3 components, or one Float"),
         Type::Vec4f => Some("floats and float vectors adding up to 4 components, or one Float"),
+        Type::Vec2i => Some("Ints and Int vectors adding up to 2 components, or one Int"),
+        Type::Vec3i => Some("Ints and Int vectors adding up to 3 components, or one Int"),
+        Type::Vec4i => Some("Ints and Int vectors adding up to 4 components, or one Int"),
+        Type::Vec2u => Some("UInts and UInt vectors adding up to 2 components, or one UInt"),
+        Type::Vec3u => Some("UInts and UInt vectors adding up to 3 components, or one UInt"),
+        Type::Vec4u => Some("UInts and UInt vectors adding up to 4 components, or one UInt"),
         _ => None,
     }
 }
@@ -706,19 +712,19 @@ pub fn operation_type(id: ExpressionId, expression: &Expression, operands: &[Typ
         Expression::Multiply(..) => multiply(operands[0], operands[1]).ok_or_else(|| invalid(MULTIPLY))?,
         Expression::Clamp(..) => {
             let value = operands[0];
-            let accepts = |bound: Type| bound == value || (value.is_vector() && bound == Type::Float);
-            if !(value.is_numeric_scalar() || value.is_vector()) || !accepts(operands[1]) || !accepts(operands[2]) {
+            let accepts = |bound: Type| bound == value || Some(bound) == value.component();
+            if !value.is_numeric() || !accepts(operands[1]) || !accepts(operands[2]) {
                 return Err(invalid(
-                    "a numeric value and two bounds of its type, or a float vector and two Floats",
+                    "a numeric value and two bounds of its type, or a vector and two scalars of its kind",
                 ));
             }
             value
         }
         Expression::Dot(..) => {
-            if operands[0] != operands[1] || !operands[0].is_vector() {
-                return Err(invalid("two float vectors of the same size"));
-            }
-            Type::Float
+            let Some(component) = operands[0].component().filter(|_| operands[0] == operands[1]) else {
+                return Err(invalid("two vectors of the same type"));
+            };
+            component
         }
         Expression::Cross(..) => {
             if operands != [Type::Vec3f, Type::Vec3f] {
@@ -727,7 +733,7 @@ pub fn operation_type(id: ExpressionId, expression: &Expression, operands: &[Typ
             Type::Vec3f
         }
         Expression::Normalize(..) => {
-            if !operands[0].is_vector() {
+            if !operands[0].is_float_vector() {
                 return Err(invalid("a float vector"));
             }
             operands[0]
@@ -755,38 +761,49 @@ pub fn operation_type(id: ExpressionId, expression: &Expression, operands: &[Typ
         }
         Expression::Construct { target, .. } => {
             let expected = construct_expected(target).ok_or_else(|| invalid(CONSTRUCT_TARGET))?;
-            let sizes = operands.iter().map(|operand| operand.float_components());
-            let splat = operands == [Type::Float];
-            if !splat && (sizes.clone().any(|size| size == 0) || sizes.sum::<u8>() != target.float_components()) {
+            let splat = operands.len() == 1 && Some(operands[0]) == target.component();
+            let of_its_kind = operands
+                .iter()
+                .all(|operand| operand.scalar() == target.scalar() && operand.components() > 0);
+            let size: u8 = operands.iter().map(|operand| operand.components()).sum();
+            if !splat && (!of_its_kind || size != target.components()) {
                 return Err(invalid(expected));
             }
             target
         }
         Expression::Swizzle { swizzle, .. } => {
             let vector = operands[0];
-            let size = vector.float_components();
-            if !vector.is_vector() || swizzle.components().iter().any(|component| component.index() >= size) {
-                return Err(ValidationErrorKind::InvalidSwizzle {
-                    expression: id,
-                    vector,
-                    swizzle,
-                });
+            let size = vector.components();
+            let read = vector
+                .scalar()
+                .zip(u8::try_from(swizzle.components().len()).ok())
+                .and_then(|(scalar, count)| Type::vector(scalar, count));
+            match read {
+                Some(ty) if vector.is_vector() && swizzle.components().iter().all(|component| component.index() < size) => {
+                    ty
+                }
+                _ => {
+                    return Err(ValidationErrorKind::InvalidSwizzle {
+                        expression: id,
+                        vector,
+                        swizzle,
+                    });
+                }
             }
-            Type::float_vector(swizzle.components().len()).unwrap_or(Type::Float)
         }
     };
     Ok(ty)
 }
 
-/// `+ - / min max` on non-matrices: same numeric type, or a float vector and a `Float`.
+/// `+ - / min max` on non-matrices: same numeric type, or a vector and a scalar of its kind.
 fn arithmetic(left: Type, right: Type) -> Option<Type> {
-    if left == right && (left.is_numeric_scalar() || left.is_vector()) {
+    if left == right && left.is_numeric() {
         return Some(left);
     }
-    if left.is_vector() && right == Type::Float {
+    if left.component() == Some(right) {
         return Some(left);
     }
-    if right.is_vector() && left == Type::Float {
+    if right.component() == Some(left) {
         return Some(right);
     }
     None
