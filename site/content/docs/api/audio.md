@@ -1,14 +1,14 @@
 ---
 title: '@jess/audio'
-description: 'Turn bytes into PCM, play voices on a sample clock where every command lands on its exact frame, render the mix offline, and read and write WAV.'
+description: 'Turn bytes into PCM, play voices on a sample clock where every command lands on its exact frame, render the mix offline, read and write WAV, and load or stream MP3, Vorbis, and Opus.'
 weight: 52
 extra:
   kind: api
 ---
 
-{{ api_signature(value="require('@jess/audio'): { pcm, stream, offline, output, processors, frames, seconds, tempo, readWav, loadWav, writeWav }") }}
+{{ api_signature(value="require('@jess/audio'): { pcm, stream, offline, output, processors, frames, seconds, tempo, readWav, loadWav, writeWav, load, decoder }") }}
 
-`@jess/audio` is audio for scripts: the built-in package's Luau over `jess.audio`, the native half. The native side owns samples, voices, the sample clock, and the mix. What a file's bytes are and which frame a second lands on are Luau's, so WAV reading and writing and the time helpers live here, and a format that needs a native codec arrives as PCM bytes the same way.
+`@jess/audio` is audio for scripts: the built-in package's Luau over `jess.audio`, the native half. The native side owns samples, voices, the sample clock, and the mix. What a file's bytes are and which frame a second lands on are Luau's, so WAV reading and writing and the time helpers live here. MP3, Ogg Vorbis, and Ogg Opus need codecs, which are [`@dream/audio`](@/docs/api/l3i.md)'s; this module loads them whole or streams them.
 
 The engine never calls into Luau. A script sends it commands, each with an optional `at`, an output frame, and the engine carries each one out on exactly that frame, wherever it falls in the block it is mixing. An offline context is rendered by the script, on demand, into a buffer: the same engine a device runs, which makes an offline render the test of a live one.
 
@@ -363,6 +363,16 @@ Reads a WAV file's chunks: `{ format, channels, rate, frames, data, loopStart, l
 {{ api_signature(value="audio.writeWav(samples: buffer, options: { channels: number, rate: number, format: ('s16' | 's24' | 'f32')? }) -> buffer") }}
 
 Interleaved 32-bit floats as a WAV file, `f32` unless `format` asks for integers. Integers round to nearest and clip at full scale, and the scale is the one `pcm` reads with, so a 16-bit file read, played at its own rate, rendered, and written back as `s16` is the same bytes.
+
+## Compressed files
+
+{{ api_signature(value="audio.load(data: buffer | string) -> AudioPcm") }}
+
+A WAV, MP3, Ogg Vorbis, or Ogg Opus file, whole, as PCM at the file's own rate: what a footstep or a door wants. The encoder's delay and padding are trimmed, so the PCM is as long as what was encoded, and a loop cut in an encoder loops without a gap. Opus always decodes at 48000 frames per second, whatever rate it was made from.
+
+{{ api_signature(value="audio.decoder(data: buffer | string, options: { format: ('mp3' | 'vorbis' | 'opus')? }?) -> Decoder") }}
+
+A decoder over a copy of the bytes, the format detected unless named: `decoder:format()`, `rate()`, `channels()`, `frames()` (nil if the file doesn't say), `position()`, `read(target, offset?, frames?)` into a buffer as interleaved 32-bit floats, and `seek(frame)`. It is [`@dream/audio`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-audio)'s, which says how each format's length and seeks are worked out: MP3 and Vorbis seek exactly, Opus to within a millionth of full scale.
 
 ## Example
 

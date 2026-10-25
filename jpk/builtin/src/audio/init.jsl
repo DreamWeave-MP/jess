@@ -3,9 +3,11 @@
 -- (`jess.audio`).
 --
 -- Rust owns samples, voices, the sample clock, and mixing. Everything that decides what a file's
--- bytes are, or which frame a second lands on, is here: WAV in and out, and seconds to frames and
--- back. Formats a codec needs native code for decode elsewhere and arrive as PCM bytes too.
+-- bytes are, or which frame a second lands on, is here: WAV in and out, seconds to frames and
+-- back, and compressed files (MP3, Ogg Vorbis, Ogg Opus) through @dream/audio's decoders, loaded
+-- whole.
 
+local Decoders = require '@dream/audio'
 local Native = jess.audio
 
 export type SampleFormat = AudioSampleFormat
@@ -26,6 +28,8 @@ export type ContextOptions = AudioContextOptions
 export type Stream = AudioStream
 export type Device = AudioDevice
 export type OutputOptions = AudioOutputOptions
+export type Decoder = dream_audio_Decoder
+export type DecoderFormat = dream_audio_Format
 
 --- A WAV file: what its samples are, and the `data` chunk's interleaved bytes. `loopStart` and
 --- `loopEnd` are the first loop of a `smpl` chunk, in frames, the end exclusive the way
@@ -278,6 +282,19 @@ local function loadWav(data: buffer | string): (Pcm, Wav)
   return pcm, wav
 end
 
+-- Compressed files ------------------------------------------------------------------------------
+
+--- Reads a WAV, MP3, Ogg Vorbis, or Ogg Opus file whole into PCM, at the file's own rate.
+local function load(data: buffer | string): Pcm
+  local bytes = if type(data) == 'string' then buffer.fromstring(data) else data
+  if buffer.len(bytes) >= 12 and buffer.readstring(bytes, 0, 4) == 'RIFF' then
+    return (loadWav(bytes))
+  end
+
+  local decoded = Decoders.decode(bytes)
+  return Native.pcm(decoded.data, { format = 'f32', channels = decoded.channels, rate = decoded.rate })
+end
+
 --- Writes interleaved 32-bit float samples (what `AudioContext:render` returns) as a WAV file:
 --- 32-bit float unless `format` asks for 16- or 24-bit integers. Integers round to nearest and
 --- clip at full scale; a sample read from a file of that format writes back as the same bytes.
@@ -353,4 +370,6 @@ return {
   readWav = readWav,
   loadWav = loadWav,
   writeWav = writeWav,
+  decoder = Decoders.decoder,
+  load = load,
 }
