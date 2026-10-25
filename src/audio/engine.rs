@@ -17,9 +17,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 
-use crate::audio::bus::Bus;
+use crate::audio::bus::{Bus, BusSend};
 use crate::audio::voice::{Voice, VoiceKey};
-use crate::audio::{BusKey, BusParam, BusSpec, MAX_CHANNELS, Pcm, PlaySpec, QUANTUM, VoiceParam};
+use crate::audio::{BusKey, BusParam, BusSpec, MAX_CHANNELS, Pcm, PlaySpec, QUANTUM, Tap, VoiceParam};
 
 /// What the control side asks of the engine.
 pub enum Command {
@@ -56,6 +56,23 @@ pub enum Command {
         bus: BusKey,
         param: BusParam,
         value: f64,
+    },
+    /// Adds or changes a bus's send, with the new order when the send is new.
+    SendBus {
+        bus: BusKey,
+        send: BusSend,
+        order: Option<Box<[u32]>>,
+    },
+    UnsendBus {
+        bus: BusKey,
+        target: u32,
+        order: Option<Box<[u32]>>,
+    },
+    /// Changes the level of a voice's send.
+    SendVoice {
+        voice: VoiceKey,
+        target: u32,
+        level: f32,
     },
 }
 
@@ -290,6 +307,41 @@ impl Engine {
                     changed.set(param, value);
                 }
             }
+            Command::SendBus { bus, send, order } => {
+                if let Some(sending) = self.bus(bus) {
+                    sending.send(send);
+                }
+                if let Some(order) = order {
+                    self.reorder(order);
+                }
+            }
+            Command::UnsendBus { bus, target, order } => {
+                if let Some(sending) = self.bus(bus) {
+                    sending.unsend(target);
+                }
+                if let Some(order) = order {
+                    self.reorder(order);
+                }
+            }
+            Command::SendVoice { voice, target, level } => self.send_voice(voice, target, level),
+        }
+    }
+
+    fn send_voice(&mut self, voice: VoiceKey, target: u32, level: f32) {
+        if let Some(playing) = self.voices[voice.slot as usize].as_mut()
+            && playing.generation == voice.generation
+        {
+            playing.set_send(target, level);
+            return;
+        }
+        if let Some(index) = self.pending_start(voice)
+            && let Command::Start { spec, .. } = &mut self.pending[index].command
+        {
+            for send in spec.sends.iter_mut().flatten() {
+                if send.bus.slot == target {
+                    send.level = level;
+                }
+            }
         }
     }
 
@@ -386,7 +438,18 @@ impl Engine {
                 rendered,
                 &mut self.mixes[bus * stride..(bus + 1) * stride],
                 self.channels,
+                1.0,
             );
+            for (target, level) in voice.sends.into_iter().flatten() {
+                let target = target as usize;
+                voice.mix(
+                    &self.scratch,
+                    rendered,
+                    &mut self.mixes[target * stride..(target + 1) * stride],
+                    self.channels,
+                    level,
+                );
+            }
             if rendered == frames {
                 continue;
             }
@@ -403,16 +466,28 @@ impl Engine {
             let Some(bus) = self.buses[slot].as_ref() else {
                 continue;
             };
-            let (level, parent) = (bus.level(), bus.parent);
-            let Some(parent) = parent else {
-                continue;
-            };
-            let (from, to) = two(&mut self.mixes, stride, slot, parent as usize);
-            for channel in 0..self.channels {
-                let range = channel * QUANTUM..channel * QUANTUM + frames;
-                for (out, sample) in to[range.clone()].iter_mut().zip(&from[range]) {
-                    *out += sample * level;
-                }
+            let (level, parent, sends) = (bus.level(), bus.parent, bus.sends);
+            for send in sends.into_iter().flatten() {
+                let gain = match send.tap {
+                    Tap::PostFader => send.level * level,
+                    Tap::PreFader => send.level,
+                };
+                self.add(slot, send.target as usize, gain, frames);
+            }
+            if let Some(parent) = parent {
+                self.add(slot, parent as usize, level, frames);
+            }
+        }
+    }
+
+    /// Adds `frames` of bus slot `from` into bus slot `to`, at `gain`.
+    fn add(&mut self, from: usize, to: usize, gain: f32, frames: usize) {
+        let stride = self.channels * QUANTUM;
+        let (from, to) = two(&mut self.mixes, stride, from, to);
+        for channel in 0..self.channels {
+            let range = channel * QUANTUM..channel * QUANTUM + frames;
+            for (out, sample) in to[range.clone()].iter_mut().zip(&from[range]) {
+                *out += sample * gain;
             }
         }
     }

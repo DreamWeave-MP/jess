@@ -3,7 +3,7 @@
 use std::f32::consts::FRAC_PI_4;
 use std::sync::Arc;
 
-use crate::audio::{AudioError, BusKey, MAX_PLAYBACK_RATE, Pcm, QUANTUM};
+use crate::audio::{AudioError, BusKey, MAX_PLAYBACK_RATE, MAX_VOICE_SENDS, Pcm, QUANTUM};
 
 /// One fractional frame in the 32.32 fixed point a voice's position is kept in. Positions are
 /// integers so that a render is the same on every machine, however long it runs.
@@ -45,6 +45,18 @@ pub struct PlaySpec {
     pub looping: Option<LoopRegion>,
     /// The bus it plays into.
     pub bus: BusKey,
+    /// Buses it also sends to, each at a level relative to what it plays into `bus`: a shared
+    /// reverb, say. Fixed when the voice starts; the levels can change.
+    pub sends: [Option<VoiceSend>; MAX_VOICE_SENDS],
+}
+
+/// A voice's send: the bus, and the level relative to the voice's own gain.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct VoiceSend {
+    /// The bus sent to.
+    pub bus: BusKey,
+    /// Linear level.
+    pub level: f32,
 }
 
 impl Default for PlaySpec {
@@ -57,6 +69,7 @@ impl Default for PlaySpec {
             offset: 0,
             looping: None,
             bus: BusKey::MASTER,
+            sends: [None; MAX_VOICE_SENDS],
         }
     }
 }
@@ -132,8 +145,23 @@ impl PlaySpec {
                 frames,
             });
         }
+        for send in self.sends.iter().flatten() {
+            check_level(f64::from(send.level))?;
+        }
         mixes(pcm.channels(), channels)
     }
+}
+
+/// A send's level, if it may take it.
+pub fn check_level(level: f64) -> Result<f64, AudioError> {
+    if level.is_finite() {
+        return Ok(level);
+    }
+    Err(AudioError::Parameter {
+        name: "send level",
+        value: level,
+        expected: "a finite number",
+    })
 }
 
 /// Whether a source of `source` channels mixes into an output of `output`.
@@ -227,6 +255,8 @@ pub struct Voice {
     pub(crate) pcm: Arc<Pcm>,
     /// The slot of the bus it plays into.
     pub(crate) bus: u32,
+    /// Bus slots it sends to, and at what level.
+    pub(crate) sends: [Option<(u32, f32)>; MAX_VOICE_SENDS],
     cursor: Cursor,
     gain: f32,
     pan: f32,
@@ -239,6 +269,7 @@ impl Voice {
         let mut voice = Voice {
             generation,
             bus: spec.bus.slot,
+            sends: spec.sends.map(|send| send.map(|send| (send.bus.slot, send.level))),
             cursor: Cursor {
                 position: spec.offset << 32,
                 step: 0,
@@ -294,9 +325,10 @@ impl Voice {
     }
 
     /// Adds `frames` of the rendered source channels in `scratch` into `bus`, `output` channels
-    /// of `QUANTUM` each, at `offset` frames into each.
-    pub(crate) fn mix(&self, scratch: &[f32], frames: usize, bus: &mut [f32], output: usize) {
+    /// of `QUANTUM` each, at the voice's gain and pan, scaled by `scale` (a send's level).
+    pub(crate) fn mix(&self, scratch: &[f32], frames: usize, bus: &mut [f32], output: usize, scale: f32) {
         let source = self.pcm.channels();
+        let gain = self.gain * scale;
         let channel = |index: usize| &scratch[index * QUANTUM..index * QUANTUM + frames];
         let mut add = |to: usize, from: &[f32], gain: f32| {
             for (out, sample) in bus[to * QUANTUM..to * QUANTUM + frames].iter_mut().zip(from) {
@@ -306,26 +338,35 @@ impl Voice {
         match (source, output) {
             (1, 2) => {
                 let angle = (self.pan + 1.0) * FRAC_PI_4;
-                add(0, channel(0), self.gain * angle.cos());
-                add(1, channel(0), self.gain * angle.sin());
+                add(0, channel(0), gain * angle.cos());
+                add(1, channel(0), gain * angle.sin());
             }
             (2, 2) => {
-                add(0, channel(0), self.gain * (1.0 - self.pan.max(0.0)));
-                add(1, channel(1), self.gain * (1.0 + self.pan.min(0.0)));
+                add(0, channel(0), gain * (1.0 - self.pan.max(0.0)));
+                add(1, channel(1), gain * (1.0 + self.pan.min(0.0)));
             }
             (2, 1) => {
-                add(0, channel(0), self.gain * 0.5);
-                add(0, channel(1), self.gain * 0.5);
+                add(0, channel(0), gain * 0.5);
+                add(0, channel(1), gain * 0.5);
             }
             (1, _) => {
                 for to in 0..output {
-                    add(to, channel(0), self.gain);
+                    add(to, channel(0), gain);
                 }
             }
             _ => {
                 for to in 0..output {
-                    add(to, channel(to), self.gain);
+                    add(to, channel(to), gain);
                 }
+            }
+        }
+    }
+
+    /// Changes the level of the send to bus slot `target`, if the voice has one.
+    pub(crate) fn set_send(&mut self, target: u32, level: f32) {
+        for (bus, known) in self.sends.iter_mut().flatten() {
+            if *bus == target {
+                *known = level;
             }
         }
     }

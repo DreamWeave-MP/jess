@@ -5,8 +5,8 @@ use std::cell::Cell;
 use std::sync::Arc;
 
 use crate::audio::{
-    AudioConfig, AudioError, BusKey, BusParam, BusSpec, LoopRegion, OfflineContext, Pcm, PlaySpec, QUANTUM, VoiceParam,
-    VoiceState,
+    AudioConfig, AudioError, BusKey, BusParam, BusSpec, LoopRegion, OfflineContext, Pcm, PlaySpec, QUANTUM, Tap, VoiceParam,
+    VoiceSend, VoiceState,
 };
 
 /// Counts allocations and frees on a thread while it is armed, so a test can prove the render
@@ -398,4 +398,90 @@ fn a_bus_is_removed_only_once_nothing_routes_into_it() {
     assert_ne!(reused, outer, "a reused slot is a new bus");
     assert!(!context.control().set_bus(outer, BusParam::Gain, 0.0, None).unwrap());
     assert_eq!(context.control().remove_bus(BusKey::MASTER, None), Err(AudioError::Master));
+}
+
+#[test]
+fn voices_on_different_buses_share_one_send_bus_mixed_once() {
+    let click = pcm(&[1.0], 48_000);
+    let mut context = mono(AudioConfig::default());
+    let music = bus(&mut context, BusKey::MASTER, 1.0);
+    let effects = bus(&mut context, BusKey::MASTER, 1.0);
+    let aux = bus(&mut context, BusKey::MASTER, 0.5);
+    let sends = |level| [Some(VoiceSend { bus: aux, level }), None];
+    let spec = |bus, level| PlaySpec {
+        sends: sends(level),
+        ..into(bus, 0)
+    };
+    let first = context.control().play(&click, &spec(music, 0.5)).unwrap();
+    context.control().play(&click, &spec(effects, 1.0)).unwrap();
+    // The aux bus applies its gain once to what both sent: 0.5 * (0.5 + 1).
+    assert_eq!(context.render(1), [2.75]);
+    assert!(
+        !context.control().set_send(first, music, 0.0, None).unwrap(),
+        "no send to its own bus"
+    );
+}
+
+#[test]
+fn a_voice_send_level_changes_on_its_frame() {
+    let tone = pcm(&[1.0; 4], 48_000);
+    let mut context = mono(AudioConfig::default());
+    let aux = bus(&mut context, BusKey::MASTER, 1.0);
+    let spec = PlaySpec {
+        gain: 0.5,
+        sends: [Some(VoiceSend { bus: aux, level: 1.0 }), None],
+        ..at(0)
+    };
+    let voice = context.control().play(&tone, &spec).unwrap();
+    assert!(context.control().set_send(voice, aux, 0.0, Some(2)).unwrap());
+    // The send's level is relative to the voice's gain.
+    assert_eq!(context.render(4), [1.0, 1.0, 0.5, 0.5]);
+}
+
+#[test]
+fn a_bus_send_taps_after_the_fader_unless_asked_to_tap_before_it() {
+    let tone = pcm(&[1.0; 4], 48_000);
+    let render = |tap| {
+        let mut context = mono(AudioConfig::default());
+        let group = bus(&mut context, BusKey::MASTER, 0.5);
+        let aux = bus(&mut context, BusKey::MASTER, 1.0);
+        context.control().send_bus(group, aux, 1.0, tap, None).unwrap();
+        context.control().play(&tone, &into(group, 0)).unwrap();
+        context.control().set_bus(group, BusParam::Mute, 1.0, Some(2)).unwrap();
+        context.control().unsend_bus(group, aux, Some(3)).unwrap();
+        context.render(4)
+    };
+    assert_eq!(render(Tap::PostFader), [1.0, 1.0, 0.0, 0.0]);
+    assert_eq!(render(Tap::PreFader), [1.5, 1.5, 1.0, 0.0]);
+}
+
+#[test]
+fn sends_that_would_loop_or_feed_a_removed_bus_are_refused() {
+    let click = pcm(&[1.0], 48_000);
+    let mut context = mono(AudioConfig::default());
+    let group = bus(&mut context, BusKey::MASTER, 1.0);
+    let aux = bus(&mut context, BusKey::MASTER, 1.0);
+    context.control().send_bus(group, aux, 1.0, Tap::PostFader, None).unwrap();
+    assert_eq!(
+        context.control().send_bus(aux, group, 1.0, Tap::PostFader, None),
+        Err(AudioError::Cycle)
+    );
+    assert_eq!(context.control().route_bus(aux, group, None), Err(AudioError::Cycle));
+    assert_eq!(
+        context.control().send_bus(group, group, 1.0, Tap::PostFader, None),
+        Err(AudioError::Cycle)
+    );
+    assert_eq!(
+        context.control().remove_bus(aux, None),
+        Err(AudioError::BusInUse { voices: 0, buses: 1 })
+    );
+    let spec = PlaySpec {
+        sends: [Some(VoiceSend { bus: group, level: 1.0 }), None],
+        ..at(5)
+    };
+    context.control().play(&click, &spec).unwrap();
+    assert_eq!(
+        context.control().remove_bus(group, None),
+        Err(AudioError::BusInUse { voices: 1, buses: 0 })
+    );
 }

@@ -49,6 +49,8 @@ pub enum AudioError {
     },
     /// The routing would feed a bus back into itself.
     Cycle,
+    /// A bus or voice already has as many sends as it can.
+    SendsExhausted(usize),
     /// The master bus is the output: it has no parent and stays.
     Master,
     /// A source whose channels the context can't mix into its output.
@@ -113,6 +115,7 @@ impl fmt::Display for AudioError {
                 "the bus still has {voices} voices and {buses} buses routed into it; stop or reroute them first"
             ),
             AudioError::Cycle => f.write_str("that routing would feed a bus back into itself"),
+            AudioError::SendsExhausted(sends) => write!(f, "it already has all {sends} of its sends"),
             AudioError::Master => f.write_str("the master bus is the output: it has no parent and can't be removed"),
             AudioError::Layout { source, output } => write!(
                 f,

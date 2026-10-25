@@ -7,7 +7,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::audio::{AudioError, BusKey};
+use crate::audio::{AudioError, BusKey, MAX_SENDS};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum State {
@@ -22,12 +22,19 @@ struct Node {
     generation: u32,
     state: State,
     parent: Option<u32>,
+    /// The buses it sends to, besides its parent.
+    sends: Vec<u32>,
 }
 
 impl Node {
     /// The buses this one feeds.
     fn outputs(&self) -> impl Iterator<Item = u32> {
-        self.parent.into_iter()
+        self.parent.into_iter().chain(self.sends.iter().copied())
+    }
+
+    fn clear(&mut self) {
+        self.parent = None;
+        self.sends.clear();
     }
 }
 
@@ -47,6 +54,7 @@ impl Graph {
                 generation: 0,
                 state: State::Free,
                 parent: None,
+                sends: Vec::new(),
             };
             capacity
         ];
@@ -89,17 +97,47 @@ impl Graph {
     pub fn unadd(&mut self, bus: BusKey) {
         let node = &mut self.nodes[bus.slot as usize];
         node.state = State::Free;
-        node.parent = None;
+        node.clear();
         self.free.push(bus.slot);
     }
 
-    /// The live buses whose parent is `bus`, counting ones being removed: they still sum into it
-    /// until the engine is done with them.
+    /// The buses whose parent is `bus` or that send to it, counting ones being removed: they still
+    /// feed it until the engine is done with them.
     pub fn children(&self, bus: BusKey) -> usize {
         self.nodes
             .iter()
-            .filter(|node| node.state != State::Free && node.parent == Some(bus.slot))
+            .filter(|node| node.state != State::Free && node.outputs().any(|target| target == bus.slot))
             .count()
+    }
+
+    /// Adds a send from `bus` to `target` and returns the new order, or `None` when there already
+    /// is one and only its level changes.
+    pub fn send(&mut self, bus: BusKey, target: BusKey) -> Result<Option<Box<[u32]>>, AudioError> {
+        let node = &mut self.nodes[bus.slot as usize];
+        if node.sends.contains(&target.slot) {
+            return Ok(None);
+        }
+        if node.sends.len() == MAX_SENDS {
+            return Err(AudioError::SendsExhausted(MAX_SENDS));
+        }
+        node.sends.push(target.slot);
+        match self.order() {
+            Ok(order) => Ok(Some(order)),
+            Err(error) => {
+                self.nodes[bus.slot as usize].sends.pop();
+                Err(error)
+            }
+        }
+    }
+
+    /// Removes the send from `bus` to `target`, returning the new order, or `None` if there was
+    /// none.
+    pub fn unsend(&mut self, bus: BusKey, target: BusKey) -> Option<Box<[u32]>> {
+        let sends = &mut self.nodes[bus.slot as usize].sends;
+        let index = sends.iter().position(|known| *known == target.slot)?;
+        sends.remove(index);
+        // Taking an edge away can't make a loop.
+        self.order().ok()
     }
 
     pub fn mark_removing(&mut self, bus: BusKey) {
@@ -114,7 +152,7 @@ impl Graph {
         }
         node.generation = node.generation.wrapping_add(1);
         node.state = State::Free;
-        node.parent = None;
+        node.clear();
         self.free.push(bus.slot);
     }
 

@@ -55,12 +55,12 @@ mod pcm;
 mod tests;
 mod voice;
 
-pub use bus::{BusKey, BusParam, BusSpec};
+pub use bus::{BusKey, BusParam, BusSpec, Tap};
 pub use context::{AudioConfig, AudioStats, Control, OfflineContext, VoiceState, context};
 pub use engine::Engine;
 pub use error::AudioError;
 pub use pcm::{Pcm, SampleFormat};
-pub use voice::{LoopRegion, PlaySpec, VoiceKey, VoiceParam};
+pub use voice::{LoopRegion, PlaySpec, VoiceKey, VoiceParam, VoiceSend};
 
 /// The most frames the engine mixes at once. A command's frame can split a block anywhere.
 pub const QUANTUM: usize = 128;
@@ -76,6 +76,12 @@ pub const MAX_VOICES: usize = 65_536;
 
 /// The most buses one context holds, the master included.
 pub const MAX_BUSES: usize = 4096;
+
+/// The most sends one bus has, besides its parent.
+pub const MAX_SENDS: usize = 4;
+
+/// The most sends one voice has, besides its bus.
+pub const MAX_VOICE_SENDS: usize = 2;
 
 /// The fastest a voice plays its source.
 pub const MAX_PLAYBACK_RATE: f64 = 64.0;

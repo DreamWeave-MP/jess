@@ -4,11 +4,14 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 
+use crate::audio::bus::BusSend;
 use crate::audio::engine::{Capacity, Command, Counters, Engine, Feedback, Stamped};
 use crate::audio::graph::Graph;
 use crate::audio::pcm::check_layout;
-use crate::audio::voice::VoiceKey;
-use crate::audio::{AudioError, BusKey, BusParam, BusSpec, MAX_BUSES, MAX_VOICES, Pcm, PlaySpec, VoiceParam};
+use crate::audio::voice::{VoiceKey, check_level};
+use crate::audio::{
+    AudioError, BusKey, BusParam, BusSpec, MAX_BUSES, MAX_VOICE_SENDS, MAX_VOICES, Pcm, PlaySpec, Tap, VoiceParam,
+};
 
 /// How to make a context.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -85,6 +88,14 @@ struct Slot {
     start: Option<u64>,
     /// The slot of the bus the voice plays into.
     bus: u32,
+    /// The slots of the buses it sends to.
+    sends: [Option<u32>; MAX_VOICE_SENDS],
+}
+
+impl Slot {
+    fn feeds(&self, bus: u32) -> bool {
+        self.busy && (self.bus == bus || self.sends.contains(&Some(bus)))
+    }
 }
 
 /// The application side of a context: it starts, stops, and changes voices and buses by sending
@@ -140,6 +151,7 @@ pub fn context(config: &AudioConfig) -> Result<(Control, Engine), AudioError> {
             busy: false,
             start: None,
             bus: 0,
+            sends: [None; MAX_VOICE_SENDS],
         };
         config.voices
     ];
@@ -190,6 +202,9 @@ impl Control {
         spec.check(pcm, self.channels)?;
         self.collect();
         self.graph.check_live(spec.bus)?;
+        for send in spec.sends.iter().flatten() {
+            self.graph.check_live(send.bus)?;
+        }
         let Some(slot) = self.free.pop() else {
             return Err(AudioError::VoicesExhausted(self.slots.len()));
         };
@@ -210,7 +225,34 @@ impl Control {
         entry.busy = true;
         entry.start = spec.at;
         entry.bus = spec.bus.slot;
+        entry.sends = spec.sends.map(|send| send.map(|send| send.bus.slot));
         Ok(voice)
+    }
+
+    /// Changes the level of a voice's send to `bus` at frame `at`, or at the next frame rendered.
+    /// True if the voice hadn't ended and sends there; its sends are fixed when it starts.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::Parameter`] for a level that isn't finite, [`AudioError::QueueFull`], or
+    /// [`AudioError::Disconnected`].
+    pub fn set_send(&mut self, voice: VoiceKey, bus: BusKey, level: f64, at: Option<u64>) -> Result<bool, AudioError> {
+        let level = check_level(level)?;
+        self.collect();
+        if !self.is_live(voice) || !self.slots[voice.slot as usize].sends.contains(&Some(bus.slot)) {
+            return Ok(false);
+        }
+        #[allow(clippy::cast_possible_truncation)] // Levels are f32 in the engine.
+        let level = level as f32;
+        self.send(
+            at,
+            Command::SendVoice {
+                voice,
+                target: bus.slot,
+                level,
+            },
+        )?;
+        Ok(true)
     }
 
     /// Stops a voice at frame `at`, or at the next frame rendered. True if the voice hadn't
@@ -298,7 +340,7 @@ impl Control {
         if !self.graph.is_live(bus) {
             return Ok(false);
         }
-        let voices = self.slots.iter().filter(|slot| slot.busy && slot.bus == bus.slot).count();
+        let voices = self.slots.iter().filter(|slot| slot.feeds(bus.slot)).count();
         let buses = self.graph.children(bus);
         if voices > 0 || buses > 0 {
             return Err(AudioError::BusInUse { voices, buses });
@@ -346,6 +388,70 @@ impl Control {
             return Ok(false);
         }
         self.send(at, Command::SetBus { bus, param, value })?;
+        Ok(true)
+    }
+
+    /// Sends `bus` to `target` at `level` from frame `at`, or from the next frame rendered,
+    /// tapped after the bus's gain or before it. A send already there changes level and tap.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::Parameter`], [`AudioError::StaleBus`] for either bus not live,
+    /// [`AudioError::Cycle`] when `target` feeds `bus`, [`AudioError::SendsExhausted`],
+    /// [`AudioError::QueueFull`], or [`AudioError::Disconnected`].
+    pub fn send_bus(
+        &mut self,
+        bus: BusKey,
+        target: BusKey,
+        level: f64,
+        tap: Tap,
+        at: Option<u64>,
+    ) -> Result<(), AudioError> {
+        let level = check_level(level)?;
+        self.collect();
+        self.graph.check_live(bus)?;
+        self.graph.check_live(target)?;
+        if bus == target {
+            return Err(AudioError::Cycle);
+        }
+        let order = self.graph.send(bus, target)?;
+        let added = order.is_some();
+        #[allow(clippy::cast_possible_truncation)] // Levels are f32 in the engine.
+        let send = BusSend {
+            target: target.slot,
+            level: level as f32,
+            tap,
+        };
+        let result = self.send(at, Command::SendBus { bus, send, order });
+        if result.is_err() && added {
+            self.graph.unsend(bus, target);
+        }
+        result
+    }
+
+    /// Removes the send from `bus` to `target` at frame `at`, or at the next frame rendered.
+    /// True if there was one.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::QueueFull`] or [`AudioError::Disconnected`].
+    pub fn unsend_bus(&mut self, bus: BusKey, target: BusKey, at: Option<u64>) -> Result<bool, AudioError> {
+        self.collect();
+        if !self.graph.is_live(bus) {
+            return Ok(false);
+        }
+        let Some(order) = self.graph.unsend(bus, target) else {
+            return Ok(false);
+        };
+        let target = target.slot;
+        self.send(
+            at,
+            Command::UnsendBus {
+                bus,
+                target,
+                order: Some(order),
+            },
+        )?;
         Ok(true)
     }
 

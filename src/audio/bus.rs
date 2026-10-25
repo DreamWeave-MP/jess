@@ -4,7 +4,7 @@
 //! so buses make a tree under the master. A bus sums whatever is routed to it, applies its gain,
 //! and adds the result into its parent.
 
-use crate::audio::AudioError;
+use crate::audio::{AudioError, MAX_SENDS};
 
 /// A bus as the application names it: its slot in the engine's table and the slot's generation
 /// when it was made, so a handle outliving its bus names nothing.
@@ -80,10 +80,30 @@ impl BusParam {
     }
 }
 
+/// Where a send taps its bus: after the bus's gain and mute (the usual), or before them, so the
+/// send keeps its level when the bus is faded or muted.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Tap {
+    /// After the bus's own gain.
+    #[default]
+    PostFader,
+    /// Before it.
+    PreFader,
+}
+
+/// One send of a bus, as the engine holds it.
+#[derive(Clone, Copy, Debug)]
+pub struct BusSend {
+    pub target: u32,
+    pub level: f32,
+    pub tap: Tap,
+}
+
 /// A bus as the engine holds it.
 pub struct Bus {
     pub generation: u32,
     pub parent: Option<u32>,
+    pub sends: [Option<BusSend>; MAX_SENDS],
     gain: f32,
     muted: bool,
 }
@@ -93,8 +113,29 @@ impl Bus {
         Bus {
             generation,
             parent,
+            sends: [None; MAX_SENDS],
             gain: spec.gain,
             muted: spec.muted,
+        }
+    }
+
+    /// Sends to `target` at `level`, replacing a send already there.
+    pub fn send(&mut self, send: BusSend) {
+        let existing = self
+            .sends
+            .iter()
+            .position(|known| known.is_some_and(|known| known.target == send.target));
+        let free = existing.or_else(|| self.sends.iter().position(Option::is_none));
+        if let Some(index) = free {
+            self.sends[index] = Some(send);
+        }
+    }
+
+    pub fn unsend(&mut self, target: u32) {
+        for send in &mut self.sends {
+            if send.is_some_and(|known| known.target == target) {
+                *send = None;
+            }
         }
     }
 
