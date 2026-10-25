@@ -382,6 +382,7 @@ fn pass_and_work(
     frame: &Frame<'_>,
     graph: &RenderGraph,
     owner: &str,
+    site: &(String, u32),
     index: i64,
     view: ValueView<'_>,
 ) -> l3i::Result<(Pass, Work)> {
@@ -404,7 +405,9 @@ fn pass_and_work(
     check_options(frame, view, &format!("{FUNCTION} {kind} pass"), keys)?;
     let name = required(frame, &what, &fields, "name")?;
     let owner = text(frame, &what, &fields, "owner")?.unwrap_or_else(|| owner.to_owned());
-    let mut pass = Pass::new(pass_kind, PassMetadata::new(name.clone(), owner));
+    // A pass is a table, which has no place of its own: it was declared where the plan was.
+    let metadata = PassMetadata::new(name.clone(), owner).with_source(site.0.clone(), site.1, 0);
+    let mut pass = Pass::new(pass_kind, metadata);
     for read in names(frame, &format!("pass {name}'s reads"), fields.raw_get(frame, "reads")?)? {
         let id = resource(graph, &name, &read)?;
         let usage = match graph.resources()[id.index()].kind() {
@@ -481,6 +484,7 @@ fn plan(this: &LuaGpuDevice, call: &Call<'_>, desc: ValueView<'_>) -> l3i::Resul
     if !desc.is_table() {
         return Err(error(format!("{FUNCTION} takes a table, not {}", kind(desc))));
     }
+    let site = crate::lua::shader::call_site(call);
     let (graph, work, viewport) = call.with_frame(|frame| {
         let fields = options(frame, FUNCTION, "the plan", desc, &PLAN_KEYS)?;
         let name = text(frame, "the plan", &fields, "name")?.unwrap_or_else(|| "plan".to_owned());
@@ -491,7 +495,7 @@ fn plan(this: &LuaGpuDevice, call: &Call<'_>, desc: ValueView<'_>) -> l3i::Resul
         let mut work = Vec::new();
         let passes = fields.raw_get(frame, "passes")?;
         table(FUNCTION, "passes", passes)?.for_each_array(frame, |frame, index, view| {
-            let (pass, done) = pass_and_work(frame, &graph, &name, index, view)?;
+            let (pass, done) = pass_and_work(frame, &graph, &name, &site, index, view)?;
             graph.add_pass(pass).map_err(|problem| graph_error(&problem))?;
             work.push(done);
             Ok(())

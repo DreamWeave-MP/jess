@@ -70,12 +70,15 @@ pub struct SourceLocation {
     pub file: String,
     /// The 1-based line.
     pub line: u32,
-    /// The 1-based column.
+    /// The 1-based column, or 0 where the declaring code knows only the line.
     pub column: u32,
 }
 
 impl fmt::Display for SourceLocation {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.column == 0 {
+            return write!(formatter, "{}:{}", self.file, self.line);
+        }
         write!(formatter, "{}:{}:{}", self.file, self.line, self.column)
     }
 }

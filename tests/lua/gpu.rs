@@ -692,6 +692,7 @@ const FRAME_PLAN: &str = r"
             assert(plan.allocations == 2 and plan.viewport.width == 16 and plan.name == 'scene')
             assert(tostring(plan) == 'GpuPlan(scene, 4 of 5 passes, 16×16)', tostring(plan))
             assert(string.find(plan:dump(), 'culled\n    debug', 1, true), plan:dump())
+            assert(string.find(plan:dump(), 'opaque\n    from:   exec:', 1, true), plan:dump())
 
             local output = device:texture({ width = 16, height = 16, format = 'rgba8Unorm', usage = 'target' })
             local pixels = device:buffer(256 * 16, {})

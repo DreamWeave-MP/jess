@@ -13,6 +13,9 @@ impl fmt::Display for CompiledGraph<'_> {
             let pass = &graph.passes()[pass.0];
             writeln!(formatter)?;
             writeln!(formatter, "{}", pass.name())?;
+            if let Some(source) = &pass.metadata.source {
+                writeln!(formatter, "    from:   {source}")?;
+            }
             if !pass.inputs.is_empty() {
                 formatter.write_str("    reads:  ")?;
                 self.write_names(formatter, pass.inputs.iter().map(|input| input.resource))?;

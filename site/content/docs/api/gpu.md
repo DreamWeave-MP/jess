@@ -397,7 +397,7 @@ Mistakes in the description name the pass: `GpuDevice:plan: pass present uses no
 | `allocations` | `number` | How many textures and buffers it made for its own targets and buffers: one for each group sharing memory. |
 | `run(imports)` | `({ [string]: GpuTexture \| GpuBuffer }?) -> ()` | Runs every pass once, in one submission, with a texture or buffer for each imported target or buffer by name: a texture of its format and size at the viewport, a buffer of its size. |
 | `resized(width, height)` | `(number, number) -> GpuPlan` | The same plan for another viewport, its targets made again at the new size. |
-| `dump()` | `() -> string` | The compiled graph: the passes in order, what each reads and writes, what was culled, every target's lifetime, and what shares memory. |
+| `dump()` | `() -> string` | The compiled graph: the passes in order, where each was declared (the `device:plan` call: a pass is a table, with no place of its own), what each reads and writes, what was culled, every target's lifetime, and what shares memory. |
 | `timings()` | `() -> { { pass, ms } }?` | How long each pass of the last run took on the GPU, in milliseconds, in the order they ran; a copy pass has no `ms`. `nil` on a device without `timestamps`. Asking waits for that run to finish, so ask once in a while, not every frame. |
 
 `tostring(plan)` is `GpuPlan(name, 4 of 5 passes, 640×480)`.

@@ -115,7 +115,7 @@ aliasing
 
 ## The Dump
 
-`CompiledGraph`'s `Display` prints the graph's name, every surviving pass in order with what it reads and writes, the culled passes if there are any, then every resource with its format (`buffer` for a buffer), size, origin, and the passes that bound its lifetime, then the alias groups:
+`CompiledGraph`'s `Display` prints the graph's name, every surviving pass in order with where it was declared (`from:`, when its metadata knows) and what it reads and writes, the culled passes if there are any, then every resource with its format (`buffer` for a buffer), size, origin, and the passes that bound its lifetime, then the alias groups:
 
 ```text
 mesh.standard

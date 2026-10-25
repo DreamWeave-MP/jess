@@ -91,7 +91,7 @@ impl Shader {
 /// The chunk and current line of the Luau function that called the running binding. A binding
 /// called through `pcall`, or as a metamethod another native function triggered, has that
 /// function as its caller, so this walks up to the nearest Luau frame.
-fn call_site(call: &Call<'_>) -> (String, u32) {
+pub(crate) fn call_site(call: &Call<'_>) -> (String, u32) {
     let mut level = 1;
     while let Some(site) = call.call_site(level) {
         if site.source != "[C]" {
