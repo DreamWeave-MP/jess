@@ -1,0 +1,235 @@
+//! Draw sets: retained draws, each a pipeline, what it binds, its buffers, and how much to draw,
+//! that a plan's draw passes take by their tags every frame without being told again.
+//!
+//! A draw set is checked once, when it is made, as a pass checks a draw. What changes afterwards
+//! (how many vertices and instances, whether it is drawn at all) changes through atomics, so
+//! whatever draws the frame never waits on whoever changes it.
+
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+
+use super::pass::{buffer_problem, group_problem};
+use super::{BindGroup, Buffer, Draw, GpuError, IndexFormat, RenderPipeline};
+
+/// What a draw set draws.
+#[derive(Clone, Debug)]
+pub struct DrawSetDesc {
+    /// The pipeline.
+    pub pipeline: Arc<RenderPipeline>,
+    /// The pass's, the material's, and the draw's bind groups, for each its program binds
+    /// anything for.
+    pub groups: [Option<Arc<BindGroup>>; 3],
+    /// The per-vertex attributes, if the program declares any.
+    pub vertices: Option<Arc<Buffer>>,
+    /// The per-instance attributes, if the program declares any.
+    pub instances: Option<Arc<Buffer>>,
+    /// The indices of the vertices to draw, if the draw is indexed.
+    pub indices: Option<(Arc<Buffer>, IndexFormat)>,
+    /// How many vertices, or indices, to draw.
+    pub count: u32,
+    /// How many instances.
+    pub instance_count: u32,
+    /// What the passes that take it look for.
+    pub tags: Vec<String>,
+}
+
+/// A retained draw.
+#[derive(Debug)]
+pub struct DrawSet {
+    pipeline: Arc<RenderPipeline>,
+    groups: [Option<Arc<BindGroup>>; 3],
+    vertices: Option<Arc<Buffer>>,
+    instances: Option<Arc<Buffer>>,
+    indices: Option<(Arc<Buffer>, IndexFormat)>,
+    tags: Box<[String]>,
+    count: AtomicU32,
+    instance_count: AtomicU32,
+    visible: AtomicBool,
+}
+
+impl DrawSet {
+    /// A visible draw set of `desc`.
+    ///
+    /// # Errors
+    ///
+    /// What a pass refuses in a draw: a bind group missing for a frequency the program binds,
+    /// given for one it doesn't, or made for another pipeline; a buffer missing, unneeded, of the
+    /// wrong usage, or too small for the count; no instances.
+    pub fn new(desc: DrawSetDesc) -> Result<DrawSet, GpuError> {
+        let set = DrawSet {
+            pipeline: desc.pipeline,
+            groups: desc.groups,
+            vertices: desc.vertices,
+            instances: desc.instances,
+            indices: desc.indices,
+            tags: desc.tags.into_boxed_slice(),
+            count: AtomicU32::new(desc.count),
+            instance_count: AtomicU32::new(desc.instance_count),
+            visible: AtomicBool::new(true),
+        };
+        set.check(desc.count, desc.instance_count)?;
+        Ok(set)
+    }
+
+    /// Whether `count` vertices of `instance_count` instances of it can be drawn.
+    fn check(&self, count: u32, instance_count: u32) -> Result<(), GpuError> {
+        let draw = Draw {
+            count,
+            instance_count,
+            ..self.draw()
+        };
+        let problem = if instance_count == 0 {
+            Some("at least one instance".to_owned())
+        } else {
+            group_problem(&draw).or_else(|| buffer_problem(&draw))
+        };
+        problem.map_or(Ok(()), |problem| {
+            Err(GpuError::Invalid(format!("the draw set is invalid: {problem}")))
+        })
+    }
+
+    /// The draw it is now.
+    #[must_use]
+    pub fn draw(&self) -> Draw<'_> {
+        Draw {
+            pipeline: &self.pipeline,
+            groups: [0, 1, 2].map(|frequency| self.groups[frequency].as_deref()),
+            vertices: self.vertices.as_deref(),
+            instances: self.instances.as_deref(),
+            indices: self.indices.as_ref().map(|(buffer, format)| (&**buffer, *format)),
+            count: self.count(),
+            instance_count: self.instance_count(),
+        }
+    }
+
+    /// Its pipeline.
+    #[must_use]
+    pub fn pipeline(&self) -> &Arc<RenderPipeline> {
+        &self.pipeline
+    }
+
+    /// What the passes that take it look for.
+    #[must_use]
+    pub fn tags(&self) -> &[String] {
+        &self.tags
+    }
+
+    /// Whether it carries any of `tags`.
+    #[must_use]
+    pub fn matches(&self, tags: &[String]) -> bool {
+        self.tags.iter().any(|tag| tags.contains(tag))
+    }
+
+    /// How many vertices, or indices, it draws.
+    #[must_use]
+    pub fn count(&self) -> u32 {
+        self.count.load(Ordering::Relaxed)
+    }
+
+    /// Draws `count` vertices, or indices, from the next frame on.
+    ///
+    /// # Errors
+    ///
+    /// A count that runs past its vertex or index buffer.
+    pub fn set_count(&self, count: u32) -> Result<(), GpuError> {
+        self.check(count, self.instance_count())?;
+        self.count.store(count, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// How many instances it draws.
+    #[must_use]
+    pub fn instance_count(&self) -> u32 {
+        self.instance_count.load(Ordering::Relaxed)
+    }
+
+    /// Draws `instance_count` instances from the next frame on.
+    ///
+    /// # Errors
+    ///
+    /// None, or more than its instance buffer holds.
+    pub fn set_instance_count(&self, instance_count: u32) -> Result<(), GpuError> {
+        self.check(self.count(), instance_count)?;
+        self.instance_count.store(instance_count, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Whether the passes that take it draw it.
+    #[must_use]
+    pub fn visible(&self) -> bool {
+        self.visible.load(Ordering::Relaxed)
+    }
+
+    /// Shows or hides it from the next frame on.
+    pub fn set_visible(&self, visible: bool) {
+        self.visible.store(visible, Ordering::Relaxed);
+    }
+}
+
+/// The draw sets a plan's passes choose from, in the order they were added.
+#[derive(Debug, Default)]
+pub struct DrawSets {
+    sets: Mutex<Vec<Arc<DrawSet>>>,
+    version: AtomicU64,
+}
+
+impl DrawSets {
+    /// An empty list.
+    #[must_use]
+    pub fn new() -> DrawSets {
+        DrawSets::default()
+    }
+
+    /// Adds `set`, to be drawn from the next frame on; adding it again does nothing.
+    pub fn add(&self, set: &Arc<DrawSet>) {
+        let mut sets = self.sets.lock().unwrap_or_else(PoisonError::into_inner);
+        if sets.iter().any(|held| Arc::ptr_eq(held, set)) {
+            return;
+        }
+        sets.push(set.clone());
+        drop(sets);
+        self.version.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Removes `set`; whether it was there.
+    pub fn remove(&self, set: &Arc<DrawSet>) -> bool {
+        let mut sets = self.sets.lock().unwrap_or_else(PoisonError::into_inner);
+        let before = sets.len();
+        sets.retain(|held| !Arc::ptr_eq(held, set));
+        let removed = sets.len() != before;
+        drop(sets);
+        if removed {
+            self.version.fetch_add(1, Ordering::Relaxed);
+        }
+        removed
+    }
+
+    /// How many sets it holds.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.sets.lock().unwrap_or_else(PoisonError::into_inner).len()
+    }
+
+    /// Whether it holds none.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Counts every addition and removal, so whatever caches a choice of sets knows when to make
+    /// it again.
+    #[must_use]
+    pub fn version(&self) -> u64 {
+        self.version.load(Ordering::Relaxed)
+    }
+
+    /// The visible sets carrying any of `tags`, in the order they were added.
+    #[must_use]
+    pub fn matching(&self, tags: &[String]) -> Vec<Arc<DrawSet>> {
+        let sets = self.sets.lock().unwrap_or_else(PoisonError::into_inner);
+        sets.iter()
+            .filter(|set| set.visible() && set.matches(tags))
+            .cloned()
+            .collect()
+    }
+}

@@ -1,6 +1,6 @@
 ---
 title: 'GPU'
-description: 'What jess::gpu is, why it is wgpu behind a feature, and how devices, resources, pipelines, bind groups, passes, and their errors work.'
+description: 'What jess::gpu is, why it is wgpu behind a feature, and how devices, resources, pipelines, bind groups, passes, draw sets, and their errors work.'
 weight: 65
 extra:
   kind: guide
@@ -18,6 +18,7 @@ The [render graph](@/docs/contributing/render-graph.md) says what to draw in wha
 - **Bind groups.** `Gpu::bind_group(pipeline, frequency, bindings)` binds exactly what the program declares for that frequency, each binding checked against its declaration: a uniform buffer at least as large as the block, a texture of the declared shape and of a format the declaration reads, a comparison sampler where one is declared.
 - **Compute.** `Gpu::compute_pipeline(program)` takes a compute program the same way, `Gpu::compute_bind_group` binds for it, and `Gpu::dispatch(pipeline, groups, workgroups)` runs it over a grid of workgroups, each of the size the program declares.
 - **Passes.** `Gpu::render(colors, depth, draws)` draws into a level of a layer of each target, starting from a clear or what the target held, with the render graph's own `LoadOp`, `StoreOp`, and `ClearValue`. Each draw is checked before anything is recorded: its pipeline's targets are the pass's, it has a bind group for every frequency its program binds and none for the rest, its buffers are vertex and index buffers, and its count stays inside them.
+- **Draw sets.** A `DrawSet` is a draw kept: a pipeline, its bind groups and buffers, a count and an instance count, and the tags the passes that take it look for. It is checked once, when it is made, the way a pass checks a draw; afterwards its count, instance count, and visibility change through atomics, checked again as they change, so whatever draws a frame never waits on whatever changes one. `DrawSets` holds them in the order they were added, and `DrawSets::matching(tags)` is the visible ones carrying any of `tags`, in that order. Its `version` counts every addition and removal, for whatever caches a choice.
 
 ## What It Is Not
 

@@ -223,7 +223,7 @@ fn check_draw(index: usize, draw: &Draw<'_>, colors: &[Target<'_>], depth: Optio
 }
 
 /// What is wrong with a draw's bind groups, if anything.
-fn group_problem(draw: &Draw<'_>) -> Option<String> {
+pub fn group_problem(draw: &Draw<'_>) -> Option<String> {
     for (frequency, (group, bound)) in Frequency::ALL.into_iter().zip(draw.pipeline.groups.iter().zip(draw.groups)) {
         match (group.raw.is_some(), bound) {
             (true, None) => return Some(format!("its program binds a {frequency} group, and the draw gives none")),
@@ -244,7 +244,7 @@ fn group_problem(draw: &Draw<'_>) -> Option<String> {
 }
 
 /// What is wrong with a draw's buffers, if anything.
-fn buffer_problem(draw: &Draw<'_>) -> Option<String> {
+pub fn buffer_problem(draw: &Draw<'_>) -> Option<String> {
     let [vertex_stride, instance_stride] = draw.pipeline.strides;
     for (name, plural, buffer, stride, count) in [
         (

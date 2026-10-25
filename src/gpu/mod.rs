@@ -15,6 +15,7 @@
 mod bind;
 mod buffer;
 mod compute;
+mod draw_set;
 mod pass;
 mod pipeline;
 mod sampler;
@@ -27,6 +28,7 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 pub use bind::{BindGroup, Binding};
 pub use buffer::{Buffer, BufferUsage};
 pub use compute::ComputePipeline;
+pub use draw_set::{DrawSet, DrawSetDesc, DrawSets};
 pub use pass::{Draw, IndexFormat, Target};
 pub use pipeline::{Blend, ColorState, Cull, DepthState, PipelineState, RenderPipeline, Topology};
 pub(crate) use pipeline::{Group, Slot};
