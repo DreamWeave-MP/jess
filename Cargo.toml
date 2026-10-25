@@ -39,6 +39,8 @@ gilrs = ["dep:gilrs"]
 audio-device = ["dep:cc"]
 # A GPU through wgpu: devices, buffers, textures, pipelines, offscreen rendering and compute.
 gpu = ["dep:wgpu", "dep:pollster"]
+# Native windows through winit, with a GPU surface each and their keyboard and pointer as input.
+window = ["gpu", "dep:winit"]
 
 [dependencies]
 clap = { version = "^4.5", features = ["derive", "env", "wrap_help"] }
@@ -56,6 +58,8 @@ sha2 = "^0.11"
 tempfile = "^3.23"
 # The GPU behind the `gpu` feature; the backends are the native ones, chosen at run time.
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "vulkan", "gles", "metal", "dx12"], optional = true }
+# Windows and their events. Wayland's client-side decorations without a title, so no font stack.
+winit = { version = "0.30.13", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen", "wayland-csd-adwaita-notitle"], optional = true }
 
 [target.'cfg(unix)'.dependencies]
 # Only for restoring SIGPIPE, which Windows lacks.
