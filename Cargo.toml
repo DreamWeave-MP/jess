@@ -75,10 +75,8 @@ cc = { version = "^1.2", optional = true }
 [dev-dependencies]
 l3i = { version = "2.3.0", features = ["analysis"] }
 naga = { version = "30.0.1", features = ["wgsl-in"] }
-pollster = "0.4.0"
 serde_yaml = "^0.9"
 toml = { version = "^1.1", features = ["preserve_order"] }
-wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "vulkan", "gles", "metal", "dx12"] }
 
 [[bin]]
 name = "jess"
