@@ -6,7 +6,7 @@ extra:
   kind: api
 ---
 
-{{ api_signature(value="require('@jess/audio'): { pcm, stream, offline, output, processors, frames, seconds, tempo, readWav, loadWav, writeWav, load, decoder }") }}
+{{ api_signature(value="require('@jess/audio'): { pcm, stream, offline, output, processors, frames, seconds, tempo, readWav, loadWav, writeWav, load, decoder, feed }") }}
 
 `@jess/audio` is audio for scripts: the built-in package's Luau over `jess.audio`, the native half. The native side owns samples, voices, the sample clock, and the mix. What a file's bytes are and which frame a second lands on are Luau's, so WAV reading and writing and the time helpers live here. MP3, Ogg Vorbis, and Ogg Opus need codecs, which are [`@dream/audio`](@/docs/api/l3i.md)'s; this module loads them whole or streams them.
 
@@ -373,6 +373,37 @@ A WAV, MP3, Ogg Vorbis, or Ogg Opus file, whole, as PCM at the file's own rate: 
 {{ api_signature(value="audio.decoder(data: buffer | string, options: { format: ('mp3' | 'vorbis' | 'opus')? }?) -> Decoder") }}
 
 A decoder over a copy of the bytes, the format detected unless named: `decoder:format()`, `rate()`, `channels()`, `frames()` (nil if the file doesn't say), `position()`, `read(target, offset?, frames?)` into a buffer as interleaved 32-bit floats, and `seek(frame)`. It is [`@dream/audio`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-audio)'s, which says how each format's length and seeks are worked out: MP3 and Vorbis seek exactly, Opus to within a millionth of full scale.
+
+{{ api_signature(value="audio.feed(data: buffer | string, options: AudioFeedOptions?) -> AudioFeed") }}
+
+Music, ambience, anything too long to hold decoded: a feed decodes an MP3, Ogg Vorbis, or Ogg Opus file into a [stream](#streams) on a thread of its own. The stream has the file's channels and rate and holds `seconds` (1) of it ahead; the thread waits for room, decodes `block` frames (4096) into it, and goes round, so the stream keeps playing whatever the script is doing: a long frame, a level loading, nothing at all. It starts at frame `start` (0), the `format` detected unless named. At the file's end it finishes the stream, and the voice ends once it has played the rest. With `loop`, it seeks back to `loopStart` (0) instead, and since the seek is exact, the loop has no seam.
+
+{{ api_signature(value="feed:stream() -> AudioStream") }}
+{{ api_signature(value="feed:status() -> AudioFeedStatus") }}
+{{ api_signature(value="feed:stop()") }}
+
+`stream` is the stream to play. `status` says whether the thread is `done`, how many `loops` it has gone round, and the `error` the decoder failed with if it did, in which case the stream was finished there. `stop` stops decoding, and what the feed already wrote plays out. A feed also ends once nothing but it holds its stream, no voice and no script, and the end of the runtime that started it stops it and waits for its thread.
+
+```luau
+--!strict
+local audio = require '@jess/audio'
+local fs = require '@dream/fs'
+
+local music, problem = fs.readFile 'music.ogg'
+assert(music, problem)
+
+local context = audio.output()
+local feed = audio.feed(music, { loop = true })
+context:play(feed:stream(), { gain = 0.8 })
+
+-- Two busy seconds of something else entirely; the music doesn't notice.
+local busy = os.clock() + 2
+while os.clock() < busy do
+end
+print(feed:status().loops, feed:stream():stats().missed)
+```
+
+For a file a second long it prints `2 0`: twice round the loop, and not a frame missed, though the script never looked at the music after starting it.
 
 ## Example
 

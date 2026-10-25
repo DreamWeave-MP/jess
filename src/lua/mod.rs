@@ -227,6 +227,8 @@ pub(crate) struct Jess {
     pub(crate) granted: Vec<String>,
     /// The audio outputs the runtime opened, which play until closed or the runtime ends.
     pub(crate) outputs: audio::Outputs,
+    /// The feeds the runtime started, which it stops and waits for when it ends.
+    pub(crate) feeds: audio::Feeds,
 }
 
 impl Jess {

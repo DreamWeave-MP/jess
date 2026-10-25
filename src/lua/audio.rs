@@ -19,9 +19,9 @@ use std::time::Duration;
 use crate::audio::Stream;
 use crate::audio::processor::{Setting, Settings};
 use crate::audio::{
-    AudioConfig, AudioError, BusKey, BusParam, BusSpec, Control, Culled, Curve, DeviceRequest, Distance, Emitter, Glide,
-    Handedness, Listener, LiveContext, LoopRegion, MAX_VOICE_SENDS, OfflineContext, Pcm, PlaySpec, ProcessorKey,
-    SampleFormat, Tap, VoiceKey, VoiceParam, VoiceSend,
+    AudioConfig, AudioError, BusKey, BusParam, BusSpec, Control, Culled, Curve, Decode, DeviceRequest, Distance, Emitter,
+    Feed, FeedSpec, FeedWatch, Glide, Handedness, Listener, LiveContext, LoopRegion, MAX_VOICE_SENDS, OfflineContext, Pcm,
+    PlaySpec, ProcessorKey, SampleFormat, Tap, VoiceKey, VoiceParam, VoiceSend,
 };
 use crate::lua::plan::Functions;
 use crate::lua::{Bytes, Jess, Text, error, guard, kind, option_value, push_table, read_options};
@@ -255,6 +255,116 @@ fn describe_stream(d: &mut ExtensionDescriptor) {
             })
         })
         .untyped();
+}
+
+/// A compressed file's decoder, from l3i's `@dream/audio`, as a feed reads it.
+struct Decoding(l3i::audio::Decoder);
+
+impl Decode for Decoding {
+    fn read(&mut self, out: &mut [f32]) -> Result<usize, String> {
+        self.0.read(out).map_err(|problem| problem.to_string())
+    }
+
+    fn seek(&mut self, frame: u64) -> Result<(), String> {
+        self.0.seek(frame).map_err(|problem| problem.to_string())
+    }
+}
+
+const FEED_KEYS: &[&str] = &["block", "format", "loop", "loopStart", "seconds", "start"];
+
+/// A feed: a compressed file decoded into a stream on a thread of its own.
+#[derive(Clone)]
+pub struct LuaAudioFeed {
+    watch: FeedWatch,
+    stream: Arc<Stream>,
+}
+
+// SAFETY: shared Rust state; the destructor never touches the Lua API.
+unsafe impl Userdata for LuaAudioFeed {
+    const NAME: &'static str = "jess.audio.Feed";
+}
+
+/// The feeds a runtime started. Each runs until it ends by itself or is stopped, whether or not
+/// the script still holds it; the runtime's end stops every one and waits for its thread.
+#[derive(Default)]
+pub struct Feeds(RefCell<Vec<Feed>>);
+
+impl Feeds {
+    fn hold(&self, feed: Feed) {
+        let mut feeds = self.0.borrow_mut();
+        feeds.retain(|feed| !feed.status().done);
+        feeds.push(feed);
+    }
+}
+
+/// `audio.feed(data, { format, seconds, block, start, loop, loopStart })`: a decoder over the
+/// file, a stream of its layout, and a feed keeping the one full from the other.
+fn feed(jess: &Jess, call: &Call<'_>, data: Bytes, options: Option<ValueView<'_>>) -> l3i::Result<Owned<LuaAudioFeed>> {
+    const FUNCTION: &str = "jess.audio.feed";
+    let (mut format, mut seconds, mut block, mut start) = (None, 1.0, FeedSpec::default().block, None);
+    let (mut looping, mut loop_start) = (false, 0);
+    call.with_frame(|frame| {
+        read_optional(frame, options, FUNCTION, FEED_KEYS, |_, name, value| {
+            match name {
+                b"format" => {
+                    let name: &str = option_value(value, "format", FUNCTION)?;
+                    format = Some(
+                        l3i::audio::Format::parse(name)
+                            .ok_or_else(|| error(format!("{FUNCTION}'s format is mp3, vorbis, or opus, not {name:?}")))?,
+                    );
+                }
+                b"seconds" => seconds = option_value(value, "seconds", FUNCTION)?,
+                b"block" => block = count(option_value(value, "block", FUNCTION)?, "a feed's block")?,
+                b"start" => start = Some(whole(option_value(value, "start", FUNCTION)?, "start")?),
+                b"loop" => looping = option_value(value, "loop", FUNCTION)?,
+                b"loopStart" => loop_start = whole(option_value(value, "loopStart", FUNCTION)?, "loopStart")?,
+                _ => return Ok(false),
+            }
+            Ok(true)
+        })
+    })?;
+    let spec = FeedSpec {
+        block,
+        looping: looping.then_some(loop_start),
+    };
+    let mut decoder = l3i::audio::Decoder::new(data.0, format).map_err(|problem| error(format!("{FUNCTION}: {problem}")))?;
+    if let Some(start) = start {
+        decoder
+            .seek(start)
+            .map_err(|problem| error(format!("{FUNCTION}: {problem}")))?;
+    }
+    let stream = Stream::new(decoder.channels(), decoder.rate(), seconds)?;
+    let feed = Feed::start(Box::new(Decoding(decoder)), Arc::clone(&stream), spec)?;
+    let watch = feed.watch();
+    jess.feeds.hold(feed);
+    Ok(Owned(LuaAudioFeed { watch, stream }))
+}
+
+fn describe_feed(d: &mut ExtensionDescriptor) {
+    let mut feed = d.userdata::<LuaAudioFeed>(LuaAudioFeed::NAME);
+    feed.tag(TagPolicy::Never)
+        .doc("A compressed file decoded into a stream on a thread of its own.");
+    feed.method("stream", |this: &LuaAudioFeed| {
+        Owned(LuaAudioStream(Arc::clone(&this.stream)))
+    })
+    .untyped();
+    feed.method(
+        "status",
+        |this: &LuaAudioFeed, call: &Call<'_>| -> l3i::Result<StackResults> {
+            let status = this.watch.status();
+            push_table(call, 0, 3, |frame, table| {
+                table.raw_set_value(frame, "done", &status.done)?;
+                table.raw_set_value(frame, "loops", &number(status.loops))?;
+                if let Some(problem) = &status.error {
+                    table.raw_set_value(frame, "error", problem.as_str())?;
+                }
+                Ok(())
+            })?;
+            Ok(StackResults)
+        },
+    )
+    .untyped();
+    feed.method("stop", |this: &LuaAudioFeed| this.watch.stop()).untyped();
 }
 
 /// Decoded audio, shared by every voice that plays it.
@@ -743,6 +853,10 @@ pub fn module(runtime: &Runtime, jess: &Rc<Jess>) -> l3i::Result<Table> {
         output(&state, call, options)
     })?;
     module.function("stream", |call: &Call<'_>, options: ValueView<'_>| stream(call, options))?;
+    let feeding = Rc::clone(jess);
+    module.function("feed", move |call: &Call<'_>, data: Bytes, options: Option<ValueView<'_>>| {
+        feed(&feeding, call, data, options)
+    })?;
     module.function("processors", |call: &Call<'_>| -> l3i::Result<StackResults> {
         l3i::stack::push_list(call, crate::audio::processor::KINDS.iter(), |frame, kind| {
             frame.push(*kind)?;
@@ -761,6 +875,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
     describe_bus(d);
     describe_processor(d);
     describe_stream(d);
+    describe_feed(d);
 }
 
 fn describe_pcm(d: &mut ExtensionDescriptor) {

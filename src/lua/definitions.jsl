@@ -243,6 +243,33 @@ export type AudioStream = {
   handle: (self: AudioStream) -> JessHandle,
 }
 
+--- How a feed reads its file: as `format` (detected unless named), `seconds` (1) of it ahead in
+--- its stream, `block` frames (4096) at a time, from frame `start` (0); and with `loop`, from
+--- `loopStart` (0) again at the end instead of finishing the stream.
+export type AudioFeedOptions = {
+  format: ('mp3' | 'vorbis' | 'opus')?,
+  seconds: number?,
+  block: number?,
+  start: number?,
+  loop: boolean?,
+  loopStart: number?,
+}
+
+--- What a feed has done: whether its thread is `done`, how many times it went back to its
+--- `loopStart`, and the `error` the decoder failed with, if it did (the stream finished there).
+export type AudioFeedStatus = { done: boolean, loops: number, error: string? }
+
+--- A compressed file decoded into a stream on a thread of its own. It ends at the file's end
+--- (unless it loops), when stopped, on a decoding error, or once nothing else holds its stream;
+--- the runtime's end stops it.
+export type AudioFeed = {
+  --- The stream it fills, at the file's rate and channels, to play.
+  stream: (self: AudioFeed) -> AudioStream,
+  status: (self: AudioFeed) -> AudioFeedStatus,
+  --- Stops decoding, leaving what it wrote to play; the stream isn't finished.
+  stop: (self: AudioFeed) -> (),
+}
+
 --- An output's options: a context's, and the device's.
 export type AudioOutputOptions = AudioContextOptions & { device: ('default' | 'null')?, period: number? }
 
@@ -599,6 +626,9 @@ declare jess: {
     --- A stream of `channels` (2) at `rate` (48000) holding `seconds` (1, at most 60) of frames; or,
     --- given a stream's handle, the stream itself, in whatever worker the handle was sent to.
     stream: (options: { channels: number?, rate: number?, seconds: number? } | JessHandle) -> AudioStream,
+    --- An MP3, Ogg Vorbis, or Ogg Opus file decoded into a stream of its own layout on a thread
+    --- of its own, which keeps the stream full whatever the script is doing.
+    feed: (data: buffer | string, options: AudioFeedOptions?) -> AudioFeed,
     --- The processor kinds `AudioBus:insert` makes.
     processors: () -> { string },
   },

@@ -5,7 +5,7 @@
 -- Rust owns samples, voices, the sample clock, and mixing. Everything that decides what a file's
 -- bytes are, or which frame a second lands on, is here: WAV in and out, seconds to frames and
 -- back, and compressed files (MP3, Ogg Vorbis, Ogg Opus) through @dream/audio's decoders, loaded
--- whole.
+-- whole; the native side decodes one into a stream on a thread of its own (`feed`).
 
 local Decoders = require '@dream/audio'
 local Native = jess.audio
@@ -30,6 +30,9 @@ export type Device = AudioDevice
 export type OutputOptions = AudioOutputOptions
 export type Decoder = dream_audio_Decoder
 export type DecoderFormat = dream_audio_Format
+export type Feed = AudioFeed
+export type FeedOptions = AudioFeedOptions
+export type FeedStatus = AudioFeedStatus
 
 --- A WAV file: what its samples are, and the `data` chunk's interleaved bytes. `loopStart` and
 --- `loopEnd` are the first loop of a `smpl` chunk, in frames, the end exclusive the way
@@ -364,6 +367,7 @@ return {
   output = Native.output,
   processors = Native.processors,
   stream = Native.stream,
+  feed = Native.feed,
   frames = frames,
   seconds = seconds,
   tempo = tempo,

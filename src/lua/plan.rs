@@ -258,6 +258,7 @@ impl Jess {
             toml_decode: RefCell::new(None),
             granted,
             outputs: crate::lua::audio::Outputs::default(),
+            feeds: crate::lua::audio::Feeds::default(),
         })
     }
 }
