@@ -114,6 +114,8 @@ struct Slot {
     sends: [Option<u32>; MAX_VOICE_SENDS],
     /// Its source's length, for checking a new loop region.
     frames: u64,
+    /// Where it is in space, as last sent, if it's there.
+    emitter: Option<Emitter>,
 }
 
 impl Slot {
@@ -162,6 +164,7 @@ pub struct Control {
     sent: u64,
     sequence: u64,
     counters: Arc<Counters>,
+    listener: Listener,
 }
 
 /// An engine and its control side, connected; the engine goes to whatever renders it.
@@ -236,6 +239,7 @@ pub fn context(config: &AudioConfig) -> Result<(Control, Engine), AudioError> {
             bus: 0,
             sends: [None; MAX_VOICE_SENDS],
             frames: 0,
+            emitter: None,
         };
         config.voices
     ];
@@ -255,6 +259,7 @@ pub fn context(config: &AudioConfig) -> Result<(Control, Engine), AudioError> {
         sent: 0,
         sequence: 0,
         counters,
+        listener: Listener::default(),
     };
     Ok((control, engine))
 }
@@ -315,6 +320,7 @@ impl Control {
         entry.bus = spec.bus.slot;
         entry.sends = spec.sends.map(|send| send.map(|send| send.bus.slot));
         entry.frames = pcm.frames() as u64;
+        entry.emitter = spec.spatial;
         Ok(voice)
     }
 
@@ -843,7 +849,24 @@ impl Control {
             });
         }
         self.collect();
-        self.send(at, Command::Listener(listener))
+        self.send(at, Command::Listener(listener))?;
+        self.listener = listener;
+        Ok(())
+    }
+
+    /// The listener as last sent.
+    #[must_use]
+    pub const fn listener(&self) -> Listener {
+        self.listener
+    }
+
+    /// Where `voice` is in space as last sent, if it's live and in space.
+    #[must_use]
+    pub fn emitter(&self, voice: VoiceKey) -> Option<Emitter> {
+        if !self.is_live(voice) {
+            return None;
+        }
+        self.slots[voice.slot as usize].emitter
     }
 
     /// Moves a voice in space from frame `at`, or from the next frame rendered. True if the voice
@@ -859,7 +882,12 @@ impl Control {
         if !self.is_live(voice) {
             return Ok(false);
         }
+        let entry = &self.slots[voice.slot as usize];
+        if entry.emitter.is_none() {
+            return Ok(false);
+        }
         self.send(at, Command::Place { voice, emitter })?;
+        self.slots[voice.slot as usize].emitter = Some(emitter);
         Ok(true)
     }
 

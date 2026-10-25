@@ -17,14 +17,14 @@ use std::sync::Arc;
 
 use crate::audio::processor::{Setting, Settings};
 use crate::audio::{
-    AudioConfig, AudioError, BusKey, BusParam, BusSpec, Curve, Glide, LoopRegion, MAX_VOICE_SENDS, OfflineContext, Pcm,
-    PlaySpec, ProcessorKey, SampleFormat, Tap, VoiceKey, VoiceParam, VoiceSend,
+    AudioConfig, AudioError, BusKey, BusParam, BusSpec, Curve, Distance, Emitter, Glide, Handedness, Listener, LoopRegion,
+    MAX_VOICE_SENDS, OfflineContext, Pcm, PlaySpec, ProcessorKey, SampleFormat, Tap, VoiceKey, VoiceParam, VoiceSend,
 };
 use crate::lua::plan::Functions;
 use crate::lua::{Bytes, Text, error, kind, push_table};
 use l3i::Runtime;
 use l3i::bind::{Call, StackResults};
-use l3i::convert::NewBuffer;
+use l3i::convert::{NewBuffer, Vector3};
 use l3i::extension::{ExtensionDescriptor, TagPolicy};
 use l3i::stack::{Frame, Scope, TableView, ValueView};
 use l3i::userdata::{Owned, Userdata};
@@ -34,7 +34,31 @@ use l3i::value::{Function, Table};
 const MAX_FRAME: f64 = 9_007_199_254_740_992.0;
 
 const PCM_KEYS: &[&str] = &["channels", "format", "rate"];
-const CONTEXT_KEYS: &[&str] = &["buses", "channels", "commands", "processors", "rate", "voices"];
+const CONTEXT_KEYS: &[&str] = &[
+    "buses",
+    "channels",
+    "commands",
+    "handedness",
+    "processors",
+    "rate",
+    "speedOfSound",
+    "voices",
+];
+const PLACE_KEYS: &[&str] = &[
+    "cone",
+    "direction",
+    "distance",
+    "doppler",
+    "gain",
+    "lowpass",
+    "maximum",
+    "position",
+    "reference",
+    "rolloff",
+    "velocity",
+];
+const CONE_KEYS: &[&str] = &["inner", "outer", "outside"];
+const LISTENER_KEYS: &[&str] = &["forward", "position", "up", "velocity"];
 const PLAY_KEYS: &[&str] = &[
     "at",
     "bus",
@@ -45,6 +69,7 @@ const PLAY_KEYS: &[&str] = &[
     "loopStart",
     "offset",
     "pan",
+    "place",
     "rate",
     "sends",
 ];
@@ -188,6 +213,80 @@ fn bus_field(frame: &Frame<'_>, table: Option<&TableView<'_>>, key: &str, contex
     })
 }
 
+fn vector(frame: &Frame<'_>, table: &TableView<'_>, key: &str, function: &str) -> l3i::Result<Option<[f64; 3]>> {
+    let value: Option<Vector3> = table.raw_get_optional(frame, key, function)?;
+    Ok(value.map(|value| [f64::from(value.x), f64::from(value.y), f64::from(value.z)]))
+}
+
+/// `base` with the fields of a place's options table changed: vectors for position, velocity,
+/// and direction, a cone in degrees, a distance model by name, and its numbers.
+fn emitter(frame: &Frame<'_>, options: ValueView<'_>, base: Emitter, function: &str) -> l3i::Result<Emitter> {
+    let place = table_of(frame, options, function, PLACE_KEYS)?;
+    let mut emitter = base;
+    if let Some(position) = vector(frame, &place, "position", function)? {
+        emitter.position = position;
+    }
+    if let Some(velocity) = vector(frame, &place, "velocity", function)? {
+        emitter.velocity = velocity;
+    }
+    if let Some(direction) = vector(frame, &place, "direction", function)? {
+        emitter.direction = Some(direction);
+    }
+    if let Some(model) = optional::<String>(frame, Some(&place), "distance", function)? {
+        emitter.distance = Distance::named(&model).ok_or_else(|| {
+            error(format!(
+                "{function}'s distance is none, inverse, linear, or exponential, not {model:?}"
+            ))
+        })?;
+    }
+    for (key, field) in [
+        ("reference", &mut emitter.reference),
+        ("maximum", &mut emitter.maximum),
+        ("rolloff", &mut emitter.rolloff),
+        ("doppler", &mut emitter.doppler),
+        ("gain", &mut emitter.gain),
+        ("lowpass", &mut emitter.lowpass),
+    ] {
+        if let Some(value) = optional::<f64>(frame, Some(&place), key, function)? {
+            *field = value;
+        }
+    }
+    frame.with_frame(|frame| {
+        let cone = place.raw_get(frame, "cone")?;
+        if cone.is_nil() {
+            return Ok(());
+        }
+        let cone = table_of(frame, cone, function, CONE_KEYS)?;
+        for (key, field) in [("inner", &mut emitter.inner), ("outer", &mut emitter.outer)] {
+            if let Some(degrees) = optional::<f64>(frame, Some(&cone), key, function)? {
+                *field = degrees.to_radians();
+            }
+        }
+        if let Some(outside) = optional::<f64>(frame, Some(&cone), "outside", function)? {
+            emitter.outside = outside;
+        }
+        Ok(())
+    })?;
+    Ok(emitter)
+}
+
+/// `base` with the fields of a listener's options table changed.
+fn listener(frame: &Frame<'_>, options: ValueView<'_>, base: Listener, function: &str) -> l3i::Result<Listener> {
+    let table = table_of(frame, options, function, LISTENER_KEYS)?;
+    let mut listener = base;
+    for (key, field) in [
+        ("position", &mut listener.position),
+        ("forward", &mut listener.forward),
+        ("up", &mut listener.up),
+        ("velocity", &mut listener.velocity),
+    ] {
+        if let Some(value) = vector(frame, &table, key, function)? {
+            *field = value;
+        }
+    }
+    Ok(listener)
+}
+
 fn voice_param(name: &Text, function: &str) -> l3i::Result<VoiceParam> {
     VoiceParam::named(&name.0).ok_or_else(|| error(format!("{function} takes gain, pan, or rate, not {:?}", name.0)))
 }
@@ -250,6 +349,14 @@ fn offline(call: &Call<'_>, options: Option<ValueView<'_>>) -> l3i::Result<Owned
                 *field = count(value, key)?;
             }
         }
+        if let Some(speed) = optional::<f64>(frame, table, "speedOfSound", FUNCTION)? {
+            config.speed_of_sound = speed;
+        }
+        config.handedness = match optional::<String>(frame, table, "handedness", FUNCTION)?.as_deref() {
+            None | Some("right") => Handedness::Right,
+            Some("left") => Handedness::Left,
+            Some(other) => return Err(error(format!("{FUNCTION}'s handedness is right or left, not {other:?}"))),
+        };
         Ok(())
     })?;
     let context = OfflineContext::new(&config)?;
@@ -283,6 +390,15 @@ fn play_spec(call: &Call<'_>, context: &Shared, pcm: &Pcm, options: Option<Value
         spec.sends = voice_sends(frame, table, context)?;
         if let Some(fade) = optional::<f64>(frame, table, "fade", FUNCTION)? {
             spec.fade = whole(fade, "fade")?;
+        }
+        if let Some(table) = table {
+            spec.spatial = frame.with_frame(|frame| {
+                let place = table.raw_get(frame, "place")?;
+                if place.is_nil() {
+                    return Ok(None);
+                }
+                emitter(frame, place, Emitter::default(), "AudioContext:play's place").map(Some)
+            })?;
         }
         let looping = optional::<bool>(frame, table, "loop", FUNCTION)?.unwrap_or(false);
         let start = optional::<f64>(frame, table, "loopStart", FUNCTION)?;
@@ -518,6 +634,17 @@ fn describe_context(d: &mut ExtensionDescriptor) {
         .method("master", |this: &LuaAudioContext| bus_handle(&this.0, BusKey::MASTER))
         .untyped();
     context
+        .method(
+            "listener",
+            |this: &LuaAudioContext, call: &Call<'_>, options: ValueView<'_>, at: Option<f64>| -> l3i::Result<()> {
+                let at = frame_option(at)?;
+                let base = this.0.borrow_mut().control().listener();
+                let moved = call.with_frame(|frame| listener(frame, options, base, "AudioContext:listener"))?;
+                Ok(this.0.borrow_mut().control().set_listener(moved, at)?)
+            },
+        )
+        .untyped();
+    context
         .method("room", |this: &LuaAudioContext| {
             number(this.0.borrow_mut().control().room() as u64)
         })
@@ -628,6 +755,19 @@ fn describe_voice(d: &mut ExtensionDescriptor) {
                 };
                 let at = frame_option(at)?;
                 Ok(this.context.borrow_mut().control().set_loop(this.key, Some(region), at)?)
+            },
+        )
+        .untyped();
+    voice
+        .method(
+            "place",
+            |this: &LuaAudioVoice, call: &Call<'_>, place: ValueView<'_>, at: Option<f64>| -> l3i::Result<bool> {
+                let at = frame_option(at)?;
+                let Some(base) = this.context.borrow_mut().control().emitter(this.key) else {
+                    return Ok(false);
+                };
+                let moved = call.with_frame(|frame| emitter(frame, place, base, "AudioVoice:place"))?;
+                Ok(this.context.borrow_mut().control().place(this.key, moved, at)?)
             },
         )
         .untyped();

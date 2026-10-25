@@ -166,7 +166,49 @@ export type AudioPlayOptions = {
   sends: { { bus: AudioBus, level: number? } }?,
   --- Frames to fade in over, from silence to `gain` (0).
   fade: number?,
+  --- Where it is, if it's in space: then distance, direction, and motion set its level, pan, and
+  --- pitch, and `pan` is not used.
+  place: AudioPlace?,
 }
+
+--- A voice's place in space, in the world's own units and axes. Every field is optional: on
+--- `play` the rest are the defaults, on `AudioVoice:place` what they were. `cone` angles are whole
+--- angles in degrees: full level inside `inner` of `direction`, `outside` (0 to 1) beyond `outer`.
+--- `distance` is the model (`inverse` by default, `linear`, `exponential`, `none`) between
+--- `reference` (1, full level) and `maximum` (no quieter beyond), at `rolloff` (1). `doppler` (1)
+--- scales the pitch shift from motion. `gain` (1) and `lowpass` (a cutoff in hertz) are for what
+--- lies between the voice and the listener, as the application works it out.
+export type AudioPlace = {
+  position: vector?,
+  velocity: vector?,
+  direction: vector?,
+  cone: { inner: number?, outer: number?, outside: number? }?,
+  distance: ('none' | 'inverse' | 'linear' | 'exponential')?,
+  reference: number?,
+  maximum: number?,
+  rolloff: number?,
+  doppler: number?,
+  gain: number?,
+  lowpass: number?,
+}
+
+--- How to make a context: 48000 frames per second, 2 channels, 256 voices, 64 buses (the master
+--- included), 256 processors, and room for 4096 waiting commands, unless told otherwise. Space is
+--- right-handed (forward crossed with up points right) unless `handedness` is `left`, and sound
+--- travels at `speedOfSound` (343) of the world's units a second.
+export type AudioContextOptions = {
+  rate: number?,
+  channels: number?,
+  voices: number?,
+  buses: number?,
+  processors: number?,
+  commands: number?,
+  speedOfSound: number?,
+  handedness: ('right' | 'left')?,
+}
+
+--- Where the listener is and which way it faces; any field left out stays as it was.
+export type AudioListener = { position: vector?, forward: vector?, up: vector?, velocity: vector? }
 
 --- A ramp's shape: a straight line, or the same ratio every frame (both ends above 0), which is
 --- even steps in decibels.
@@ -254,6 +296,8 @@ export type AudioVoice = {
   loop: (self: AudioVoice, start: number, stop: number, at: number?) -> boolean,
   --- Lets go of the loop from `at`: playback runs on past it, into whatever follows (an outro).
   release: (self: AudioVoice, at: number?) -> boolean,
+  --- Moves a voice in space from `at`, changing the fields given; false for a voice not in space.
+  place: (self: AudioVoice, place: AudioPlace, at: number?) -> boolean,
   --- Changes the level of a send it started with.
   send: (self: AudioVoice, bus: AudioBus, level: number, at: number?) -> boolean,
   state: (self: AudioVoice) -> AudioVoiceState,
@@ -274,6 +318,9 @@ export type AudioContext = {
   --- Renders `frames` frames and returns them as interleaved 32-bit floats.
   render: (self: AudioContext, frames: number) -> buffer,
   stats: (self: AudioContext) -> AudioStats,
+  --- Moves the listener from `at`, changing the fields given. It starts at the origin facing
+  --- `-z` with `y` up, still.
+  listener: (self: AudioContext, listener: AudioListener, at: number?) -> (),
   --- How many more commands the queue to the engine has room for.
   room: (self: AudioContext) -> number,
   --- Runs `body`, and sends every command it makes to the engine together: ones not stamped for
@@ -475,16 +522,8 @@ declare jess: {
   audio: {
     --- PCM from interleaved bytes, `channels` samples per frame, each stored as `format`.
     pcm: (data: buffer | string, options: { format: AudioSampleFormat, channels: number, rate: number }) -> AudioPcm,
-    --- A context the script renders: 48000 frames per second, 2 channels, 256 voices, 64 buses, 256
-    --- processors, and room for 4096 waiting commands, unless told otherwise.
-    offline: (options: {
-      rate: number?,
-      channels: number?,
-      voices: number?,
-      buses: number?,
-      processors: number?,
-      commands: number?,
-    }?) -> AudioContext,
+    --- A context the script renders.
+    offline: (options: AudioContextOptions?) -> AudioContext,
     --- The processor kinds `AudioBus:insert` makes.
     processors: () -> { string },
   },

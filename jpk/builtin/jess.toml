@@ -16,6 +16,7 @@ tests = [
   "tests/input/run.jsl",
   "tests/audio/run.jsl",
   "tests/audio/adaptive.jsl",
+  "tests/audio/space.jsl",
   "tests/backup/run.jsl",
   "tests/http/run.jsl",
 ]

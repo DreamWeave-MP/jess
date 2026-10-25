@@ -20,6 +20,9 @@ export type Processor = AudioProcessor
 export type Meter = AudioMeter
 export type SendOptions = AudioSendOptions
 export type Curve = AudioCurve
+export type Place = AudioPlace
+export type Listener = AudioListener
+export type ContextOptions = AudioContextOptions
 
 --- A WAV file: what its samples are, and the `data` chunk's interleaved bytes. `loopStart` and
 --- `loopEnd` are the first loop of a `smpl` chunk, in frames, the end exclusive the way
