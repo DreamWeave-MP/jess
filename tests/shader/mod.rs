@@ -17,6 +17,5 @@ mod outputs;
 mod statements;
 mod storage;
 mod textures;
-mod triangle;
 mod validation;
 mod wgsl;
