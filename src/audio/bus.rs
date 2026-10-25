@@ -4,7 +4,7 @@
 //! so buses make a tree under the master. A bus sums whatever is routed to it, applies its gain,
 //! and adds the result into its parent.
 
-use crate::audio::{AudioError, MAX_SENDS};
+use crate::audio::{AudioError, MAX_CHAIN, MAX_SENDS};
 
 /// A bus as the application names it: its slot in the engine's table and the slot's generation
 /// when it was made, so a handle outliving its bus names nothing.
@@ -104,6 +104,11 @@ pub struct Bus {
     pub generation: u32,
     pub parent: Option<u32>,
     pub sends: [Option<BusSend>; MAX_SENDS],
+    /// The processor slots it runs, in order; the first `length`.
+    pub chain: [u32; MAX_CHAIN],
+    pub length: usize,
+    /// Removed, and ringing out: frames left before it goes.
+    pub draining: Option<u64>,
     gain: f32,
     muted: bool,
 }
@@ -114,9 +119,39 @@ impl Bus {
             generation,
             parent,
             sends: [None; MAX_SENDS],
+            chain: [0; MAX_CHAIN],
+            length: 0,
+            draining: None,
             gain: spec.gain,
             muted: spec.muted,
         }
+    }
+
+    /// The processor slots it runs, in order.
+    pub fn chain(&self) -> &[u32] {
+        &self.chain[..self.length]
+    }
+
+    /// Puts processor slot `processor` at `index` in the chain, or last; does nothing when the
+    /// chain is full, which the control side never sends.
+    pub fn mount(&mut self, processor: u32, index: usize) {
+        if self.length == MAX_CHAIN {
+            return;
+        }
+        let index = index.min(self.length);
+        self.chain.copy_within(index..self.length, index + 1);
+        self.chain[index] = processor;
+        self.length += 1;
+    }
+
+    /// Takes processor slot `processor` out of the chain; true if it was there.
+    pub fn unmount(&mut self, processor: u32) -> bool {
+        let Some(index) = self.chain().iter().position(|known| *known == processor) else {
+            return false;
+        };
+        self.chain.copy_within(index + 1..self.length, index);
+        self.length -= 1;
+        true
     }
 
     /// Sends to `target` at `level`, replacing a send already there.

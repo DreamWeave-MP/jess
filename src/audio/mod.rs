@@ -51,6 +51,7 @@ mod engine;
 mod error;
 mod graph;
 mod pcm;
+pub mod processor;
 #[cfg(test)]
 mod tests;
 mod voice;
@@ -60,6 +61,7 @@ pub use context::{AudioConfig, AudioStats, Control, OfflineContext, VoiceState, 
 pub use engine::Engine;
 pub use error::AudioError;
 pub use pcm::{Pcm, SampleFormat};
+pub use processor::{Processor, ProcessorKey};
 pub use voice::{LoopRegion, PlaySpec, VoiceKey, VoiceParam, VoiceSend};
 
 /// The most frames the engine mixes at once. A command's frame can split a block anywhere.
@@ -82,6 +84,12 @@ pub const MAX_SENDS: usize = 4;
 
 /// The most sends one voice has, besides its bus.
 pub const MAX_VOICE_SENDS: usize = 2;
+
+/// The most processors one bus runs.
+pub const MAX_CHAIN: usize = 16;
+
+/// The most processors one context holds.
+pub const MAX_PROCESSORS: usize = 4096;
 
 /// The fastest a voice plays its source.
 pub const MAX_PLAYBACK_RATE: f64 = 64.0;

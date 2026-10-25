@@ -8,9 +8,11 @@ use crate::audio::bus::BusSend;
 use crate::audio::engine::{Capacity, Command, Counters, Engine, Feedback, Stamped};
 use crate::audio::graph::Graph;
 use crate::audio::pcm::check_layout;
+use crate::audio::processor::{ParamInfo, Processor, ProcessorKey, check_param, param_index};
 use crate::audio::voice::{VoiceKey, check_level};
 use crate::audio::{
-    AudioError, BusKey, BusParam, BusSpec, MAX_BUSES, MAX_VOICE_SENDS, MAX_VOICES, Pcm, PlaySpec, Tap, VoiceParam,
+    AudioError, BusKey, BusParam, BusSpec, MAX_BUSES, MAX_CHAIN, MAX_PROCESSORS, MAX_VOICE_SENDS, MAX_VOICES, Pcm, PlaySpec,
+    Tap, VoiceParam,
 };
 
 /// How to make a context.
@@ -24,6 +26,8 @@ pub struct AudioConfig {
     pub voices: usize,
     /// Buses, the master included.
     pub buses: usize,
+    /// Processors on all buses together.
+    pub processors: usize,
     /// Commands that can wait for the engine at once, in the queue and again in the engine's
     /// list of commands stamped for later.
     pub commands: usize,
@@ -36,6 +40,7 @@ impl Default for AudioConfig {
             channels: 2,
             voices: 256,
             buses: 64,
+            processors: 256,
             commands: 4096,
         }
     }
@@ -98,6 +103,21 @@ impl Slot {
     }
 }
 
+/// A processor as the control side knows it: enough to check commands for it without asking the
+/// engine, which has the processor itself.
+#[derive(Clone, Copy, Debug)]
+struct ProcessorSlot {
+    generation: u32,
+    /// Taken: mounted, or sent away and not yet back.
+    busy: bool,
+    /// In a bus's chain, as far as this side has sent.
+    mounted: bool,
+    bus: u32,
+    latency: u64,
+    kind: &'static str,
+    params: &'static [ParamInfo],
+}
+
 /// The application side of a context: it starts, stops, and changes voices and buses by sending
 /// the engine commands, and hears back what ended. It never touches the engine's state.
 #[derive(Debug)]
@@ -112,6 +132,8 @@ pub struct Control {
     /// same voices gets the same slots, and so the same mix order.
     free: Vec<u32>,
     graph: Graph,
+    processors: Vec<ProcessorSlot>,
+    free_processors: Vec<u32>,
     sequence: u64,
     counters: Arc<Counters>,
 }
@@ -122,7 +144,7 @@ pub struct Control {
 ///
 /// [`AudioError::Rate`] or [`AudioError::Channels`] out of range, and
 /// [`AudioError::Capacity`] for no voices or more than [`MAX_VOICES`], no buses or more than
-/// [`MAX_BUSES`], or no command room.
+/// [`MAX_BUSES`], more than [`MAX_PROCESSORS`], or no command room.
 pub fn context(config: &AudioConfig) -> Result<(Control, Engine), AudioError> {
     check_layout(config.channels, config.rate)?;
     if config.voices == 0 || config.voices > MAX_VOICES {
@@ -131,20 +153,34 @@ pub fn context(config: &AudioConfig) -> Result<(Control, Engine), AudioError> {
     if config.buses == 0 || config.buses > MAX_BUSES {
         return Err(AudioError::Capacity("a context's bus count", config.buses));
     }
+    if config.processors > MAX_PROCESSORS {
+        return Err(AudioError::Capacity("a context's processor count", config.processors));
+    }
     if config.commands == 0 {
         return Err(AudioError::Capacity("a context's command capacity", 0));
     }
-    let (commands, receive) = sync_channel(config.commands);
-    // Each voice and bus ends once, and its slot is reused only after the control side reads that;
-    // each command replaces at most one order. So a queue of their sum never fills.
-    let (send, feedback) = sync_channel(config.voices + config.buses + config.commands);
-    let counters = Arc::new(Counters::default());
     let capacity = Capacity {
         voices: config.voices,
         buses: config.buses,
+        processors: config.processors,
         commands: config.commands,
     };
+    let (commands, receive) = sync_channel(config.commands);
+    let (send, feedback) = sync_channel(capacity.feedback());
+    let counters = Arc::new(Counters::default());
     let engine = Engine::new(config.rate, config.channels, &capacity, receive, send, Arc::clone(&counters));
+    let processors = vec![
+        ProcessorSlot {
+            generation: 0,
+            busy: false,
+            mounted: false,
+            bus: 0,
+            latency: 0,
+            kind: "",
+            params: &[],
+        };
+        config.processors
+    ];
     let slots = vec![
         Slot {
             generation: 0,
@@ -165,6 +201,8 @@ pub fn context(config: &AudioConfig) -> Result<(Control, Engine), AudioError> {
         slots,
         free,
         graph: Graph::new(config.buses),
+        processors,
+        free_processors: (0..u32::try_from(config.processors).unwrap_or(u32::MAX)).rev().collect(),
         sequence: 0,
         counters,
     };
@@ -347,6 +385,12 @@ impl Control {
         }
         self.send(at, Command::RemoveBus { bus })?;
         self.graph.mark_removing(bus);
+        // Its processors go with it, once it has rung out.
+        for slot in &mut self.processors {
+            if slot.mounted && slot.bus == bus.slot {
+                slot.mounted = false;
+            }
+        }
         Ok(true)
     }
 
@@ -455,6 +499,129 @@ impl Control {
         Ok(true)
     }
 
+    /// Puts `processor` in `bus`'s chain at `index` (from 0), or last, from the next frame
+    /// rendered. The processor moves to the engine; the key names it from here on.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::StaleBus`], [`AudioError::ChainFull`], [`AudioError::ProcessorsExhausted`],
+    /// [`AudioError::QueueFull`], or [`AudioError::Disconnected`].
+    pub fn mount(
+        &mut self,
+        processor: Box<dyn Processor>,
+        bus: BusKey,
+        index: Option<usize>,
+    ) -> Result<ProcessorKey, AudioError> {
+        self.collect();
+        self.graph.check_live(bus)?;
+        let chained = self
+            .processors
+            .iter()
+            .filter(|slot| slot.mounted && slot.bus == bus.slot)
+            .count();
+        if chained == MAX_CHAIN {
+            return Err(AudioError::ChainFull(MAX_CHAIN));
+        }
+        let Some(slot) = self.free_processors.pop() else {
+            return Err(AudioError::ProcessorsExhausted(self.processors.len()));
+        };
+        let key = ProcessorKey {
+            slot,
+            generation: self.processors[slot as usize].generation,
+        };
+        let entry = ProcessorSlot {
+            generation: key.generation,
+            busy: true,
+            mounted: true,
+            bus: bus.slot,
+            latency: processor.latency(),
+            kind: processor.kind(),
+            params: processor.params(),
+        };
+        let command = Command::Mount {
+            processor: key,
+            instance: processor,
+            bus,
+            index: index.unwrap_or(MAX_CHAIN),
+        };
+        if let Err(error) = self.send(None, command) {
+            self.free_processors.push(slot);
+            return Err(error);
+        }
+        self.processors[slot as usize] = entry;
+        Ok(key)
+    }
+
+    /// Takes a processor out of its chain at frame `at`, or at the next frame rendered. True if
+    /// it was mounted.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::QueueFull`] or [`AudioError::Disconnected`].
+    pub fn unmount(&mut self, processor: ProcessorKey, at: Option<u64>) -> Result<bool, AudioError> {
+        self.collect();
+        if !self.processor_live(processor) {
+            return Ok(false);
+        }
+        self.send(at, Command::Unmount { processor })?;
+        self.processors[processor.slot as usize].mounted = false;
+        Ok(true)
+    }
+
+    /// Sets a processor's parameter `name` at frame `at`, or at the next frame rendered. True if
+    /// the processor is mounted.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::StaleProcessor`], [`AudioError::UnknownParameter`],
+    /// [`AudioError::Parameter`] outside its range, [`AudioError::QueueFull`], or
+    /// [`AudioError::Disconnected`].
+    pub fn set_processor(
+        &mut self,
+        processor: ProcessorKey,
+        name: &str,
+        value: f64,
+        at: Option<u64>,
+    ) -> Result<bool, AudioError> {
+        self.collect();
+        if !self.processor_live(processor) {
+            return Ok(false);
+        }
+        let slot = self.processors[processor.slot as usize];
+        let index = param_index(slot.kind, slot.params, name)?;
+        let value = check_param(&slot.params[index], value)?;
+        self.send(at, Command::SetProcessor { processor, index, value })?;
+        Ok(true)
+    }
+
+    /// True while `processor` is in a chain.
+    #[must_use]
+    pub fn processor_live(&self, processor: ProcessorKey) -> bool {
+        self.processors
+            .get(processor.slot as usize)
+            .is_some_and(|slot| slot.mounted && slot.generation == processor.generation)
+    }
+
+    /// How many frames `bus`'s output lags the voices that reach it, by the longest way round:
+    /// the processor latency along the path a voice takes to it.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::StaleBus`].
+    pub fn latency(&mut self, bus: BusKey) -> Result<u64, AudioError> {
+        self.collect();
+        self.graph.check_live(bus)?;
+        let processors = &self.processors;
+        let latencies = self.graph.latencies(|bus| {
+            processors
+                .iter()
+                .filter(|slot| slot.mounted && slot.bus == bus)
+                .map(|slot| slot.latency)
+                .sum()
+        });
+        Ok(latencies[bus.slot as usize])
+    }
+
     /// True while `bus` is live: made, and not removed.
     pub fn bus_live(&mut self, bus: BusKey) -> bool {
         self.collect();
@@ -491,6 +658,17 @@ impl Control {
                     self.free.push(voice.slot);
                 }
                 Feedback::BusEnded { bus } => self.graph.ended(bus),
+                Feedback::ProcessorEnded { processor, instance } => {
+                    drop(instance);
+                    let slot = &mut self.processors[processor.slot as usize];
+                    if slot.generation != processor.generation || !slot.busy {
+                        continue;
+                    }
+                    slot.generation = slot.generation.wrapping_add(1);
+                    slot.busy = false;
+                    slot.mounted = false;
+                    self.free_processors.push(processor.slot);
+                }
                 Feedback::Order(order) => drop(order),
             }
         }

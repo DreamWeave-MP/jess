@@ -51,6 +51,21 @@ pub enum AudioError {
     Cycle,
     /// A bus or voice already has as many sends as it can.
     SendsExhausted(usize),
+    /// Every processor slot is taken.
+    ProcessorsExhausted(usize),
+    /// A bus already runs as many processors as it can.
+    ChainFull(usize),
+    /// A processor handle from one that was removed, or another context.
+    StaleProcessor,
+    /// A parameter name a processor doesn't have.
+    UnknownParameter {
+        /// The processor's kind.
+        kind: &'static str,
+        /// The name asked for.
+        name: String,
+        /// The names it has.
+        known: String,
+    },
     /// The master bus is the output: it has no parent and stays.
     Master,
     /// A source whose channels the context can't mix into its output.
@@ -116,6 +131,12 @@ impl fmt::Display for AudioError {
             ),
             AudioError::Cycle => f.write_str("that routing would feed a bus back into itself"),
             AudioError::SendsExhausted(sends) => write!(f, "it already has all {sends} of its sends"),
+            AudioError::ProcessorsExhausted(count) => write!(f, "all {count} processors are in use"),
+            AudioError::ChainFull(count) => write!(f, "the bus already runs {count} processors"),
+            AudioError::StaleProcessor => f.write_str("the processor was removed or belongs to another context"),
+            AudioError::UnknownParameter { kind, name, known } => {
+                write!(f, "a {kind} processor has no parameter {name:?}; it has {known}")
+            }
             AudioError::Master => f.write_str("the master bus is the output: it has no parent and can't be removed"),
             AudioError::Layout { source, output } => write!(
                 f,

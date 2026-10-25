@@ -169,6 +169,25 @@ impl Graph {
         }
     }
 
+    /// How many frames each bus's output lags the voices that reach it by the longest way round,
+    /// by slot, given what each bus's own processors add (`own`). A bus summing paths of
+    /// different latency is where compensation would delay the shorter ones to match.
+    pub fn latencies(&self, own: impl Fn(u32) -> u64) -> Vec<u64> {
+        let mut arrival = vec![0u64; self.nodes.len()];
+        let mut output = vec![0u64; self.nodes.len()];
+        let Ok(order) = self.order() else {
+            return output;
+        };
+        for slot in order {
+            let done = arrival[slot as usize] + own(slot);
+            output[slot as usize] = done;
+            for target in self.nodes[slot as usize].outputs() {
+                arrival[target as usize] = arrival[target as usize].max(done);
+            }
+        }
+        output
+    }
+
     /// Every bus not yet free in an order where each comes before everything it feeds, the
     /// master last. Among buses that could go next, the lowest slot goes first, so the same graph
     /// always mixes in the same order.

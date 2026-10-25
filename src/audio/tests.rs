@@ -4,6 +4,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::Arc;
 
+use crate::audio::processor::{Block, Gain, ParamInfo, Processor, Tail};
 use crate::audio::{
     AudioConfig, AudioError, BusKey, BusParam, BusSpec, LoopRegion, OfflineContext, Pcm, PlaySpec, QUANTUM, Tap, VoiceParam,
     VoiceSend, VoiceState,
@@ -484,4 +485,157 @@ fn sends_that_would_loop_or_feed_a_removed_bus_are_refused() {
         context.control().remove_bus(group, None),
         Err(AudioError::BusInUse { voices: 1, buses: 0 })
     );
+}
+
+/// Adds a constant: a chain's order shows in what comes out.
+struct Offset(f32);
+
+impl Processor for Offset {
+    fn kind(&self) -> &'static str {
+        "offset"
+    }
+
+    fn params(&self) -> &'static [ParamInfo] {
+        &[]
+    }
+
+    fn set(&mut self, _index: usize, _value: f64) {}
+
+    fn process(&mut self, block: &mut Block<'_>, _key: Option<&[f32]>) {
+        for sample in block.channel(0) {
+            *sample += self.0;
+        }
+    }
+}
+
+/// Holds the last sample it heard for `tail` frames after its input stops, and says its output
+/// lags by `latency` (which it doesn't, to keep renders readable).
+struct Ring {
+    tail: u64,
+    latency: u64,
+    held: f32,
+    left: u64,
+}
+
+fn ring(tail: u64, latency: u64) -> Box<dyn Processor> {
+    Box::new(Ring {
+        tail,
+        latency,
+        held: 0.0,
+        left: 0,
+    })
+}
+
+impl Processor for Ring {
+    fn kind(&self) -> &'static str {
+        "ring"
+    }
+
+    fn params(&self) -> &'static [ParamInfo] {
+        &[]
+    }
+
+    fn set(&mut self, _index: usize, _value: f64) {}
+
+    fn latency(&self) -> u64 {
+        self.latency
+    }
+
+    fn tail(&self) -> Tail {
+        Tail::Frames(self.tail)
+    }
+
+    fn process(&mut self, block: &mut Block<'_>, _key: Option<&[f32]>) {
+        for sample in block.channel(0) {
+            if *sample != 0.0 {
+                (self.held, self.left) = (*sample, self.tail);
+            } else if self.left > 0 {
+                *sample = self.held;
+                self.left -= 1;
+            }
+        }
+    }
+}
+
+#[test]
+fn a_bus_runs_its_chain_in_order_before_its_gain() {
+    let tone = pcm(&[1.0; 8], 48_000);
+    let mut context = mono(AudioConfig::default());
+    let group = bus(&mut context, BusKey::MASTER, 0.5);
+    let gain = context.control().mount(Box::new(Gain::new()), group, None).unwrap();
+    context.control().mount(Box::new(Offset(1.0)), group, None).unwrap();
+    context.control().set_processor(gain, "gain", 2.0, None).unwrap();
+    context.control().play(&tone, &into(group, 0)).unwrap();
+    // (1 * 2 + 1) * 0.5.
+    assert_eq!(context.render(1), [1.5]);
+
+    context.control().mount(Box::new(Offset(1.0)), group, Some(0)).unwrap();
+    // ((1 + 1) * 2 + 1) * 0.5.
+    assert_eq!(context.render(1), [2.5]);
+    context.control().set_processor(gain, "gain", 0.0, Some(3)).unwrap();
+    assert!(context.control().unmount(gain, Some(4)).unwrap());
+    // Then ((1 + 1) * 0 + 1) * 0.5, and without the gain (1 + 1 + 1) * 0.5.
+    assert_eq!(context.render(3), [2.5, 0.5, 1.5]);
+    assert!(!context.control().processor_live(gain));
+    assert!(!context.control().set_processor(gain, "gain", 1.0, None).unwrap());
+}
+
+#[test]
+fn processor_parameters_are_checked_by_name_and_range() {
+    let mut context = mono(AudioConfig::default());
+    let gain = context.control().mount(Box::new(Gain::new()), BusKey::MASTER, None).unwrap();
+    assert!(matches!(
+        context.control().set_processor(gain, "volume", 1.0, None),
+        Err(AudioError::UnknownParameter { kind: "gain", .. })
+    ));
+    assert!(matches!(
+        context.control().set_processor(gain, "gain", 100.0, None),
+        Err(AudioError::Parameter { name: "gain", .. })
+    ));
+    let full = mono(AudioConfig {
+        processors: 1,
+        ..AudioConfig::default()
+    });
+    let mut full = full;
+    full.control().mount(Box::new(Gain::new()), BusKey::MASTER, None).unwrap();
+    assert!(matches!(
+        full.control().mount(Box::new(Gain::new()), BusKey::MASTER, None),
+        Err(AudioError::ProcessorsExhausted(1))
+    ));
+}
+
+#[test]
+fn a_removed_bus_rings_out_its_tail_before_it_goes() {
+    let click = pcm(&[1.0], 48_000);
+    let mut context = mono(AudioConfig::default());
+    let room = bus(&mut context, BusKey::MASTER, 1.0);
+    let ringing = context.control().mount(ring(4, 0), room, None).unwrap();
+    context.control().play(&click, &into(room, 0)).unwrap();
+    let mut out = context.render(2);
+    assert!(context.control().remove_bus(room, None).unwrap());
+    assert!(!context.control().processor_live(ringing), "the processor goes with its bus");
+    out.extend(context.render(6));
+    assert_eq!(out, [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0]);
+    let stats = context.control().stats();
+    assert_eq!(stats.allocated, 0);
+    let reused = bus(&mut context, BusKey::MASTER, 1.0);
+    assert_ne!(reused, room);
+    context.control().mount(Box::new(Gain::new()), reused, None).unwrap();
+}
+
+#[test]
+fn latency_adds_up_along_the_longest_path_to_each_bus() {
+    let mut context = mono(AudioConfig::default());
+    let group = bus(&mut context, BusKey::MASTER, 1.0);
+    let inner = bus(&mut context, group, 1.0);
+    let aux = bus(&mut context, BusKey::MASTER, 1.0);
+    context.control().mount(ring(0, 10), group, None).unwrap();
+    let late = context.control().mount(ring(0, 5), inner, None).unwrap();
+    context.control().send_bus(inner, aux, 1.0, Tap::PostFader, None).unwrap();
+    assert_eq!(context.control().latency(inner), Ok(5));
+    assert_eq!(context.control().latency(group), Ok(15));
+    assert_eq!(context.control().latency(aux), Ok(5));
+    assert_eq!(context.control().latency(BusKey::MASTER), Ok(15));
+    context.control().unmount(late, None).unwrap();
+    assert_eq!(context.control().latency(BusKey::MASTER), Ok(10));
 }

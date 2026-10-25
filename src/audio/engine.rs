@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 
 use crate::audio::bus::{Bus, BusSend};
+use crate::audio::processor::{Block, Processor, ProcessorKey, Tail};
 use crate::audio::voice::{Voice, VoiceKey};
 use crate::audio::{BusKey, BusParam, BusSpec, MAX_CHANNELS, Pcm, PlaySpec, QUANTUM, Tap, VoiceParam};
 
@@ -74,6 +75,21 @@ pub enum Command {
         target: u32,
         level: f32,
     },
+    /// Puts a processor in a bus's chain at `index`.
+    Mount {
+        processor: ProcessorKey,
+        instance: Box<dyn Processor>,
+        bus: BusKey,
+        index: usize,
+    },
+    Unmount {
+        processor: ProcessorKey,
+    },
+    SetProcessor {
+        processor: ProcessorKey,
+        index: usize,
+        value: f64,
+    },
 }
 
 /// A command and when to carry it out: `at` an output frame, or `None` for the next frame the
@@ -96,8 +112,13 @@ pub enum Feedback {
     /// A voice ended: it ran out, was stopped, or was stopped before it started. Its slot is free
     /// once the control side has read this, and the PCM drops there.
     VoiceEnded { voice: VoiceKey, pcm: Arc<Pcm> },
-    /// A bus was removed; its slot is free once the control side has read this.
+    /// A bus was removed and has rung out; its slot is free once the control side has read this.
     BusEnded { bus: BusKey },
+    /// A processor left its bus, to be dropped.
+    ProcessorEnded {
+        processor: ProcessorKey,
+        instance: Box<dyn Processor>,
+    },
     /// An order the engine replaced, to drop.
     Order(Box<[u32]>),
 }
@@ -122,7 +143,24 @@ pub struct Counters {
 pub struct Capacity {
     pub voices: usize,
     pub buses: usize,
+    pub processors: usize,
     pub commands: usize,
+}
+
+impl Capacity {
+    /// The feedback the engine can owe at once: each voice, bus, and processor ends once and its
+    /// slot is reused only after the control side reads that, and each command replaces at most
+    /// one order.
+    pub const fn feedback(&self) -> usize {
+        self.voices + self.buses + self.processors + self.commands
+    }
+}
+
+/// A processor in a bus's chain.
+struct Mounted {
+    generation: u32,
+    bus: u32,
+    instance: Box<dyn Processor>,
 }
 
 /// The render side of a context. See the module docs.
@@ -136,6 +174,7 @@ pub struct Engine {
     unsent: Vec<Feedback>,
     voices: Box<[Option<Voice>]>,
     buses: Box<[Option<Bus>]>,
+    processors: Box<[Option<Mounted>]>,
     /// Bus slots, each before every bus it feeds; slots of removed buses are skipped.
     order: Box<[u32]>,
     /// One block of every bus: `channels × QUANTUM` samples per slot, channel after channel.
@@ -176,9 +215,10 @@ impl Engine {
             rate,
             commands,
             feedback,
-            unsent: Vec::with_capacity(capacity.voices + capacity.buses + capacity.commands),
+            unsent: Vec::with_capacity(capacity.feedback()),
             voices: std::iter::repeat_with(|| None).take(capacity.voices).collect(),
             buses,
+            processors: std::iter::repeat_with(|| None).take(capacity.processors).collect(),
             order: Box::new([0]),
             mixes: vec![0.0; capacity.buses * channels * QUANTUM].into_boxed_slice(),
             pending: Vec::with_capacity(capacity.commands),
@@ -268,6 +308,7 @@ impl Engine {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // one arm per command
     fn carry_out(&mut self, command: Command) {
         match command {
             Command::Start { voice, pcm, spec } => {
@@ -291,9 +332,26 @@ impl Engine {
                 self.reorder(order);
             }
             Command::RemoveBus { bus } => {
-                if self.bus(bus).is_some() {
-                    self.buses[bus.slot as usize] = None;
-                    self.send(Feedback::BusEnded { bus });
+                let Some(removed) = self.buses[bus.slot as usize].as_ref() else {
+                    return;
+                };
+                if removed.generation != bus.generation || removed.draining.is_some() {
+                    return;
+                }
+                let tail = removed
+                    .chain()
+                    .iter()
+                    .filter_map(|slot| self.processors[*slot as usize].as_ref())
+                    .map(|mounted| match mounted.instance.tail() {
+                        Tail::None => 0,
+                        Tail::Frames(frames) => frames,
+                    })
+                    .max()
+                    .unwrap_or(0);
+                if tail == 0 {
+                    self.retire_bus(bus.slot as usize);
+                } else if let Some(removed) = self.buses[bus.slot as usize].as_mut() {
+                    removed.draining = Some(tail);
                 }
             }
             Command::RouteBus { bus, parent, order } => {
@@ -324,7 +382,73 @@ impl Engine {
                 }
             }
             Command::SendVoice { voice, target, level } => self.send_voice(voice, target, level),
+            Command::Mount {
+                processor,
+                instance,
+                bus,
+                index,
+            } => {
+                let Some(chain) = self.bus(bus) else {
+                    self.send(Feedback::ProcessorEnded { processor, instance });
+                    return;
+                };
+                chain.mount(processor.slot, index);
+                self.processors[processor.slot as usize] = Some(Mounted {
+                    generation: processor.generation,
+                    bus: bus.slot,
+                    instance,
+                });
+            }
+            Command::Unmount { processor } => {
+                let slot = processor.slot as usize;
+                if self.processors[slot]
+                    .as_ref()
+                    .is_none_or(|mounted| mounted.generation != processor.generation)
+                {
+                    return;
+                }
+                if let Some(mounted) = self.processors[slot].take() {
+                    if let Some(bus) = self.buses[mounted.bus as usize].as_mut() {
+                        bus.unmount(processor.slot);
+                    }
+                    self.send(Feedback::ProcessorEnded {
+                        processor,
+                        instance: mounted.instance,
+                    });
+                }
+            }
+            Command::SetProcessor { processor, index, value } => {
+                if let Some(mounted) = self.processors[processor.slot as usize].as_mut()
+                    && mounted.generation == processor.generation
+                {
+                    mounted.instance.set(index, value);
+                }
+            }
         }
+    }
+
+    /// Lets go of the bus in `slot` and every processor it runs.
+    fn retire_bus(&mut self, slot: usize) {
+        let Some(bus) = self.buses[slot].take() else {
+            return;
+        };
+        for &processor in bus.chain() {
+            if let Some(mounted) = self.processors[processor as usize].take() {
+                let processor = ProcessorKey {
+                    slot: processor,
+                    generation: mounted.generation,
+                };
+                self.send(Feedback::ProcessorEnded {
+                    processor,
+                    instance: mounted.instance,
+                });
+            }
+        }
+        let bus = BusKey {
+            slot: u32::try_from(slot).unwrap_or(u32::MAX),
+            generation: bus.generation,
+        };
+        self.send(Feedback::BusEnded { bus });
     }
 
     fn send_voice(&mut self, voice: VoiceKey, target: u32, level: f32) {
@@ -463,9 +587,22 @@ impl Engine {
         }
         for index in 0..self.order.len() {
             let slot = self.order[index] as usize;
-            let Some(bus) = self.buses[slot].as_ref() else {
+            let Some(bus) = self.buses[slot].as_mut() else {
                 continue;
             };
+            let mut block = Block {
+                samples: &mut self.mixes[slot * stride..(slot + 1) * stride],
+                channels: self.channels,
+                frames,
+            };
+            for &processor in &bus.chain[..bus.length] {
+                if let Some(mounted) = self.processors[processor as usize].as_mut() {
+                    mounted.instance.process(&mut block, None);
+                }
+            }
+            if let Some(left) = bus.draining.as_mut() {
+                *left = left.saturating_sub(frames as u64);
+            }
             let (level, parent, sends) = (bus.level(), bus.parent, bus.sends);
             for send in sends.into_iter().flatten() {
                 let gain = match send.tap {
@@ -476,6 +613,12 @@ impl Engine {
             }
             if let Some(parent) = parent {
                 self.add(slot, parent as usize, level, frames);
+            }
+        }
+        for index in 0..self.order.len() {
+            let slot = self.order[index] as usize;
+            if self.buses[slot].as_ref().is_some_and(|bus| bus.draining == Some(0)) {
+                self.retire_bus(slot);
             }
         }
     }
