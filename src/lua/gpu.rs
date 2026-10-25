@@ -19,6 +19,8 @@ mod draw_set;
 #[cfg(feature = "gpu")]
 mod pipeline;
 #[cfg(feature = "gpu")]
+mod plan;
+#[cfg(feature = "gpu")]
 mod resources;
 
 #[cfg(feature = "gpu")]

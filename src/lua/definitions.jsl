@@ -827,11 +827,97 @@ export type GpuDrawSetDesc = {
   tags: { string }?,
 }
 
+--- A target a plan declares: a color or depth format, the viewport's size times `scale` (1 by
+--- default) or a fixed `width` and `height`, and whether the run gives it (`imported`).
+export type GpuPlanTarget = {
+  name: string,
+  format: GpuTextureFormat,
+  scale: number?,
+  width: number?,
+  height: number?,
+  imported: boolean?,
+}
+
+--- A buffer a plan declares: `size` bytes, a multiple of 4, and whether the run gives it.
+export type GpuPlanBuffer = { name: string, size: number, imported: boolean? }
+
+--- A target a pass draws into: its name, or one cleared first (four channels, or a depth), loaded
+--- from what it held, or neither, and stored unless `store` is `false`.
+export type GpuPlanWrite = string | {
+  target: string,
+  clear: ({ number } | number)?,
+  load: boolean?,
+  store: boolean?,
+}
+
+--- A buffer a compute pass writes: its name, or one zeroed first (`clear = true`) or loaded.
+export type GpuPlanStorage = string | {
+  buffer: string,
+  clear: boolean?,
+  load: boolean?,
+  store: boolean?,
+}
+
+--- A group a plan's pass binds: one made already, or bindings by binding number, each a resource or
+--- the name of one of the plan's targets or buffers.
+export type GpuPlanGroup = GpuBindGroup | { [number]: GpuBuffer | GpuTexture | GpuSampler | string }
+
+--- One pass of a plan and what it does: a `draw` pass draws the device's visible draw sets carrying
+--- any of its `tags` with its `pass` group, a `fullscreen` pass draws one triangle of its
+--- `pipeline`, a `compute` pass dispatches its `pipeline`, and a `copy` pass copies `from` into
+--- `to`. `reads` names the targets and buffers its shaders read, and `depthTest` the depth target
+--- it tests against without writing.
+export type GpuPlanPass = {
+  name: string,
+  kind: 'draw' | 'fullscreen' | 'compute' | 'copy',
+  owner: string?,
+  tags: { string }?,
+  pipeline: GpuPipeline?,
+  pass: GpuPlanGroup?,
+  material: GpuPlanGroup?,
+  draw: GpuPlanGroup?,
+  colors: { GpuPlanWrite }?,
+  depth: GpuPlanWrite?,
+  depthTest: string?,
+  reads: { string }?,
+  storage: { GpuPlanStorage }?,
+  workgroups: (number | { number })?,
+  from: string?,
+  to: string?,
+  load: boolean?,
+}
+
+--- What `GpuDevice:plan` compiles: a render graph's targets, buffers, and passes, for a viewport.
+export type GpuPlanDesc = {
+  name: string?,
+  viewport: { width: number, height: number },
+  targets: { GpuPlanTarget }?,
+  buffers: { GpuPlanBuffer }?,
+  passes: { GpuPlanPass },
+}
+
+--- A render graph compiled for its device and a viewport: the passes that run, in `order`, and the
+--- textures and buffers it allocated (`allocations`) for its own targets and buffers. `run` runs every pass
+--- once, in one submission, with a texture or buffer for each imported one by name; `resized` is
+--- the same plan for another viewport, and `dump` the compiled graph. `tostring` gives
+--- `GpuPlan(scene, 4 of 5 passes, 640×480)`.
+declare extern type GpuPlan with
+  name: string
+  order: { string }
+  viewport: { width: number, height: number }
+  allocations: number
+  function run(self, imports: { [string]: GpuTexture | GpuBuffer }?): ()
+  function resized(self, width: number, height: number): GpuPlan
+  function dump(self): string
+  __tostring: (self: GpuPlan) -> string
+end
+
 --- The GPU a script draws and computes with: the adapter's `name`, the `backend` API wgpu reaches it
 --- through (`vulkan`, `metal`, `dx12`, `gl`), its `kind` (`discrete`, `integrated`, `virtual`,
 --- `cpu`, `other`), and its `limits`. `buffer`, `texture`, and `sampler` make resources on it,
 --- `pipeline` makes a program ready to draw or compute, `render` and `dispatch` submit work, and
---- `drawSet` keeps a draw on the device. `tostring` gives `GpuDevice(name, backend)`.
+--- `drawSet` keeps a draw on the device, and `plan` compiles a render graph to run every frame.
+--- `tostring` gives `GpuDevice(name, backend)`.
 declare extern type GpuDevice with
   name: string
   backend: string
@@ -844,6 +930,7 @@ declare extern type GpuDevice with
   function render(self, pass: GpuPass): ()
   function dispatch(self, work: GpuDispatch): ()
   function drawSet(self, desc: GpuDrawSetDesc): GpuDrawSet
+  function plan(self, desc: GpuPlanDesc): GpuPlan
   __tostring: (self: GpuDevice) -> string
 end
 

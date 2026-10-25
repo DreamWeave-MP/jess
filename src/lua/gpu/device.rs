@@ -78,6 +78,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
     super::resources::device_methods(&mut device);
     super::pipeline::device_methods(&mut device);
     super::draw_set::device_methods(&mut device);
+    super::plan::device_methods(&mut device);
     crate::lua::plan::metamethod(&mut device, "__tostring", |this: &LuaGpuDevice| {
         let info = this.gpu.info();
         format!("GpuDevice({}, {})", info.name, info.backend)
@@ -85,4 +86,5 @@ pub fn describe(d: &mut ExtensionDescriptor) {
     super::resources::describe(d);
     super::pipeline::describe(d);
     super::draw_set::describe(d);
+    super::plan::describe(d);
 }

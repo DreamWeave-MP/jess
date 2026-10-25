@@ -554,3 +554,338 @@ fn a_script_keeps_draw_sets() {
         assert!(error.contains(expected), "{script}: {error}");
     }
 }
+
+/// A plan described in Luau: opaque draw sets with depth, an overlay depth tested read-only, a
+/// fullscreen pass sampling the result into an imported target, and a copy of that into an
+/// imported buffer, run again after a set changes, and resized.
+#[cfg(feature = "gpu")]
+#[test]
+fn a_script_plans_a_frame_and_runs_it() {
+    let Some(runtime) = gpu_runtime("a_script_plans_a_frame_and_runs_it") else {
+        return;
+    };
+    runtime.exec(FRAME_PLAN).unwrap_or_else(|error| panic!("{error}"));
+}
+
+/// What `a_script_plans_a_frame_and_runs_it` runs.
+#[cfg(feature = "gpu")]
+const FRAME_PLAN: &str = r"
+            local shader = require('@jess/shader')
+            local device = jess.gpu.device()
+
+            local lit = shader.program({
+              attributes = { position = shader.vec3 },
+              pass = { tint = shader.vec4 },
+              material = { color = shader.vec4 },
+              vertex = function(input) return { position = shader.vec4(input.attributes.position, 1) } end,
+              fragment = function(input) return input.material.color * input.pass.tint end,
+            })
+            local solid = device:pipeline(lit, { colors = { 'rgba8Unorm' }, depth = 'depth32Float' })
+            local glaze = device:pipeline(lit, {
+              colors = { 'rgba8Unorm' },
+              depth = { format = 'depth32Float', write = false },
+            })
+
+            local function uniform(values: { number })
+              local bytes = buffer.create(16)
+              for index, value in values do
+                buffer.writef32(bytes, (index - 1) * 4, value)
+              end
+              local block = device:buffer(16, 'uniform')
+              block:write(0, bytes)
+              return block
+            end
+
+            local function rectangle(pipeline, left, right, depth, color, tag)
+              local corners = { left, -1, right, -1, left, 1, right, -1, right, 1, left, 1 }
+              local bytes = buffer.create(72)
+              for vertex = 0, 5 do
+                buffer.writef32(bytes, vertex * 12, corners[vertex * 2 + 1])
+                buffer.writef32(bytes, vertex * 12 + 4, corners[vertex * 2 + 2])
+                buffer.writef32(bytes, vertex * 12 + 8, depth)
+              end
+              local vertices = device:buffer(72, 'vertex')
+              vertices:write(0, bytes)
+              return device:drawSet({
+                pipeline = pipeline,
+                material = pipeline:bind('material', { [0] = uniform(color) }),
+                vertices = vertices,
+                count = 6,
+                tags = { tag },
+              })
+            end
+
+            rectangle(solid, -1, 0, 0.25, { 0, 1, 0, 1 }, 'opaque')
+            rectangle(solid, -1, 1, 0.5, { 1, 0, 0, 1 }, 'opaque')
+            local overlay = rectangle(glaze, -1, 1, 0.4, { 0, 0, 1, 1 }, 'overlay')
+            local tint = solid:bind('pass', { [0] = uniform({ 0.6, 0.6, 0.6, 1 }) })
+
+            local swap = shader.program({
+              material = { scene = shader.texture2d },
+              vertex = function(input)
+                local index = input.builtin.vertexIndex
+                local corner = shader.vec2(
+                  shader.float(shader.bitAnd(shader.shiftLeft(index, shader.uint(1)), shader.uint(2))),
+                  shader.float(shader.bitAnd(index, shader.uint(2)))
+                )
+                return { position = shader.vec4(corner * 2 - 1, 0, 1) }
+              end,
+              fragment = function(input)
+                local texel = shader.load(input.material.scene, shader.vec2u(input.builtin.position.xy), 0)
+                return texel.zyxw
+              end,
+            })
+            local present = device:pipeline(swap, { colors = { 'rgba8Unorm' } })
+            local material = {}
+            for _, binding in swap.layout.material.bindings do
+              material[binding.binding] = if binding.kind == 'Sampler' then device:sampler() else 'color'
+            end
+
+            local plan = device:plan({
+              name = 'scene',
+              viewport = { width = 16, height = 16 },
+              targets = {
+                { name = 'color', format = 'rgba8Unorm' },
+                { name = 'depth', format = 'depth32Float' },
+                { name = 'debug', format = 'rgba8Unorm', scale = 0.5 },
+                { name = 'output', format = 'rgba8Unorm', imported = true },
+              },
+              buffers = { { name = 'pixels', size = 256 * 16, imported = true } },
+              passes = {
+                {
+                  name = 'opaque',
+                  kind = 'draw',
+                  tags = { 'opaque' },
+                  pass = tint,
+                  colors = { { target = 'color', clear = { 0, 0, 0, 1 } } },
+                  depth = { target = 'depth', clear = 1 },
+                },
+                { name = 'debug', kind = 'draw', tags = { 'debug' }, colors = { 'debug' } },
+                {
+                  name = 'overlay',
+                  kind = 'draw',
+                  tags = { 'overlay' },
+                  pass = tint,
+                  depthTest = 'depth',
+                  colors = { { target = 'color', load = true } },
+                },
+                {
+                  name = 'present',
+                  kind = 'fullscreen',
+                  pipeline = present,
+                  material = material,
+                  reads = { 'color' },
+                  colors = { 'output' },
+                },
+                { name = 'readBack', kind = 'copy', from = 'output', to = 'pixels' },
+              },
+            })
+            assert(table.concat(plan.order, ' ') == 'opaque overlay present readBack', table.concat(plan.order, ' '))
+            assert(plan.allocations == 2 and plan.viewport.width == 16 and plan.name == 'scene')
+            assert(tostring(plan) == 'GpuPlan(scene, 4 of 5 passes, 16×16)', tostring(plan))
+            assert(string.find(plan:dump(), 'culled\n    debug', 1, true), plan:dump())
+
+            local output = device:texture({ width = 16, height = 16, format = 'rgba8Unorm', usage = 'target' })
+            local pixels = device:buffer(256 * 16, {})
+            local function texel(x, y)
+              return buffer.readu32(pixels:read(y * 256 + x * 4, 4), 0)
+            end
+            plan:run({ output = output, pixels = pixels })
+            assert(texel(2, 8) == 0xff009900, string.format('%08x', texel(2, 8)))
+            assert(texel(14, 8) == 0xff000099, string.format('%08x', texel(14, 8)))
+
+            overlay.visible = false
+            plan:run({ output = output, pixels = pixels })
+            assert(texel(14, 8) == 0xff990000, string.format('%08x', texel(14, 8)))
+
+            local small = plan:resized(8, 8)
+            assert(small.viewport.width == 8 and plan.viewport.width == 16)
+";
+
+/// A plan described in Luau whose compute passes write a transient buffer, which a fullscreen pass
+/// reads and a copy keeps.
+#[cfg(feature = "gpu")]
+#[test]
+fn a_script_plans_compute_for_later_passes() {
+    let Some(runtime) = gpu_runtime("a_script_plans_compute_for_later_passes") else {
+        return;
+    };
+    runtime
+        .exec(
+            r"
+            local shader = require('@jess/shader')
+            local device = jess.gpu.device()
+            local output = device:texture({ width = 16, height = 16, format = 'rgba8Unorm', usage = 'target' })
+            local brighten = shader.compute({
+              workgroupSize = 4,
+              pass = { colors = shader.storage(shader.vec4, 'readWrite') },
+              compute = function(input)
+                local index = input.builtin.globalInvocationId.x
+                shader.write(input.pass.colors, index, input.pass.colors[index] + 0.2)
+              end,
+            })
+            local paint = shader.program({
+              material = { colors = shader.storage(shader.vec4) },
+              vertex = function(input)
+                local index = input.builtin.vertexIndex
+                local corner = shader.vec2(
+                  shader.float(shader.bitAnd(shader.shiftLeft(index, shader.uint(1)), shader.uint(2))),
+                  shader.float(shader.bitAnd(index, shader.uint(2)))
+                )
+                return { position = shader.vec4(corner * 2 - 1, 0, 1) }
+              end,
+              fragment = function(input) return input.material.colors[shader.uint(0)] end,
+            })
+            local computing = device:pipeline(brighten)
+            local painting = device:pipeline(paint, { colors = { 'rgba8Unorm' } })
+            local storage = brighten.layout.pass.bindings[1].binding
+            local read = paint.layout.material.bindings[1].binding
+            local computed = device:plan({
+              viewport = { width = 16, height = 16 },
+              targets = { { name = 'output', format = 'rgba8Unorm', imported = true } },
+              buffers = { { name = 'colors', size = 64 }, { name = 'kept', size = 64, imported = true } },
+              passes = {
+                {
+                  name = 'fill',
+                  kind = 'compute',
+                  pipeline = computing,
+                  pass = { [storage] = 'colors' },
+                  storage = { { buffer = 'colors', clear = true } },
+                },
+                {
+                  name = 'again',
+                  kind = 'compute',
+                  pipeline = computing,
+                  pass = { [storage] = 'colors' },
+                  storage = { { buffer = 'colors', load = true } },
+                  workgroups = { 1 },
+                },
+                {
+                  name = 'paint',
+                  kind = 'fullscreen',
+                  pipeline = painting,
+                  material = { [read] = 'colors' },
+                  reads = { 'colors' },
+                  colors = { 'output' },
+                },
+                { name = 'keep', kind = 'copy', from = 'colors', to = 'kept' },
+              },
+            })
+            local kept = device:buffer(64, {})
+            for _ = 1, 2 do
+              computed:run({ output = output, kept = kept })
+              local first = buffer.readf32(kept:read(0, 4), 0)
+              assert(math.abs(first - 0.4) < 1e-6, first)
+              assert(buffer.readu32(output:read(), 0) == 0x66666666)
+            end
+
+        ",
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+}
+
+/// What `device:plan` and `plan:run` refuse, each naming the mistake: (script, what the error
+/// says).
+#[cfg(feature = "gpu")]
+const PLAN_MISTAKES: [(&str, &str); 15] = [
+    ("device:plan(1)", "GpuDevice:plan takes a table, not number"),
+    (
+        "device:plan({ viewport = viewport, pass = {} })",
+        "unknown GpuDevice:plan option 'pass'",
+    ),
+    (
+        "device:plan({ viewport = viewport, passes = { { name = 'p', kind = 'mesh' } } })",
+        "GpuDevice:plan: pass 1's kind is one of draw, fullscreen, compute, copy, not \"mesh\"",
+    ),
+    (
+        "device:plan({ viewport = viewport, passes = { { name = 'p', kind = 'copy', colors = {} } } })",
+        "unknown GpuDevice:plan copy pass option 'colors'",
+    ),
+    (
+        "device:plan({ viewport = viewport, passes = { { name = 'p', kind = 'draw', colors = { 'nowhere' } } } })",
+        "GpuDevice:plan: pass p uses nowhere, which the plan has no target or buffer called",
+    ),
+    (
+        "device:plan({ viewport = viewport, targets = targets, passes = { { name = 'p', kind = 'compute', \
+         pipeline = computing, storage = { 'output' } } } })",
+        "GpuDevice:plan: pass \"p\" writes render target \"output\" through a storage attachment, which only a \
+         buffer allows",
+    ),
+    (
+        "device:plan({ viewport = viewport, targets = targets, passes = { { name = 'p', kind = 'fullscreen', \
+         pipeline = filling, colors = { { target = 'output', clear = { 0, 0, 0, 1 }, load = true } } } } })",
+        "GpuDevice:plan: pass p's write clears output and loads it: expected one or the other",
+    ),
+    (
+        "device:plan({ viewport = viewport, buffers = { { name = 'b', size = 16 } }, passes = { { name = 'p', \
+         kind = 'compute', pipeline = computing, storage = { { buffer = 'b', clear = 1 } } } } })",
+        "a buffer's clear is true, to zero",
+    ),
+    (
+        "device:plan({ viewport = viewport, targets = { { name = 't', format = 'rgba8Unorm', scale = 1, width = 2, \
+         height = 2 } } })",
+        "GpuDevice:plan: target 1 has a scale and a width and height: expected one or the other",
+    ),
+    (
+        "device:plan({ viewport = viewport, targets = targets, passes = { { name = 'p', kind = 'compute', \
+         pipeline = filling } } })",
+        "GpuDevice:plan: pass p's pipeline draws, and the pass computes",
+    ),
+    (
+        "device:plan({ viewport = viewport, targets = targets, passes = { { name = 'p', kind = 'draw', \
+         pass = {}, colors = { 'output' } } } })",
+        "GpuDevice:plan: pass p makes its pass group from bindings, and names no pipeline to lay them out for",
+    ),
+    (
+        "device:plan({ viewport = viewport, targets = targets, passes = { { name = 'p', kind = 'fullscreen', \
+         pipeline = tinted, material = { [0] = 'output' }, colors = { 'output' } } } })",
+        "GpuDevice:plan: pass p's material group: binding 0 is the uniform block: expected a resource, not a name",
+    ),
+    (
+        "device:plan({ viewport = viewport, targets = targets, passes = { { name = 'p', kind = 'fullscreen', \
+         pipeline = filling, colors = { 'output' } }, { name = 'q', kind = 'copy', from = 'output', to = 'output' \
+         } } })",
+        "GpuDevice:plan: pass \"q\" both reads and writes \"output\"",
+    ),
+    (
+        "plan:run({ output = 1 })",
+        "GpuPlan:run: output is a GpuTexture or a GpuBuffer, not number",
+    ),
+    (
+        "plan:run()",
+        "GpuPlan:run: pass p is invalid: the run gives nothing for output",
+    ),
+];
+
+#[cfg(feature = "gpu")]
+#[test]
+fn plan_errors_name_the_mistake() {
+    let Some(runtime) = gpu_runtime("plan_errors_name_the_mistake") else {
+        return;
+    };
+    let prelude = r"
+            local shader = require('@jess/shader')
+            local device = jess.gpu.device()
+            local function fullscreen(material)
+              return shader.program({
+                material = material,
+                vertex = function(input) return { position = shader.vec4(0, 0, 0, 1) } end,
+                fragment = function(input) return shader.vec4(1) end,
+              })
+            end
+            local filling = device:pipeline(fullscreen(nil), { colors = { 'rgba8Unorm' } })
+            local tinted = device:pipeline(fullscreen({ tint = shader.vec4 }), { colors = { 'rgba8Unorm' } })
+            local computing = device:pipeline(shader.compute({ workgroupSize = 1, compute = function() end }))
+            local viewport = { width = 4, height = 4 }
+            local targets = { { name = 'output', format = 'rgba8Unorm', imported = true } }
+            local plan = device:plan({
+              viewport = viewport,
+              targets = targets,
+              passes = { { name = 'p', kind = 'fullscreen', pipeline = filling, colors = { 'output' } } },
+            })
+        ";
+    for (script, expected) in PLAN_MISTAKES {
+        let error = runtime.exec(&format!("{prelude}\n{script}")).unwrap_err().to_string();
+        assert!(error.contains(expected), "{script}: {error}");
+    }
+}

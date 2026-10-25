@@ -1,6 +1,6 @@
 ---
 title: 'jess.gpu'
-description: 'The GPU in front of the script: the device jess opens on it, the buffers, textures, and samplers made on it, the pipelines that draw and compute with them, and the draw sets kept on it.'
+description: 'The GPU in front of the script: the device jess opens on it, the buffers, textures, and samplers made on it, the pipelines that draw and compute with them, the draw sets kept on it, and the plans that run a frame.'
 weight: 47
 extra:
   kind: api
@@ -345,3 +345,105 @@ quad.visible = false
 print(quad, quad:remove(), quad.added)
 -- GpuDrawSet(3 vertices, opaque, hidden)  true  false
 ```
+
+## Plans
+
+### GpuDevice:plan
+
+{{ api_signature(value="device:plan(desc: GpuPlanDesc): GpuPlan") }}
+
+Compiles a [render graph](@/docs/contributing/render-graph.md) for the device: the targets and buffers a frame uses, the passes that use them, and what each pass does. Passes are ordered by what they read and write, not by where they are in the list; passes whose work nothing sees are culled; transient targets and buffers whose lifetimes don't overlap share memory. Planning allocates them and makes every bind group it can, so a frame does nothing but record.
+
+| Field | Type | Holds |
+| --- | --- | --- |
+| `name` | `string?` | The plan's name, `plan` by default, and every pass's owner unless the pass names one. |
+| `viewport` | `{ width, height }` | The pixels relative targets are sized against. |
+| `targets` | `{ GpuPlanTarget }?` | `{ name, format, scale \| width and height, imported }`: a color or depth target the viewport's size times `scale` (1 by default), or a fixed size. An `imported` one is given to each run, a window's backbuffer, say. |
+| `buffers` | `{ GpuPlanBuffer }?` | `{ name, size, imported }`: `size` bytes, a multiple of 4. |
+| `passes` | `{ GpuPlanPass }` | What runs: below. |
+
+Every pass has a `name` and a `kind`. What it reads and writes depends on the kind:
+
+| Kind | Does | Fields |
+| --- | --- | --- |
+| `draw` | Draws the device's visible draw sets carrying any of `tags`, in the order they were made, each with `pass` as its pass group. | `tags`, `pass`, `pipeline` (the one whose layout a `pass` of bindings is made for), `colors`, `depth`, `depthTest`, `reads` |
+| `fullscreen` | Draws three vertices of `pipeline`: one triangle over its targets. | `pipeline`, `pass`, `material`, `draw`, `colors`, `depth`, `depthTest`, `reads` |
+| `compute` | Dispatches `pipeline` over `workgroups` (1 by default). | `pipeline`, `pass`, `material`, `draw`, `storage`, `workgroups`, `reads` |
+| `copy` | Copies `from` into `to`; `load` keeps what the copy doesn't cover. | `from`, `to`, `load` |
+
+- `colors` and `depth` are the targets drawn into: a name, or `{ target, clear, load, store }`, cleared first, loaded from what it held, or neither, and stored unless `store` is `false`. The first pass to write a target can't load it: nothing is there yet.
+- `depthTest` names a depth target the pass tests against without writing it. A draw set whose pipeline writes depth isn't drawn in such a pass: the run refuses it.
+- `reads` names what the pass's shaders read: targets as textures, buffers as storage.
+- `storage` names the buffers a compute pass writes: a name, or `{ buffer, clear, load, store }`, where `clear = true` zeroes it first, at every run.
+- A group (`pass`, `material`, `draw`) is a `GpuBindGroup`, or bindings by binding number, as `GpuPipeline:bind` takes them, where a binding can also be a target's or a buffer's name. A texture binding names a target the pass `reads`; a storage binding names a buffer the pass reads, for a `'read'` declaration, or writes in `storage`, for a `'readWrite'` one.
+- A copy between a target and a buffer lays out each row padded to a multiple of 256 bytes, the way the GPU copies, and the buffer has to hold every row.
+
+Mistakes in the description name the pass: `GpuDevice:plan: pass present uses nowhere, which the plan has no target or buffer called`, `pass "q" both reads and writes "output"`.
+
+## GpuPlan
+
+| Member | Type | Holds |
+| --- | --- | --- |
+| `name` | `string` | The plan's name. |
+| `order` | `{ string }` | The passes that run, in the order they run. |
+| `viewport` | `{ width, height }` | What its relative targets are sized for. |
+| `allocations` | `number` | How many textures and buffers it made for its own targets and buffers: one for each group sharing memory. |
+| `run(imports)` | `({ [string]: GpuTexture \| GpuBuffer }?) -> ()` | Runs every pass once, in one submission, with a texture or buffer for each imported target or buffer by name: a texture of its format and size at the viewport, a buffer of its size. |
+| `resized(width, height)` | `(number, number) -> GpuPlan` | The same plan for another viewport, its targets made again at the new size. |
+| `dump()` | `() -> string` | The compiled graph: the passes in order, what each reads and writes, what was culled, every target's lifetime, and what shares memory. |
+
+`tostring(plan)` is `GpuPlan(name, 4 of 5 passes, 640×480)`.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+local device = jess.gpu.device()
+local flat = shader.program {
+  attributes = { position = shader.vec2 },
+  pass = { tint = shader.vec4 },
+  vertex = function(input)
+    return { position = shader.vec4(input.attributes.position, 0, 1) }
+  end,
+  fragment = function(input) return input.pass.tint end,
+}
+local pipeline = device:pipeline(flat, { colors = { 'rgba8Unorm' } })
+
+local corners = buffer.create(24)
+for index, value in { -1, -1, 3, -1, -1, 3 } do
+  buffer.writef32(corners, (index - 1) * 4, value)
+end
+local vertices = device:buffer(24, 'vertex')
+vertices:write(0, corners)
+device:drawSet { pipeline = pipeline, vertices = vertices, count = 3, tags = { 'scene' } }
+
+local orange = device:buffer(16, 'uniform')
+orange:write(0, buffer.fromstring(string.pack('<ffff', 1, 0.5, 0, 1)))
+
+local plan = device:plan {
+  name = 'tiny',
+  viewport = { width = 4, height = 4 },
+  targets = { { name = 'screen', format = 'rgba8Unorm', imported = true } },
+  buffers = { { name = 'pixels', size = 256 * 4, imported = true } },
+  passes = {
+    {
+      name = 'scene',
+      kind = 'draw',
+      tags = { 'scene' },
+      pass = pipeline:bind('pass', { [0] = orange }),
+      colors = { { target = 'screen', clear = { 0, 0, 0, 1 } } },
+    },
+    { name = 'readBack', kind = 'copy', from = 'screen', to = 'pixels' },
+  },
+}
+
+local screen = device:texture { width = 4, height = 4, format = 'rgba8Unorm', usage = 'target' }
+local pixels = device:buffer(256 * 4, {})
+plan:run { screen = screen, pixels = pixels }
+print(plan, table.concat(plan.order, ', '))
+print(string.unpack('BBBB', buffer.tostring(pixels:read(0, 4))))
+-- GpuPlan(tiny, 2 of 2 passes, 4×4)  scene, readBack
+-- 255  128  0  255  5
+```
+
+The last number is `string.unpack`'s, again. A run draws the draw sets as they are when it runs: change one, and the next run draws it changed, with nothing planned again.

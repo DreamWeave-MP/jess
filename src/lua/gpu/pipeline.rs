@@ -54,7 +54,7 @@ unsafe impl Userdata for LuaGpuPipeline {
 /// What one frequency binds for a pipeline.
 #[derive(Debug)]
 pub struct LuaGpuBindGroup {
-    group: Arc<BindGroup>,
+    pub group: Arc<BindGroup>,
 }
 
 // SAFETY: plain Rust state; the destructor never touches the Lua API.
@@ -643,29 +643,10 @@ fn dispatch(this: &LuaGpuDevice, call: &Call<'_>, work: ValueView<'_>) -> l3i::R
     let (pipeline, groups, workgroups) = call.with_frame(|frame| {
         check_options(frame, work, FUNCTION, &DISPATCH_KEYS)?;
         let work = work.as_table()?;
-        let counts = work.raw_get(frame, "workgroups")?;
-        let mut workgroups = [1; 3];
-        if counts.is_table() {
-            let mut count = 0;
-            counts.as_table()?.for_each_array(frame, |_, index, value| {
-                if let Some(slot) = usize::try_from(index - 1).ok().and_then(|index| workgroups.get_mut(index)) {
-                    *slot = whole(FUNCTION, "a workgroup count", Some(value), None)?;
-                }
-                count = index;
-                Ok(())
-            })?;
-            if !(1..=3).contains(&count) {
-                return Err(error(format!(
-                    "{FUNCTION}: workgroups is a count, or one to three of them, not {count}"
-                )));
-            }
-        } else {
-            workgroups[0] = whole(FUNCTION, "workgroups", Some(counts), None)?;
-        }
         Ok((
             pipeline_field(frame, FUNCTION, &work)?,
             groups(frame, FUNCTION, &work)?,
-            workgroups,
+            workgroups(frame, FUNCTION, work.raw_get(frame, "workgroups")?)?,
         ))
     })?;
     let Pipeline::Compute(compute) = &*pipeline else {
@@ -676,6 +657,29 @@ fn dispatch(this: &LuaGpuDevice, call: &Call<'_>, work: ValueView<'_>) -> l3i::R
     this.gpu
         .dispatch(compute, [0, 1, 2].map(|frequency| groups[frequency].as_deref()), workgroups)
         .map_err(|problem| gpu_error(FUNCTION, &problem))
+}
+
+/// How many workgroups a dispatch runs on each axis: a count, or one to three of them, the rest 1.
+pub fn workgroups(frame: &Frame<'_>, function: &str, counts: ValueView<'_>) -> l3i::Result<[u32; 3]> {
+    let mut workgroups = [1; 3];
+    if !counts.is_table() {
+        workgroups[0] = whole(function, "workgroups", Some(counts), None)?;
+        return Ok(workgroups);
+    }
+    let mut count = 0;
+    counts.as_table()?.for_each_array(frame, |_, index, value| {
+        if let Some(slot) = usize::try_from(index - 1).ok().and_then(|index| workgroups.get_mut(index)) {
+            *slot = whole(function, "a workgroup count", Some(value), None)?;
+        }
+        count = index;
+        Ok(())
+    })?;
+    if !(1..=3).contains(&count) {
+        return Err(error(format!(
+            "{function}: workgroups is a count, or one to three of them, not {count}"
+        )));
+    }
+    Ok(workgroups)
 }
 
 /// Declares the device's methods that make pipelines and run them.
