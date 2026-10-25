@@ -29,6 +29,7 @@ The runtime's device. The first call opens it, on whatever adapter the machine h
 | `backend` | `string` | The API wgpu reaches it through: `vulkan`, `metal`, `dx12`, or `gl`. |
 | `kind` | `string` | `discrete`, `integrated`, `virtual`, `cpu` (a software adapter), or `other`. |
 | `limits` | `{ textureSize, textureLayers, bufferSize, workgroups }` | The widest or tallest 2D texture, the most layers an array texture has, the largest buffer in bytes, and the most workgroups a dispatch has on one axis. |
+| `pipelines` | `{ compiled, reused }` | How many pipelines the device compiled, and how many times `GpuDevice:pipeline` gave back one it already had. |
 
 `tostring(device)` is `GpuDevice(name, backend)`.
 
@@ -161,6 +162,8 @@ A [shader program](@/docs/api/shader.md), lowered, validated by the backend, and
 | `clockwise` | `boolean?` | Whether a triangle running clockwise faces the camera; by default a counter-clockwise one does. |
 
 The program's own layout decides everything else: its bind groups, its vertex buffers' strides and attributes. A pipeline can't disagree with its program.
+
+The device compiles a pipeline once. Asking again for a program that lowers to the same shader, with the same state, gives back the pipeline it already has, for as long as anything holds it; `device.pipelines` counts how often it compiled and how often it reused one. Writing a material's buffer changes what a pipeline draws, not the pipeline, so it compiles nothing.
 
 ## GpuPipeline
 

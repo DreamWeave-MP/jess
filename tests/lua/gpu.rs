@@ -503,6 +503,14 @@ fn a_script_keeps_draw_sets() {
             set:add()
             set:add()
             assert(set.added)
+
+            -- A material change writes a buffer; it compiles nothing, and the same program and
+            -- state made again is the pipeline the device already has.
+            local before = device.pipelines
+            color:write(0, buffer.create(16))
+            assert(device:pipeline(program, { colors = { 'rgba8Unorm' } }) ~= nil)
+            local after = device.pipelines
+            assert(after.compiled == before.compiled and after.reused == before.reused + 1)
         ",
         )
         .unwrap_or_else(|error| panic!("{error}"));

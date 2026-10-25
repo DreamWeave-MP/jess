@@ -14,6 +14,7 @@
 
 mod bind;
 mod buffer;
+mod cache;
 mod compute;
 mod draw_set;
 mod pass;
@@ -29,6 +30,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 pub use bind::{BindGroup, Binding};
 pub use buffer::{Buffer, BufferUsage};
+pub use cache::PipelineStats;
 pub use compute::ComputePipeline;
 pub use draw_set::{DrawSet, DrawSetDesc, DrawSets};
 pub use pass::{Draw, IndexFormat, Target};
@@ -138,6 +140,8 @@ pub struct Gpu {
     info: GpuInfo,
     /// Every bind group layout the device has made, by its entries.
     layouts: Mutex<HashMap<Vec<wgpu::BindGroupLayoutEntry>, Arc<pipeline::Layout>>>,
+    /// The pipelines it compiled, by what they were compiled from.
+    cache: Mutex<cache::Cache>,
 }
 
 impl fmt::Debug for Gpu {
@@ -202,6 +206,7 @@ impl Gpu {
             queue,
             info,
             layouts: Mutex::default(),
+            cache: Mutex::default(),
         })
     }
 

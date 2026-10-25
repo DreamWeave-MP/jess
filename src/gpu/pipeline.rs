@@ -8,7 +8,7 @@ use super::texture::raw_format;
 use super::{Compare, Gpu, GpuError};
 use crate::render::{SampleKind, TextureFormat};
 use crate::shader::layout::{GroupLayout, VertexBufferLayout};
-use crate::shader::wgsl::{self, FRAGMENT_ENTRY_POINT, VERTEX_ENTRY_POINT};
+use crate::shader::wgsl::{self, FRAGMENT_ENTRY_POINT, VERTEX_ENTRY_POINT, WgslModule};
 use crate::shader::{Access, Frequency, Program, ResourceId, ResourceKind, Scalar, StorageId, Type};
 
 /// How a pipeline assembles vertices into primitives.
@@ -169,6 +169,16 @@ impl Gpu {
             ));
         }
         let module = wgsl::lower(program).map_err(|errors| invalid_program(&errors))?;
+        self.render_pipeline_of(program, &module, state)
+    }
+
+    /// The pipeline of `program`, lowered to `module`, drawing with `state`.
+    pub(crate) fn render_pipeline_of(
+        &self,
+        program: &Program,
+        module: &WgslModule,
+        state: &PipelineState,
+    ) -> Result<RenderPipeline, GpuError> {
         check_targets(&module.outputs, state)?;
         let groups = self.groups(program, &module.layout.groups, wgpu::ShaderStages::VERTEX_FRAGMENT)?;
         let attributes: Vec<Vec<wgpu::VertexAttribute>> =

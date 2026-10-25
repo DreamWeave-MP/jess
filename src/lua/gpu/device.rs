@@ -75,6 +75,22 @@ pub fn describe(d: &mut ExtensionDescriptor) {
             },
         )
         .untyped();
+    device
+        .getter(
+            "pipelines",
+            |this: &LuaGpuDevice, call: &Call<'_>| -> l3i::Result<StackResults> {
+                let stats = this.gpu.pipeline_stats();
+                push_table(call, 0, 2, |frame, table| {
+                    // Counts of compilations stay far below 2^53.
+                    #[allow(clippy::cast_precision_loss)]
+                    table.raw_set_value(frame, "compiled", &(stats.compiled as f64))?;
+                    #[allow(clippy::cast_precision_loss)]
+                    table.raw_set_value(frame, "reused", &(stats.reused as f64))
+                })?;
+                Ok(StackResults)
+            },
+        )
+        .untyped();
     super::resources::device_methods(&mut device);
     super::pipeline::device_methods(&mut device);
     super::draw_set::device_methods(&mut device);

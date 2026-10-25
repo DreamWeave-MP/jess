@@ -914,15 +914,16 @@ end
 
 --- The GPU a script draws and computes with: the adapter's `name`, the `backend` API wgpu reaches it
 --- through (`vulkan`, `metal`, `dx12`, `gl`), its `kind` (`discrete`, `integrated`, `virtual`,
---- `cpu`, `other`), and its `limits`. `buffer`, `texture`, and `sampler` make resources on it,
---- `pipeline` makes a program ready to draw or compute, `render` and `dispatch` submit work, and
---- `drawSet` keeps a draw on the device, and `plan` compiles a render graph to run every frame.
---- `tostring` gives `GpuDevice(name, backend)`.
+--- `cpu`, `other`), its `limits`, and how many `pipelines` it compiled and reused. `buffer`,
+--- `texture`, and `sampler` make resources on it, `pipeline` makes a program ready to draw or
+--- compute, `render` and `dispatch` submit work, `drawSet` keeps a draw on the device, and `plan`
+--- compiles a render graph to run every frame. `tostring` gives `GpuDevice(name, backend)`.
 declare extern type GpuDevice with
   name: string
   backend: string
   kind: string
   limits: { textureSize: number, textureLayers: number, bufferSize: number, workgroups: number }
+  pipelines: { compiled: number, reused: number }
   function buffer(self, size: number, usage: GpuBufferUsage | { GpuBufferUsage }): GpuBuffer
   function texture(self, desc: GpuTextureDesc): GpuTexture
   function sampler(self, desc: GpuSamplerDesc?): GpuSampler

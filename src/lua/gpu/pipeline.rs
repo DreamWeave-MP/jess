@@ -164,11 +164,11 @@ fn pipeline(
                 shown(state)
             )));
         }
-        Pipeline::Compute(Arc::new(
+        Pipeline::Compute(
             this.gpu
-                .compute_pipeline(program)
+                .cached_compute_pipeline(program)
                 .map_err(|problem| gpu_error(FUNCTION, &problem))?,
-        ))
+        )
     } else {
         let Some(state) = state else {
             return Err(error(format!(
@@ -176,11 +176,11 @@ fn pipeline(
             )));
         };
         let state = call.with_frame(|frame| pipeline_state(frame, FUNCTION, state))?;
-        Pipeline::Render(Arc::new(
+        Pipeline::Render(
             this.gpu
-                .render_pipeline(program, &state)
+                .cached_render_pipeline(program, &state)
                 .map_err(|problem| gpu_error(FUNCTION, &problem))?,
-        ))
+        )
     };
     Ok(Owned(LuaGpuPipeline {
         gpu: this.gpu.clone(),

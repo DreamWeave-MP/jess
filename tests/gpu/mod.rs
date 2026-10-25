@@ -1,6 +1,7 @@
 //! The `jess::gpu` integration tests, behind the `gpu` feature. Each runs on whatever adapter the
 //! machine has, a software one included, and skips, saying so, on a machine with none.
 
+mod cache;
 mod compute;
 mod draw;
 mod draw_sets;

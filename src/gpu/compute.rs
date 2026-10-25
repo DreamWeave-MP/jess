@@ -3,7 +3,7 @@
 use super::bind::{BindGroup, Binding};
 use super::pipeline::{Group, invalid_program};
 use super::{Gpu, GpuError};
-use crate::shader::wgsl::{self, COMPUTE_ENTRY_POINT};
+use crate::shader::wgsl::{self, COMPUTE_ENTRY_POINT, WgslModule};
 use crate::shader::{Frequency, Program};
 
 /// A compute program ready to dispatch.
@@ -35,6 +35,16 @@ impl Gpu {
             ));
         };
         let module = wgsl::lower(program).map_err(|errors| invalid_program(&errors))?;
+        self.compute_pipeline_of(program, &module, workgroup_size)
+    }
+
+    /// The pipeline of `program`, a compute program of `workgroup_size`, lowered to `module`.
+    pub(crate) fn compute_pipeline_of(
+        &self,
+        program: &Program,
+        module: &WgslModule,
+        workgroup_size: [u32; 3],
+    ) -> Result<ComputePipeline, GpuError> {
         let groups = self.groups(program, &module.layout.groups, wgpu::ShaderStages::COMPUTE)?;
         let raw = self.checked(|| {
             let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
