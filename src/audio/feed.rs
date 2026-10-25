@@ -77,7 +77,8 @@ struct Shared {
     error: Mutex<Option<String>>,
 }
 
-/// What a feed has done, readable from anywhere while its thread runs.
+/// What a feed has done, readable from anywhere while its thread runs, and a way to stop it
+/// that doesn't wait.
 #[derive(Clone, Debug)]
 pub struct FeedWatch(Arc<Shared>);
 
@@ -90,6 +91,12 @@ impl FeedWatch {
             loops: self.0.loops.load(Ordering::Relaxed),
             error: self.0.error.lock().unwrap_or_else(PoisonError::into_inner).clone(),
         }
+    }
+
+    /// Asks the feed to stop, without waiting: its thread ends within [`POLL`] and a block's
+    /// decoding, leaving what it wrote in the stream.
+    pub fn stop(&self) {
+        self.0.stop.store(true, Ordering::Release);
     }
 }
 
@@ -156,7 +163,7 @@ impl Feed {
     /// Stops the feed and waits for its thread. What it already wrote stays in the stream, which
     /// isn't finished: whatever else writes it can go on.
     pub fn stop(&mut self) {
-        self.watch.0.stop.store(true, Ordering::Release);
+        self.watch.stop();
         if let Some(thread) = self.thread.take() {
             // The thread catches its own panics, so joining has nothing to pass on.
             drop(thread.join());
@@ -365,6 +372,15 @@ mod tests {
         drop(feed);
         assert!(watch.status().done);
         assert!(started.elapsed() < Duration::from_secs(1));
+
+        // Asked through a watch, it stops without being waited for.
+        let feed = Feed::start(endless(), Arc::clone(&stream), FeedSpec::default()).unwrap();
+        feed.watch().stop();
+        let started = Instant::now();
+        while !feed.status().done {
+            assert!(started.elapsed() < Duration::from_secs(5), "the feed didn't stop");
+            std::thread::yield_now();
+        }
         assert!(
             !stream.stats().finished,
             "a stopped feed leaves the stream to whoever else writes it"
