@@ -8,5 +8,6 @@
 // buys nothing audible.
 #![allow(clippy::suboptimal_flops)]
 
+pub mod delay;
 pub mod filter;
 pub mod pan;

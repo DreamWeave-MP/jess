@@ -8,6 +8,7 @@
 //!
 //! There is no public plugin interface: the built-in processors are the trait's implementations.
 
+use crate::audio::dsp::delay::Delay;
 use crate::audio::dsp::filter::{Filter, Shape};
 use crate::audio::dsp::pan::Pan;
 use crate::audio::{AudioError, QUANTUM};
@@ -181,7 +182,7 @@ impl Settings {
 }
 
 /// The kinds of processor [`create`] makes.
-pub const KINDS: &[&str] = &["gain", "pan", "filter"];
+pub const KINDS: &[&str] = &["gain", "pan", "filter", "delay"];
 
 /// Makes a processor of `kind` for a context of `rate` and `channels`, with `settings`: the
 /// ones the kind is made with, and the rest as parameters.
@@ -190,7 +191,7 @@ pub const KINDS: &[&str] = &["gain", "pan", "filter"];
 ///
 /// [`AudioError::UnknownProcessor`] for a kind there isn't, and whatever its settings are wrong
 /// with.
-pub fn create(kind: &str, rate: u32, _channels: usize, mut settings: Settings) -> Result<Box<dyn Processor>, AudioError> {
+pub fn create(kind: &str, rate: u32, channels: usize, mut settings: Settings) -> Result<Box<dyn Processor>, AudioError> {
     let mut processor: Box<dyn Processor> = match kind {
         "gain" => Box::new(Gain::new()),
         "pan" => Box::new(Pan::default()),
@@ -199,6 +200,17 @@ pub fn create(kind: &str, rate: u32, _channels: usize, mut settings: Settings) -
                 .text("filter", "shape")?
                 .map_or(Ok(Shape::Lowpass), |name| name.parse())?;
             Box::new(Filter::new(shape, rate))
+        }
+        "delay" => {
+            let longest = settings.number("delay", "longest")?.unwrap_or(2.0);
+            if !(longest > 0.0 && longest <= Delay::LONGEST) {
+                return Err(AudioError::Setting {
+                    kind: "delay",
+                    name: "longest".to_owned(),
+                    expected: "a number of seconds above 0 and at most 10",
+                });
+            }
+            Box::new(Delay::new(rate, channels, longest))
         }
         other => {
             return Err(AudioError::UnknownProcessor {
