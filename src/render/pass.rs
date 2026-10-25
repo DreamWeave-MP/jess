@@ -164,6 +164,8 @@ pub enum ClearValue {
     Color([f32; 4]),
     /// RGBA for unsigned integer color formats.
     Uint([u32; 4]),
+    /// RGBA for signed integer color formats.
+    Sint([i32; 4]),
     /// Depth for depth formats, within `0.0..=1.0`.
     Depth(f32),
 }
@@ -173,8 +175,9 @@ impl ClearValue {
     #[must_use]
     pub const fn fits(self, format: TextureFormat) -> bool {
         match self {
-            Self::Color(_) => !format.is_depth() && !format.is_integer(),
-            Self::Uint(_) => format.is_integer(),
+            Self::Color(_) => !format.is_depth() && !format.is_uint() && !format.is_sint(),
+            Self::Uint(_) => format.is_uint(),
+            Self::Sint(_) => format.is_sint(),
             Self::Depth(_) => format.is_depth(),
         }
     }
@@ -184,7 +187,7 @@ impl ClearValue {
     pub fn is_valid(self) -> bool {
         match self {
             Self::Color(color) => color.iter().all(|component| component.is_finite()),
-            Self::Uint(_) => true,
+            Self::Uint(_) | Self::Sint(_) => true,
             Self::Depth(depth) => (0.0..=1.0).contains(&depth),
         }
     }

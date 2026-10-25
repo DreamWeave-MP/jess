@@ -58,7 +58,7 @@ Reads come in three kinds, and the target's kind has to match:
 | `DepthTexture` | depth targets |
 | `DepthTest` (the read-only depth attachment) | depth targets |
 
-Writes go through a color attachment (render targets) or the depth attachment (depth targets), with a `LoadOp` (`Clear(value)`, `Load`, `DontCare`) and a `StoreOp` (`Store`, `Discard`). A clear value has to fit the format: `Color` for float and normalized formats, `Uint` for `R32Uint` picking ids, `Depth` within `0.0..=1.0` for depth.
+Writes go through a color attachment (render targets) or the depth attachment (depth targets), with a `LoadOp` (`Clear(value)`, `Load`, `DontCare`) and a `StoreOp` (`Store`, `Discard`). A clear value has to fit the format: `Color` for float and normalized formats, `Uint` for unsigned integer formats such as `R32Uint` picking ids, `Sint` for signed integer formats, and `Depth` within `0.0..=1.0` for depth.
 
 `add_pass` rejects a pass that is wrong on its own: empty name or owner, a duplicate name, no writes, a target id from another graph, a read or write the target's kind doesn't allow, a clear value that doesn't fit, the same target used twice, a target both read and written (a feedback loop, or a depth test on the depth it's also writing), more than one depth attachment, or attachments of different sizes. Sampled reads aren't attachments, so their size is free.
 

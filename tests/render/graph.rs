@@ -1197,3 +1197,28 @@ fn compiling_twice_gives_the_same_dump() {
     let graph = bloom_graph();
     assert_eq!(graph.compile().unwrap().to_string(), graph.compile().unwrap().to_string());
 }
+
+#[test]
+fn every_format_clears_with_its_own_kind_of_value() {
+    for format in TextureFormat::ALL {
+        let fitting = [
+            ClearValue::Color([0.0; 4]),
+            ClearValue::Uint([0; 4]),
+            ClearValue::Sint([0; 4]),
+            ClearValue::Depth(1.0),
+        ]
+        .into_iter()
+        .filter(|clear| clear.fits(format))
+        .count();
+        assert_eq!(fitting, 1, "{format} fits exactly one kind of clear value");
+    }
+    assert!(ClearValue::Sint([-1, 0, 0, 0]).fits(TextureFormat::R32Sint));
+    assert!(!ClearValue::Uint([1, 0, 0, 0]).fits(TextureFormat::Rgba32Sint));
+    assert_eq!(TextureFormat::Rgba32Float.texel_bytes(), Some(16));
+    assert_eq!(TextureFormat::Depth24Plus.texel_bytes(), None);
+    assert_eq!(TextureFormat::Rgba8Uint.sample_kind(), jess::render::SampleKind::Uint);
+    assert_eq!(
+        TextureFormat::R32Float.sample_kind(),
+        jess::render::SampleKind::UnfilterableFloat
+    );
+}
