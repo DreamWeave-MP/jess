@@ -958,6 +958,7 @@ pub fn struct_errors(earlier: &[StructDecl], declaration: &StructDecl) -> Vec<Va
 
 /// What is wrong with the name of a uniform member, resource, or field declared after the `earlier`
 /// names it may not share: an invalid name, or one already taken.
+#[allow(single_use_lifetimes)] // Rust 1.92 needs the name: it can't elide one in `impl Trait` here
 pub fn binding_errors<'a>(
     kind: DeclarationKind,
     mut earlier: impl Iterator<Item = &'a str>,
@@ -1078,6 +1079,7 @@ pub fn attribute_errors(earlier: &[Attribute], attribute: &Attribute) -> Vec<Val
 
 /// What is wrong with declaring `name` as `ty` after `earlier` declarations of the same `kind`:
 /// an invalid name, a name already taken, or a type the kind cannot have. Empty when nothing is.
+#[allow(single_use_lifetimes)] // Rust 1.92 needs the name: it can't elide one in `impl Trait` here
 pub fn declaration_errors<'a>(
     kind: DeclarationKind,
     mut earlier: impl Iterator<Item = (&'a str, Type)>,

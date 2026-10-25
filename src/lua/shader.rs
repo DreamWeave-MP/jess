@@ -2021,6 +2021,7 @@ fn data_type_name(program: &Program, ty: DataType) -> String {
 
 /// Pushes `{ name, offset, size, type, stride }` for each named member of a struct or block, in
 /// declaration order: `stride` only for an array.
+#[allow(single_use_lifetimes)] // Rust 1.92 needs the name: it can't elide one in `impl Trait` here
 fn push_members<'a>(
     frame: &Frame<'_>,
     program: &Program,
