@@ -55,7 +55,7 @@ A device makes three kinds of resource. Each lives as long as a script holds it,
 
 {{ api_signature(value="device:buffer(size: number, usage: GpuBufferUsage | { GpuBufferUsage }) -> GpuBuffer") }}
 
-`size` bytes, zeroed, a multiple of 4 up to `limits.bufferSize`. `usage` names what the buffer is for, one name or a list: `vertex`, `index`, `uniform`, or `storage`. A buffer can always be written and read back; `{}` makes one for nothing else.
+`size` bytes, zeroed, a multiple of 4 up to `limits.bufferSize`. `usage` names what the buffer is for, one name or a list: `vertex`, `index`, `uniform`, `storage`, or `indirect` (the counts of an indirect draw). A buffer can always be written and read back; `{}` makes one for nothing else.
 
 ### GpuDevice:texture
 
@@ -89,7 +89,7 @@ A name the table doesn't take is an error listing the ones it does, so `layer = 
 | Member | Type | Does |
 | --- | --- | --- |
 | `size` | `number` | Its size in bytes. |
-| `usage` | `{ GpuBufferUsage }` | What it is for, in the order `vertex`, `index`, `uniform`, `storage`. |
+| `usage` | `{ GpuBufferUsage }` | What it is for, in the order `vertex`, `index`, `uniform`, `storage`, `indirect`. |
 | `write` | `(self, offset: number, bytes: buffer \| string, from: number?, length: number?) -> ()` | Copies `bytes` (or `length` of them from `from`) into the buffer at `offset`, before the next work the GPU is given. Luau's bytes are read in place, not copied first. |
 | `read` | `(self, offset: number?, length: number?) -> buffer` | Waits for everything submitted so far, and returns `length` bytes from `offset` (by default, all of it) as a new `buffer`. |
 
@@ -214,6 +214,7 @@ A draw is a table:
 | `pass`, `material`, `draw` | `GpuBindGroup?` | A bind group for each frequency its program binds anything for, laid out as its program lays that frequency out. |
 | `vertices`, `instances` | `GpuBuffer?` | The per-vertex and per-instance attributes, if the program has any, in vertex buffers holding every one drawn. |
 | `indices`, `indexFormat` | `GpuBuffer?`, `('u16' \| 'u32')?` | An index buffer, and how wide its indices are (`u32` by default). |
+| `indirect`, `indirectOffset` | `GpuBuffer?`, `number?` | Where the counts come from instead of `count` and `instanceCount`: an `indirect` buffer holding, from `indirectOffset` (0 by default, a multiple of 4), four `u32`s (vertex count, instance count, first vertex, first instance) or, for an indexed draw, five (index count, instance count, first index, base vertex, first instance). Whatever the GPU wrote there is drawn, a compute pass's count of what it kept, say; nothing checks it against the buffers, and the GPU keeps a draw past their ends inside them. |
 
 Everything is checked before anything is submitted, and each mistake names its draw: `draw 0 is invalid: its program binds a material group, and the draw gives none`. A pass reads its draws one at a time, so a pass of ten thousand draws holds no more of the Luau stack than a pass of one.
 
@@ -309,7 +310,7 @@ The last number is `string.unpack`'s: where it stopped reading.
 
 {{ api_signature(value="device:drawSet(desc: GpuDrawSetDesc): GpuDrawSet") }}
 
-Keeps a draw on the device: a render pipeline, its `material` and `draw` bind groups, its `vertices`, `instances`, and `indices` (with `indexFormat`), `count` and `instanceCount`, and the `tags` passes choose it by. The fields are a draw's, as `GpuDevice:render` takes them, without `pass`: a draw set is drawn with the pass group of whichever pass takes it, so one camera block serves every set a pass draws. It is checked when it is made, the way a pass checks a draw, and drawn from the next frame on by every draw pass whose tags it carries, until it is removed.
+Keeps a draw on the device: a render pipeline, its `material` and `draw` bind groups, its `vertices`, `instances`, and `indices` (with `indexFormat`), `count` and `instanceCount` (or the `indirect` buffer the GPU writes them into), and the `tags` passes choose it by. The fields are a draw's, as `GpuDevice:render` takes them, without `pass`: a draw set is drawn with the pass group of whichever pass takes it, so one camera block serves every set a pass draws. It is checked when it is made, the way a pass checks a draw, and drawn from the next frame on by every draw pass whose tags it carries, until it is removed.
 
 ## GpuDrawSet
 
@@ -379,7 +380,7 @@ Every pass has a `name` and a `kind`. What it reads and writes depends on the ki
 
 - `colors` and `depth` are the targets drawn into: a name, or `{ target, clear, load, store }`, cleared first, loaded from what it held, or neither, and stored unless `store` is `false`. The first pass to write a target can't load it: nothing is there yet.
 - `depthTest` names a depth target the pass tests against without writing it. A draw set whose pipeline writes depth isn't drawn in such a pass: the run refuses it.
-- `reads` names what the pass's shaders read: targets as textures, buffers as storage.
+- `reads` names what the pass reads: targets as textures, and buffers its shaders read as storage or its draws take vertices, instances, or indirect counts from. A draw set's buffers aren't the graph's, so a draw pass names the imported buffers its sets draw from here, and the passes that write them run first.
 - `storage` names the buffers a compute pass writes: a name, or `{ buffer, clear, load, store }`, where `clear = true` zeroes it first, at every run.
 - A group (`pass`, `material`, `draw`) is a `GpuBindGroup`, or bindings by binding number, as `GpuPipeline:bind` takes them, where a binding can also be a target's or a buffer's name. A texture binding names a target the pass `reads`; a storage binding names a buffer the pass reads, for a `'read'` declaration, or writes in `storage`, for a `'readWrite'` one.
 - A copy between a target and a buffer lays out each row padded to a multiple of 256 bytes, the way the GPU copies, and the buffer has to hold every row.

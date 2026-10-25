@@ -32,6 +32,8 @@ pub struct DrawSetDesc {
     pub count: u32,
     /// How many instances.
     pub instance_count: u32,
+    /// Where the counts come from instead, written by the GPU, as a [`Draw`]'s `indirect` says.
+    pub indirect: Option<(Arc<Buffer>, u64)>,
     /// What the passes that take it look for.
     pub tags: Vec<String>,
 }
@@ -45,6 +47,7 @@ pub struct DrawSet {
     vertices: Option<Arc<Buffer>>,
     instances: Option<Arc<Buffer>>,
     indices: Option<(Arc<Buffer>, IndexFormat)>,
+    indirect: Option<(Arc<Buffer>, u64)>,
     tags: Box<[String]>,
     count: AtomicU32,
     instance_count: AtomicU32,
@@ -67,6 +70,7 @@ impl DrawSet {
             vertices: desc.vertices,
             instances: desc.instances,
             indices: desc.indices,
+            indirect: desc.indirect,
             tags: desc.tags.into_boxed_slice(),
             count: AtomicU32::new(desc.count),
             instance_count: AtomicU32::new(desc.instance_count),
@@ -83,7 +87,7 @@ impl DrawSet {
             instance_count,
             ..self.draw(None)
         };
-        let problem = if instance_count == 0 {
+        let problem = if instance_count == 0 && self.indirect.is_none() {
             Some("at least one instance".to_owned())
         } else {
             group_problem(&draw, &[Frequency::Material, Frequency::Draw]).or_else(|| buffer_problem(&draw))
@@ -104,6 +108,7 @@ impl DrawSet {
             indices: self.indices.as_ref().map(|(buffer, format)| (&**buffer, *format)),
             count: self.count(),
             instance_count: self.instance_count(),
+            indirect: self.indirect.as_ref().map(|(buffer, offset)| (&**buffer, *offset)),
         }
     }
 

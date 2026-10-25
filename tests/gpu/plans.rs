@@ -125,6 +125,7 @@ fn rectangle(
         vertices: Some(Arc::new(vertex_buffer)),
         instances: None,
         indices: None,
+        indirect: None,
         count: 6,
         instance_count: 1,
         tags: vec![tag.to_owned()],

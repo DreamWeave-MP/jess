@@ -621,7 +621,7 @@ declare extern type ShaderInput with
 end
 
 --- What a GPU buffer is for: its vertices, its indices, a uniform block, or a storage buffer.
-export type GpuBufferUsage = 'vertex' | 'index' | 'uniform' | 'storage'
+export type GpuBufferUsage = 'vertex' | 'index' | 'uniform' | 'storage' | 'indirect'
 
 --- What a texture is for: sampled by shaders, drawn into, or both.
 export type GpuTextureUsage = 'sampled' | 'target'
@@ -765,11 +765,12 @@ export type GpuTarget = GpuTexture | {
   store: boolean?,
 }
 
---- One draw: `count` vertices (or indices, with `indices`) of `instanceCount` instances, its
---- pipeline's bind groups by frequency, and its vertex, instance, and index buffers.
+--- One draw: `count` vertices (or indices, with `indices`) of `instanceCount` instances, or the
+--- counts the GPU wrote into `indirect`, its pipeline's bind groups by frequency, and its vertex,
+--- instance, and index buffers. `count` is needed unless the draw is indirect.
 export type GpuDraw = {
   pipeline: GpuPipeline,
-  count: number,
+  count: number?,
   instanceCount: number?,
   pass: GpuBindGroup?,
   material: GpuBindGroup?,
@@ -778,6 +779,8 @@ export type GpuDraw = {
   instances: GpuBuffer?,
   indices: GpuBuffer?,
   indexFormat: ('u16' | 'u32')?,
+  indirect: GpuBuffer?,
+  indirectOffset: number?,
 }
 
 --- A render pass: its color targets by location, its depth target, and its draws, in order.
@@ -816,7 +819,7 @@ end
 --- passes choose it by.
 export type GpuDrawSetDesc = {
   pipeline: GpuPipeline,
-  count: number,
+  count: number?,
   instanceCount: number?,
   material: GpuBindGroup?,
   draw: GpuBindGroup?,
@@ -824,6 +827,8 @@ export type GpuDrawSetDesc = {
   instances: GpuBuffer?,
   indices: GpuBuffer?,
   indexFormat: ('u16' | 'u32')?,
+  indirect: GpuBuffer?,
+  indirectOffset: number?,
   tags: { string }?,
 }
 

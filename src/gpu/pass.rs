@@ -60,6 +60,12 @@ pub struct Draw<'a> {
     pub count: u32,
     /// How many instances.
     pub instance_count: u32,
+    /// Where the counts come from instead, written by the GPU: the buffer, and the offset of
+    /// four `u32`s in it (vertex count, instance count, first vertex, first instance) or, for an
+    /// indexed draw, five (index count, instance count, first index, base vertex, first instance).
+    /// `count` and `instance_count` are then ignored, and nothing checks the counts against the
+    /// buffers: the GPU keeps a draw past their ends inside them.
+    pub indirect: Option<(&'a Buffer, u64)>,
 }
 
 impl<'a> Draw<'a> {
@@ -74,6 +80,7 @@ impl<'a> Draw<'a> {
             indices: None,
             count,
             instance_count: 1,
+            indirect: None,
         }
     }
 }
@@ -200,9 +207,15 @@ pub fn encode(
                     IndexFormat::U32 => wgpu::IndexFormat::Uint32,
                 };
                 pass.set_index_buffer(buffer.raw.slice(..), format);
-                pass.draw_indexed(0..draw.count, 0, 0..draw.instance_count);
+                match draw.indirect {
+                    Some((arguments, offset)) => pass.draw_indexed_indirect(&arguments.raw, offset),
+                    None => pass.draw_indexed(0..draw.count, 0, 0..draw.instance_count),
+                }
             }
-            None => pass.draw(0..draw.count, 0..draw.instance_count),
+            None => match draw.indirect {
+                Some((arguments, offset)) => pass.draw_indirect(&arguments.raw, offset),
+                None => pass.draw(0..draw.count, 0..draw.instance_count),
+            },
         }
     }
 }
@@ -244,7 +257,7 @@ fn check_draw(index: usize, draw: &Draw<'_>, colors: &[Target<'_>], depth: Optio
         Some(format!("its pipeline draws into {wanted:?}, and the pass has {formats:?}"))
     } else if state.depth.map(|depth| depth.format) != depth.map(|target| target.texture.desc().format) {
         Some("its pipeline's depth target and the pass's differ".to_owned())
-    } else if draw.instance_count == 0 {
+    } else if draw.instance_count == 0 && draw.indirect.is_none() {
         Some("at least one instance".to_owned())
     } else {
         group_problem(draw, &Frequency::ALL).or_else(|| buffer_problem(draw))
@@ -275,8 +288,23 @@ pub fn group_problem(draw: &Draw<'_>, frequencies: &[Frequency]) -> Option<Strin
     None
 }
 
-/// What is wrong with a draw's buffers, if anything.
+/// What is wrong with a draw's buffers, if anything. An indirect draw's counts are the GPU's, so
+/// only its buffers' usages and its argument buffer's size are checked.
 pub fn buffer_problem(draw: &Draw<'_>) -> Option<String> {
+    let counted = draw.indirect.is_none();
+    if let Some((buffer, offset)) = draw.indirect {
+        let needed = if draw.indices.is_some() { 20 } else { 16 };
+        if !buffer.usage().contains(BufferUsage::INDIRECT) {
+            return Some("its indirect buffer isn't one".to_owned());
+        }
+        if !offset.is_multiple_of(4) || buffer.size() < offset + needed {
+            return Some(format!(
+                "its indirect arguments take {needed} bytes from {offset}, a multiple of 4, in its {}-byte \
+                 buffer",
+                buffer.size()
+            ));
+        }
+    }
     let [vertex_stride, instance_stride] = draw.pipeline.strides;
     for (name, plural, buffer, stride, count) in [
         (
@@ -302,7 +330,7 @@ pub fn buffer_problem(draw: &Draw<'_>) -> Option<String> {
             Some(buffer) if !buffer.usage().contains(BufferUsage::VERTEX) => {
                 return Some(format!("its {name} buffer isn't a vertex buffer"));
             }
-            Some(buffer) if buffer.size() < u64::from(stride) * u64::from(count) => {
+            Some(buffer) if counted && buffer.size() < u64::from(stride) * u64::from(count) => {
                 return Some(format!(
                     "{count} {plural} of {stride} bytes run past its {}-byte {name} buffer",
                     buffer.size()
@@ -319,7 +347,7 @@ pub fn buffer_problem(draw: &Draw<'_>) -> Option<String> {
     if !buffer.usage().contains(BufferUsage::INDEX) {
         return Some("its index buffer isn't one".to_owned());
     }
-    (buffer.size() < width * u64::from(draw.count)).then(|| {
+    (counted && buffer.size() < width * u64::from(draw.count)).then(|| {
         format!(
             "{} indices of {width} bytes run past its {}-byte index buffer",
             draw.count,

@@ -10,7 +10,9 @@ use l3i::stack::{Scope, ValueView};
 use l3i::userdata::{Owned, Userdata};
 
 use super::device::LuaGpuDevice;
-use super::pipeline::{Pipeline, buffer_field, gpu_error, groups, options, pipeline_field, table};
+use super::pipeline::{
+    Pipeline, buffer_field, count_field, gpu_error, groups, indirect_field, options, pipeline_field, table,
+};
 use super::resources::{choice, shown, whole};
 use crate::gpu::{DrawSet, DrawSetDesc, DrawSets, IndexFormat};
 use crate::lua::{error, kind};
@@ -27,11 +29,13 @@ unsafe impl Userdata for LuaGpuDrawSet {
     const NAME: &'static str = "jess.gpu.DrawSet";
 }
 
-const DRAW_SET_KEYS: [&str; 10] = [
+const DRAW_SET_KEYS: [&str; 12] = [
     "count",
     "draw",
     "indexFormat",
     "indices",
+    "indirect",
+    "indirectOffset",
     "instanceCount",
     "instances",
     "material",
@@ -72,6 +76,7 @@ fn draw_set(this: &LuaGpuDevice, call: &Call<'_>, desc: ValueView<'_>) -> l3i::R
                 Ok(())
             })?;
         }
+        let indirect = indirect_field(frame, FUNCTION, &fields)?;
         Ok(DrawSetDesc {
             pipeline: pipeline.clone(),
             material,
@@ -79,13 +84,14 @@ fn draw_set(this: &LuaGpuDevice, call: &Call<'_>, desc: ValueView<'_>) -> l3i::R
             vertices: buffer_field(frame, FUNCTION, &fields, "vertices")?,
             instances: buffer_field(frame, FUNCTION, &fields, "instances")?,
             indices: indices.map(|buffer| (buffer, index_format)),
-            count: whole(FUNCTION, "the count", Some(fields.raw_get(frame, "count")?), None)?,
+            count: count_field(frame, FUNCTION, &fields, indirect.is_some())?,
             instance_count: whole(
                 FUNCTION,
                 "the instance count",
                 Some(fields.raw_get(frame, "instanceCount")?),
                 Some(1),
             )?,
+            indirect,
             tags,
         })
     })?;

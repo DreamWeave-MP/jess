@@ -443,3 +443,52 @@ fn a_bind_group_binds_for_every_program_laid_out_alike() {
         "draw 0 is invalid: its material bind group was made for another frequency or layout"
     );
 }
+
+#[test]
+fn indirect_draws_take_their_counts_from_a_buffer() {
+    let Some(gpu) = gpu("indirect_draws_take_their_counts_from_a_buffer") else {
+        return;
+    };
+    let state = PipelineState {
+        colors: vec![ColorState::new(TextureFormat::Rgba8Unorm)],
+        ..PipelineState::default()
+    };
+    let pipeline = gpu.render_pipeline(&flat(0.5), &state).unwrap();
+    let (_red, red) = colored(&gpu, &pipeline, [1.0, 0.0, 0.0, 1.0]);
+    let arguments = |usage| {
+        let buffer = gpu.buffer(16, usage).unwrap();
+        let counts: Vec<u8> = [3u32, 1, 0, 0].iter().flat_map(|count| count.to_le_bytes()).collect();
+        gpu.write_buffer(&buffer, 0, &counts).unwrap();
+        buffer
+    };
+    let indirect = arguments(BufferUsage::INDIRECT);
+    let draw = |buffer, offset| Draw {
+        groups: [None, Some(&red), None],
+        indirect: Some((buffer, offset)),
+        ..Draw::new(&pipeline, 0)
+    };
+    let pixels = draw_one(
+        &gpu,
+        TextureFormat::Rgba8Unorm,
+        ClearValue::Color([0.0; 4]),
+        draw(&indirect, 0),
+    );
+    assert_eq!(
+        texel(&pixels, SIZE / 2, SIZE / 2),
+        RED,
+        "three vertices of one instance, from the buffer"
+    );
+
+    let plain = arguments(BufferUsage::STORAGE);
+    let color = target(&gpu, TextureFormat::Rgba8Unorm);
+    let clear = Target::cleared(&color, ClearValue::Color([0.0; 4]));
+    for (draw, message) in [
+        (draw(&plain, 0), "draw 0 is invalid: its indirect buffer isn't one"),
+        (
+            draw(&indirect, 4),
+            "draw 0 is invalid: its indirect arguments take 16 bytes from 4, a multiple of 4, in its 16-byte buffer",
+        ),
+    ] {
+        assert_eq!(gpu.render(&[clear], None, &[draw]).unwrap_err().to_string(), message);
+    }
+}

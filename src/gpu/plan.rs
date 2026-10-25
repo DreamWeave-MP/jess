@@ -483,7 +483,11 @@ impl Gpu {
                         .map(|texture| Allocation::Texture(Arc::new(texture)))
                 }
                 ResourceDesc::Buffer { bytes } => {
-                    let usage = BufferUsage::VERTEX | BufferUsage::INDEX | BufferUsage::UNIFORM | BufferUsage::STORAGE;
+                    let usage = BufferUsage::VERTEX
+                        | BufferUsage::INDEX
+                        | BufferUsage::UNIFORM
+                        | BufferUsage::STORAGE
+                        | BufferUsage::INDIRECT;
                     self.buffer(bytes, usage).map(|buffer| Allocation::Buffer(Arc::new(buffer)))
                 }
             }

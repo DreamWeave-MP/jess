@@ -157,7 +157,7 @@ fn resource_errors_name_the_mistake() {
     for (script, expected) in [
         (
             "device:buffer(16, 'vertexx')",
-            "GpuDevice:buffer: a usage is one of vertex, index, uniform, storage, not \"vertexx\"",
+            "GpuDevice:buffer: a usage is one of vertex, index, uniform, storage, indirect, not \"vertexx\"",
         ),
         (
             "device:buffer(1.5, 'vertex')",
@@ -1025,4 +1025,133 @@ fn a_script_compacts_through_atomics() {
         ",
         )
         .unwrap_or_else(|error| panic!("{error}"));
+}
+
+/// What `a_script_culls_on_the_gpu` runs.
+#[cfg(feature = "gpu")]
+const GPU_CULLING: &str = r"
+            local shader = require('@jess/shader')
+            local device = jess.gpu.device()
+
+            -- Eight instances across the target; the cull keeps the four on the right half.
+            local cull = shader.compute({
+              workgroupSize = 64,
+              pass = {
+                everything = shader.storage(shader.vec4),
+                kept = shader.storage(shader.vec4, 'readWrite'),
+                arguments = shader.storage(shader.uint, 'atomic'),
+              },
+              compute = function(input)
+                local index = input.builtin.globalInvocationId.x
+                local pass = input.pass
+                shader.when(shader.less(index, shader.arrayLength(pass.everything)), function()
+                  local offset = pass.everything[index]
+                  shader.when(shader.greater(offset.x, 0), function()
+                    local slot = shader.atomicAdd(pass.arguments, 1, shader.uint(1))
+                    shader.write(pass.kept, slot, offset)
+                  end)
+                end)
+              end,
+            })
+            local square = shader.program({
+              attributes = { corner = shader.vec2 },
+              instance = { offset = shader.vec4 },
+              vertex = function(input)
+                local at = input.attributes.corner * shader.vec2(0.05, 0.9) + input.instance.offset.xy
+                return { position = shader.vec4(at, 0, 1) }
+              end,
+              fragment = function() return shader.vec4(1, 1, 1, 1) end,
+            })
+            local culling = device:pipeline(cull)
+            local drawing = device:pipeline(square, { colors = { 'rgba8Unorm' } })
+
+            local function filled(size, usage, values, format)
+              local bytes = buffer.create(size)
+              for index, value in values do
+                if format == 'u32' then
+                  buffer.writeu32(bytes, (index - 1) * 4, value)
+                else
+                  buffer.writef32(bytes, (index - 1) * 4, value)
+                end
+              end
+              local made = device:buffer(size, usage)
+              made:write(0, bytes)
+              return made
+            end
+            local positions = {}
+            for index = 0, 7 do
+              for _, value in { -0.875 + index * 0.25, 0, 0, 1 } do
+                table.insert(positions, value)
+              end
+            end
+            local everything = filled(128, 'storage', positions)
+            local kept = filled(128, { 'storage', 'vertex' }, {})
+            local arguments = filled(16, { 'storage', 'indirect' }, {}, 'u32')
+            local template = filled(16, {}, { 6, 0, 0, 0 }, 'u32')
+            local corners = filled(48, 'vertex', { -1, -1, 1, -1, -1, 1, 1, -1, 1, 1, -1, 1 })
+
+            device:drawSet({
+              pipeline = drawing,
+              vertices = corners,
+              instances = kept,
+              indirect = arguments,
+              tags = { 'squares' },
+            })
+            local storage = {}
+            for _, binding in cull.layout.pass.bindings do
+              storage[binding.binding] = binding.name
+            end
+            local plan = device:plan({
+              viewport = { width = 64, height = 8 },
+              targets = { { name = 'screen', format = 'rgba8Unorm', imported = true } },
+              buffers = {
+                { name = 'template', size = 16, imported = true },
+                { name = 'arguments', size = 16, imported = true },
+                { name = 'everything', size = 128, imported = true },
+                { name = 'kept', size = 128, imported = true },
+              },
+              passes = {
+                { name = 'reset', kind = 'copy', from = 'template', to = 'arguments' },
+                {
+                  name = 'cull',
+                  kind = 'compute',
+                  pipeline = culling,
+                  pass = storage,
+                  reads = { 'everything' },
+                  storage = { 'kept', { buffer = 'arguments', load = true } },
+                },
+                {
+                  name = 'draw',
+                  kind = 'draw',
+                  tags = { 'squares' },
+                  reads = { 'kept', 'arguments' },
+                  colors = { { target = 'screen', clear = { 0, 0, 0, 1 } } },
+                },
+              },
+            })
+            assert(table.concat(plan.order, ' ') == 'reset cull draw', table.concat(plan.order, ' '))
+
+            local screen = device:texture({ width = 64, height = 8, format = 'rgba8Unorm', usage = 'target' })
+            local imports = { screen = screen, template = template, arguments = arguments, everything = everything, kept = kept }
+            for _ = 1, 2 do
+              plan:run(imports)
+              local counts = arguments:read()
+              assert(buffer.readu32(counts, 0) == 6 and buffer.readu32(counts, 4) == 4, buffer.readu32(counts, 4))
+              local pixels = screen:read()
+              local function lit(column) return buffer.readu8(pixels, (4 * 64 + column) * 4) == 255 end
+              -- Instance 1 at -0.625 and instance 6 at 0.625: culled, and drawn.
+              assert(not lit(12), 'a culled instance is not drawn')
+              assert(lit(52), 'a kept instance is drawn')
+            end
+";
+
+/// A compute pass culls instances on the GPU, compacting the ones it keeps through an atomic
+/// count in the arguments a draw set draws indirectly from: no count goes back to Luau.
+#[cfg(feature = "gpu")]
+#[test]
+fn a_script_culls_on_the_gpu() {
+    let Some(runtime) = gpu_runtime("a_script_culls_on_the_gpu") else {
+        return;
+    };
+    runtime.exec(GPU_CULLING).unwrap_or_else(|error| panic!("{error}"));
 }

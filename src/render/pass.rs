@@ -124,7 +124,8 @@ pub enum ReadUsage {
     DepthTexture,
     /// Bound as the pass's read-only depth attachment for depth testing. Depth targets only.
     DepthTest,
-    /// Read by its shaders as a storage buffer. Buffers only.
+    /// Read by its shaders as a storage buffer, or by its draws for vertices, instances, or indirect
+    /// counts. Buffers only.
     Buffer,
     /// Copied from. Any resource; only a copy pass reads this way.
     Copy,

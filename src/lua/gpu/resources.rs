@@ -52,11 +52,12 @@ unsafe impl Userdata for LuaGpuSampler {
     const NAME: &'static str = "jess.gpu.Sampler";
 }
 
-const BUFFER_USAGES: [(&str, BufferUsage); 4] = [
+const BUFFER_USAGES: [(&str, BufferUsage); 5] = [
     ("vertex", BufferUsage::VERTEX),
     ("index", BufferUsage::INDEX),
     ("uniform", BufferUsage::UNIFORM),
     ("storage", BufferUsage::STORAGE),
+    ("indirect", BufferUsage::INDIRECT),
 ];
 
 const TEXTURE_USAGES: [(&str, TextureUsage); 2] = [("sampled", TextureUsage::SAMPLED), ("target", TextureUsage::TARGET)];

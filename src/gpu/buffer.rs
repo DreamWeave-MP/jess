@@ -19,6 +19,8 @@ impl BufferUsage {
     pub const UNIFORM: BufferUsage = BufferUsage(4);
     /// A storage buffer.
     pub const STORAGE: BufferUsage = BufferUsage(8);
+    /// The counts of indirect draws: what the GPU wrote says how much to draw.
+    pub const INDIRECT: BufferUsage = BufferUsage(16);
 
     /// Whether this includes every usage `other` does.
     #[must_use]
@@ -33,6 +35,7 @@ impl BufferUsage {
             (BufferUsage::INDEX, wgpu::BufferUsages::INDEX),
             (BufferUsage::UNIFORM, wgpu::BufferUsages::UNIFORM),
             (BufferUsage::STORAGE, wgpu::BufferUsages::STORAGE),
+            (BufferUsage::INDIRECT, wgpu::BufferUsages::INDIRECT),
         ] {
             if self.contains(usage) {
                 usages |= raw;
@@ -57,6 +60,7 @@ impl fmt::Display for BufferUsage {
             (BufferUsage::INDEX, "index"),
             (BufferUsage::UNIFORM, "uniform"),
             (BufferUsage::STORAGE, "storage"),
+            (BufferUsage::INDIRECT, "indirect"),
         ]
         .into_iter()
         .filter(|(usage, _)| self.contains(*usage))

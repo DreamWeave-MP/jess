@@ -72,11 +72,13 @@ const TARGET_KEYS: [&str; 5] = ["clear", "layer", "level", "store", "texture"];
 
 const RENDER_KEYS: [&str; 3] = ["colors", "depth", "draws"];
 
-const DRAW_KEYS: [&str; 10] = [
+const DRAW_KEYS: [&str; 12] = [
     "count",
     "draw",
     "indexFormat",
     "indices",
+    "indirect",
+    "indirectOffset",
     "instanceCount",
     "instances",
     "material",
@@ -421,6 +423,31 @@ struct HeldDraw {
     indices: Option<(Arc<Buffer>, IndexFormat)>,
     count: u32,
     instance_count: u32,
+    indirect: Option<(Arc<Buffer>, u64)>,
+}
+
+/// A draw's `indirect` buffer and its `indirectOffset`, if it draws what the GPU counted.
+pub fn indirect_field(frame: &Frame<'_>, function: &str, table: &TableView<'_>) -> l3i::Result<Option<(Arc<Buffer>, u64)>> {
+    let Some(buffer) = buffer_field(frame, function, table, "indirect")? else {
+        return Ok(None);
+    };
+    let offset = whole(
+        function,
+        "the indirect offset",
+        Some(table.raw_get(frame, "indirectOffset")?),
+        Some(0),
+    )?;
+    Ok(Some((buffer, u64::from(offset))))
+}
+
+/// A draw's `count`, which an indirect draw leaves to the GPU.
+pub fn count_field(frame: &Frame<'_>, function: &str, table: &TableView<'_>, indirect: bool) -> l3i::Result<u32> {
+    whole(
+        function,
+        "the count",
+        Some(table.raw_get(frame, "count")?),
+        indirect.then_some(0),
+    )
 }
 
 /// A target: a texture, loaded and stored, or `{ texture, clear, level, layer, store }`.
@@ -561,13 +588,15 @@ fn draw(frame: &Frame<'_>, function: &str, view: ValueView<'_>) -> l3i::Result<H
         "u16" => IndexFormat::U16,
         _ => IndexFormat::U32,
     };
+    let indirect = indirect_field(frame, function, &table)?;
     Ok(HeldDraw {
         pipeline: pipeline_field(frame, function, &table)?,
         groups: groups(frame, function, &table)?,
         vertices: buffer_field(frame, function, &table, "vertices")?,
         instances: buffer_field(frame, function, &table, "instances")?,
         indices: indices.map(|buffer| (buffer, index_format)),
-        count: whole(function, "the count", Some(table.raw_get(frame, "count")?), None)?,
+        count: count_field(frame, function, &table, indirect.is_some())?,
+        indirect,
         instance_count: whole(
             function,
             "the instance count",
@@ -627,6 +656,7 @@ fn render(this: &LuaGpuDevice, call: &Call<'_>, pass: ValueView<'_>) -> l3i::Res
             indices: held.indices.as_ref().map(|(buffer, format)| (&**buffer, *format)),
             count: held.count,
             instance_count: held.instance_count,
+            indirect: held.indirect.as_ref().map(|(buffer, offset)| (&**buffer, *offset)),
         });
     }
     this.gpu
