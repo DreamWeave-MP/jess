@@ -6,7 +6,7 @@ extra:
   kind: api
 ---
 
-{{ api_signature(value="jess: { version, null, granted, payload, bench, shader, context, worker, events, interfaces, application, input }") }}
+{{ api_signature(value="jess: { version, null, granted, payload, bench, shader, context, worker, events, interfaces, application, input, audio }") }}
 
 `jess` is the global table every script gets, however it was started: `jess run`, `jess test`, a command target, or a managed module in an application. It holds one table per native module, plus the few values that belong to no module and had to live somewhere. `require('jess')` is the same table.
 
@@ -30,6 +30,7 @@ extra:
 | `jess.application` | Ask the host running an application to stop | [jess.application](@/docs/api/application.md) |
 | `jess.shader` | Typed shader programs from Luau modules | [jess.shader](@/docs/api/shader.md) |
 | `jess.input` | The native half of `@jess/input`: compiling binding documents, and the runtime | [@jess/input](@/docs/api/input.md) |
+| `jess.audio` | The native half of `@jess/audio`: PCM and contexts that mix voices on a sample clock | [@jess/audio](@/docs/api/audio.md) |
 | `jess.bench` | What a measurement needs from the host | [jess.bench](@/docs/api/bench.md) |
 | `@jess/log` | Structured logging with one sink the host owns | [@jess/log](@/docs/api/log.md) |
 | `@jess/test` | Test suites, expectations, and reports | [@jess/test](@/docs/api/test.md) |
@@ -42,6 +43,7 @@ extra:
 | `@jess/data/value` | The one value model the codecs share | [@jess/data/value](@/docs/api/value.md) |
 | `@jess/l10n` | Localized text from message bundles | [@jess/l10n](@/docs/api/l10n.md) |
 | `@jess/input` | Action graphs, labels, conflicts, intents, and the input runtime | [@jess/input](@/docs/api/input.md) |
+| `@jess/audio` | PCM, voices on a sample clock, offline renders, and WAV | [@jess/audio](@/docs/api/audio.md) |
 | `@jess/backup` | Overwrite a file, keeping what was there as `.bak` | [@jess/backup](@/docs/api/backup.md) |
 | `@jess/http` | HTTP/1.1 requests and responses over the transport the runtime exposes | [@jess/http](@/docs/api/http.md) |
 | `@dream/fs` | Files and folders | [Files](@/docs/api/fs.md) |
