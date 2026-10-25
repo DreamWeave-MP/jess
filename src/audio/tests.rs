@@ -7,7 +7,7 @@ use std::sync::Arc;
 use crate::audio::processor::{Block, Gain, ParamInfo, Processor, Tail};
 use crate::audio::{
     AudioConfig, AudioError, BusKey, BusParam, BusSpec, Culled, Curve, Distance, Emitter, Glide, Listener, LoopRegion,
-    Meter, OfflineContext, Pcm, PlaySpec, QUANTUM, Tap, VoiceParam, VoiceSend, VoiceState,
+    Meter, OfflineContext, Pcm, PlaySpec, QUANTUM, Stream, Tap, VoiceParam, VoiceSend, VoiceState,
 };
 
 /// Counts allocations and frees on a thread while it is armed, so a test can prove the render
@@ -1053,6 +1053,70 @@ fn choosing_voices_over_a_budget_never_allocates() {
         context.control().play(&tone, &spec).unwrap();
     }
     let mut out = vec![0.0; 2 * 256];
+    let (_, engine) = context.parts();
+    assert_eq!(
+        allocations(|| {
+            for _ in 0..20 {
+                engine.render(&mut out);
+            }
+        }),
+        0
+    );
+}
+
+#[test]
+fn a_stream_written_between_renders_plays_the_same_as_its_pcm() {
+    let tone: Vec<f32> = (0..1000u16).map(|frame| (f32::from(frame) / 37.0).sin()).collect();
+    let mut whole = mono(AudioConfig::default());
+    whole.control().play(&pcm(&tone, 24_000), &at(0)).unwrap();
+    let expected = whole.render(2000);
+
+    let mut context = mono(AudioConfig::default());
+    let stream = Stream::new(1, 24_000, 0.01).unwrap();
+    context.control().play_stream(&stream, &at(0)).unwrap();
+    assert_eq!(context.control().play_stream(&stream, &at(0)), Err(AudioError::StreamClaimed));
+    let mut written = 0;
+    let mut out = Vec::new();
+    while out.len() < 2000 {
+        // The writer keeps a little ahead of the engine, the way a generator or decoder would.
+        while written < tone.len() && stream.room() > 0 {
+            written += stream.write(&tone[written..(written + 64).min(tone.len())]).unwrap();
+        }
+        if written == tone.len() {
+            stream.finish();
+        }
+        out.extend(context.render(100));
+    }
+    assert_eq!(out, expected);
+    assert_eq!(stream.stats().missed, 0);
+}
+
+#[test]
+fn a_stream_that_runs_dry_plays_counted_silence_and_ends_once_finished() {
+    let mut context = mono(AudioConfig::default());
+    let stream = Stream::new(1, 48_000, 0.1).unwrap();
+    let voice = context.control().play_stream(&stream, &at(0)).unwrap();
+    stream.write(&[1.0; 10]).unwrap();
+    let out = context.render(20);
+    assert_eq!(out[..10], [1.0; 10]);
+    assert_eq!(out[10..], [0.0; 10]);
+    assert!(stream.stats().missed >= 10);
+    stream.write(&[0.5; 5]).unwrap();
+    stream.finish();
+    let out = context.render(20);
+    assert!(out.contains(&0.5), "what came late plays after the gap");
+    context.render(QUANTUM);
+    assert_eq!(context.control().state(voice), VoiceState::Ended);
+}
+
+#[test]
+fn rendering_a_stream_never_allocates() {
+    let mut context = OfflineContext::new(&AudioConfig::default()).unwrap();
+    let stream = Stream::new(2, 44_100, 1.0).unwrap();
+    let spec = PlaySpec { rate: 1.5, ..at(0) };
+    context.control().play_stream(&stream, &spec).unwrap();
+    stream.write(&vec![0.25; 2 * 20_000]).unwrap();
+    let mut out = vec![0.0; 2 * 300];
     let (_, engine) = context.parts();
     assert_eq!(
         allocations(|| {

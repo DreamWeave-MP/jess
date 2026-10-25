@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use crate::audio::param::{Curve, Glide, Param};
 use crate::audio::spatial::{Emitter, Space};
+use crate::audio::stream::Stream;
 use crate::audio::{AudioError, BusKey, MAX_CHANNELS, MAX_PLAYBACK_RATE, MAX_VOICE_SENDS, Pcm, QUANTUM};
 
 /// One fractional frame in the 32.32 fixed point a voice's position is kept in. Positions are
@@ -178,9 +179,7 @@ impl VoiceParam {
 impl PlaySpec {
     /// Checks the spec against `pcm` and an output of `channels`.
     pub(crate) fn check(&self, pcm: &Pcm, channels: usize) -> Result<(), AudioError> {
-        VoiceParam::Gain.check(f64::from(self.gain))?;
-        VoiceParam::Pan.check(f64::from(self.pan))?;
-        VoiceParam::Rate.check(self.rate)?;
+        self.check_levels()?;
         let frames = pcm.frames() as u64;
         if self.offset > frames {
             return Err(AudioError::Parameter {
@@ -198,13 +197,42 @@ impl PlaySpec {
                 frames,
             });
         }
+        mixes(pcm.channels(), channels)
+    }
+
+    /// Checks the spec against `stream` and an output of `channels`: a stream plays once, from
+    /// where its writer is, at up to four times its rate.
+    pub(crate) fn check_stream(&self, stream: &Stream, channels: usize) -> Result<(), AudioError> {
+        self.check_levels()?;
+        if self.offset != 0 || self.looping.is_some() {
+            return Err(AudioError::Parameter {
+                name: "offset",
+                value: to_f64(self.offset),
+                expected: "0 and no loop for a stream, which plays once from where its writer is",
+            });
+        }
+        if self.rate > 4.0 {
+            return Err(AudioError::Parameter {
+                name: "rate",
+                value: self.rate,
+                expected: "at most 4 for a stream",
+            });
+        }
+        mixes(stream.channels(), channels)
+    }
+
+    /// Checks the gain, pan, rate, sends, and place.
+    fn check_levels(&self) -> Result<(), AudioError> {
+        VoiceParam::Gain.check(f64::from(self.gain))?;
+        VoiceParam::Pan.check(f64::from(self.pan))?;
+        VoiceParam::Rate.check(self.rate)?;
         for send in self.sends.iter().flatten() {
             check_level(f64::from(send.level))?;
         }
         if let Some(emitter) = &self.spatial {
             emitter.check()?;
         }
-        mixes(pcm.channels(), channels)
+        Ok(())
     }
 }
 
@@ -386,10 +414,140 @@ impl Spatial {
     }
 }
 
+/// Frames a stream voice's window holds per channel: a block at the fastest a stream plays, and
+/// the frames around it that interpolation reads.
+pub const STREAM_WINDOW: usize = QUANTUM * 4 + 8;
+
+/// What a voice plays.
+pub enum Source {
+    /// Decoded audio, shared.
+    Pcm(Arc<Pcm>),
+    /// A stream, and the window the voice reads it through: planar, [`STREAM_WINDOW`] frames a
+    /// channel, allocated on the control side.
+    Stream(Arc<Stream>, Box<[f32]>),
+}
+
+impl Source {
+    pub(crate) fn channels(&self) -> usize {
+        match self {
+            Source::Pcm(pcm) => pcm.channels(),
+            Source::Stream(stream, _) => stream.channels(),
+        }
+    }
+
+    pub(crate) fn rate(&self) -> u32 {
+        match self {
+            Source::Pcm(pcm) => pcm.rate(),
+            Source::Stream(stream, _) => stream.rate(),
+        }
+    }
+}
+
+/// Reads `frames` frames of each channel of `pcm` into `scratch` from `cursor`, moving it, with
+/// `steps` frame by frame while the rate ramps; how many it read before the source ran out.
+fn render_pcm(pcm: &Pcm, cursor: &mut Cursor, scratch: &mut [f32], steps: Option<&[u64]>, frames: usize) -> usize {
+    let length = pcm.frames() as u64;
+    let start = *cursor;
+    let mut produced = 0;
+    for channel in 0..pcm.channels() {
+        *cursor = start;
+        let data = pcm.channel(channel);
+        produced = 0;
+        for (index, sample) in scratch[channel * QUANTUM..channel * QUANTUM + frames].iter_mut().enumerate() {
+            if cursor.looping.is_none() && cursor.position >> 32 >= length {
+                break;
+            }
+            *sample = cursor.read(data);
+            produced += 1;
+            if let Some(steps) = steps {
+                cursor.step = steps[index];
+            }
+            cursor.advance();
+        }
+    }
+    produced
+}
+
+/// A stream voice's reading: the stream, and the window of it around the cursor.
+struct Reader<'a> {
+    stream: &'a Stream,
+    window: &'a mut [f32],
+    base: &'a mut u64,
+    filled: &'a mut usize,
+}
+
+impl Reader<'_> {
+    /// Reads `frames` frames as [`render_pcm`] does, from the window, which it first slides up to
+    /// the cursor and fills from the stream. Where the stream has nothing yet the window holds
+    /// silence, counted as missed; a finished stream ends where its data does.
+    fn render(self, cursor: &mut Cursor, scratch: &mut [f32], steps: Option<&[u64]>, frames: usize) -> usize {
+        let channels = self.stream.channels();
+        // Let go of what the cursor has passed, but the frame interpolation still reads.
+        let keep = (cursor.position >> 32).saturating_sub(1);
+        if keep > *self.base {
+            let passed = usize::try_from(keep - *self.base).unwrap_or(usize::MAX).min(*self.filled);
+            for channel in 0..channels {
+                let line = &mut self.window[channel * STREAM_WINDOW..(channel + 1) * STREAM_WINDOW];
+                line.copy_within(passed..*self.filled, 0);
+            }
+            *self.base += passed as u64;
+            *self.filled -= passed;
+        }
+        let travel = steps.map_or(cursor.step * frames as u64, |steps| steps.iter().sum());
+        let last = ((cursor.position + travel) >> 32) + 3;
+        let wanted = usize::try_from(last.saturating_sub(*self.base))
+            .unwrap_or(usize::MAX)
+            .min(STREAM_WINDOW);
+        if wanted > *self.filled {
+            *self.filled += self
+                .stream
+                .take(self.window, STREAM_WINDOW, *self.filled, wanted - *self.filled);
+        }
+        if *self.filled < wanted && !self.stream.finished() {
+            for channel in 0..channels {
+                self.window[channel * STREAM_WINDOW + *self.filled..channel * STREAM_WINDOW + wanted].fill(0.0);
+            }
+            self.stream.miss((wanted - *self.filled) as u64);
+            *self.filled = wanted;
+        }
+        let finished = self.stream.finished();
+        let origin = *self.base << 32;
+        let start = Cursor {
+            position: cursor.position - origin,
+            ..*cursor
+        };
+        let mut relative = start;
+        let mut produced = 0;
+        for channel in 0..channels {
+            relative = start;
+            let data = &self.window[channel * STREAM_WINDOW..channel * STREAM_WINDOW + *self.filled];
+            produced = 0;
+            for (index, sample) in scratch[channel * QUANTUM..channel * QUANTUM + frames].iter_mut().enumerate() {
+                // An unfinished stream has silence where it has nothing; a finished one ends.
+                if finished && relative.position >> 32 >= data.len() as u64 {
+                    break;
+                }
+                *sample = relative.read(data);
+                produced += 1;
+                if let Some(steps) = steps {
+                    relative.step = steps[index];
+                }
+                relative.advance();
+            }
+        }
+        cursor.position = relative.position + origin;
+        cursor.step = relative.step;
+        produced
+    }
+}
+
 /// A playing voice, owned by the engine.
 pub struct Voice {
     pub(crate) generation: u32,
-    pub(crate) pcm: Arc<Pcm>,
+    pub(crate) source: Source,
+    /// For a stream, the absolute frame its window starts at, and the frames in it.
+    base: u64,
+    filled: usize,
     /// The slot of the bus it plays into.
     pub(crate) bus: u32,
     /// Bus slots it sends to, and at what level.
@@ -410,7 +568,7 @@ pub struct Voice {
 }
 
 impl Voice {
-    pub(crate) fn new(generation: u32, pcm: Arc<Pcm>, spec: &PlaySpec, output_rate: u32) -> Voice {
+    pub(crate) fn new(generation: u32, source: Source, spec: &PlaySpec, output_rate: u32) -> Voice {
         let mut gain = Param::new(f64::from(spec.gain));
         if spec.fade > 0 {
             gain.set(0.0);
@@ -441,7 +599,9 @@ impl Voice {
             culled: spec.culled,
             audible: true,
             output_rate,
-            pcm,
+            source,
+            base: 0,
+            filled: 0,
         };
         voice.cursor.step = voice.step(spec.rate);
         voice
@@ -460,6 +620,10 @@ impl Voice {
     /// Keeps time for `frames` frames without mixing anything: its ramps, its fade, and its place in
     /// its source all move on. False once it has run out.
     pub(crate) fn skip(&mut self, frames: usize) -> bool {
+        // A stream has nothing to skip but what it has been given: culled, it holds its place.
+        if matches!(self.source, Source::Stream(..)) {
+            return true;
+        }
         let frames = frames as u64;
         if let Some(left) = self.ending.as_mut() {
             if *left <= frames {
@@ -474,7 +638,10 @@ impl Voice {
             self.cursor.step = self.step(self.rate.value());
         }
         self.cursor.skip(frames);
-        self.cursor.looping.is_some() || self.cursor.position >> 32 < self.pcm.frames() as u64
+        match &self.source {
+            Source::Pcm(pcm) => self.cursor.looping.is_some() || self.cursor.position >> 32 < pcm.frames() as u64,
+            Source::Stream(..) => true,
+        }
     }
 
     /// Moves a voice in space; a voice that wasn't in space stays out of it.
@@ -488,7 +655,7 @@ impl Voice {
     /// to, its Doppler shift, and its low-pass. Nothing for a voice not in space.
     #[allow(clippy::cast_possible_truncation)] // Engine coefficients are f32.
     pub(crate) fn hear(&mut self, space: &Space, output: usize) {
-        let source = self.pcm.channels();
+        let source = self.source.channels();
         let Some(spatial) = self.spatial.as_mut() else {
             return;
         };
@@ -552,7 +719,11 @@ impl Voice {
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // A positive step below 2^64.
     fn step(&self, rate: f64) -> u64 {
         let doppler = self.spatial.as_ref().map_or(1.0, |spatial| spatial.doppler);
-        let ratio = rate * doppler * f64::from(self.pcm.rate()) / f64::from(self.output_rate);
+        let mut ratio = rate * doppler * f64::from(self.source.rate()) / f64::from(self.output_rate);
+        if matches!(self.source, Source::Stream(..)) {
+            // A stream is read through a window a block wide at four times: no faster.
+            ratio = ratio.min(4.0);
+        }
         ((ratio * 4_294_967_296.0).round() as u64).max(1)
     }
 
@@ -571,33 +742,26 @@ impl Voice {
                 self.rate.advance(1);
             }
         }
-        let length = self.pcm.frames() as u64;
-        let mut produced = 0;
-        let mut cursor = self.cursor;
-        for channel in 0..self.pcm.channels() {
-            cursor = self.cursor;
-            let data = self.pcm.channel(channel);
-            produced = 0;
-            for (index, sample) in scratch[channel * QUANTUM..channel * QUANTUM + frames].iter_mut().enumerate() {
-                if cursor.looping.is_none() && cursor.position >> 32 >= length {
-                    break;
-                }
-                *sample = cursor.read(data);
-                produced += 1;
-                if gliding {
-                    cursor.step = steps[index];
-                }
-                cursor.advance();
+        let steps = gliding.then_some(&steps[..frames]);
+        let produced = match &mut self.source {
+            Source::Pcm(pcm) => render_pcm(pcm, &mut self.cursor, scratch, steps, frames),
+            Source::Stream(stream, window) => {
+                let reader = Reader {
+                    stream,
+                    window,
+                    base: &mut self.base,
+                    filled: &mut self.filled,
+                };
+                reader.render(&mut self.cursor, scratch, steps, frames)
             }
-        }
-        self.cursor = cursor;
+        };
         if gliding {
             self.cursor.step = self.step(self.rate.value());
         }
         if let Some(spatial) = self.spatial.as_mut()
             && spatial.lowpass < 1.0
         {
-            for channel in 0..self.pcm.channels() {
+            for channel in 0..self.source.channels() {
                 let memory = &mut spatial.memory[channel];
                 for sample in &mut scratch[channel * QUANTUM..channel * QUANTUM + produced] {
                     *memory += spatial.lowpass * (*sample - *memory);
@@ -618,7 +782,7 @@ impl Voice {
     /// frame written into `envelope`.
     #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)] // Engine levels are f32.
     pub(crate) fn levels(&mut self, frames: usize, envelope: &mut [f32], output: usize) -> Levels {
-        let source = self.pcm.channels();
+        let source = self.source.channels();
         if let Some(spatial) = &self.spatial {
             // Space sets the pan; the voice's gain scales what space gives, frame by frame.
             let ((first, second), (last_first, last_second)) = (spatial.from, spatial.to);
@@ -686,7 +850,7 @@ impl Voice {
         let mut out = |to: usize, from: &[f32], level: Level<'_>| {
             add(&mut bus[to * QUANTUM..to * QUANTUM + frames], from, level);
         };
-        match (self.pcm.channels(), output) {
+        match (self.source.channels(), output) {
             (1, 2) => {
                 out(0, channel(0), first);
                 out(1, channel(0), second);

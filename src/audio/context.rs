@@ -11,7 +11,8 @@ use crate::audio::param::Glide;
 use crate::audio::pcm::check_layout;
 use crate::audio::processor::{ParamInfo, Processor, ProcessorKey, check_param, param_index};
 use crate::audio::spatial::{Emitter, Handedness, Listener, Space};
-use crate::audio::voice::{VoiceKey, check_level};
+use crate::audio::stream::Stream;
+use crate::audio::voice::{STREAM_WINDOW, Source, VoiceKey, check_level};
 use crate::audio::{
     AudioError, BusKey, BusParam, BusSpec, LoopRegion, MAX_BUSES, MAX_CHAIN, MAX_PROCESSORS, MAX_VOICE_SENDS, MAX_VOICES,
     Pcm, PlaySpec, Tap, VoiceParam,
@@ -311,6 +312,30 @@ impl Control {
     /// [`AudioError::QueueFull`], or [`AudioError::Disconnected`].
     pub fn play(&mut self, pcm: &Arc<Pcm>, spec: &PlaySpec) -> Result<VoiceKey, AudioError> {
         spec.check(pcm, self.channels)?;
+        self.start(Source::Pcm(Arc::clone(pcm)), spec, pcm.frames() as u64)
+    }
+
+    /// Starts a voice playing `stream`, which no other voice may play; it plays as its writer
+    /// writes, silence where the writer is behind, and ends once the writer finishes and it has
+    /// played everything written.
+    ///
+    /// # Errors
+    ///
+    /// As [`Control::play`], and [`AudioError::StreamClaimed`] for a stream a voice already plays.
+    pub fn play_stream(&mut self, stream: &Arc<Stream>, spec: &PlaySpec) -> Result<VoiceKey, AudioError> {
+        spec.check_stream(stream, self.channels)?;
+        if !stream.claim() {
+            return Err(AudioError::StreamClaimed);
+        }
+        let window = vec![0.0; stream.channels() * STREAM_WINDOW].into_boxed_slice();
+        let started = self.start(Source::Stream(Arc::clone(stream), window), spec, 0);
+        if started.is_err() {
+            stream.release();
+        }
+        started
+    }
+
+    fn start(&mut self, source: Source, spec: &PlaySpec, frames: u64) -> Result<VoiceKey, AudioError> {
         self.collect();
         self.graph.check_live(spec.bus)?;
         for send in spec.sends.iter().flatten() {
@@ -325,7 +350,7 @@ impl Control {
         };
         let command = Command::Start {
             voice,
-            pcm: Arc::clone(pcm),
+            source,
             spec: *spec,
         };
         if let Err(error) = self.send(spec.at, command) {
@@ -337,7 +362,7 @@ impl Control {
         entry.start = spec.at;
         entry.bus = spec.bus.slot;
         entry.sends = spec.sends.map(|send| send.map(|send| send.bus.slot));
-        entry.frames = pcm.frames() as u64;
+        entry.frames = frames;
         entry.emitter = spec.spatial;
         Ok(voice)
     }
@@ -935,8 +960,8 @@ impl Control {
     pub fn collect(&mut self) {
         while let Ok(feedback) = self.feedback.try_recv() {
             match feedback {
-                Feedback::VoiceEnded { voice, pcm } => {
-                    drop(pcm);
+                Feedback::VoiceEnded { voice, source } => {
+                    drop(source);
                     let slot = &mut self.slots[voice.slot as usize];
                     if slot.generation != voice.generation || !slot.busy {
                         continue;

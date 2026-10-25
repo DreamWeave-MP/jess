@@ -21,14 +21,14 @@ use crate::audio::bus::{Bus, BusSend};
 use crate::audio::param::{Glide, Param};
 use crate::audio::processor::{Block, Processor, ProcessorKey, Tail};
 use crate::audio::spatial::{Emitter, Listener, Space};
-use crate::audio::voice::{Culled, Voice, VoiceKey};
-use crate::audio::{BusKey, BusParam, BusSpec, LoopRegion, MAX_CHANNELS, Pcm, PlaySpec, QUANTUM, Tap, VoiceParam};
+use crate::audio::voice::{Culled, Source, Voice, VoiceKey};
+use crate::audio::{BusKey, BusParam, BusSpec, LoopRegion, MAX_CHANNELS, PlaySpec, QUANTUM, Tap, VoiceParam};
 
 /// What the control side asks of the engine.
 pub enum Command {
     Start {
         voice: VoiceKey,
-        pcm: Arc<Pcm>,
+        source: Source,
         spec: PlaySpec,
     },
     /// Stops a voice, fading out over `fade` frames first.
@@ -148,7 +148,7 @@ impl Stamped {
 pub enum Feedback {
     /// A voice ended: it ran out, was stopped, or was stopped before it started. Its slot is free
     /// once the control side has read this, and the PCM drops there.
-    VoiceEnded { voice: VoiceKey, pcm: Arc<Pcm> },
+    VoiceEnded { voice: VoiceKey, source: Source },
     /// A bus was removed and has rung out; its slot is free once the control side has read this.
     BusEnded { bus: BusKey },
     /// A processor left its bus, to be dropped.
@@ -528,7 +528,7 @@ impl Engine {
     #[allow(clippy::too_many_lines)] // one arm per command
     fn carry_out(&mut self, command: Command) {
         match command {
-            Command::Start { voice, pcm, spec } => {
+            Command::Start { voice, source, spec } => {
                 let slot = voice.slot as usize;
                 if let Some(old) = self.voices[slot].take() {
                     let old_key = VoiceKey {
@@ -537,10 +537,10 @@ impl Engine {
                     };
                     self.send(Feedback::VoiceEnded {
                         voice: old_key,
-                        pcm: old.pcm,
+                        source: old.source,
                     });
                 }
-                self.voices[slot] = Some(Voice::new(voice.generation, pcm, &spec, self.rate));
+                self.voices[slot] = Some(Voice::new(voice.generation, source, &spec, self.rate));
             }
             Command::Stop { voice, fade } => self.stop(voice, fade),
             Command::SetVoice {
@@ -754,15 +754,18 @@ impl Engine {
                 return;
             }
             if let Some(stopped) = self.voices[slot].take() {
-                self.send(Feedback::VoiceEnded { voice, pcm: stopped.pcm });
+                self.send(Feedback::VoiceEnded {
+                    voice,
+                    source: stopped.source,
+                });
             }
             return;
         }
         // Stopped before its start: the start never happens.
         if let Some(index) = self.pending_start(voice)
-            && let Command::Start { pcm, .. } = self.pending.remove(index).command
+            && let Command::Start { source, .. } = self.pending.remove(index).command
         {
-            self.send(Feedback::VoiceEnded { voice, pcm });
+            self.send(Feedback::VoiceEnded { voice, source });
         }
     }
 
@@ -854,7 +857,10 @@ impl Engine {
                         slot: u32::try_from(slot).unwrap_or(u32::MAX),
                         generation: ended.generation,
                     };
-                    self.send(Feedback::VoiceEnded { voice, pcm: ended.pcm });
+                    self.send(Feedback::VoiceEnded {
+                        voice,
+                        source: ended.source,
+                    });
                 }
                 continue;
             }
@@ -888,7 +894,10 @@ impl Engine {
                     slot: u32::try_from(slot).unwrap_or(u32::MAX),
                     generation: ended.generation,
                 };
-                self.send(Feedback::VoiceEnded { voice, pcm: ended.pcm });
+                self.send(Feedback::VoiceEnded {
+                    voice,
+                    source: ended.source,
+                });
             }
         }
         self.mix_buses(frames);
