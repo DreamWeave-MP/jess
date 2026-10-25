@@ -14,6 +14,7 @@
 
 mod bind;
 mod buffer;
+mod compute;
 mod pass;
 mod pipeline;
 mod sampler;
@@ -24,6 +25,7 @@ use std::future::Future;
 
 pub use bind::{BindGroup, Binding};
 pub use buffer::{Buffer, BufferUsage};
+pub use compute::ComputePipeline;
 pub use pass::{Draw, IndexFormat, Target};
 pub use pipeline::{Blend, ColorState, Cull, DepthState, PipelineState, RenderPipeline, Topology};
 pub use sampler::{AddressMode, Compare, Filter, Sampler, SamplerDesc};
@@ -100,6 +102,8 @@ pub struct GpuInfo {
     pub max_texture_layers: u32,
     /// The largest buffer, in bytes.
     pub max_buffer_size: u64,
+    /// The most workgroups a dispatch may have on one axis.
+    pub max_workgroups: u32,
 }
 
 /// One adapter and the device opened on it.
@@ -159,6 +163,7 @@ impl Gpu {
             max_texture_size: limits.max_texture_dimension_2d,
             max_texture_layers: limits.max_texture_array_layers,
             max_buffer_size: limits.max_buffer_size,
+            max_workgroups: limits.max_compute_workgroups_per_dimension,
         };
         Ok(Gpu { device, queue, info })
     }

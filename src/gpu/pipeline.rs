@@ -121,7 +121,7 @@ pub struct Group {
 }
 
 /// Numbers every pipeline, so a bind group knows which it was laid out for.
-static NEXT_PIPELINE: AtomicU64 = AtomicU64::new(0);
+pub static NEXT_PIPELINE: AtomicU64 = AtomicU64::new(0);
 
 /// A program ready to draw, with its fixed-function state.
 #[derive(Debug)]
