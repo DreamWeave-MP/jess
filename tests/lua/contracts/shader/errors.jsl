@@ -70,6 +70,16 @@ return {
     notATexture = inFragment(
       function(input) return shader.sample(input.material.tint, input.material.light.xy) end
     ),
+    cubeAtUv = build {
+      material = { sky = shader.textureCube },
+      vertex = vertex,
+      fragment = function(input) return shader.sample(input.material.sky, shader.vec2(0.5)) end,
+    },
+    noLayer = build {
+      material = { decals = shader.texture2dArray },
+      vertex = vertex,
+      fragment = function(input) return shader.sample(input.material.decals, shader.vec2(0.5)) end,
+    },
     notASampler = inFragment(
       function(input)
         return shader.sample(input.material.diffuse, input.material.tint, input.material.light.xy)

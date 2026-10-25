@@ -163,6 +163,8 @@ pub enum ValidationErrorKind {
         sampler: ResourceKind,
         /// Its coordinates' type.
         coordinates: Type,
+        /// Its layer's type, if it has one.
+        layer: Option<Type>,
     },
     /// An expression reads an attribute that was never declared.
     UndefinedAttribute {
@@ -355,13 +357,18 @@ impl fmt::Display for ValidationErrorKind {
                 texture,
                 sampler,
                 coordinates,
+                layer,
                 ..
-            } => write!(
-                formatter,
-                "sample({}, {}, {coordinates}) is invalid: expected sample(Texture2D, Sampler, Vec2f)",
-                texture.name(),
-                sampler.name()
-            ),
+            } => {
+                let layer = layer.map(|layer| format!(", {layer}")).unwrap_or_default();
+                write!(
+                    formatter,
+                    "sample({}, {}, {coordinates}{layer}) is invalid: expected {}",
+                    texture.name(),
+                    sampler.name(),
+                    sample_signature(*texture)
+                )
+            }
             ValidationErrorKind::UndefinedAttribute { expression, attribute } => write!(
                 formatter,
                 "expression {} reads attribute {}, which is not declared",
@@ -749,7 +756,9 @@ pub fn data_type_errors(
 /// The declaration kind of a resource of `kind` that `frequency` binds.
 pub fn resource_kind(frequency: Frequency, kind: ResourceKind) -> DeclarationKind {
     match kind {
-        ResourceKind::Texture2D => DeclarationKind::Texture(frequency),
+        ResourceKind::Texture2D | ResourceKind::Texture2DArray | ResourceKind::TextureCube | ResourceKind::Texture3D => {
+            DeclarationKind::Texture(frequency)
+        }
         ResourceKind::Sampler => DeclarationKind::Sampler(frequency),
     }
 }
@@ -1037,7 +1046,9 @@ fn infer(
                 function,
             });
         }
-        Expression::Sample { texture, sampler, .. } => sample_type(program, id, texture, sampler, operands[0])?,
+        Expression::Sample { texture, sampler, .. } => {
+            sample_type(program, id, texture, sampler, operands[0], operands.get(1).copied())?
+        }
         _ => operation_type(id, expression, operands)?,
     };
     constant_out_of_range(&program.expressions, id, expression)?;
@@ -1098,6 +1109,15 @@ pub fn place_type(
     }
 }
 
+/// How a texture of `kind` is sampled, as errors print it.
+fn sample_signature(kind: ResourceKind) -> String {
+    let Some(coordinates) = kind.coordinates() else {
+        return "sample(a texture, a Sampler, its coordinates)".to_owned();
+    };
+    let layer = if kind.is_array() { ", an Int or UInt layer" } else { "" };
+    format!("sample({}, Sampler, {coordinates}{layer})", kind.name())
+}
+
 /// The type of sampling `texture` with `sampler` at `coordinates`, or what is wrong with it.
 pub fn sample_type(
     program: &Program,
@@ -1105,6 +1125,7 @@ pub fn sample_type(
     texture: ResourceId,
     sampler: ResourceId,
     coordinates: Type,
+    layer: Option<Type>,
 ) -> Result<Type, ValidationErrorKind> {
     let kind = |resource: ResourceId| {
         let found = program.resources.get(resource.index()).map(|declared| declared.kind);
@@ -1114,12 +1135,15 @@ pub fn sample_type(
         })
     };
     let (texture, sampler) = (kind(texture)?, kind(sampler)?);
-    if (texture, sampler, coordinates) != (ResourceKind::Texture2D, ResourceKind::Sampler, Type::Vec2f) {
+    // An array texture takes one integer layer, and no other texture takes any.
+    let layered = texture.is_array() == layer.is_some() && layer.is_none_or(|layer| layer.is_integer() && layer.is_scalar());
+    if sampler != ResourceKind::Sampler || texture.coordinates() != Some(coordinates) || !layered {
         return Err(ValidationErrorKind::InvalidSample {
             expression: id,
             texture,
             sampler,
             coordinates,
+            layer,
         });
     }
     Ok(Type::Vec4f)

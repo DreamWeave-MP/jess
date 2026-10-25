@@ -149,6 +149,60 @@
       ]
     },
     "sameModule": true,
+    "sampled": {
+      "cube": "ShaderExpr(Vec4f)",
+      "explicit": "ShaderExpr(Vec4f)",
+      "handles": [
+        "ShaderTexture(Texture2DArray)",
+        "ShaderTexture(Texture3D)",
+        "ShaderTexture(TextureCube)"
+      ],
+      "layered": "ShaderExpr(Vec4f)",
+      "numberLayer": "ShaderExpr(Vec4f)",
+      "volume": "ShaderExpr(Vec4f)"
+    },
+    "textures": {
+      "attributes": [
+        {
+          "name": "position",
+          "type": "Vec4f"
+        }
+      ],
+      "draw": [
+        {
+          "name": "layer",
+          "type": "UInt"
+        }
+      ],
+      "instance": {},
+      "material": [
+        {
+          "name": "decals",
+          "type": "Texture2DArray"
+        },
+        {
+          "name": "fog",
+          "type": "Texture3D"
+        },
+        {
+          "name": "sky",
+          "type": "TextureCube"
+        }
+      ],
+      "pass": [
+        {
+          "name": "linear",
+          "type": "Sampler"
+        }
+      ],
+      "tostring": "ShaderProgram(1 attribute, 1 uniform, 3 textures, 1 varying)",
+      "varyings": [
+        {
+          "name": "direction",
+          "type": "Vec3f"
+        }
+      ]
+    },
     "types": {
       "array": "Light[4]",
       "float": "Float",
@@ -158,6 +212,9 @@
       "sampler": "Sampler",
       "struct": "Camera",
       "texture2d": "Texture2D",
+      "texture2dArray": "Texture2DArray",
+      "texture3d": "Texture3D",
+      "textureCube": "TextureCube",
       "uint": "UInt",
       "valueArray": "Vec4f[16]",
       "vec2": "Vec2f",

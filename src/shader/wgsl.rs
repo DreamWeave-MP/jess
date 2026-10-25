@@ -172,10 +172,14 @@ impl Lowering<'_> {
             }
             for binding in &group.resources {
                 let resource = &program.resources[binding.resource.index()];
-                let (prefix, ty) = match resource.kind {
-                    ResourceKind::Texture2D => ('t', "texture_2d<f32>"),
-                    ResourceKind::Sampler => ('s', "sampler"),
+                let ty = match resource.kind {
+                    ResourceKind::Texture2D => "texture_2d<f32>",
+                    ResourceKind::Texture2DArray => "texture_2d_array<f32>",
+                    ResourceKind::TextureCube => "texture_cube<f32>",
+                    ResourceKind::Texture3D => "texture_3d<f32>",
+                    ResourceKind::Sampler => "sampler",
                 };
+                let prefix = resource_prefix(resource.kind);
                 emit!(
                     self,
                     "@group({}) @binding({}) var {prefix}_{frequency}_{}: {ty};\n",
@@ -357,6 +361,7 @@ impl Lowering<'_> {
                 texture,
                 sampler,
                 coordinates,
+                layer,
             } => {
                 emit!(self, "textureSample(");
                 self.resource(texture);
@@ -364,6 +369,10 @@ impl Lowering<'_> {
                 self.resource(sampler);
                 emit!(self, ", ");
                 self.operand(coordinates);
+                if let Some(layer) = layer {
+                    emit!(self, ", ");
+                    self.operand(layer);
+                }
                 emit!(self, ")");
             }
             Expression::Load(place) => self.place(&place),
@@ -482,10 +491,7 @@ impl Lowering<'_> {
 
     fn resource(&mut self, resource: ResourceId) {
         let declaration = &self.program.resources[resource.index()];
-        let prefix = match declaration.kind {
-            ResourceKind::Texture2D => 't',
-            ResourceKind::Sampler => 's',
-        };
+        let prefix = resource_prefix(declaration.kind);
         emit!(self, "{prefix}_{}_{}", declaration.frequency, declaration.name);
     }
 
@@ -578,4 +584,9 @@ fn builtin_name(builtin: Builtin) -> &'static str {
         Builtin::Position => "input.position",
         Builtin::FrontFacing => "front_facing",
     }
+}
+
+/// The first letter of a resource's name: `t` for a texture, `s` for a sampler.
+fn resource_prefix(kind: ResourceKind) -> char {
+    if kind.is_texture() { 't' } else { 's' }
 }

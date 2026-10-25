@@ -180,6 +180,36 @@ local constant = shader.program {
   fragment = function() return shader.vec4(1.0, 0.5, 0.0, 1.0) end,
 }
 
+local textures = shader.program {
+  attributes = { position = shader.vec4 },
+  pass = { linear = shader.sampler },
+  material = {
+    decals = shader.texture2dArray,
+    fog = shader.texture3d,
+    sky = shader.textureCube,
+  },
+  draw = { layer = shader.uint },
+  vertex = function(input)
+    return { position = input.attributes.position, direction = input.attributes.position.xyz }
+  end,
+
+  fragment = function(input)
+    local material = input.material
+    observed.textures = {
+      handles = { tostring(material.decals), tostring(material.fog), tostring(material.sky) },
+      layered = tostring(shader.sample(material.decals, input.direction.xy, input.draw.layer)),
+      numberLayer = tostring(shader.sample(material.decals, input.direction.xy, 2)),
+      explicit = tostring(
+        shader.sample(material.decals, input.pass.linear, input.direction.xy, input.draw.layer)
+      ),
+      cube = tostring(shader.sample(material.sky, input.direction)),
+      volume = tostring(shader.sample(material.fog, input.pass.linear, input.direction)),
+    }
+
+    return shader.sample(material.sky, input.direction)
+  end,
+}
+
 local function describe(program: ShaderProgram): { [string]: any }
   return {
     tostring = tostring(program),
@@ -201,6 +231,9 @@ return {
     mat3 = tostring(shader.mat3),
     mat4 = tostring(shader.mat4),
     texture2d = tostring(shader.texture2d),
+    texture2dArray = tostring(shader.texture2dArray),
+    textureCube = tostring(shader.textureCube),
+    texture3d = tostring(shader.texture3d),
     sampler = tostring(shader.sampler),
     int = tostring(shader.int),
     uint = tostring(shader.uint),
@@ -216,6 +249,8 @@ return {
   },
   lit = describe(lit),
   constant = describe(constant),
+  textures = describe(textures),
+  sampled = observed.textures,
   vertex = observed.vertex,
   fragment = observed.fragment,
   sameModule = require '@jess/shader' == jess.shader,

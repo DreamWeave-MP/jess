@@ -126,7 +126,11 @@ enum Member {
     /// A uniform member, at its position among the frequency's members.
     Uniform { position: u32, descriptor: Descriptor },
     /// A texture and the sampler declared with it.
-    Texture { texture: ResourceId, sampler: ResourceId },
+    Texture {
+        kind: ResourceKind,
+        texture: ResourceId,
+        sampler: ResourceId,
+    },
     /// A sampler of its own.
     Sampler(ResourceId),
 }
@@ -347,6 +351,7 @@ unsafe impl Userdata for LuaShaderPlace {
 #[derive(Clone, Debug)]
 pub struct LuaShaderTexture {
     build: Rc<RefCell<Build>>,
+    kind: ResourceKind,
     texture: ResourceId,
     sampler: ResourceId,
 }
@@ -660,12 +665,14 @@ fn shader_kind(view: ValueView<'_>) -> String {
 }
 
 /// `shader.sample(texture, uv)` with the sampler declared with the texture, or
-/// `shader.sample(texture, sampler, uv)` with a sampler declared on its own.
+/// `shader.sample(texture, sampler, uv)` with a sampler declared on its own; an array texture
+/// takes its layer last, `shader.sample(layers, uv, layer)`.
 fn sample(
     call: &Call<'_>,
     texture: ValueView<'_>,
     second: ValueView<'_>,
     third: Option<ValueView<'_>>,
+    fourth: Option<ValueView<'_>>,
 ) -> l3i::Result<Owned<LuaShaderExpr>> {
     let Some(texture) = l3i::userdata::receiver::<LuaShaderTexture>(texture) else {
         return Err(error(format!(
@@ -673,25 +680,32 @@ fn sample(
             shader_kind(texture)
         )));
     };
-    let (sampler, coordinates) = match third {
-        None => (texture.sampler, second),
-        Some(coordinates) => {
-            let Some(sampler) = l3i::userdata::receiver::<LuaShaderSampler>(second) else {
-                return Err(error(format!(
-                    "shader.sample: expected a sampler, not {}",
-                    shader_kind(second)
-                )));
-            };
+    // A sampler second means the coordinates are third; anything else is the coordinates.
+    let sampler = l3i::userdata::receiver::<LuaShaderSampler>(second);
+    let (sampler, coordinates, layer) = match (sampler, third) {
+        (Some(sampler), Some(coordinates)) => {
             if !Rc::ptr_eq(&sampler.build, &texture.build) {
                 return Err(error("shader.sample: the sampler belongs to another shader program"));
             }
-            (sampler.sampler, coordinates)
+            (sampler.sampler, coordinates, fourth)
         }
+        (Some(_), None) => return Err(error("shader.sample: expected coordinates after the sampler")),
+        (None, Some(_)) if fourth.is_some() || !texture.kind.is_array() => {
+            return Err(error(format!(
+                "shader.sample: expected a sampler, not {}",
+                shader_kind(second)
+            )));
+        }
+        (None, layer) => (texture.sampler, second, layer),
     };
     let build = texture.build.clone();
     let value = at_site(call, &build, |site, _| {
         let coordinates = operand(site, "sample", coordinates)?;
-        site.sample(texture.texture, sampler, coordinates).map_err(invalid)
+        // A number layer is a UInt: `shader.sample(layers, uv, 2)`.
+        let layer = layer
+            .map(|layer| operand_of(site, "sample", layer, Scalar::UInt))
+            .transpose()?;
+        site.sample(texture.texture, sampler, coordinates, layer).map_err(invalid)
     })?;
     Ok(expression(&build, value))
 }
@@ -715,8 +729,13 @@ const TYPE_DESCRIPTORS: [(&str, Type); 14] = [
 ];
 
 /// The `jess.shader` members that declare textures and samplers.
-const RESOURCE_DESCRIPTORS: [(&str, ResourceKind); 2] =
-    [("texture2d", ResourceKind::Texture2D), ("sampler", ResourceKind::Sampler)];
+const RESOURCE_DESCRIPTORS: [(&str, ResourceKind); 5] = [
+    ("texture2d", ResourceKind::Texture2D),
+    ("texture2dArray", ResourceKind::Texture2DArray),
+    ("textureCube", ResourceKind::TextureCube),
+    ("texture3d", ResourceKind::Texture3D),
+    ("sampler", ResourceKind::Sampler),
+];
 
 fn descriptor_name(ty: Type) -> &'static str {
     TYPE_DESCRIPTORS
@@ -958,9 +977,10 @@ fn place_index(this: &LuaShaderPlace, call: &Call<'_>, key: ValueView<'_>) -> l3
             })?;
             match member {
                 Member::Uniform { position, descriptor } => (Step::Field(position), None, descriptor),
-                Member::Texture { texture, sampler } => {
+                Member::Texture { kind, texture, sampler } => {
                     call.push(&Owned(LuaShaderTexture {
                         build: this.build.clone(),
+                        kind,
                         texture,
                         sampler,
                     }))?;
@@ -1300,12 +1320,12 @@ fn declare_groups(site: &mut Site<'_>, info: &mut Info, groups: [Vec<(String, De
         let mut position = 0;
         for (name, descriptor) in declared {
             let member = match descriptor {
-                Descriptor::Resource(ResourceKind::Texture2D) => {
-                    let texture = site.resource(frequency, &name, ResourceKind::Texture2D).map_err(invalid)?;
+                Descriptor::Resource(kind) if kind.is_texture() => {
+                    let texture = site.resource(frequency, &name, kind).map_err(invalid)?;
                     let sampler = site.resource(frequency, &name, ResourceKind::Sampler).map_err(invalid)?;
-                    Member::Texture { texture, sampler }
+                    Member::Texture { kind, texture, sampler }
                 }
-                Descriptor::Resource(ResourceKind::Sampler) => {
+                Descriptor::Resource(_) => {
                     Member::Sampler(site.resource(frequency, &name, ResourceKind::Sampler).map_err(invalid)?)
                 }
                 descriptor => {
@@ -1394,7 +1414,7 @@ fn construct_program(call: &Call<'_>, build: &Rc<RefCell<Build>>, spec: Spec) ->
             let reflect = |(name, member): (String, Member)| {
                 let ty = match member {
                     Member::Uniform { descriptor, .. } => descriptor.name(),
-                    Member::Texture { .. } => ResourceKind::Texture2D.name().to_owned(),
+                    Member::Texture { kind, .. } => kind.name().to_owned(),
                     Member::Sampler(_) => ResourceKind::Sampler.name().to_owned(),
                 };
                 (name, ty)
@@ -1511,9 +1531,11 @@ pub(crate) fn module(runtime: &Runtime, _jess: &Rc<Jess>) -> l3i::Result<Table> 
     })?;
     module.function(
         "sample",
-        move |call: &Call<'_>, texture: ValueView<'_>, second: ValueView<'_>, third: Option<ValueView<'_>>| {
-            sample(call, texture, second, third)
-        },
+        move |call: &Call<'_>,
+              texture: ValueView<'_>,
+              second: ValueView<'_>,
+              third: Option<ValueView<'_>>,
+              fourth: Option<ValueView<'_>>| sample(call, texture, second, third, fourth),
     )?;
     let functions = |arity: usize| {
         ShaderFunction::ALL
@@ -1649,8 +1671,8 @@ fn describe_bindings(d: &mut ExtensionDescriptor) {
     let mut texture = d.userdata::<LuaShaderTexture>(LuaShaderTexture::NAME);
     texture.tag(TagPolicy::Never).doc("A declared texture, for `shader.sample`.");
     arithmetic_metamethods(&mut texture);
-    crate::lua::plan::metamethod(&mut texture, "__tostring", |_: &LuaShaderTexture| {
-        format!("ShaderTexture({})", ResourceKind::Texture2D.name())
+    crate::lua::plan::metamethod(&mut texture, "__tostring", |this: &LuaShaderTexture| {
+        format!("ShaderTexture({})", this.kind.name())
     });
 
     let mut sampler = d.userdata::<LuaShaderSampler>(LuaShaderSampler::NAME);
@@ -1700,7 +1722,11 @@ fn describe_program(d: &mut ExtensionDescriptor) {
             .groups
             .iter()
             .flatten()
-            .filter(|(_, ty)| ty == ResourceKind::Texture2D.name())
+            .filter(|(_, ty)| {
+                RESOURCE_DESCRIPTORS
+                    .iter()
+                    .any(|(_, kind)| kind.is_texture() && kind.name() == ty)
+            })
             .count();
         format!(
             "ShaderProgram({}, {}, {}, {})",

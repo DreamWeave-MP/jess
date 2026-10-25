@@ -229,11 +229,18 @@ impl Uniform {
     }
 }
 
-/// What a resource is.
+/// What a resource is. Every texture holds filterable floats and samples to a `Vec4f`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ResourceKind {
-    /// A 2D texture of filterable floats, sampled to a `Vec4f`.
+    /// A 2D texture, sampled at `Vec2f` coordinates.
     Texture2D,
+    /// Layers of 2D textures of one size, sampled at `Vec2f` coordinates in an `Int` or `UInt`
+    /// layer.
+    Texture2DArray,
+    /// Six square faces, sampled in a `Vec3f` direction from the centre.
+    TextureCube,
+    /// A 3D texture, sampled at `Vec3f` coordinates.
+    Texture3D,
     /// A filtering sampler.
     Sampler,
 }
@@ -244,8 +251,33 @@ impl ResourceKind {
     pub fn name(self) -> &'static str {
         match self {
             ResourceKind::Texture2D => "Texture2D",
+            ResourceKind::Texture2DArray => "Texture2DArray",
+            ResourceKind::TextureCube => "TextureCube",
+            ResourceKind::Texture3D => "Texture3D",
             ResourceKind::Sampler => "Sampler",
         }
+    }
+
+    /// Whether it is a texture rather than a sampler.
+    #[must_use]
+    pub fn is_texture(self) -> bool {
+        self != ResourceKind::Sampler
+    }
+
+    /// The coordinates a texture is sampled at; `None` for a sampler.
+    #[must_use]
+    pub fn coordinates(self) -> Option<Type> {
+        match self {
+            ResourceKind::Texture2D | ResourceKind::Texture2DArray => Some(Type::Vec2f),
+            ResourceKind::TextureCube | ResourceKind::Texture3D => Some(Type::Vec3f),
+            ResourceKind::Sampler => None,
+        }
+    }
+
+    /// Whether it is an array texture, read in a layer.
+    #[must_use]
+    pub fn is_array(self) -> bool {
+        self == ResourceKind::Texture2DArray
     }
 }
 

@@ -517,15 +517,16 @@ export type AudioContext = {
 }
 
 --- A shader type, from `jess.shader`: a value type (`float`, `int`, `uint`, `vec2`..`vec4`,
---- `vec2i`..`vec4i`, `vec2u`..`vec4u`, `mat3`, `mat4`), `texture2d` and `sampler`, or a struct
---- or array type from `shader.struct` and `shader.array`. It's what a program's attributes and
---- bindings declare (`tint = shader.vec4`). Called, the vector types build a vector from values
---- and numbers whose sizes add up to theirs, or from one number repeated
---- (`shader.vec4(position, 1)`); a number in an integer vector is that vector's integer, and must
---- be whole. `shader.float(0.5)`, `shader.int(-3)`, and `shader.uint(7)` are constants. One value of
---- another scalar converts (`shader.float(index)`, `shader.vec3(cell)`), keeping its size;
---- `shader.mat3` and `shader.mat4` take their columns. The other types can't be constructed.
---- `tostring` gives the type's name (`Vec4f`, `Light`, `Light[8]`).
+--- `vec2i`..`vec4i`, `vec2u`..`vec4u`, `mat3`, `mat4`), a texture (`texture2d`, `texture2dArray`,
+--- `textureCube`, `texture3d`) or `sampler`, or a struct or array type from `shader.struct` and
+--- `shader.array`. It's what a program's attributes and bindings declare (`tint = shader.vec4`).
+--- Called, the vector types build a vector from values and numbers whose sizes add up to theirs,
+--- or from one number repeated (`shader.vec4(position, 1)`); a number in an integer vector is
+--- that vector's integer, and must be whole. `shader.float(0.5)`, `shader.int(-3)`, and
+--- `shader.uint(7)` are constants. One value of another scalar converts (`shader.float(index)`,
+--- `shader.vec3(cell)`), keeping its size; `shader.mat3` and `shader.mat4` take their columns.
+--- The other types can't be constructed. `tostring` gives the type's name (`Vec4f`, `Light`,
+--- `Light[8]`).
 declare extern type ShaderType with
   __call: (self: ShaderType, ...ShaderExpr | number) -> ShaderExpr
   __tostring: (self: ShaderType) -> string
@@ -572,7 +573,8 @@ declare extern type ShaderPlace with
   __tostring: (self: ShaderPlace) -> string
 end
 
---- A declared texture, with the sampler declared with it, for `shader.sample`.
+--- A declared texture, with the sampler declared with it, for `shader.sample`. `tostring` gives
+--- its kind: `ShaderTexture(TextureCube)`.
 declare extern type ShaderTexture with
   __tostring: (self: ShaderTexture) -> string
 end
@@ -667,6 +669,9 @@ export type ShaderModule = {
   mat3: ShaderType,
   mat4: ShaderType,
   texture2d: ShaderType,
+  texture2dArray: ShaderType,
+  textureCube: ShaderType,
+  texture3d: ShaderType,
   sampler: ShaderType,
   --- A struct type: named fields of value, struct, and array types, laid out by jess.
   struct: (name: string, fields: { [string]: ShaderType }) -> ShaderType,
@@ -761,10 +766,11 @@ export type ShaderModule = {
   --- `accept` where `condition` holds, else `reject`, two values of one scalar or vector type.
   --- Both are computed.
   select: (condition: ShaderExpr | boolean, accept: ShaderExpr | number, reject: ShaderExpr | number) -> ShaderExpr,
-  --- A texture read, a `Vec4f`: a declared texture with the sampler declared with it and `Vec2f`
-  --- coordinates, or a texture, a sampler declared on its own, and coordinates. Fragment stage
-  --- only.
-  sample: ((texture: ShaderExpr, coordinates: ShaderExpr) -> ShaderExpr) & ((texture: ShaderExpr, sampler: ShaderExpr, coordinates: ShaderExpr) -> ShaderExpr),
+  --- A texture read, a `Vec4f`: a declared texture with the sampler declared with it and its
+  --- coordinates (`Vec2f` for `texture2d` and `texture2dArray`, `Vec3f` for `textureCube` and
+  --- `texture3d`), or a texture, a sampler declared on its own, and coordinates. An array texture
+  --- takes its layer last, an `Int` or `UInt`. Fragment stage only.
+  sample: ((texture: ShaderExpr, coordinates: ShaderExpr, layer: (ShaderExpr | number)?) -> ShaderExpr) & ((texture: ShaderExpr, sampler: ShaderExpr, coordinates: ShaderExpr, layer: (ShaderExpr | number)?) -> ShaderExpr),
 }
 
 declare jess: {

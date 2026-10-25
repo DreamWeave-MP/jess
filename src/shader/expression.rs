@@ -719,14 +719,16 @@ pub enum Expression {
     /// A declared varying, as the vertex stage wrote it and the rasterizer interpolated it.
     /// Fragment stage only.
     Varying(VaryingId),
-    /// A texture read at `Vec2f` coordinates, to `Vec4f`. Fragment stage only.
+    /// A texture read through a sampler, to `Vec4f`. Fragment stage only.
     Sample {
-        /// A `Texture2D`.
+        /// A texture.
         texture: ResourceId,
         /// A `Sampler`.
         sampler: ResourceId,
-        /// The `Vec2f` coordinates.
+        /// The coordinates, of the type [`ResourceKind::coordinates`](crate::shader::ResourceKind::coordinates) gives.
         coordinates: ExpressionId,
+        /// The layer of an array texture, an `Int` or `UInt`; `None` for any other.
+        layer: Option<ExpressionId>,
     },
     /// An operator on one value.
     Unary(UnaryOperator, ExpressionId),
@@ -791,7 +793,16 @@ impl Expression {
         let ids: &[ExpressionId] = match self {
             Expression::Literal(_) | Expression::Attribute(_) | Expression::Builtin(_) | Expression::Varying(_) => &[],
             Expression::Load(place) => return place.indices(),
-            Expression::Sample { coordinates, .. } => &[*coordinates],
+            Expression::Sample {
+                coordinates,
+                layer: None,
+                ..
+            } => &[*coordinates],
+            Expression::Sample {
+                coordinates,
+                layer: Some(layer),
+                ..
+            } => &[*coordinates, *layer],
             Expression::Unary(_, value) | Expression::Convert { value, .. } => &[*value],
             Expression::Binary(_, left, right) => &[*left, *right],
             Expression::Select {
@@ -811,7 +822,12 @@ impl Expression {
         match self {
             Expression::Literal(_) | Expression::Attribute(_) | Expression::Builtin(_) | Expression::Varying(_) => {}
             Expression::Load(place) => place.rewrite_indices(rewrite),
-            Expression::Sample { coordinates, .. } => rewrite(coordinates),
+            Expression::Sample { coordinates, layer, .. } => {
+                rewrite(coordinates);
+                if let Some(layer) = layer {
+                    rewrite(layer);
+                }
+            }
             Expression::Unary(_, value) | Expression::Convert { value, .. } => rewrite(value),
             Expression::Binary(_, left, right) => {
                 rewrite(left);

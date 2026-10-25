@@ -494,27 +494,35 @@ impl Site<'_> {
         self.call(Function::Mix, &[start, end, amount])
     }
 
-    /// A texture read, to `Vec4f`. Sampling in the vertex stage is rejected by
-    /// [`ProgramBuilder::finish`], which knows the stages.
+    /// A texture read, to `Vec4f`, at `coordinates` and, in an array texture, in `layer`.
+    /// Sampling in the vertex stage is rejected by [`ProgramBuilder::finish`], which knows the
+    /// stages.
     ///
     /// # Errors
     ///
-    /// Coordinates from another program, or a texture, sampler, and coordinates that are not a
-    /// `Texture2D`, a `Sampler`, and a `Vec2f`.
+    /// Values from another program, or a texture, sampler, coordinates, and layer that don't
+    /// fit: a `Sampler`, the coordinates [`ResourceKind::coordinates`] gives, and a layer for
+    /// an array texture only.
     pub fn sample(
         &mut self,
         texture: ResourceId,
         sampler: ResourceId,
         coordinates: Value,
+        layer: Option<Value>,
     ) -> Result<Value, ValidationError> {
         self.own(coordinates)?;
+        if let Some(layer) = layer {
+            self.own(layer)?;
+        }
         let id = self.next();
         let program = &self.builder.program;
-        let ty = validate::sample_type(program, id, texture, sampler, coordinates.ty).map_err(|kind| self.error(kind))?;
+        let ty = validate::sample_type(program, id, texture, sampler, coordinates.ty, layer.map(|layer| layer.ty))
+            .map_err(|kind| self.error(kind))?;
         let expression = Expression::Sample {
             texture,
             sampler,
             coordinates: coordinates.expression,
+            layer: layer.map(|layer| layer.expression),
         };
         Ok(self.push(expression, ty))
     }

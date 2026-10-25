@@ -74,6 +74,7 @@ fn textured_lit() -> Program {
         texture,
         sampler,
         coordinates: uv,
+        layer: None,
     });
     let normal = program.push(Expression::Varying(world_normal));
     let unit_normal = program.push(Expression::call(Function::Normalize, &[normal]).unwrap());

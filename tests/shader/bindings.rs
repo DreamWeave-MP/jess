@@ -56,8 +56,8 @@ fn structs_and_arrays_lower_with_the_layout_jess_reports() {
     let range = member(Frequency::Pass, 1).then(Step::Field(0)).unwrap();
     let range = site.load(range, &[]).unwrap();
     let uv = site.swizzle(range, jess::shader::Swizzle::parse("xy").unwrap()).unwrap();
-    let lit = site.sample(diffuse, diffuse_sampler, uv).unwrap();
-    let shade = site.sample(shadow, shadow_sampler, uv).unwrap();
+    let lit = site.sample(diffuse, diffuse_sampler, uv, None).unwrap();
+    let shade = site.sample(shadow, shadow_sampler, uv, None).unwrap();
     let exposure = site.load(member(Frequency::Pass, 2), &[]).unwrap();
     let one = site.float(1.0).unwrap();
     let tinted = site.construct(Type::Vec4f, &[color, one]).unwrap();

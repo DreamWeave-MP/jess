@@ -77,7 +77,7 @@ fn textured_lit() -> Result<ProgramBuilder, ValidationError> {
     let normal = site.pass("normal", transformed)?;
     let uv = site.pass("uv", uv)?;
 
-    let diffuse = site.sample(texture, sampler, uv)?;
+    let diffuse = site.sample(texture, sampler, uv, None)?;
     let unit_normal = site.normalize(normal)?;
     let facing = site.dot(unit_normal, light_direction)?;
     let zero = site.float(0.0)?;
@@ -256,7 +256,7 @@ fn every_operation_is_typed_at_its_site() {
         site.clamp(triple, pair, scalar).unwrap_err().to_string(),
         site.length(integer).unwrap_err().to_string(),
         site.normalize(scalar).unwrap_err().to_string(),
-        site.sample(texture, texture, pair).unwrap_err().to_string(),
+        site.sample(texture, texture, pair, None).unwrap_err().to_string(),
         site.construct(Type::Vec4f, &[triple, pair]).unwrap_err().to_string(),
         site.construct(Type::Vec4f, &[scalar, scalar, scalar, scalar, scalar])
             .unwrap_err()
@@ -442,7 +442,7 @@ fn finish_reports_whole_program_mistakes_with_origins() {
         .unwrap();
     let sampler = site.resource(Frequency::Material, "diffuse", ResourceKind::Sampler).unwrap();
     let uv = site.literal(Literal::Vec2f([0.5, 0.5])).unwrap();
-    let texel = site.sample(texture, sampler, uv).unwrap();
+    let texel = site.sample(texture, sampler, uv, None).unwrap();
     site.pass("texel", texel).unwrap();
 
     let errors = builder.finish().unwrap_err();

@@ -77,6 +77,7 @@ fn sampling_with_vec3_coordinates_is_invalid() {
         texture,
         sampler,
         coordinates,
+        layer: None,
     });
     program.push_fragment_output(color);
 
@@ -95,12 +96,13 @@ fn sampling_takes_a_texture_then_a_sampler() {
         texture: sampler,
         sampler: texture,
         coordinates,
+        layer: None,
     });
     program.push_fragment_output(color);
 
     assert_eq!(
         messages(&program),
-        ["sample(Sampler, Texture2D, Vec2f) is invalid: expected sample(Texture2D, Sampler, Vec2f)"]
+        ["sample(Sampler, Texture2D, Vec2f) is invalid: expected sample(a texture, a Sampler, its coordinates)"]
     );
 }
 
@@ -196,6 +198,7 @@ fn undefined_references_are_reported() {
         texture: foreign_texture,
         sampler: foreign_texture,
         coordinates,
+        layer: None,
     });
     program.push_fragment_output(texel);
     let input = program.push(Expression::Attribute(foreign_input));
@@ -295,6 +298,7 @@ fn inputs_belong_to_their_stage() {
         texture,
         sampler,
         coordinates: read_uv,
+        layer: None,
     });
     let displaced = program.push(Expression::Binary(BinaryOperator::Add, position, texel));
     program.set_position(displaced);
@@ -322,6 +326,7 @@ fn inputs_belong_to_their_stage() {
         texture,
         sampler,
         coordinates,
+        layer: None,
     });
     let tint = program.varying("tint", Type::Vec4f);
     program.write_varying(tint, texel);

@@ -12,6 +12,7 @@ mod integers;
 mod layout;
 mod logic;
 mod operators;
+mod textures;
 mod triangle;
 mod validation;
 mod wgsl;
