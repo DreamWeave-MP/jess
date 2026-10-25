@@ -22,8 +22,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::shader::{
-    AttributeId, DataType, Element, Field, Frequency, Place, PlaceRoot, Program, ProgramBuilder, Rate, ResourceId,
-    ResourceKind, Scalar, Site, SourceOrigin, Step, StructId, Swizzle, Type, ValidationError, Value,
+    AttributeId, BinaryOperator, DataType, Element, Field, Frequency, Function as ShaderFunction, Place, PlaceRoot, Program,
+    ProgramBuilder, Rate, ResourceId, ResourceKind, Scalar, Site, SourceOrigin, Step, StructId, Swizzle, Type,
+    UnaryOperator, ValidationError, Value,
 };
 use l3i::Runtime;
 use l3i::bind::{ArgView, Call, StackResults};
@@ -400,7 +401,8 @@ fn invalid(problem: ValidationError) -> l3i::Error {
 }
 
 /// An operand of `operation`: a shader value's expression (a value from another program is
-/// refused by the site), or a number, which is a `Float` literal at the operation's origin.
+/// refused by the site), a number, which is a `Float` literal at the operation's origin, or a
+/// boolean, which is a `Bool` literal.
 fn operand(site: &mut Site<'_>, operation: &str, view: ValueView<'_>) -> l3i::Result<Value> {
     operand_of(site, operation, view, Scalar::Float)
 }
@@ -410,6 +412,9 @@ fn operand(site: &mut Site<'_>, operation: &str, view: ValueView<'_>) -> l3i::Re
 fn operand_of(site: &mut Site<'_>, operation: &str, view: ValueView<'_>, scalar: Scalar) -> l3i::Result<Value> {
     if let Some(expression) = l3i::userdata::receiver::<LuaShaderExpr>(view) {
         return Ok(expression.value);
+    }
+    if view.is_boolean() {
+        return Ok(site.bool(view.read::<bool>()?));
     }
     if !(view.is_number() || view.is_integer()) {
         return Err(error(format!(
@@ -444,95 +449,105 @@ fn expression(build: &Rc<RefCell<Build>>, value: Value) -> Owned<LuaShaderExpr> 
     })
 }
 
-/// The two-operand operations: the arithmetic metamethods and the module's functions.
+/// The two-operand operations: an operator, or a function of two arguments.
 #[derive(Clone, Copy, Debug)]
 enum Binary {
-    Add,
-    Subtract,
-    Multiply,
-    Divide,
-    Min,
-    Max,
-    Dot,
-    Cross,
+    Operator(BinaryOperator),
+    ShaderFunction(ShaderFunction),
 }
 
 impl Binary {
-    const fn name(self) -> &'static str {
+    fn name(self) -> &'static str {
         match self {
-            Self::Add => "+",
-            Self::Subtract => "-",
-            Self::Multiply => "*",
-            Self::Divide => "/",
-            Self::Min => "min",
-            Self::Max => "max",
-            Self::Dot => "dot",
-            Self::Cross => "cross",
+            Self::Operator(operator) => operator.name(),
+            Self::ShaderFunction(function) => function.name(),
         }
     }
 
     fn apply(self, site: &mut Site<'_>, left: Value, right: Value) -> Result<Value, ValidationError> {
         match self {
-            Self::Add => site.add(left, right),
-            Self::Subtract => site.subtract(left, right),
-            Self::Multiply => site.multiply(left, right),
-            Self::Divide => site.divide(left, right),
-            Self::Min => site.min(left, right),
-            Self::Max => site.max(left, right),
-            Self::Dot => site.dot(left, right),
-            Self::Cross => site.cross(left, right),
+            Self::Operator(operator) => site.binary(operator, left, right),
+            Self::ShaderFunction(function) => site.call(function, &[left, right]),
         }
     }
 }
 
-/// The one-operand operations.
+/// The one-operand operations: an operator, or a function of one argument.
 #[derive(Clone, Copy, Debug)]
 enum Unary {
-    Normalize,
-    Length,
-    Floor,
+    Operator(UnaryOperator),
+    ShaderFunction(ShaderFunction),
 }
 
 impl Unary {
-    const fn name(self) -> &'static str {
+    fn name(self) -> &'static str {
         match self {
-            Self::Normalize => "normalize",
-            Self::Length => "length",
-            Self::Floor => "floor",
+            Self::Operator(operator) => operator.name(),
+            Self::ShaderFunction(function) => function.name(),
         }
     }
 
     fn apply(self, site: &mut Site<'_>, value: Value) -> Result<Value, ValidationError> {
         match self {
-            Self::Normalize => site.normalize(value),
-            Self::Length => site.length(value),
-            Self::Floor => site.floor(value),
+            Self::Operator(operator) => site.unary(operator, value),
+            Self::ShaderFunction(function) => site.call(function, &[value]),
         }
     }
 }
 
-/// The three-operand operations.
+/// The three-operand operations: `select`, or a function of three arguments.
 #[derive(Clone, Copy, Debug)]
 enum Ternary {
-    Clamp,
-    Mix,
+    Select,
+    ShaderFunction(ShaderFunction),
 }
 
 impl Ternary {
-    const fn name(self) -> &'static str {
+    fn name(self) -> &'static str {
         match self {
-            Self::Clamp => "clamp",
-            Self::Mix => "mix",
+            Self::Select => "select",
+            Self::ShaderFunction(function) => function.name(),
         }
     }
 
     fn apply(self, site: &mut Site<'_>, first: Value, second: Value, third: Value) -> Result<Value, ValidationError> {
         match self {
-            Self::Clamp => site.clamp(first, second, third),
-            Self::Mix => site.mix(first, second, third),
+            Self::Select => site.select(first, second, third),
+            Self::ShaderFunction(function) => site.call(function, &[first, second, third]),
         }
     }
 }
+
+/// The `jess.shader` functions of two operands, by the name the module gives them.
+const BINARY_FUNCTIONS: [Binary; 12] = [
+    Binary::ShaderFunction(ShaderFunction::Min),
+    Binary::ShaderFunction(ShaderFunction::Max),
+    Binary::ShaderFunction(ShaderFunction::Dot),
+    Binary::ShaderFunction(ShaderFunction::Cross),
+    Binary::Operator(BinaryOperator::Equal),
+    Binary::Operator(BinaryOperator::NotEqual),
+    Binary::Operator(BinaryOperator::Less),
+    Binary::Operator(BinaryOperator::LessEqual),
+    Binary::Operator(BinaryOperator::Greater),
+    Binary::Operator(BinaryOperator::GreaterEqual),
+    Binary::Operator(BinaryOperator::And),
+    Binary::Operator(BinaryOperator::Or),
+];
+
+/// The `jess.shader` functions of one operand.
+const UNARY_FUNCTIONS: [Unary; 4] = [
+    Unary::ShaderFunction(ShaderFunction::Normalize),
+    Unary::ShaderFunction(ShaderFunction::Length),
+    Unary::ShaderFunction(ShaderFunction::Floor),
+    Unary::Operator(UnaryOperator::Not),
+];
+
+/// The `jess.shader` functions of three operands.
+const TERNARY_FUNCTIONS: [Ternary; 3] = [
+    Ternary::ShaderFunction(ShaderFunction::Clamp),
+    Ternary::ShaderFunction(ShaderFunction::Mix),
+    Ternary::Select,
+];
 
 fn binary(
     call: &Call<'_>,
@@ -1432,7 +1447,7 @@ pub(crate) fn module(runtime: &Runtime, _jess: &Rc<Jess>) -> l3i::Result<Table> 
             sample(call, texture, second, third)
         },
     )?;
-    for operation in [Binary::Min, Binary::Max, Binary::Dot, Binary::Cross] {
+    for operation in BINARY_FUNCTIONS {
         let state = shader.clone();
         module.function(
             operation.name(),
@@ -1442,14 +1457,14 @@ pub(crate) fn module(runtime: &Runtime, _jess: &Rc<Jess>) -> l3i::Result<Table> 
             },
         )?;
     }
-    for operation in [Unary::Normalize, Unary::Length, Unary::Floor] {
+    for operation in UNARY_FUNCTIONS {
         let state = shader.clone();
         module.function(operation.name(), move |call: &Call<'_>, value: ValueView<'_>| {
             let build = state.build_for(operation.name(), &[value])?;
             unary(call, &build, operation, value)
         })?;
     }
-    for operation in [Ternary::Clamp, Ternary::Mix] {
+    for operation in TERNARY_FUNCTIONS {
         let state = shader.clone();
         module.function(
             operation.name(),
@@ -1478,22 +1493,30 @@ pub fn describe(d: &mut ExtensionDescriptor) {
     crate::lua::plan::metamethod(
         &mut expression,
         "__add",
-        |call: &Call<'_>, left: ValueView<'_>, right: ValueView<'_>| arithmetic(call, Binary::Add, left, right),
+        |call: &Call<'_>, left: ValueView<'_>, right: ValueView<'_>| {
+            arithmetic(call, Binary::Operator(BinaryOperator::Add), left, right)
+        },
     );
     crate::lua::plan::metamethod(
         &mut expression,
         "__sub",
-        |call: &Call<'_>, left: ValueView<'_>, right: ValueView<'_>| arithmetic(call, Binary::Subtract, left, right),
+        |call: &Call<'_>, left: ValueView<'_>, right: ValueView<'_>| {
+            arithmetic(call, Binary::Operator(BinaryOperator::Subtract), left, right)
+        },
     );
     crate::lua::plan::metamethod(
         &mut expression,
         "__mul",
-        |call: &Call<'_>, left: ValueView<'_>, right: ValueView<'_>| arithmetic(call, Binary::Multiply, left, right),
+        |call: &Call<'_>, left: ValueView<'_>, right: ValueView<'_>| {
+            arithmetic(call, Binary::Operator(BinaryOperator::Multiply), left, right)
+        },
     );
     crate::lua::plan::metamethod(
         &mut expression,
         "__div",
-        |call: &Call<'_>, left: ValueView<'_>, right: ValueView<'_>| arithmetic(call, Binary::Divide, left, right),
+        |call: &Call<'_>, left: ValueView<'_>, right: ValueView<'_>| {
+            arithmetic(call, Binary::Operator(BinaryOperator::Divide), left, right)
+        },
     );
     crate::lua::plan::metamethod(&mut expression, "__eq", |this: &LuaShaderExpr, other: ValueView<'_>| {
         l3i::userdata::receiver::<LuaShaderExpr>(other)
@@ -1529,10 +1552,10 @@ pub fn describe(d: &mut ExtensionDescriptor) {
 /// what the handle is instead of with Luau's own error.
 fn refuse_arithmetic<T: Userdata>(ty: &mut UserdataBuilder<'_, T>) {
     let operations = [
-        ("__add", Binary::Add),
-        ("__sub", Binary::Subtract),
-        ("__mul", Binary::Multiply),
-        ("__div", Binary::Divide),
+        ("__add", Binary::Operator(BinaryOperator::Add)),
+        ("__sub", Binary::Operator(BinaryOperator::Subtract)),
+        ("__mul", Binary::Operator(BinaryOperator::Multiply)),
+        ("__div", Binary::Operator(BinaryOperator::Divide)),
     ];
     for (name, operation) in operations {
         crate::lua::plan::metamethod(ty, name, move |call: &Call<'_>, left: ValueView<'_>, right: ValueView<'_>| {

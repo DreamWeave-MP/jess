@@ -27,6 +27,12 @@
       "fromParts": "ShaderExpr(Vec4f)",
       "input": "ShaderInput(fragment)",
       "length": "ShaderExpr(Float)",
+      "logic": {
+        "both": "ShaderExpr(Bool)",
+        "chosen": "ShaderExpr(Vec4f)",
+        "less": "ShaderExpr(Bool)",
+        "negated": "ShaderExpr(Bool)"
+      },
       "min": "ShaderExpr(Vec4f)",
       "mixed": "ShaderExpr(Vec3f)",
       "numberFirst": "ShaderExpr(Vec4f)",

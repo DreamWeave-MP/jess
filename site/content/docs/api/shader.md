@@ -6,7 +6,7 @@ extra:
   kind: api
 ---
 
-{{ api_signature(value="jess.shader: { program, struct, array, float, int, uint, vec2, vec3, vec4, vec2i, vec3i, vec4i, vec2u, vec3u, vec4u, mat3, mat4, texture2d, sampler, min, max, clamp, dot, cross, normalize, length, floor, mix, sample }") }}
+{{ api_signature(value="jess.shader: { program, struct, array, float, int, uint, vec2, vec3, vec4, vec2i, vec3i, vec4i, vec2u, vec3u, vec4u, mat3, mat4, texture2d, sampler, min, max, clamp, dot, cross, normalize, length, floor, mix, equal, notEqual, less, lessEqual, greater, greaterEqual, logicalAnd, logicalOr, logicalNot, select, sample }") }}
 
 A shader, written in Luau. `require("@jess/shader")` is the same table as `jess.shader`, and a shader module is an ordinary Luau module that runs once and returns a `ShaderProgram`.
 
@@ -71,7 +71,7 @@ return program
 
 {% usage_note(title="What this is, today") %}
 - This is the authoring half. Nothing draws with a `ShaderProgram` yet: the renderer that takes one is a later piece of work, and this page will say so when it isn't.
-- The expression set is the one the first real materials need, and no more: arithmetic, the functions below, vector construction, swizzles, and texture sampling. There's no negation, comparison, or control flow. They arrive when a renderer needs them, not because GLSL has them.
+- The expression set is the one the first real materials need, and no more: arithmetic, the functions below, comparisons and `select`, vector construction, swizzles, and texture sampling. There's no negation or control flow yet. They arrive when a renderer needs them, not because GLSL has them.
 {% end %}
 
 ## shader.program
@@ -238,7 +238,7 @@ An array type: `length` values or structs, at least one. An array holds no array
 A symbolic value in the program under construction: an expression, its type, and the program it belongs to. It isn't a number and it isn't a GPU value; there's nothing in it to read.
 
 - **Operators:** `+`, `-`, `*`, `/`, between two values of one numeric type, or a vector and a scalar of its kind (a `Vec3f` and a `Float`, a `Vec2u` and a `UInt`). `+` and `-` also take two matrices of one size; `*` also takes a matrix and a `Float`, a matrix and a vector of its size, or two matrices of one size. `projection * view * model * position` multiplies left to right, as Luau evaluates it.
-- **Numbers:** a Luau number where a value goes is a `Float` constant, on either side: `2 * color`, `shader.max(facing, 0)`. Integers are spelled `shader.int(3)` and `shader.uint(3)`, so `2 * cell` is a `Float` times whatever `cell` is, and fails for an integer vector.
+- **Numbers:** a Luau number where a value goes is a `Float` constant, on either side: `2 * color`, `shader.max(facing, 0)`. Integers are spelled `shader.int(3)` and `shader.uint(3)`, so `2 * cell` is a `Float` times whatever `cell` is, and fails for an integer vector. A Luau `true` or `false` is a `Bool` constant.
 - **Swizzles:** `.x`, `.xy`, `.zyx`, `.wzyx`: one to four of `x`, `y`, `z`, and `w`, giving a scalar or a vector of the same kind. They're the only names a value has.
 - **`==`:** whether two handles name the same expression. Reading `input.material.tint` twice gives equal values.
 - **`tostring`:** `ShaderExpr(Vec4f)`.
@@ -362,6 +362,44 @@ shader.program {
 }
 -- ShaderExpr(Float)  ShaderExpr(Vec3f)  ShaderExpr(Float)  ShaderExpr(Vec3f)
 -- ShaderExpr(Vec3f)  ShaderExpr(Vec3f)
+```
+
+### Comparisons and choice
+
+Luau's `==` and `<` answer a Luau boolean, so a shader compares with functions, each giving a `Bool`, and chooses with `select`.
+
+| Function | Takes | Gives |
+| --- | --- | --- |
+| `shader.equal(a, b)`, `shader.notEqual(a, b)` | Two scalars of one type, `Bool` included. | Whether they're equal, or differ. |
+| `shader.less(a, b)`, `shader.lessEqual(a, b)`, `shader.greater(a, b)`, `shader.greaterEqual(a, b)` | Two `Int`s, `UInt`s, or `Float`s of one type. | `a < b`, `a <= b`, `a > b`, `a >= b`. |
+| `shader.logicalAnd(a, b)`, `shader.logicalOr(a, b)` | Two `Bool`s. | Whether both hold, or either does. |
+| `shader.logicalNot(value)` | A `Bool`. | Whether it doesn't hold. |
+| `shader.select(condition, accept, reject)` | A `Bool`, then two scalars or vectors of one type. | `accept` where `condition` holds, else `reject`. |
+
+`select` isn't a branch: both choices are computed, and one is kept. It's the right thing for picking a value, and cheap, since a GPU would run both sides of a short branch anyway.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+shader.program {
+  attributes = { position = shader.vec3, height = shader.float },
+  material = { snowLine = shader.float, snow = shader.vec4, rock = shader.vec4 },
+  vertex = function(input)
+    local vertex = input.attributes
+
+    return { position = shader.vec4(vertex.position, 1), height = vertex.height }
+  end,
+
+  fragment = function(input)
+    local material = input.material
+    local snowy = shader.greaterEqual(input.height, material.snowLine)
+    print(snowy, shader.logicalAnd(snowy, true), shader.logicalNot(snowy))
+
+    return shader.select(snowy, material.snow, material.rock)
+  end,
+}
+-- ShaderExpr(Bool)  ShaderExpr(Bool)  ShaderExpr(Bool)
 ```
 
 ### shader.sample

@@ -677,6 +677,21 @@ export type ShaderModule = {
   floor: (value: ShaderExpr | number) -> ShaderExpr,
   --- `start + (finish - start) * amount`, per component.
   mix: (start: ShaderExpr | number, finish: ShaderExpr | number, amount: ShaderExpr | number) -> ShaderExpr,
+  --- Comparisons of two scalars of one type, to a `Bool`: `equal` and `notEqual` any scalars, the
+  --- rest `Int`, `UInt`, or `Float`.
+  equal: (left: ShaderExpr | number | boolean, right: ShaderExpr | number | boolean) -> ShaderExpr,
+  notEqual: (left: ShaderExpr | number | boolean, right: ShaderExpr | number | boolean) -> ShaderExpr,
+  less: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr,
+  lessEqual: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr,
+  greater: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr,
+  greaterEqual: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr,
+  --- Both, either, and not, of `Bool`s; a Luau boolean is a `Bool` constant.
+  logicalAnd: (left: ShaderExpr | boolean, right: ShaderExpr | boolean) -> ShaderExpr,
+  logicalOr: (left: ShaderExpr | boolean, right: ShaderExpr | boolean) -> ShaderExpr,
+  logicalNot: (value: ShaderExpr | boolean) -> ShaderExpr,
+  --- `accept` where `condition` holds, else `reject`, two values of one scalar or vector type.
+  --- Both are computed.
+  select: (condition: ShaderExpr | boolean, accept: ShaderExpr | number, reject: ShaderExpr | number) -> ShaderExpr,
   --- A texture read, a `Vec4f`: a declared texture with the sampler declared with it and `Vec2f`
   --- coordinates, or a texture, a sampler declared on its own, and coordinates. Fragment stage
   --- only.

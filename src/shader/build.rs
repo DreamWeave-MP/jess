@@ -4,7 +4,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::shader::expression::{
-    BinaryOperator, Expression, ExpressionId, Function, Literal, Place, SourceOrigin, Step, Swizzle,
+    BinaryOperator, Expression, ExpressionId, Function, Literal, Place, SourceOrigin, Step, Swizzle, UnaryOperator,
 };
 use crate::shader::interface::{
     Attribute, AttributeId, DataType, Field, Frequency, Rate, Resource, ResourceId, ResourceKind, StructDecl, StructId,
@@ -321,6 +321,43 @@ impl Site<'_> {
         self.push(Expression::Literal(Literal::Bool(value)), Type::Bool)
     }
 
+    /// `operator` on `value`.
+    ///
+    /// # Errors
+    ///
+    /// A value from another program, or a type the operator doesn't take.
+    pub fn unary(&mut self, operator: UnaryOperator, value: Value) -> Result<Value, ValidationError> {
+        self.operation(Expression::Unary(operator, value.expression), &[value])
+    }
+
+    /// `operator` between `left` and `right`.
+    ///
+    /// # Errors
+    ///
+    /// A value from another program, operand types the operator doesn't take, or constant
+    /// arithmetic WGSL would reject.
+    pub fn binary(&mut self, operator: BinaryOperator, left: Value, right: Value) -> Result<Value, ValidationError> {
+        self.operation(
+            Expression::Binary(operator, left.expression, right.expression),
+            &[left, right],
+        )
+    }
+
+    /// `accept` where `condition` holds, else `reject`.
+    ///
+    /// # Errors
+    ///
+    /// A value from another program, a condition that isn't a `Bool`, or choices that aren't one
+    /// scalar or vector type.
+    pub fn select(&mut self, condition: Value, accept: Value, reject: Value) -> Result<Value, ValidationError> {
+        let expression = Expression::Select {
+            condition: condition.expression,
+            accept: accept.expression,
+            reject: reject.expression,
+        };
+        self.operation(expression, &[condition, accept, reject])
+    }
+
     /// `left + right`.
     ///
     /// # Errors
@@ -568,10 +605,22 @@ impl Site<'_> {
         first.map_or(Ok(()), |kind| Err(self.error(kind)))
     }
 
-    /// A call of `function` with `arguments`, typed and pushed.
-    fn call(&mut self, function: Function, arguments: &[Value]) -> Result<Value, ValidationError> {
+    /// A call of `function` with `arguments`.
+    ///
+    /// # Errors
+    ///
+    /// A value from another program, the wrong number of arguments, or argument types the function
+    /// doesn't take.
+    pub fn call(&mut self, function: Function, arguments: &[Value]) -> Result<Value, ValidationError> {
         let ids: Vec<ExpressionId> = arguments.iter().map(|argument| argument.expression).collect();
-        let expression = Expression::call(function, &ids).expect("a function takes at most three arguments");
+        let Some(expression) = Expression::call(function, &ids) else {
+            return Err(self.error(ValidationErrorKind::InvalidOperation {
+                expression: self.next(),
+                operation: function.name(),
+                operands: arguments.iter().map(|argument| argument.ty).collect(),
+                expected: "at most four arguments",
+            }));
+        };
         self.operation(expression, arguments)
     }
 

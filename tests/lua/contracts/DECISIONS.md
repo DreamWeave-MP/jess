@@ -72,9 +72,9 @@ The entries below are the decisions behind what the fixtures and the neighbourin
 
 ### 11. A number in a shader is a `Float`
 
-- **What:** a Luau number has no `Float`/`Int`/`UInt` type, and `@jess/shader` takes one wherever a shader value goes (`shader.max(facing, 0)`, `2 * color`, `shader.vec4(position, 1)`). It is a `Float` literal, written at the operation's line. A number is never an `Int` or `UInt` by its value: integers are spelled `shader.int(3)` and `shader.uint(3)`. Inside an integer vector's constructor (`shader.vec3i(1, -2, 3)`) a number is that vector's integer, by where it is written, and must be whole and in range.
+- **What:** a Luau number has no `Float`/`Int`/`UInt` type, and `@jess/shader` takes one wherever a shader value goes (`shader.max(facing, 0)`, `2 * color`, `shader.vec4(position, 1)`). It is a `Float` literal, written at the operation's line. A number is never an `Int` or `UInt` by its value: integers are spelled `shader.int(3)` and `shader.uint(3)`. Inside an integer vector's constructor (`shader.vec3i(1, -2, 3)`) a number is that vector's integer, by where it is written, and must be whole and in range. A Luau boolean is a `Bool` constant.
 - **Class:** design.
-- **Decision:** pinned in `shader/program` (`constant`, `float`, `integers`); a number that isn't whole or is out of range is an error naming the constructor (`shader/errors`, `notWhole`, `uintRange`), and a bare number beside an integer vector stays a `Float` (`integerFloat`).
+- **Decision:** pinned in `shader/program` (`constant`, `float`, `integers`); a number that isn't whole or is out of range is an error naming the constructor (`shader/errors`, `notWhole`, `uintRange`), a bare number beside an integer vector stays a `Float` (`integerFloat`), and a boolean is a `Bool` (`shader/program`, `logic`).
 
 ### 12. A texture comes with its sampler
 

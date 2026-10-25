@@ -137,6 +137,12 @@ impl Type {
         }
     }
 
+    /// Whether this is `Bool`, `Int`, `UInt`, or `Float`.
+    #[must_use]
+    pub fn is_scalar(self) -> bool {
+        self.components() == 1
+    }
+
     /// Whether this is a vector of any scalar.
     #[must_use]
     pub fn is_vector(self) -> bool {

@@ -345,11 +345,20 @@ impl Lowering<'_> {
                 emit!(self, ")");
             }
             Expression::Load(place) => self.place(&place),
-            Expression::Binary(_, left, right) => {
+            Expression::Unary(operator, value) => {
+                emit!(self, "{}", operator.symbol());
+                self.operand(value);
+            }
+            Expression::Binary(operator, left, right) => {
                 self.operand(left);
-                emit!(self, " {} ", expression.operation());
+                emit!(self, " {} ", operator.symbol());
                 self.operand(right);
             }
+            Expression::Select {
+                condition,
+                accept,
+                reject,
+            } => self.call("select", &[reject, accept, condition], None),
             Expression::Call { function, arguments } => {
                 // WGSL's min, max, and clamp take no scalar beside a vector, which Jess's do.
                 let splat = matches!(function, Function::Min | Function::Max | Function::Clamp).then(|| self.type_of(id));

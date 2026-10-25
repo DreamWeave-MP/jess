@@ -325,10 +325,27 @@ pub enum BinaryOperator {
     Multiply,
     /// `left / right`.
     Divide,
+    /// Whether two scalars are equal.
+    Equal,
+    /// Whether two scalars differ.
+    NotEqual,
+    /// `left < right`, between two numeric scalars.
+    Less,
+    /// `left <= right`.
+    LessEqual,
+    /// `left > right`.
+    Greater,
+    /// `left >= right`.
+    GreaterEqual,
+    /// Whether two `Bool`s both hold.
+    And,
+    /// Whether either of two `Bool`s holds.
+    Or,
 }
 
 impl BinaryOperator {
-    /// The operator as errors and WGSL write it: `+`.
+    /// The operator's Jess name, as errors print it: `+` for the arithmetic, which is written between
+    /// its operands, and the function's name (`less`, `logicalAnd`) for the rest.
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
@@ -336,6 +353,58 @@ impl BinaryOperator {
             BinaryOperator::Subtract => "-",
             BinaryOperator::Multiply => "*",
             BinaryOperator::Divide => "/",
+            BinaryOperator::Equal => "equal",
+            BinaryOperator::NotEqual => "notEqual",
+            BinaryOperator::Less => "less",
+            BinaryOperator::LessEqual => "lessEqual",
+            BinaryOperator::Greater => "greater",
+            BinaryOperator::GreaterEqual => "greaterEqual",
+            BinaryOperator::And => "logicalAnd",
+            BinaryOperator::Or => "logicalOr",
+        }
+    }
+
+    /// The operator as WGSL writes it.
+    #[must_use]
+    pub fn symbol(self) -> &'static str {
+        match self {
+            BinaryOperator::Add => "+",
+            BinaryOperator::Subtract => "-",
+            BinaryOperator::Multiply => "*",
+            BinaryOperator::Divide => "/",
+            BinaryOperator::Equal => "==",
+            BinaryOperator::NotEqual => "!=",
+            BinaryOperator::Less => "<",
+            BinaryOperator::LessEqual => "<=",
+            BinaryOperator::Greater => ">",
+            BinaryOperator::GreaterEqual => ">=",
+            BinaryOperator::And => "&&",
+            BinaryOperator::Or => "||",
+        }
+    }
+}
+
+/// An operator on one value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum UnaryOperator {
+    /// Whether a `Bool` doesn't hold.
+    Not,
+}
+
+impl UnaryOperator {
+    /// The operator's Jess name, as errors print it.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            UnaryOperator::Not => "logicalNot",
+        }
+    }
+
+    /// The operator as WGSL writes it.
+    #[must_use]
+    pub fn symbol(self) -> &'static str {
+        match self {
+            UnaryOperator::Not => "!",
         }
     }
 }
@@ -412,8 +481,19 @@ pub enum Expression {
         /// The `Vec2f` coordinates.
         coordinates: ExpressionId,
     },
+    /// An operator on one value.
+    Unary(UnaryOperator, ExpressionId),
     /// An operator between two values.
     Binary(BinaryOperator, ExpressionId, ExpressionId),
+    /// `accept` where `condition` holds, else `reject`: both are computed.
+    Select {
+        /// A `Bool`.
+        condition: ExpressionId,
+        /// The value where it holds.
+        accept: ExpressionId,
+        /// The value where it doesn't, of the same type.
+        reject: ExpressionId,
+    },
     /// A built-in function.
     Call {
         /// The function.
@@ -458,7 +538,13 @@ impl Expression {
             Expression::Literal(_) | Expression::Attribute(_) | Expression::Varying(_) => &[],
             Expression::Load(place) => return place.indices(),
             Expression::Sample { coordinates, .. } => &[*coordinates],
+            Expression::Unary(_, value) => &[*value],
             Expression::Binary(_, left, right) => &[*left, *right],
+            Expression::Select {
+                condition,
+                accept,
+                reject,
+            } => &[*condition, *accept, *reject],
             Expression::Call { arguments, .. } => return *arguments,
             Expression::Construct { components, .. } => return *components,
             Expression::Swizzle { vector, .. } => &[*vector],
@@ -472,9 +558,19 @@ impl Expression {
             Expression::Literal(_) | Expression::Attribute(_) | Expression::Varying(_) => {}
             Expression::Load(place) => place.rewrite_indices(rewrite),
             Expression::Sample { coordinates, .. } => rewrite(coordinates),
+            Expression::Unary(_, value) => rewrite(value),
             Expression::Binary(_, left, right) => {
                 rewrite(left);
                 rewrite(right);
+            }
+            Expression::Select {
+                condition,
+                accept,
+                reject,
+            } => {
+                rewrite(condition);
+                rewrite(accept);
+                rewrite(reject);
             }
             Expression::Call { arguments, .. } => arguments.as_mut_slice().iter_mut().for_each(rewrite),
             Expression::Construct { components, .. } => components.as_mut_slice().iter_mut().for_each(rewrite),
@@ -503,7 +599,9 @@ impl Expression {
             Expression::Attribute(_) => "attribute",
             Expression::Varying(_) => "varying",
             Expression::Sample { .. } => "sample",
+            Expression::Unary(operator, _) => operator.name(),
             Expression::Binary(operator, ..) => operator.name(),
+            Expression::Select { .. } => "select",
             Expression::Call { function, .. } => function.name(),
             Expression::Construct { target, .. } => target.name(),
             Expression::Swizzle { .. } => "swizzle",

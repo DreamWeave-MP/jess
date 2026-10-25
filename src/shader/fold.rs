@@ -26,6 +26,7 @@ impl Arithmetic {
             BinaryOperator::Subtract => Arithmetic::Subtract,
             BinaryOperator::Multiply => Arithmetic::Multiply,
             BinaryOperator::Divide => Arithmetic::Divide,
+            _ => return None,
         };
         Some((arithmetic, left, right))
     }

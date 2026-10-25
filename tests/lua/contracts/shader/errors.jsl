@@ -71,6 +71,15 @@ return {
         return shader.sample(input.material.diffuse, input.material.tint, input.material.light.xy)
       end
     ),
+    compare = inFragment(
+      function(input)
+        local light = input.material.light
+        return shader.select(shader.less(light, 1), input.material.tint, input.material.tint)
+      end
+    ),
+    selectTypes = inFragment(
+      function(input) return shader.select(true, input.material.tint, input.material.light) end
+    ),
     textureAsValue = inFragment(function(input) return input.material.diffuse * 2.0 end),
     structAsValue = inFragment(function(input) return input.pass.camera + 1.0 end),
 

@@ -108,7 +108,7 @@ pub mod wgsl;
 pub use build::{ProgramBuilder, Site, Value};
 pub use expression::{
     BinaryOperator, Component, Expression, ExpressionId, Function, Literal, MAX_PLACE_INDICES, MAX_PLACE_STEPS, Operands,
-    Place, PlaceRoot, SourceOrigin, Step, Swizzle, VaryingId,
+    Place, PlaceRoot, SourceOrigin, Step, Swizzle, UnaryOperator, VaryingId,
 };
 pub use interface::{
     Attribute, AttributeId, DataType, Element, Field, Frequency, Rate, Resource, ResourceId, ResourceKind, StructDecl,

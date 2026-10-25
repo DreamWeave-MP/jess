@@ -128,6 +128,12 @@ local lit = shader.program {
       time = tostring(input.pass.time),
       camera = tostring(input.pass.camera.position),
       viewport = tostring(input.pass.viewportSize),
+      logic = {
+        less = tostring(shader.less(facing, 0.5)),
+        both = tostring(shader.logicalAnd(true, shader.greater(facing, 0))),
+        negated = tostring(shader.logicalNot(false)),
+        chosen = tostring(shader.select(shader.equal(facing, 0), diffuse, material.tint)),
+      },
     }
 
     return shader.vec4(lit, diffuse.w)

@@ -3,7 +3,8 @@
 use std::fmt;
 
 use crate::shader::expression::{
-    BinaryOperator, Expression, ExpressionId, Function, Literal, Place, PlaceRoot, SourceOrigin, Step, Swizzle, VaryingId,
+    BinaryOperator, Expression, ExpressionId, Function, Literal, Place, PlaceRoot, SourceOrigin, Step, Swizzle,
+    UnaryOperator, VaryingId,
 };
 use crate::shader::fold::{Arithmetic, evaluate};
 use crate::shader::interface::{
@@ -1133,8 +1134,36 @@ pub fn operation_type(id: ExpressionId, expression: &Expression, operands: &[Typ
                 BinaryOperator::Add | BinaryOperator::Subtract => (arithmetic(left, right), ADD_SUBTRACT),
                 BinaryOperator::Divide => (arithmetic(left, right), ARITHMETIC),
                 BinaryOperator::Multiply => (multiply(left, right), MULTIPLY),
+                BinaryOperator::Equal | BinaryOperator::NotEqual => {
+                    let same = left == right && left.is_scalar();
+                    (same.then_some(Type::Bool), "two scalars of the same type")
+                }
+                BinaryOperator::Less
+                | BinaryOperator::LessEqual
+                | BinaryOperator::Greater
+                | BinaryOperator::GreaterEqual => {
+                    let same = left == right && left.is_numeric_scalar();
+                    (same.then_some(Type::Bool), "two Ints, UInts, or Floats of the same type")
+                }
+                BinaryOperator::And | BinaryOperator::Or => {
+                    let both = left == Type::Bool && right == Type::Bool;
+                    (both.then_some(Type::Bool), "two Bools")
+                }
             };
             ty.ok_or_else(|| invalid(expected))?
+        }
+        Expression::Unary(UnaryOperator::Not, _) => {
+            if operands[0] != Type::Bool {
+                return Err(invalid("a Bool"));
+            }
+            Type::Bool
+        }
+        Expression::Select { .. } => {
+            let (condition, accept, reject) = (operands[0], operands[1], operands[2]);
+            if condition != Type::Bool || accept != reject || accept.is_matrix() {
+                return Err(invalid("a Bool, then two scalars or vectors of the same type"));
+            }
+            accept
         }
         Expression::Call { function, .. } => {
             if operands.len() != function.arity() {
