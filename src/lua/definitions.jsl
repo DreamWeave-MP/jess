@@ -518,9 +518,10 @@ export type AudioContext = {
 
 --- A shader type, from `jess.shader`: a value type (`float`, `int`, `uint`, `vec2`..`vec4`,
 --- `vec2i`..`vec4i`, `vec2u`..`vec4u`, `mat3`, `mat4`), a texture (`texture2d`, `texture2dArray`,
---- `textureCube`, `texture3d`, and the integer `texture2di` and `texture2du`) or `sampler`, or a
---- struct or array type from `shader.struct` and `shader.array`. It's what a program's attributes
---- and bindings declare (`tint = shader.vec4`).
+--- `textureCube`, `texture3d`, the integer `texture2di` and `texture2du`, and the depth
+--- `depthTexture2d`, `depthTexture2dArray`, and `depthTextureCube`), a `sampler` or
+--- `comparisonSampler`, or a struct or array type from `shader.struct` and `shader.array`. It's
+--- what a program's attributes and bindings declare (`tint = shader.vec4`).
 --- Called, the vector types build a vector from values and numbers whose sizes add up to theirs,
 --- or from one number repeated (`shader.vec4(position, 1)`); a number in an integer vector is
 --- that vector's integer, and must be whole. `shader.float(0.5)`, `shader.int(-3)`, and
@@ -580,7 +581,8 @@ declare extern type ShaderTexture with
   __tostring: (self: ShaderTexture) -> string
 end
 
---- A sampler declared on its own, for `shader.sample`'s three-argument form.
+--- A sampler declared on its own, filtering or comparing, for a texture function that takes one
+--- after the texture. `tostring` gives its kind: `ShaderSampler(ComparisonSampler)`.
 declare extern type ShaderSampler with
   __tostring: (self: ShaderSampler) -> string
 end
@@ -675,7 +677,11 @@ export type ShaderModule = {
   texture3d: ShaderType,
   texture2di: ShaderType,
   texture2du: ShaderType,
+  depthTexture2d: ShaderType,
+  depthTexture2dArray: ShaderType,
+  depthTextureCube: ShaderType,
   sampler: ShaderType,
+  comparisonSampler: ShaderType,
   --- A struct type: named fields of value, struct, and array types, laid out by jess.
   struct: (name: string, fields: { [string]: ShaderType }) -> ShaderType,
   --- An array type: `length` (at least 1) values or structs.
@@ -779,6 +785,11 @@ export type ShaderModule = {
   --- sampler and a layer go where they go in `sample`.
   sampleLevel: (texture: ShaderExpr, ...ShaderExpr | number) -> ShaderExpr,
   sampleBias: (texture: ShaderExpr, ...ShaderExpr | number) -> ShaderExpr,
+  --- A depth texture's depths compared with the `Float` depth given last, through its comparison
+  --- sampler or the one given, and filtered: a `Float` from 0 (every texel failed) to 1 (every one
+  --- passed). `sampleCompare` in the fragment stage; `sampleCompareLevel`, in level 0, in either.
+  sampleCompare: (texture: ShaderExpr, ...ShaderExpr | number) -> ShaderExpr,
+  sampleCompareLevel: (texture: ShaderExpr, ...ShaderExpr | number) -> ShaderExpr,
   --- One texel, without a sampler: integer coordinates, then a layer for an array texture, then
   --- the `Int` or `UInt` mip level. A `Vec4f`, or a `Vec4i` or `Vec4u` from an integer texture.
   --- Not a cube.

@@ -132,7 +132,7 @@ enum Member {
         sampler: Option<ResourceId>,
     },
     /// A sampler of its own.
-    Sampler(ResourceId),
+    Sampler { kind: ResourceKind, sampler: ResourceId },
 }
 
 /// The names a program declares, each read once and handed out as the same value after that.
@@ -362,10 +362,12 @@ unsafe impl Userdata for LuaShaderTexture {
     const NAME: &'static str = "jess.shader.Texture";
 }
 
-/// A sampler declared on its own, for `shader.sample`'s three-argument form.
+/// A sampler declared on its own, filtering or comparing, for the texture functions that take one
+/// after the texture.
 #[derive(Clone, Debug)]
 pub struct LuaShaderSampler {
     build: Rc<RefCell<Build>>,
+    kind: ResourceKind,
     sampler: ResourceId,
 }
 
@@ -671,6 +673,8 @@ enum TextureFunction {
     Sample,
     SampleBias,
     SampleLevel,
+    SampleCompare,
+    SampleCompareLevel,
     Load,
     Dimensions,
     Levels,
@@ -678,10 +682,12 @@ enum TextureFunction {
 }
 
 impl TextureFunction {
-    const ALL: [TextureFunction; 7] = [
+    const ALL: [TextureFunction; 9] = [
         TextureFunction::Sample,
         TextureFunction::SampleBias,
         TextureFunction::SampleLevel,
+        TextureFunction::SampleCompare,
+        TextureFunction::SampleCompareLevel,
         TextureFunction::Load,
         TextureFunction::Dimensions,
         TextureFunction::Levels,
@@ -693,6 +699,8 @@ impl TextureFunction {
             TextureFunction::Sample => "sample",
             TextureFunction::SampleBias => "sampleBias",
             TextureFunction::SampleLevel => "sampleLevel",
+            TextureFunction::SampleCompare => "sampleCompare",
+            TextureFunction::SampleCompareLevel => "sampleCompareLevel",
             TextureFunction::Load => "load",
             TextureFunction::Dimensions => "dimensions",
             TextureFunction::Levels => "levels",
@@ -703,7 +711,11 @@ impl TextureFunction {
     fn samples(self) -> bool {
         matches!(
             self,
-            TextureFunction::Sample | TextureFunction::SampleBias | TextureFunction::SampleLevel
+            TextureFunction::Sample
+                | TextureFunction::SampleBias
+                | TextureFunction::SampleLevel
+                | TextureFunction::SampleCompare
+                | TextureFunction::SampleCompareLevel
         )
     }
 
@@ -722,6 +734,7 @@ impl TextureFunction {
         match self {
             TextureFunction::SampleBias => values.push("a bias"),
             TextureFunction::SampleLevel | TextureFunction::Load => values.push("a level"),
+            TextureFunction::SampleCompare | TextureFunction::SampleCompareLevel => values.push("a depth"),
             _ => {}
         }
         Some(values)
@@ -808,6 +821,14 @@ fn texture_function(call: &Call<'_>, function: TextureFunction, args: ArgView<'_
                 let (coordinates, layer, level) = (coordinates(site)?, layer(site)?, value(site, last, Scalar::Float)?);
                 site.sample_level(texel, sampler, coordinates, layer, level)
             }
+            TextureFunction::SampleCompare => {
+                let (coordinates, layer, depth) = (coordinates(site)?, layer(site)?, value(site, last, Scalar::Float)?);
+                site.sample_compare(texel, sampler, coordinates, layer, depth)
+            }
+            TextureFunction::SampleCompareLevel => {
+                let (coordinates, layer, depth) = (coordinates(site)?, layer(site)?, value(site, last, Scalar::Float)?);
+                site.sample_compare_level(texel, sampler, coordinates, layer, depth)
+            }
             TextureFunction::Load => {
                 let (coordinates, layer, level) = (coordinates(site)?, layer(site)?, value(site, last, Scalar::UInt)?);
                 site.load_texel(texel, coordinates, layer, level)
@@ -853,14 +874,18 @@ const TYPE_DESCRIPTORS: [(&str, Type); 14] = [
 ];
 
 /// The `jess.shader` members that declare textures and samplers.
-const RESOURCE_DESCRIPTORS: [(&str, ResourceKind); 7] = [
+const RESOURCE_DESCRIPTORS: [(&str, ResourceKind); 11] = [
     ("texture2d", ResourceKind::Texture2D),
     ("texture2di", ResourceKind::Texture2Di),
     ("texture2du", ResourceKind::Texture2Du),
     ("texture2dArray", ResourceKind::Texture2DArray),
     ("textureCube", ResourceKind::TextureCube),
     ("texture3d", ResourceKind::Texture3D),
+    ("depthTexture2d", ResourceKind::DepthTexture2D),
+    ("depthTexture2dArray", ResourceKind::DepthTexture2DArray),
+    ("depthTextureCube", ResourceKind::DepthTextureCube),
     ("sampler", ResourceKind::Sampler),
+    ("comparisonSampler", ResourceKind::ComparisonSampler),
 ];
 
 fn descriptor_name(ty: Type) -> &'static str {
@@ -1112,9 +1137,10 @@ fn place_index(this: &LuaShaderPlace, call: &Call<'_>, key: ValueView<'_>) -> l3
                     }))?;
                     return Ok(StackResults);
                 }
-                Member::Sampler(sampler) => {
+                Member::Sampler { kind, sampler } => {
                     call.push(&Owned(LuaShaderSampler {
                         build: this.build.clone(),
+                        kind,
                         sampler,
                     }))?;
                     return Ok(StackResults);
@@ -1448,16 +1474,17 @@ fn declare_groups(site: &mut Site<'_>, info: &mut Info, groups: [Vec<(String, De
             let member = match descriptor {
                 Descriptor::Resource(kind) if kind.is_texture() => {
                     let texture = site.resource(frequency, &name, kind).map_err(invalid)?;
-                    let sampler = if kind.is_integer() {
-                        None
-                    } else {
-                        Some(site.resource(frequency, &name, ResourceKind::Sampler).map_err(invalid)?)
-                    };
+                    // An integer texture has no sampler; a depth texture's compares.
+                    let sampler = kind
+                        .sampler()
+                        .map(|sampler| site.resource(frequency, &name, sampler).map_err(invalid))
+                        .transpose()?;
                     Member::Texture { kind, texture, sampler }
                 }
-                Descriptor::Resource(_) => {
-                    Member::Sampler(site.resource(frequency, &name, ResourceKind::Sampler).map_err(invalid)?)
-                }
+                Descriptor::Resource(kind) => Member::Sampler {
+                    kind,
+                    sampler: site.resource(frequency, &name, kind).map_err(invalid)?,
+                },
                 descriptor => {
                     let ty = declare_type(site, &mut info.structs, &descriptor)?;
                     site.uniform(frequency, &name, ty).map_err(invalid)?;
@@ -1544,8 +1571,7 @@ fn construct_program(call: &Call<'_>, build: &Rc<RefCell<Build>>, spec: Spec) ->
             let reflect = |(name, member): (String, Member)| {
                 let ty = match member {
                     Member::Uniform { descriptor, .. } => descriptor.name(),
-                    Member::Texture { kind, .. } => kind.name().to_owned(),
-                    Member::Sampler(_) => ResourceKind::Sampler.name().to_owned(),
+                    Member::Texture { kind, .. } | Member::Sampler { kind, .. } => kind.name().to_owned(),
                 };
                 (name, ty)
             };
@@ -1807,8 +1833,8 @@ fn describe_bindings(d: &mut ExtensionDescriptor) {
         .tag(TagPolicy::Never)
         .doc("A sampler declared on its own, for `shader.sample`.");
     arithmetic_metamethods(&mut sampler);
-    crate::lua::plan::metamethod(&mut sampler, "__tostring", |_: &LuaShaderSampler| {
-        format!("ShaderSampler({})", ResourceKind::Sampler.name())
+    crate::lua::plan::metamethod(&mut sampler, "__tostring", |this: &LuaShaderSampler| {
+        format!("ShaderSampler({})", this.kind.name())
     });
 }
 

@@ -581,6 +581,64 @@ impl Site<'_> {
         self.texture_operation(expression, &values)
     }
 
+    /// A depth texture's depths at `coordinates` and, in an array texture, in `layer`, compared
+    /// with the `Float` `reference` through a comparison sampler and filtered, to a `Float` from
+    /// 0 (every texel read fails) to 1 (every one passes), at the level the fragment stage's
+    /// derivatives pick. Fragment stage only.
+    ///
+    /// # Errors
+    ///
+    /// Values from another program, or a texture, sampler, coordinates, layer, and reference
+    /// that don't fit: a depth texture, a `ComparisonSampler`, its coordinates, a layer for an
+    /// array texture only, and a `Float`.
+    pub fn sample_compare(
+        &mut self,
+        texture: ResourceId,
+        sampler: ResourceId,
+        coordinates: Value,
+        layer: Option<Value>,
+        reference: Value,
+    ) -> Result<Value, ValidationError> {
+        self.compare_at(texture, sampler, coordinates, layer, reference, false)
+    }
+
+    /// [`sample_compare`](Site::sample_compare) in mip level 0, in any stage.
+    ///
+    /// # Errors
+    ///
+    /// As [`sample_compare`](Site::sample_compare).
+    pub fn sample_compare_level(
+        &mut self,
+        texture: ResourceId,
+        sampler: ResourceId,
+        coordinates: Value,
+        layer: Option<Value>,
+        reference: Value,
+    ) -> Result<Value, ValidationError> {
+        self.compare_at(texture, sampler, coordinates, layer, reference, true)
+    }
+
+    fn compare_at(
+        &mut self,
+        texture: ResourceId,
+        sampler: ResourceId,
+        coordinates: Value,
+        layer: Option<Value>,
+        reference: Value,
+        level_zero: bool,
+    ) -> Result<Value, ValidationError> {
+        let expression = Expression::SampleCompare {
+            texture,
+            sampler,
+            coordinates: coordinates.expression,
+            layer: layer.map(|layer| layer.expression),
+            reference: reference.expression,
+            level_zero,
+        };
+        let values: Vec<Value> = [Some(coordinates), layer, Some(reference)].into_iter().flatten().collect();
+        self.texture_operation(expression, &values)
+    }
+
     /// One texel of a texture that isn't a cube, read without a sampler: at integer
     /// `coordinates`, in `layer` of an array texture, in the `Int` or `UInt` mip `level`. It reads
     /// as a `Vec4f`, or as a `Vec4i` or `Vec4u` from an integer texture.

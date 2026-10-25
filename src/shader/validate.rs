@@ -246,8 +246,10 @@ pub enum ValidationErrorKind {
     SampleInVertex {
         /// The sample.
         expression: ExpressionId,
-        /// `sample` or `sampleBias`.
+        /// `sample`, `sampleBias`, or `sampleCompare`.
         operation: &'static str,
+        /// What the vertex stage can do instead.
+        instead: &'static str,
     },
     /// The vertex stage takes a derivative, which only the fragment stage has.
     DerivativeInVertex {
@@ -435,10 +437,10 @@ impl fmt::Display for ValidationErrorKind {
                 formatter,
                 "varying {varying:?} is read in the vertex stage, which only writes varyings"
             ),
-            ValidationErrorKind::SampleInVertex { operation, .. } => write!(
+            ValidationErrorKind::SampleInVertex { operation, instead, .. } => write!(
                 formatter,
                 "{operation} is used in the vertex stage, which has no derivatives to pick a mip level with: \
-                 sample at a level with sampleLevel"
+                 {instead}"
             ),
             ValidationErrorKind::DerivativeInVertex { function, .. } => write!(
                 formatter,
@@ -752,7 +754,7 @@ pub fn data_type_errors(
 /// The declaration kind of a resource of `kind` that `frequency` binds.
 pub fn resource_kind(frequency: Frequency, kind: ResourceKind) -> DeclarationKind {
     match kind {
-        ResourceKind::Sampler => DeclarationKind::Sampler(frequency),
+        ResourceKind::Sampler | ResourceKind::ComparisonSampler => DeclarationKind::Sampler(frequency),
         _ => DeclarationKind::Texture(frequency),
     }
 }
@@ -1035,6 +1037,14 @@ fn infer(
             return Err(ValidationErrorKind::SampleInVertex {
                 expression: id,
                 operation: level.operation(),
+                instead: "sample at a level with sampleLevel",
+            });
+        }
+        Expression::SampleCompare { level_zero: false, .. } if stage & VERTEX != 0 => {
+            return Err(ValidationErrorKind::SampleInVertex {
+                expression: id,
+                operation: "sampleCompare",
+                instead: "compare in level 0 with sampleCompareLevel",
             });
         }
         Expression::Call { function, .. } if function.needs_derivatives() && stage & VERTEX != 0 => {
@@ -1043,9 +1053,10 @@ fn infer(
                 function,
             });
         }
-        Expression::Sample { .. } | Expression::TextureLoad { .. } | Expression::TextureQuery { .. } => {
-            texture_type(program, id, expression, operands)?
-        }
+        Expression::Sample { .. }
+        | Expression::SampleCompare { .. }
+        | Expression::TextureLoad { .. }
+        | Expression::TextureQuery { .. } => texture_type(program, id, expression, operands)?,
         _ => operation_type(id, expression, operands)?,
     };
     constant_out_of_range(&program.expressions, id, expression)?;
@@ -1115,6 +1126,12 @@ fn texture_signature(kind: ResourceKind, expression: &Expression) -> String {
             if kind.is_integer() {
                 return format!("a float texture: a {} is read with load", kind.name());
             }
+            if kind.is_depth() {
+                return format!(
+                    "a float texture: a {} is compared with sampleCompare, or read with load",
+                    kind.name()
+                );
+            }
             let Some(coordinates) = kind.coordinates() else {
                 return format!("{operation}(a texture, a Sampler, its coordinates)");
             };
@@ -1125,9 +1142,17 @@ fn texture_signature(kind: ResourceKind, expression: &Expression) -> String {
             };
             format!("{operation}({}, Sampler, {coordinates}{layer}{tail})", kind.name())
         }
-        Expression::TextureLoad { .. } if kind == ResourceKind::TextureCube => {
-            "a texture that isn't a cube: a cube is only sampled".to_owned()
+        Expression::SampleCompare { level_zero, .. } => {
+            let operation = if level_zero { "sampleCompareLevel" } else { "sampleCompare" };
+            let Some(coordinates) = kind.coordinates().filter(|_| kind.is_depth()) else {
+                return format!("a depth texture: {operation} compares depths");
+            };
+            format!(
+                "{operation}({}, ComparisonSampler, {coordinates}{layer}, a Float depth)",
+                kind.name()
+            )
         }
+        Expression::TextureLoad { .. } if kind.is_cube() => "a texture that isn't a cube: a cube is only sampled".to_owned(),
         Expression::TextureLoad { .. } if kind.is_texture() => {
             let coordinates = if kind.dimensions() == 3 {
                 "Vec3i or Vec3u"
@@ -1144,7 +1169,7 @@ fn texture_signature(kind: ResourceKind, expression: &Expression) -> String {
         Expression::TextureQuery {
             query: TextureQuery::Layers,
             ..
-        } => "a Texture2DArray".to_owned(),
+        } => "an array texture".to_owned(),
         _ => "a texture".to_owned(),
     }
 }
@@ -1180,15 +1205,27 @@ pub fn texture_type(
             let (texture, sampler) = (kind(texture)?, kind(sampler)?);
             let level = level.expression().map(|_| operands[operands.len() - 1]);
             let fits = sampler == ResourceKind::Sampler
+                && !texture.is_depth()
                 && texture.coordinates() == Some(operands[0])
                 && layered(texture, layer)
                 && level.is_none_or(|level| level == Type::Float);
             (texture, vec![texture.name(), sampler.name()], fits.then_some(Type::Vec4f))
         }
+        Expression::SampleCompare {
+            texture, sampler, layer, ..
+        } => {
+            let (texture, sampler) = (kind(texture)?, kind(sampler)?);
+            let fits = sampler == ResourceKind::ComparisonSampler
+                && texture.is_depth()
+                && texture.coordinates() == Some(operands[0])
+                && layered(texture, layer)
+                && operands[operands.len() - 1] == Type::Float;
+            (texture, vec![texture.name(), sampler.name()], fits.then_some(Type::Float))
+        }
         Expression::TextureLoad { texture, layer, .. } => {
             let texture = kind(texture)?;
             let coordinates = operands[0];
-            let fits = texture != ResourceKind::TextureCube
+            let fits = !texture.is_cube()
                 && coordinates.is_integer()
                 && coordinates.components() == texture.dimensions()
                 && layered(texture, layer)
@@ -1286,6 +1323,7 @@ pub fn operation_type(id: ExpressionId, expression: &Expression, operands: &[Typ
         | Expression::Varying(_)
         | Expression::Load(_)
         | Expression::Sample { .. }
+        | Expression::SampleCompare { .. }
         | Expression::TextureLoad { .. }
         | Expression::TextureQuery { .. } => unreachable!("typed by their declarations, not their operands"),
         Expression::Binary(operator, ..) => {

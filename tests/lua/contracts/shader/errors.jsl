@@ -98,6 +98,14 @@ return {
     dimensionsOfTwo = inFragment(
       function(input) return shader.vec4(shader.float(shader.dimensions(input.material.diffuse, 0, 1).x)) end
     ),
+    sampleDepth = build {
+      material = { shadow = shader.depthTexture2d },
+      vertex = vertex,
+      fragment = function(input) return shader.sample(input.material.shadow, shader.vec2(0.5)) end,
+    },
+    compareColor = inFragment(
+      function(input) return shader.vec4(shader.sampleCompare(input.material.diffuse, shader.vec2(0.5), 0)) end
+    ),
     notASampler = inFragment(
       function(input)
         return shader.sample(input.material.diffuse, input.material.tint, input.material.light.xy)

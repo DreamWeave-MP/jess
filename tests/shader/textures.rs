@@ -211,7 +211,7 @@ fn reads_and_queries_take_what_their_texture_does() {
             site.dimensions(sampler, None),
             "dimensions(Sampler) is invalid: expected a texture, and maybe an Int or UInt level",
         ),
-        (site.layers(flat), "layers(Texture2D) is invalid: expected a Texture2DArray"),
+        (site.layers(flat), "layers(Texture2D) is invalid: expected an array texture"),
     ];
     for (result, message) in refusals {
         let error = result.unwrap_err();
@@ -241,6 +241,146 @@ fn a_bias_needs_the_fragment_stage() {
         [
             "sampleBias is used in the vertex stage, which has no derivatives to pick a mip level with: sample at a \
           level with sampleLevel"
+        ]
+    );
+}
+
+#[test]
+fn depth_textures_compare_through_comparison_samplers() {
+    let mut builder = ProgramBuilder::new();
+    let mut site = builder.site();
+    let position = site.attribute(Rate::Vertex, "position", Type::Vec4f).unwrap();
+    let position = site.read_attribute(position);
+    let shadow = site
+        .resource(Frequency::Pass, "shadow", ResourceKind::DepthTexture2D)
+        .unwrap();
+    let cascades = site
+        .resource(Frequency::Pass, "cascades", ResourceKind::DepthTexture2DArray)
+        .unwrap();
+    let point = site
+        .resource(Frequency::Pass, "point", ResourceKind::DepthTextureCube)
+        .unwrap();
+    let compare = site
+        .resource(Frequency::Pass, "compare", ResourceKind::ComparisonSampler)
+        .unwrap();
+    let cascade = read(&mut site, Frequency::Draw, "cascade", Type::UInt);
+
+    // In the vertex stage, a comparison happens in level 0.
+    let uv = site.swizzle(position, Swizzle::parse("xy").unwrap()).unwrap();
+    let depth = site.swizzle(position, Swizzle::parse("z").unwrap()).unwrap();
+    let lit = site.sample_compare_level(shadow, compare, uv, None, depth).unwrap();
+    assert_eq!(lit.ty(), Type::Float);
+    let lit = site.construct(Type::Vec4f, &[lit]).unwrap();
+    let position = site.multiply(position, lit).unwrap();
+    site.set_position(position).unwrap();
+    let direction = site.swizzle(position, Swizzle::parse("xyz").unwrap()).unwrap();
+    let direction = site.pass("direction", direction).unwrap();
+
+    let uv = site.swizzle(direction, Swizzle::parse("xy").unwrap()).unwrap();
+    let depth = site.swizzle(direction, Swizzle::parse("z").unwrap()).unwrap();
+    let near = site.sample_compare(cascades, compare, uv, Some(cascade), depth).unwrap();
+    let far = site.sample_compare(point, compare, direction, None, depth).unwrap();
+    let zero = site.uint(0);
+    let texel = site.convert(Type::Vec2u, uv).unwrap();
+    let stored = site.load_texel(shadow, texel, None, zero).unwrap();
+    assert_eq!(stored.ty(), Type::Float);
+    let light = site.multiply(near, far).unwrap();
+    let light = site.add(light, stored).unwrap();
+    let color = site.construct(Type::Vec4f, &[light]).unwrap();
+    site.output(color).unwrap();
+
+    let program = builder.finish().unwrap_or_else(|errors| panic!("{errors:#?}"));
+    let module = wgsl::lower(&program).unwrap_or_else(|errors| panic!("{errors:#?}"));
+    assert_valid_wgsl(&module);
+    for line in [
+        "var t_pass_shadow: texture_depth_2d;",
+        "var t_pass_cascades: texture_depth_2d_array;",
+        "var t_pass_point: texture_depth_cube;",
+        "var s_pass_compare: sampler_comparison;",
+        "textureSampleCompareLevel(t_pass_shadow, s_pass_compare, ",
+        "textureSampleCompare(t_pass_cascades, s_pass_compare, e0, u_draw.f_cascade, e1)",
+        "textureSampleCompare(t_pass_point, s_pass_compare, input.v_direction, e1)",
+    ] {
+        assert!(module.source.contains(line), "no {line:?} in:\n{}", module.source);
+    }
+}
+
+#[test]
+fn a_comparison_takes_a_depth_texture_and_a_comparison_sampler() {
+    let mut builder = ProgramBuilder::new();
+    let mut site = builder.site();
+    let uv = read(&mut site, Frequency::Material, "uv", Type::Vec2f);
+    let depth = read(&mut site, Frequency::Material, "depth", Type::Float);
+    let linear = site.resource(Frequency::Pass, "linear", ResourceKind::Sampler).unwrap();
+    let compare = site
+        .resource(Frequency::Pass, "compare", ResourceKind::ComparisonSampler)
+        .unwrap();
+    let shadow = site
+        .resource(Frequency::Pass, "shadow", ResourceKind::DepthTexture2D)
+        .unwrap();
+    let flat = site.resource(Frequency::Pass, "flat", ResourceKind::Texture2D).unwrap();
+
+    let refusals = [
+        (
+            site.sample(shadow, linear, uv, None),
+            "sample(DepthTexture2D, Sampler, Vec2f) is invalid: expected a float texture: a DepthTexture2D is \
+             compared with sampleCompare, or read with load",
+        ),
+        (
+            site.sample(flat, compare, uv, None),
+            "sample(Texture2D, ComparisonSampler, Vec2f) is invalid: expected sample(Texture2D, Sampler, Vec2f)",
+        ),
+        (
+            site.sample_compare(shadow, linear, uv, None, depth),
+            "sampleCompare(DepthTexture2D, Sampler, Vec2f, Float) is invalid: expected \
+             sampleCompare(DepthTexture2D, ComparisonSampler, Vec2f, a Float depth)",
+        ),
+        (
+            site.sample_compare(flat, compare, uv, None, depth),
+            "sampleCompare(Texture2D, ComparisonSampler, Vec2f, Float) is invalid: expected a depth texture: \
+             sampleCompare compares depths",
+        ),
+        (
+            site.sample_compare_level(shadow, compare, uv, None, uv),
+            "sampleCompareLevel(DepthTexture2D, ComparisonSampler, Vec2f, Vec2f) is invalid: expected \
+             sampleCompareLevel(DepthTexture2D, ComparisonSampler, Vec2f, a Float depth)",
+        ),
+    ];
+    for (result, message) in refusals {
+        let error = result.unwrap_err();
+        assert!(matches!(error.kind, ValidationErrorKind::InvalidTexture { .. }), "{error:?}");
+        assert_eq!(error.kind.to_string(), message);
+    }
+}
+
+#[test]
+fn a_comparison_at_the_derivatives_level_needs_the_fragment_stage() {
+    let mut builder = ProgramBuilder::new();
+    let mut site = builder.site();
+    let position = site.attribute(Rate::Vertex, "position", Type::Vec4f).unwrap();
+    let position = site.read_attribute(position);
+    let shadow = site
+        .resource(Frequency::Pass, "shadow", ResourceKind::DepthTexture2D)
+        .unwrap();
+    let compare = site
+        .resource(Frequency::Pass, "shadow", ResourceKind::ComparisonSampler)
+        .unwrap();
+    let uv = site.swizzle(position, Swizzle::parse("xy").unwrap()).unwrap();
+    let depth = site.swizzle(position, Swizzle::parse("z").unwrap()).unwrap();
+    let lit = site.sample_compare(shadow, compare, uv, None, depth).unwrap();
+    let lit = site.construct(Type::Vec4f, &[lit]).unwrap();
+    site.set_position(lit).unwrap();
+    let one = site.float(1.0).unwrap();
+    let white = site.construct(Type::Vec4f, &[one]).unwrap();
+    site.output(white).unwrap();
+
+    let errors = builder.finish().unwrap_err();
+    let messages: Vec<String> = errors.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        messages,
+        [
+            "sampleCompare is used in the vertex stage, which has no derivatives to pick a mip level with: compare \
+          in level 0 with sampleCompareLevel"
         ]
     );
 }

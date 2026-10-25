@@ -229,8 +229,11 @@ impl Uniform {
     }
 }
 
-/// What a resource is. Every texture but the integer ones holds filterable floats and samples to
-/// a `Vec4f`; the integer ones are only loaded.
+/// What a resource is: a texture or a sampler.
+///
+/// The float textures hold filterable floats and sample to a `Vec4f`; the integer ones are only
+/// loaded; the depth ones hold depths, compared with a reference depth through a comparison
+/// sampler, or loaded to a `Float`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ResourceKind {
     /// A 2D texture, sampled at `Vec2f` coordinates.
@@ -246,8 +249,17 @@ pub enum ResourceKind {
     Texture2Di,
     /// A 2D texture of unsigned integers, loaded to a `Vec4u`.
     Texture2Du,
+    /// A 2D texture of depths, compared at `Vec2f` coordinates: a shadow map.
+    DepthTexture2D,
+    /// Layers of 2D textures of depths, compared at `Vec2f` coordinates in a layer: cascaded
+    /// shadow maps.
+    DepthTexture2DArray,
+    /// Six square faces of depths, compared in a `Vec3f` direction: a point light's shadow map.
+    DepthTextureCube,
     /// A filtering sampler.
     Sampler,
+    /// A sampler that compares what it reads with a reference depth, for a depth texture.
+    ComparisonSampler,
 }
 
 impl ResourceKind {
@@ -261,24 +273,40 @@ impl ResourceKind {
             ResourceKind::Texture3D => "Texture3D",
             ResourceKind::Texture2Di => "Texture2Di",
             ResourceKind::Texture2Du => "Texture2Du",
+            ResourceKind::DepthTexture2D => "DepthTexture2D",
+            ResourceKind::DepthTexture2DArray => "DepthTexture2DArray",
+            ResourceKind::DepthTextureCube => "DepthTextureCube",
             ResourceKind::Sampler => "Sampler",
+            ResourceKind::ComparisonSampler => "ComparisonSampler",
         }
+    }
+
+    /// Whether it is a sampler of either kind rather than a texture.
+    #[must_use]
+    pub fn is_sampler(self) -> bool {
+        matches!(self, ResourceKind::Sampler | ResourceKind::ComparisonSampler)
     }
 
     /// Whether it is a texture rather than a sampler.
     #[must_use]
     pub fn is_texture(self) -> bool {
-        self != ResourceKind::Sampler
+        !self.is_sampler()
     }
 
-    /// The coordinates a float texture is sampled at; `None` for an integer texture, which isn't
-    /// sampled, and a sampler.
+    /// The coordinates a float or depth texture is sampled at; `None` for an integer texture,
+    /// which isn't sampled, and a sampler.
     #[must_use]
     pub fn coordinates(self) -> Option<Type> {
         match self {
-            ResourceKind::Texture2D | ResourceKind::Texture2DArray => Some(Type::Vec2f),
-            ResourceKind::TextureCube | ResourceKind::Texture3D => Some(Type::Vec3f),
-            ResourceKind::Texture2Di | ResourceKind::Texture2Du | ResourceKind::Sampler => None,
+            ResourceKind::Texture2D
+            | ResourceKind::Texture2DArray
+            | ResourceKind::DepthTexture2D
+            | ResourceKind::DepthTexture2DArray => Some(Type::Vec2f),
+            ResourceKind::TextureCube | ResourceKind::Texture3D | ResourceKind::DepthTextureCube => Some(Type::Vec3f),
+            ResourceKind::Texture2Di
+            | ResourceKind::Texture2Du
+            | ResourceKind::Sampler
+            | ResourceKind::ComparisonSampler => None,
         }
     }
 
@@ -288,19 +316,22 @@ impl ResourceKind {
     pub fn dimensions(self) -> u8 {
         match self {
             ResourceKind::Texture3D => 3,
-            ResourceKind::Sampler => 0,
+            ResourceKind::Sampler | ResourceKind::ComparisonSampler => 0,
             _ => 2,
         }
     }
 
-    /// What one texel reads as: `Vec4f`, or `Vec4i` or `Vec4u` for an integer texture; `None` for
-    /// a sampler.
+    /// What one texel reads as: `Vec4f`, `Vec4i` or `Vec4u` for an integer texture, or a `Float`
+    /// depth; `None` for a sampler.
     #[must_use]
     pub fn texel(self) -> Option<Type> {
         match self {
             ResourceKind::Texture2Di => Some(Type::Vec4i),
             ResourceKind::Texture2Du => Some(Type::Vec4u),
-            ResourceKind::Sampler => None,
+            ResourceKind::DepthTexture2D | ResourceKind::DepthTexture2DArray | ResourceKind::DepthTextureCube => {
+                Some(Type::Float)
+            }
+            ResourceKind::Sampler | ResourceKind::ComparisonSampler => None,
             _ => Some(Type::Vec4f),
         }
     }
@@ -311,10 +342,36 @@ impl ResourceKind {
         matches!(self, ResourceKind::Texture2Di | ResourceKind::Texture2Du)
     }
 
+    /// Whether it is a depth texture, compared through a comparison sampler or loaded.
+    #[must_use]
+    pub fn is_depth(self) -> bool {
+        matches!(
+            self,
+            ResourceKind::DepthTexture2D | ResourceKind::DepthTexture2DArray | ResourceKind::DepthTextureCube
+        )
+    }
+
     /// Whether it is an array texture, read in a layer.
     #[must_use]
     pub fn is_array(self) -> bool {
-        self == ResourceKind::Texture2DArray
+        matches!(self, ResourceKind::Texture2DArray | ResourceKind::DepthTexture2DArray)
+    }
+
+    /// Whether it is a cube, which is only sampled.
+    #[must_use]
+    pub fn is_cube(self) -> bool {
+        matches!(self, ResourceKind::TextureCube | ResourceKind::DepthTextureCube)
+    }
+
+    /// The sampler a texture of this kind is declared with: a comparison sampler for a depth
+    /// texture, none for an integer texture; `None` for a sampler.
+    #[must_use]
+    pub fn sampler(self) -> Option<ResourceKind> {
+        match self {
+            _ if self.is_sampler() || self.is_integer() => None,
+            _ if self.is_depth() => Some(ResourceKind::ComparisonSampler),
+            _ => Some(ResourceKind::Sampler),
+        }
     }
 }
 

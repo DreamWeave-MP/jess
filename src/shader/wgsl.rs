@@ -181,7 +181,11 @@ impl Lowering<'_> {
                     ResourceKind::Texture2DArray => "texture_2d_array<f32>",
                     ResourceKind::TextureCube => "texture_cube<f32>",
                     ResourceKind::Texture3D => "texture_3d<f32>",
+                    ResourceKind::DepthTexture2D => "texture_depth_2d",
+                    ResourceKind::DepthTexture2DArray => "texture_depth_2d_array",
+                    ResourceKind::DepthTextureCube => "texture_depth_cube",
                     ResourceKind::Sampler => "sampler",
+                    ResourceKind::ComparisonSampler => "sampler_comparison",
                 };
                 let prefix = resource_prefix(resource.kind);
                 emit!(
@@ -369,6 +373,19 @@ impl Lowering<'_> {
                     SampleLevel::Implicit => "textureSample",
                     SampleLevel::Bias(_) => "textureSampleBias",
                     SampleLevel::Explicit(_) => "textureSampleLevel",
+                };
+                self.texture_call(function, &[texture, sampler], &expression);
+            }
+            Expression::SampleCompare {
+                texture,
+                sampler,
+                level_zero,
+                ..
+            } => {
+                let function = if level_zero {
+                    "textureSampleCompareLevel"
+                } else {
+                    "textureSampleCompare"
                 };
                 self.texture_call(function, &[texture, sampler], &expression);
             }

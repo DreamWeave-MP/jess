@@ -151,7 +151,12 @@
     "sameModule": true,
     "sampled": {
       "bias": "ShaderExpr(Vec4f)",
+      "compareHandle": "ShaderSampler(ComparisonSampler)",
+      "compared": "ShaderExpr(Float)",
+      "comparedAtZero": "ShaderExpr(Float)",
+      "comparedIn": "ShaderExpr(Float)",
       "cube": "ShaderExpr(Vec4f)",
+      "depth": "ShaderExpr(Float)",
       "explicit": "ShaderExpr(Vec4f)",
       "handles": [
         "ShaderTexture(Texture2DArray)",
@@ -167,6 +172,7 @@
       "levelSize": "ShaderExpr(Vec2u)",
       "levels": "ShaderExpr(UInt)",
       "numberLayer": "ShaderExpr(Vec4f)",
+      "shadowHandle": "ShaderTexture(DepthTexture2D)",
       "size": "ShaderExpr(Vec3u)",
       "volume": "ShaderExpr(Vec4f)"
     },
@@ -186,6 +192,10 @@
       "instance": {},
       "material": [
         {
+          "name": "cascades",
+          "type": "DepthTexture2DArray"
+        },
+        {
           "name": "decals",
           "type": "Texture2DArray"
         },
@@ -198,17 +208,25 @@
           "type": "Texture2Du"
         },
         {
+          "name": "shadow",
+          "type": "DepthTexture2D"
+        },
+        {
           "name": "sky",
           "type": "TextureCube"
         }
       ],
       "pass": [
         {
+          "name": "compare",
+          "type": "ComparisonSampler"
+        },
+        {
           "name": "linear",
           "type": "Sampler"
         }
       ],
-      "tostring": "ShaderProgram(1 attribute, 1 uniform, 4 textures, 1 varying)",
+      "tostring": "ShaderProgram(1 attribute, 1 uniform, 6 textures, 1 varying)",
       "varyings": [
         {
           "name": "direction",
@@ -218,6 +236,10 @@
     },
     "types": {
       "array": "Light[4]",
+      "comparisonSampler": "ComparisonSampler",
+      "depthTexture2d": "DepthTexture2D",
+      "depthTexture2dArray": "DepthTexture2DArray",
+      "depthTextureCube": "DepthTextureCube",
       "float": "Float",
       "int": "Int",
       "mat3": "Mat3f",

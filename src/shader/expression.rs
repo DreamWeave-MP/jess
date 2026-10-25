@@ -805,6 +805,24 @@ pub enum Expression {
         /// How it picks a mip level.
         level: SampleLevel,
     },
+    /// A depth texture's depths compared with a `Float` reference depth through a comparison
+    /// sampler and filtered, to a `Float` from 0, where every texel read fails, to 1, where every
+    /// one passes.
+    SampleCompare {
+        /// A depth texture.
+        texture: ResourceId,
+        /// A `ComparisonSampler`.
+        sampler: ResourceId,
+        /// The coordinates, of the type [`ResourceKind::coordinates`](crate::shader::ResourceKind::coordinates) gives.
+        coordinates: ExpressionId,
+        /// The layer of an array texture, an `Int` or `UInt`; `None` for any other.
+        layer: Option<ExpressionId>,
+        /// The `Float` depth compared with.
+        reference: ExpressionId,
+        /// Whether it compares in mip level 0, in any stage, rather than at the level the fragment
+        /// stage's derivatives pick.
+        level_zero: bool,
+    },
     /// One texel of a texture that isn't a cube, read without a sampler, to `Vec4f`, `Vec4i`, or
     /// `Vec4u` as the texture holds.
     TextureLoad {
@@ -901,6 +919,12 @@ impl Expression {
                 level,
                 ..
             } => return texture_operands(*coordinates, *layer, level.expression()),
+            Expression::SampleCompare {
+                coordinates,
+                layer,
+                reference,
+                ..
+            } => return texture_operands(*coordinates, *layer, Some(*reference)),
             Expression::TextureLoad {
                 coordinates,
                 layer,
@@ -942,6 +966,16 @@ impl Expression {
                     SampleLevel::Implicit => {}
                     SampleLevel::Bias(level) | SampleLevel::Explicit(level) => rewrite(level),
                 }
+            }
+            Expression::SampleCompare {
+                coordinates,
+                layer,
+                reference,
+                ..
+            } => {
+                rewrite(coordinates);
+                layer.iter_mut().for_each(&mut rewrite);
+                rewrite(reference);
             }
             Expression::TextureLoad {
                 coordinates,
@@ -1000,6 +1034,8 @@ impl Expression {
             Expression::Builtin(builtin) => builtin.name(),
             Expression::Varying(_) => "varying",
             Expression::Sample { level, .. } => level.operation(),
+            Expression::SampleCompare { level_zero: false, .. } => "sampleCompare",
+            Expression::SampleCompare { level_zero: true, .. } => "sampleCompareLevel",
             Expression::TextureQuery { query, .. } => query.operation(),
             Expression::Unary(operator, _) => operator.name(),
             Expression::Binary(operator, ..) => operator.name(),

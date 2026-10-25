@@ -6,7 +6,7 @@ extra:
   kind: api
 ---
 
-{{ api_signature(value="jess.shader: { program, struct, array, float, int, uint, vec2, vec3, vec4, vec2i, vec3i, vec4i, vec2u, vec3u, vec4u, mat3, mat4, texture2d, texture2dArray, textureCube, texture3d, texture2di, texture2du, sampler, min, max, clamp, abs, sign, floor, ceil, round, trunc, fract, sqrt, inverseSqrt, exp, exp2, log, log2, pow, sin, cos, tan, asin, acos, atan, atan2, radians, degrees, saturate, step, smoothstep, mix, dot, cross, length, distance, normalize, reflect, refract, transpose, determinant, dpdx, dpdy, fwidth, equal, notEqual, less, lessEqual, greater, greaterEqual, logicalAnd, logicalOr, logicalNot, select, bitAnd, bitOr, bitXor, bitNot, shiftLeft, shiftRight, sample, sampleLevel, sampleBias, load, dimensions, levels, layers }") }}
+{{ api_signature(value="jess.shader: { program, struct, array, float, int, uint, vec2, vec3, vec4, vec2i, vec3i, vec4i, vec2u, vec3u, vec4u, mat3, mat4, texture2d, texture2dArray, textureCube, texture3d, texture2di, texture2du, depthTexture2d, depthTexture2dArray, depthTextureCube, sampler, comparisonSampler, min, max, clamp, abs, sign, floor, ceil, round, trunc, fract, sqrt, inverseSqrt, exp, exp2, log, log2, pow, sin, cos, tan, asin, acos, atan, atan2, radians, degrees, saturate, step, smoothstep, mix, dot, cross, length, distance, normalize, reflect, refract, transpose, determinant, dpdx, dpdy, fwidth, equal, notEqual, less, lessEqual, greater, greaterEqual, logicalAnd, logicalOr, logicalNot, select, bitAnd, bitOr, bitXor, bitNot, shiftLeft, shiftRight, sample, sampleLevel, sampleBias, sampleCompare, sampleCompareLevel, load, dimensions, levels, layers }") }}
 
 A shader, written in Luau. `require("@jess/shader")` is the same table as `jess.shader`, and a shader module is an ordinary Luau module that runs once and returns a `ShaderProgram`.
 
@@ -222,8 +222,8 @@ Everything else a program reads is bound by one of three frequencies, which say 
 Each frequency's table names what it binds:
 
 - **Values, structs, and arrays** are its uniform block's members. A value is `shader.vec4` and the rest; a struct is a type from [shader.struct](#shader-struct); an array is a type from [shader.array](#shader-array). Change one, and nothing recompiles: it's data.
-- **`shader.texture2d`**, **`shader.texture2dArray`**, **`shader.textureCube`**, and **`shader.texture3d`** are textures, each declared with a sampler of the same name, which [sample](#shader-sample) uses. **`shader.texture2di`** and **`shader.texture2du`** are textures of integers, with no sampler, which [load](#levels-texels-and-sizes) reads.
-- **`shader.sampler`** is a sampler of its own, for `sample`'s three-argument form.
+- **`shader.texture2d`**, **`shader.texture2dArray`**, **`shader.textureCube`**, and **`shader.texture3d`** are textures, each declared with a sampler of the same name, which [sample](#shader-sample) uses. **`shader.texture2di`** and **`shader.texture2du`** are textures of integers, with no sampler, which [load](#levels-texels-and-sizes) reads. The depth textures, **`shader.depthTexture2d`** and the rest, come with a comparison sampler, for [sampleCompare](#depth-comparison).
+- **`shader.sampler`** and **`shader.comparisonSampler`** are samplers of their own, for the texture functions that take a sampler after the texture.
 
 Reading goes one step at a time. `input.pass.camera` is the camera; `.view` is its view matrix, a value. An array is indexed from 0 by a number or by a shader value, `#` is its length, and an element is a value or a struct to go on into: `input.pass.lights[i].color`. A step that reaches a value reads it; a texture or sampler is a handle for `sample`. Until then it's a `ShaderPlace`, which isn't a value: `input.pass.camera + 1` fails with `+: expected a shader value, not Camera, a struct: read one of its fields`.
 
@@ -310,7 +310,7 @@ shader.program {
 
 ## Types
 
-{{ api_signature(value="shader.float, shader.int, shader.uint, shader.vec2, shader.vec3, shader.vec4, shader.vec2i, shader.vec3i, shader.vec4i, shader.vec2u, shader.vec3u, shader.vec4u, shader.mat3, shader.mat4, shader.texture2d, shader.texture2dArray, shader.textureCube, shader.texture3d, shader.texture2di, shader.texture2du, shader.sampler: ShaderType") }}
+{{ api_signature(value="shader.float, shader.int, shader.uint, shader.vec2, shader.vec3, shader.vec4, shader.vec2i, shader.vec3i, shader.vec4i, shader.vec2u, shader.vec3u, shader.vec4u, shader.mat3, shader.mat4, shader.texture2d, shader.texture2dArray, shader.textureCube, shader.texture3d, shader.texture2di, shader.texture2du, shader.depthTexture2d, shader.depthTexture2dArray, shader.depthTextureCube, shader.sampler, shader.comparisonSampler: ShaderType") }}
 
 A `ShaderType` is what attributes and bindings declare, and `tostring` gives its name as errors spell it.
 
@@ -326,7 +326,9 @@ A `ShaderType` is what attributes and bindings declare, and `tostring` gives its
 | `shader.textureCube` | `TextureCube` | The same: six square faces, an environment or a sky. |
 | `shader.texture3d` | `Texture3D` | The same: a volume. |
 | `shader.texture2di`, `shader.texture2du` | `Texture2Di`, `Texture2Du` | A 2D texture of signed or unsigned integers, read with [load](#levels-texels-and-sizes), declared with no sampler. |
+| `shader.depthTexture2d`, `shader.depthTexture2dArray`, `shader.depthTextureCube` | `DepthTexture2D`, `DepthTexture2DArray`, `DepthTextureCube` | A texture of depths and its comparison sampler, for [sampleCompare](#depth-comparison). |
 | `shader.sampler` | `Sampler` | A sampler of its own, for [sample](#shader-sample)'s three-argument form. |
+| `shader.comparisonSampler` | `ComparisonSampler` | A comparison sampler of its own, for [sampleCompare](#depth-comparison). |
 | [shader.struct](#shader-struct)`(...)` | its name | A uniform member, a field, or an element. |
 | [shader.array](#shader-array)`(...)` | `Element[length]` | A uniform member or a field. |
 
@@ -622,12 +624,47 @@ shader.program {
     local material = input.material
     local size = shader.dimensions(material.ids)
     local id = shader.load(material.ids, shader.vec2u(input.uv * shader.vec2(size)), 0)
-    print(size, id, shader.levels(material.height), shader.sampleBias(material.height, input.uv, -1))
+    local sharp = shader.sampleBias(material.height, input.uv, -1)
+    print(size, id, shader.levels(material.height), sharp)
 
     return shader.vec4(shader.float(id.x) / 255)
   end,
 }
 -- ShaderExpr(Vec2u)  ShaderExpr(Vec4u)  ShaderExpr(UInt)  ShaderExpr(Vec4f)
+```
+
+### Depth comparison
+
+{{ api_signature(value="shader.sampleCompare(texture: ShaderTexture, sampler: ShaderSampler?, coordinates: ShaderExpr, layer: (ShaderExpr | number)?, depth: ShaderExpr | number) -> ShaderExpr") }}
+{{ api_signature(value="shader.sampleCompareLevel(texture: ShaderTexture, sampler: ShaderSampler?, coordinates: ShaderExpr, layer: (ShaderExpr | number)?, depth: ShaderExpr | number) -> ShaderExpr") }}
+
+A shadow map is a depth texture: how far the light saw, per texel. Shading a point asks whether it's farther than that, which is a comparison the sampler makes, texel by texel, before it filters. `sampleCompare` takes a depth texture, its coordinates (and layer), and the `Float` depth to compare, and gives a `Float` from 0, where every texel it read is nearer the light than the point, to 1, where none is: the point's share of light. `sampleCompareLevel` compares in mip level 0, which the vertex stage can do too.
+
+The depth textures, `shader.depthTexture2d`, `shader.depthTexture2dArray` (cascades), and `shader.depthTextureCube` (a point light's six directions), are declared with a comparison sampler of the same name; `shader.comparisonSampler` declares one of its own. `load` reads a depth texture's texel as a `Float`, and `sample` refuses one: `sample(DepthTexture2D, ComparisonSampler, Vec2f) is invalid: expected a float texture: a DepthTexture2D is compared with sampleCompare, or read with load`.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+shader.program {
+  attributes = { position = shader.vec3 },
+  pass = { lightViewProjection = shader.mat4, shadow = shader.depthTexture2d },
+  vertex = function(input)
+    local position = shader.vec4(input.attributes.position, 1)
+    local light = input.pass.lightViewProjection * position
+
+    return { position = position, light = light.xyz / light.w }
+  end,
+
+  fragment = function(input)
+    local uv = input.light.xy * shader.vec2(0.5, -0.5) + 0.5
+    local lit = shader.sampleCompare(input.pass.shadow, uv, input.light.z - 0.005)
+    print(input.pass.shadow, lit)
+
+    return shader.vec4(shader.vec3(shader.mix(0.2, 1, lit)), 1)
+  end,
+}
+-- ShaderTexture(DepthTexture2D)  ShaderExpr(Float)
 ```
 
 ## ShaderProgram
