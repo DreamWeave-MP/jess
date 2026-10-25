@@ -71,6 +71,10 @@ pub const FILES: &[(&str, &str)] = &[
         "tests/audio/adaptive.jsl",
         include_str!("../../jpk/builtin/tests/audio/adaptive.jsl"),
     ),
+    (
+        "tests/audio/arrangement.jsl",
+        include_str!("../../jpk/builtin/tests/audio/arrangement.jsl"),
+    ),
     ("tests/audio/run.jsl", include_str!("../../jpk/builtin/tests/audio/run.jsl")),
     (
         "tests/audio/space.jsl",
