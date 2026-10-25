@@ -9,6 +9,7 @@
 //! There is no public plugin interface: the built-in processors are the trait's implementations.
 
 use crate::audio::dsp::delay::Delay;
+use crate::audio::dsp::drive::Drive;
 use crate::audio::dsp::dynamics::{Compressor, Limiter};
 use crate::audio::dsp::filter::{Filter, Shape};
 use crate::audio::dsp::pan::Pan;
@@ -184,7 +185,7 @@ impl Settings {
 }
 
 /// The kinds of processor [`create`] makes.
-pub const KINDS: &[&str] = &["gain", "pan", "filter", "delay", "compressor", "limiter", "reverb"];
+pub const KINDS: &[&str] = &["gain", "pan", "filter", "delay", "compressor", "limiter", "reverb", "drive"];
 
 /// Makes a processor of `kind` for a context of `rate` and `channels`, with `settings`: the
 /// ones the kind is made with, and the rest as parameters.
@@ -227,6 +228,7 @@ pub fn create(kind: &str, rate: u32, channels: usize, mut settings: Settings) ->
             Box::new(Limiter::new(rate, channels, lookahead))
         }
         "reverb" => Box::new(Reverb::new(rate)),
+        "drive" => Box::new(Drive::new()),
         other => {
             return Err(AudioError::UnknownProcessor {
                 kind: other.to_owned(),
