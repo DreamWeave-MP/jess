@@ -3,6 +3,7 @@
 //! reports, and the work itself.
 
 use std::rc::Rc;
+use std::sync::Arc;
 
 use l3i::bind::Call;
 use l3i::extension::{ExtensionDescriptor, TagPolicy, UserdataBuilder};
@@ -24,9 +25,9 @@ use crate::shader::Frequency;
 #[derive(Debug)]
 pub enum Pipeline {
     /// A vertex and fragment program and its fixed-function state.
-    Render(RenderPipeline),
+    Render(Arc<RenderPipeline>),
     /// A compute program.
-    Compute(ComputePipeline),
+    Compute(Arc<ComputePipeline>),
 }
 
 impl Pipeline {
@@ -53,7 +54,7 @@ unsafe impl Userdata for LuaGpuPipeline {
 /// What one frequency binds for a pipeline.
 #[derive(Debug)]
 pub struct LuaGpuBindGroup {
-    group: Rc<BindGroup>,
+    group: Arc<BindGroup>,
 }
 
 // SAFETY: plain Rust state; the destructor never touches the Lua API.
@@ -163,11 +164,11 @@ fn pipeline(
                 shown(state)
             )));
         }
-        Pipeline::Compute(
+        Pipeline::Compute(Arc::new(
             this.gpu
                 .compute_pipeline(program)
                 .map_err(|problem| gpu_error(FUNCTION, &problem))?,
-        )
+        ))
     } else {
         let Some(state) = state else {
             return Err(error(format!(
@@ -175,11 +176,11 @@ fn pipeline(
             )));
         };
         let state = call.with_frame(|frame| pipeline_state(frame, FUNCTION, state))?;
-        Pipeline::Render(
+        Pipeline::Render(Arc::new(
             this.gpu
                 .render_pipeline(program, &state)
                 .map_err(|problem| gpu_error(FUNCTION, &problem))?,
-        )
+        ))
     };
     Ok(Owned(LuaGpuPipeline {
         gpu: this.gpu.clone(),
@@ -302,9 +303,9 @@ fn frequency_of(function: &str, view: ValueView<'_>) -> l3i::Result<Frequency> {
 
 /// A resource a bind group is made from, held while it is made.
 enum Held {
-    Buffer(Rc<Buffer>),
-    Texture(Rc<Texture>),
-    Sampler(Rc<Sampler>),
+    Buffer(Arc<Buffer>),
+    Texture(Arc<Texture>),
+    Sampler(Arc<Sampler>),
 }
 
 /// What `slot`, named `name`, is, as errors name it.
@@ -387,12 +388,12 @@ fn bind(
         Pipeline::Compute(pipeline) => this.gpu.compute_bind_group(pipeline, frequency, &bindings),
     }
     .map_err(|problem| gpu_error(FUNCTION, &problem))?;
-    Ok(Owned(LuaGpuBindGroup { group: Rc::new(group) }))
+    Ok(Owned(LuaGpuBindGroup { group: Arc::new(group) }))
 }
 
 /// A pass target, held while the pass is drawn.
 struct HeldTarget {
-    texture: Rc<Texture>,
+    texture: Arc<Texture>,
     level: u32,
     layer: u32,
     load: LoadOp,
@@ -414,10 +415,10 @@ impl HeldTarget {
 /// A draw, held while the pass is drawn.
 struct HeldDraw {
     pipeline: Rc<Pipeline>,
-    groups: [Option<Rc<BindGroup>>; 3],
-    vertices: Option<Rc<Buffer>>,
-    instances: Option<Rc<Buffer>>,
-    indices: Option<(Rc<Buffer>, IndexFormat)>,
+    groups: [Option<Arc<BindGroup>>; 3],
+    vertices: Option<Arc<Buffer>>,
+    instances: Option<Arc<Buffer>>,
+    indices: Option<(Arc<Buffer>, IndexFormat)>,
     count: u32,
     instance_count: u32,
 }
@@ -509,7 +510,7 @@ fn clear_value(
 }
 
 /// The bind groups a draw or dispatch gives, by frequency.
-fn groups(frame: &Frame<'_>, function: &str, table: &TableView<'_>) -> l3i::Result<[Option<Rc<BindGroup>>; 3]> {
+fn groups(frame: &Frame<'_>, function: &str, table: &TableView<'_>) -> l3i::Result<[Option<Arc<BindGroup>>; 3]> {
     let mut groups = [None, None, None];
     for frequency in Frequency::ALL {
         let view = table.raw_get(frame, frequency.name())?;
@@ -528,7 +529,7 @@ fn groups(frame: &Frame<'_>, function: &str, table: &TableView<'_>) -> l3i::Resu
 }
 
 /// A buffer field, if it is given.
-fn buffer_field(frame: &Frame<'_>, function: &str, table: &TableView<'_>, key: &str) -> l3i::Result<Option<Rc<Buffer>>> {
+fn buffer_field(frame: &Frame<'_>, function: &str, table: &TableView<'_>, key: &str) -> l3i::Result<Option<Arc<Buffer>>> {
     let view = table.raw_get(frame, key)?;
     if view.is_nil() {
         return Ok(None);

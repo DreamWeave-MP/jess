@@ -2,6 +2,7 @@
 //! string without a copy on the way in, and read back as a new `buffer`.
 
 use std::rc::Rc;
+use std::sync::Arc;
 
 use l3i::bind::{Call, StackResults};
 use l3i::convert::{BytesView, NewBuffer};
@@ -21,7 +22,7 @@ use crate::render::TextureFormat;
 #[derive(Debug)]
 pub struct LuaGpuBuffer {
     pub(crate) gpu: Rc<Gpu>,
-    pub(crate) buffer: Rc<Buffer>,
+    pub(crate) buffer: Arc<Buffer>,
 }
 
 // SAFETY: plain Rust state; the destructor never touches the Lua API.
@@ -33,7 +34,7 @@ unsafe impl Userdata for LuaGpuBuffer {
 #[derive(Debug)]
 pub struct LuaGpuTexture {
     pub(crate) gpu: Rc<Gpu>,
-    pub(crate) texture: Rc<Texture>,
+    pub(crate) texture: Arc<Texture>,
 }
 
 // SAFETY: plain Rust state; the destructor never touches the Lua API.
@@ -44,7 +45,7 @@ unsafe impl Userdata for LuaGpuTexture {
 /// A way of reading textures.
 #[derive(Debug)]
 pub struct LuaGpuSampler {
-    pub(crate) sampler: Rc<Sampler>,
+    pub(crate) sampler: Arc<Sampler>,
 }
 
 // SAFETY: plain Rust state; the destructor never touches the Lua API.
@@ -208,7 +209,7 @@ fn buffer(
         .map_err(|problem| gpu_error(FUNCTION, &problem))?;
     Ok(Owned(LuaGpuBuffer {
         gpu: this.gpu.clone(),
-        buffer: Rc::new(buffer),
+        buffer: Arc::new(buffer),
     }))
 }
 
@@ -251,7 +252,7 @@ fn texture(this: &LuaGpuDevice, call: &Call<'_>, desc: ValueView<'_>) -> l3i::Re
     let texture = this.gpu.texture(&desc).map_err(|problem| gpu_error(FUNCTION, &problem))?;
     Ok(Owned(LuaGpuTexture {
         gpu: this.gpu.clone(),
-        texture: Rc::new(texture),
+        texture: Arc::new(texture),
     }))
 }
 
@@ -304,7 +305,7 @@ fn sampler(this: &LuaGpuDevice, call: &Call<'_>, desc: Option<ValueView<'_>>) ->
     };
     let sampler = this.gpu.sampler(&desc).map_err(|problem| gpu_error(FUNCTION, &problem))?;
     Ok(Owned(LuaGpuSampler {
-        sampler: Rc::new(sampler),
+        sampler: Arc::new(sampler),
     }))
 }
 
