@@ -4,17 +4,17 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::shader::expression::{
-    BinaryOperator, Builtin, Expression, ExpressionId, Function, Literal, Place, SampleLevel, SourceOrigin, Step, Swizzle,
-    TextureQuery, UnaryOperator,
+    BinaryOperator, Builtin, Expression, ExpressionId, Function, Literal, Place, PlaceRoot, SampleLevel, SourceOrigin, Step,
+    Swizzle, TextureQuery, UnaryOperator,
 };
 use crate::shader::flow::{Local, LocalId, LocalKind, Stage, Statement};
 use crate::shader::interface::{
-    Attribute, AttributeId, DataType, Field, Frequency, Rate, Resource, ResourceId, ResourceKind, StructDecl, StructId,
-    Uniform, UniformId,
+    Access, Attribute, AttributeId, DataType, Element, Field, Frequency, Rate, Resource, ResourceId, ResourceKind,
+    StorageBuffer, StorageId, StructDecl, StructId, Uniform, UniformId,
 };
 use crate::shader::program::{Declaration, Program};
 use crate::shader::types::Type;
-use crate::shader::validate::{self, DeclarationKind, ValidationError, ValidationErrorKind};
+use crate::shader::validate::{self, DeclarationKind, PlaceProblem, ValidationError, ValidationErrorKind};
 
 /// Numbers every builder, so a value knows which program it belongs to.
 static NEXT_PROGRAM: AtomicU64 = AtomicU64::new(0);
@@ -236,6 +236,96 @@ impl Site<'_> {
             origin: self.origin.clone(),
         };
         Ok(self.builder.program.resource(resource))
+    }
+
+    /// Declares a storage buffer `name` that `frequency` binds: as many `element`s as the buffer
+    /// bound holds, which the stages read, or read and write.
+    ///
+    /// # Errors
+    ///
+    /// An invalid name, a name the frequency has already, or an element no buffer holds.
+    pub fn storage(
+        &mut self,
+        frequency: Frequency,
+        name: &str,
+        element: Element,
+        access: Access,
+    ) -> Result<StorageId, ValidationError> {
+        let program = &self.builder.program;
+        let kind = DeclarationKind::Storage(frequency);
+        let names = binding_names(program, frequency, None);
+        let mut problems = validate::binding_errors(kind, names, name);
+        problems.extend(validate::data_type_errors(kind, name, element.into(), &program.structs));
+        if let Some(problem) = problems.into_iter().next() {
+            return Err(self.error(problem));
+        }
+        let mut buffer = StorageBuffer::new(frequency, name, element, access);
+        buffer.origin.clone_from(&self.origin);
+        Ok(self.builder.program.storage_buffer(buffer))
+    }
+
+    /// How many elements the storage buffer bound holds, a `UInt`.
+    ///
+    /// # Errors
+    ///
+    /// A storage buffer this program doesn't have.
+    pub fn storage_length(&mut self, storage: StorageId) -> Result<Value, ValidationError> {
+        if self.builder.program.storage.get(storage.index()).is_none() {
+            return Err(self.error(ValidationErrorKind::InvalidPlace {
+                expression: self.next(),
+                problem: PlaceProblem::UndefinedStorage { storage },
+            }));
+        }
+        Ok(self.push(Expression::StorageLength(storage), Type::UInt))
+    }
+
+    /// Writes `value` at `place`, in a `ReadWrite` storage buffer, from here on. `indices` are the
+    /// values of its index steps, in order, as [`load`](Site::load) takes them.
+    ///
+    /// # Errors
+    ///
+    /// Values from another program, no stage entered, the vertex stage, a place outside a
+    /// `ReadWrite` storage buffer or that doesn't lead to a value, or a value of another type.
+    pub fn write(&mut self, place: Place, value: Value, indices: &[Value]) -> Result<(), ValidationError> {
+        self.own(value)?;
+        for index in indices {
+            self.own(*index)?;
+        }
+        let stage = self.stage()?;
+        let program = &self.builder.program;
+        let target = match place.root {
+            PlaceRoot::Uniform(_) => Some(ValidationErrorKind::WriteToUniform),
+            PlaceRoot::Storage(storage) => match program.storage.get(storage.index()) {
+                Some(buffer) if buffer.access == Access::Read => Some(ValidationErrorKind::WriteToReadOnly {
+                    name: buffer.name.clone(),
+                }),
+                Some(buffer) if stage == Stage::Vertex => Some(ValidationErrorKind::StorageInVertex {
+                    name: buffer.name.clone(),
+                }),
+                _ => None,
+            },
+        };
+        if let Some(kind) = target {
+            return Err(self.error(kind));
+        }
+        let index_type = |id: ExpressionId| {
+            let index = indices.iter().find(|index| index.expression == id);
+            index.map_or(Type::Bool, |index| index.ty)
+        };
+        let ty = validate::place_type(program, &place, index_type)
+            .map_err(|problem| self.error(ValidationErrorKind::InvalidWrite { problem }))?;
+        if ty != value.ty {
+            return Err(self.error(ValidationErrorKind::WriteType {
+                place: ty,
+                value: value.ty,
+            }));
+        }
+        self.statement(Statement::Write {
+            place,
+            value: value.expression,
+            origin: self.origin.clone(),
+        });
+        Ok(())
     }
 
     /// The uniform value at `place`, read at this site. `indices` are the values of its index
@@ -1158,5 +1248,10 @@ fn binding_names(program: &Program, frequency: Frequency, kind: Option<ResourceK
         .iter()
         .filter(move |resource| resource.frequency == frequency && kind.is_none_or(|kind| resource.kind == kind))
         .map(|resource| resource.name.as_str());
-    uniforms.chain(resources)
+    let storage = program
+        .storage
+        .iter()
+        .filter(move |buffer| buffer.frequency == frequency)
+        .map(|buffer| buffer.name.as_str());
+    uniforms.chain(resources).chain(storage)
 }

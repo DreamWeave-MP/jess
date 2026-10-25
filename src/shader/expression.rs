@@ -5,7 +5,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use crate::shader::flow::LocalId;
-use crate::shader::interface::{AttributeId, Frequency, ResourceId};
+use crate::shader::interface::{AttributeId, Frequency, ResourceId, StorageId};
 use crate::shader::types::Type;
 
 arena_id!(
@@ -235,9 +235,12 @@ pub const MAX_PLACE_INDICES: usize = 4;
 
 /// Where a place starts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[allow(variant_size_differences)] // an id beside a one-byte frequency: a few bytes either way
 pub enum PlaceRoot {
     /// A frequency's uniform block; the first step names one of its members.
     Uniform(Frequency),
+    /// A storage buffer; the first step is an index, of an element.
+    Storage(StorageId),
 }
 
 /// One step into a struct or an array.
@@ -306,7 +309,7 @@ impl Place {
         operands
     }
 
-    fn rewrite_indices(&mut self, mut rewrite: impl FnMut(&mut ExpressionId)) {
+    pub(crate) fn rewrite_indices(&mut self, mut rewrite: impl FnMut(&mut ExpressionId)) {
         for step in &mut self.steps[..self.count as usize] {
             if let Step::Index(index) = step {
                 rewrite(index);
@@ -792,6 +795,8 @@ pub enum Expression {
     Builtin(Builtin),
     /// A local's value as of here. It is computed where it is placed, so it must be placed.
     Local(LocalId),
+    /// How many elements the bound storage buffer holds, a `UInt`.
+    StorageLength(StorageId),
     /// A declared varying, as the vertex stage wrote it and the rasterizer interpolated it.
     /// Fragment stage only.
     Varying(VaryingId),
@@ -911,6 +916,7 @@ impl Expression {
             | Expression::Attribute(_)
             | Expression::Builtin(_)
             | Expression::Local(_)
+            | Expression::StorageLength(_)
             | Expression::Varying(_)
             | Expression::TextureQuery {
                 query: TextureQuery::Dimensions(None) | TextureQuery::Levels | TextureQuery::Layers,
@@ -960,6 +966,7 @@ impl Expression {
             | Expression::Attribute(_)
             | Expression::Builtin(_)
             | Expression::Local(_)
+            | Expression::StorageLength(_)
             | Expression::Varying(_) => {}
             Expression::Load(place) => place.rewrite_indices(rewrite),
             Expression::Sample {
@@ -1041,6 +1048,7 @@ impl Expression {
             Expression::Attribute(_) => "attribute",
             Expression::Builtin(builtin) => builtin.name(),
             Expression::Local(_) => "local",
+            Expression::StorageLength(_) => "#",
             Expression::Varying(_) => "varying",
             Expression::Sample { level, .. } => level.operation(),
             Expression::SampleCompare { level_zero: false, .. } => "sampleCompare",

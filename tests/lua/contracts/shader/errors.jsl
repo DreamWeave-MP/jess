@@ -132,6 +132,56 @@ return {
       end,
       fragment = white,
     },
+    writeReadOnly = build {
+      material = { weights = shader.storage(shader.float) },
+      vertex = vertex,
+      fragment = function(input)
+        shader.write(input.material.weights, 0, 1)
+
+        return shader.vec4(1)
+      end,
+    },
+    writeInVertex = build {
+      material = { sums = shader.storage(shader.float, 'readWrite') },
+      vertex = function(input)
+        shader.write(input.material.sums, 0, 1)
+
+        return { position = shader.vec4(1) }
+      end,
+      fragment = white,
+    },
+    writeStruct = build {
+      material = { lights = shader.storage(Light, 'readWrite') },
+      vertex = vertex,
+      fragment = function(input)
+        shader.write(input.material.lights, 0, shader.vec3(1))
+
+        return shader.vec4(1)
+      end,
+    },
+    writeType = build {
+      material = { sums = shader.storage(shader.float, 'readWrite') },
+      vertex = vertex,
+      fragment = function(input)
+        shader.write(input.material.sums, 0, shader.vec2(1))
+
+        return shader.vec4(1)
+      end,
+    },
+    writeUniform = inFragment(function(input)
+      shader.write(input.pass.lights[0] :: any, 'color', shader.vec3(1))
+
+      return input.material.tint
+    end),
+    storageLength = inFragment(function(input)
+      shader.arrayLength(input.material.tint)
+
+      return input.material.tint
+    end),
+    storageAccess = oracle.message(function() return shader.storage(shader.float, 'write' :: any) end),
+    storageInStruct = oracle.message(
+      function() return shader.struct('Bad', { counts = shader.storage(shader.uint) }) end
+    ),
     notASampler = inFragment(
       function(input)
         return shader.sample(input.material.diffuse, input.material.tint, input.material.light.xy)

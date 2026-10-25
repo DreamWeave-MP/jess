@@ -3,7 +3,8 @@
 use crate::shader::expression::{Expression, ExpressionId, SourceOrigin, VaryingId};
 use crate::shader::flow::{Local, LocalId, Stage, Statement};
 use crate::shader::interface::{
-    Attribute, AttributeId, Frequency, Resource, ResourceId, StructDecl, StructId, Uniform, UniformId,
+    Attribute, AttributeId, Frequency, Resource, ResourceId, StorageBuffer, StorageId, StructDecl, StructId, Uniform,
+    UniformId,
 };
 use crate::shader::layout::ProgramLayout;
 use crate::shader::types::Type;
@@ -38,6 +39,7 @@ pub struct Program {
     pub(crate) attributes: Vec<Attribute>,
     pub(crate) uniforms: Vec<Uniform>,
     pub(crate) resources: Vec<Resource>,
+    pub(crate) storage: Vec<StorageBuffer>,
     pub(crate) varyings: Vec<Declaration>,
     pub(crate) position: Option<ExpressionId>,
     pub(crate) varying_writes: Vec<(VaryingId, ExpressionId)>,
@@ -126,6 +128,17 @@ impl Program {
         let location = u32::try_from(self.fragment_outputs.len()).expect("more than u32::MAX fragment outputs");
         self.fragment_outputs.push(expression);
         location
+    }
+
+    /// Declares a storage buffer.
+    pub fn storage_buffer(&mut self, buffer: StorageBuffer) -> StorageId {
+        StorageId::at(push(&mut self.storage, buffer))
+    }
+
+    /// The declared storage buffers, in order.
+    #[must_use]
+    pub fn storage_buffers(&self) -> &[StorageBuffer] {
+        &self.storage
     }
 
     /// Declares a local of a stage body, for a [`Statement::Store`] or a [`Statement::Loop`].

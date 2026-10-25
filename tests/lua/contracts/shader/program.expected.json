@@ -1,5 +1,24 @@
 {
   "result": {
+    "buffers": {
+      "attributes": {},
+      "draw": {},
+      "instance": {},
+      "material": [
+        {
+          "name": "particles",
+          "type": "Particle[]"
+        }
+      ],
+      "pass": [
+        {
+          "name": "counts",
+          "type": "UInt[] readWrite"
+        }
+      ],
+      "tostring": "ShaderProgram(0 attributes, 0 uniforms, 0 textures, 0 varyings)",
+      "varyings": {}
+    },
     "constant": {
       "attributes": [
         {
@@ -202,6 +221,14 @@
       "value": "ShaderExpr(Vec4f)",
       "var": "ShaderVar(Vec4f)"
     },
+    "storage": {
+      "buffer": "ShaderPlace(UInt[] readWrite)",
+      "element": "ShaderExpr(UInt)",
+      "field": "ShaderExpr(Float)",
+      "length": "ShaderExpr(UInt)",
+      "particle": "ShaderPlace(Particle)",
+      "structs": "ShaderPlace(Particle[])"
+    },
     "textures": {
       "attributes": [
         {
@@ -271,6 +298,8 @@
       "mat3": "Mat3f",
       "mat4": "Mat4f",
       "sampler": "Sampler",
+      "storage": "Particle[]",
+      "storageReadWrite": "Vec4f[] readWrite",
       "struct": "Camera",
       "texture2d": "Texture2D",
       "texture2dArray": "Texture2DArray",

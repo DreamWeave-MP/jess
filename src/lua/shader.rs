@@ -22,9 +22,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::shader::{
-    AttributeId, BinaryOperator, Builtin, DataType, Element, Field, Frequency, Function as ShaderFunction, LocalId, Place,
-    PlaceRoot, Program, ProgramBuilder, Rate, ResourceId, ResourceKind, Scalar, Site, SourceOrigin, Stage, Step, StructId,
-    Swizzle, Type, UnaryOperator, ValidationError, Value,
+    Access, AttributeId, BinaryOperator, Builtin, DataType, Element, Field, Frequency, Function as ShaderFunction, LocalId,
+    Place, PlaceRoot, Program, ProgramBuilder, Rate, ResourceId, ResourceKind, Scalar, Site, SourceOrigin, Stage, Step,
+    StorageId, StructId, Swizzle, Type, UnaryOperator, ValidationError, Value,
 };
 use l3i::Runtime;
 use l3i::bind::{ArgView, Call, StackResults};
@@ -117,6 +117,8 @@ enum Member {
     },
     /// A sampler of its own.
     Sampler { kind: ResourceKind, sampler: ResourceId },
+    /// A storage buffer, with its [`Descriptor::Storage`].
+    Storage { storage: StorageId, descriptor: Descriptor },
 }
 
 /// The names a program declares, each read once and handed out as the same value after that.
@@ -210,6 +212,8 @@ enum Descriptor {
     Resource(ResourceKind),
     Struct(Rc<StructType>),
     Array(ArrayElement, u32),
+    /// A storage buffer of the elements, as many as the buffer bound holds.
+    Storage(ArrayElement, Access),
 }
 
 /// What an array of a [`Descriptor::Array`] holds.
@@ -246,6 +250,8 @@ impl Descriptor {
             Descriptor::Resource(kind) => kind.name().to_owned(),
             Descriptor::Struct(structure) => structure.name.clone(),
             Descriptor::Array(element, length) => format!("{}[{length}]", element.descriptor().name()),
+            Descriptor::Storage(element, Access::Read) => format!("{}[]", element.descriptor().name()),
+            Descriptor::Storage(element, Access::ReadWrite) => format!("{}[] readWrite", element.descriptor().name()),
         }
     }
 }
@@ -669,6 +675,7 @@ fn shader_kind(view: ValueView<'_>) -> String {
         return match &place.at {
             None => format!("the {}: read one of its members", place.frequency),
             Some(Descriptor::Array(..)) => format!("{}, an array: read one of its elements", place_name(place)),
+            Some(Descriptor::Storage(..)) => format!("{}, a storage buffer: read one of its elements", place_name(place)),
             Some(_) => format!("{}, a struct: read one of its fields", place_name(place)),
         };
     }
@@ -1040,6 +1047,9 @@ fn data_descriptor(value: ValueView<'_>, what: &str, arrays: bool) -> l3i::Resul
         Descriptor::Array(..) if !arrays => Err(error(format!(
             "{what} is an array: an array holds values or structs, not arrays"
         ))),
+        Descriptor::Storage(..) => Err(error(format!(
+            "{what} is a storage buffer: storage buffers are bound, not held in a struct or array"
+        ))),
         descriptor => Ok(descriptor.clone()),
     }
 }
@@ -1079,7 +1089,9 @@ fn array(shader: &Rc<Shader>, element: ValueView<'_>, length: ValueView<'_>) -> 
     let element = match data_descriptor(element, "shader.array's element", false)? {
         Descriptor::Value(ty) => ArrayElement::Value(ty),
         Descriptor::Struct(structure) => ArrayElement::Struct(structure),
-        Descriptor::Resource(_) | Descriptor::Array(..) => unreachable!("data_descriptor refused it"),
+        Descriptor::Resource(_) | Descriptor::Array(..) | Descriptor::Storage(..) => {
+            unreachable!("data_descriptor refused it")
+        }
     };
     let count = if length.is_number() || length.is_integer() {
         length.read::<f64>()?
@@ -1103,6 +1115,103 @@ fn array(shader: &Rc<Shader>, element: ValueView<'_>, length: ValueView<'_>) -> 
         descriptor: Descriptor::Array(element, length),
         shader: shader.clone(),
     }))
+}
+
+/// `shader.storage(element, access)`: a storage buffer type of value or struct elements, read
+/// (`'read'`, the default) or read and written (`'readWrite'`).
+fn storage(shader: &Rc<Shader>, element: ValueView<'_>, access: Option<ValueView<'_>>) -> l3i::Result<Owned<LuaShaderType>> {
+    let element = match data_descriptor(element, "shader.storage's element", false)? {
+        Descriptor::Value(ty) => ArrayElement::Value(ty),
+        Descriptor::Struct(structure) => ArrayElement::Struct(structure),
+        _ => unreachable!("data_descriptor refused it"),
+    };
+    let access = match access.filter(|access| !access.is_nil()) {
+        None => Access::Read,
+        Some(access) if access.is_string() && access.read::<&str>()? == "read" => Access::Read,
+        Some(access) if access.is_string() && access.read::<&str>()? == "readWrite" => Access::ReadWrite,
+        Some(access) => {
+            let found = if access.is_string() {
+                format!("{:?}", access.read::<&str>()?)
+            } else {
+                kind(access).to_owned()
+            };
+            return Err(error(format!(
+                "shader.storage's access is 'read' or 'readWrite', not {found}"
+            )));
+        }
+    };
+    Ok(Owned(LuaShaderType {
+        descriptor: Descriptor::Storage(element, access),
+        shader: shader.clone(),
+    }))
+}
+
+/// `shader.write(place, key, value)`: writes `value` at `place[key]`, which must reach a value, in
+/// a `readWrite` storage buffer.
+fn write(call: &Call<'_>, place: ValueView<'_>, key: ValueView<'_>, value: ValueView<'_>) -> l3i::Result<()> {
+    let Some(this) = l3i::userdata::receiver::<LuaShaderPlace>(place) else {
+        return Err(error(format!(
+            "shader.write takes a storage buffer or a struct in one, such as input.material.particles[i], \
+             not {}",
+            shader_kind(place)
+        )));
+    };
+    let (step, index, descriptor) = match &this.at {
+        Some(Descriptor::Struct(structure)) => {
+            let name = place_key(this, key)?;
+            let position = field_position(structure, name)?;
+            (Step::Field(position), None, structure.fields[position as usize].1.clone())
+        }
+        Some(Descriptor::Array(element, length)) => {
+            let index = at_site(call, &this.build, |site, _| element_index(site, this, key, Some(*length)))?;
+            (Step::Index(index.expression()), Some(index), element.descriptor())
+        }
+        Some(Descriptor::Storage(element, _)) => {
+            let index = at_site(call, &this.build, |site, _| element_index(site, this, key, None))?;
+            (Step::Index(index.expression()), Some(index), element.descriptor())
+        }
+        _ => {
+            return Err(error(format!(
+                "shader.write writes into a storage buffer, not {}",
+                place_name(this)
+            )));
+        }
+    };
+    let Descriptor::Value(ty) = descriptor else {
+        return Err(error(format!(
+            "shader.write writes a value, and {} is not one: write one of its fields or elements",
+            descriptor.name()
+        )));
+    };
+    let place = this.place.then(step).ok_or_else(too_deep)?;
+    let mut indices = this.indices.clone();
+    indices.extend(index);
+    at_site(call, &this.build, |site, _| {
+        let value = operand_of(site, "shader.write", value, ty.scalar())?;
+        site.write(place, value, &indices).map_err(invalid)
+    })
+}
+
+/// A struct field's position, or the error naming the fields it has.
+fn field_position(structure: &StructType, name: &str) -> l3i::Result<u32> {
+    let Some(position) = structure.fields.iter().position(|(field, _)| field == name) else {
+        let names: Vec<&str> = structure.fields.iter().map(|(field, _)| field.as_str()).collect();
+        return Err(error(format!(
+            "{} has no field \"{name}\": it has {}",
+            structure.name,
+            names.join(", ")
+        )));
+    };
+    // At most `u32::MAX` fields: they are a Luau table's.
+    #[allow(clippy::cast_possible_truncation)]
+    Ok(position as u32)
+}
+
+fn too_deep() -> l3i::Error {
+    error(
+        "this place is too deep to read: a value is at most 8 fields and indices from its binding, and at \
+         most 4 of them indices",
+    )
 }
 
 /// `value.xyz`: a swizzle, the only names a shader value has.
@@ -1235,25 +1344,28 @@ fn place_index(this: &LuaShaderPlace, call: &Call<'_>, key: ValueView<'_>) -> l3
                     }))?;
                     return Ok(StackResults);
                 }
+                Member::Storage { storage, descriptor } => {
+                    call.push(&Owned(LuaShaderPlace {
+                        build: this.build.clone(),
+                        frequency: this.frequency,
+                        place: Place::new(PlaceRoot::Storage(storage), &[]).expect("a root has no steps"),
+                        indices: Vec::new(),
+                        at: Some(descriptor),
+                    }))?;
+                    return Ok(StackResults);
+                }
             }
         }
         Some(Descriptor::Struct(structure)) => {
-            let name = place_key(this, key)?;
-            let Some(position) = structure.fields.iter().position(|(field, _)| field == name) else {
-                let names: Vec<&str> = structure.fields.iter().map(|(field, _)| field.as_str()).collect();
-                return Err(error(format!(
-                    "{} has no field \"{name}\": it has {}",
-                    structure.name,
-                    names.join(", ")
-                )));
-            };
-            // At most `u32::MAX` fields: they are a Luau table's.
-            #[allow(clippy::cast_possible_truncation)]
-            let position = position as u32;
+            let position = field_position(structure, place_key(this, key)?)?;
             (Step::Field(position), None, structure.fields[position as usize].1.clone())
         }
         Some(Descriptor::Array(element, length)) => {
-            let index = at_site(call, &this.build, |site, _| element_index(site, this, key, *length))?;
+            let index = at_site(call, &this.build, |site, _| element_index(site, this, key, Some(*length)))?;
+            (Step::Index(index.expression()), Some(index), element.descriptor())
+        }
+        Some(Descriptor::Storage(element, _)) => {
+            let index = at_site(call, &this.build, |site, _| element_index(site, this, key, None))?;
             (Step::Index(index.expression()), Some(index), element.descriptor())
         }
         Some(Descriptor::Value(_) | Descriptor::Resource(_)) => unreachable!("a place is never a value or resource"),
@@ -1300,8 +1412,9 @@ fn place_key<'a>(this: &LuaShaderPlace, key: ValueView<'a>) -> l3i::Result<&'a s
     key.read::<&str>()
 }
 
-/// An array's index: a shader value, or a number, a `UInt` that must be one of its elements.
-fn element_index(site: &mut Site<'_>, this: &LuaShaderPlace, key: ValueView<'_>, length: u32) -> l3i::Result<Value> {
+/// An array's index: a shader value, or a number, a `UInt` that must be one of its elements; a
+/// storage buffer's (`length` `None`) as long as the buffer bound, so any `UInt`.
+fn element_index(site: &mut Site<'_>, this: &LuaShaderPlace, key: ValueView<'_>, length: Option<u32>) -> l3i::Result<Value> {
     if let Some(expression) = l3i::userdata::receiver::<LuaShaderExpr>(key) {
         return Ok(expression.value);
     }
@@ -1313,11 +1426,10 @@ fn element_index(site: &mut Site<'_>, this: &LuaShaderPlace, key: ValueView<'_>,
         )));
     }
     let number = key.read::<f64>()?;
-    if number.fract() != 0.0 || !(0.0..f64::from(length)).contains(&number) {
-        return Err(error(format!(
-            "{name} has no element {number}: its elements are 0 to {}",
-            length - 1
-        )));
+    let end = length.map_or_else(|| f64::from(u32::MAX) + 1.0, f64::from);
+    if number.fract() != 0.0 || !(0.0..end).contains(&number) {
+        let elements = length.map_or_else(|| "counted by UInts".to_owned(), |length| format!("0 to {}", length - 1));
+        return Err(error(format!("{name} has no element {number}: its elements are {elements}")));
     }
     // Whole and in range, checked above.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -1328,8 +1440,30 @@ fn element_index(site: &mut Site<'_>, this: &LuaShaderPlace, key: ValueView<'_>,
 fn place_length(this: &LuaShaderPlace) -> l3i::Result<u32> {
     match &this.at {
         Some(Descriptor::Array(_, length)) => Ok(*length),
+        // Luau's `#` gives a number, and this is known only on the GPU.
+        Some(Descriptor::Storage(..)) => Err(error(format!(
+            "{} is as long as the buffer bound, which only the GPU knows: shader.arrayLength reads it",
+            place_name(this)
+        ))),
         _ => Err(error(format!("{} has no length: only an array does", place_name(this)))),
     }
+}
+
+/// `shader.arrayLength(buffer)`: how many elements the storage buffer bound holds, a `UInt`.
+fn array_length(call: &Call<'_>, buffer: ValueView<'_>) -> l3i::Result<Owned<LuaShaderExpr>> {
+    let place = l3i::userdata::receiver::<LuaShaderPlace>(buffer);
+    let storage = place.and_then(|place| match (&place.at, place.place.root) {
+        (Some(Descriptor::Storage(..)), PlaceRoot::Storage(storage)) => Some((place, storage)),
+        _ => None,
+    });
+    let Some((place, storage)) = storage else {
+        return Err(error(format!(
+            "shader.arrayLength takes a storage buffer, such as input.pass.particles, not {}",
+            shader_kind(buffer)
+        )));
+    };
+    let value = at_site(call, &place.build, |site, _| site.storage_length(storage).map_err(invalid))?;
+    Ok(expression(&place.build, value))
 }
 
 /// `input.attributes.<name>` and `input.instance.<name>`: a declared attribute.
@@ -1550,7 +1684,9 @@ fn declare_type(
                 length: *length,
             }
         }
-        Descriptor::Resource(_) => unreachable!("a texture or sampler is a resource, not a type"),
+        Descriptor::Resource(_) | Descriptor::Storage(..) => {
+            unreachable!("a resource or storage buffer is bound, not a type")
+        }
     };
     Ok(ty)
 }
@@ -1575,6 +1711,19 @@ fn declare_groups(site: &mut Site<'_>, info: &mut Info, groups: [Vec<(String, De
                     kind,
                     sampler: site.resource(frequency, &name, kind).map_err(invalid)?,
                 },
+                Descriptor::Storage(ref element, access) => {
+                    let element = match element {
+                        ArrayElement::Value(ty) => Element::Value(*ty),
+                        ArrayElement::Struct(structure) => {
+                            Element::Struct(declare_struct(site, &mut info.structs, structure)?)
+                        }
+                    };
+                    let storage = site.storage(frequency, &name, element, access).map_err(invalid)?;
+                    Member::Storage {
+                        storage,
+                        descriptor: descriptor.clone(),
+                    }
+                }
                 descriptor => {
                     let ty = declare_type(site, &mut info.structs, &descriptor)?;
                     site.uniform(frequency, &name, ty).map_err(invalid)?;
@@ -1662,7 +1811,7 @@ fn construct_program(call: &Call<'_>, build: &Rc<RefCell<Build>>, spec: Spec) ->
         let groups = info.groups.clone().map(|members| {
             let reflect = |(name, member): (String, Member)| {
                 let ty = match member {
-                    Member::Uniform { descriptor, .. } => descriptor.name(),
+                    Member::Uniform { descriptor, .. } | Member::Storage { descriptor, .. } => descriptor.name(),
                     Member::Texture { kind, .. } | Member::Sampler { kind, .. } => kind.name().to_owned(),
                 };
                 (name, ty)
@@ -1777,6 +1926,17 @@ pub(crate) fn module(runtime: &Runtime, _jess: &Rc<Jess>) -> l3i::Result<Table> 
     module.function("array", move |element: ValueView<'_>, length: ValueView<'_>| {
         array(&state, element, length)
     })?;
+    let state = shader.clone();
+    module.function("storage", move |element: ValueView<'_>, access: Option<ValueView<'_>>| {
+        storage(&state, element, access)
+    })?;
+    module.function("arrayLength", |call: &Call<'_>, buffer: ValueView<'_>| {
+        array_length(call, buffer)
+    })?;
+    module.function(
+        "write",
+        |call: &Call<'_>, place: ValueView<'_>, key: ValueView<'_>, value: ValueView<'_>| write(call, place, key, value),
+    )?;
     statements(&module, &shader)?;
     for function in TextureFunction::ALL {
         module.function(function.name(), move |call: &Call<'_>, args: ArgView<'_>| {

@@ -9,7 +9,8 @@ use crate::shader::expression::{
 use crate::shader::flow::{self, LocalId, LocalKind, Placements, Stage, Statement};
 use crate::shader::fold::{Arithmetic, evaluate};
 use crate::shader::interface::{
-    Attribute, AttributeId, DataType, Element, Frequency, Rate, ResourceId, ResourceKind, StructDecl, StructId,
+    Access, Attribute, AttributeId, DataType, Element, Frequency, Rate, ResourceId, ResourceKind, StorageId, StructDecl,
+    StructId,
 };
 use crate::shader::layout::ProgramLayout;
 use crate::shader::program::{Declaration, Program};
@@ -38,6 +39,8 @@ pub enum DeclarationKind {
     Texture(Frequency),
     /// A sampler the frequency binds.
     Sampler(Frequency),
+    /// A storage buffer the frequency binds.
+    Storage(Frequency),
     /// A varying.
     Varying,
 }
@@ -51,6 +54,7 @@ impl fmt::Display for DeclarationKind {
             DeclarationKind::Uniform(frequency) => write!(formatter, "{frequency} uniform"),
             DeclarationKind::Texture(frequency) => write!(formatter, "{frequency} texture"),
             DeclarationKind::Sampler(frequency) => write!(formatter, "{frequency} sampler"),
+            DeclarationKind::Storage(frequency) => write!(formatter, "{frequency} storage buffer"),
             DeclarationKind::Varying => formatter.write_str("varying"),
         }
     }
@@ -339,6 +343,30 @@ pub enum ValidationErrorKind {
         /// What doesn't fit.
         problem: &'static str,
     },
+    /// A `ReadWrite` storage buffer is used in the vertex stage, which WGSL forbids.
+    StorageInVertex {
+        /// The buffer's name.
+        name: String,
+    },
+    /// A write's place is in a uniform block, which only the host writes.
+    WriteToUniform,
+    /// A write's place is in a `Read` storage buffer.
+    WriteToReadOnly {
+        /// The buffer's name.
+        name: String,
+    },
+    /// A write's place doesn't reach a value.
+    InvalidWrite {
+        /// What is wrong with it.
+        problem: PlaceProblem,
+    },
+    /// A write's value is not of its place's type.
+    WriteType {
+        /// The place's type.
+        place: Type,
+        /// The value's.
+        value: Type,
+    },
     /// The vertex stage has no position.
     MissingPosition,
     /// The vertex position is not a `Vec4f`.
@@ -585,6 +613,22 @@ impl fmt::Display for ValidationErrorKind {
                  {instead}"
             ),
             ValidationErrorKind::Unbalanced { problem } => write!(formatter, "the statements don't nest: {problem}"),
+            ValidationErrorKind::StorageInVertex { name } => write!(
+                formatter,
+                "storage buffer {name:?} is readWrite and used in the vertex function, which may only read \
+                 storage buffers declared to be read"
+            ),
+            ValidationErrorKind::WriteToUniform => {
+                formatter.write_str("a uniform is written: only a readWrite storage buffer is")
+            }
+            ValidationErrorKind::WriteToReadOnly { name } => write!(
+                formatter,
+                "storage buffer {name:?} is written, but it is read: declare it shader.storage(element, 'readWrite')"
+            ),
+            ValidationErrorKind::InvalidWrite { problem } => write!(formatter, "a write {problem}"),
+            ValidationErrorKind::WriteType { place, value } => {
+                write!(formatter, "a {place} in a storage buffer is written a {value}")
+            }
             ValidationErrorKind::MissingPosition => formatter.write_str("the vertex stage has no position"),
             ValidationErrorKind::PositionType { found } => {
                 write!(formatter, "the vertex position is {found}: expected Vec4f")
@@ -651,6 +695,11 @@ pub enum PlaceProblem {
     },
     /// It ends at a struct or an array.
     NotAValue,
+    /// Its root is a storage buffer that is not declared.
+    UndefinedStorage {
+        /// The buffer.
+        storage: StorageId,
+    },
 }
 
 impl fmt::Display for PlaceProblem {
@@ -676,6 +725,9 @@ impl fmt::Display for PlaceProblem {
             }
             PlaceProblem::NotAValue => {
                 formatter.write_str("ends at a struct or an array, not a value: read one of its fields or elements")
+            }
+            PlaceProblem::UndefinedStorage { storage } => {
+                write!(formatter, "reads storage buffer {}, which is not declared", storage.index())
             }
         }
     }
@@ -783,6 +835,29 @@ fn check_declarations(program: &Program, errors: &mut Vec<ValidationError>) {
                     .map(|earlier| earlier.name.as_str()),
             );
         report(binding_errors(kind, earlier, &resource.name), &resource.origin);
+    }
+    for (index, buffer) in program.storage.iter().enumerate() {
+        let kind = DeclarationKind::Storage(buffer.frequency);
+        let frequency = buffer.frequency;
+        let earlier = program
+            .uniforms_of(frequency)
+            .map(|(_, uniform)| uniform.name.as_str())
+            .chain(
+                program
+                    .resources
+                    .iter()
+                    .filter(|resource| resource.frequency == frequency)
+                    .map(|resource| resource.name.as_str()),
+            )
+            .chain(
+                program.storage[..index]
+                    .iter()
+                    .filter(|earlier| earlier.frequency == frequency)
+                    .map(|earlier| earlier.name.as_str()),
+            );
+        let mut kinds = binding_errors(kind, earlier, &buffer.name);
+        kinds.extend(data_type_errors(kind, &buffer.name, buffer.element.into(), &program.structs));
+        report(kinds, &buffer.origin);
     }
     check_named(DeclarationKind::Varying, &program.varyings, errors);
 
@@ -1152,8 +1227,21 @@ fn infer(
     let ty = match *expression {
         Expression::Literal(literal) => literal_type(id, literal)?,
         // Every index was typed: an untyped operand returned above.
-        Expression::Load(place) => place_type(program, &place, |index| types[index.index()].unwrap_or(Type::Bool))
-            .map_err(|problem| ValidationErrorKind::InvalidPlace { expression: id, problem })?,
+        Expression::Load(place) => {
+            read_write_in_vertex(program, place.root, stage)?;
+            place_type(program, &place, |index| types[index.index()].unwrap_or(Type::Bool))
+                .map_err(|problem| ValidationErrorKind::InvalidPlace { expression: id, problem })?
+        }
+        Expression::StorageLength(storage) => {
+            if program.storage.get(storage.index()).is_none() {
+                return Err(ValidationErrorKind::InvalidPlace {
+                    expression: id,
+                    problem: PlaceProblem::UndefinedStorage { storage },
+                });
+            }
+            read_write_in_vertex(program, PlaceRoot::Storage(storage), stage)?;
+            Type::UInt
+        }
         Expression::Attribute(attribute) => {
             let Some(declaration) = program.attributes.get(attribute.index()) else {
                 return Err(ValidationErrorKind::UndefinedAttribute {
@@ -1176,23 +1264,7 @@ fn infer(
             }
             builtin.ty()
         }
-        Expression::Local(local) => {
-            let Some(declared) = program.locals.get(local.index()) else {
-                return Err(ValidationErrorKind::UndefinedLocal { local });
-            };
-            let other = match declared.stage {
-                Stage::Vertex => Stage::Fragment,
-                Stage::Fragment => Stage::Vertex,
-            };
-            if stage & stage_bit(other) != 0 {
-                return Err(ValidationErrorKind::LocalInOtherStage {
-                    kind: declared.kind,
-                    declared: declared.stage,
-                    used: other,
-                });
-            }
-            declared.ty
-        }
+        Expression::Local(local) => local_type(program, local, stage)?,
         Expression::Varying(varying) => {
             let Some(declaration) = program.varyings.get(varying.index()) else {
                 return Err(ValidationErrorKind::UndefinedVarying { expression: id, varying });
@@ -1242,17 +1314,27 @@ pub fn place_type(
     place: &Place,
     index_type: impl Fn(ExpressionId) -> Type,
 ) -> Result<Type, PlaceProblem> {
-    let PlaceRoot::Uniform(frequency) = place.root;
     let mut steps = place.steps().iter();
     let first = steps.next().ok_or(PlaceProblem::Empty)?;
-    let Step::Field(member) = *first else {
-        return Err(PlaceProblem::NotAnArray);
+    let mut current = match (place.root, *first) {
+        (PlaceRoot::Uniform(frequency), Step::Field(member)) => program
+            .uniforms_of(frequency)
+            .nth(member as usize)
+            .map(|(_, uniform)| uniform.ty)
+            .ok_or(PlaceProblem::UndefinedMember { frequency, member })?,
+        // A storage buffer is as long as what is bound, so no index is out of range here.
+        (PlaceRoot::Storage(storage), Step::Index(index)) => {
+            let buffer = program.storage.get(storage.index());
+            let buffer = buffer.ok_or(PlaceProblem::UndefinedStorage { storage })?;
+            let found = index_type(index);
+            if !matches!(found, Type::Int | Type::UInt) {
+                return Err(PlaceProblem::IndexType { found });
+            }
+            buffer.element.into()
+        }
+        (PlaceRoot::Uniform(_), Step::Index(_)) => return Err(PlaceProblem::NotAnArray),
+        (PlaceRoot::Storage(_), Step::Field(_)) => return Err(PlaceProblem::NotAStruct),
     };
-    let mut current = program
-        .uniforms_of(frequency)
-        .nth(member as usize)
-        .map(|(_, uniform)| uniform.ty)
-        .ok_or(PlaceProblem::UndefinedMember { frequency, member })?;
     for step in steps {
         current = match (*step, current) {
             (Step::Field(field), DataType::Struct(id)) => {
@@ -1430,6 +1512,40 @@ pub fn texture_type(
     })
 }
 
+/// The type of reading `local` in `stage`'s bits, or why it can't be read there.
+fn local_type(program: &Program, local: LocalId, stage: u8) -> Result<Type, ValidationErrorKind> {
+    let Some(declared) = program.locals.get(local.index()) else {
+        return Err(ValidationErrorKind::UndefinedLocal { local });
+    };
+    let other = match declared.stage {
+        Stage::Vertex => Stage::Fragment,
+        Stage::Fragment => Stage::Vertex,
+    };
+    if stage & stage_bit(other) != 0 {
+        return Err(ValidationErrorKind::LocalInOtherStage {
+            kind: declared.kind,
+            declared: declared.stage,
+            used: other,
+        });
+    }
+    Ok(declared.ty)
+}
+
+/// The error for a vertex stage (in `stage`'s bits) using a `ReadWrite` storage buffer at `root`.
+fn read_write_in_vertex(program: &Program, root: PlaceRoot, stage: u8) -> Result<(), ValidationErrorKind> {
+    let PlaceRoot::Storage(storage) = root else {
+        return Ok(());
+    };
+    match program.storage.get(storage.index()) {
+        Some(buffer) if buffer.access == Access::ReadWrite && stage & VERTEX != 0 => {
+            Err(ValidationErrorKind::StorageInVertex {
+                name: buffer.name.clone(),
+            })
+        }
+        _ => Ok(()),
+    }
+}
+
 /// The type of `literal`, or the error for a NaN or infinite one.
 pub fn literal_type(id: ExpressionId, literal: Literal) -> Result<Type, ValidationErrorKind> {
     if literal.floats().iter().any(|value| !value.is_finite()) {
@@ -1493,6 +1609,7 @@ pub fn operation_type(id: ExpressionId, expression: &Expression, operands: &[Typ
         Expression::Literal(_)
         | Expression::Attribute(_)
         | Expression::Local(_)
+        | Expression::StorageLength(_)
         | Expression::Builtin(_)
         | Expression::Varying(_)
         | Expression::Load(_)
@@ -1919,6 +2036,11 @@ fn check_statements(
                     }
                 }
             },
+            Statement::Write { place, value, origin } => {
+                if let Some(kind) = write_error(program, stage, place, *value, types) {
+                    report(errors, kind, origin);
+                }
+            }
             Statement::If {
                 condition,
                 accept,
@@ -1955,6 +2077,44 @@ fn check_statements(
                 }
             }
         }
+    }
+}
+
+/// What is wrong with writing `value` at `place` in `stage`, if anything.
+fn write_error(
+    program: &Program,
+    stage: Stage,
+    place: &Place,
+    value: ExpressionId,
+    types: &[Option<Type>],
+) -> Option<ValidationErrorKind> {
+    let type_of = |expression: ExpressionId| types.get(expression.index()).copied().flatten();
+    match place.root {
+        PlaceRoot::Uniform(_) => return Some(ValidationErrorKind::WriteToUniform),
+        PlaceRoot::Storage(storage) => match program.storage.get(storage.index()) {
+            Some(buffer) if buffer.access == Access::Read => {
+                return Some(ValidationErrorKind::WriteToReadOnly {
+                    name: buffer.name.clone(),
+                });
+            }
+            Some(buffer) if stage == Stage::Vertex => {
+                return Some(ValidationErrorKind::StorageInVertex {
+                    name: buffer.name.clone(),
+                });
+            }
+            _ => {}
+        },
+    }
+    // Every index was typed: the statement's uses are roots.
+    let index_type = |index: ExpressionId| type_of(index).unwrap_or(Type::Bool);
+    match place_type(program, place, index_type) {
+        Err(problem) => Some(ValidationErrorKind::InvalidWrite { problem }),
+        Ok(ty) => type_of(value)
+            .filter(|written| *written != ty)
+            .map(|written| ValidationErrorKind::WriteType {
+                place: ty,
+                value: written,
+            }),
     }
 }
 

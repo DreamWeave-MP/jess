@@ -264,6 +264,33 @@ local flow = shader.program {
   end,
 }
 
+local Particle = shader.struct('Particle', { position = shader.vec4, size = shader.float })
+
+local buffers = shader.program {
+  pass = { counts = shader.storage(shader.uint, 'readWrite') },
+  material = { particles = shader.storage(Particle) },
+  vertex = function(input)
+    local particle = input.material.particles[input.builtin.vertexIndex]
+
+    return { position = particle.position }
+  end,
+
+  fragment = function(input)
+    local counts = input.pass.counts
+    shader.write(counts, 0, counts[0] + shader.uint(1))
+    observed.storage = {
+      buffer = tostring(counts),
+      element = tostring(counts[1]),
+      length = tostring(shader.arrayLength(counts)),
+      structs = tostring(input.material.particles),
+      particle = tostring(input.material.particles[2]),
+      field = tostring(input.material.particles[shader.uint(3)].size),
+    }
+
+    return shader.vec4(1)
+  end,
+}
+
 local function describe(program: ShaderProgram): { [string]: any }
   return {
     tostring = tostring(program),
@@ -292,6 +319,8 @@ return {
     depthTexture2dArray = tostring(shader.depthTexture2dArray),
     depthTextureCube = tostring(shader.depthTextureCube),
     comparisonSampler = tostring(shader.comparisonSampler),
+    storage = tostring(shader.storage(Particle)),
+    storageReadWrite = tostring(shader.storage(shader.vec4, 'readWrite')),
     textureCube = tostring(shader.textureCube),
     texture3d = tostring(shader.texture3d),
     sampler = tostring(shader.sampler),
@@ -310,6 +339,8 @@ return {
   lit = describe(lit),
   constant = describe(constant),
   flow = describe(flow),
+  buffers = describe(buffers),
+  storage = observed.storage,
   statements = observed.flow,
   textures = describe(textures),
   sampled = observed.textures,

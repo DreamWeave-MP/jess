@@ -23,7 +23,7 @@
 //! declaration order with no padding. Locations are numbered across both: every per-vertex
 //! attribute's, then every per-instance attribute's. A matrix takes one location per column.
 
-use crate::shader::interface::{AttributeId, DataType, Element, Frequency, Rate, ResourceId, StructId};
+use crate::shader::interface::{AttributeId, DataType, Element, Frequency, Rate, ResourceId, StorageId, StructId};
 use crate::shader::program::Program;
 use crate::shader::types::Type;
 
@@ -203,6 +203,19 @@ pub struct ResourceBinding {
     pub binding: u32,
 }
 
+/// Where a storage buffer is bound, and how far apart its elements are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct StorageBinding {
+    /// The buffer.
+    pub storage: StorageId,
+    /// Its bind group: its frequency's.
+    pub group: u32,
+    /// Its binding in the group.
+    pub binding: u32,
+    /// The bytes from one element to the next.
+    pub stride: u32,
+}
+
 /// One frequency's bind group.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GroupLayout {
@@ -211,8 +224,10 @@ pub struct GroupLayout {
     /// The uniform block at binding 0, if the frequency has uniform members: its members are the
     /// frequency's, in declaration order.
     pub uniform: Option<StructLayout>,
-    /// The frequency's resources, in declaration order.
+    /// The frequency's resources, in declaration order, after the uniform block.
     pub resources: Vec<ResourceBinding>,
+    /// The frequency's storage buffers, in declaration order, after the resources.
+    pub storage: Vec<StorageBinding>,
 }
 
 /// Everything about where a program's interface lives.
@@ -233,6 +248,7 @@ impl ProgramLayout {
     pub fn of(program: &Program) -> ProgramLayout {
         let (structs, attributes, uniforms, resources) =
             (&program.structs, &program.attributes, &program.uniforms, &program.resources);
+        let storage = &program.storage;
         let mut struct_layouts: Vec<StructLayout> = Vec::with_capacity(structs.len());
         for declaration in structs {
             let layout = StructLayout::of(declaration.fields.iter().map(|field| field.ty), &struct_layouts);
@@ -256,10 +272,24 @@ impl ProgramLayout {
                 });
                 binding += 1;
             }
+            let mut buffers = Vec::new();
+            for (index, buffer) in storage.iter().enumerate() {
+                if buffer.frequency != frequency {
+                    continue;
+                }
+                buffers.push(StorageBinding {
+                    storage: StorageId::at(index),
+                    group: frequency.group(),
+                    binding,
+                    stride: element_stride(buffer.element, &struct_layouts),
+                });
+                binding += 1;
+            }
             GroupLayout {
                 frequency,
                 uniform,
                 resources: bound,
+                storage: buffers,
             }
         });
 
@@ -316,6 +346,16 @@ impl ProgramLayout {
             .iter()
             .flat_map(|group| &group.resources)
             .find(|binding| binding.resource == resource)
+            .copied()
+    }
+
+    /// Where `storage` is bound.
+    #[must_use]
+    pub fn storage(&self, storage: StorageId) -> Option<StorageBinding> {
+        self.groups
+            .iter()
+            .flat_map(|group| &group.storage)
+            .find(|binding| binding.storage == storage)
             .copied()
     }
 

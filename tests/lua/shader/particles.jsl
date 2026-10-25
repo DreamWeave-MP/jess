@@ -1,0 +1,29 @@
+--!strict
+-- Instances placed from a storage buffer of particles, and a count of what each fragment covers
+-- kept in another, which the fragment stage writes.
+local shader = require '@jess/shader'
+
+local Particle = shader.struct('Particle', { position = shader.vec4, size = shader.float })
+
+return shader.program {
+  attributes = { corner = shader.vec2 },
+  pass = { coverage = shader.storage(shader.uint, 'readWrite'), viewProjection = shader.mat4 },
+  material = { particles = shader.storage(Particle) },
+
+  vertex = function(input)
+    local particle = input.material.particles[input.builtin.instanceIndex]
+    local offset = shader.vec4(input.attributes.corner * particle.size, 0, 0)
+
+    return { position = input.pass.viewProjection * (particle.position + offset) }
+  end,
+
+  fragment = function(input)
+    local pixel = shader.vec2u(input.builtin.position.xy)
+    local slot = pixel.y * shader.uint(1024) + pixel.x
+    shader.when(shader.less(slot, shader.arrayLength(input.pass.coverage)), function()
+      shader.write(input.pass.coverage, slot, input.pass.coverage[slot] + shader.uint(1))
+    end)
+
+    return shader.vec4(1)
+  end,
+}

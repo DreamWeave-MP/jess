@@ -13,6 +13,7 @@ mod layout;
 mod logic;
 mod operators;
 mod statements;
+mod storage;
 mod textures;
 mod triangle;
 mod validation;

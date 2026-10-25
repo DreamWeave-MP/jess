@@ -19,7 +19,7 @@ use crate::shader::expression::{
     Builtin, Expression, ExpressionId, Function, Literal, Place, PlaceRoot, SampleLevel, Step, TextureQuery,
 };
 use crate::shader::flow::{Stage, Statement};
-use crate::shader::interface::{AttributeId, DataType, Element, Frequency, Rate, ResourceId, ResourceKind};
+use crate::shader::interface::{Access, AttributeId, DataType, Element, Frequency, Rate, ResourceId, ResourceKind};
 use crate::shader::layout::{MemberLayout, ProgramLayout, StructLayout, value_extent};
 use crate::shader::program::Program;
 use crate::shader::types::Type;
@@ -206,6 +206,27 @@ impl Lowering<'_> {
             if !group.resources.is_empty() {
                 emit!(self, "\n");
             }
+            for binding in &group.storage {
+                let buffer = &program.storage[binding.storage.index()];
+                let access = match buffer.access {
+                    Access::Read => "read",
+                    Access::ReadWrite => "read_write",
+                };
+                let element = match buffer.element {
+                    Element::Value(ty) => wgsl_type(ty).to_owned(),
+                    Element::Struct(id) => struct_name(program, id.index()),
+                };
+                emit!(
+                    self,
+                    "@group({}) @binding({}) var<storage, {access}> b_{frequency}_{}: array<{element}>;\n",
+                    binding.group,
+                    binding.binding,
+                    buffer.name
+                );
+            }
+            if !group.storage.is_empty() {
+                emit!(self, "\n");
+            }
         }
     }
 
@@ -388,6 +409,13 @@ impl Lowering<'_> {
                     self.operand(*value);
                     emit!(self, ";\n");
                 }
+                Statement::Write { place, value, .. } => {
+                    emit!(self, "{indent}");
+                    self.place(place);
+                    emit!(self, " = ");
+                    self.operand(*value);
+                    emit!(self, ";\n");
+                }
                 Statement::If {
                     condition,
                     accept,
@@ -466,6 +494,10 @@ impl Lowering<'_> {
             }
             Expression::Load(place) => self.place(&place),
             Expression::Local(local) => emit!(self, "l{}", local.index()),
+            Expression::StorageLength(storage) => {
+                let buffer = &self.program.storage[storage.index()];
+                emit!(self, "arrayLength(&b_{}_{})", buffer.frequency, buffer.name);
+            }
             // Parenthesized: `--1.0` is WGSL's decrement, not the negation of `-1.0`.
             Expression::Unary(operator, value) => {
                 emit!(self, "{}(", operator.symbol());
@@ -542,12 +574,25 @@ impl Lowering<'_> {
         }
     }
 
-    /// A uniform value: its block, then a field or an index per step.
+    /// A uniform or storage value: its block or buffer, then a field or an index per step.
     fn place(&mut self, place: &Place) {
         let program = self.program;
-        let PlaceRoot::Uniform(frequency) = place.root;
-        emit!(self, "u_{frequency}");
-        let mut current: Option<DataType> = None;
+        // A uniform block is its members; a storage buffer is an array of its elements.
+        let (frequency, mut current) = match place.root {
+            PlaceRoot::Uniform(frequency) => {
+                emit!(self, "u_{frequency}");
+                (frequency, None)
+            }
+            PlaceRoot::Storage(storage) => {
+                let buffer = &program.storage[storage.index()];
+                emit!(self, "b_{}_{}", buffer.frequency, buffer.name);
+                let array = DataType::Array {
+                    element: buffer.element,
+                    length: 0,
+                };
+                (buffer.frequency, Some(array))
+            }
+        };
         for step in place.steps() {
             match *step {
                 Step::Field(position) => {

@@ -30,6 +30,12 @@ arena_id!(
     ResourceId,
     "resource's position in declaration order, across every frequency"
 );
+arena_id!(
+    /// A storage buffer, by its position among a program's declared storage buffers of every
+    /// frequency.
+    StorageId,
+    "storage buffer's position in declaration order, across every frequency"
+);
 
 /// How often a uniform member or resource changes, which says who binds it.
 ///
@@ -371,6 +377,55 @@ impl ResourceKind {
             _ if self.is_sampler() || self.is_integer() => None,
             _ if self.is_depth() => Some(ResourceKind::ComparisonSampler),
             _ => Some(ResourceKind::Sampler),
+        }
+    }
+}
+
+/// What a stage may do with a storage buffer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Access {
+    /// Read it.
+    Read,
+    /// Read it and write it: never in the vertex stage.
+    ReadWrite,
+}
+
+impl Access {
+    /// The access's name, as Luau and errors write it.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Access::Read => "read",
+            Access::ReadWrite => "readWrite",
+        }
+    }
+}
+
+/// A storage buffer some frequency binds: as many `element`s as the bound buffer holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StorageBuffer {
+    /// The buffer's name.
+    pub name: String,
+    /// Who binds it.
+    pub frequency: Frequency,
+    /// What each element is: a value or a struct.
+    pub element: Element,
+    /// What the stages may do with it.
+    pub access: Access,
+    /// Where the author declared it, if known.
+    pub origin: Option<SourceOrigin>,
+}
+
+impl StorageBuffer {
+    /// A storage buffer `name` of `element`s that `frequency` binds, with no origin.
+    #[must_use]
+    pub fn new(frequency: Frequency, name: &str, element: Element, access: Access) -> StorageBuffer {
+        StorageBuffer {
+            name: name.to_owned(),
+            frequency,
+            element,
+            access,
+            origin: None,
         }
     }
 }

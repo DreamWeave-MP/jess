@@ -113,8 +113,8 @@ pub use expression::{
 };
 pub use flow::{Local, LocalId, LocalKind, Stage, Statement};
 pub use interface::{
-    Attribute, AttributeId, DataType, Element, Field, Frequency, Rate, Resource, ResourceId, ResourceKind, StructDecl,
-    StructId, Uniform, UniformId,
+    Access, Attribute, AttributeId, DataType, Element, Field, Frequency, Rate, Resource, ResourceId, ResourceKind,
+    StorageBuffer, StorageId, StructDecl, StructId, Uniform, UniformId,
 };
 pub use program::{Declaration, Program};
 pub use types::{Scalar, Type};

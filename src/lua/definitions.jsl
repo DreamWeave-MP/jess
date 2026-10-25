@@ -695,6 +695,16 @@ export type ShaderModule = {
   struct: (name: string, fields: { [string]: ShaderType }) -> ShaderType,
   --- An array type: `length` (at least 1) values or structs.
   array: (element: ShaderType, length: number) -> ShaderType,
+  --- A storage buffer type: as many `element`s (a value or struct type) as the buffer bound holds,
+  --- which the stages read (`'read'`, the default), or read and write (`'readWrite'`; never in the
+  --- vertex function). Index it from 0 by a number or shader value; `shader.arrayLength` says how
+  --- many elements are bound.
+  storage: (element: ShaderType, access: ("read" | "readWrite")?) -> ShaderType,
+  --- How many elements the storage buffer bound holds, a `UInt`.
+  arrayLength: (buffer: ShaderPlace | ShaderExpr) -> ShaderExpr,
+  --- Writes `value` at `place[key]`, which must reach a value, in a `readWrite` storage buffer:
+  --- `shader.write(input.pass.counts, i, n)`, `shader.write(particles[i], 'position', p)`.
+  write: (place: ShaderPlace | ShaderExpr, key: string | number | ShaderExpr, value: ShaderExpr | number | boolean) -> (),
   --- Builds a program: declares the attributes and bindings, runs `vertex` and passes what it
   --- returned to the fragment stage, runs `fragment`, then validates the whole program, listing
   --- every problem with its line.

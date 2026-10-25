@@ -4,7 +4,8 @@
 
 use std::fmt;
 
-use crate::shader::expression::{Expression, ExpressionId, SourceOrigin};
+use crate::shader::expression::{Expression, ExpressionId, Place, PlaceRoot, SourceOrigin};
+use crate::shader::interface::Access;
 use crate::shader::program::Program;
 use crate::shader::types::Type;
 
@@ -79,6 +80,16 @@ pub enum Statement {
         /// What it now holds.
         value: ExpressionId,
         /// Where the author stored it, if known.
+        origin: Option<SourceOrigin>,
+    },
+    /// Writes `value` to a place in a [`ReadWrite`](crate::shader::Access::ReadWrite) storage
+    /// buffer that reaches a value of its type.
+    Write {
+        /// Where.
+        place: Place,
+        /// What.
+        value: ExpressionId,
+        /// Where the author wrote it, if known.
         origin: Option<SourceOrigin>,
     },
     /// `accept` where the `Bool` `condition` holds, else `reject`.
@@ -188,6 +199,12 @@ fn place_block(block: &[Statement], stage: Stage, id: u32, placements: &mut Plac
                 _ => placements.misplaced.push(*expression),
             },
             Statement::Store { value, origin, .. } => use_here(*value, origin, placements),
+            Statement::Write { place, value, origin } => {
+                for index in place.indices().iter() {
+                    use_here(*index, origin, placements);
+                }
+                use_here(*value, origin, placements);
+            }
             Statement::If {
                 condition,
                 accept,
@@ -243,7 +260,7 @@ fn walk_block(
                 walk_block(reject, agreed, uniform, visit);
             }
             Statement::Loop { count, body, .. } => walk_block(body, agreed && uniform(*count), uniform, visit),
-            Statement::Emit(_) | Statement::Store { .. } | Statement::Discard { .. } => {}
+            Statement::Emit(_) | Statement::Store { .. } | Statement::Write { .. } | Statement::Discard { .. } => {}
         }
     }
 }
@@ -261,6 +278,17 @@ pub fn uniformity(program: &Program, reachable: &[bool], locals: &[bool]) -> Vec
             Expression::Varying(_) | Expression::Attribute(_) => false,
             Expression::Builtin(builtin) => builtin.in_vertex(),
             Expression::Local(local) => locals.get(local.index()).copied().unwrap_or(false),
+            // Another invocation may write a readWrite buffer between any two reads.
+            Expression::Load(Place {
+                root: PlaceRoot::Storage(storage),
+                ..
+            }) if program
+                .storage
+                .get(storage.index())
+                .is_none_or(|buffer| buffer.access == Access::ReadWrite) =>
+            {
+                false
+            }
             _ => expression
                 .operands()
                 .iter()

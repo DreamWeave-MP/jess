@@ -6,7 +6,7 @@ extra:
   kind: api
 ---
 
-{{ api_signature(value="jess.shader: { program, struct, array, float, int, uint, vec2, vec3, vec4, vec2i, vec3i, vec4i, vec2u, vec3u, vec4u, mat3, mat4, texture2d, texture2dArray, textureCube, texture3d, texture2di, texture2du, depthTexture2d, depthTexture2dArray, depthTextureCube, sampler, comparisonSampler, min, max, clamp, abs, sign, floor, ceil, round, trunc, fract, sqrt, inverseSqrt, exp, exp2, log, log2, pow, sin, cos, tan, asin, acos, atan, atan2, radians, degrees, saturate, step, smoothstep, mix, dot, cross, length, distance, normalize, reflect, refract, transpose, determinant, dpdx, dpdy, fwidth, equal, notEqual, less, lessEqual, greater, greaterEqual, logicalAnd, logicalOr, logicalNot, select, bitAnd, bitOr, bitXor, bitNot, shiftLeft, shiftRight, var, when, loop, discard, sample, sampleLevel, sampleBias, sampleCompare, sampleCompareLevel, load, dimensions, levels, layers }") }}
+{{ api_signature(value="jess.shader: { program, struct, array, storage, float, int, uint, vec2, vec3, vec4, vec2i, vec3i, vec4i, vec2u, vec3u, vec4u, mat3, mat4, texture2d, texture2dArray, textureCube, texture3d, texture2di, texture2du, depthTexture2d, depthTexture2dArray, depthTextureCube, sampler, comparisonSampler, min, max, clamp, abs, sign, floor, ceil, round, trunc, fract, sqrt, inverseSqrt, exp, exp2, log, log2, pow, sin, cos, tan, asin, acos, atan, atan2, radians, degrees, saturate, step, smoothstep, mix, dot, cross, length, distance, normalize, reflect, refract, transpose, determinant, dpdx, dpdy, fwidth, equal, notEqual, less, lessEqual, greater, greaterEqual, logicalAnd, logicalOr, logicalNot, select, bitAnd, bitOr, bitXor, bitNot, shiftLeft, shiftRight, var, when, loop, discard, write, arrayLength, sample, sampleLevel, sampleBias, sampleCompare, sampleCompareLevel, load, dimensions, levels, layers }") }}
 
 A shader, written in Luau. `require("@jess/shader")` is the same table as `jess.shader`, and a shader module is an ordinary Luau module that runs once and returns a `ShaderProgram`.
 
@@ -71,7 +71,7 @@ return program
 
 {% usage_note(title="What this is, today") %}
 - This is the authoring half. Nothing draws with a `ShaderProgram` yet: the renderer that takes one is a later piece of work, and this page will say so when it isn't.
-- The expression set is the one real materials need, and no more: arithmetic, WGSL's functions, comparisons and `select`, construction and conversion, swizzles, texture reads, and [statements](#statements): vars, `when`, bounded loops, and `discard`. There are no storage buffers or compute stage yet.
+- The expression set is the one real materials need, and no more: arithmetic, WGSL's functions, comparisons and `select`, construction and conversion, swizzles, texture reads, and [statements](#statements): vars, `when`, bounded loops, and `discard`. There's no compute stage yet.
 {% end %}
 
 ## shader.program
@@ -223,6 +223,7 @@ Each frequency's table names what it binds:
 
 - **Values, structs, and arrays** are its uniform block's members. A value is `shader.vec4` and the rest; a struct is a type from [shader.struct](#shader-struct); an array is a type from [shader.array](#shader-array). Change one, and nothing recompiles: it's data.
 - **`shader.texture2d`**, **`shader.texture2dArray`**, **`shader.textureCube`**, and **`shader.texture3d`** are textures, each declared with a sampler of the same name, which [sample](#shader-sample) uses. **`shader.texture2di`** and **`shader.texture2du`** are textures of integers, with no sampler, which [load](#levels-texels-and-sizes) reads. The depth textures, **`shader.depthTexture2d`** and the rest, come with a comparison sampler, for [sampleCompare](#depth-comparison).
+- **[shader.storage](#shader-storage)** is a storage buffer: as many elements as the buffer bound holds, read, or read and written.
 - **`shader.sampler`** and **`shader.comparisonSampler`** are samplers of their own, for the texture functions that take a sampler after the texture.
 
 Reading goes one step at a time. `input.pass.camera` is the camera; `.view` is its view matrix, a value. An array is indexed from 0 by a number or by a shader value, `#` is its length, and an element is a value or a struct to go on into: `input.pass.lights[i].color`. A step that reaches a value reads it; a texture or sampler is a handle for `sample`. Until then it's a `ShaderPlace`, which isn't a value: `input.pass.camera + 1` fails with `+: expected a shader value, not Camera, a struct: read one of its fields`.
@@ -274,6 +275,50 @@ A struct type: named fields of values, structs, and arrays. The name is what err
 An array type: `length` values or structs, at least one. An array holds no arrays: put one in a struct to nest it.
 
 - **Errors:** `shader.array's length must be a whole number of at least 1, not 0`; `shader.array's element is an array: an array holds values or structs, not arrays`.
+
+### shader.storage
+
+{{ api_signature(value="shader.storage(element: ShaderType, access: ('read' | 'readWrite')?) -> ShaderType") }}
+{{ api_signature(value="shader.arrayLength(buffer: ShaderPlace) -> ShaderExpr") }}
+{{ api_signature(value="shader.write(place: ShaderPlace, key: string | number | ShaderExpr, value: ShaderExpr | number | boolean)") }}
+
+A storage buffer: as many `element`s, values or structs, as the buffer bound to it holds. A uniform block is small and fixed; a storage buffer is however long the data is, a particle per element or a light per element, and the stages may write it.
+
+- **Access:** `'read'`, the default, or `'readWrite'`. The vertex function only reads buffers declared `'read'`, which is WGSL's rule: `storage buffer "sums" is readWrite and used in the vertex function, which may only read storage buffers declared to be read`.
+- **Reading:** index it from 0, by a number or a shader value, and go on into the element: `input.material.particles[i].position`. There's no range to check while the program is built; WGSL keeps a read past the end inside the buffer.
+- **Length:** `shader.arrayLength(buffer)` is a `UInt` value of how many elements are bound. Luau's `#` gives a number, which the length isn't until the GPU runs.
+- **Writing:** `shader.write(place, key, value)` writes `value` at `place[key]` in a `readWrite` buffer, where `place[key]` is a value: `shader.write(input.pass.counts, i, n)`, `shader.write(particles[i], 'position', p)`. A write is a statement, run where the call is.
+- **Layout:** each element is laid out like a struct, and the layout reports the stride between them, so whatever fills the buffer writes from that.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+local Particle = shader.struct('Particle', { position = shader.vec4, size = shader.float })
+
+shader.program {
+  attributes = { corner = shader.vec2 },
+  pass = { coverage = shader.storage(shader.uint, 'readWrite') },
+  material = { particles = shader.storage(Particle) },
+  vertex = function(input)
+    local particle = input.material.particles[input.builtin.instanceIndex]
+    print(input.material.particles, particle, particle.size)
+
+    return { position = particle.position + shader.vec4(input.attributes.corner * particle.size, 0, 0) }
+  end,
+
+  fragment = function(input)
+    local coverage = input.pass.coverage
+    local slot = shader.uint(input.builtin.position.x)
+    shader.when(shader.less(slot, shader.arrayLength(coverage)), function()
+      shader.write(coverage, slot, coverage[slot] + shader.uint(1))
+    end)
+
+    return shader.vec4(1)
+  end,
+}
+-- ShaderPlace(Particle[])  ShaderPlace(Particle)  ShaderExpr(Float)
+```
 
 ## ShaderExpr
 
@@ -331,6 +376,7 @@ A `ShaderType` is what attributes and bindings declare, and `tostring` gives its
 | `shader.comparisonSampler` | `ComparisonSampler` | A comparison sampler of its own, for [sampleCompare](#depth-comparison). |
 | [shader.struct](#shader-struct)`(...)` | its name | A uniform member, a field, or an element. |
 | [shader.array](#shader-array)`(...)` | `Element[length]` | A uniform member or a field. |
+| [shader.storage](#shader-storage)`(...)` | `Element[]`, `Element[] readWrite` | A storage buffer, in `pass`, `material`, or `draw`. |
 
 The value types are also constructors, inside a stage function:
 

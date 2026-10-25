@@ -9,7 +9,7 @@ use jess::lua::l3i::Runtime;
 use jess::lua::scripts::load_module;
 use jess::lua::shader::LuaShaderProgram;
 use jess::shader::wgsl::{self, WgslModule};
-use jess::shader::{DataType, Frequency, Program, ResourceKind, Type};
+use jess::shader::{Access, DataType, Frequency, Program, ResourceKind, Type};
 
 use super::common;
 
@@ -123,6 +123,27 @@ fn point_lights_loop_and_discard_in_the_fragment_body() {
         "    for (l1 = 0u; l1 < u_pass.f_lightCount; l1 = l1 + 1u) {\n",
         "        let e5 = u_pass.f_lights[e4].f_position;\n",
         "    l0 = vec3<f32>(0.0, 0.0, 0.0);\n",
+    ] {
+        assert!(module.source.contains(line), "no {line:?} in:\n{}", module.source);
+    }
+}
+
+#[test]
+fn particles_read_one_storage_buffer_and_write_another() {
+    let runtime = common::runtime();
+    let (program, module) = lowered(&runtime, "particles.jsl");
+    let buffers: Vec<(&str, Access)> = program
+        .storage_buffers()
+        .iter()
+        .map(|buffer| (buffer.name.as_str(), buffer.access))
+        .collect();
+    assert_eq!(buffers, [("coverage", Access::ReadWrite), ("particles", Access::Read)]);
+    for line in [
+        "var<storage, read_write> b_pass_coverage: array<u32>;",
+        "var<storage, read> b_material_particles: array<S0_Particle>;",
+        "b_material_particles[instance_index].f_size",
+        "arrayLength(&b_pass_coverage)",
+        "        b_pass_coverage[e5] = e9;\n",
     ] {
         assert!(module.source.contains(line), "no {line:?} in:\n{}", module.source);
     }
