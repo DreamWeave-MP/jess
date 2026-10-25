@@ -86,7 +86,7 @@ A context the script renders. Defaults: 48000 frames per second, 2 channels, 256
 
 A context an output device renders: the platform's default output, or with `device = 'null'` the null device, which plays to nowhere in real time (for tests, and machines with no sound). It takes a context's options, runs at the device's own rate unless `rate` asks for another, and asks for `period` frames at a time as a hint. Everything else is the same as an offline context, except `render`, which is the device's: the script plays into it and the device's thread mixes as time passes, whether or not the script is running.
 
-An output needs the `audio.output` capability, and a jess built with the `audio-device` feature; without the feature it says so. An offline context needs neither.
+An output needs the `audio.output` capability, and a jess built with the `audio-device` feature, which is on unless a build turned it off; without it, `output` says so. An offline context needs neither.
 
 An output plays until it is closed or the runtime that opened it ends, whether or not the script still holds it: music started from a function that returned keeps playing after its handles are collected. A domain's restart ends its runtime, and with it every output that generation opened.
 

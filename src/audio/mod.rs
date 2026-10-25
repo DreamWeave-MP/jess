@@ -15,8 +15,8 @@
 //! ```
 //!
 //! An engine is rendered by a device or by an [`OfflineContext`], and it is the same engine
-//! either way, so an offline render is the test of a live one. The default build has no device:
-//! everything here runs headless.
+//! either way, so an offline render is the test of a live one. Without the `audio-device` feature
+//! (on by default) there is no device, and everything here runs headless.
 //!
 //! # Example
 //!

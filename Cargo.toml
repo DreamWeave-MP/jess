@@ -29,11 +29,13 @@ exclude = ["/tests", "/tools"]
 [workspace]
 
 [features]
-default = []
-# Real device backends are opt-in; the native kernel stays headless by default.
+default = ["audio-device"]
+# Input device backends are opt-in; the native kernel reads no input device by default.
 linux-evdev = ["dep:evdev"]
 gilrs = ["dep:gilrs"]
 # An audio output device, through miniaudio's device layer (vendor/miniaudio), compiled with cc.
+# On by default: miniaudio links no audio library at build time and loads the platform's at run
+# time, so a jess on a machine with no sound system still starts, and finds only the null device.
 audio-device = ["dep:cc"]
 
 [dependencies]

@@ -76,7 +76,7 @@ Why miniaudio, and only its device layer:
 - **Licence.** Public domain or MIT No Attribution, either compatible with jess's own.
 - **Scope.** Only the device. miniaudio's engine, node graph, resampler, and decoders stay compiled out. The mixer, the clock, and the DSP are jess's, so offline and live renders are one engine.
 
-The cost is jess's first build script and C compile, behind the feature. The default build stays headless.
+The feature is on by default, because it costs nothing at run time: miniaudio links no audio library when jess is built, so a jess on a machine with no sound system still starts and finds the null device. What it costs is jess's first build script and a C compile, which `--no-default-features` leaves out.
 
 A live context belongs to the Luau runtime that opened it, not to the script's handles: the runtime's jess state holds every output it opened until the script closes it, so a garbage collection never stops a sound. A domain restart drops its runtime and so its outputs, stopping their devices; closing one drops its engine on the spot, and the commands sent after find the engine gone.
 

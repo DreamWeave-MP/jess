@@ -3,7 +3,7 @@
 //! The engine is the same one an [`OfflineContext`](crate::audio::OfflineContext) renders; a
 //! device only calls [`Engine::render`](crate::audio::Engine::render) when its hardware wants
 //! frames. Opening one needs the `audio-device` feature, which builds miniaudio's device layer
-//! (`vendor/miniaudio`); the default build is headless and [`DeviceRequest::open`] says so.
+//! (`vendor/miniaudio`) and is on by default; without it, [`DeviceRequest::open`] says so.
 
 #[cfg(feature = "audio-device")]
 mod miniaudio;
