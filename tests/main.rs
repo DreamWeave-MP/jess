@@ -4,6 +4,8 @@
 //! `cargo test --test integration cli::`, `... lua::package::`, `... lua::luau_style::`.
 
 mod cli;
+#[cfg(feature = "gpu")]
+mod gpu;
 mod host;
 mod input;
 mod lua;
