@@ -148,7 +148,14 @@ fn generic_contract_fixtures_keep_their_answers() {
         let values = function.invoke_multi(&runtime.stack(), (&oracle,)).unwrap();
         let finish: l3i::value::Function = oracle.get(&runtime.stack(), "finish").unwrap();
         let actual: String = finish.invoke_with_values(&runtime.stack(), &values).unwrap();
-        let expected = std::fs::read_to_string(root.join(format!("{fixture}.expected.json"))).unwrap();
+        let path = root.join(format!("{fixture}.expected.json"));
+        // Re-blessing is deliberate, as the WGSL goldens' is: the reason goes in the commit.
+        if std::env::var_os("JESS_BLESS").is_some() {
+            let newline = if actual.ends_with('\n') { "" } else { "\n" };
+            std::fs::write(&path, actual + newline).unwrap();
+            continue;
+        }
+        let expected = std::fs::read_to_string(path).unwrap();
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&actual).unwrap(),
             serde_json::from_str::<serde_json::Value>(&expected).unwrap(),
