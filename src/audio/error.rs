@@ -145,7 +145,7 @@ impl fmt::Display for AudioError {
             AudioError::BusesExhausted(buses) => write!(f, "all {buses} buses are in use"),
             AudioError::BusInUse { voices, buses } => write!(
                 f,
-                "the bus still has {voices} voices and {buses} buses routed into it; stop or reroute them first"
+                "the bus still has {voices} voices and {buses} buses routed into it or listening to it; stop or reroute them first"
             ),
             AudioError::Cycle => f.write_str("that routing would feed a bus back into itself"),
             AudioError::SendsExhausted(sends) => write!(f, "it already has all {sends} of its sends"),

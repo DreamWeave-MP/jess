@@ -125,6 +125,8 @@ struct ProcessorSlot {
     /// In a bus's chain, as far as this side has sent.
     mounted: bool,
     bus: u32,
+    /// The slot of the bus it listens to, if any.
+    key: Option<u32>,
     latency: u64,
     kind: &'static str,
     params: &'static [ParamInfo],
@@ -192,6 +194,7 @@ pub fn context(config: &AudioConfig) -> Result<(Control, Engine), AudioError> {
             busy: false,
             mounted: false,
             bus: 0,
+            key: None,
             latency: 0,
             kind: "",
             params: &[],
@@ -453,9 +456,10 @@ impl Control {
         self.send(at, Command::RemoveBus { bus })?;
         self.graph.mark_removing(bus);
         // Its processors go with it, once it has rung out.
-        for slot in &mut self.processors {
-            if slot.mounted && slot.bus == bus.slot {
-                slot.mounted = false;
+        for slot in 0..self.processors.len() {
+            let entry = self.processors[slot];
+            if entry.mounted && entry.bus == bus.slot {
+                self.release_processor(u32::try_from(slot).unwrap_or(u32::MAX));
             }
         }
         Ok(true)
@@ -619,6 +623,7 @@ impl Control {
             busy: true,
             mounted: true,
             bus: bus.slot,
+            key: None,
             latency: processor.latency(),
             kind: processor.kind(),
             params: processor.params(),
@@ -649,8 +654,59 @@ impl Control {
             return Ok(false);
         }
         self.send(at, Command::Unmount { processor })?;
-        self.processors[processor.slot as usize].mounted = false;
+        self.release_processor(processor.slot);
         Ok(true)
+    }
+
+    /// Has a processor listen to `key` (its sidechain) from frame `at`, or to its own bus again
+    /// with `None`. The key bus is mixed before the processor's, so a key that is fed by the
+    /// processor's bus is a loop, and refused. True if the processor is mounted.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::StaleBus`], [`AudioError::Cycle`], [`AudioError::QueueFull`], or
+    /// [`AudioError::Disconnected`].
+    pub fn listen(&mut self, processor: ProcessorKey, key: Option<BusKey>, at: Option<u64>) -> Result<bool, AudioError> {
+        self.collect();
+        if !self.processor_live(processor) {
+            return Ok(false);
+        }
+        let ProcessorSlot { bus, key: old, .. } = self.processors[processor.slot as usize];
+        let order = match key {
+            Some(key) => {
+                self.graph.check_live(key)?;
+                Some(self.graph.listen(key, bus)?)
+            }
+            None => None,
+        };
+        let command = Command::Listen {
+            processor,
+            key: key.map(|key| key.slot),
+            order,
+        };
+        if let Err(error) = self.send(at, command) {
+            if let Some(key) = key {
+                self.graph.unlisten(key.slot, bus);
+            }
+            return Err(error);
+        }
+        // Taking an edge away leaves the order the engine has a good one.
+        if let Some(old) = old {
+            self.graph.unlisten(old, bus);
+        }
+        self.processors[processor.slot as usize].key = key.map(|key| key.slot);
+        Ok(true)
+    }
+
+    /// Takes a processor out of the graph on this side: no longer mounted, and no longer heard
+    /// by the bus it listened to.
+    fn release_processor(&mut self, slot: u32) {
+        let entry = &mut self.processors[slot as usize];
+        entry.mounted = false;
+        if let Some(key) = entry.key.take() {
+            let bus = entry.bus;
+            self.graph.unlisten(key, bus);
+        }
     }
 
     /// Sets a processor's parameter `name` at frame `at`, or at the next frame rendered, at once

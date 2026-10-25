@@ -24,17 +24,25 @@ struct Node {
     parent: Option<u32>,
     /// The buses it sends to, besides its parent.
     sends: Vec<u32>,
+    /// The buses whose processors listen to it, once for each processor: it is mixed before them.
+    listeners: Vec<u32>,
 }
 
 impl Node {
-    /// The buses this one feeds.
-    fn outputs(&self) -> impl Iterator<Item = u32> {
+    /// The buses this one feeds: its signal goes there.
+    fn signal(&self) -> impl Iterator<Item = u32> {
         self.parent.into_iter().chain(self.sends.iter().copied())
+    }
+
+    /// The buses this one feeds, or that hear it: everything mixed after it.
+    fn outputs(&self) -> impl Iterator<Item = u32> {
+        self.signal().chain(self.listeners.iter().copied())
     }
 
     fn clear(&mut self) {
         self.parent = None;
         self.sends.clear();
+        self.listeners.clear();
     }
 }
 
@@ -55,6 +63,7 @@ impl Graph {
                 state: State::Free,
                 parent: None,
                 sends: Vec::new(),
+                listeners: Vec::new(),
             };
             capacity
         ];
@@ -101,13 +110,15 @@ impl Graph {
         self.free.push(bus.slot);
     }
 
-    /// The buses whose parent is `bus` or that send to it, counting ones being removed: they still
-    /// feed it until the engine is done with them.
+    /// The buses whose parent is `bus` or that send to it, counting ones being removed (they
+    /// still feed it until the engine is done with them), and the processors listening to it.
     pub fn children(&self, bus: BusKey) -> usize {
-        self.nodes
+        let feeding = self
+            .nodes
             .iter()
-            .filter(|node| node.state != State::Free && node.outputs().any(|target| target == bus.slot))
-            .count()
+            .filter(|node| node.state != State::Free && node.signal().any(|target| target == bus.slot))
+            .count();
+        feeding + self.nodes[bus.slot as usize].listeners.len()
     }
 
     /// Adds a send from `bus` to `target` and returns the new order, or `None` when there already
@@ -128,6 +139,30 @@ impl Graph {
                 Err(error)
             }
         }
+    }
+
+    /// Has a processor on `listener` hear `key`, so `key` is mixed first; the new order, or why
+    /// not.
+    pub fn listen(&mut self, key: BusKey, listener: u32) -> Result<Box<[u32]>, AudioError> {
+        if key.slot == listener {
+            return Err(AudioError::Cycle);
+        }
+        self.nodes[key.slot as usize].listeners.push(listener);
+        match self.order() {
+            Ok(order) => Ok(order),
+            Err(error) => {
+                self.nodes[key.slot as usize].listeners.pop();
+                Err(error)
+            }
+        }
+    }
+
+    /// Takes away one processor on `listener` hearing bus slot `key`, and returns the new order.
+    pub fn unlisten(&mut self, key: u32, listener: u32) -> Option<Box<[u32]>> {
+        let listeners = &mut self.nodes[key as usize].listeners;
+        let index = listeners.iter().position(|known| *known == listener)?;
+        listeners.remove(index);
+        self.order().ok()
     }
 
     /// Removes the send from `bus` to `target`, returning the new order, or `None` if there was
@@ -181,7 +216,7 @@ impl Graph {
         for slot in order {
             let done = arrival[slot as usize] + own(slot);
             output[slot as usize] = done;
-            for target in self.nodes[slot as usize].outputs() {
+            for target in self.nodes[slot as usize].signal() {
                 arrival[target as usize] = arrival[target as usize].max(done);
             }
         }

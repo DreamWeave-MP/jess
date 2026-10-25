@@ -103,6 +103,13 @@ pub enum Command {
     },
     /// Commands that arrive together, each with its own stamp.
     Group(Vec<Stamped>),
+    /// Has a processor listen to a bus, with the order that mixes the bus first; or to its own
+    /// bus again, which leaves the order as it is.
+    Listen {
+        processor: ProcessorKey,
+        key: Option<u32>,
+        order: Option<Box<[u32]>>,
+    },
 }
 
 impl std::fmt::Debug for Stamped {
@@ -233,6 +240,8 @@ struct Mounted {
     /// Parameters ramping, by index: set at the start of each block of at most
     /// [`CONTROL_QUANTUM`] frames while they move.
     ramps: [Option<(usize, Param)>; MAX_RAMPS],
+    /// The slot of the bus it listens to, which the order mixes before its own.
+    key: Option<u32>,
 }
 
 /// The most of one processor's parameters that ramp at once; a further ramp replaces the oldest.
@@ -590,6 +599,7 @@ impl Engine {
                     bus: bus.slot,
                     instance,
                     ramps: [None; MAX_RAMPS],
+                    key: None,
                 });
             }
             Command::Unmount { processor } => {
@@ -627,6 +637,16 @@ impl Engine {
             // The control side never opens a group inside another; one would be taken whole.
             Command::Group(members) => {
                 self.accept_group(members);
+            }
+            Command::Listen { processor, key, order } => {
+                if let Some(mounted) = self.processors[processor.slot as usize].as_mut()
+                    && mounted.generation == processor.generation
+                {
+                    mounted.key = key;
+                }
+                if let Some(order) = order {
+                    self.reorder(order);
+                }
             }
         }
     }
@@ -809,23 +829,46 @@ impl Engine {
                 self.send(Feedback::VoiceEnded { voice, pcm: ended.pcm });
             }
         }
+        self.mix_buses(frames);
+    }
+
+    /// Mixes `frames` frames of every bus, in order: its processors, its pre-fader sends, its
+    /// gain, its meter, its post-fader sends, and its parent. A bus that has rung out goes.
+    fn mix_buses(&mut self, frames: usize) {
+        let stride = self.channels * QUANTUM;
         let mut ramping = false;
         for index in 0..self.order.len() {
             let slot = self.order[index] as usize;
+            let Some((chain, length)) = self.buses[slot].as_ref().map(|bus| (bus.chain, bus.length)) else {
+                continue;
+            };
+            for &processor in &chain[..length] {
+                let Some(mounted) = self.processors[processor as usize].as_mut() else {
+                    continue;
+                };
+                ramping |= mounted.step_ramps(frames);
+                // A key the order put first, and that is still there, is heard as it left its bus.
+                let key = mounted
+                    .key
+                    .map(|key| key as usize)
+                    .filter(|key| *key != slot && self.buses[*key].is_some());
+                let (heard, samples) = match key {
+                    Some(key) => {
+                        let (heard, samples) = two(&mut self.mixes, stride, key, slot);
+                        (Some(heard), samples)
+                    }
+                    None => (None, &mut self.mixes[slot * stride..(slot + 1) * stride]),
+                };
+                let mut block = Block {
+                    samples,
+                    channels: self.channels,
+                    frames,
+                };
+                mounted.instance.process(&mut block, heard);
+            }
             let Some(bus) = self.buses[slot].as_mut() else {
                 continue;
             };
-            let mut block = Block {
-                samples: &mut self.mixes[slot * stride..(slot + 1) * stride],
-                channels: self.channels,
-                frames,
-            };
-            for &processor in &bus.chain[..bus.length] {
-                if let Some(mounted) = self.processors[processor as usize].as_mut() {
-                    ramping |= mounted.step_ramps(frames);
-                    mounted.instance.process(&mut block, None);
-                }
-            }
             if let Some(left) = bus.draining.as_mut() {
                 *left = left.saturating_sub(frames as u64);
             }

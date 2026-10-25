@@ -783,3 +783,52 @@ fn a_processor_parameter_ramps_every_control_block() {
     assert_eq!(out[32..64], [0.5; 32]);
     assert_eq!(out[64..], [0.0; 36]);
 }
+
+#[test]
+fn a_compressor_listening_to_dialogue_ducks_the_music_while_it_speaks() {
+    let mut context = mono(AudioConfig::default());
+    let music = bus(&mut context, BusKey::MASTER, 1.0);
+    let dialogue = bus(&mut context, BusKey::MASTER, 1.0);
+    let settings = {
+        let mut settings = crate::audio::processor::Settings::new();
+        settings.insert("ratio", crate::audio::processor::Setting::Number(20.0));
+        settings.insert("knee", crate::audio::processor::Setting::Number(0.0));
+        settings
+    };
+    let ducker = crate::audio::processor::create("compressor", 48_000, 1, settings).unwrap();
+    let ducker = context.control().mount(ducker, music, None).unwrap();
+    assert!(context.control().listen(ducker, Some(dialogue), None).unwrap());
+    context
+        .control()
+        .play(&pcm(&vec![0.1; 48_000], 48_000), &into(music, 0))
+        .unwrap();
+    context
+        .control()
+        .play(&pcm(&vec![0.5; 24_000], 48_000), &into(dialogue, 12_000))
+        .unwrap();
+    context.render(12_000);
+    assert!(
+        (context.control().meter(music).unwrap().peak - 0.1).abs() < 1e-6,
+        "untouched before anyone speaks"
+    );
+    context.render(12_000);
+    let level = context.control().meter(music).unwrap().rms;
+    assert!(level < 0.03, "{level}");
+
+    // The key can't go while it's heard, and a key the music feeds would be a loop; a bus that
+    // feeds the music is mixed before it anyway.
+    assert!(matches!(
+        context.control().remove_bus(dialogue, None),
+        Err(AudioError::BusInUse { buses: 1, .. })
+    ));
+    let inner = bus(&mut context, music, 1.0);
+    assert_eq!(
+        context.control().listen(ducker, Some(BusKey::MASTER), None),
+        Err(AudioError::Cycle)
+    );
+    assert!(context.control().listen(ducker, Some(inner), None).unwrap());
+    assert_eq!(context.control().listen(ducker, Some(music), None), Err(AudioError::Cycle));
+    context.control().unmount(ducker, None).unwrap();
+    context.render(30_000);
+    assert!(context.control().remove_bus(dialogue, None).unwrap());
+}
