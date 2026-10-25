@@ -897,3 +897,72 @@ fn plan_errors_name_the_mistake() {
         assert!(error.contains(expected), "{script}: {error}");
     }
 }
+
+/// A window shows a plan every frame `jess.gpu.pump` draws, here copying what it drew into a
+/// buffer to read, and closes. It opens a real window, so it runs only where `JESS_WINDOW_TESTS`
+/// is set, on a desktop: winit allows one event loop a process, so this is the suite's only
+/// window.
+#[cfg(feature = "window")]
+#[test]
+fn a_script_shows_a_plan_in_a_window() {
+    if std::env::var_os("JESS_WINDOW_TESTS").is_none() {
+        eprintln!("SKIPPED a_script_shows_a_plan_in_a_window: set JESS_WINDOW_TESTS on a desktop to open one");
+        return;
+    }
+    if crate::gpu::gpu("a_script_shows_a_plan_in_a_window").is_none() {
+        return;
+    }
+    let capabilities = ["gpu.device".to_owned(), "gpu.window".to_owned()];
+    jess::lua::runtime_with_capabilities(jess::lua::Options::default(), &capabilities)
+        .unwrap()
+        .exec(
+            r"
+            local shader = require('@jess/shader')
+            local device = jess.gpu.device()
+            local window = jess.gpu.window(device, {
+              title = 'jess window test',
+              width = 64,
+              height = 48,
+              resizable = false,
+            })
+            assert(window.open and window.width > 0 and window.scale > 0, tostring(window))
+            assert(string.find(tostring(window), 'GpuWindow(jess window test, ', 1, true) == 1, tostring(window))
+
+            local green = shader.program({
+              vertex = function(input)
+                local index = input.builtin.vertexIndex
+                local corner = shader.vec2(
+                  shader.float(shader.bitAnd(shader.shiftLeft(index, shader.uint(1)), shader.uint(2))),
+                  shader.float(shader.bitAnd(index, shader.uint(2)))
+                )
+                return { position = shader.vec4(corner * 2 - 1, 0, 1) }
+              end,
+              fragment = function() return shader.vec4(0, 1, 0, 1) end,
+            })
+            local pipeline = device:pipeline(green, { colors = { window.format } })
+            local row = math.ceil(window.width * 4 / 256) * 256
+            local plan = device:plan({
+              viewport = { width = window.width, height = window.height },
+              targets = { { name = 'screen', format = window.format, imported = true } },
+              buffers = { { name = 'pixels', size = row * window.height, imported = true } },
+              passes = {
+                { name = 'fill', kind = 'fullscreen', pipeline = pipeline, colors = { 'screen' } },
+                { name = 'grab', kind = 'copy', from = 'screen', to = 'pixels' },
+              },
+            })
+            local pixels = device:buffer(row * window.height, {})
+            window:show(plan, 'screen', { pixels = pixels })
+            for _ = 1, 10 do
+              jess.gpu.pump()
+            end
+            local middle = row * (window.height // 2) + 4 * (window.width // 2)
+            local texel = buffer.readu32(pixels:read(middle, 4), 0)
+            assert(texel == 0xff00ff00, string.format('%08x', texel))
+
+            window:close()
+            jess.gpu.pump()
+            assert(not window.open and window.format == nil)
+        ",
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+}

@@ -11,3 +11,5 @@ pub mod lua;
 pub mod render;
 pub mod runtime;
 pub mod shader;
+#[cfg(feature = "window")]
+pub mod window;

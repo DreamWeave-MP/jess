@@ -1,6 +1,6 @@
 ---
 title: 'jess.gpu'
-description: 'The GPU in front of the script: the device jess opens on it, the buffers, textures, and samplers made on it, the pipelines that draw and compute with them, the draw sets kept on it, and the plans that run a frame.'
+description: 'The GPU in front of the script: the device jess opens on it, the buffers, textures, and samplers made on it, the pipelines that draw and compute with them, the draw sets kept on it, the plans that run a frame, and the windows that show one.'
 weight: 47
 extra:
   kind: api
@@ -450,3 +450,83 @@ print(string.unpack('BBBB', buffer.tostring(pixels:read(0, 4))))
 ```
 
 The last number is `string.unpack`'s, again. A run draws the draw sets as they are when it runs: change one, and the next run draws it changed, with nothing planned again.
+
+## Windows
+
+{{ api_signature(value="jess.gpu.window(device: GpuDevice, desc: GpuWindowDesc?) -> GpuWindow") }}
+
+Opens a native window with a surface on `device`. The window is what a person sees an application in, and so far nothing more: which windows an application has and how they're managed come later.
+
+| Field | Type | Holds |
+| --- | --- | --- |
+| `title` | `string?` | Its title; `jess` by default. |
+| `width`, `height` | `number?` | Its inner size in physical pixels; 800 by 600 by default. The window system may give it another. |
+| `resizable` | `boolean?` | Whether the person can resize it; `true` by default. |
+| `vsync` | `boolean?` | Whether presenting waits for the display's refresh, one image a refresh; `true` by default. |
+| `format` | `GpuTextureFormat?` | The format its surface draws in; by default the first of `bgra8Unorm`, `rgba8Unorm`, `bgra8UnormSrgb`, and `rgba8UnormSrgb` it offers. |
+
+- **Capability:** `gpu.window`. A script you run holds it, as it holds the GPU; a package target declares it.
+- **Errors:** `jess.gpu.window: no window system: …` on a machine without a display; `windows belong to the thread that opened the first one`, since a process has one window system loop; and a jess built without the `window` feature says so: `jess.gpu.window: this jess has no windows: it was built without the window feature`.
+
+{{ api_signature(value="jess.gpu.pump() -> ()") }}
+
+Handles what the window system reported since the last call, without waiting (sizes, closes, keys, the pointer), and draws every window showing a plan. An application's host does this every frame, around the frame, and its scripts never call it; a script that opens a window itself calls it once a frame.
+
+## GpuWindow
+
+| Member | Type | Holds |
+| --- | --- | --- |
+| `title` | `string` | Its title. |
+| `width`, `height` | `number` | Its inner size in physical pixels, which its surface and the plan it shows are sized to. |
+| `scale` | `number` | How many physical pixels a logical one is on its display. |
+| `format` | `GpuTextureFormat?` | What its images are; `nil` once it's closed. |
+| `open` | `boolean` | Whether it's open: neither closed by the person nor by `close`. |
+| `show(plan, target, imports?)` | `(GpuPlan, string, { [string]: GpuTexture \| GpuBuffer }?) -> ()` | Draws `plan` into it every frame from the next on, its image as the plan's imported target `target`, which must have the window's format, with `imports` for the plan's other imported targets and buffers. The plan is resized with the window. |
+| `hide()`, `close()` | `() -> ()` | Stops drawing, or closes it. |
+
+`tostring(window)` is `GpuWindow(title, 800×600)`. Drawing a shown plan runs no Luau: each frame takes the window's next image, runs the plan into it with the draw sets as they are, and presents it, so a scene that doesn't change costs a script nothing at all.
+
+Under the host of an application target that declares `gpu.window`, a window's keyboard and pointer are the application's: keys, pointer buttons, position, motion, and the wheel reach [`@jess/input`](@/docs/api/input.md) as one keyboard and one pointer, whichever window they happened in, named as every jess backend names them (`key:KeyW`, `pointerButton:Primary`, `pointerAxis:DeltaX`).
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+local device = jess.gpu.device()
+local window = jess.gpu.window(device, { title = 'green', width = 320, height = 240 })
+
+local green = shader.program {
+  vertex = function(input)
+    local index = input.builtin.vertexIndex
+    local corner = shader.vec2(
+      shader.float(shader.bitAnd(shader.shiftLeft(index, shader.uint(1)), shader.uint(2))),
+      shader.float(shader.bitAnd(index, shader.uint(2)))
+    )
+
+    return { position = shader.vec4(corner * 2 - 1, 0, 1) }
+  end,
+  fragment = function() return shader.vec4(0, 1, 0, 1) end,
+}
+
+local format = assert(window.format)
+local plan = device:plan {
+  viewport = { width = window.width, height = window.height },
+  targets = { { name = 'screen', format = format, imported = true } },
+  passes = {
+    {
+      name = 'fill',
+      kind = 'fullscreen',
+      pipeline = device:pipeline(green, { colors = { format } }),
+      colors = { 'screen' },
+    },
+  },
+}
+
+window:show(plan, 'screen')
+for _ = 1, 120 do
+  jess.gpu.pump()
+end
+print(window, window.open)
+window:close()
+-- GpuWindow(green, 320×240)  true
+```

@@ -103,4 +103,6 @@ pub fn describe(d: &mut ExtensionDescriptor) {
     super::pipeline::describe(d);
     super::draw_set::describe(d);
     super::plan::describe(d);
+    #[cfg(feature = "window")]
+    super::window::describe(d);
 }

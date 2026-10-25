@@ -139,6 +139,15 @@ impl Texture {
 /// A row of a copy into a buffer starts at a multiple of 256 bytes.
 const ROW_ALIGNMENT: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
 
+#[cfg(feature = "window")]
+impl Texture {
+    /// `raw`, a texture wgpu made elsewhere (a surface's image), described as `desc`.
+    pub(crate) fn wrap(raw: wgpu::Texture, desc: TextureDesc) -> Texture {
+        let view = raw.create_view(&wgpu::TextureViewDescriptor::default());
+        Texture { raw, view, desc }
+    }
+}
+
 impl Gpu {
     /// A texture of `desc`, zeroed.
     ///

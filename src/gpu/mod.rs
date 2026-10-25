@@ -21,6 +21,8 @@ mod pass;
 mod pipeline;
 mod plan;
 mod sampler;
+#[cfg(feature = "window")]
+mod surface;
 mod texture;
 
 use std::collections::HashMap;
@@ -38,6 +40,8 @@ pub use pipeline::{Blend, ColorState, Cull, DepthState, PipelineState, RenderPip
 pub(crate) use pipeline::{Group, Slot};
 pub use plan::{Import, Plan, PlanBinding, PlanGroup, Work};
 pub use sampler::{AddressMode, Compare, Filter, Sampler, SamplerDesc};
+#[cfg(feature = "window")]
+pub use surface::{PresentMode, Surface, SurfaceFrame};
 pub use texture::{Texture, TextureDesc, TextureShape, TextureUsage};
 
 /// What went wrong on the GPU.
@@ -135,6 +139,11 @@ fn instance(backends: wgpu::Backends) -> wgpu::Instance {
 
 /// One adapter and the device opened on it.
 pub struct Gpu {
+    /// The process-wide instance the adapter was found through, which surfaces are made on.
+    #[cfg_attr(not(feature = "window"), allow(dead_code))]
+    instance: &'static wgpu::Instance,
+    #[cfg_attr(not(feature = "window"), allow(dead_code))]
+    adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
     info: GpuInfo,
@@ -164,7 +173,7 @@ impl Gpu {
         let _opening = OPENING.lock().unwrap_or_else(PoisonError::into_inner);
         let mut found = None;
         'search: for (instance, backends) in [(&PRIMARY, wgpu::Backends::PRIMARY), (&FALLBACK, wgpu::Backends::GL)] {
-            let instance = instance.get_or_init(|| self::instance(backends));
+            let instance: &'static wgpu::Instance = instance.get_or_init(|| self::instance(backends));
             for force_fallback_adapter in [false, true] {
                 let options = wgpu::RequestAdapterOptions {
                     power_preference: wgpu::PowerPreference::LowPower,
@@ -173,12 +182,12 @@ impl Gpu {
                     ..Default::default()
                 };
                 if let Ok(adapter) = block_on(instance.request_adapter(&options)) {
-                    found = Some(adapter);
+                    found = Some((instance, adapter));
                     break 'search;
                 }
             }
         }
-        let adapter = found.ok_or(GpuError::NoAdapter)?;
+        let (instance, adapter) = found.ok_or(GpuError::NoAdapter)?;
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
             .map_err(|error| GpuError::Device(error.to_string()))?;
         // An error no scope catches would panic in wgpu's default handler; every call here opens a
@@ -202,6 +211,8 @@ impl Gpu {
             max_workgroups: limits.max_compute_workgroups_per_dimension,
         };
         Ok(Gpu {
+            instance,
+            adapter,
             device,
             queue,
             info,

@@ -912,6 +912,35 @@ declare extern type GpuPlan with
   __tostring: (self: GpuPlan) -> string
 end
 
+--- What `jess.gpu.window` opens: an inner size in physical pixels (800 by 600 by default),
+--- whether the person may resize it, whether presenting waits for the display (`vsync`, the
+--- default), and the format its surface draws in, the first plain 8-bit one it offers by default.
+export type GpuWindowDesc = {
+  title: string?,
+  width: number?,
+  height: number?,
+  resizable: boolean?,
+  vsync: boolean?,
+  format: GpuTextureFormat?,
+}
+
+--- A native window: its inner `width` and `height` in physical pixels, the `scale` of a logical
+--- pixel, its surface's `format`, and whether it is `open`. `show` draws a plan into it every
+--- frame, the window's image as the plan's imported target `target`, the plan resized with the
+--- window; `hide` stops, and `close` closes it. `tostring` gives `GpuWindow(title, 800×600)`.
+declare extern type GpuWindow with
+  title: string
+  width: number
+  height: number
+  scale: number
+  format: GpuTextureFormat?
+  open: boolean
+  function show(self, plan: GpuPlan, target: string, imports: { [string]: GpuTexture | GpuBuffer }?): ()
+  function hide(self): ()
+  function close(self): ()
+  __tostring: (self: GpuWindow) -> string
+end
+
 --- The GPU a script draws and computes with: the adapter's `name`, the `backend` API wgpu reaches it
 --- through (`vulkan`, `metal`, `dx12`, `gl`), its `kind` (`discrete`, `integrated`, `virtual`,
 --- `cpu`, `other`), its `limits`, and how many `pipelines` it compiled and reused. `buffer`,
@@ -1328,5 +1357,12 @@ declare jess: {
     --- software one included. Needs `gpu.device`; a jess built without the `gpu` feature says
     --- it has no GPU.
     device: () -> GpuDevice,
+    --- A native window with a surface on `device`, which `GpuWindow:show` gives a plan to draw
+    --- every frame. Needs `gpu.window`; a jess built without the `window` feature says it has no
+    --- windows.
+    window: (device: GpuDevice, desc: GpuWindowDesc?) -> GpuWindow,
+    --- Handles what the window system reported since the last call and draws every window showing
+    --- a plan: what an application's host does every frame, for a script no host drives.
+    pump: () -> (),
   },
 }

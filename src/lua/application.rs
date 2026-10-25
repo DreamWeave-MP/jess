@@ -547,6 +547,24 @@ pub(crate) fn launch(
             step: FRAME,
             max_catch_up: MAX_CATCH_UP,
         });
+    // A target that may open windows hears their keyboard and pointer, whatever else its host
+    // polls; one that may not stays as headless as it was asked to be.
+    #[cfg(feature = "window")]
+    let input = if target
+        .capabilities
+        .iter()
+        .any(|capability| capability == crate::lua::gpu::WINDOW_CAPABILITY)
+    {
+        match input {
+            Some(InputSource::Backend(backend)) => {
+                Some(InputSource::Backend(Box::new(crate::window::WindowInput::new(Some(backend)))))
+            }
+            Some(InputSource::Synthetic) => Some(InputSource::Synthetic),
+            None => Some(InputSource::Backend(Box::new(crate::window::WindowInput::new(None)))),
+        }
+    } else {
+        input
+    };
     let host_spec = match input {
         Some(source) => HostSpec::new(spec).input(source),
         None => HostSpec::new(spec),
@@ -741,8 +759,18 @@ impl Application {
                 next = Instant::now();
             }
             let now = Instant::now();
+            // The window system's news reaches the frame's input; what the frame left the windows
+            // showing is drawn after it.
+            #[cfg(feature = "window")]
+            crate::window::pump();
             let outcome = self.frame(now - last);
             last = now;
+            #[cfg(feature = "window")]
+            if let Err(failures) = crate::window::present() {
+                for (title, problem) in failures {
+                    report(&format!("window {title}: {problem}"));
+                }
+            }
             self.flush(report);
             outcome.map_err(|problem| error(problem.to_string()))?;
             ran += 1;

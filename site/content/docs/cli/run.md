@@ -105,7 +105,7 @@ The program form, and `--trusted`, give a script every capability in the [table]
 
 ## Capabilities
 
-A script you run is yours, so it holds what you already have: its terminal (`process.stdio`, for `@dream/process`'s `write`) the input devices in front of you (`input.actions`, `input.observe`, `input.configure`), and the GPU (`gpu.device`). Everything else is a flag away and denied without one, with the function and the capability named:
+A script you run is yours, so it holds what you already have: its terminal (`process.stdio`, for `@dream/process`'s `write`) the input devices in front of you (`input.actions`, `input.observe`, `input.configure`), the GPU (`gpu.device`), and the screen (`gpu.window`). Everything else is a flag away and denied without one, with the function and the capability named:
 
 ```text
 $ jess run read.jsl

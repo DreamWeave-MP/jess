@@ -1,6 +1,6 @@
 ---
 title: 'GPU'
-description: 'What jess::gpu is, why it is wgpu behind a feature, and how devices, resources, pipelines, bind groups, passes, draw sets, plans, and their errors work.'
+description: 'What jess::gpu is, why it is wgpu behind a feature, and how devices, resources, pipelines, bind groups, passes, draw sets, plans, windows, and their errors work.'
 weight: 65
 extra:
   kind: guide
@@ -40,11 +40,21 @@ A copy between a target and a buffer lays each row out as its texels padded to a
 
 `Gpu::run` takes the draw sets its draw passes choose from, and an `Import` for each imported target and buffer: a texture of the declared format and size at the plan's viewport, a buffer of the declared size. `Plan::resized(viewport)` is the same plan for another viewport, its transient targets and the groups that bind them made again. `Plan::order()` names the passes that run, and `Plan::allocations()` counts what the plan allocated.
 
+## Windows
+
+`jess::window` (`src/window`, feature `window`, which brings `gpu`) opens native windows through winit, each with a `Surface` made on the device's own wgpu instance from the window's handle. A surface's next image is a `SurfaceFrame` whose texture is an ordinary jess `Texture`, so a window is drawn the way anything is: as the imported target of a plan. `Window::show` keeps a plan, resized with the window, and `window::present` runs it into every shown window's next image and presents it, with no Luau on the way.
+
+winit allows one event loop a process, on the thread that made it. Jess makes it at the first window and pumps it without blocking (`window::pump`) from whatever drives the frames: an application's host pumps before each frame and presents after it, so the host stays the application's one loop, windowed or headless. Keyboard and pointer events go into a bounded queue that `WindowInput`, an input `Backend`, drains into the host's input service at the host's clock; with no host listening, nothing is kept.
+
+winit is taken with X11 and Wayland, loaded at run time, and Wayland's client-side decorations without a title, which keeps a font stack out of the build. Everything it brings is MIT, Apache-2.0, BSD, or Zlib.
+
+The window test opens a real window, so it runs only with `JESS_WINDOW_TESTS` set, on a desktop.
+
 ## What It Is Not
 
 - **Not a wgpu wrapper.** No public type names a wgpu type. Usages are jess's own small sets, formats are jess's list, and errors are jess's.
 - **Not a renderer.** It doesn't know what a mesh, a camera, or a material is. What a buffer holds and why is the caller's business, and in the end Luau's.
-- **Not on by default.** It's behind the `gpu` feature, so the kernel still builds and runs without a GPU stack.
+- **Not on by default.** It's behind the `gpu` feature, and windows behind `window`, so the kernel still builds and runs without a GPU stack or a window system.
 
 ## Why wgpu
 

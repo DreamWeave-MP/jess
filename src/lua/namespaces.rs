@@ -33,7 +33,7 @@ const TYPES: [(&str, &str); 12] = [
 
 /// The GPU's handle types, in a jess built with the `gpu` feature.
 #[cfg(feature = "gpu")]
-const GPU_TYPES: [(&str, &str); 8] = [
+const GPU_TYPES: &[(&str, &str)] = &[
     ("jess.gpu.BindGroup", "GpuBindGroup"),
     ("jess.gpu.Buffer", "GpuBuffer"),
     ("jess.gpu.Device", "GpuDevice"),
@@ -42,9 +42,11 @@ const GPU_TYPES: [(&str, &str); 8] = [
     ("jess.gpu.Plan", "GpuPlan"),
     ("jess.gpu.Sampler", "GpuSampler"),
     ("jess.gpu.Texture", "GpuTexture"),
+    #[cfg(feature = "window")]
+    ("jess.gpu.Window", "GpuWindow"),
 ];
 #[cfg(not(feature = "gpu"))]
-const GPU_TYPES: [(&str, &str); 0] = [];
+const GPU_TYPES: &[(&str, &str)] = &[];
 
 /// Every handle type scripts index, with the names it registers.
 ///

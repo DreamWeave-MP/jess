@@ -12,6 +12,9 @@ use crate::lua::{Jess, guard};
 /// What opening a GPU device needs: the GPU is the machine's, as its input devices are.
 pub const DEVICE_CAPABILITY: &str = "gpu.device";
 
+/// What opening a window needs: the screen in front of the person, as the GPU is.
+pub const WINDOW_CAPABILITY: &str = "gpu.window";
+
 #[cfg(feature = "gpu")]
 mod device;
 #[cfg(feature = "gpu")]
@@ -22,6 +25,8 @@ mod pipeline;
 mod plan;
 #[cfg(feature = "gpu")]
 mod resources;
+#[cfg(feature = "window")]
+mod window;
 
 #[cfg(feature = "gpu")]
 pub use device::describe;
@@ -40,6 +45,28 @@ pub fn module(runtime: &Runtime, jess: &Rc<Jess>) -> l3i::Result<Table> {
         Err::<(), _>(crate::lua::error(
             "jess.gpu.device: this jess has no GPU: it was built without the gpu feature",
         ))
+    })?;
+    let state = jess.clone();
+    module.function(
+        "window",
+        move |call: &l3i::bind::Call<'_>, device: l3i::stack::ValueView<'_>, desc: Option<l3i::stack::ValueView<'_>>| {
+            guard(&state, "jess.gpu.window", WINDOW_CAPABILITY)?;
+            #[cfg(feature = "window")]
+            return window::open(call, device, desc);
+            #[cfg(not(feature = "window"))]
+            {
+                let _ = (call, device, desc);
+                Err::<(), _>(crate::lua::error(
+                    "jess.gpu.window: this jess has no windows: it was built without the window feature",
+                ))
+            }
+        },
+    )?;
+    module.function("pump", || {
+        #[cfg(feature = "window")]
+        return window::pump();
+        #[cfg(not(feature = "window"))]
+        Ok::<(), l3i::Error>(())
     })?;
     module.finish()
 }

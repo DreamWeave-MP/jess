@@ -1,0 +1,159 @@
+//! Windows from Luau: `jess.gpu.window` opens one on a device, `window:show` gives it a plan to draw
+//! every frame, and `jess.gpu.pump` handles the window system and draws, for a script no
+//! application host drives.
+
+use l3i::bind::Call;
+use l3i::extension::{ExtensionDescriptor, TagPolicy};
+use l3i::stack::{Scope, ValueView};
+use l3i::userdata::{Owned, Userdata, receiver};
+
+use super::device::LuaGpuDevice;
+use super::pipeline::{flag, options};
+use super::plan::{Given, LuaGpuPlan, given};
+use super::resources::{format_name, format_of, whole};
+use crate::gpu::PresentMode;
+use crate::lua::{error, kind};
+use crate::window::{Imported, Showing, Window, WindowDesc};
+
+/// A window and the device its surface is on.
+#[derive(Debug)]
+pub struct LuaGpuWindow {
+    window: Window,
+}
+
+// SAFETY: plain Rust state; the destructor never touches the Lua API.
+unsafe impl Userdata for LuaGpuWindow {
+    const NAME: &'static str = "jess.gpu.Window";
+}
+
+const WINDOW_KEYS: [&str; 6] = ["format", "height", "resizable", "title", "vsync", "width"];
+
+/// `jess.gpu.window(device, { title, width, height, resizable, vsync, format })`.
+pub fn open(call: &Call<'_>, device: ValueView<'_>, desc: Option<ValueView<'_>>) -> l3i::Result<Owned<LuaGpuWindow>> {
+    const FUNCTION: &str = "jess.gpu.window";
+    let Some(device) = receiver::<LuaGpuDevice>(device) else {
+        return Err(error(format!("{FUNCTION} takes a GpuDevice, not {}", kind(device))));
+    };
+    let mut wanted = WindowDesc::default();
+    if let Some(desc) = desc.filter(|desc| !desc.is_nil()) {
+        call.with_frame(|frame| {
+            let fields = options(frame, FUNCTION, "the window", desc, &WINDOW_KEYS)?;
+            let title = fields.raw_get(frame, "title")?;
+            if !title.is_nil() {
+                if !title.is_string() {
+                    return Err(error(format!("{FUNCTION}: the title is a string, not {}", kind(title))));
+                }
+                title.read::<&str>()?.clone_into(&mut wanted.title);
+            }
+            wanted.width = whole(
+                FUNCTION,
+                "the width",
+                Some(fields.raw_get(frame, "width")?),
+                Some(wanted.width),
+            )?;
+            wanted.height = whole(
+                FUNCTION,
+                "the height",
+                Some(fields.raw_get(frame, "height")?),
+                Some(wanted.height),
+            )?;
+            wanted.resizable = flag(frame, FUNCTION, &fields, "resizable", true)?;
+            wanted.present = if flag(frame, FUNCTION, &fields, "vsync", true)? {
+                PresentMode::Vsync
+            } else {
+                PresentMode::Immediate
+            };
+            let format = fields.raw_get(frame, "format")?;
+            if format.is_string() {
+                wanted.format = Some(format_of(FUNCTION, format.read::<&str>()?)?);
+            } else if !format.is_nil() {
+                return Err(error(format!(
+                    "{FUNCTION}: the format is a format's name, not {}",
+                    kind(format)
+                )));
+            }
+            Ok(())
+        })?;
+    }
+    let window = crate::window::open(&device.gpu, &wanted).map_err(|problem| error(format!("{FUNCTION}: {problem}")))?;
+    Ok(Owned(LuaGpuWindow { window }))
+}
+
+/// `jess.gpu.pump()`: the window system's news handled, and every window showing a plan drawn.
+pub fn pump() -> l3i::Result<()> {
+    crate::window::pump();
+    crate::window::present().map_err(|failures| {
+        let lines: Vec<String> = failures
+            .iter()
+            .map(|(title, problem)| format!("window {title}: {problem}"))
+            .collect();
+        error(format!("jess.gpu.pump: {}", lines.join("; ")))
+    })
+}
+
+/// `window:show(plan, target, imports?)`.
+fn show(
+    this: &LuaGpuWindow,
+    call: &Call<'_>,
+    plan: ValueView<'_>,
+    target: ValueView<'_>,
+    imports: Option<ValueView<'_>>,
+) -> l3i::Result<()> {
+    const FUNCTION: &str = "GpuWindow:show";
+    let Some(plan) = receiver::<LuaGpuPlan>(plan) else {
+        return Err(error(format!("{FUNCTION} takes a GpuPlan, not {}", kind(plan))));
+    };
+    if !target.is_string() {
+        return Err(error(format!(
+            "{FUNCTION}: the target is the name of the plan's imported target the window's image is, not {}",
+            kind(target)
+        )));
+    }
+    let imports = given(call, FUNCTION, imports)?
+        .into_iter()
+        .map(|given| match given {
+            Given::Texture(name, texture) => Imported::Texture(name, texture),
+            Given::Buffer(name, buffer) => Imported::Buffer(name, buffer),
+        })
+        .collect();
+    let plan_for_window = plan
+        .plan
+        .resized(&plan.gpu, this.window.size())
+        .map_err(|problem| error(format!("{FUNCTION}: {problem}")))?;
+    this.window
+        .show(Showing {
+            plan: plan_for_window,
+            sets: plan.sets.clone(),
+            target: target.read::<&str>()?.to_owned(),
+            imports,
+        })
+        .map_err(|problem| error(format!("{FUNCTION}: {problem}")))
+}
+
+/// Declares the window type.
+pub fn describe(d: &mut ExtensionDescriptor) {
+    let mut window = d.userdata::<LuaGpuWindow>(LuaGpuWindow::NAME);
+    window
+        .tag(TagPolicy::Never)
+        .doc("A native window, its surface on a GPU device, and the plan it draws every frame.");
+    window.getter("title", |this: &LuaGpuWindow| this.window.title()).untyped();
+    window
+        .getter("width", |this: &LuaGpuWindow| this.window.size().width)
+        .untyped();
+    window
+        .getter("height", |this: &LuaGpuWindow| this.window.size().height)
+        .untyped();
+    window.getter("scale", |this: &LuaGpuWindow| this.window.scale()).untyped();
+    window
+        .getter("format", |this: &LuaGpuWindow| this.window.format().map(format_name))
+        .untyped();
+    window.getter("open", |this: &LuaGpuWindow| this.window.is_open()).untyped();
+    window.method("show", show).untyped();
+    window.method("hide", |this: &LuaGpuWindow| this.window.hide()).untyped();
+    window.method("close", |this: &LuaGpuWindow| this.window.close()).untyped();
+    crate::lua::plan::metamethod(&mut window, "__tostring", |this: &LuaGpuWindow| {
+        let size = this.window.size();
+        let closed = if this.window.is_open() { "" } else { ", closed" };
+        format!("GpuWindow({}, {}×{}{closed})", this.window.title(), size.width, size.height)
+    });
+}

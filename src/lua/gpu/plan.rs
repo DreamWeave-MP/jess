@@ -26,9 +26,9 @@ use crate::shader::Frequency;
 /// A plan compiled from Luau, and the device and draw sets it runs with.
 #[derive(Debug)]
 pub struct LuaGpuPlan {
-    gpu: Rc<Gpu>,
-    sets: Rc<DrawSets>,
-    plan: Plan,
+    pub gpu: Rc<Gpu>,
+    pub sets: Rc<DrawSets>,
+    pub plan: Plan,
 }
 
 // SAFETY: plain Rust state; the destructor never touches the Lua API.
@@ -524,39 +524,48 @@ fn extent(frame: &Frame<'_>, view: ValueView<'_>) -> l3i::Result<Extent> {
 }
 
 /// A resource given to a run, held while it runs.
-enum Given {
+pub enum Given {
+    /// A texture, for an imported target.
     Texture(String, Arc<crate::gpu::Texture>),
+    /// A buffer, for an imported buffer.
     Buffer(String, Arc<crate::gpu::Buffer>),
+}
+
+/// The imports a table names, `{ [name] = texture | buffer }`, for `function`.
+pub fn given(call: &Call<'_>, function: &str, imports: Option<ValueView<'_>>) -> l3i::Result<Vec<Given>> {
+    let mut given = Vec::new();
+    let Some(imports) = imports.filter(|imports| !imports.is_nil()) else {
+        return Ok(given);
+    };
+    if !imports.is_table() {
+        return Err(error(format!("{function} takes a table of imports, not {}", kind(imports))));
+    }
+    call.with_frame(|frame| {
+        imports.as_table()?.for_each(frame, |_, key, value| {
+            if !key.is_string() {
+                return Err(error(format!("{function}: an import's name is a string, not {}", shown(key))));
+            }
+            let name = key.read::<&str>()?.to_owned();
+            if let Some(texture) = receiver::<LuaGpuTexture>(value) {
+                given.push(Given::Texture(name, texture.texture.clone()));
+            } else if let Some(buffer) = receiver::<LuaGpuBuffer>(value) {
+                given.push(Given::Buffer(name, buffer.buffer.clone()));
+            } else {
+                return Err(error(format!(
+                    "{function}: {name} is a GpuTexture or a GpuBuffer, not {}",
+                    kind(value)
+                )));
+            }
+            Ok(())
+        })
+    })?;
+    Ok(given)
 }
 
 /// `plan:run(imports)`: every surviving pass, with `imports` by name.
 fn run(this: &LuaGpuPlan, call: &Call<'_>, imports: Option<ValueView<'_>>) -> l3i::Result<()> {
     const RUN: &str = "GpuPlan:run";
-    let mut given = Vec::new();
-    if let Some(imports) = imports.filter(|imports| !imports.is_nil()) {
-        if !imports.is_table() {
-            return Err(error(format!("{RUN} takes a table of imports, not {}", kind(imports))));
-        }
-        call.with_frame(|frame| {
-            imports.as_table()?.for_each(frame, |_, key, value| {
-                if !key.is_string() {
-                    return Err(error(format!("{RUN}: an import's name is a string, not {}", shown(key))));
-                }
-                let name = key.read::<&str>()?.to_owned();
-                if let Some(texture) = receiver::<LuaGpuTexture>(value) {
-                    given.push(Given::Texture(name, texture.texture.clone()));
-                } else if let Some(buffer) = receiver::<LuaGpuBuffer>(value) {
-                    given.push(Given::Buffer(name, buffer.buffer.clone()));
-                } else {
-                    return Err(error(format!(
-                        "{RUN}: {name} is a GpuTexture or a GpuBuffer, not {}",
-                        kind(value)
-                    )));
-                }
-                Ok(())
-            })
-        })?;
-    }
+    let given = given(call, RUN, imports)?;
     let imports: Vec<Import<'_>> = given
         .iter()
         .map(|given| match given {

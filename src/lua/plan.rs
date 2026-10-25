@@ -169,6 +169,7 @@ impl Extension for JessExtension {
         // `jess.audio.output` checks this the same way.
         d.optional_capability(crate::audio::capability::OUTPUT);
         d.optional_capability(crate::lua::gpu::DEVICE_CAPABILITY);
+        d.optional_capability(crate::lua::gpu::WINDOW_CAPABILITY);
         let module = d.module(MODULE);
         module.doc("Generic native services for Luau applications.");
         for name in MEMBERS {
