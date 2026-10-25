@@ -24,13 +24,13 @@ use crate::audio::{
     SampleFormat, Tap, VoiceKey, VoiceParam, VoiceSend,
 };
 use crate::lua::plan::Functions;
-use crate::lua::{Bytes, Jess, Text, error, guard, kind, push_table};
+use crate::lua::{Bytes, Jess, Text, error, guard, kind, option_value, push_table, read_options};
 use crate::runtime::ResourceHandle;
 use l3i::Runtime;
 use l3i::bind::{Call, StackResults};
 use l3i::convert::{NewBuffer, Vector3};
 use l3i::extension::{ExtensionDescriptor, TagPolicy};
-use l3i::stack::{Frame, Scope, TableView, ValueView};
+use l3i::stack::{Frame, Scope, ValueView};
 use l3i::userdata::{Owned, Userdata};
 use l3i::value::{Function, Table};
 
@@ -155,12 +155,17 @@ fn stream(call: &Call<'_>, options: ValueView<'_>) -> l3i::Result<Owned<LuaAudio
         let found = Stream::find(handle.id).ok_or_else(|| error(format!("{FUNCTION}: the stream is gone")))?;
         return Ok(Owned(LuaAudioStream(found)));
     }
-    let (channels, rate, seconds) = call.with_frame(|frame| {
-        let table = table_of(frame, options, FUNCTION, STREAM_KEYS)?;
-        let channels = optional::<f64>(frame, Some(&table), "channels", FUNCTION)?.unwrap_or(2.0);
-        let rate = optional::<f64>(frame, Some(&table), "rate", FUNCTION)?.unwrap_or(48_000.0);
-        let seconds = optional::<f64>(frame, Some(&table), "seconds", FUNCTION)?.unwrap_or(1.0);
-        Ok((channels, rate, seconds))
+    let (mut channels, mut rate, mut seconds) = (2.0, 48_000.0, 1.0);
+    call.with_frame(|frame| {
+        read_table(frame, options, FUNCTION, STREAM_KEYS, |_, name, value| {
+            match name {
+                b"channels" => channels = option_value(value, "channels", FUNCTION)?,
+                b"rate" => rate = option_value(value, "rate", FUNCTION)?,
+                b"seconds" => seconds = option_value(value, "seconds", FUNCTION)?,
+                _ => return Ok(false),
+            }
+            Ok(true)
+        })
     })?;
     let stream = Stream::new(count(channels, "channels")?, rate_of(rate)?, seconds)?;
     Ok(Owned(LuaAudioStream(stream)))
@@ -335,30 +340,32 @@ fn frame_option(at: Option<f64>) -> l3i::Result<Option<u64>> {
     at.map(|at| whole(at, "at")).transpose()
 }
 
-/// The options table a function was given, checked for keys it doesn't take; `None` for none.
-fn table<'v>(
+/// The options table a function was given, if it was given one, read in one walk.
+fn read_optional(
     frame: &Frame<'_>,
-    options: Option<ValueView<'v>>,
+    options: Option<ValueView<'_>>,
     function: &str,
     keys: &[&str],
-) -> l3i::Result<Option<TableView<'v>>> {
+    visit: impl FnMut(&Frame<'_>, &[u8], ValueView<'_>) -> l3i::Result<bool>,
+) -> l3i::Result<()> {
     let Some(options) = options.filter(|options| !options.is_nil()) else {
-        return Ok(None);
+        return Ok(());
     };
+    read_table(frame, options, function, keys, visit)
+}
+
+/// A table of options that must be there, read in one walk.
+fn read_table(
+    frame: &Frame<'_>,
+    options: ValueView<'_>,
+    function: &str,
+    keys: &[&str],
+    visit: impl FnMut(&Frame<'_>, &[u8], ValueView<'_>) -> l3i::Result<bool>,
+) -> l3i::Result<()> {
     if !options.is_table() {
         return Err(error(format!("{function} takes a table of options, not {}", kind(options))));
     }
-    crate::lua::check_options(frame, options, function, keys)?;
-    Ok(Some(options.as_table()?))
-}
-
-fn optional<T: for<'a> l3i::convert::FromView<'a>>(
-    frame: &Frame<'_>,
-    table: Option<&TableView<'_>>,
-    key: &str,
-    function: &str,
-) -> l3i::Result<Option<T>> {
-    table.map_or_else(|| Ok(None), |table| table.raw_get_optional(frame, key, function))
+    read_options(frame, &options.as_table()?, function, keys, visit)
 }
 
 /// The bus a value is, which must belong to `context`.
@@ -372,91 +379,63 @@ fn bus_of(value: ValueView<'_>, context: &Shared, what: &str) -> l3i::Result<Bus
     Ok(bus.key)
 }
 
-/// The bus in field `key` of `table`, if there is one.
-fn bus_field(frame: &Frame<'_>, table: Option<&TableView<'_>>, key: &str, context: &Shared) -> l3i::Result<Option<BusKey>> {
-    let Some(table) = table else {
-        return Ok(None);
-    };
-    frame.with_frame(|frame| {
-        let value = table.raw_get(frame, key)?;
-        if value.is_nil() {
-            return Ok(None);
-        }
-        bus_of(value, context, key).map(Some)
-    })
-}
-
-fn vector(frame: &Frame<'_>, table: &TableView<'_>, key: &str, function: &str) -> l3i::Result<Option<[f64; 3]>> {
-    let value: Option<Vector3> = table.raw_get_optional(frame, key, function)?;
-    Ok(value.map(|value| [f64::from(value.x), f64::from(value.y), f64::from(value.z)]))
+fn vector(value: ValueView<'_>, key: &str, function: &str) -> l3i::Result<[f64; 3]> {
+    let value: Vector3 = option_value(value, key, function)?;
+    Ok([f64::from(value.x), f64::from(value.y), f64::from(value.z)])
 }
 
 /// `base` with the fields of a place's options table changed: vectors for position, velocity,
 /// and direction, a cone in degrees, a distance model by name, and its numbers.
 fn emitter(frame: &Frame<'_>, options: ValueView<'_>, base: Emitter, function: &str) -> l3i::Result<Emitter> {
-    let place = table_of(frame, options, function, PLACE_KEYS)?;
     let mut emitter = base;
-    if let Some(position) = vector(frame, &place, "position", function)? {
-        emitter.position = position;
-    }
-    if let Some(velocity) = vector(frame, &place, "velocity", function)? {
-        emitter.velocity = velocity;
-    }
-    if let Some(direction) = vector(frame, &place, "direction", function)? {
-        emitter.direction = Some(direction);
-    }
-    if let Some(model) = optional::<String>(frame, Some(&place), "distance", function)? {
-        emitter.distance = Distance::named(&model).ok_or_else(|| {
-            error(format!(
-                "{function}'s distance is none, inverse, linear, or exponential, not {model:?}"
-            ))
-        })?;
-    }
-    for (key, field) in [
-        ("reference", &mut emitter.reference),
-        ("maximum", &mut emitter.maximum),
-        ("rolloff", &mut emitter.rolloff),
-        ("doppler", &mut emitter.doppler),
-        ("gain", &mut emitter.gain),
-        ("lowpass", &mut emitter.lowpass),
-    ] {
-        if let Some(value) = optional::<f64>(frame, Some(&place), key, function)? {
-            *field = value;
-        }
-    }
-    frame.with_frame(|frame| {
-        let cone = place.raw_get(frame, "cone")?;
-        if cone.is_nil() {
-            return Ok(());
-        }
-        let cone = table_of(frame, cone, function, CONE_KEYS)?;
-        for (key, field) in [("inner", &mut emitter.inner), ("outer", &mut emitter.outer)] {
-            if let Some(degrees) = optional::<f64>(frame, Some(&cone), key, function)? {
-                *field = degrees.to_radians();
+    read_table(frame, options, function, PLACE_KEYS, |frame, name, value| {
+        match name {
+            b"position" => emitter.position = vector(value, "position", function)?,
+            b"velocity" => emitter.velocity = vector(value, "velocity", function)?,
+            b"direction" => emitter.direction = Some(vector(value, "direction", function)?),
+            b"distance" => {
+                let model: &str = option_value(value, "distance", function)?;
+                emitter.distance = Distance::named(model).ok_or_else(|| {
+                    error(format!(
+                        "{function}'s distance is none, inverse, linear, or exponential, not {model:?}"
+                    ))
+                })?;
             }
+            b"reference" => emitter.reference = option_value(value, "reference", function)?,
+            b"maximum" => emitter.maximum = option_value(value, "maximum", function)?,
+            b"rolloff" => emitter.rolloff = option_value(value, "rolloff", function)?,
+            b"doppler" => emitter.doppler = option_value(value, "doppler", function)?,
+            b"gain" => emitter.gain = option_value(value, "gain", function)?,
+            b"lowpass" => emitter.lowpass = option_value(value, "lowpass", function)?,
+            b"cone" => read_table(frame, value, function, CONE_KEYS, |_, name, value| {
+                match name {
+                    b"inner" => emitter.inner = option_value::<f64>(value, "inner", function)?.to_radians(),
+                    b"outer" => emitter.outer = option_value::<f64>(value, "outer", function)?.to_radians(),
+                    b"outside" => emitter.outside = option_value(value, "outside", function)?,
+                    _ => return Ok(false),
+                }
+                Ok(true)
+            })?,
+            _ => return Ok(false),
         }
-        if let Some(outside) = optional::<f64>(frame, Some(&cone), "outside", function)? {
-            emitter.outside = outside;
-        }
-        Ok(())
+        Ok(true)
     })?;
     Ok(emitter)
 }
 
 /// `base` with the fields of a listener's options table changed.
 fn listener(frame: &Frame<'_>, options: ValueView<'_>, base: Listener, function: &str) -> l3i::Result<Listener> {
-    let table = table_of(frame, options, function, LISTENER_KEYS)?;
     let mut listener = base;
-    for (key, field) in [
-        ("position", &mut listener.position),
-        ("forward", &mut listener.forward),
-        ("up", &mut listener.up),
-        ("velocity", &mut listener.velocity),
-    ] {
-        if let Some(value) = vector(frame, &table, key, function)? {
-            *field = value;
+    read_table(frame, options, function, LISTENER_KEYS, |_, name, value| {
+        match name {
+            b"position" => listener.position = vector(value, "position", function)?,
+            b"forward" => listener.forward = vector(value, "forward", function)?,
+            b"up" => listener.up = vector(value, "up", function)?,
+            b"velocity" => listener.velocity = vector(value, "velocity", function)?,
+            _ => return Ok(false),
         }
-    }
+        Ok(true)
+    })?;
     Ok(listener)
 }
 
@@ -484,19 +463,21 @@ fn rate_of(rate: f64) -> l3i::Result<u32> {
 /// `audio.pcm(data, { format, channels, rate })`.
 fn pcm(call: &Call<'_>, data: &Bytes, options: Option<ValueView<'_>>) -> l3i::Result<Owned<LuaAudioPcm>> {
     const FUNCTION: &str = "jess.audio.pcm";
-    let (format, channels, rate) = call.with_frame(|frame| {
-        let Some(table) = table(frame, options, FUNCTION, PCM_KEYS)? else {
-            return Err(error(format!("{FUNCTION} needs {{ format, channels, rate }}")));
-        };
-        let format: Option<String> = optional(frame, Some(&table), "format", FUNCTION)?;
-        let channels: Option<f64> = optional(frame, Some(&table), "channels", FUNCTION)?;
-        let rate: Option<f64> = optional(frame, Some(&table), "rate", FUNCTION)?;
-        match (format, channels, rate) {
-            (Some(format), Some(channels), Some(rate)) => Ok((format, channels, rate)),
-            _ => Err(error(format!("{FUNCTION} needs format, channels, and rate"))),
-        }
+    let (mut format, mut channels, mut rate) = (None, None, None);
+    call.with_frame(|frame| {
+        read_optional(frame, options, FUNCTION, PCM_KEYS, |_, name, value| {
+            match name {
+                b"format" => format = Some(option_value::<&str>(value, "format", FUNCTION)?.parse::<SampleFormat>()?),
+                b"channels" => channels = Some(option_value::<f64>(value, "channels", FUNCTION)?),
+                b"rate" => rate = Some(option_value::<f64>(value, "rate", FUNCTION)?),
+                _ => return Ok(false),
+            }
+            Ok(true)
+        })
     })?;
-    let format: SampleFormat = format.parse()?;
+    let (Some(format), Some(channels), Some(rate)) = (format, channels, rate) else {
+        return Err(error(format!("{FUNCTION} needs format, channels, and rate")));
+    };
     let pcm = Pcm::from_interleaved(&data.0, format, count(channels, "channels")?, rate_of(rate)?)?;
     Ok(Owned(LuaAudioPcm(Arc::new(pcm))))
 }
@@ -534,45 +515,43 @@ fn context_config(
     let mut request = DeviceRequest::default();
     let live = keys.contains(&"device");
     call.with_frame(|frame| {
-        let table = table(frame, options, function, keys)?;
-        let table = table.as_ref();
-        if let Some(rate) = optional::<f64>(frame, table, "rate", function)? {
-            config.rate = rate_of(rate)?;
-            request.rate = Some(config.rate);
-        }
-        if live {
-            if let Some(period) = optional::<f64>(frame, table, "period", function)? {
-                request.period = Some(u32::try_from(whole(period, "period")?).unwrap_or(u32::MAX));
+        read_optional(frame, options, function, keys, |_, name, value| {
+            let number = |key| option_value::<f64>(value, key, function);
+            match name {
+                b"rate" => {
+                    config.rate = rate_of(number("rate")?)?;
+                    request.rate = Some(config.rate);
+                }
+                b"period" if live => {
+                    request.period = Some(u32::try_from(whole(number("period")?, "period")?).unwrap_or(u32::MAX));
+                }
+                b"device" if live => {
+                    request.null = match option_value::<&str>(value, "device", function)? {
+                        "default" => false,
+                        "null" => true,
+                        other => return Err(error(format!("{function}'s device is default or null, not {other:?}"))),
+                    };
+                }
+                b"channels" => config.channels = count(number("channels")?, "channels")?,
+                b"voices" => config.voices = count(number("voices")?, "voices")?,
+                b"buses" => config.buses = count(number("buses")?, "buses")?,
+                b"processors" => config.processors = count(number("processors")?, "processors")?,
+                b"commands" => config.commands = count(number("commands")?, "commands")?,
+                b"physical" => config.physical = Some(count(number("physical")?, "physical")?),
+                b"speedOfSound" => config.speed_of_sound = number("speedOfSound")?,
+                b"handedness" => {
+                    config.handedness = match option_value::<&str>(value, "handedness", function)? {
+                        "right" => Handedness::Right,
+                        "left" => Handedness::Left,
+                        other => {
+                            return Err(error(format!("{function}'s handedness is right or left, not {other:?}")));
+                        }
+                    };
+                }
+                _ => return Ok(false),
             }
-            request.null = match optional::<String>(frame, table, "device", function)?.as_deref() {
-                None | Some("default") => false,
-                Some("null") => true,
-                Some(other) => return Err(error(format!("{function}'s device is default or null, not {other:?}"))),
-            };
-        }
-        for (key, field) in [
-            ("channels", &mut config.channels),
-            ("voices", &mut config.voices),
-            ("buses", &mut config.buses),
-            ("processors", &mut config.processors),
-            ("commands", &mut config.commands),
-        ] {
-            if let Some(value) = optional::<f64>(frame, table, key, function)? {
-                *field = count(value, key)?;
-            }
-        }
-        if let Some(physical) = optional::<f64>(frame, table, "physical", function)? {
-            config.physical = Some(count(physical, "physical")?);
-        }
-        if let Some(speed) = optional::<f64>(frame, table, "speedOfSound", function)? {
-            config.speed_of_sound = speed;
-        }
-        config.handedness = match optional::<String>(frame, table, "handedness", function)?.as_deref() {
-            None | Some("right") => Handedness::Right,
-            Some("left") => Handedness::Left,
-            Some(other) => return Err(error(format!("{function}'s handedness is right or left, not {other:?}"))),
-        };
-        Ok(())
+            Ok(true)
+        })
     })?;
     Ok((config, request))
 }
@@ -582,62 +561,48 @@ fn context_config(
 fn play_spec(call: &Call<'_>, context: &Shared, frames: u64, options: Option<ValueView<'_>>) -> l3i::Result<PlaySpec> {
     const FUNCTION: &str = "AudioContext:play";
     let mut spec = PlaySpec::default();
+    let (mut looping, mut start, mut end) = (false, None, None);
     call.with_frame(|frame| {
-        let table = table(frame, options, FUNCTION, PLAY_KEYS)?;
-        let table = table.as_ref();
-        spec.at = frame_option(optional(frame, table, "at", FUNCTION)?)?;
-        if let Some(gain) = optional::<f64>(frame, table, "gain", FUNCTION)? {
-            spec.gain = VoiceParam::Gain.check(gain)? as f32;
-        }
-        if let Some(pan) = optional::<f64>(frame, table, "pan", FUNCTION)? {
-            spec.pan = VoiceParam::Pan.check(pan)? as f32;
-        }
-        if let Some(rate) = optional::<f64>(frame, table, "rate", FUNCTION)? {
-            spec.rate = rate;
-        }
-        if let Some(offset) = optional::<f64>(frame, table, "offset", FUNCTION)? {
-            spec.offset = whole(offset, "offset")?;
-        }
-        if let Some(bus) = bus_field(frame, table, "bus", context)? {
-            spec.bus = bus;
-        }
-        spec.sends = voice_sends(frame, table, context)?;
-        if let Some(fade) = optional::<f64>(frame, table, "fade", FUNCTION)? {
-            spec.fade = whole(fade, "fade")?;
-        }
-        if let Some(priority) = optional::<f64>(frame, table, "priority", FUNCTION)? {
-            if !priority.is_finite() {
-                return Err(error(format!("{FUNCTION}'s priority is a finite number, not {priority}")));
-            }
-            spec.priority = priority as f32;
-        }
-        if let Some(culled) = optional::<String>(frame, table, "culled", FUNCTION)? {
-            spec.culled = Culled::named(&culled)
-                .ok_or_else(|| error(format!("{FUNCTION}'s culled is advance, pause, or stop, not {culled:?}")))?;
-        }
-        if let Some(table) = table {
-            spec.spatial = frame.with_frame(|frame| {
-                let place = table.raw_get(frame, "place")?;
-                if place.is_nil() {
-                    return Ok(None);
+        read_optional(frame, options, FUNCTION, PLAY_KEYS, |frame, name, value| {
+            match name {
+                b"at" => spec.at = Some(whole(option_value(value, "at", FUNCTION)?, "at")?),
+                b"gain" => spec.gain = VoiceParam::Gain.check(option_value(value, "gain", FUNCTION)?)? as f32,
+                b"pan" => spec.pan = VoiceParam::Pan.check(option_value(value, "pan", FUNCTION)?)? as f32,
+                b"rate" => spec.rate = option_value(value, "rate", FUNCTION)?,
+                b"offset" => spec.offset = whole(option_value(value, "offset", FUNCTION)?, "offset")?,
+                b"bus" => spec.bus = bus_of(value, context, "bus")?,
+                b"sends" => spec.sends = voice_sends(frame, value, context)?,
+                b"fade" => spec.fade = whole(option_value(value, "fade", FUNCTION)?, "fade")?,
+                b"priority" => {
+                    let priority: f64 = option_value(value, "priority", FUNCTION)?;
+                    if !priority.is_finite() {
+                        return Err(error(format!("{FUNCTION}'s priority is a finite number, not {priority}")));
+                    }
+                    spec.priority = priority as f32;
                 }
-                emitter(frame, place, Emitter::default(), "AudioContext:play's place").map(Some)
-            })?;
-        }
-        let looping = optional::<bool>(frame, table, "loop", FUNCTION)?.unwrap_or(false);
-        let start = optional::<f64>(frame, table, "loopStart", FUNCTION)?;
-        let end = optional::<f64>(frame, table, "loopEnd", FUNCTION)?;
-        if !looping && (start.is_some() || end.is_some()) {
-            return Err(error(format!("{FUNCTION}: loopStart and loopEnd need loop = true")));
-        }
-        if looping {
-            spec.looping = Some(LoopRegion {
-                start: start.map_or(Ok(0), |start| whole(start, "loopStart"))?,
-                end: end.map_or_else(|| Ok(frames), |end| whole(end, "loopEnd"))?,
-            });
-        }
-        Ok(())
+                b"culled" => {
+                    let culled: &str = option_value(value, "culled", FUNCTION)?;
+                    spec.culled = Culled::named(culled)
+                        .ok_or_else(|| error(format!("{FUNCTION}'s culled is advance, pause, or stop, not {culled:?}")))?;
+                }
+                b"place" => spec.spatial = Some(emitter(frame, value, Emitter::default(), "AudioContext:play's place")?),
+                b"loop" => looping = option_value(value, "loop", FUNCTION)?,
+                b"loopStart" => start = Some(whole(option_value(value, "loopStart", FUNCTION)?, "loopStart")?),
+                b"loopEnd" => end = Some(whole(option_value(value, "loopEnd", FUNCTION)?, "loopEnd")?),
+                _ => return Ok(false),
+            }
+            Ok(true)
+        })
     })?;
+    if !looping && (start.is_some() || end.is_some()) {
+        return Err(error(format!("{FUNCTION}: loopStart and loopEnd need loop = true")));
+    }
+    if looping {
+        spec.looping = Some(LoopRegion {
+            start: start.unwrap_or(0),
+            end: end.unwrap_or(frames),
+        });
+    }
     Ok(spec)
 }
 
@@ -645,55 +610,48 @@ fn play_spec(call: &Call<'_>, context: &Shared, frames: u64, options: Option<Val
 #[allow(clippy::cast_possible_truncation)] // Levels are f32 in the engine.
 fn voice_sends(
     frame: &Frame<'_>,
-    table: Option<&TableView<'_>>,
+    list: ValueView<'_>,
     context: &Shared,
 ) -> l3i::Result<[Option<VoiceSend>; MAX_VOICE_SENDS]> {
     const FUNCTION: &str = "AudioContext:play's sends";
     let mut sends = [None; MAX_VOICE_SENDS];
-    let Some(table) = table else {
-        return Ok(sends);
-    };
-    frame.with_frame(|frame| {
-        let list = table.raw_get(frame, "sends")?;
-        if list.is_nil() {
-            return Ok(sends);
-        }
-        if !list.is_table() {
-            return Err(error(format!("{FUNCTION} is a list of {{ bus, level }}, not {}", kind(list))));
-        }
-        let list = list.as_table()?;
-        for index in 1.. {
-            let more = frame.with_frame(|frame| {
-                let entry = list.raw_get_index(frame, index)?;
-                if entry.is_nil() {
-                    return Ok(false);
+    if !list.is_table() {
+        return Err(error(format!("{FUNCTION} is a list of {{ bus, level }}, not {}", kind(list))));
+    }
+    let list = list.as_table()?;
+    for index in 1.. {
+        let more = frame.with_frame(|frame| {
+            let entry = list.raw_get_index(frame, index)?;
+            if entry.is_nil() {
+                return Ok(false);
+            }
+            let slot = usize::try_from(index - 1).unwrap_or(usize::MAX);
+            if slot >= MAX_VOICE_SENDS {
+                return Err(AudioError::SendsExhausted(MAX_VOICE_SENDS).into());
+            }
+            let (mut bus, mut level) = (None, 1.0);
+            read_table(frame, entry, FUNCTION, SEND_KEYS, |_, name, value| {
+                match name {
+                    b"bus" => bus = Some(bus_of(value, context, "bus")?),
+                    b"level" => level = option_value(value, "level", FUNCTION)?,
+                    _ => return Ok(false),
                 }
-                let slot = usize::try_from(index - 1).unwrap_or(usize::MAX);
-                if slot >= MAX_VOICE_SENDS {
-                    return Err(AudioError::SendsExhausted(MAX_VOICE_SENDS).into());
-                }
-                let send = table_of(frame, entry, FUNCTION, SEND_KEYS)?;
-                let Some(bus) = bus_field(frame, Some(&send), "bus", context)? else {
-                    return Err(error(format!("{FUNCTION}: each send names its bus")));
-                };
-                let level = optional::<f64>(frame, Some(&send), "level", FUNCTION)?.unwrap_or(1.0);
-                sends[slot] = Some(VoiceSend {
-                    bus,
-                    level: level as f32,
-                });
                 Ok(true)
             })?;
-            if !more {
-                break;
-            }
+            let Some(bus) = bus else {
+                return Err(error(format!("{FUNCTION}: each send names its bus")));
+            };
+            sends[slot] = Some(VoiceSend {
+                bus,
+                level: level as f32,
+            });
+            Ok(true)
+        })?;
+        if !more {
+            break;
         }
-        Ok(sends)
-    })
-}
-
-/// A table that must be there.
-fn table_of<'v>(frame: &Frame<'_>, value: ValueView<'v>, function: &str, keys: &[&str]) -> l3i::Result<TableView<'v>> {
-    table(frame, Some(value), function, keys)?.ok_or_else(|| error(format!("{function} takes a table")))
+    }
+    Ok(sends)
 }
 
 /// `context:bus({ parent, gain, muted })`.
@@ -702,16 +660,15 @@ fn bus_spec(call: &Call<'_>, context: &Shared, options: Option<ValueView<'_>>) -
     const FUNCTION: &str = "AudioContext:bus";
     let mut spec = BusSpec::default();
     call.with_frame(|frame| {
-        let table = table(frame, options, FUNCTION, BUS_KEYS)?;
-        let table = table.as_ref();
-        if let Some(parent) = bus_field(frame, table, "parent", context)? {
-            spec.parent = parent;
-        }
-        if let Some(gain) = optional::<f64>(frame, table, "gain", FUNCTION)? {
-            spec.gain = BusParam::Gain.check(gain)? as f32;
-        }
-        spec.muted = optional::<bool>(frame, table, "muted", FUNCTION)?.unwrap_or(false);
-        Ok(())
+        read_optional(frame, options, FUNCTION, BUS_KEYS, |_, name, value| {
+            match name {
+                b"parent" => spec.parent = bus_of(value, context, "parent")?,
+                b"gain" => spec.gain = BusParam::Gain.check(option_value(value, "gain", FUNCTION)?)? as f32,
+                b"muted" => spec.muted = option_value(value, "muted", FUNCTION)?,
+                _ => return Ok(false),
+            }
+            Ok(true)
+        })
     })?;
     Ok(spec)
 }
@@ -1131,19 +1088,25 @@ fn describe_bus(d: &mut ExtensionDescriptor) {
         |this: &LuaAudioBus, call: &Call<'_>, target: ValueView<'_>, options: Option<ValueView<'_>>| -> l3i::Result<()> {
             const FUNCTION: &str = "AudioBus:send";
             let target = bus_of(target, &this.context, "AudioBus:send's target")?;
-            let (level, tap, at) = call.with_frame(|frame| {
-                let table = table(frame, options, FUNCTION, BUS_SEND_KEYS)?;
-                let table = table.as_ref();
-                let level = optional::<f64>(frame, table, "level", FUNCTION)?.unwrap_or(1.0);
-                let tap = match optional::<String>(frame, table, "tap", FUNCTION)?.as_deref() {
-                    None | Some("post") => Tap::PostFader,
-                    Some("pre") => Tap::PreFader,
-                    Some(other) => {
-                        return Err(error(format!("{FUNCTION}'s tap is post or pre, not {other:?}")));
+            let (mut level, mut tap, mut at) = (1.0, Tap::PostFader, None);
+            call.with_frame(|frame| {
+                read_optional(frame, options, FUNCTION, BUS_SEND_KEYS, |_, name, value| {
+                    match name {
+                        b"level" => level = option_value(value, "level", FUNCTION)?,
+                        b"tap" => {
+                            tap = match option_value::<&str>(value, "tap", FUNCTION)? {
+                                "post" => Tap::PostFader,
+                                "pre" => Tap::PreFader,
+                                other => {
+                                    return Err(error(format!("{FUNCTION}'s tap is post or pre, not {other:?}")));
+                                }
+                            };
+                        }
+                        b"at" => at = Some(whole(option_value(value, "at", FUNCTION)?, "at")?),
+                        _ => return Ok(false),
                     }
-                };
-                let at = frame_option(optional(frame, table, "at", FUNCTION)?)?;
-                Ok((level, tap, at))
+                    Ok(true)
+                })
             })?;
             Ok(this
                 .context

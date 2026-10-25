@@ -13,7 +13,7 @@ use l3i::Runtime;
 use l3i::bind::Call;
 use l3i::extension::RuntimePlan;
 use l3i::source::LoadScope;
-use l3i::stack::{Frame, Scope, ValueView};
+use l3i::stack::{Frame, Scope, TableView, ValueView};
 use l3i::value::{Function, Table, Value};
 
 pub use l3i;
@@ -347,6 +347,42 @@ pub(crate) fn check_options(frame: &Frame<'_>, options: ValueView<'_>, function:
         Ok(())
     })?;
     unknown.map_or(Ok(()), Err)
+}
+
+/// Visits each entry of an options table once, by name: `visit` reads an option it takes and
+/// returns false for one it doesn't, which is the error naming `keys`. A call costs what the
+/// table holds, not what `function` could take, which matters to one made thousands of times a
+/// second.
+pub(crate) fn read_options(
+    frame: &Frame<'_>,
+    options: &TableView<'_>,
+    function: &str,
+    keys: &[&str],
+    mut visit: impl FnMut(&Frame<'_>, &[u8], ValueView<'_>) -> l3i::Result<bool>,
+) -> l3i::Result<()> {
+    options.for_each(frame, |frame, key, value| {
+        if let Ok(name) = key.read::<&[u8]>()
+            && visit(frame, name, value)?
+        {
+            return Ok(());
+        }
+        Err(unknown_option(function, key, keys))
+    })
+}
+
+/// The value of option `key`, as `T`.
+pub(crate) fn option_value<'v, T: l3i::convert::FromView<'v>>(
+    value: ValueView<'v>,
+    key: &str,
+    function: &str,
+) -> l3i::Result<T> {
+    if T::matches(value) {
+        return value.read::<T>();
+    }
+    Err(l3i::Error::logic(format!(
+        "{function} \"{key}\" has an invalid value \"{}\"",
+        l3i::diagnostics::describe_value(value, 64)
+    )))
 }
 
 /// The error for an option `function` doesn't take, listing the ones it does.
