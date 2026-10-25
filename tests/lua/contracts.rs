@@ -117,6 +117,8 @@ fn the_types_cover_exactly_the_kernel_s_modules() {
             "@jess/l10n",
             "@jess/log",
             "@jess/package",
+            "@jess/render",
+            "@jess/render/camera",
             "@jess/shader",
             "@jess/style",
             "@jess/test",
