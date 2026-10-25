@@ -16,6 +16,11 @@
     },
     "fragment": {
       "brightness": "ShaderExpr(Float)",
+      "builtins": {
+        "frontFacing": "ShaderExpr(Bool)",
+        "handle": "ShaderBuiltins(fragment)",
+        "position": "ShaderExpr(Vec4f)"
+      },
       "camera": "ShaderExpr(Vec3f)",
       "constant": "ShaderExpr(Float)",
       "cross": "ShaderExpr(Vec3f)",
@@ -167,6 +172,12 @@
     },
     "vertex": {
       "attributes": "ShaderAttributes(attributes)",
+      "builtins": {
+        "handle": "ShaderBuiltins(vertex)",
+        "instanceIndex": "ShaderExpr(UInt)",
+        "sameRead": true,
+        "vertexIndex": "ShaderExpr(UInt)"
+      },
       "clip": "ShaderExpr(Vec4f)",
       "conversions": {
         "columns": "ShaderExpr(Mat3f)",

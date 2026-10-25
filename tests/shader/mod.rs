@@ -3,6 +3,7 @@
 
 mod bindings;
 mod builder;
+mod builtins;
 mod common;
 mod conversions;
 mod folding;

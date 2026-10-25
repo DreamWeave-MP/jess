@@ -15,7 +15,7 @@
 
 use std::fmt::Write as _;
 
-use crate::shader::expression::{Expression, ExpressionId, Function, Literal, Place, PlaceRoot, Step};
+use crate::shader::expression::{Builtin, Expression, ExpressionId, Function, Literal, Place, PlaceRoot, Step};
 use crate::shader::interface::{AttributeId, DataType, Element, Frequency, Rate, ResourceId, ResourceKind};
 use crate::shader::layout::{MemberLayout, ProgramLayout, StructLayout, value_extent};
 use crate::shader::program::Program;
@@ -264,12 +264,13 @@ impl Lowering<'_> {
     }
 
     fn vertex_entry_point(&mut self) {
-        let input = if self.program.attributes.is_empty() {
-            ""
-        } else {
-            "input: VertexInput"
-        };
-        emit!(self, "@vertex\nfn {VERTEX_ENTRY_POINT}({input}) -> VertexOutput {{\n");
+        let mut parameters = Vec::new();
+        if !self.program.attributes.is_empty() {
+            parameters.push("input: VertexInput".to_owned());
+        }
+        parameters.extend(self.builtin_parameters(VERTEX));
+        let parameters = parameters.join(", ");
+        emit!(self, "@vertex\nfn {VERTEX_ENTRY_POINT}({parameters}) -> VertexOutput {{\n");
         self.temporaries_for(VERTEX);
         emit!(self, "    var output: VertexOutput;\n    output.position = ");
         let program = self.program;
@@ -292,7 +293,10 @@ impl Lowering<'_> {
     fn fragment_entry_point(&mut self) {
         let outputs = self.program.fragment_outputs.len();
         let result = if outputs == 0 { "" } else { " -> FragmentOutput" };
-        emit!(self, "@fragment\nfn {FRAGMENT_ENTRY_POINT}(input: VertexOutput){result} {{\n");
+        let mut parameters = vec!["input: VertexOutput".to_owned()];
+        parameters.extend(self.builtin_parameters(FRAGMENT));
+        let parameters = parameters.join(", ");
+        emit!(self, "@fragment\nfn {FRAGMENT_ENTRY_POINT}({parameters}){result} {{\n");
         self.temporaries_for(FRAGMENT);
         if outputs > 0 {
             emit!(self, "    var output: FragmentOutput;\n");
@@ -304,6 +308,24 @@ impl Lowering<'_> {
             emit!(self, "    return output;\n");
         }
         emit!(self, "}}\n");
+    }
+
+    /// The entry point parameters of the built-in values `stage` reads, in [`Builtin::ALL`]'s
+    /// order. The fragment position is the vertex output's, so it needs none.
+    fn builtin_parameters(&self, stage: u8) -> Vec<String> {
+        Builtin::ALL
+            .into_iter()
+            .filter(|builtin| *builtin != Builtin::Position)
+            .filter(|builtin| {
+                self.program.expressions.iter().enumerate().any(|(index, expression)| {
+                    *expression == Expression::Builtin(*builtin) && self.analysis.stages[index] & stage != 0
+                })
+            })
+            .map(|builtin| {
+                let name = builtin_name(builtin);
+                format!("@builtin({name}) {name}: {}", wgsl_type(builtin.ty()))
+            })
+            .collect()
     }
 
     /// One `let eN` per non-leaf expression `stage` reads, in arena order, which is dependency
@@ -382,7 +404,9 @@ impl Lowering<'_> {
                 self.operand(vector);
                 emit!(self, ".{swizzle}");
             }
-            Expression::Literal(_) | Expression::Attribute(_) | Expression::Varying(_) => self.operand(id),
+            Expression::Literal(_) | Expression::Attribute(_) | Expression::Builtin(_) | Expression::Varying(_) => {
+                self.operand(id);
+            }
         }
     }
 
@@ -413,6 +437,7 @@ impl Lowering<'_> {
             Expression::Literal(literal) => self.literal(literal),
             Expression::Load(place) if place.indices().is_empty() => self.place(&place),
             Expression::Attribute(attribute) => self.attribute(attribute),
+            Expression::Builtin(builtin) => emit!(self, "{}", builtin_name(builtin)),
             Expression::Varying(varying) => emit!(self, "input.v_{}", program.varyings[varying.index()].name),
             _ => emit!(self, "e{}", self.temporaries[id.index()]),
         }
@@ -542,5 +567,15 @@ fn wgsl_type(ty: Type) -> &'static str {
         Type::Vec4u => "vec4<u32>",
         Type::Mat3f => "mat3x3<f32>",
         Type::Mat4f => "mat4x4<f32>",
+    }
+}
+
+/// What a lowered stage calls a built-in value: WGSL's own name, and the vertex output's position.
+fn builtin_name(builtin: Builtin) -> &'static str {
+    match builtin {
+        Builtin::VertexIndex => "vertex_index",
+        Builtin::InstanceIndex => "instance_index",
+        Builtin::Position => "input.position",
+        Builtin::FrontFacing => "front_facing",
     }
 }

@@ -22,8 +22,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::shader::{
-    AttributeId, BinaryOperator, DataType, Element, Field, Frequency, Function as ShaderFunction, Place, PlaceRoot, Program,
-    ProgramBuilder, Rate, ResourceId, ResourceKind, Scalar, Site, SourceOrigin, Step, StructId, Swizzle, Type,
+    AttributeId, BinaryOperator, Builtin, DataType, Element, Field, Frequency, Function as ShaderFunction, Place, PlaceRoot,
+    Program, ProgramBuilder, Rate, ResourceId, ResourceKind, Scalar, Site, SourceOrigin, Step, StructId, Swizzle, Type,
     UnaryOperator, ValidationError, Value,
 };
 use l3i::Runtime;
@@ -43,6 +43,9 @@ const PROGRAM_KEYS: &[&str] = &["attributes", "draw", "fragment", "instance", "m
 /// The names a stage input answers with a namespace of declarations, by the attribute rate they
 /// read.
 const NAMESPACES: [(&str, Rate); 2] = [("attributes", Rate::Vertex), ("instance", Rate::Instance)];
+
+/// The name a stage input answers with the stage's built-in values.
+const BUILTINS: &str = "builtin";
 
 /// The names a stage input answers with what a frequency binds, which are also the spec's keys.
 const GROUPS: [(&str, Frequency); 3] = [
@@ -144,6 +147,8 @@ struct Info {
     structs: HashMap<*const StructType, StructId>,
     /// Every uniform value read without an index, so reading one twice gives the same value.
     loads: HashMap<Place, Value>,
+    /// Each built-in value read so far, by its position in [`Builtin::ALL`].
+    builtins: [Option<Value>; Builtin::ALL.len()],
     /// What the vertex function returned, as the fragment stage reads it.
     varyings: BTreeMap<String, Value>,
 }
@@ -157,6 +162,7 @@ impl Info {
             groups: [BTreeMap::new(), BTreeMap::new(), BTreeMap::new()],
             structs: HashMap::new(),
             loads: HashMap::new(),
+            builtins: [None; Builtin::ALL.len()],
             varyings: BTreeMap::new(),
         }
     }
@@ -184,6 +190,7 @@ impl Info {
     /// Every name an input of `stage` answers to, sorted, for the error naming one it doesn't.
     fn names(&self, stage: Stage) -> Vec<&str> {
         let mut names: Vec<&str> = GROUPS.iter().map(|(name, _)| *name).collect();
+        names.push(BUILTINS);
         match stage {
             Stage::Vertex => names.extend(NAMESPACES.iter().map(|(name, _)| *name)),
             Stage::Fragment => names.extend(self.varyings.keys().map(String::as_str)),
@@ -198,7 +205,8 @@ fn output_name_taken(name: &str) -> l3i::Result<()> {
     let reserved = NAMESPACES
         .iter()
         .map(|(namespace, _)| *namespace)
-        .chain(GROUPS.iter().map(|(group, _)| *group));
+        .chain(GROUPS.iter().map(|(group, _)| *group))
+        .chain([BUILTINS]);
     if reserved.into_iter().any(|reserved| reserved == name) {
         return Err(error(format!(
             "vertex output \"{name}\" has the name of a namespace of the input, which the input would hide"
@@ -303,6 +311,18 @@ pub struct LuaShaderAttributes {
 // SAFETY: an `Rc` to plain Rust state; the destructor never touches the Lua API.
 unsafe impl Userdata for LuaShaderAttributes {
     const NAME: &'static str = "jess.shader.Attributes";
+}
+
+/// `input.builtin`: the values the pipeline gives the stage, by name.
+#[derive(Clone, Debug)]
+pub struct LuaShaderBuiltins {
+    build: Rc<RefCell<Build>>,
+    stage: Stage,
+}
+
+// SAFETY: an `Rc` to plain Rust state; the destructor never touches the Lua API.
+unsafe impl Userdata for LuaShaderBuiltins {
+    const NAME: &'static str = "jess.shader.Builtins";
 }
 
 /// Somewhere in what a frequency binds that isn't a value yet: `input.material`, a struct member,
@@ -872,6 +892,13 @@ fn input(this: &LuaShaderInput, call: &Call<'_>, key: ValueView<'_>) -> l3i::Res
         }))?;
         return Ok(StackResults);
     }
+    if name == BUILTINS {
+        call.push(&Owned(LuaShaderBuiltins {
+            build: this.build.clone(),
+            stage,
+        }))?;
+        return Ok(StackResults);
+    }
     if let Some((_, frequency)) = GROUPS.iter().find(|(group, _)| *group == name) {
         let place = Place::new(PlaceRoot::Uniform(*frequency), &[]).expect("a root has no steps");
         call.push(&Owned(LuaShaderPlace {
@@ -1065,6 +1092,36 @@ fn attribute(this: &LuaShaderAttributes, call: &Call<'_>, key: ValueView<'_>) ->
             )));
         };
         Ok(*read.get_or_insert_with(|| site.read_attribute(*attribute)))
+    })?;
+    Ok(expression(&this.build, value))
+}
+
+/// `input.builtin.<name>`: a value the pipeline gives the stage.
+fn builtin(this: &LuaShaderBuiltins, call: &Call<'_>, key: ValueView<'_>) -> l3i::Result<Owned<LuaShaderExpr>> {
+    let stage = this.stage.name();
+    if !key.is_string() {
+        return Err(error(format!("the {stage} builtins are indexed by name, not {}", kind(key))));
+    }
+    let name = key.read::<&str>()?;
+    let in_vertex = this.stage == Stage::Vertex;
+    let Some(position) = Builtin::ALL.iter().position(|builtin| builtin.name() == name) else {
+        let names: Vec<&str> = Builtin::ALL
+            .iter()
+            .filter(|builtin| builtin.in_vertex() == in_vertex)
+            .map(|builtin| builtin.name())
+            .collect();
+        return Err(error(format!(
+            "the {stage} builtins have no \"{name}\": they have {}",
+            names.join(", ")
+        )));
+    };
+    let builtin = Builtin::ALL[position];
+    if builtin.in_vertex() != in_vertex {
+        let other = if in_vertex { "fragment" } else { "vertex" };
+        return Err(error(format!("builtin {name} is only readable in the {other} function")));
+    }
+    let value = at_site(call, &this.build, |site, info| {
+        Ok(*info.builtins[position].get_or_insert_with(|| site.builtin(builtin)))
     })?;
     Ok(expression(&this.build, value))
 }
@@ -1531,6 +1588,15 @@ pub fn describe(d: &mut ExtensionDescriptor) {
     crate::lua::plan::metamethod(&mut attributes, "__index", attribute);
     crate::lua::plan::metamethod(&mut attributes, "__tostring", |this: &LuaShaderAttributes| {
         format!("ShaderAttributes({})", namespace_name(this.rate))
+    });
+
+    let mut builtins = d.userdata::<LuaShaderBuiltins>(LuaShaderBuiltins::NAME);
+    builtins
+        .tag(TagPolicy::Never)
+        .doc("The values the pipeline gives one stage, by name: `input.builtin`.");
+    crate::lua::plan::metamethod(&mut builtins, "__index", builtin);
+    crate::lua::plan::metamethod(&mut builtins, "__tostring", |this: &LuaShaderBuiltins| {
+        format!("ShaderBuiltins({})", this.stage.name())
     });
 
     describe_bindings(d);

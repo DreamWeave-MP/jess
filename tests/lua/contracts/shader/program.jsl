@@ -94,6 +94,12 @@ local lit = shader.program {
         dot = tostring(shader.dot(shader.vec3i(1), shader.vec3i(2))),
         swizzle = tostring(shader.vec4u(1, 2, 3, 4).wx),
       },
+      builtins = {
+        handle = tostring(input.builtin),
+        vertexIndex = tostring(input.builtin.vertexIndex),
+        instanceIndex = tostring(input.builtin.instanceIndex),
+        sameRead = input.builtin.vertexIndex == input.builtin.vertexIndex,
+      },
       conversions = {
         scalar = tostring(shader.float(input.attributes.light)),
         vector = tostring(shader.vec4(input.instance.shade)),
@@ -142,6 +148,11 @@ local lit = shader.program {
       time = tostring(input.pass.time),
       camera = tostring(input.pass.camera.position),
       viewport = tostring(input.pass.viewportSize),
+      builtins = {
+        handle = tostring(input.builtin),
+        position = tostring(input.builtin.position),
+        frontFacing = tostring(input.builtin.frontFacing),
+      },
       math = {
         smooth = tostring(shader.smoothstep(0.2, 0.8, facing)),
         stepped = tostring(shader.step(0.5, diffuse.xyz)),

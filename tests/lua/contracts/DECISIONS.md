@@ -102,9 +102,9 @@ The entries below are the decisions behind what the fixtures and the neighbourin
 
 ### 16. A program declares what each frequency binds, and nothing is built in
 
-- **What:** a program's uniform values, textures, and samplers are declared under the frequency that binds them: `pass`, `material`, or `draw`, one bind group each. There are no semantic inputs: a camera, a model matrix, or a time is a member some frequency declares, often from a shared module of `shader.struct` types. Members are read by name, a struct's fields by name, an array's elements by a number or a shader value from 0, and `#` is an array's length; a step that doesn't reach a value is a `ShaderPlace`, which isn't one. A number index is checked against the array's length where it's written; a value index can't be, and isn't.
+- **What:** a program's uniform values, textures, and samplers are declared under the frequency that binds them: `pass`, `material`, or `draw`, one bind group each. There are no semantic inputs: a camera, a model matrix, or a time is a member some frequency declares, often from a shared module of `shader.struct` types. Members are read by name, a struct's fields by name, an array's elements by a number or a shader value from 0, and `#` is an array's length; a step that doesn't reach a value is a `ShaderPlace`, which isn't one. A number index is checked against the array's length where it's written; a value index can't be, and isn't. What a program doesn't declare is only what the pipeline itself gives a stage, under `input.builtin`: `vertexIndex` and `instanceIndex` in the vertex function, `position` and `frontFacing` in the fragment function, each refused in the other.
 - **Class:** design.
-- **Decision:** pinned in `shader/program` (`places`, `lit`'s `pass`, `material`, `draw`, and the struct and array type names) and `shader/errors` (`places`, `types`, `structAsValue`, `uniformStride`, and the spec's `unknownKey`, which names the keys a program takes).
+- **Decision:** pinned in `shader/program` (`places`, `builtins`, `lit`'s `pass`, `material`, `draw`, and the struct and array type names) and `shader/errors` (`places`, `types`, `structAsValue`, `uniformStride`, `builtinName`, and the spec's `unknownKey`, which names the keys a program takes).
 
 ## Modules
 

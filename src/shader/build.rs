@@ -4,7 +4,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::shader::expression::{
-    BinaryOperator, Expression, ExpressionId, Function, Literal, Place, SourceOrigin, Step, Swizzle, UnaryOperator,
+    BinaryOperator, Builtin, Expression, ExpressionId, Function, Literal, Place, SourceOrigin, Step, Swizzle, UnaryOperator,
 };
 use crate::shader::interface::{
     Attribute, AttributeId, DataType, Field, Frequency, Rate, Resource, ResourceId, ResourceKind, StructDecl, StructId,
@@ -266,6 +266,12 @@ impl Site<'_> {
             .get(attribute.index())
             .map_or(Type::Float, |declared| declared.ty);
         self.push(Expression::Attribute(attribute), ty)
+    }
+
+    /// A built-in value, read at this site. Reading one in the stage that doesn't have it is
+    /// reported by [`ProgramBuilder::finish`], which knows the stages.
+    pub fn builtin(&mut self, builtin: Builtin) -> Value {
+        self.push(Expression::Builtin(builtin), builtin.ty())
     }
 
     /// Passes `value` from the vertex stage to the fragment stage as the varying `name`, declared

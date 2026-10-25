@@ -3,7 +3,7 @@
 use std::fmt;
 
 use crate::shader::expression::{
-    BinaryOperator, Expression, ExpressionId, Function, Literal, Place, PlaceRoot, SourceOrigin, Step, Swizzle,
+    BinaryOperator, Builtin, Expression, ExpressionId, Function, Literal, Place, PlaceRoot, SourceOrigin, Step, Swizzle,
     UnaryOperator, VaryingId,
 };
 use crate::shader::fold::{Arithmetic, evaluate};
@@ -223,6 +223,13 @@ pub enum ValidationErrorKind {
         /// The attribute's name.
         attribute: String,
     },
+    /// A stage reads a built-in value only the other stage has.
+    BuiltinInStage {
+        /// The reader.
+        expression: ExpressionId,
+        /// The value.
+        builtin: Builtin,
+    },
     /// The attributes take more than [`MAX_ATTRIBUTE_LOCATIONS`] locations.
     TooManyAttributeLocations {
         /// How many they take.
@@ -407,6 +414,18 @@ impl fmt::Display for ValidationErrorKind {
                 formatter,
                 "attribute {attribute:?} is read in the fragment stage: pass it through a varying"
             ),
+            ValidationErrorKind::BuiltinInStage { builtin, .. } => {
+                let (reader, owner) = if builtin.in_vertex() {
+                    ("fragment", "vertex")
+                } else {
+                    ("vertex", "fragment")
+                };
+                write!(
+                    formatter,
+                    "builtin {} is read in the {reader} stage: only the {owner} stage has it",
+                    builtin.name()
+                )
+            }
             ValidationErrorKind::TooManyAttributeLocations { count } => write!(
                 formatter,
                 "the attributes take {count} locations: at most {MAX_ATTRIBUTE_LOCATIONS}"
@@ -989,6 +1008,13 @@ fn infer(
             }
             declaration.ty
         }
+        Expression::Builtin(builtin) => {
+            let other = if builtin.in_vertex() { FRAGMENT } else { VERTEX };
+            if stage & other != 0 {
+                return Err(ValidationErrorKind::BuiltinInStage { expression: id, builtin });
+            }
+            builtin.ty()
+        }
         Expression::Varying(varying) => {
             let Some(declaration) = program.varyings.get(varying.index()) else {
                 return Err(ValidationErrorKind::UndefinedVarying { expression: id, varying });
@@ -1161,6 +1187,7 @@ pub fn operation_type(id: ExpressionId, expression: &Expression, operands: &[Typ
     let ty = match *expression {
         Expression::Literal(_)
         | Expression::Attribute(_)
+        | Expression::Builtin(_)
         | Expression::Varying(_)
         | Expression::Load(_)
         | Expression::Sample { .. } => unreachable!("typed by their declarations, not their operands"),

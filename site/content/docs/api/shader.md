@@ -102,6 +102,7 @@ What `vertex` and `fragment` are called with. Every name is one of these, and a 
 | `attributes` | `vertex` | Your `attributes`, by name: `input.attributes.position`. |
 | `instance` | `vertex` | Your `instance` attributes, by name: `input.instance.transform`. |
 | `pass`, `material`, `draw` | both | What each binds, by name: `input.material.tint`. See [Bindings](#bindings). |
+| `builtin` | both | What the pipeline gives the stage: `input.builtin.vertexIndex`. See [Built-in values](#built-in-values). |
 | What `vertex` returned, except `position` | `fragment` | The type of the value returned. |
 
 The fragment function has no attributes: `input.attributes` there fails with `the attributes are only readable in the vertex function; return what the fragment function needs from them, to pass it as a varying`, which is also the fix.
@@ -130,6 +131,47 @@ shader.program {
 }
 -- ShaderExpr(Vec3f)  ShaderExpr(Mat4f)  ShaderExpr(Float)
 -- ShaderExpr(Float)  ShaderExpr(Float)  ShaderInput(fragment)
+```
+
+### Built-in values
+
+`input.builtin` holds what the pipeline gives a stage rather than what a buffer does. Each is read in the stage that has it; reading one in the other fails at once, `builtin vertexIndex is only readable in the vertex function`.
+
+| Name | In | Type | What |
+| --- | --- | --- | --- |
+| `vertexIndex` | `vertex` | `UInt` | The vertex's index in the draw; with an index buffer, the index it read. |
+| `instanceIndex` | `vertex` | `UInt` | The instance's index in the draw. |
+| `position` | `fragment` | `Vec4f` | Where the fragment is: `x` and `y` in pixels from the target's top left, at the pixel's centre, `z` its depth, and `w` one over the clip position's `w`. |
+| `frontFacing` | `fragment` | `Bool` | Whether the fragment belongs to a triangle facing the camera. |
+
+A program with no attributes at all can still draw: three vertices and `vertexIndex` make a triangle that covers the target, the usual start of a full-screen pass.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+shader.program {
+  vertex = function(input)
+    local index = input.builtin.vertexIndex
+    local corner = shader.vec2(
+      shader.float(shader.bitAnd(shader.shiftLeft(index, shader.uint(1)), shader.uint(2))),
+      shader.float(shader.bitAnd(index, shader.uint(2)))
+    )
+    print(input.builtin, index, corner)
+
+    return { position = shader.vec4(corner * 2 - 1, 0, 1) }
+  end,
+
+  fragment = function(input)
+    local pixel = input.builtin.position
+    local stripe = shader.step(0.5, shader.fract(pixel.x / 8))
+    print(pixel, input.builtin.frontFacing)
+
+    return shader.select(input.builtin.frontFacing, shader.vec4(stripe), shader.vec4(0, 0, 0, 1))
+  end,
+}
+-- ShaderBuiltins(vertex)  ShaderExpr(UInt)  ShaderExpr(Vec2f)
+-- ShaderExpr(Vec4f)  ShaderExpr(Bool)
 ```
 
 ## Attributes

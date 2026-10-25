@@ -582,13 +582,23 @@ declare extern type ShaderSampler with
   __tostring: (self: ShaderSampler) -> string
 end
 
+--- The values the pipeline gives one stage, by name: `input.builtin`. The vertex function has
+--- `vertexIndex` and `instanceIndex`, `UInt`s; the fragment function has `position`, a `Vec4f`
+--- (`x` and `y` in pixels from the target's top left, at the pixel's centre, `z` its depth, `w`
+--- one over the clip position's `w`), and `frontFacing`, a `Bool`.
+declare extern type ShaderBuiltins with
+  [string]: ShaderExpr
+  __tostring: (self: ShaderBuiltins) -> string
+end
+
 --- A stage function's input. `pass`, `material`, and `draw` are what each frequency binds;
---- `attributes` and `instance`, in the vertex function, the declared attributes; in the fragment
---- function every other name is a value the vertex function returned. A name it doesn't have is
---- an error listing the ones it does.
+--- `builtin` the values the pipeline gives the stage; `attributes` and `instance`, in the vertex
+--- function, the declared attributes; in the fragment function every other name is a value the
+--- vertex function returned. A name it doesn't have is an error listing the ones it does.
 declare extern type ShaderInput with
   attributes: ShaderAttributes
   instance: ShaderAttributes
+  builtin: ShaderBuiltins
   pass: ShaderPlace
   material: ShaderPlace
   draw: ShaderPlace

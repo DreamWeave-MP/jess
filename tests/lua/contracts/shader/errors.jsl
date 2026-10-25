@@ -108,6 +108,10 @@ return {
     indexKind = inFragment(function(input) return (input.pass.lights :: any).first end),
     fieldKind = inFragment(function(input) return (input.pass.camera :: any)[1] end),
     noLength = inFragment(function(input) return shader.vec4(#input.pass.camera) end),
+    unknownBuiltin = inFragment(function(input) return shader.vec4(input.builtin.fragCoord.x) end),
+    builtinOfVertex = inFragment(
+      function(input) return shader.vec4(shader.float(input.builtin.vertexIndex)) end
+    ),
   },
 
   program = {
@@ -216,6 +220,15 @@ return {
         fragment = white,
       }
     ),
+    builtinName = oracle.raises(
+      'argument',
+      'vertex output "builtin" has the name of a namespace of the input, which the input would hide',
+      shader.program,
+      {
+        vertex = function() return { position = shader.vec4(1.0), builtin = shader.vec4(0.0) } end,
+        fragment = white,
+      }
+    ),
     vertexReturn = oracle.raises(
       'argument',
       'the vertex function returned number: expected a table with position and the values to pass to the fragment function',
@@ -289,7 +302,7 @@ return {
   input = {
     unknown = oracle.raises(
       'unknownName',
-      'the vertex input has no "foo": it has attributes, draw, instance, material, pass',
+      'the vertex input has no "foo": it has attributes, builtin, draw, instance, material, pass',
       shader.program,
       {
         material = { tint = shader.vec4 },

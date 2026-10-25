@@ -651,6 +651,60 @@ impl Function {
     }
 }
 
+/// A value the pipeline gives a stage rather than a buffer: which vertex or instance this is,
+/// and where the fragment is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Builtin {
+    /// The vertex's index in the draw, a `UInt`: with an index buffer, the index it read.
+    /// Vertex stage only.
+    VertexIndex,
+    /// The instance's index in the draw, a `UInt`. Vertex stage only.
+    InstanceIndex,
+    /// The fragment's position, a `Vec4f`: `x` and `y` in pixels from the target's top left, at
+    /// the pixel's centre, `z` its depth, and `w` one over the clip position's `w`. Fragment
+    /// stage only.
+    Position,
+    /// Whether the fragment belongs to a front-facing triangle, a `Bool`. Fragment stage only.
+    FrontFacing,
+}
+
+impl Builtin {
+    /// Every built-in value.
+    pub const ALL: [Builtin; 4] = [
+        Builtin::VertexIndex,
+        Builtin::InstanceIndex,
+        Builtin::Position,
+        Builtin::FrontFacing,
+    ];
+
+    /// Its name, as Luau and errors write it.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Builtin::VertexIndex => "vertexIndex",
+            Builtin::InstanceIndex => "instanceIndex",
+            Builtin::Position => "position",
+            Builtin::FrontFacing => "frontFacing",
+        }
+    }
+
+    /// Its type.
+    #[must_use]
+    pub fn ty(self) -> Type {
+        match self {
+            Builtin::VertexIndex | Builtin::InstanceIndex => Type::UInt,
+            Builtin::Position => Type::Vec4f,
+            Builtin::FrontFacing => Type::Bool,
+        }
+    }
+
+    /// Whether the vertex stage has it; otherwise only the fragment stage does.
+    #[must_use]
+    pub fn in_vertex(self) -> bool {
+        matches!(self, Builtin::VertexIndex | Builtin::InstanceIndex)
+    }
+}
+
 /// A node in a [`Program`](crate::shader::Program)'s expression arena.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Expression {
@@ -660,6 +714,8 @@ pub enum Expression {
     Load(Place),
     /// A declared vertex attribute, per vertex or per instance. Vertex stage only.
     Attribute(AttributeId),
+    /// A value the pipeline gives the stage that has it.
+    Builtin(Builtin),
     /// A declared varying, as the vertex stage wrote it and the rasterizer interpolated it.
     /// Fragment stage only.
     Varying(VaryingId),
@@ -733,7 +789,7 @@ impl Expression {
     #[must_use]
     pub fn operands(&self) -> Operands {
         let ids: &[ExpressionId] = match self {
-            Expression::Literal(_) | Expression::Attribute(_) | Expression::Varying(_) => &[],
+            Expression::Literal(_) | Expression::Attribute(_) | Expression::Builtin(_) | Expression::Varying(_) => &[],
             Expression::Load(place) => return place.indices(),
             Expression::Sample { coordinates, .. } => &[*coordinates],
             Expression::Unary(_, value) | Expression::Convert { value, .. } => &[*value],
@@ -753,7 +809,7 @@ impl Expression {
     /// Calls `rewrite` on every operand, in order.
     pub(crate) fn rewrite_operands(&mut self, mut rewrite: impl FnMut(&mut ExpressionId)) {
         match self {
-            Expression::Literal(_) | Expression::Attribute(_) | Expression::Varying(_) => {}
+            Expression::Literal(_) | Expression::Attribute(_) | Expression::Builtin(_) | Expression::Varying(_) => {}
             Expression::Load(place) => place.rewrite_indices(rewrite),
             Expression::Sample { coordinates, .. } => rewrite(coordinates),
             Expression::Unary(_, value) | Expression::Convert { value, .. } => rewrite(value),
@@ -782,7 +838,7 @@ impl Expression {
     #[must_use]
     pub fn is_leaf(&self) -> bool {
         match self {
-            Expression::Literal(_) | Expression::Attribute(_) | Expression::Varying(_) => true,
+            Expression::Literal(_) | Expression::Attribute(_) | Expression::Builtin(_) | Expression::Varying(_) => true,
             Expression::Load(place) => place.indices().is_empty(),
             _ => false,
         }
@@ -795,6 +851,7 @@ impl Expression {
             Expression::Literal(_) => "literal",
             Expression::Load(_) => "load",
             Expression::Attribute(_) => "attribute",
+            Expression::Builtin(builtin) => builtin.name(),
             Expression::Varying(_) => "varying",
             Expression::Sample { .. } => "sample",
             Expression::Unary(operator, _) => operator.name(),
