@@ -155,12 +155,12 @@ fn a_load_leads_to_a_value() {
 }
 
 #[test]
-fn stage_outputs_must_be_vec4f() {
+fn stage_outputs_have_their_types() {
     let mut program = Program::new();
     let position = program.attribute(Attribute::new(Rate::Vertex, "position", Type::Vec3f));
     let position = program.push_at(Expression::Attribute(position), origin(3, 1));
     program.set_position(position);
-    let color = program.push(Expression::Literal(Literal::Vec3f([1.0, 0.0, 0.0])));
+    let color = program.push(Expression::Literal(Literal::Bool(true)));
     program.push_fragment_output(color);
 
     assert_eq!(
@@ -169,7 +169,7 @@ fn stage_outputs_must_be_vec4f() {
             ValidationErrorKind::PositionType { found: Type::Vec3f },
             ValidationErrorKind::FragmentOutputType {
                 location: 0,
-                found: Type::Vec3f
+                found: Type::Bool
             },
         ]
     );
@@ -557,7 +557,7 @@ fn every_independent_mistake_is_reported_once() {
     let doubled = program.push(Expression::Binary(BinaryOperator::Add, facing, facing));
     let color = program.push(Expression::construct(Type::Vec4f, &[doubled]).unwrap());
     program.push_fragment_output(color);
-    let wrong = program.push(Expression::Literal(Literal::Vec2f([0.0, 0.0])));
+    let wrong = program.push(Expression::Literal(Literal::Bool(false)));
     program.push_fragment_output(wrong);
 
     assert_eq!(errors(&program).len(), 3, "{:#?}", errors(&program));

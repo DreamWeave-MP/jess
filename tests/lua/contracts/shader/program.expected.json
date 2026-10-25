@@ -464,7 +464,27 @@
         }
       ]
     },
+    "litOutputs": [
+      {
+        "name": "color",
+        "type": "Vec4f"
+      }
+    ],
     "litSize": true,
+    "pickingOutputs": [
+      {
+        "name": "color",
+        "type": "Vec4f"
+      },
+      {
+        "name": "depth",
+        "type": "Float"
+      },
+      {
+        "name": "id",
+        "type": "UInt"
+      }
+    ],
     "sameModule": true,
     "sampled": {
       "bias": "ShaderExpr(Vec4f)",

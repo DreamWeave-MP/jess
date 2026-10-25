@@ -397,7 +397,7 @@ pub enum ValidationErrorKind {
         /// Its type.
         found: Type,
     },
-    /// A fragment output is not a `Vec4f`.
+    /// A fragment output is not a numeric scalar or vector: a `Bool` or a matrix.
     FragmentOutputType {
         /// The output's color location.
         location: u32,
@@ -669,7 +669,10 @@ impl fmt::Display for ValidationErrorKind {
                 write!(formatter, "the vertex position is {found}: expected Vec4f")
             }
             ValidationErrorKind::FragmentOutputType { location, found } => {
-                write!(formatter, "fragment output {location} is {found}: expected Vec4f")
+                write!(
+                    formatter,
+                    "fragment output {location} is {found}: expected a Float, Int, or UInt, or a vector of one"
+                )
             }
             ValidationErrorKind::TooManyFragmentOutputs { count } => write!(
                 formatter,
@@ -2264,7 +2267,8 @@ fn check_outputs(program: &Program, types: &[Option<Type>], varyings_read: &[boo
         let Some(found) = type_of(output) else {
             continue;
         };
-        if found != Type::Vec4f {
+        // A target holds floats, or signed or unsigned integers, of one to four channels.
+        if !found.is_numeric() {
             errors.push(ValidationError {
                 kind: ValidationErrorKind::FragmentOutputType { location, found },
                 origin: origin_of(output),

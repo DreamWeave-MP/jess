@@ -13,6 +13,7 @@ mod integers;
 mod layout;
 mod logic;
 mod operators;
+mod outputs;
 mod statements;
 mod storage;
 mod textures;

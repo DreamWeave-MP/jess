@@ -181,14 +181,14 @@ fn folding_reaches_through_forwarded_operands() {
 fn an_invalid_program_is_left_alone() {
     let mut program = fragment(|program| {
         let two = literal(program, Literal::Float(2.0));
-        let three = literal(program, Literal::Vec3f([3.0; 3]));
-        program.push(Expression::Binary(BinaryOperator::Multiply, two, three))
+        let four = program.push(Expression::Binary(BinaryOperator::Multiply, two, two));
+        program.push(Expression::Binary(BinaryOperator::Less, four, two))
     });
     let before = program.expressions().to_vec();
     let errors = program.fold_constants().unwrap_err();
     assert!(matches!(
         errors[0].kind,
-        ValidationErrorKind::FragmentOutputType { found: Type::Vec3f, .. }
+        ValidationErrorKind::FragmentOutputType { found: Type::Bool, .. }
     ));
     assert_eq!(program.expressions(), before);
 }

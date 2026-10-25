@@ -905,7 +905,7 @@ impl Site<'_> {
     }
 
     /// Adds a fragment output at the next color location and returns the location.
-    /// [`ProgramBuilder::finish`] checks that it is a `Vec4f`.
+    /// [`ProgramBuilder::finish`] checks that it is a numeric scalar or vector.
     ///
     /// # Errors
     ///
@@ -915,7 +915,6 @@ impl Site<'_> {
         Ok(self.builder.program.push_fragment_output(value.expression))
     }
 
-    /// The id the next pushed expression gets.
     /// Builds `stage`'s body from here on: every operation is computed where it is created, in
     /// whatever `if` or loop is open. Before the first `enter`, operations are placed nowhere and
     /// computed at the top of whichever stage reads them.
@@ -1167,6 +1166,7 @@ impl Site<'_> {
         self.error(ValidationErrorKind::Unbalanced { problem })
     }
 
+    /// The id the next pushed expression gets.
     fn next(&self) -> ExpressionId {
         ExpressionId::at(self.builder.program.expressions.len())
     }

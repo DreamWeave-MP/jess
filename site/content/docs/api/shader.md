@@ -85,11 +85,11 @@ Builds and validates a program.
   - `instance`: names to types. What each instance has, read from the instance buffer.
   - `pass`, `material`, `draw`: names to types. What each pass, material, and draw binds: values, structs, and arrays, textures, and samplers. See [Bindings](#bindings).
   - `vertex`: a function taking the vertex [input](#shaderinput). It returns a table: `position`, the clip-space `Vec4f`, and any other named values, which become the fragment stage's inputs.
-  - `fragment`: a function taking the fragment input. It returns the color, a `Vec4f`.
+  - `fragment`: a function taking the fragment input. It returns the color, or a table of named outputs, one per color target: `{ color = lit, id = input.draw.id }`. Each is a `Float`, `Int`, or `UInt`, or a vector of one, as the target behind it holds; a `Vec4f` for an ordinary color target. One value is the output `color`.
 - **Returns:** the [ShaderProgram](#shaderprogram).
-- **Order:** attributes are declared sorted by name, then instance attributes, then what the pass, the material, and the draw bind, each sorted by name; `vertex` runs; what it returned is passed along, sorted by name; `fragment` runs; the whole program is validated. A Luau table has no order, so jess doesn't pretend yours does: the same module always builds the same program.
+- **Order:** attributes are declared sorted by name, then instance attributes, then what the pass, the material, and the draw bind, each sorted by name; `vertex` runs; what it returned is passed along, sorted by name; `fragment` runs, and its outputs take color locations sorted by name; the whole program is validated. A Luau table has no order, so jess doesn't pretend yours does: the same module always builds the same program.
 - **Names:** every declaration lives under its own name (`input.attributes.uv`, `input.material.tint`), so names only clash within one table. A vertex output can't be named `attributes`, `instance`, `pass`, `material`, or `draw`, because the fragment input couldn't tell it apart from the namespace.
-- **Errors:** see [Errors](#errors). Also `unknown jess.shader.program option '<key>': expected attributes, draw, fragment, instance, material, pass, or vertex`, `shader.program needs a vertex function, not nil`, `material.<name> must be a shader type such as shader.vec4, not <kind>`, `attributes.<name> must be a value type such as shader.vec3, not Texture2D`, `the vertex function's table has no position`, and `the fragment function returned <kind>: expected a shader value, the Vec4f color`.
+- **Errors:** see [Errors](#errors). Also `unknown jess.shader.program option '<key>': expected attributes, draw, fragment, instance, material, pass, or vertex`, `shader.program needs a vertex function, not nil`, `material.<name> must be a shader type such as shader.vec4, not <kind>`, `attributes.<name> must be a value type such as shader.vec3, not Texture2D`, `the vertex function's table has no position`, `the fragment function returned <kind>: expected a shader value, the color, or a table of named outputs`, and, when the program finishes, `fragment output 0 is Mat4f: expected a Float, Int, or UInt, or a vector of one`.
 
 `shader.program` validates the program and leaves it as you wrote it. It doesn't fold constants: that rewrites the program, and rewriting is the consumer's decision.
 
@@ -826,6 +826,7 @@ What `shader.program` and `shader.compute` return and a shader module hands back
 | `instance` | `{ { name: string, type: string } }` | The per-instance attributes, sorted by name. |
 | `pass`, `material`, `draw` | `{ { name: string, type: string } }` | What each frequency binds, sorted by name: `Vec4f`, `Camera`, `Light[4]`, `Texture2D`, `Sampler`. A texture's own sampler is part of the texture. |
 | `varyings` | `{ { name: string, type: string } }` | What `vertex` passes to `fragment`, sorted by name. |
+| `outputs` | `{ { name: string, type: string } }` | The fragment outputs, by color location: `color` alone for a fragment function that returned one value. |
 | `workgroupSize` | `{ number }?` | A compute program's workgroup size, `{ x, y, z }`; `nil` for a vertex and fragment program. |
 | `layout` | `ShaderLayout` | Where everything lives: see [layout](#layout). |
 
@@ -927,9 +928,9 @@ end))
 print(pcall(function()
   return shader.program {
     attributes = { position = shader.vec3 },
-    pass = { cameraPosition = shader.vec3 },
+    pass = { view = shader.mat4 },
     vertex = function(input) return { position = input.attributes.position } end,
-    fragment = function(input) return input.pass.cameraPosition end,
+    fragment = function(input) return input.pass.view end,
   }
 end))
 ```
@@ -940,7 +941,7 @@ And this is `jess run shaders/errors.jsl`:
 false	shaders/errors.jsl:16 (shaders/errors.jsl): dot(Vec3f, Vec4f) is invalid: expected two vectors of the same type
 false	shaders/errors.jsl: the shader program is invalid
 shaders/errors.jsl:26 (shaders/errors.jsl): the vertex position is Vec3f: expected Vec4f
-shaders/errors.jsl:27 (shaders/errors.jsl): fragment output 0 is Vec3f: expected Vec4f
+shaders/errors.jsl:27 (shaders/errors.jsl): fragment output 0 is Mat4f: expected a Float, Int, or UInt, or a vector of one
 ```
 
 Each location is `file:line`, then the module that called `shader.program` in parentheses, which differs when a helper module builds part of the program. There's no column: Luau doesn't record one, and jess doesn't make one up. The line is that of the nearest Luau function on the call stack, so a call through `pcall` still points at your source.

@@ -48,6 +48,9 @@ const COMPUTE_KEYS: &[&str] = &["compute", "draw", "material", "pass", "workgrou
 /// read.
 const NAMESPACES: [(&str, Rate); 2] = [("attributes", Rate::Vertex), ("instance", Rate::Instance)];
 
+/// The name of the one fragment output a fragment function returns by itself.
+const FRAGMENT_COLOR: &str = "color";
+
 /// The name a stage input answers with the stage's built-in values.
 const BUILTINS: &str = "builtin";
 
@@ -145,6 +148,8 @@ struct Info {
     builtins: [Option<Value>; Builtin::ALL.len()],
     /// What the vertex function returned, as the fragment stage reads it.
     varyings: BTreeMap<String, Value>,
+    /// The fragment outputs' names and types, by color location.
+    outputs: Vec<(String, Type)>,
 }
 
 impl Info {
@@ -158,6 +163,7 @@ impl Info {
             loads: HashMap::new(),
             builtins: [None; Builtin::ALL.len()],
             varyings: BTreeMap::new(),
+            outputs: Vec::new(),
         }
     }
 
@@ -401,6 +407,8 @@ struct Finished {
     /// What each frequency binds, sorted by name, with its type's name: a sampler declared with a
     /// texture is part of the texture.
     groups: [Vec<(String, String)>; 3],
+    /// The fragment outputs' names and types, by color location.
+    outputs: Vec<(String, Type)>,
 }
 
 impl LuaShaderProgram {
@@ -1636,6 +1644,41 @@ fn vertex_outputs(frame: &Frame<'_>, outputs: ValueView<'_>) -> l3i::Result<(Val
     Ok((position, varyings))
 }
 
+/// What the fragment function returned: one value, the output `color`, or a table of named
+/// outputs, sorted by name, each at the next color location.
+fn fragment_outputs(frame: &Frame<'_>, returned: ValueView<'_>) -> l3i::Result<Vec<(String, Value)>> {
+    if let Some(expression) = l3i::userdata::receiver::<LuaShaderExpr>(returned) {
+        return Ok(vec![(FRAGMENT_COLOR.to_owned(), expression.value)]);
+    }
+    if !returned.is_table() {
+        return Err(error(format!(
+            "the fragment function returned {}: expected a shader value, the color, or a table of named \
+             outputs",
+            kind(returned)
+        )));
+    }
+    let mut outputs = Vec::new();
+    returned.as_table()?.for_each(frame, |_, key, value| {
+        if !key.is_string() {
+            return Err(error(format!("fragment outputs are named by strings, not {}", kind(key))));
+        }
+        let name = key.read::<&str>()?;
+        let Some(expression) = l3i::userdata::receiver::<LuaShaderExpr>(value) else {
+            return Err(error(format!(
+                "fragment output \"{name}\" is {}: expected a shader value",
+                kind(value)
+            )));
+        };
+        outputs.push((name.to_owned(), expression.value));
+        Ok(())
+    })?;
+    if outputs.is_empty() {
+        return Err(error("the fragment function's table has no outputs"));
+    }
+    outputs.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(outputs)
+}
+
 /// Where `value` was written, for the declarations and outputs made from it, else `fallback`.
 fn origin_of(builder: &ProgramBuilder, value: Value, fallback: &SourceOrigin) -> SourceOrigin {
     builder
@@ -1791,22 +1834,16 @@ fn render_stages(
         build: build.clone(),
         stage: Stage::Fragment,
     };
-    let output = fragment
-        .invoke_with(call, (Owned(input),), |_, output| {
-            l3i::userdata::receiver::<LuaShaderExpr>(output)
-                .map(|expression| expression.value)
-                .ok_or_else(|| {
-                    error(format!(
-                        "the fragment function returned {}: expected a shader value, the Vec4f color",
-                        kind(output)
-                    ))
-                })
-        })
+    let outputs = fragment
+        .invoke_with(call, (Owned(input),), fragment_outputs)
         .map_err(crate::lua::callback_error)?;
-    let Build { builder, .. } = &mut *build.borrow_mut();
+    let Build { builder, info } = &mut *build.borrow_mut();
     let builder = builder.as_mut().expect("a program under construction has its builder");
-    let at = origin_of(builder, output, declared_at);
-    builder.at(at).output(output).map_err(invalid)?;
+    for (name, output) in outputs {
+        let at = origin_of(builder, output, declared_at);
+        builder.at(at).output(output).map_err(invalid)?;
+        info.outputs.push((name, output.ty()));
+    }
     Ok(())
 }
 
@@ -1858,7 +1895,7 @@ fn construct_program(call: &Call<'_>, build: &Rc<RefCell<Build>>, spec: Spec) ->
         Stages::Compute { compute, .. } => compute_stage(call, build, compute)?,
     }
 
-    let (builder, owner, groups) = {
+    let (builder, owner, groups, outputs) = {
         let Build { builder, info } = &mut *build.borrow_mut();
         let taken = builder.take().expect("a program under construction has its builder");
         let groups = info.groups.clone().map(|members| {
@@ -1871,7 +1908,7 @@ fn construct_program(call: &Call<'_>, build: &Rc<RefCell<Build>>, spec: Spec) ->
             };
             members.into_iter().map(reflect).collect()
         });
-        (taken, info.owner.clone(), groups)
+        (taken, info.owner.clone(), groups, std::mem::take(&mut info.outputs))
     };
     let program = builder.finish().map_err(|problems| {
         let mut message = format!("{owner}: the shader program is invalid");
@@ -1881,7 +1918,12 @@ fn construct_program(call: &Call<'_>, build: &Rc<RefCell<Build>>, spec: Spec) ->
         }
         error(message)
     })?;
-    Ok(Finished { program, owner, groups })
+    Ok(Finished {
+        program,
+        owner,
+        groups,
+        outputs,
+    })
 }
 
 /// `shader.program { attributes, instance, pass, material, draw, vertex, fragment }`.
@@ -2416,6 +2458,17 @@ fn describe_program(d: &mut ExtensionDescriptor) {
     program
         .getter("varyings", |this: &LuaShaderProgram, call: &Call<'_>| {
             push_declarations(call, this.0.program.varyings())
+        })
+        .untyped();
+    program
+        .getter("outputs", |this: &LuaShaderProgram, call: &Call<'_>| {
+            let named: Vec<(String, String)> = this
+                .0
+                .outputs
+                .iter()
+                .map(|(name, ty)| (name.clone(), ty.name().to_owned()))
+                .collect();
+            push_named(call, &named)
         })
         .untyped();
     program

@@ -624,6 +624,9 @@ end
 --- backend. `tostring` gives `ShaderProgram(3 attributes, 2 uniforms, 1 texture, 2 varyings)`, or
 --- for a compute program `ShaderProgram(compute 64×1×1, 1 uniform, 0 textures, 2 storage buffers)`.
 declare extern type ShaderProgram with
+  --- The fragment outputs by color location, each with its type's name: `color` alone for a
+  --- fragment function that returned one value.
+  outputs: { { name: string, type: string } }
   --- Where everything the program declares lives: every block member's and struct field's
   --- offset, every binding, and every vertex buffer's stride and attribute offsets.
   layout: ShaderLayout
@@ -660,7 +663,7 @@ export type ShaderProgramSpec = {
   material: { [string]: ShaderType }?,
   draw: { [string]: ShaderType }?,
   vertex: (input: ShaderInput) -> { [string]: ShaderExpr },
-  fragment: (input: ShaderInput) -> ShaderExpr,
+  fragment: (input: ShaderInput) -> ShaderExpr | { [string]: ShaderExpr },
 }
 
 --- A member of a struct or uniform block, where it is: `stride` is an array's, from one element

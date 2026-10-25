@@ -311,6 +311,15 @@ local integrate = shader.compute {
   end,
 }
 
+local picking = shader.program {
+  attributes = { position = shader.vec4 },
+  draw = { id = shader.uint },
+  vertex = function(input) return { position = input.attributes.position } end,
+  fragment = function(input)
+    return { color = shader.vec4(1), id = input.draw.id, depth = input.builtin.position.z }
+  end,
+}
+
 local function describe(program: ShaderProgram): { [string]: any }
   return {
     tostring = tostring(program),
@@ -361,6 +370,8 @@ return {
   flow = describe(flow),
   buffers = describe(buffers),
   layout = lit.layout,
+  pickingOutputs = picking.outputs,
+  litOutputs = lit.outputs,
   buffersLayout = buffers.layout,
   integrate = describe(integrate),
   integrateSize = integrate.workgroupSize,

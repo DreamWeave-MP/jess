@@ -305,8 +305,9 @@ impl Lowering<'_> {
             return;
         }
         emit!(self, "struct FragmentOutput {{\n");
-        for location in 0..self.program.fragment_outputs.len() {
-            emit!(self, "    @location({location}) color{location}: vec4<f32>,\n");
+        for (location, &output) in self.program.fragment_outputs.iter().enumerate() {
+            let ty = wgsl_type(self.type_of(output));
+            emit!(self, "    @location({location}) color{location}: {ty},\n");
         }
         emit!(self, "}}\n\n");
     }

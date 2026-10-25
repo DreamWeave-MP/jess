@@ -271,7 +271,7 @@ return {
   },
 
   program = {
-    fragmentType = inFragment(function(input) return input.material.light.xyz end),
+    fragmentType = inFragment(function(input) return input.draw.model end),
 
     position = build {
       attributes = { position = shader.vec3 },
@@ -361,7 +361,7 @@ return {
           shade = shader.sample(input.material.diffuse, input.attributes.uv),
         }
       end,
-      fragment = function(input) return input.shade.xyz end,
+      fragment = function(input) return shader.less(input.shade.x, 0) end,
     },
   },
 
@@ -462,9 +462,21 @@ return {
     ),
     fragmentReturn = oracle.raises(
       'argument',
-      'the fragment function returned table: expected a shader value, the Vec4f color',
+      'the fragment function returned number: expected a shader value, the color, or a table of named outputs',
       shader.program,
-      { vertex = vertex, fragment = function() return {} end }
+      { vertex = vertex, fragment = function() return 1 end :: any }
+    ),
+    fragmentEmpty = oracle.raises(
+      'argument',
+      "the fragment function's table has no outputs",
+      shader.program,
+      { vertex = vertex, fragment = function() return {} end :: any }
+    ),
+    fragmentOutputName = oracle.raises(
+      'argument',
+      'fragment output "id" is number: expected a shader value',
+      shader.program,
+      { vertex = vertex, fragment = function() return { color = white(), id = 3 } end :: any }
     ),
   },
 
