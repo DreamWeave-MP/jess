@@ -719,9 +719,88 @@ export type GpuSamplerDesc = {
   compare: GpuCompare?,
 }
 
+--- What one frequency binds for a pipeline: its uniform block, textures, samplers, and storage
+--- buffers, from `GpuPipeline:bind`. `tostring` gives `GpuBindGroup(material)`.
+declare extern type GpuBindGroup with
+  frequency: 'pass' | 'material' | 'draw'
+  __tostring: (self: GpuBindGroup) -> string
+end
+
+--- A shader program made ready to draw (`kind` `render`) or to compute (`compute`). `bind` makes
+--- what one frequency binds for it from resources by the binding numbers `program.layout`
+--- reports: the uniform block at 0, then each texture, sampler, and storage buffer. `tostring`
+--- gives `GpuPipeline(render, 1 color target, depth)` or `GpuPipeline(compute 64×1×1)`.
+declare extern type GpuPipeline with
+  kind: 'render' | 'compute'
+  function bind(
+    self,
+    frequency: 'pass' | 'material' | 'draw',
+    bindings: { [number]: GpuBuffer | GpuTexture | GpuSampler }
+  ): GpuBindGroup
+  __tostring: (self: GpuPipeline) -> string
+end
+
+--- How a pipeline combines a fragment's color with what its target holds.
+export type GpuBlend = 'replace' | 'alpha' | 'premultiplied' | 'additive'
+
+--- A render pipeline's fixed-function state: a color target per fragment output (a format's name,
+--- or one with a `blend`), the depth target it tests against (a format's name tests `less` and
+--- writes), and how it assembles and culls primitives. A triangle facing the camera runs
+--- counter-clockwise unless `clockwise` says otherwise.
+export type GpuPipelineState = {
+  colors: { GpuTextureFormat | { format: GpuTextureFormat, blend: GpuBlend? } },
+  depth: (GpuTextureFormat | { format: GpuTextureFormat, compare: GpuCompare?, write: boolean? })?,
+  topology: ('triangles' | 'triangleStrip' | 'lines' | 'lineStrip' | 'points')?,
+  cull: ('none' | 'front' | 'back')?,
+  clockwise: boolean?,
+}
+
+--- A level of a layer of a texture a pass draws into: a texture alone keeps what it holds, and a
+--- `clear` (four channels, or a depth) replaces it. `store = false` throws away what the pass drew.
+export type GpuTarget = GpuTexture | {
+  texture: GpuTexture,
+  clear: ({ number } | number)?,
+  level: number?,
+  layer: number?,
+  store: boolean?,
+}
+
+--- One draw: `count` vertices (or indices, with `indices`) of `instanceCount` instances, its
+--- pipeline's bind groups by frequency, and its vertex, instance, and index buffers.
+export type GpuDraw = {
+  pipeline: GpuPipeline,
+  count: number,
+  instanceCount: number?,
+  pass: GpuBindGroup?,
+  material: GpuBindGroup?,
+  draw: GpuBindGroup?,
+  vertices: GpuBuffer?,
+  instances: GpuBuffer?,
+  indices: GpuBuffer?,
+  indexFormat: ('u16' | 'u32')?,
+}
+
+--- A render pass: its color targets by location, its depth target, and its draws, in order.
+export type GpuPass = {
+  colors: { GpuTarget }?,
+  depth: GpuTarget?,
+  draws: { GpuDraw }?,
+}
+
+--- A compute dispatch: its pipeline, its bind groups by frequency, and how many workgroups on each
+--- axis, one count meaning the rest are 1.
+export type GpuDispatch = {
+  pipeline: GpuPipeline,
+  workgroups: number | { number },
+  pass: GpuBindGroup?,
+  material: GpuBindGroup?,
+  draw: GpuBindGroup?,
+}
+
 --- The GPU a script draws and computes with: the adapter's `name`, the `backend` API wgpu reaches it
 --- through (`vulkan`, `metal`, `dx12`, `gl`), its `kind` (`discrete`, `integrated`, `virtual`,
---- `cpu`, `other`), and its `limits`. `buffer`, `texture`, and `sampler` make resources on it.
+--- `cpu`, `other`), and its `limits`. `buffer`, `texture`, and `sampler` make resources on it,
+--- `pipeline` makes a program ready to draw or compute, and `render` and `dispatch` submit work.
 --- `tostring` gives `GpuDevice(name, backend)`.
 declare extern type GpuDevice with
   name: string
@@ -731,6 +810,9 @@ declare extern type GpuDevice with
   function buffer(self, size: number, usage: GpuBufferUsage | { GpuBufferUsage }): GpuBuffer
   function texture(self, desc: GpuTextureDesc): GpuTexture
   function sampler(self, desc: GpuSamplerDesc?): GpuSampler
+  function pipeline(self, program: ShaderProgram, state: GpuPipelineState?): GpuPipeline
+  function render(self, pass: GpuPass): ()
+  function dispatch(self, work: GpuDispatch): ()
   __tostring: (self: GpuDevice) -> string
 end
 

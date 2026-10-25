@@ -21,7 +21,7 @@ use crate::render::TextureFormat;
 #[derive(Debug)]
 pub struct LuaGpuBuffer {
     pub(crate) gpu: Rc<Gpu>,
-    pub(crate) buffer: Buffer,
+    pub(crate) buffer: Rc<Buffer>,
 }
 
 // SAFETY: plain Rust state; the destructor never touches the Lua API.
@@ -33,7 +33,7 @@ unsafe impl Userdata for LuaGpuBuffer {
 #[derive(Debug)]
 pub struct LuaGpuTexture {
     pub(crate) gpu: Rc<Gpu>,
-    pub(crate) texture: Texture,
+    pub(crate) texture: Rc<Texture>,
 }
 
 // SAFETY: plain Rust state; the destructor never touches the Lua API.
@@ -44,7 +44,7 @@ unsafe impl Userdata for LuaGpuTexture {
 /// A way of reading textures.
 #[derive(Debug)]
 pub struct LuaGpuSampler {
-    pub(crate) sampler: Sampler,
+    pub(crate) sampler: Rc<Sampler>,
 }
 
 // SAFETY: plain Rust state; the destructor never touches the Lua API.
@@ -124,7 +124,7 @@ fn usages<T: Copy + std::ops::BitOr<Output = T> + Default>(
 
 /// What a value is, as errors name it: a string in quotes, a number as Luau prints it, else its
 /// kind.
-fn shown(view: ValueView<'_>) -> String {
+pub fn shown(view: ValueView<'_>) -> String {
     if view.is_string() {
         return view
             .read::<&str>()
@@ -162,7 +162,7 @@ pub fn whole(function: &str, what: &str, view: Option<ValueView<'_>>, default: O
 }
 
 /// A string field of `table`, one of `names`, or `default` where it is nil.
-fn choice<'a>(
+pub fn choice<'a>(
     frame: &Frame<'_>,
     function: &str,
     table: &l3i::stack::TableView<'_>,
@@ -208,7 +208,7 @@ fn buffer(
         .map_err(|problem| gpu_error(FUNCTION, &problem))?;
     Ok(Owned(LuaGpuBuffer {
         gpu: this.gpu.clone(),
-        buffer,
+        buffer: Rc::new(buffer),
     }))
 }
 
@@ -251,7 +251,7 @@ fn texture(this: &LuaGpuDevice, call: &Call<'_>, desc: ValueView<'_>) -> l3i::Re
     let texture = this.gpu.texture(&desc).map_err(|problem| gpu_error(FUNCTION, &problem))?;
     Ok(Owned(LuaGpuTexture {
         gpu: this.gpu.clone(),
-        texture,
+        texture: Rc::new(texture),
     }))
 }
 
@@ -303,7 +303,9 @@ fn sampler(this: &LuaGpuDevice, call: &Call<'_>, desc: Option<ValueView<'_>>) ->
         })?,
     };
     let sampler = this.gpu.sampler(&desc).map_err(|problem| gpu_error(FUNCTION, &problem))?;
-    Ok(Owned(LuaGpuSampler { sampler }))
+    Ok(Owned(LuaGpuSampler {
+        sampler: Rc::new(sampler),
+    }))
 }
 
 /// The comparison named `name`, one `choice` already checked.

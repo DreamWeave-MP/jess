@@ -29,6 +29,7 @@ pub use buffer::{Buffer, BufferUsage};
 pub use compute::ComputePipeline;
 pub use pass::{Draw, IndexFormat, Target};
 pub use pipeline::{Blend, ColorState, Cull, DepthState, PipelineState, RenderPipeline, Topology};
+pub(crate) use pipeline::{Group, Slot};
 pub use sampler::{AddressMode, Compare, Filter, Sampler, SamplerDesc};
 pub use texture::{Texture, TextureDesc, TextureShape, TextureUsage};
 

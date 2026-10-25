@@ -1,6 +1,6 @@
 ---
 title: 'jess.gpu'
-description: 'The GPU in front of the script: the device jess opens on it, what it reports, and the buffers, textures, and samplers made on it.'
+description: 'The GPU in front of the script: the device jess opens on it, the buffers, textures, and samplers made on it, and the pipelines that draw and compute with them.'
 weight: 47
 extra:
   kind: api
@@ -143,3 +143,156 @@ print(atlas, atlas.layers, atlas.mips, buffer.len(level), buffer.readu8(level, 2
 ## GpuSampler
 
 A sampler has nothing to read: it is what a draw binds beside a texture. `tostring(sampler)` is `GpuSampler(linear)`, or `GpuSampler(nearest, comparing)` for a comparison sampler.
+
+## Pipelines
+
+### GpuDevice:pipeline
+
+{{ api_signature(value="device:pipeline(program: ShaderProgram, state: GpuPipelineState?) -> GpuPipeline") }}
+
+A [shader program](@/docs/api/shader.md), lowered, validated by the backend, and made ready to run. A compute program takes no state. A vertex and fragment program takes the fixed-function state everything else about drawing needs:
+
+| Field | Type | Holds |
+| --- | --- | --- |
+| `colors` | `{ GpuTextureFormat \| { format, blend } }` | A color target per fragment output, by location, each of a format the output fits. `blend` is `replace` (the default), `alpha`, `premultiplied`, or `additive`; an integer target only replaces. |
+| `depth` | `(GpuTextureFormat \| { format, compare, write })?` | The depth target it tests against. A format's name alone tests `less` and writes; `compare` is a `GpuCompare` and `write` a boolean. |
+| `topology` | `string?` | `triangles` (the default), `triangleStrip`, `lines`, `lineStrip`, or `points`. |
+| `cull` | `string?` | Which triangles it throws away: `none` (the default), `front`, or `back`. |
+| `clockwise` | `boolean?` | Whether a triangle running clockwise faces the camera; by default a counter-clockwise one does. |
+
+The program's own layout decides everything else: its bind groups, its vertex buffers' strides and attributes. A pipeline can't disagree with its program.
+
+## GpuPipeline
+
+| Member | Type | Does |
+| --- | --- | --- |
+| `kind` | `'render' \| 'compute'` | Whether it draws or computes. |
+| `bind` | `(self, frequency, bindings) -> GpuBindGroup` | What one frequency binds for it. |
+
+`tostring(pipeline)` is `GpuPipeline(render, 1 color target, depth)`, or `GpuPipeline(compute 64×1×1)`.
+
+### GpuPipeline:bind
+
+{{ api_signature(value="pipeline:bind(frequency: 'pass' | 'material' | 'draw', bindings: { [number]: GpuBuffer | GpuTexture | GpuSampler }) -> GpuBindGroup") }}
+
+`bindings` are keyed by binding number, the numbers [program.layout](@/docs/api/shader.md#layout) reports: the uniform block at 0, if the frequency has members, then each texture, sampler, and storage buffer. Every declaration is bound exactly once, with a resource of its kind: a uniform buffer at least the block's size, a texture of the declared shape and sample kind, a comparison sampler where one is declared, a storage buffer. A number the program doesn't bind is an error listing the ones it does: `the program binds nothing at material binding 5: it binds 0 (the uniform block), 1 (the texture diffuse), 2 (diffuse's sampler)`.
+
+Names belong to whatever builds on this: the kernel takes numbers, so a Luau library can bind a material by its declarations' names without the kernel deciding what a name means.
+
+## GpuBindGroup
+
+What one frequency binds for one pipeline, and for no other. `frequency` is `pass`, `material`, or `draw`, and `tostring(group)` is `GpuBindGroup(material)`.
+
+## Passes
+
+### GpuDevice:render
+
+{{ api_signature(value="device:render(pass: GpuPass)") }}
+
+Draws `draws`, in order, into `colors` (by location) and `depth`, and submits the pass. A target is a texture made with the `target` usage, and keeps what it holds, or a table:
+
+| Field | Type | Holds |
+| --- | --- | --- |
+| `texture` | `GpuTexture` | The texture drawn into. |
+| `clear` | `({ number } \| number)?` | What it is cleared to first: four channels (whole numbers for an integer format), or a depth from 0 to 1. Without one, the pass draws over what's there. |
+| `level`, `layer` | `number?` | The mip level, and the array layer or cube face, drawn into; 0 by default. |
+| `store` | `boolean?` | `false` throws away what the pass drew. |
+
+A draw is a table:
+
+| Field | Type | Holds |
+| --- | --- | --- |
+| `pipeline` | `GpuPipeline` | A render pipeline whose targets are the pass's. |
+| `count` | `number` | How many vertices, or with `indices`, how many indices. |
+| `instanceCount` | `number?` | How many instances; 1 by default. |
+| `pass`, `material`, `draw` | `GpuBindGroup?` | A bind group for each frequency its program binds anything for, made for its pipeline. |
+| `vertices`, `instances` | `GpuBuffer?` | The per-vertex and per-instance attributes, if the program has any, in vertex buffers holding every one drawn. |
+| `indices`, `indexFormat` | `GpuBuffer?`, `('u16' \| 'u32')?` | An index buffer, and how wide its indices are (`u32` by default). |
+
+Everything is checked before anything is submitted, and each mistake names its draw: `draw 0 is invalid: its program binds a material group, and the draw gives none`. A pass reads its draws one at a time, so a pass of ten thousand draws holds no more of the Luau stack than a pass of one.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+local program = shader.program {
+  attributes = { position = shader.vec2 },
+  material = { tint = shader.vec4 },
+  vertex = function(input)
+    return { position = shader.vec4(input.attributes.position, 0, 1) }
+  end,
+  fragment = function(input) return input.material.tint end,
+}
+
+local device = jess.gpu.device()
+local pipeline = device:pipeline(program, { colors = { 'rgba8Unorm' } })
+
+local tint = device:buffer(program.layout.material.size or 0, 'uniform')
+local orange = buffer.create(16)
+for index, channel in { 1, 0.5, 0, 1 } do
+  buffer.writef32(orange, (index - 1) * 4, channel)
+end
+tint:write(0, orange)
+
+-- One triangle that covers the whole target.
+local corners = buffer.create(24)
+for index, value in { -1, -1, 3, -1, -1, 3 } do
+  buffer.writef32(corners, (index - 1) * 4, value)
+end
+local vertices = device:buffer(24, 'vertex')
+vertices:write(0, corners)
+
+local image = device:texture({ width = 2, height = 2, format = 'rgba8Unorm', usage = 'target' })
+device:render({
+  colors = { { texture = image, clear = { 0, 0, 0, 1 } } },
+  draws = {
+    {
+      pipeline = pipeline,
+      material = pipeline:bind('material', { [0] = tint }),
+      vertices = vertices,
+      count = 3,
+    },
+  },
+})
+
+local pixels = image:read()
+print(pipeline, buffer.readu8(pixels, 0), buffer.readu8(pixels, 1), buffer.readu8(pixels, 2))
+-- GpuPipeline(render, 1 color target)  255  128  0
+```
+
+### GpuDevice:dispatch
+
+{{ api_signature(value="device:dispatch(work: GpuDispatch)") }}
+
+Runs a compute pipeline over `workgroups` workgroups (a count, or one to three of them, one per axis, the rest 1), each of the program's workgroup size, with a bind group for each frequency its program binds, and submits it. A buffer read afterwards waits for it.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+local double = shader.compute {
+  workgroupSize = { 64 },
+  pass = { values = shader.storage(shader.float, 'readWrite') },
+  compute = function(input)
+    local index, values = input.builtin.globalInvocationId.x, input.pass.values
+    shader.when(shader.less(index, shader.arrayLength(values)), function()
+      shader.write(values, index, values[index] * 2)
+    end)
+  end,
+}
+
+local device = jess.gpu.device()
+local pipeline = device:pipeline(double)
+local values = device:buffer(16, 'storage')
+values:write(0, buffer.fromstring(string.pack('<ffff', 1, 2, 3, 4)))
+
+device:dispatch({
+  pipeline = pipeline,
+  pass = pipeline:bind('pass', { [0] = values }),
+  workgroups = 1,
+})
+print(string.unpack('<ffff', buffer.tostring(values:read())))
+-- 2  4  6  8  17
+```
+
+The last number is `string.unpack`'s: where it stopped reading.

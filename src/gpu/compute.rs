@@ -12,7 +12,7 @@ use crate::shader::{Frequency, Program};
 #[derive(Debug)]
 pub struct ComputePipeline {
     raw: wgpu::ComputePipeline,
-    groups: [Group; 3],
+    pub(crate) groups: [Group; 3],
     token: u64,
     workgroup_size: [u32; 3],
 }

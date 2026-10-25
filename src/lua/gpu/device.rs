@@ -38,7 +38,7 @@ impl Opened {
     }
 }
 
-/// Declares the device type and the resources it makes.
+/// Declares the device type, the resources it makes, and its pipelines.
 pub fn describe(d: &mut ExtensionDescriptor) {
     let mut device = d.userdata::<LuaGpuDevice>(LuaGpuDevice::NAME);
     device
@@ -71,9 +71,11 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         )
         .untyped();
     super::resources::device_methods(&mut device);
+    super::pipeline::device_methods(&mut device);
     crate::lua::plan::metamethod(&mut device, "__tostring", |this: &LuaGpuDevice| {
         let info = this.gpu.info();
         format!("GpuDevice({}, {})", info.name, info.backend)
     });
     super::resources::describe(d);
+    super::pipeline::describe(d);
 }

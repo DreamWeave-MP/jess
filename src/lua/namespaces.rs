@@ -33,9 +33,11 @@ const TYPES: [(&str, &str); 12] = [
 
 /// The GPU's handle types, in a jess built with the `gpu` feature.
 #[cfg(feature = "gpu")]
-const GPU_TYPES: [(&str, &str); 4] = [
+const GPU_TYPES: [(&str, &str); 6] = [
+    ("jess.gpu.BindGroup", "GpuBindGroup"),
     ("jess.gpu.Buffer", "GpuBuffer"),
     ("jess.gpu.Device", "GpuDevice"),
+    ("jess.gpu.Pipeline", "GpuPipeline"),
     ("jess.gpu.Sampler", "GpuSampler"),
     ("jess.gpu.Texture", "GpuTexture"),
 ];
