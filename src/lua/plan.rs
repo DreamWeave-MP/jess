@@ -104,6 +104,7 @@ fn builder(capabilities: &[String], profiling: bool) -> RuntimePlanBuilder {
     }
     RuntimePlan::builder()
         .policy(policy)
+        .extension(l3i::audio::AudioExtension)
         .extension(l3i::bytes::BytesExtension)
         .extension(l3i::data::DataExtension)
         .extension(l3i::dns::DnsExtension::default())
