@@ -4,6 +4,7 @@
 mod compute;
 mod draw;
 mod draw_sets;
+mod plans;
 mod resources;
 
 use jess::gpu::{Gpu, GpuError};

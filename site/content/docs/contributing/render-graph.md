@@ -21,13 +21,13 @@ render technique -> RenderGraph -> CompiledGraph -> backend
 - `RenderGraph` is what gets declared: targets, buffers, and the passes that use them.
 - `CompiledGraph` is what a backend executes: pass order, culled passes, dependencies, resource lifetimes, and alias groups. Its `Display` is the debug dump.
 
-The two ends of that line don't exist yet. The technique will eventually come from Luau (`@jess/render`), and the backend will be wgpu. Neither is in this module.
+The backend is [`jess::gpu`](@/docs/contributing/gpu.md#plans): `Gpu::plan` compiles a graph for a device and allocates what it needs, and `Gpu::run` records it. Neither is in this module.
 
 ## What It Is Not
 
 - **Not a renderer.** It allocates no textures and records no commands.
 - **Not a wgpu wrapper.** No public type names a wgpu type. `TextureFormat` is jess's own list of the formats the renderer needs; a backend maps it to whatever its API calls them. The same goes, later, for bind groups, pipeline layouts, and shader modules.
-- **Not a Luau API.** There are no bindings. Those wait for l3i, and a temporary binding layer would become the permanent one the day it shipped.
+- **Not a Luau API.** It is Rust; nothing in Luau builds one.
 - **Not a material or shader system.** A pass says what it touches, not how it shades. Shaders are the [shader IR](@/docs/contributing/shader-ir.md)'s problem.
 - **Not published.** The crate is `publish = false` until the native foundations are reassessed.
 

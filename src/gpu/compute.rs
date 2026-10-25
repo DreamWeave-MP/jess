@@ -91,21 +91,21 @@ impl Gpu {
         groups: [Option<&BindGroup>; 3],
         workgroups: [u32; 3],
     ) -> Result<(), GpuError> {
-        for (frequency, (group, bound)) in Frequency::ALL.into_iter().zip(pipeline.groups.iter().zip(groups)) {
-            let problem = match (&group.layout, bound) {
-                (Some(_), None) => Some(format!("its program binds a {frequency} group, and the dispatch gives none")),
-                (None, Some(_)) => Some(format!(
-                    "its program binds nothing per {frequency}, and the dispatch gives a group"
-                )),
-                (Some(layout), Some(bound)) if !bound.fits(frequency, layout) => {
-                    Some(format!("its {frequency} bind group was made for another frequency or layout"))
-                }
-                _ => None,
-            };
-            if let Some(problem) = problem {
-                return Err(GpuError::Invalid(format!("the dispatch is invalid: {problem}")));
-            }
+        if let Some(problem) = group_problem(pipeline, groups) {
+            return Err(GpuError::Invalid(format!("the dispatch is invalid: {problem}")));
         }
+        self.check_workgroups(workgroups)?;
+        self.checked(|| {
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            encode(&mut encoder, pipeline, groups, workgroups);
+            self.queue.submit([encoder.finish()]);
+        })
+    }
+
+    /// Whether the device runs `workgroups` workgroups in one dispatch.
+    pub(crate) fn check_workgroups(&self, workgroups: [u32; 3]) -> Result<(), GpuError> {
         let limit = self.info.max_workgroups;
         if workgroups.contains(&0) || workgroups.iter().any(|count| *count > limit) {
             let [x, y, z] = workgroups;
@@ -113,22 +113,43 @@ impl Gpu {
                 "a dispatch of {x}×{y}×{z} workgroups is invalid: expected from 1 to {limit} on each axis"
             )));
         }
-        self.checked(|| {
-            let mut encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-            {
-                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
-                pass.set_pipeline(&pipeline.raw);
-                for (group, bound) in (0..).zip(groups) {
-                    if let Some(bound) = bound {
-                        pass.set_bind_group(group, &bound.raw, &[]);
-                    }
-                }
-                let [x, y, z] = workgroups;
-                pass.dispatch_workgroups(x, y, z);
-            }
-            self.queue.submit([encoder.finish()]);
-        })
+        Ok(())
     }
+}
+
+/// What is wrong with the bind groups a dispatch of `pipeline` gives, if anything.
+pub fn group_problem(pipeline: &ComputePipeline, groups: [Option<&BindGroup>; 3]) -> Option<String> {
+    for (frequency, (group, bound)) in Frequency::ALL.into_iter().zip(pipeline.groups.iter().zip(groups)) {
+        match (&group.layout, bound) {
+            (Some(_), None) => return Some(format!("its program binds a {frequency} group, and the dispatch gives none")),
+            (None, Some(_)) => {
+                return Some(format!(
+                    "its program binds nothing per {frequency}, and the dispatch gives a group"
+                ));
+            }
+            (Some(layout), Some(bound)) if !bound.fits(frequency, layout) => {
+                return Some(format!("its {frequency} bind group was made for another frequency or layout"));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Records a dispatch whose groups and workgroups were checked into `encoder`.
+pub fn encode(
+    encoder: &mut wgpu::CommandEncoder,
+    pipeline: &ComputePipeline,
+    groups: [Option<&BindGroup>; 3],
+    workgroups: [u32; 3],
+) {
+    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+    pass.set_pipeline(&pipeline.raw);
+    for (group, bound) in (0..).zip(groups) {
+        if let Some(bound) = bound {
+            pass.set_bind_group(group, &bound.raw, &[]);
+        }
+    }
+    let [x, y, z] = workgroups;
+    pass.dispatch_workgroups(x, y, z);
 }

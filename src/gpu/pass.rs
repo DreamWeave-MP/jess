@@ -88,89 +88,116 @@ impl Gpu {
     /// buffers are missing or laid out for another program, or whose count runs past its
     /// vertices.
     pub fn render(&self, colors: &[Target<'_>], depth: Option<&Target<'_>>, draws: &[Draw<'_>]) -> Result<(), GpuError> {
-        if colors.is_empty() && depth.is_none() {
-            return Err(GpuError::Invalid(
-                "a pass draws into nothing: expected a color or depth target".to_owned(),
-            ));
-        }
-        for (position, target) in colors.iter().chain(depth).enumerate() {
-            check_target(target, position == colors.len())?;
-        }
-        for (index, draw) in draws.iter().enumerate() {
-            check_draw(index, draw, colors, depth)?;
-        }
-        let views: Vec<wgpu::TextureView> = colors.iter().chain(depth).map(target_view).collect();
+        check_pass(colors, depth, false, draws)?;
         self.checked(|| {
             let mut encoder = self
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-            {
-                let attachments: Vec<Option<wgpu::RenderPassColorAttachment<'_>>> = colors
-                    .iter()
-                    .zip(&views)
-                    .map(|(target, view)| {
-                        Some(wgpu::RenderPassColorAttachment {
-                            view,
-                            depth_slice: None,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: match target.load {
-                                    LoadOp::Clear(clear) => wgpu::LoadOp::Clear(clear_color(clear)),
-                                    LoadOp::Load => wgpu::LoadOp::Load,
-                                    LoadOp::DontCare => wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                                },
-                                store: store(target.store),
-                            },
-                        })
-                    })
-                    .collect();
-                let depth_attachment = depth.map(|target| wgpu::RenderPassDepthStencilAttachment {
-                    view: &views[colors.len()],
-                    depth_ops: Some(wgpu::Operations {
-                        load: match target.load {
-                            LoadOp::Clear(ClearValue::Depth(depth)) => wgpu::LoadOp::Clear(depth),
-                            LoadOp::Load => wgpu::LoadOp::Load,
-                            _ => wgpu::LoadOp::Clear(1.0),
-                        },
-                        store: store(target.store),
-                    }),
-                    stencil_ops: None,
-                });
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: None,
-                    color_attachments: &attachments,
-                    depth_stencil_attachment: depth_attachment,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-                for draw in draws {
-                    pass.set_pipeline(&draw.pipeline.raw);
-                    for (group, bound) in (0..).zip(draw.groups) {
-                        if let Some(bound) = bound {
-                            pass.set_bind_group(group, &bound.raw, &[]);
-                        }
-                    }
-                    for (slot, buffer) in (0..).zip([draw.vertices, draw.instances]) {
-                        if let Some(buffer) = buffer {
-                            pass.set_vertex_buffer(slot, buffer.raw.slice(..));
-                        }
-                    }
-                    match draw.indices {
-                        Some((buffer, format)) => {
-                            let format = match format {
-                                IndexFormat::U16 => wgpu::IndexFormat::Uint16,
-                                IndexFormat::U32 => wgpu::IndexFormat::Uint32,
-                            };
-                            pass.set_index_buffer(buffer.raw.slice(..), format);
-                            pass.draw_indexed(0..draw.count, 0, 0..draw.instance_count);
-                        }
-                        None => pass.draw(0..draw.count, 0..draw.instance_count),
-                    }
-                }
-            }
+            encode(&mut encoder, colors, depth, false, draws);
             self.queue.submit([encoder.finish()]);
         })
+    }
+}
+
+/// Whether a pass of `draws` into `colors` and `depth` can be drawn, as
+/// [`render`](Gpu::render) checks it. A pass that only tests against `depth` (`read_only`) draws
+/// nothing that writes it.
+pub fn check_pass(
+    colors: &[Target<'_>],
+    depth: Option<&Target<'_>>,
+    read_only: bool,
+    draws: &[Draw<'_>],
+) -> Result<(), GpuError> {
+    if colors.is_empty() && depth.is_none() {
+        return Err(GpuError::Invalid(
+            "a pass draws into nothing: expected a color or depth target".to_owned(),
+        ));
+    }
+    for (position, target) in colors.iter().chain(depth).enumerate() {
+        check_target(target, position == colors.len())?;
+    }
+    for (index, draw) in draws.iter().enumerate() {
+        check_draw(index, draw, colors, depth)?;
+        if read_only && draw.pipeline.state().depth.is_some_and(|depth| depth.write) {
+            return Err(GpuError::Invalid(format!(
+                "draw {index} is invalid: its pipeline writes depth, and the pass only tests against its depth target"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Records a pass [`check_pass`] accepted into `encoder`.
+pub fn encode(
+    encoder: &mut wgpu::CommandEncoder,
+    colors: &[Target<'_>],
+    depth: Option<&Target<'_>>,
+    read_only: bool,
+    draws: &[Draw<'_>],
+) {
+    let views: Vec<wgpu::TextureView> = colors.iter().chain(depth).map(target_view).collect();
+    let attachments: Vec<Option<wgpu::RenderPassColorAttachment<'_>>> = colors
+        .iter()
+        .zip(&views)
+        .map(|(target, view)| {
+            Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: match target.load {
+                        LoadOp::Clear(clear) => wgpu::LoadOp::Clear(clear_color(clear)),
+                        LoadOp::Load => wgpu::LoadOp::Load,
+                        LoadOp::DontCare => wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    },
+                    store: store(target.store),
+                },
+            })
+        })
+        .collect();
+    let depth_attachment = depth.map(|target| wgpu::RenderPassDepthStencilAttachment {
+        view: &views[colors.len()],
+        depth_ops: (!read_only).then(|| wgpu::Operations {
+            load: match target.load {
+                LoadOp::Clear(ClearValue::Depth(depth)) => wgpu::LoadOp::Clear(depth),
+                LoadOp::Load => wgpu::LoadOp::Load,
+                _ => wgpu::LoadOp::Clear(1.0),
+            },
+            store: store(target.store),
+        }),
+        stencil_ops: None,
+    });
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: None,
+        color_attachments: &attachments,
+        depth_stencil_attachment: depth_attachment,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+    });
+    for draw in draws {
+        pass.set_pipeline(&draw.pipeline.raw);
+        for (group, bound) in (0..).zip(draw.groups) {
+            if let Some(bound) = bound {
+                pass.set_bind_group(group, &bound.raw, &[]);
+            }
+        }
+        for (slot, buffer) in (0..).zip([draw.vertices, draw.instances]) {
+            if let Some(buffer) = buffer {
+                pass.set_vertex_buffer(slot, buffer.raw.slice(..));
+            }
+        }
+        match draw.indices {
+            Some((buffer, format)) => {
+                let format = match format {
+                    IndexFormat::U16 => wgpu::IndexFormat::Uint16,
+                    IndexFormat::U32 => wgpu::IndexFormat::Uint32,
+                };
+                pass.set_index_buffer(buffer.raw.slice(..), format);
+                pass.draw_indexed(0..draw.count, 0, 0..draw.instance_count);
+            }
+            None => pass.draw(0..draw.count, 0..draw.instance_count),
+        }
     }
 }
 

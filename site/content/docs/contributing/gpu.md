@@ -1,6 +1,6 @@
 ---
 title: 'GPU'
-description: 'What jess::gpu is, why it is wgpu behind a feature, and how devices, resources, pipelines, bind groups, passes, draw sets, and their errors work.'
+description: 'What jess::gpu is, why it is wgpu behind a feature, and how devices, resources, pipelines, bind groups, passes, draw sets, plans, and their errors work.'
 weight: 65
 extra:
   kind: guide
@@ -19,6 +19,26 @@ The [render graph](@/docs/contributing/render-graph.md) says what to draw in wha
 - **Compute.** `Gpu::compute_pipeline(program)` takes a compute program the same way, `Gpu::compute_bind_group` binds for it, and `Gpu::dispatch(pipeline, groups, workgroups)` runs it over a grid of workgroups, each of the size the program declares.
 - **Passes.** `Gpu::render(colors, depth, draws)` draws into a level of a layer of each target, starting from a clear or what the target held, with the render graph's own `LoadOp`, `StoreOp`, and `ClearValue`. Each draw is checked before anything is recorded: its pipeline's targets are the pass's, it has a bind group for every frequency its program binds and none for the rest, its buffers are vertex and index buffers, and its count stays inside them.
 - **Draw sets.** A `DrawSet` is a draw kept: a pipeline, its material and draw bind groups, its buffers, a count and an instance count, and the tags the passes that take it look for. Its pass group is the pass's: `set.draw(pass)` is the draw it is now under a pass group, so one camera block serves every set a pass draws. It is checked once, when it is made, the way a pass checks a draw; afterwards its count, instance count, and visibility change through atomics, checked again as they change, so whatever draws a frame never waits on whatever changes one. `DrawSets` holds them in the order they were added, and `DrawSets::matching(tags)` is the visible ones carrying any of `tags`, in that order. Its `version` counts every addition and removal, for whatever caches a choice.
+- **Plans.** `Gpu::plan(graph, work, viewport)` compiles a [render graph](@/docs/contributing/render-graph.md) for the device, with one `Work` per pass saying what it does, and `Gpu::run(plan, sets, imports)` runs every pass that survived, in order, in one submission. Planning allocates one texture or buffer per alias group, sized for the viewport, and makes every bind group it can; running records the passes and nothing else. Details below.
+
+## Plans
+
+A render graph says what each pass reads and writes. A plan adds what each pass does, as one `Work` per pass in the order they were registered, and the kind has to match the pass's:
+
+| Pass | Work | Records |
+| --- | --- | --- |
+| `Mesh` | `Draw { tags, pipeline, pass }` | the visible draw sets carrying any of `tags`, in the order they were added, each with `pass` as its pass group |
+| `Fullscreen` | `Fullscreen { pipeline, groups }` | three vertices of `pipeline`, no buffers: a triangle over the targets |
+| `Compute` | `Compute { pipeline, groups, workgroups }` | a dispatch of `pipeline` |
+| `Copy` | `Copy` | the pass's source into its destination |
+
+A pass's targets are its writes, and its depth test, if it reads one: a `DepthTest` read is the pass's depth attachment, read-only, so a set whose pipeline writes depth there is refused. A buffer written with `Clear(Zero)` is zeroed first, at every run.
+
+A group is either one made already (`PlanGroup::Bound`), or bindings the plan makes into one (`PlanGroup::Make`) for the pass's pipeline, or for a draw pass the `pipeline` its work names. Bindings can name the graph's own resources: `PlanBinding::Target` binds a target the pass reads as a texture, and `PlanBinding::Buffer` binds a buffer as a storage buffer, which the pass has to read for a read-only declaration and write for a read-write one. Groups are made when the plan is, except those that bind an imported resource, which are made at every run, because the import is the run's.
+
+A copy between a target and a buffer lays each row out as its texels padded to a multiple of 256 bytes, the layout the GPU copies in, and the plan checks the buffer holds every row at the viewport's size. Nothing writes a depth target from a buffer.
+
+`Gpu::run` takes the draw sets its draw passes choose from, and an `Import` for each imported target and buffer: a texture of the declared format and size at the plan's viewport, a buffer of the declared size. `Plan::resized(viewport)` is the same plan for another viewport, its transient targets and the groups that bind them made again. `Plan::order()` names the passes that run, and `Plan::allocations()` counts what the plan allocated.
 
 ## What It Is Not
 

@@ -18,6 +18,7 @@ mod compute;
 mod draw_set;
 mod pass;
 mod pipeline;
+mod plan;
 mod sampler;
 mod texture;
 
@@ -33,6 +34,7 @@ pub use draw_set::{DrawSet, DrawSetDesc, DrawSets};
 pub use pass::{Draw, IndexFormat, Target};
 pub use pipeline::{Blend, ColorState, Cull, DepthState, PipelineState, RenderPipeline, Topology};
 pub(crate) use pipeline::{Group, Slot};
+pub use plan::{Import, Plan, PlanBinding, PlanGroup, Work};
 pub use sampler::{AddressMode, Compare, Filter, Sampler, SamplerDesc};
 pub use texture::{Texture, TextureDesc, TextureShape, TextureUsage};
 
