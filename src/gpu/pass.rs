@@ -214,7 +214,7 @@ fn check_draw(index: usize, draw: &Draw<'_>, colors: &[Target<'_>], depth: Optio
     } else if draw.instance_count == 0 {
         Some("at least one instance".to_owned())
     } else {
-        group_problem(draw).or_else(|| buffer_problem(draw))
+        group_problem(draw, &Frequency::ALL).or_else(|| buffer_problem(draw))
     };
     let Some(problem) = problem else {
         return Ok(());
@@ -222,9 +222,10 @@ fn check_draw(index: usize, draw: &Draw<'_>, colors: &[Target<'_>], depth: Optio
     Err(GpuError::Invalid(format!("draw {index} is invalid: {problem}")))
 }
 
-/// What is wrong with a draw's bind groups, if anything.
-pub fn group_problem(draw: &Draw<'_>) -> Option<String> {
-    for (frequency, (group, bound)) in Frequency::ALL.into_iter().zip(draw.pipeline.groups.iter().zip(draw.groups)) {
+/// What is wrong with a draw's bind groups for `frequencies`, if anything.
+pub fn group_problem(draw: &Draw<'_>, frequencies: &[Frequency]) -> Option<String> {
+    for &frequency in frequencies {
+        let (group, bound) = (&draw.pipeline.groups[frequency as usize], draw.groups[frequency as usize]);
         match (&group.layout, bound) {
             (Some(_), None) => return Some(format!("its program binds a {frequency} group, and the draw gives none")),
             (None, Some(_)) => {

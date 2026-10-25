@@ -1,24 +1,27 @@
 //! Draw sets: retained draws, each a pipeline, what it binds, its buffers, and how much to draw,
 //! that a plan's draw passes take by their tags every frame without being told again.
 //!
-//! A draw set is checked once, when it is made, as a pass checks a draw. What changes afterwards
-//! (how many vertices and instances, whether it is drawn at all) changes through atomics, so
-//! whatever draws the frame never waits on whoever changes it.
+//! A draw set binds its own material and draw groups; its pass group is the pass's, so one camera
+//! block serves every set a pass draws. A draw set is checked once, when it is made, as a pass
+//! checks a draw. What changes afterwards (how many vertices and instances, whether it is drawn at
+//! all) changes through atomics, so whatever draws the frame never waits on whoever changes it.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use super::pass::{buffer_problem, group_problem};
 use super::{BindGroup, Buffer, Draw, GpuError, IndexFormat, RenderPipeline};
+use crate::shader::Frequency;
 
 /// What a draw set draws.
 #[derive(Clone, Debug)]
 pub struct DrawSetDesc {
     /// The pipeline.
     pub pipeline: Arc<RenderPipeline>,
-    /// The pass's, the material's, and the draw's bind groups, for each its program binds
-    /// anything for.
-    pub groups: [Option<Arc<BindGroup>>; 3],
+    /// The material's bind group, if its program binds anything per material.
+    pub material: Option<Arc<BindGroup>>,
+    /// The draw's bind group, if its program binds anything per draw.
+    pub draw: Option<Arc<BindGroup>>,
     /// The per-vertex attributes, if the program declares any.
     pub vertices: Option<Arc<Buffer>>,
     /// The per-instance attributes, if the program declares any.
@@ -37,7 +40,8 @@ pub struct DrawSetDesc {
 #[derive(Debug)]
 pub struct DrawSet {
     pipeline: Arc<RenderPipeline>,
-    groups: [Option<Arc<BindGroup>>; 3],
+    material: Option<Arc<BindGroup>>,
+    draw: Option<Arc<BindGroup>>,
     vertices: Option<Arc<Buffer>>,
     instances: Option<Arc<Buffer>>,
     indices: Option<(Arc<Buffer>, IndexFormat)>,
@@ -52,13 +56,14 @@ impl DrawSet {
     ///
     /// # Errors
     ///
-    /// What a pass refuses in a draw: a bind group missing for a frequency the program binds,
-    /// given for one it doesn't, or made for another pipeline; a buffer missing, unneeded, of the
-    /// wrong usage, or too small for the count; no instances.
+    /// What a pass refuses in a draw: a material or draw group missing where the program binds
+    /// one, given where it doesn't, or laid out for another program; a buffer missing, unneeded,
+    /// of the wrong usage, or too small for the count; no instances.
     pub fn new(desc: DrawSetDesc) -> Result<DrawSet, GpuError> {
         let set = DrawSet {
             pipeline: desc.pipeline,
-            groups: desc.groups,
+            material: desc.material,
+            draw: desc.draw,
             vertices: desc.vertices,
             instances: desc.instances,
             indices: desc.indices,
@@ -76,24 +81,24 @@ impl DrawSet {
         let draw = Draw {
             count,
             instance_count,
-            ..self.draw()
+            ..self.draw(None)
         };
         let problem = if instance_count == 0 {
             Some("at least one instance".to_owned())
         } else {
-            group_problem(&draw).or_else(|| buffer_problem(&draw))
+            group_problem(&draw, &[Frequency::Material, Frequency::Draw]).or_else(|| buffer_problem(&draw))
         };
         problem.map_or(Ok(()), |problem| {
             Err(GpuError::Invalid(format!("the draw set is invalid: {problem}")))
         })
     }
 
-    /// The draw it is now.
+    /// The draw it is now, in a pass whose pass group is `pass`.
     #[must_use]
-    pub fn draw(&self) -> Draw<'_> {
+    pub fn draw<'a>(&'a self, pass: Option<&'a BindGroup>) -> Draw<'a> {
         Draw {
             pipeline: &self.pipeline,
-            groups: [0, 1, 2].map(|frequency| self.groups[frequency].as_deref()),
+            groups: [pass, self.material.as_deref(), self.draw.as_deref()],
             vertices: self.vertices.as_deref(),
             instances: self.instances.as_deref(),
             indices: self.indices.as_ref().map(|(buffer, format)| (&**buffer, *format)),

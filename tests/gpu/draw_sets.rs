@@ -66,7 +66,8 @@ fn half(gpu: &Gpu, pipeline: &Arc<RenderPipeline>, right: bool, color: [f32; 4],
     let (from, to) = if right { (0.0, 1.0) } else { (-1.0, 0.0) };
     let set = DrawSet::new(DrawSetDesc {
         pipeline: pipeline.clone(),
-        groups: [None, Some(material(gpu, pipeline, color)), None],
+        material: Some(material(gpu, pipeline, color)),
+        draw: None,
         vertices: Some(vertices(
             gpu,
             &[from, -1.0, to, -1.0, from, 1.0, to, -1.0, to, 1.0, from, 1.0],
@@ -89,7 +90,7 @@ fn drawn(gpu: &Gpu, sets: &DrawSets, tag: &str) -> ([u8; 4], [u8; 4], [u8; 4]) {
         .texture(&TextureDesc::d2(SIZE, SIZE, TextureFormat::Rgba8Unorm, TextureUsage::TARGET))
         .unwrap();
     let chosen = sets.matching(&[tag.to_owned()]);
-    let draws: Vec<_> = chosen.iter().map(|set| set.draw()).collect();
+    let draws: Vec<_> = chosen.iter().map(|set| set.draw(None)).collect();
     gpu.render(
         &[Target::cleared(&color, ClearValue::Color([0.0, 0.0, 0.0, 1.0]))],
         None,
@@ -164,7 +165,8 @@ fn draw_sets_are_checked_as_draws_are() {
 
     let unbound = DrawSet::new(DrawSetDesc {
         pipeline,
-        groups: [None, None, None],
+        material: None,
+        draw: None,
         vertices: Some(vertices(&gpu, &[0.0; 6])),
         instances: None,
         indices: None,
