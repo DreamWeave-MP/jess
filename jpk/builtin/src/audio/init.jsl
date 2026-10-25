@@ -58,6 +58,127 @@ end
 --- How long `count` frames last at `rate`.
 local function seconds(count: number, rate: number): number return count / rate end
 
+-- Tempo ---------------------------------------------------------------------------------------
+
+--- From `beat` on (counted from 0 at the tempo's start), `bpm` beats a minute.
+export type TempoChange = { beat: number, bpm: number }
+
+export type TempoOptions = {
+  --- The output's frames per second.
+  rate: number,
+  --- Beats a minute from the start.
+  bpm: number,
+  --- Beats in a bar (4).
+  beatsPerBar: number?,
+  --- The frame beat 0 lands on (0).
+  start: number?,
+  --- Later tempos, in any order.
+  changes: { TempoChange }?,
+}
+
+--- A stretch of the tempo map: from `beat`, which falls `seconds` after the start, at `bpm`.
+type Segment = { beat: number, seconds: number, bpm: number }
+
+type TempoState = { rate: number, start: number, beatsPerBar: number, segments: { Segment } }
+
+local TempoMethods = {}
+TempoMethods.__index = TempoMethods
+TempoMethods.__metatable = false
+
+--- The segment `beat` falls in.
+local function segmentOfBeat(tempo: TempoState, beat: number): Segment
+  local found = tempo.segments[1]
+  for _, segment in tempo.segments do
+    if segment.beat > beat then break end
+
+    found = segment
+  end
+
+  return found
+end
+
+--- The frame `beat` lands on, to the nearest frame, halves up. Every beat's frame is worked out
+--- from the tempo map itself, never from the beat before, so nothing drifts however far in.
+function TempoMethods.frame(tempo: TempoState, beat: number): number
+  local segment = segmentOfBeat(tempo, beat)
+  local at = segment.seconds + (beat - segment.beat) * 60 / segment.bpm
+  return tempo.start + math.floor(at * tempo.rate + 0.5)
+end
+
+--- The beat at `frame`, fractional: 2.5 is halfway through the third beat.
+function TempoMethods.beat(tempo: TempoState, frame: number): number
+  local at = (frame - tempo.start) / tempo.rate
+  local found = tempo.segments[1]
+  for _, segment in tempo.segments do
+    if segment.seconds > at then break end
+
+    found = segment
+  end
+
+  return found.beat + (at - found.seconds) * found.bpm / 60
+end
+
+--- The frame of the first beat at or after `frame` that is a whole number of `every` beats
+--- from the start: the next beat with `every = 1`, the next bar with the bar's length.
+function TempoMethods.next(tempo: TempoState, frame: number, every: number): number
+  if every <= 0 then error(`a boundary comes every so many beats above 0, not {every}`, 2) end
+
+  -- Start a step early: the beat at a frame is rounded, and the boundary may be the one before.
+  local step = math.floor(TempoMethods.beat(tempo, frame) / every) - 1
+  while true do
+    local candidate = TempoMethods.frame(tempo, step * every)
+    if candidate >= frame then return candidate end
+
+    step += 1
+  end
+end
+
+--- The frame bar `bar` (from 0) starts on.
+function TempoMethods.bar(tempo: TempoState, bar: number): number
+  return TempoMethods.frame(tempo, bar * tempo.beatsPerBar)
+end
+
+--- The frame of the first bar line at or after `frame`.
+function TempoMethods.nextBar(tempo: TempoState, frame: number): number
+  return TempoMethods.next(tempo, frame, tempo.beatsPerBar)
+end
+
+local TempoMetatable = table.freeze(TempoMethods)
+
+export type Tempo = typeof(setmetatable({} :: TempoState, TempoMetatable))
+
+--- A tempo map: beats to frames and back, through tempo changes, for scheduling music on the
+--- sample clock. Musical time is the script's: the engine only ever sees frames.
+local function tempo(options: TempoOptions): Tempo
+  if not (options.rate > 0) then error(`a tempo's rate is frames per second above 0, not {options.rate}`, 2) end
+
+  local changes = table.clone(options.changes or {})
+  table.sort(changes, function(first: TempoChange, second: TempoChange): boolean return first.beat < second.beat end)
+  local segments: { Segment } = { { beat = 0, seconds = 0, bpm = options.bpm } }
+  for _, change in changes do
+    if not (change.bpm > 0) then error(`a tempo is beats a minute above 0, not {change.bpm}`, 2) end
+
+    if change.beat <= 0 then
+      segments[1].bpm = change.bpm
+      continue
+    end
+
+    local last = segments[#segments]
+    local at = last.seconds + (change.beat - last.beat) * 60 / last.bpm
+    table.insert(segments, { beat = change.beat, seconds = at, bpm = change.bpm })
+  end
+
+  if not (segments[1].bpm > 0) then error(`a tempo is beats a minute above 0, not {segments[1].bpm}`, 2) end
+
+  local state: TempoState = {
+    rate = options.rate,
+    start = options.start or 0,
+    beatsPerBar = options.beatsPerBar or 4,
+    segments = segments,
+  }
+  return setmetatable(state, TempoMetatable)
+end
+
 -- WAV -----------------------------------------------------------------------------------------
 
 --- The format a `fmt ` chunk describes. The sample size is the container's (block alignment over
@@ -220,6 +341,7 @@ return {
   processors = Native.processors,
   frames = frames,
   seconds = seconds,
+  tempo = tempo,
   readWav = readWav,
   loadWav = loadWav,
   writeWav = writeWav,

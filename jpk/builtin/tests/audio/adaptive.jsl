@@ -1,0 +1,186 @@
+--!strict
+-- An adaptive score over @jess/audio, rendered offline: stems that stay aligned while their
+-- levels follow an intensity, and a change of section on a bar line, scheduled ahead on the
+-- sample clock. The director here is a test's: a soundtrack package would own one like it.
+local audio = require '@jess/audio'
+local test = require '@jess/test'
+local expect = test.expect
+local suite = test.new()
+
+local Rate = 8000
+
+--- A mono stem of `count` frames, each `shape(frame)`.
+local function stem(count: number, shape: (number) -> number): audio.Pcm
+  local out = buffer.create(count * 4)
+  for frame = 0, count - 1 do
+    buffer.writef32(out, frame * 4, shape(frame))
+  end
+
+  return audio.pcm(out, { format = 'f32', channels = 1, rate = Rate })
+end
+
+local function sample(data: buffer, frame: number): number return buffer.readf32(data, frame * 4) end
+
+suite.describe('a tempo map', function()
+  suite.it('puts beats and bars on frames, through a tempo change, without drifting', function()
+    local tempo = audio.tempo { rate = 48000, bpm = 120, start = 100, changes = { { beat = 8, bpm = 60 } } }
+    expect(tempo:frame(0)).toBe(100)
+    expect(tempo:frame(1)).toBe(24100)
+    expect(tempo:bar(2)).toBe(192100)
+    -- After beat 8 a beat is a second.
+    expect(tempo:frame(9)).toBe(240100)
+    expect(tempo:beat(240100)).toBe(9)
+    expect(tempo:next(24101, 1)).toBe(48100)
+    expect(tempo:next(24100, 1)).toBe(24100)
+    expect(tempo:nextBar(1)).toBe(100)
+    expect(tempo:nextBar(101)).toBe(96100)
+    expect(tempo:frame(1000000)).toBe(100 + 192000 + (1000000 - 8) * 48000)
+  end)
+
+  suite.it('refuses tempos that are not one', function()
+    expect(function() audio.tempo { rate = 48000, bpm = 0 } end).toThrow 'above 0'
+    expect(function() audio.tempo { rate = 0, bpm = 120 } end).toThrow 'frames per second'
+    expect(function() audio.tempo({ rate = 48000, bpm = 120 }):next(0, 0) end).toThrow 'every so many beats'
+  end)
+end)
+
+suite.describe('a vertical score', function()
+  suite.it('keeps four stems on one timeline while their levels follow the intensity', function()
+    local context = audio.offline { rate = Rate, channels = 1 }
+    local tempo = audio.tempo { rate = Rate, bpm = 120 }
+    -- Each stem counts its own frames, so a stem a frame out of line shows in the sum.
+    local length = tempo:bar(2)
+    local count = stem(length, function(frame: number): number return frame / length end)
+    local stems: { audio.Voice } = {}
+    context:group(function()
+      for index = 1, 4 do
+        table.insert(stems, context:play(count, { at = 0, loop = true, gain = if index == 1 then 1 else 0 }))
+      end
+    end)
+
+    -- Intensity rises on the second beat: strings and percussion fade in over a beat.
+    local rise = tempo:frame(1)
+    for index = 2, 3 do
+      stems[index]:ramp('gain', 1, tempo:frame(2) - rise, rise)
+    end
+
+    local out = context:render(tempo:bar(3))
+    for _, frame in { 10, rise - 1, tempo:frame(2) + 5, length - 1, length + 77, tempo:bar(2) + 4000 } do
+      local gains = if frame < rise then 1 elseif frame >= tempo:frame(2) then 3 else nil
+      if not gains then continue end
+
+      expect(math.abs(sample(out, frame) - gains * (frame % length) / length) < 1e-5).toBe(true)
+    end
+
+    -- Silenced, the choir kept its place: it comes in on the same frame of its loop as the rest.
+    expect(stems[4]:state()).toBe 'playing'
+  end)
+end)
+
+--- A director for the test score: exploration until combat, then combat from the next bar.
+type Director = {
+  context: audio.Context,
+  tempo: audio.Tempo,
+  exploration: { audio.Voice },
+  combat: { audio.Pcm },
+  sting: audio.Pcm,
+  intensity: number,
+  fighting: boolean,
+}
+
+local function director(context: audio.Context, tempo: audio.Tempo, stems: { audio.Pcm }, combat: { audio.Pcm }, sting: audio.Pcm): Director
+  local exploration = {}
+  context:group(function()
+    for index, pcm in stems do
+      table.insert(exploration, context:play(pcm, { at = 0, loop = true, gain = if index == 1 then 1 else 0 }))
+    end
+  end)
+
+  return {
+    context = context,
+    tempo = tempo,
+    exploration = exploration,
+    combat = combat,
+    sting = sting,
+    intensity = 1,
+    fighting = false,
+  }
+end
+
+--- Raises the intensity: from the next beat, one more stem fades in over that beat.
+local function raise(score: Director)
+  if score.intensity >= #score.exploration then return end
+
+  score.intensity += 1
+  local beat = score.tempo:next(score.context:now(), 1)
+  local length = score.tempo:next(beat + 1, 1) - beat
+  score.exploration[score.intensity]:ramp('gain', 1, length, beat)
+end
+
+--- Combat from the next bar line: exploration stops on it, the sting and the combat stems start on
+--- it, all stamped for that frame now, whatever the game does before then.
+local function fight(score: Director): number
+  score.fighting = true
+  local line = score.tempo:nextBar(score.context:now())
+  score.context:group(function()
+    for _, voice in score.exploration do
+      voice:stop(line)
+    end
+
+    score.context:play(score.sting, { at = line })
+    for _, pcm in score.combat do
+      score.context:play(pcm, { at = line, loop = true })
+    end
+  end)
+
+  return line
+end
+
+--- The score for six seconds of a game that ticks `perSecond` times a second, renders up to each
+--- tick, and decides only on ticks: more intensity at 1.1 s, combat at 2.6 s.
+local function play(perSecond: number): (string, number)
+  local context = audio.offline { rate = Rate, channels = 1 }
+  local tempo = audio.tempo { rate = Rate, bpm = 120 }
+  local length = tempo:bar(2)
+  local tone = function(pitch: number): audio.Pcm
+    return stem(length, function(frame: number): number return 0.1 * math.sin(2 * math.pi * pitch * frame / Rate) end)
+  end
+
+  local score = director(context, tempo, { tone(110), tone(220), tone(330), tone(440) }, { tone(150), tone(300) }, stem(64, function(): number return 0.5 end))
+  local total = 6 * Rate
+  local chunks = {}
+  local rendered, tick, line = 0, 0, -1
+  while rendered < total do
+    local now = tick / perSecond
+    if now >= 1.1 and score.intensity == 1 then raise(score) end
+
+    if now >= 2.6 and not score.fighting then line = fight(score) end
+
+    local target = math.min(total, math.floor((tick + 1) / perSecond * Rate + 0.5))
+    table.insert(chunks, buffer.tostring(context:render(target - rendered)))
+    rendered = target
+    tick += 1
+  end
+
+  return table.concat(chunks), line
+end
+
+suite.describe('a horizontal score', function()
+  suite.it('changes section on the bar line after the request, the sting on its first frame', function()
+    local mix, line = play(60)
+    local tempo = audio.tempo { rate = Rate, bpm = 120 }
+    expect(line).toBe(tempo:bar(2))
+    local data = buffer.fromstring(mix)
+    -- The sting is a flat 0.5 under the combat stems, which start at zero phase.
+    expect(math.abs(sample(data, line) - 0.5) < 1e-6).toBe(true)
+    expect(math.abs(sample(data, line - 1)) < 0.45).toBe(true)
+  end)
+
+  suite.it('comes out the same whatever rate the game ticks at', function()
+    local slow = play(20)
+    expect(play(60) == slow).toBe(true)
+    expect(play(144) == slow).toBe(true)
+  end)
+end)
+
+return suite
