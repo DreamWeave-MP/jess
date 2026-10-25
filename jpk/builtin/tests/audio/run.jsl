@@ -299,4 +299,85 @@ suite.describe('automation', function()
   end)
 end)
 
+--- `count` frames of a sine at `frequency`, at 48000 frames per second.
+local function sine(frequency: number, count: number, level: number?): audio.Pcm
+  local values = {}
+  for frame = 0, count - 1 do
+    table.insert(values, (level or 1) * math.sin(2 * math.pi * frequency * frame / 48000))
+  end
+
+  return source(values)
+end
+
+suite.describe('effects', function()
+  suite.it('has every processor kind by name', function()
+    expect(audio.processors()).toEqual { 'gain', 'pan', 'filter', 'delay', 'compressor', 'limiter', 'reverb', 'drive' }
+  end)
+
+  suite.it('runs many voices through one shared room', function()
+    local context = audio.offline { channels = 2 }
+    local room = context:bus()
+    room:insert('reverb', { room = 0.8, wet = 0.5 })
+    local click = source { 1 }
+    for index = 1, 24 do
+      context:play(click, { at = index * 100, pan = (index % 3) - 1, sends = { { bus = room, level = 0.3 } } })
+    end
+
+    context:render(48000)
+    local tail = room:meter()
+    expect(tail.rms > 1e-4).toBe(true)
+    -- Long after the last click the room is still ringing.
+    context:render(4800)
+    expect(room:meter().peak > 1e-5).toBe(true)
+  end)
+
+  suite.it('ducks the music while the dialogue speaks', function()
+    local context = audio.offline { channels = 1 }
+    local music, dialogue = context:bus(), context:bus()
+    local ducker = music:insert('compressor', { threshold = -30, ratio = 20, knee = 0, attack = 0.001, release = 0.05 })
+    expect(ducker:listen(dialogue)).toBe(true)
+    context:play(sine(220, 96000, 0.2), { bus = music, at = 0 })
+    context:play(sine(440, 24000, 0.5), { bus = dialogue, at = 24000 })
+    context:render(24000)
+    local open = music:meter().rms
+    context:render(24000)
+    local ducked = music:meter().rms
+    -- A tenth of a second to recover, then the music is back where it was.
+    context:render(4800)
+    music:meter()
+    context:render(43200)
+    expect(ducked < open / 4).toBe(true)
+    expect(math.abs(music:meter().rms - open) < open * 0.05).toBe(true)
+    expect(function() ducker:listen(context:master()) end).toThrow 'back into itself'
+    expect(ducker:listen(nil)).toBe(true)
+  end)
+
+  suite.it('holds the master under its ceiling and filters what it is asked to', function()
+    local context = audio.offline { channels = 1 }
+    local limiter = context:master():insert('limiter', { ceiling = -6, lookahead = 0.002 })
+    expect(limiter:kind()).toBe 'limiter'
+    expect(context:master():latency()).toBe(96)
+    for _ = 1, 8 do
+      context:play(sine(300, 4800, 0.9), { at = 0 })
+    end
+
+    local out = samples(context:render(9600))
+    local ceiling = 10 ^ (-6 / 20)
+    local loudest = 0
+    for _, sample in out do
+      loudest = math.max(loudest, math.abs(sample))
+    end
+
+    expect(loudest <= ceiling + 1e-5).toBe(true)
+
+    local dark = audio.offline { channels = 1 }
+    dark:master():insert('filter', { shape = 'lowpass', frequency = 500 })
+    dark:play(sine(8000, 4800), { at = 0 })
+    dark:render(2400)
+    expect(dark:master():meter().peak < 0.05).toBe(true)
+    expect(function() dark:master():insert('filter', { shape = 'bell' }) end).toThrow 'one of lowpass'
+    expect(function() dark:master():insert('delay', { longest = 60 }) end).toThrow 'at most 10'
+  end)
+end)
+
 return suite

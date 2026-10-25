@@ -825,6 +825,19 @@ fn describe_processor(d: &mut ExtensionDescriptor) {
         )
         .untyped();
     processor
+        .method(
+            "listen",
+            |this: &LuaAudioProcessor, key: Option<ValueView<'_>>, at: Option<f64>| -> l3i::Result<bool> {
+                let key = key
+                    .filter(|key| !key.is_nil())
+                    .map(|key| bus_of(key, &this.context, "AudioProcessor:listen's bus"))
+                    .transpose()?;
+                let at = frame_option(at)?;
+                Ok(this.context.borrow_mut().control().listen(this.key, key, at)?)
+            },
+        )
+        .untyped();
+    processor
         .method("remove", |this: &LuaAudioProcessor, at: Option<f64>| -> l3i::Result<bool> {
             let at = frame_option(at)?;
             Ok(this.context.borrow_mut().control().unmount(this.key, at)?)

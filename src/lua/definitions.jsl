@@ -211,6 +211,9 @@ export type AudioProcessor = {
   set: (self: AudioProcessor, param: string, value: number, at: number?) -> boolean,
   --- Ramps a parameter to `value` over `frames` frames from `at`; it moves every 32 frames.
   ramp: (self: AudioProcessor, param: string, value: number, frames: number, at: number?, curve: AudioCurve?) -> boolean,
+  --- Listens to `bus` (its sidechain key) from `at` instead of its own bus, or to its own again
+  --- with nil. The key is mixed first; a key its own bus feeds is a loop, and an error.
+  listen: (self: AudioProcessor, bus: AudioBus?, at: number?) -> boolean,
   remove: (self: AudioProcessor, at: number?) -> boolean,
   live: (self: AudioProcessor) -> boolean,
 }
