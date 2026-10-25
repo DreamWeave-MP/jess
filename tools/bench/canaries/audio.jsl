@@ -38,7 +38,9 @@ local function around(angle: number, radius: number): vector
 end
 
 local function run(scale: number): number
-  local seconds = math.max(1, math.floor(20 * scale))
+  -- Two seconds of scene a step of scale: twenty at the harness's default, about as long a run
+  -- as the other canaries take.
+  local seconds = math.max(1, math.floor(2 * scale))
   local context = jess.audio.offline {
     rate = Rate,
     voices = 2048,
