@@ -48,3 +48,22 @@ fn without_the_feature_an_output_says_what_it_needs() {
     let error = runtime(&["audio.output"]).eval::<()>(OPEN).unwrap_err().to_string();
     assert!(error.contains("audio-device feature"), "{error}");
 }
+
+#[cfg(feature = "audio-device")]
+#[test]
+fn a_closed_output_stops_and_refuses_commands() {
+    let script = r"
+        local context = jess.audio.output { device = 'null' }
+        local click = jess.audio.pcm(buffer.create(4 * 64), { format = 'f32', channels = 1, rate = 48000 })
+        context:play(click, { loop = true })
+        context:close()
+        assert(context:device().closed)
+        context:close()
+        context:play(click)
+    ";
+    let runtime = runtime(&["audio.output"]);
+    let error = runtime.exec(script).unwrap_err().to_string();
+    assert!(error.contains("its output was closed"), "{error}");
+    let error = runtime.exec("jess.audio.offline():close()").unwrap_err().to_string();
+    assert!(error.contains("closes an output"), "{error}");
+}

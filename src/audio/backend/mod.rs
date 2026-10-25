@@ -82,18 +82,36 @@ impl DeviceEvents {
     }
 }
 
-/// A context a device renders: a [`Control`] here, its engine on the device's thread. Dropping
-/// it stops the device and waits for that thread before the engine goes.
+/// A context a device renders: a [`Control`] here, its engine on the device's thread. Closing
+/// or dropping it stops the device and waits for that thread before the engine goes.
 #[derive(Debug)]
 pub struct LiveContext {
     control: Control,
     info: DeviceInfo,
     events: Arc<DeviceEvents>,
+    /// `None` once closed.
     #[cfg(feature = "audio-device")]
-    _device: miniaudio::Device,
+    device: Option<miniaudio::Device>,
 }
 
 impl LiveContext {
+    /// Stops the device and drops the engine with every voice it held. Commands sent after it
+    /// fail with [`AudioError::Disconnected`]; what the control side knows (the clock, the
+    /// buses) stays readable, frozen where the device left it.
+    pub fn close(&mut self) {
+        #[cfg(feature = "audio-device")]
+        self.device.take();
+    }
+
+    /// True once [`LiveContext::close`] has run.
+    #[must_use]
+    pub const fn is_closed(&self) -> bool {
+        #[cfg(feature = "audio-device")]
+        return self.device.is_none();
+        #[cfg(not(feature = "audio-device"))]
+        true
+    }
+
     /// The control side, to play and schedule on.
     pub const fn control(&mut self) -> &mut Control {
         &mut self.control
@@ -161,6 +179,15 @@ mod tests {
         }
         assert_eq!(live.control().state(voice), VoiceState::Ended);
         assert!(!live.stats().failed);
+        assert!(!live.is_closed());
+        live.close();
+        assert!(live.is_closed());
+        let now = live.control().now();
+        assert_eq!(
+            live.control().play(&click, &PlaySpec::default()),
+            Err(AudioError::Disconnected)
+        );
+        assert_eq!(live.control().now(), now, "a closed output's clock stands still");
         drop(live);
     }
 }

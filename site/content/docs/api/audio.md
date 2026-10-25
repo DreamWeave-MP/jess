@@ -86,11 +86,17 @@ A context the script renders. Defaults: 48000 frames per second, 2 channels, 256
 
 A context an output device renders: the platform's default output, or with `device = 'null'` the null device, which plays to nowhere in real time (for tests, and machines with no sound). It takes a context's options, runs at the device's own rate unless `rate` asks for another, and asks for `period` frames at a time as a hint. Everything else is the same as an offline context, except `render`, which is the device's: the script plays into it and the device's thread mixes as time passes, whether or not the script is running.
 
-An output needs the `audio.output` capability, and a jess built with the `audio-device` feature; without the feature it says so. An offline context needs neither. Dropping the context stops the device, and so does the end of the generation of the script that opened it.
+An output needs the `audio.output` capability, and a jess built with the `audio-device` feature; without the feature it says so. An offline context needs neither.
+
+An output plays until it is closed or the runtime that opened it ends, whether or not the script still holds it: music started from a function that returned keeps playing after its handles are collected. A domain's restart ends its runtime, and with it every output that generation opened.
+
+{{ api_signature(value="context:close()") }}
+
+Stops an output's device and drops every voice it played. Commands after it are errors; `now` and the rest of what the context knows stay readable, frozen where the device left them. Closing twice is nothing, and an offline context has nothing to close: it goes when nothing holds it.
 
 {{ api_signature(value="context:device() -> AudioDevice?") }}
 
-The device rendering an output, or nil for an offline context: its `backend` (the platform API, such as `PulseAudio`, `WASAPI`, `Core Audio`, or `Null`), `rate`, `channels`, the frames it asks for at a time (`period`) and how many it buffers (`periods`), `latency` (about how many frames what you hear lags `now`), and what has happened to it: `stopped`, `rerouted` to a new default device, `interrupted` by the system, and whether the engine `failed` on its thread.
+The device rendering an output, or nil for an offline context: its `backend` (the platform API, such as `PulseAudio`, `WASAPI`, `Core Audio`, or `Null`), `rate`, `channels`, the frames it asks for at a time (`period`) and how many it buffers (`periods`), `latency` (about how many frames what you hear lags `now`), and what has happened to it: `stopped`, `rerouted` to a new default device, `interrupted` by the system, whether the engine `failed` on its thread, and whether the output was `closed`.
 
 See [Audio Engine](@/docs/contributing/audio-engine.md) for how the device and the engine meet.
 

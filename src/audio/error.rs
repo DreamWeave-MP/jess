@@ -145,7 +145,7 @@ impl fmt::Display for AudioError {
                 f,
                 "the audio command queue is full ({capacity} commands): the engine is behind or not running"
             ),
-            AudioError::Disconnected => f.write_str("the audio engine is gone"),
+            AudioError::Disconnected => f.write_str("the audio engine is gone: its output was closed"),
             AudioError::StaleVoice => f.write_str("the voice has ended or belongs to another context"),
             AudioError::StaleBus => f.write_str("the bus was removed or belongs to another context"),
             AudioError::BusesExhausted(buses) => write!(f, "all {buses} buses are in use"),

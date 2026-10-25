@@ -115,6 +115,20 @@ impl Context {
 
 type Shared = Rc<RefCell<Context>>;
 
+/// The outputs a runtime opened. Each plays until the script closes it or the runtime ends,
+/// whether or not the script still holds it: a sound doesn't stop because its handles were
+/// collected, and a domain's restart, which drops its runtime, stops every output it opened.
+#[derive(Default)]
+pub struct Outputs(RefCell<Vec<Shared>>);
+
+impl Outputs {
+    fn hold(&self, context: &Shared) {
+        let mut outputs = self.0.borrow_mut();
+        outputs.retain(|output| !matches!(&*output.borrow(), Context::Live(live) if live.is_closed()));
+        outputs.push(Rc::clone(context));
+    }
+}
+
 /// A stream: audio written while it plays.
 #[derive(Clone)]
 pub struct LuaAudioStream(Arc<Stream>);
@@ -503,7 +517,9 @@ fn output(jess: &Jess, call: &Call<'_>, options: Option<ValueView<'_>>) -> l3i::
     guard(jess, FUNCTION, crate::audio::capability::OUTPUT)?;
     let (config, request) = context_config(call, options, FUNCTION, OUTPUT_KEYS)?;
     let live = request.open(&config)?;
-    Ok(Owned(LuaAudioContext(Rc::new(RefCell::new(Context::Live(Box::new(live)))))))
+    let context = Rc::new(RefCell::new(Context::Live(Box::new(live))));
+    jess.outputs.hold(&context);
+    Ok(Owned(LuaAudioContext(context)))
 }
 
 /// A context's options, and for an output the device's: its rate (the device's own unless given),
@@ -875,8 +891,8 @@ fn describe_context(d: &mut ExtensionDescriptor) {
                     call.push(&())?;
                     return Ok(StackResults);
                 };
-                let (info, stats) = (live.info().clone(), live.stats());
-                push_table(call, 0, 10, |frame, table| {
+                let (info, stats, closed) = (live.info().clone(), live.stats(), live.is_closed());
+                push_table(call, 0, 11, |frame, table| {
                     table.raw_set_value(frame, "backend", info.backend.as_str())?;
                     table.raw_set_value(frame, "rate", &f64::from(info.rate))?;
                     table.raw_set_value(frame, "channels", &number(info.channels as u64))?;
@@ -886,11 +902,23 @@ fn describe_context(d: &mut ExtensionDescriptor) {
                     table.raw_set_value(frame, "stopped", &number(stats.stopped))?;
                     table.raw_set_value(frame, "rerouted", &number(stats.rerouted))?;
                     table.raw_set_value(frame, "interrupted", &number(stats.interrupted))?;
-                    table.raw_set_value(frame, "failed", &stats.failed)
+                    table.raw_set_value(frame, "failed", &stats.failed)?;
+                    table.raw_set_value(frame, "closed", &closed)
                 })?;
                 Ok(StackResults)
             },
         )
+        .untyped();
+    context
+        .method("close", |this: &LuaAudioContext| -> l3i::Result<()> {
+            let Context::Live(live) = &mut *this.0.borrow_mut() else {
+                return Err(error(
+                    "AudioContext:close closes an output; an offline context goes when nothing holds it",
+                ));
+            };
+            live.close();
+            Ok(())
+        })
         .untyped();
     context
         .method("room", |this: &LuaAudioContext| {

@@ -249,7 +249,8 @@ export type AudioOutputOptions = AudioContextOptions & { device: ('default' | 'n
 --- An output device: the platform API it plays through, its rate and channels, the frames it
 --- asks for at a time and how many periods it buffers (`latency`, about, in frames, is how far
 --- what you hear lags `now`), and what has happened to it: `stopped`, `rerouted` to a new default
---- device, `interrupted` by the system, and whether the engine `failed` on its thread.
+--- device, `interrupted` by the system, whether the engine `failed` on its thread, and whether
+--- the output was `closed`.
 export type AudioDevice = {
   backend: string,
   rate: number,
@@ -261,6 +262,7 @@ export type AudioDevice = {
   rerouted: number,
   interrupted: number,
   failed: boolean,
+  closed: boolean,
 }
 
 --- Where the listener is and which way it faces; any field left out stays as it was.
@@ -383,6 +385,9 @@ export type AudioContext = {
   listener: (self: AudioContext, listener: AudioListener, at: number?) -> (),
   --- The device rendering an output, or nil for an offline context.
   device: (self: AudioContext) -> AudioDevice?,
+  --- Stops an output's device and drops every voice it played; commands after it are errors.
+  --- An output plays until it is closed or its runtime ends, held or not.
+  close: (self: AudioContext) -> (),
   --- How many more commands the queue to the engine has room for.
   room: (self: AudioContext) -> number,
   --- Runs `body`, and sends every command it makes to the engine together: ones not stamped for

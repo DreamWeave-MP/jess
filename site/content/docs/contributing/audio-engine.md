@@ -78,7 +78,7 @@ Why miniaudio, and only its device layer:
 
 The cost is jess's first build script and C compile, behind the feature. The default build stays headless.
 
-A live context belongs to whatever owns the Luau runtime that opened it. A domain restart drops its runtime and so its contexts, stopping their devices.
+A live context belongs to the Luau runtime that opened it, not to the script's handles: the runtime's jess state holds every output it opened until the script closes it, so a garbage collection never stops a sound. A domain restart drops its runtime and so its outputs, stopping their devices; closing one drops its engine on the spot, and the commands sent after find the engine gone.
 
 ## What is deliberately left
 

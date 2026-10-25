@@ -225,6 +225,8 @@ pub(crate) struct Jess {
     /// Every capability the runtime's plan grants: what [`guard`] allows, and `jess.granted`
     /// answers, outside a domain.
     pub(crate) granted: Vec<String>,
+    /// The audio outputs the runtime opened, which play until closed or the runtime ends.
+    pub(crate) outputs: audio::Outputs,
 }
 
 impl Jess {

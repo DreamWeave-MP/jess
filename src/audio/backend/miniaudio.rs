@@ -182,6 +182,6 @@ pub fn open(request: &DeviceRequest, config: &AudioConfig) -> Result<LiveContext
         control,
         info,
         events,
-        _device: device,
+        device: Some(device),
     })
 }
