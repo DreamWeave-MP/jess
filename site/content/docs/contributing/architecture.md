@@ -13,6 +13,7 @@ jess is one crate, `jess`, with a library and the `jess` binary. Rust owns opera
 | `src/runtime` | `ScriptDomain`: lifecycle and generation, contexts and phases, capabilities, workers, ownership teardown, diagnostics, profiling. Ignorant of GUI and application identity. |
 | `src/host` | The headless application kernel: a `ScriptDomain` joined to live input, advancing frames. No window, renderer, or GUI. |
 | `src/input` | Device and control vocabulary, action graph compilation, the evaluator, synthetic input, and the optional platform backends (features `linux-evdev`, `gilrs`). Input policy is Luau, `@jess/input`. |
+| `src/audio` | The audio engine: voices, buses, and processors mixed on a sample clock by frame-stamped commands, offline or on an output device (feature `audio-device`, on by default). Audio policy is Luau, `@jess/audio`. See [Audio Engine](@/docs/contributing/audio-engine.md). |
 | `src/render` | The backend-independent render graph IR. Not a renderer. |
 | `src/shader` | The typed shader IR, validation, deterministic WGSL lowering. |
 | `src/lua` | The l3i extension plan: everything Luau sees. `stdlib/` holds the built-in Luau (`@jess/log`, `@jess/test`, `@jess/jpk`, `@jess/package`, and the private package bootstrap); `templates/` is `jess init`'s; `definitions.jsl` feeds `jess luau-types`. |
@@ -21,7 +22,7 @@ jess is one crate, `jess`, with a library and the `jess` binary. Rust owns opera
 | `tools/bench`, `tools/site`, `tools/dev` | The benchmark harness, the two command targets that build this site, and the no-LTO development script. |
 | `tests/` | The integration test binaries; see [Building and Testing](@/docs/contributing/building-and-testing.md). |
 
-The crate depends on [l3i](https://DreamWeave-MP.github.io/l3i/) for the Luau VM, the binder, the native code generator, and the `@dream/*` primitives (bytes, files, processes, the network, text), on clap for the command line, and on serde for the documents the binary prints. That is the whole native stack.
+The crate depends on [l3i](https://DreamWeave-MP.github.io/l3i/) for the Luau VM, the binder, the native code generator, and the `@dream/*` primitives (bytes, files, processes, the network, text), on clap for the command line, on serde for the documents the binary prints, and on miniaudio's device layer, vendored, for sound out. That is the whole native stack.
 
 ## What moves between the layers
 
