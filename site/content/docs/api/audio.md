@@ -137,15 +137,39 @@ Removes the bus. It has to be quiet first: a voice playing or sending into it, o
 
 Puts a processor of `kind` in the bus's chain, last or at `index` (from 1), made with `settings`: its parameters by name, and whatever the kind is made with. A bus runs up to 16. `audio.processors()` lists the kinds:
 
-| Kind | Parameters | Does |
-| --- | --- | --- |
-| `gain` | `gain` (-64 to 64, 1) | Multiplies the bus: a trim before the rest of the chain |
+| Kind | Made with | Parameters (range, default) | Does |
+| --- | --- | --- | --- |
+| `gain` | | `gain` (-64 to 64, 1) | Multiplies the bus: a trim before the rest of the chain |
+| `pan` | | `pan` (-1 to 1, 0) | Balances a stereo bus; on any other it does nothing |
+| `filter` | `shape`: `lowpass` (the default), `highpass`, `bandpass`, `notch`, `peak`, `lowshelf`, `highshelf`, `allpass` | `frequency` (Hz, 1000), `q` (0.025 to 40, 0.707), `gain` (dB, -48 to 48, 0; the peak and shelves) | One biquad from the audio EQ cookbook. A parametric EQ is a chain of `peak` filters |
+| `delay` | `longest`: seconds, up to 10 (2) | `time` (seconds, 0.25), `feedback` (-0.99 to 0.99, 0.3), `mix` (0 dry to 1 wet, 0.5) | Echoes. A time past `longest` plays at `longest` |
+| `compressor` | | `threshold` (dB, -80 to 0, -20), `ratio` (1 to 50, 4), `attack` (seconds, 0.005), `release` (seconds, 0.1), `knee` (dB, 0 to 24, 6), `makeup` (dB, -24 to 24, 0) | Turns down what goes over the threshold, following its own bus or the one it `listen`s to |
+| `limiter` | `lookahead`: seconds, up to 0.05 (0.005) | `ceiling` (dB, -24 to 0, -0.3), `release` (seconds, 0.05) | Keeps every sample at or under the ceiling, turning down before a peak arrives; its lookahead is its latency |
+| `reverb` | | `room` (0 to 1, 0.5), `damping` (0 to 1, 0.5), `wet` (0 to 1, 0.3), `dry` (0 to 1, 0), `width` (0 to 1, 1) | A room, after Jezar's public-domain Freeverb: eight damped combs and four allpasses a side. With `dry` at 0 it suits a bus voices send to |
+| `drive` | | `drive` (dB, 0 to 48, 12), `level` (dB, -48 to 12, -6), `mix` (0 to 1, 1) | Saturation: a hyperbolic tangent that rounds off where the signal would clip |
+
+A processor's tail is how long it keeps sounding once its input stops: a delay until its echoes have died to -60 dB, a reverb until its longest comb has, a limiter its lookahead. A removed bus runs that long before it goes.
 
 {{ api_signature(value="processor:set(param: string, value: number, at: number?) -> boolean") }}
 {{ api_signature(value="processor:ramp(param: string, value: number, frames: number, at: number?, curve: ('linear' | 'exponential')?) -> boolean") }}
+{{ api_signature(value="processor:listen(bus: AudioBus?, at: number?) -> boolean") }}
 {{ api_signature(value="processor:remove(at: number?) -> boolean") }}
 {{ api_signature(value="processor:kind() -> string") }}
 {{ api_signature(value="processor:live() -> boolean") }}
+
+`listen` gives a processor a sidechain: it hears `bus` as it leaves that bus, after its gain, instead of its own input, and still processes its own. A compressor on the music listening to the dialogue bus ducks the music whenever anyone speaks:
+
+```luau
+--!strict
+local audio = require '@jess/audio'
+
+local context = audio.offline()
+local music, dialogue = context:bus(), context:bus()
+local ducker = music:insert('compressor', { threshold = -30, ratio = 8, release = 0.25 })
+ducker:listen(dialogue)
+```
+
+The bus a processor listens to is mixed before the processor's own, so listening to a bus that the processor's bus feeds (its parent, say) would be a loop, and is refused. A bus being listened to can't be removed until nothing listens. `listen(nil)` goes back to the processor's own input.
 
 A name the processor doesn't have, or a value outside its range, is an error naming what it does take. A processor's parameters ramp in steps of 32 frames rather than every frame: while one ramps, the engine mixes in blocks of 32 and tells the processor where the ramp has got to at the start of each.
 
