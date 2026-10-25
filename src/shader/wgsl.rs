@@ -367,6 +367,7 @@ impl Lowering<'_> {
                 self.call(function.name(), &arguments, splat);
             }
             Expression::Construct { target, components } => self.call(wgsl_type(target), &components, None),
+            Expression::Convert { target, value } => self.call(wgsl_type(target), &[value], None),
             Expression::Swizzle { vector, swizzle } => {
                 self.operand(vector);
                 emit!(self, ".{swizzle}");

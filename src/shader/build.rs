@@ -536,6 +536,21 @@ impl Site<'_> {
         self.operation(expression, components)
     }
 
+    /// `value` as `target`, a scalar or vector type of the same size: `Float(index)`.
+    ///
+    /// # Errors
+    ///
+    /// A value from another program, or a matrix, or a value whose size isn't the target's.
+    pub fn convert(&mut self, target: Type, value: Value) -> Result<Value, ValidationError> {
+        self.operation(
+            Expression::Convert {
+                target,
+                value: value.expression,
+            },
+            &[value],
+        )
+    }
+
     /// Components read from a vector: `.w`, `.xyz`, `.zyx`.
     ///
     /// # Errors

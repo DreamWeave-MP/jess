@@ -284,13 +284,15 @@ A `ShaderType` is what attributes and bindings declare, and `tostring` gives its
 | [shader.struct](#shader-struct)`(...)` | its name | A uniform member, a field, or an element. |
 | [shader.array](#shader-array)`(...)` | `Element[length]` | A uniform member or a field. |
 
-The vector types, `float`, `int`, and `uint` are also constructors, inside a stage function:
+The value types are also constructors, inside a stage function:
 
 {{ api_signature(value="shader.vec4(...: ShaderExpr | number) -> ShaderExpr") }}
 
 - `shader.vec2`, `shader.vec3`, `shader.vec4` take floats and smaller vectors whose sizes add up to theirs (`shader.vec4(position, 1)`, `shader.vec4(uv, 0, 1)`), or one `Float` to repeat (`shader.vec3(0.5)`). The integer vectors take integers the same way, and a number among them is that vector's integer: `shader.vec3i(1, -2, 3)`, `shader.vec2u(shader.uint(1))`. A number that isn't whole, or is out of range, fails: `shader.vec3i: 1.5 is not an Int: expected a whole number from -2147483648 to 2147483647`.
 - `shader.float(0.25)` is a `Float` constant, for when a bare number has nothing beside it to make it one, and `shader.int(-3)` and `shader.uint(7)` are the integer constants.
-- The matrices can't be constructed yet: `Mat4f(Float) is invalid: expected a vector target`. Nor can a texture, a sampler, a struct, or an array: `Camera can't be constructed: it is declared, and read from the input`.
+- One value of another scalar converts, keeping its size: `shader.float(index)` is a `UInt` index as a `Float`, `shader.vec3(cell)` a `Vec3u` as a `Vec3f`, and `shader.vec3i(cell)` the same cell signed. A float converts to an integer by truncating toward zero. A conversion never changes the size: `shader.float(tint)` fails with `Float(Vec4f) is invalid: expected a scalar or vector of the same size`; take a component first.
+- `shader.mat3` and `shader.mat4` take their columns: `shader.mat3(right, up, forward)`, three `Vec3f`s. Anything else fails: `Mat4f(Float) is invalid: expected four Vec4f columns`.
+- A texture, a sampler, a struct, or an array can't be constructed: `Camera can't be constructed: it is declared, and read from the input`.
 
 ```luau
 --!strict
@@ -301,11 +303,13 @@ print(shader.struct('Fog', { density = shader.float }), shader.array(shader.vec4
 -- Fog  Vec4f[8]
 
 shader.program {
-  attributes = { position = shader.vec3, uv = shader.vec2 },
+  attributes = { cell = shader.vec3u, position = shader.vec3, uv = shader.vec2 },
   vertex = function(input)
     local vertex = input.attributes
     print(shader.vec4(vertex.position, 1), shader.vec4(vertex.uv, 0, 1), shader.vec3(0.5))
     print(shader.vec3i(1, -2, 3), shader.uint(7), shader.vec2u(shader.uint(1)).yx)
+    print(shader.vec3(vertex.cell), shader.float(vertex.cell.x))
+    print(shader.mat3(vertex.position, shader.vec3(0, 1, 0), shader.vec3(0, 0, 1)))
 
     return { position = shader.vec4(vertex.position, 1) }
   end,
@@ -314,6 +318,8 @@ shader.program {
 }
 -- ShaderExpr(Vec4f)  ShaderExpr(Vec4f)  ShaderExpr(Vec3f)
 -- ShaderExpr(Vec3i)  ShaderExpr(UInt)  ShaderExpr(Vec2u)
+-- ShaderExpr(Vec3f)  ShaderExpr(Float)
+-- ShaderExpr(Mat3f)
 ```
 
 ## Functions

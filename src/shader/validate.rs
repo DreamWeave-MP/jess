@@ -925,7 +925,7 @@ fn infer_types(
 }
 
 /// What a vector constructor's target must be.
-pub const CONSTRUCT_TARGET: &str = "a vector target";
+pub const CONSTRUCT_TARGET: &str = "a vector or matrix target";
 const ARITHMETIC: &str = "two values of the same numeric type, or a vector and a scalar of its kind";
 const ADD_SUBTRACT: &str =
     "two values of the same numeric type, a vector and a scalar of its kind, or two matrices of the same size";
@@ -1110,7 +1110,7 @@ pub fn constant_out_of_range(
     Ok(())
 }
 
-/// What a vector constructor of `target` accepts; `None` when `target` is not a vector.
+/// What a constructor of `target` accepts; `None` when `target` is a scalar.
 pub fn construct_expected(target: Type) -> Option<&'static str> {
     match target {
         Type::Vec2f => Some("floats and float vectors adding up to 2 components, or one Float"),
@@ -1122,6 +1122,8 @@ pub fn construct_expected(target: Type) -> Option<&'static str> {
         Type::Vec2u => Some("UInts and UInt vectors adding up to 2 components, or one UInt"),
         Type::Vec3u => Some("UInts and UInt vectors adding up to 3 components, or one UInt"),
         Type::Vec4u => Some("UInts and UInt vectors adding up to 4 components, or one UInt"),
+        Type::Mat3f => Some("three Vec3f columns"),
+        Type::Mat4f => Some("four Vec4f columns"),
         _ => None,
     }
 }
@@ -1211,6 +1213,12 @@ pub fn operation_type(id: ExpressionId, expression: &Expression, operands: &[Typ
         }
         Expression::Construct { target, .. } => {
             let expected = construct_expected(target).ok_or_else(|| invalid(CONSTRUCT_TARGET))?;
+            if let Some(column) = target.column() {
+                if operands.len() != usize::from(column.components()) || operands.iter().any(|operand| *operand != column) {
+                    return Err(invalid(expected));
+                }
+                return Ok(target);
+            }
             let splat = operands.len() == 1 && Some(operands[0]) == target.component();
             let of_its_kind = operands
                 .iter()
@@ -1218,6 +1226,13 @@ pub fn operation_type(id: ExpressionId, expression: &Expression, operands: &[Typ
             let size: u8 = operands.iter().map(|operand| operand.components()).sum();
             if !splat && (!of_its_kind || size != target.components()) {
                 return Err(invalid(expected));
+            }
+            target
+        }
+        Expression::Convert { target, .. } => {
+            let value = operands[0];
+            if target.is_matrix() || value.is_matrix() || target.components() != value.components() {
+                return Err(invalid("a scalar or vector of the same size"));
             }
             target
         }

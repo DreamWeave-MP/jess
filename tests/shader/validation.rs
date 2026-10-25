@@ -496,7 +496,7 @@ fn operand_rules_are_checked() {
         Expression::call(Function::Floor, &[integer]).unwrap(),
         Expression::call(Function::Normalize, &[scalar]).unwrap(),
         Expression::construct(Type::Vec4f, &[triple, pair]).unwrap(),
-        Expression::construct(Type::Mat3f, &[triple, triple, triple]).unwrap(),
+        Expression::construct(Type::Float, &[triple]).unwrap(),
         Expression::Swizzle {
             vector: pair,
             swizzle: Swizzle::parse("xyz").unwrap(),
@@ -528,7 +528,7 @@ fn operand_rules_are_checked() {
             "floor(Int) is invalid: expected a Float or float vector",
             "normalize(Float) is invalid: expected a float vector",
             "Vec4f(Vec3f, Vec2f) is invalid: expected floats and float vectors adding up to 4 components, or one Float",
-            "Mat3f(Vec3f, Vec3f, Vec3f) is invalid: expected a vector target",
+            "Float(Vec3f) is invalid: expected a vector or matrix target",
             "Vec2f.xyz is invalid: expected components a Vec2f has",
             "Float.x is invalid: expected components a Float has",
         ]

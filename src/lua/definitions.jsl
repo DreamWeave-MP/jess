@@ -522,8 +522,10 @@ export type AudioContext = {
 --- bindings declare (`tint = shader.vec4`). Called, the vector types build a vector from values
 --- and numbers whose sizes add up to theirs, or from one number repeated
 --- (`shader.vec4(position, 1)`); a number in an integer vector is that vector's integer, and must
---- be whole. `shader.float(0.5)`, `shader.int(-3)`, and `shader.uint(7)` are constants; the other
---- types can't be constructed. `tostring` gives the type's name (`Vec4f`, `Light`, `Light[8]`).
+--- be whole. `shader.float(0.5)`, `shader.int(-3)`, and `shader.uint(7)` are constants. One value of
+--- another scalar converts (`shader.float(index)`, `shader.vec3(cell)`), keeping its size;
+--- `shader.mat3` and `shader.mat4` take their columns. The other types can't be constructed.
+--- `tostring` gives the type's name (`Vec4f`, `Light`, `Light[8]`).
 declare extern type ShaderType with
   __call: (self: ShaderType, ...ShaderExpr | number) -> ShaderExpr
   __tostring: (self: ShaderType) -> string

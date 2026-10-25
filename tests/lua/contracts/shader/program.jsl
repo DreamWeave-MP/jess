@@ -94,6 +94,12 @@ local lit = shader.program {
         dot = tostring(shader.dot(shader.vec3i(1), shader.vec3i(2))),
         swizzle = tostring(shader.vec4u(1, 2, 3, 4).wx),
       },
+      conversions = {
+        scalar = tostring(shader.float(input.attributes.light)),
+        vector = tostring(shader.vec4(input.instance.shade)),
+        signed = tostring(shader.vec4i(input.instance.shade)),
+        columns = tostring(shader.mat3(camera.position, input.attributes.normal, camera.position)),
+      },
     }
 
     return {

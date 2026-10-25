@@ -165,6 +165,10 @@ fn fold(expressions: &[Expression], types: &[Option<Type>], expression: &Express
     };
 
     if let Expression::Construct { components, .. } = expression {
+        // Only a float vector folds: a matrix's columns would not fit, and integers stay as written.
+        if !ty.is_float_vector() {
+            return None;
+        }
         let mut values = [0.0f32; 4];
         let mut size = 0;
         for &component in components.iter() {

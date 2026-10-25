@@ -159,6 +159,12 @@
     "vertex": {
       "attributes": "ShaderAttributes(attributes)",
       "clip": "ShaderExpr(Vec4f)",
+      "conversions": {
+        "columns": "ShaderExpr(Mat3f)",
+        "scalar": "ShaderExpr(Float)",
+        "signed": "ShaderExpr(Vec4i)",
+        "vector": "ShaderExpr(Vec4f)"
+      },
       "differentValues": false,
       "input": "ShaderInput(vertex)",
       "instance": "ShaderAttributes(instance)",

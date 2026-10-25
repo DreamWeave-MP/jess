@@ -533,13 +533,20 @@ pub enum Expression {
         /// Its arguments, as many as [`Function::arity`].
         arguments: Operands,
     },
-    /// A float vector from floats and smaller vectors whose sizes add up to the target's, or
-    /// from one float repeated.
+    /// A vector from scalars and smaller vectors of its scalar whose sizes add up to its, or from
+    /// one scalar repeated; or a matrix from its columns.
     Construct {
-        /// `Vec2f`, `Vec3f`, or `Vec4f`.
+        /// A vector or matrix type.
         target: Type,
         /// The components, in order.
         components: Operands,
+    },
+    /// A scalar or vector as `target`, a type of the same size: `f32(index)`.
+    Convert {
+        /// The type converted to.
+        target: Type,
+        /// The value.
+        value: ExpressionId,
     },
     /// Components read from a vector.
     Swizzle {
@@ -570,7 +577,7 @@ impl Expression {
             Expression::Literal(_) | Expression::Attribute(_) | Expression::Varying(_) => &[],
             Expression::Load(place) => return place.indices(),
             Expression::Sample { coordinates, .. } => &[*coordinates],
-            Expression::Unary(_, value) => &[*value],
+            Expression::Unary(_, value) | Expression::Convert { value, .. } => &[*value],
             Expression::Binary(_, left, right) => &[*left, *right],
             Expression::Select {
                 condition,
@@ -590,7 +597,7 @@ impl Expression {
             Expression::Literal(_) | Expression::Attribute(_) | Expression::Varying(_) => {}
             Expression::Load(place) => place.rewrite_indices(rewrite),
             Expression::Sample { coordinates, .. } => rewrite(coordinates),
-            Expression::Unary(_, value) => rewrite(value),
+            Expression::Unary(_, value) | Expression::Convert { value, .. } => rewrite(value),
             Expression::Binary(_, left, right) => {
                 rewrite(left);
                 rewrite(right);
@@ -635,7 +642,7 @@ impl Expression {
             Expression::Binary(operator, ..) => operator.name(),
             Expression::Select { .. } => "select",
             Expression::Call { function, .. } => function.name(),
-            Expression::Construct { target, .. } => target.name(),
+            Expression::Construct { target, .. } | Expression::Convert { target, .. } => target.name(),
             Expression::Swizzle { .. } => "swizzle",
         }
     }

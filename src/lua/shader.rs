@@ -718,8 +718,9 @@ fn descriptor_name(ty: Type) -> &'static str {
         .map_or("type", |(name, _)| name)
 }
 
-/// `shader.vec4(...)` and the other value types called: a vector from values and numbers, or
-/// `shader.float(number)`, a `Float` literal. The other types say they can't be constructed.
+/// `shader.vec4(...)` and the other value types called: a vector from values and numbers, a matrix
+/// from its columns, `shader.float(number)`, a `Float` literal, or one value of another scalar,
+/// converted. The other types say they can't be constructed.
 fn construct(this: &LuaShaderType, call: &Call<'_>, args: ArgView<'_>) -> l3i::Result<Owned<LuaShaderExpr>> {
     let Descriptor::Value(ty) = this.descriptor else {
         return Err(error(format!(
@@ -742,6 +743,14 @@ fn construct(this: &LuaShaderType, call: &Call<'_>, args: ArgView<'_>) -> l3i::R
             .iter()
             .map(|view| operand_of(site, &operation, *view, scalar))
             .collect::<l3i::Result<Vec<Value>>>()?;
+        // One value of another scalar converts: `shader.float(index)`, `shader.vec3(cell)`.
+        if let [only] = components.as_slice() {
+            let other = only.ty();
+            let converts = other != ty && other.components() == ty.components() && other.scalar() != ty.scalar();
+            if ty.is_scalar() || converts {
+                return site.convert(ty, *only).map_err(invalid);
+            }
+        }
         site.construct(ty, &components).map_err(invalid)
     })?;
     Ok(expression(&build, value))

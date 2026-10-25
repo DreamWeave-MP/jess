@@ -4,6 +4,7 @@
 mod bindings;
 mod builder;
 mod common;
+mod conversions;
 mod folding;
 mod integers;
 mod layout;

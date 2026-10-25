@@ -261,9 +261,7 @@ fn every_operation_is_typed_at_its_site() {
         site.construct(Type::Vec4f, &[scalar, scalar, scalar, scalar, scalar])
             .unwrap_err()
             .to_string(),
-        site.construct(Type::Mat3f, &[triple, triple, triple])
-            .unwrap_err()
-            .to_string(),
+        site.construct(Type::Mat3f, &[triple, triple]).unwrap_err().to_string(),
         site.swizzle(pair, Swizzle::parse("xyz").unwrap()).unwrap_err().to_string(),
         site.swizzle(scalar, Swizzle::parse("x").unwrap()).unwrap_err().to_string(),
     ];
@@ -283,7 +281,7 @@ fn every_operation_is_typed_at_its_site() {
         "Vec4f(Vec3f, Vec2f) is invalid: expected floats and float vectors adding up to 4 components, or one Float",
         "Vec4f(Float, Float, Float, Float, Float) is invalid: expected floats and float vectors adding up to 4 \
          components, or one Float",
-        "Mat3f(Vec3f, Vec3f, Vec3f) is invalid: expected a vector target",
+        "Mat3f(Vec3f, Vec3f) is invalid: expected three Vec3f columns",
         "Vec2f.xyz is invalid: expected components a Vec2f has",
         "Float.x is invalid: expected components a Float has",
     ];
