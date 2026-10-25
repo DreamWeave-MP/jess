@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use crate::audio::processor::{Block, Gain, ParamInfo, Processor, Tail};
 use crate::audio::{
-    AudioConfig, AudioError, BusKey, BusParam, BusSpec, LoopRegion, OfflineContext, Pcm, PlaySpec, QUANTUM, Tap, VoiceParam,
-    VoiceSend, VoiceState,
+    AudioConfig, AudioError, BusKey, BusParam, BusSpec, LoopRegion, Meter, OfflineContext, Pcm, PlaySpec, QUANTUM, Tap,
+    VoiceParam, VoiceSend, VoiceState,
 };
 
 /// Counts allocations and frees on a thread while it is armed, so a test can prove the render
@@ -638,4 +638,20 @@ fn latency_adds_up_along_the_longest_path_to_each_bus() {
     assert_eq!(context.control().latency(BusKey::MASTER), Ok(15));
     context.control().unmount(late, None).unwrap();
     assert_eq!(context.control().latency(BusKey::MASTER), Ok(10));
+}
+
+#[test]
+fn a_meter_reads_what_its_bus_put_out_since_it_was_last_read() {
+    let ramp = pcm(&[0.5, -1.0, 0.5, -1.0], 48_000);
+    let mut context = mono(AudioConfig::default());
+    let group = bus(&mut context, BusKey::MASTER, 0.5);
+    context.control().play(&ramp, &into(group, 0)).unwrap();
+    context.render(4);
+    let meter = context.control().meter(group).unwrap();
+    assert_eq!(meter.peak, 0.5);
+    // Samples of 0.25 and 0.5 after the gain: the root of their mean square.
+    assert!((meter.rms - (0.15625f32).sqrt()).abs() < 1e-6, "{}", meter.rms);
+    assert_eq!(context.control().meter(BusKey::MASTER).unwrap().peak, 0.5);
+    context.render(4);
+    assert_eq!(context.control().meter(group).unwrap(), Meter { peak: 0.0, rms: 0.0 });
 }

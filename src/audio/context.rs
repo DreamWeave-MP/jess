@@ -86,6 +86,15 @@ pub struct AudioStats {
     pub pending: u64,
 }
 
+/// A bus's level over a stretch of output: the peak sample's magnitude and the RMS, linear.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct Meter {
+    /// The largest sample's magnitude.
+    pub peak: f32,
+    /// The root mean square of every sample.
+    pub rms: f32,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Slot {
     generation: u32,
@@ -167,7 +176,7 @@ pub fn context(config: &AudioConfig) -> Result<(Control, Engine), AudioError> {
     };
     let (commands, receive) = sync_channel(config.commands);
     let (send, feedback) = sync_channel(capacity.feedback());
-    let counters = Arc::new(Counters::default());
+    let counters = Arc::new(Counters::new(config.buses));
     let engine = Engine::new(config.rate, config.channels, &capacity, receive, send, Arc::clone(&counters));
     let processors = vec![
         ProcessorSlot {
@@ -622,6 +631,28 @@ impl Control {
         Ok(latencies[bus.slot as usize])
     }
 
+    /// What `bus` has put out, after its gain, since the last time it was read: the peak sample's
+    /// magnitude and the RMS level, across its channels. Reading starts the next measurement.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::StaleBus`].
+    pub fn meter(&mut self, bus: BusKey) -> Result<Meter, AudioError> {
+        self.collect();
+        self.graph.check_live(bus)?;
+        let meter = &self.counters.meters[bus.slot as usize];
+        let peak = f32::from_bits(meter.peak.swap(0, Ordering::Relaxed));
+        let energy = f64::from_bits(meter.energy.swap(0, Ordering::Relaxed));
+        let samples = meter.samples.swap(0, Ordering::Relaxed);
+        #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)] // A level.
+        let rms = if samples == 0 {
+            0.0
+        } else {
+            (energy / samples as f64).sqrt() as f32
+        };
+        Ok(Meter { peak, rms })
+    }
+
     /// True while `bus` is live: made, and not removed.
     pub fn bus_live(&mut self, bus: BusKey) -> bool {
         self.collect();
@@ -657,7 +688,14 @@ impl Control {
                     slot.start = None;
                     self.free.push(voice.slot);
                 }
-                Feedback::BusEnded { bus } => self.graph.ended(bus),
+                Feedback::BusEnded { bus } => {
+                    self.graph.ended(bus);
+                    // The next bus in the slot starts its own measurement.
+                    let meter = &self.counters.meters[bus.slot as usize];
+                    meter.peak.store(0, Ordering::Relaxed);
+                    meter.energy.store(0, Ordering::Relaxed);
+                    meter.samples.store(0, Ordering::Relaxed);
+                }
                 Feedback::ProcessorEnded { processor, instance } => {
                     drop(instance);
                     let slot = &mut self.processors[processor.slot as usize];

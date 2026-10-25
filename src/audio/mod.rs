@@ -57,7 +57,7 @@ mod tests;
 mod voice;
 
 pub use bus::{BusKey, BusParam, BusSpec, Tap};
-pub use context::{AudioConfig, AudioStats, Control, OfflineContext, VoiceState, context};
+pub use context::{AudioConfig, AudioStats, Control, Meter, OfflineContext, VoiceState, context};
 pub use engine::Engine;
 pub use error::AudioError;
 pub use pcm::{Pcm, SampleFormat};

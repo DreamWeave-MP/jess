@@ -14,7 +14,7 @@
 //! last, is the output.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 
 use crate::audio::bus::{Bus, BusSend};
@@ -137,6 +137,48 @@ pub struct Counters {
     pub(crate) nonfinite: AtomicU64,
     /// Commands waiting for their frame.
     pub(crate) pending: AtomicU64,
+    /// Each bus's meter, by slot.
+    pub(crate) meters: Box<[BusMeter]>,
+}
+
+impl Counters {
+    pub fn new(buses: usize) -> Counters {
+        Counters {
+            meters: std::iter::repeat_with(BusMeter::default).take(buses).collect(),
+            ..Counters::default()
+        }
+    }
+}
+
+/// What one bus put out since the control side last read it, after its gain: the largest
+/// sample's magnitude, and the sum of squares over the samples counted. The engine only adds;
+/// a reader takes the values and leaves zeros.
+#[derive(Debug, Default)]
+pub struct BusMeter {
+    /// An `f32`'s bits; the order of non-negative floats' bits is their order.
+    pub(crate) peak: AtomicU32,
+    /// An `f64`'s bits.
+    pub(crate) energy: AtomicU64,
+    pub(crate) samples: AtomicU64,
+}
+
+impl BusMeter {
+    fn add(&self, peak: f32, energy: f64, samples: u64) {
+        self.peak.fetch_max(peak.to_bits(), Ordering::Relaxed);
+        // One writer, but a reader may swap in a zero between the load and the store.
+        let mut bits = self.energy.load(Ordering::Relaxed);
+        loop {
+            let sum = (f64::from_bits(bits) + energy).to_bits();
+            match self
+                .energy
+                .compare_exchange_weak(bits, sum, Ordering::Relaxed, Ordering::Relaxed)
+            {
+                Ok(_) => break,
+                Err(now) => bits = now,
+            }
+        }
+        self.samples.fetch_add(samples, Ordering::Relaxed);
+    }
 }
 
 /// How big each of the engine's tables is, fixed when it's made.
@@ -604,6 +646,7 @@ impl Engine {
                 *left = left.saturating_sub(frames as u64);
             }
             let (level, parent, sends) = (bus.level(), bus.parent, bus.sends);
+            self.meter(slot, level, frames);
             for send in sends.into_iter().flatten() {
                 let gain = match send.tap {
                     Tap::PostFader => send.level * level,
@@ -621,6 +664,25 @@ impl Engine {
                 self.retire_bus(slot);
             }
         }
+    }
+
+    /// Meters `frames` of bus slot `slot` as it leaves the bus, at `level`.
+    fn meter(&self, slot: usize, level: f32, frames: usize) {
+        let stride = self.channels * QUANTUM;
+        let block = &self.mixes[slot * stride..(slot + 1) * stride];
+        let (mut peak, mut energy) = (0.0f32, 0.0f64);
+        for channel in 0..self.channels {
+            for sample in &block[channel * QUANTUM..channel * QUANTUM + frames] {
+                let sample = f64::from(sample * level);
+                let square = sample * sample;
+                #[allow(clippy::cast_possible_truncation)] // Back to the f32 it came from.
+                let magnitude = sample.abs() as f32;
+                peak = peak.max(magnitude);
+                energy += square;
+            }
+        }
+        // Not-a-number compares false with everything; the meter shows it as nothing.
+        self.counters.meters[slot].add(peak, energy, (frames * self.channels) as u64);
     }
 
     /// Adds `frames` of bus slot `from` into bus slot `to`, at `gain`.
