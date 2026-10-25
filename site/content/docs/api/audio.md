@@ -31,7 +31,7 @@ PCM from interleaved bytes: `channels` samples per frame (1 to 8), each stored a
 
 ## Contexts
 
-{{ api_signature(value="audio.offline(options: { rate: number?, channels: number?, voices: number?, buses: number?, processors: number?, commands: number?, speedOfSound: number?, handedness: ('right' | 'left')? }?) -> AudioContext") }}
+{{ api_signature(value="audio.offline(options: { rate: number?, channels: number?, voices: number?, buses: number?, processors: number?, commands: number?, speedOfSound: number?, handedness: ('right' | 'left')?, physical: number? }?) -> AudioContext") }}
 
 A context the script renders. Defaults: 48000 frames per second, 2 channels, 256 voices, 64 buses (the master included), 256 processors, and room for 4096 commands waiting for their frame. `speedOfSound` (343) and `handedness` (`right`) describe the world's space; see [Space](#space).
 
@@ -54,6 +54,8 @@ Starts a voice. Options:
 | `sends` | none | Up to two `{ bus, level }`: buses it also plays into, at `level` (1) times its own gain |
 | `fade` | `0` | Frames to fade in over, from silence to `gain` |
 | `place` | none | Where it is in space, which then sets its level, pan, and pitch; see [Space](#space) |
+| `priority` | `0` | How much it matters when there are more voices than the context mixes; see [Budgets](#budgets) |
+| `culled` | `advance` | What it does while it isn't mixed: `advance`, `pause`, or `stop` |
 
 A source at a different rate from the context is resampled; at the same rate and `rate = 1` it plays sample for sample. Mono mixes into any output, stereo into mono (averaged), and otherwise the channel counts must match.
 
@@ -69,7 +71,7 @@ The next frame the engine renders. Anything stamped for it or later lands on its
 {{ api_signature(value="context:channels() -> number") }}
 {{ api_signature(value="context:stats() -> AudioStats") }}
 
-`stats` is the engine as of its last render: `frames` rendered, voices `active` in the mix and `allocated` (playing or waiting to start), commands carried out `late`, `nonfinite` samples silenced, and commands `pending` for a later frame.
+`stats` is the engine as of its last render: `frames` rendered, voices `active` (live, mixed or not) and `allocated` (playing or waiting to start), commands carried out `late`, `nonfinite` samples silenced, commands `pending` for a later frame, voices `culled` in the last block, and voices `stolen` all told.
 
 {{ api_signature(value="context:group(body: () -> ())") }}
 {{ api_signature(value="context:room() -> number") }}
@@ -173,6 +175,12 @@ ducker:listen(dialogue)
 The bus a processor listens to is mixed before the processor's own, so listening to a bus that the processor's bus feeds (its parent, say) would be a loop, and is refused. A bus being listened to can't be removed until nothing listens. `listen(nil)` goes back to the processor's own input.
 
 A name the processor doesn't have, or a value outside its range, is an error naming what it does take. A processor's parameters ramp in steps of 32 frames rather than every frame: while one ramps, the engine mixes in blocks of 32 and tells the processor where the ramp has got to at the start of each.
+
+## Budgets
+
+A context can hold far more voices than it mixes. With `physical` set below `voices`, each block the engine ranks the live voices by `priority`, then by how loud they would be (their gain, times what distance and cones give them in space), and mixes the top `physical`; the rest are culled for that block. A voice that was mixed holds its place against one only a little louder, so voices near the line don't flicker in and out. Ties go to the voice that started in the lower slot, so the same score culls the same voices every time.
+
+What a culled voice does is its own: `advance` (the default) keeps its place in its source moving, silently, so a looping hum out of earshot is where it would have been when it comes back; `pause` holds it where it was; `stop` ends it, which is voice stealing. Music and dialogue that must never drop out get a high `priority`. Rules like "no more than four footsteps at once" are the application's: count them in Luau and stop the oldest.
 
 ## Space
 
