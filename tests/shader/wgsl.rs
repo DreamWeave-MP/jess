@@ -159,7 +159,7 @@ fn solid_color_matches_golden() {
     assert_eq!(pass, ["view", "projection"]);
     assert!(module.layout.groups.iter().all(|group| group.resources.is_empty()));
     assert_eq!(module.layout.vertex_buffers[0].attributes.len(), 1);
-    assert_eq!(module.fragment_outputs, 1);
+    assert_eq!(module.outputs.len(), 1);
 }
 
 #[test]
@@ -199,7 +199,7 @@ fn assorted_matches_golden() {
     assert_golden("assorted", &module.source);
     assert!(module.source.contains("@location(0) @interpolate(flat) v_index: u32"));
     assert!(!module.source.contains("v_unused"), "an unwritten varying is not an output");
-    assert_eq!(module.fragment_outputs, 2);
+    assert_eq!(module.outputs.len(), 2);
 }
 
 #[test]

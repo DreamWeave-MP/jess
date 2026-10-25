@@ -42,8 +42,8 @@ pub struct WgslModule {
     /// Where everything the program declares lives: uniform blocks, structs, bindings, and vertex
     /// buffers.
     pub layout: ProgramLayout,
-    /// How many color targets the fragment stage writes.
-    pub fragment_outputs: u32,
+    /// What the fragment stage writes to each color target, by location: one type per target.
+    pub outputs: Vec<Type>,
 }
 
 /// Validates `program` and lowers it as it is; run
@@ -55,9 +55,12 @@ pub struct WgslModule {
 /// The program's validation errors, as [`Program::validate`] reports them.
 pub fn lower(program: &Program) -> Result<WgslModule, Vec<ValidationError>> {
     let analysis = analyze(program)?;
-    // Validation caps the outputs at `MAX_FRAGMENT_OUTPUTS`.
-    #[allow(clippy::cast_possible_truncation)]
-    let output_count = program.fragment_outputs.len() as u32;
+    // Validation typed every output.
+    let outputs = program
+        .fragment_outputs
+        .iter()
+        .map(|output| analysis.types[output.index()].unwrap_or(Type::Vec4f))
+        .collect();
     let layout = program.layout();
     let mut lowering = Lowering {
         program,
@@ -83,7 +86,7 @@ pub fn lower(program: &Program) -> Result<WgslModule, Vec<ValidationError>> {
     Ok(WgslModule {
         source: lowering.source,
         layout,
-        fragment_outputs: output_count,
+        outputs,
     })
 }
 

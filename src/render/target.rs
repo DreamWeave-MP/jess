@@ -116,6 +116,22 @@ impl TextureFormat {
         }
     }
 
+    /// How many channels a texel has: 1 to 4, and 1 for depth.
+    #[must_use]
+    pub const fn channels(self) -> u8 {
+        match self {
+            Self::R8Unorm
+            | Self::R16Float
+            | Self::R32Float
+            | Self::R32Uint
+            | Self::R32Sint
+            | Self::Depth24Plus
+            | Self::Depth32Float => 1,
+            Self::Rg8Unorm | Self::Rg16Float | Self::Rg32Float => 2,
+            _ => 4,
+        }
+    }
+
     /// The bytes one texel takes when written or read back; `None` for `Depth24Plus`, whose
     /// layout is the backend's.
     #[must_use]

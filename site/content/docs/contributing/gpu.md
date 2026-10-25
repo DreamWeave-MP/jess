@@ -1,18 +1,22 @@
 ---
 title: 'GPU'
-description: 'What jess::gpu is, why it is wgpu behind a feature, and how devices, buffers, textures, and their errors work.'
+description: 'What jess::gpu is, why it is wgpu behind a feature, and how devices, resources, pipelines, bind groups, passes, and their errors work.'
 weight: 65
 extra:
   kind: guide
 ---
 
-The [render graph](@/docs/contributing/render-graph.md) says what to draw in what order, and the [shader IR](@/docs/contributing/shader-ir.md) says how each draw shades. Something has to own the hardware they run on. `jess::gpu` (`src/gpu`) is that: one adapter, the device opened on it, and the bytes and images on that device.
+The [render graph](@/docs/contributing/render-graph.md) says what to draw in what order, and the [shader IR](@/docs/contributing/shader-ir.md) says how each draw shades. Something has to own the hardware they run on. `jess::gpu` (`src/gpu`) is that: one adapter, the device opened on it, the bytes and images on that device, and the pipelines and passes that draw with them.
 
 ## What It Is
 
 - **A device.** `Gpu::headless()` takes whatever adapter the machine has, preferring a hardware one and falling back to a software one, and opens a device on it. `Gpu::info()` reports the adapter's name, the API it's reached through (`vulkan`, `metal`, `dx12`, `gl`), what kind of device it is, and the limits a caller sizes things by.
 - **Buffers.** Bytes on the GPU, bound as any of vertex, index, uniform, and storage buffers, written from the CPU and read back. Sizes, offsets, and lengths are whole 4-byte words, which is what the GPU copies.
 - **Textures.** 2D, layered, cube, and 3D images in a [`TextureFormat`](@/docs/contributing/render-graph.md#targets), with mip levels, sampled by shaders, drawn into as targets, or both. A level of a layer is written from tightly packed rows and read back the same way; jess pads and unpads the rows the GPU's copies need.
+- **Samplers.** Nearest or linear filtering, between texels and between mip levels, clamping, repeating, or mirroring past the edges, and an optional comparison for depth textures.
+- **Pipelines.** `Gpu::render_pipeline(program, state)` takes a [shader program](@/docs/contributing/shader-ir.md) and its fixed-function state (topology, culling, which way round faces the camera, a color target per fragment output, and an optional depth test) and builds everything else from the program's own layout: a bind group layout per frequency, the vertex buffer layouts per rate, a matrix attribute as a column per location. The state's color targets must fit the outputs: a `UInt` output needs an unsigned integer target, and a target can't have more channels than its output.
+- **Bind groups.** `Gpu::bind_group(pipeline, frequency, bindings)` binds exactly what the program declares for that frequency, each binding checked against its declaration: a uniform buffer at least as large as the block, a texture of the declared shape and of a format the declaration reads, a comparison sampler where one is declared.
+- **Passes.** `Gpu::render(colors, depth, draws)` draws into a level of a layer of each target, starting from a clear or what the target held, with the render graph's own `LoadOp`, `StoreOp`, and `ClearValue`. Each draw is checked before anything is recorded: its pipeline's targets are the pass's, it has a bind group for every frequency its program binds and none for the rest, its buffers are vertex and index buffers, and its count stays inside them.
 
 ## What It Is Not
 
@@ -26,7 +30,7 @@ wgpu is the one GPU API that reaches Vulkan, Metal, Direct3D 12, and OpenGL from
 
 ## Errors
 
-A call that can fail checks its arguments in jess's terms first: a buffer of 6 bytes, a cube with oblong faces, a level a texture doesn't have, bytes that don't fill the level they're for. Each is a `GpuError::Invalid` naming what's wrong and what was expected. What gets past that runs inside a wgpu error scope, so anything wgpu refuses comes back as `GpuError::Backend` with wgpu's message, rather than through wgpu's default handler, which panics.
+A call that can fail checks its arguments in jess's terms first: a buffer of 6 bytes, a cube with oblong faces, a level a texture doesn't have, bytes that don't fill the level they're for, a `Vec4f` output drawn into an `R32Uint` target, a draw without the material bind group its program needs. Each is a `GpuError::Invalid` naming what's wrong and what was expected. What gets past that runs inside a wgpu error scope, so anything wgpu refuses comes back as `GpuError::Backend` with wgpu's message, rather than through wgpu's default handler, which panics.
 
 ## Testing
 

@@ -27,7 +27,7 @@ fn outputs_lower_at_their_own_types() {
     let program = builder.finish().unwrap_or_else(|errors| panic!("{errors:#?}"));
     let module = wgsl::lower(&program).unwrap_or_else(|errors| panic!("{errors:#?}"));
     assert_valid_wgsl(&module);
-    assert_eq!(module.fragment_outputs, 4);
+    assert_eq!(module.outputs, [Type::Vec4f, Type::UInt, Type::Float, Type::Vec2i]);
     let expected = "struct FragmentOutput {
     @location(0) color0: vec4<f32>,
     @location(1) color1: u32,

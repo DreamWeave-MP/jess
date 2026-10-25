@@ -89,7 +89,7 @@ fn solid_color_lowers_to_valid_wgsl() {
     );
     assert_eq!(attributes(&program), [("position", Type::Vec3f)]);
     assert_eq!(program.varyings(), []);
-    assert_eq!(module.fragment_outputs, 1);
+    assert_eq!(module.outputs.len(), 1);
     assert!(module.source.contains("u_material.f_tint"), "{}", module.source);
 }
 

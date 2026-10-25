@@ -123,6 +123,8 @@ impl TextureDesc {
 #[derive(Debug)]
 pub struct Texture {
     pub(crate) raw: wgpu::Texture,
+    /// The view of all of it, of its shape, as shaders read it.
+    pub(crate) view: wgpu::TextureView,
     desc: TextureDesc,
 }
 
@@ -157,8 +159,14 @@ impl Gpu {
         if desc.usage.contains(TextureUsage::TARGET) {
             usage |= wgpu::TextureUsages::RENDER_ATTACHMENT;
         }
-        let raw = self.checked(|| {
-            self.device.create_texture(&wgpu::TextureDescriptor {
+        let view_dimension = match desc.shape {
+            TextureShape::D2 => wgpu::TextureViewDimension::D2,
+            TextureShape::D2Array { .. } => wgpu::TextureViewDimension::D2Array,
+            TextureShape::Cube => wgpu::TextureViewDimension::Cube,
+            TextureShape::D3 { .. } => wgpu::TextureViewDimension::D3,
+        };
+        let (raw, view) = self.checked(|| {
+            let raw = self.device.create_texture(&wgpu::TextureDescriptor {
                 label: None,
                 size: wgpu::Extent3d {
                     width: desc.width,
@@ -171,9 +179,14 @@ impl Gpu {
                 format: raw_format(desc.format),
                 usage,
                 view_formats: &[],
-            })
+            });
+            let view = raw.create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(view_dimension),
+                ..Default::default()
+            });
+            (raw, view)
         })?;
-        Ok(Texture { raw, desc: *desc })
+        Ok(Texture { raw, view, desc: *desc })
     }
 
     /// Writes all of mip `level` of `layer` (a cube's face, an array's layer; 0 for a 2D texture
@@ -287,6 +300,8 @@ fn check_desc(gpu: &Gpu, desc: &TextureDesc) -> Result<(), GpuError> {
         Some("from 1 mip level to as many as its size halves to".to_owned())
     } else if desc.format.is_depth() && matches!(desc.shape, TextureShape::D3 { .. }) {
         Some("a color format: depth isn't a volume".to_owned())
+    } else if desc.usage.contains(TextureUsage::TARGET) && matches!(desc.shape, TextureShape::D3 { .. }) {
+        Some("to be sampled only: a pass draws into 2D layers, not a volume".to_owned())
     } else if desc.usage == TextureUsage::default() {
         Some("a usage: sampled, a target, or both".to_owned())
     } else {

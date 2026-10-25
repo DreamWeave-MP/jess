@@ -82,7 +82,7 @@ Integration tests are one `[[test]]` binary, `integration` (`autotests = false`)
 | `input` | `tests/input/` | The action graph and the evaluator, against a golden document |
 | `render` | `tests/render/` | The render graph IR, against golden dumps |
 | `shader` | `tests/shader/` | The shader IR: builder, validation, folding, WGSL goldens, and a headless triangle |
-| `gpu` | `tests/gpu/` | The GPU, behind the `gpu` feature, on whatever adapter the machine has: buffers and textures read back as written |
+| `gpu` | `tests/gpu/` | The GPU, behind the `gpu` feature, on whatever adapter the machine has: resources read back as written, and passes drawn and read back pixel by pixel |
 | `lua` | `tests/lua/` | Everything Luau sees: `contracts`, `kernel`, `lua_api`, `luau_style`, `network_capability`, `package` (with `application` and `workspace` under it), `script_support`, `shader`, and `stdlib` |
 
 A filter is a prefix of a test's path. Prefer the smallest one that proves a change, then widen:

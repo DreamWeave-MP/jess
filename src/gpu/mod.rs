@@ -1,4 +1,5 @@
-//! The GPU, through wgpu: a device, and the buffers and textures on it.
+//! The GPU, through wgpu: a device, the buffers, textures, and samplers on it, and the pipelines
+//! and passes that draw with them.
 //!
 //! Everything here is generic. It knows bytes, formats, and sizes, never what they mean: what a
 //! buffer holds and why is the caller's. No public type names a wgpu type; formats are
@@ -11,13 +12,21 @@
 
 #![warn(missing_docs)]
 
+mod bind;
 mod buffer;
+mod pass;
+mod pipeline;
+mod sampler;
 mod texture;
 
 use std::fmt;
 use std::future::Future;
 
+pub use bind::{BindGroup, Binding};
 pub use buffer::{Buffer, BufferUsage};
+pub use pass::{Draw, IndexFormat, Target};
+pub use pipeline::{Blend, ColorState, Cull, DepthState, PipelineState, RenderPipeline, Topology};
+pub use sampler::{AddressMode, Compare, Filter, Sampler, SamplerDesc};
 pub use texture::{Texture, TextureDesc, TextureShape, TextureUsage};
 
 /// What went wrong on the GPU.
