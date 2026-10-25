@@ -22,6 +22,7 @@ mod texture;
 
 use std::fmt;
 use std::future::Future;
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 pub use bind::{BindGroup, Binding};
 pub use buffer::{Buffer, BufferUsage};
@@ -106,6 +107,24 @@ pub struct GpuInfo {
     pub max_workgroups: u32,
 }
 
+/// The process's wgpu instances: one of the primary backends (Vulkan, Metal, Direct3D 12), and one
+/// of OpenGL for a machine with none. The Vulkan loader isn't safe against instances made and
+/// dropped on several threads at once (it crashed jess's tests in
+/// `vkEnumerateInstanceExtensionProperties`), so every device opens through these.
+static PRIMARY: OnceLock<wgpu::Instance> = OnceLock::new();
+static FALLBACK: OnceLock<wgpu::Instance> = OnceLock::new();
+
+/// Held while a device opens: OpenGL's contexts belong to a thread, and enumerating its adapters
+/// from two threads at once fails in EGL with `BadAccess`.
+static OPENING: Mutex<()> = Mutex::new(());
+
+/// An instance of `backends`, unless `WGPU_BACKEND` names others.
+fn instance(backends: wgpu::Backends) -> wgpu::Instance {
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    descriptor.backends = backends;
+    wgpu::Instance::new(descriptor.with_env())
+}
+
 /// One adapter and the device opened on it.
 pub struct Gpu {
     device: wgpu::Device,
@@ -130,19 +149,24 @@ impl Gpu {
     ///
     /// No adapter at all, or one that opens no device.
     pub fn headless() -> Result<Gpu, GpuError> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        let adapter = [false, true]
-            .into_iter()
-            .find_map(|force_fallback_adapter| {
+        let _opening = OPENING.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut found = None;
+        'search: for (instance, backends) in [(&PRIMARY, wgpu::Backends::PRIMARY), (&FALLBACK, wgpu::Backends::GL)] {
+            let instance = instance.get_or_init(|| self::instance(backends));
+            for force_fallback_adapter in [false, true] {
                 let options = wgpu::RequestAdapterOptions {
                     power_preference: wgpu::PowerPreference::LowPower,
                     force_fallback_adapter,
                     compatible_surface: None,
                     ..Default::default()
                 };
-                pollster::block_on(instance.request_adapter(&options)).ok()
-            })
-            .ok_or(GpuError::NoAdapter)?;
+                if let Ok(adapter) = block_on(instance.request_adapter(&options)) {
+                    found = Some(adapter);
+                    break 'search;
+                }
+            }
+        }
+        let adapter = found.ok_or(GpuError::NoAdapter)?;
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
             .map_err(|error| GpuError::Device(error.to_string()))?;
         // An error no scope catches would panic in wgpu's default handler; every call here opens a
