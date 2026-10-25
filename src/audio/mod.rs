@@ -50,6 +50,7 @@ mod context;
 mod engine;
 mod error;
 mod graph;
+mod param;
 mod pcm;
 pub mod processor;
 #[cfg(test)]
@@ -58,8 +59,9 @@ mod voice;
 
 pub use bus::{BusKey, BusParam, BusSpec, Tap};
 pub use context::{AudioConfig, AudioStats, Control, Meter, OfflineContext, VoiceState, context};
-pub use engine::Engine;
+pub use engine::{CONTROL_QUANTUM, Engine};
 pub use error::AudioError;
+pub use param::{Curve, Glide};
 pub use pcm::{Pcm, SampleFormat};
 pub use processor::{Processor, ProcessorKey};
 pub use voice::{LoopRegion, PlaySpec, VoiceKey, VoiceParam, VoiceSend};

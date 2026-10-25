@@ -7,12 +7,13 @@ use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use crate::audio::bus::BusSend;
 use crate::audio::engine::{Capacity, Command, Counters, Engine, Feedback, Stamped};
 use crate::audio::graph::Graph;
+use crate::audio::param::Glide;
 use crate::audio::pcm::check_layout;
 use crate::audio::processor::{ParamInfo, Processor, ProcessorKey, check_param, param_index};
 use crate::audio::voice::{VoiceKey, check_level};
 use crate::audio::{
-    AudioError, BusKey, BusParam, BusSpec, MAX_BUSES, MAX_CHAIN, MAX_PROCESSORS, MAX_VOICE_SENDS, MAX_VOICES, Pcm, PlaySpec,
-    Tap, VoiceParam,
+    AudioError, BusKey, BusParam, BusSpec, LoopRegion, MAX_BUSES, MAX_CHAIN, MAX_PROCESSORS, MAX_VOICE_SENDS, MAX_VOICES,
+    Pcm, PlaySpec, Tap, VoiceParam,
 };
 
 /// How to make a context.
@@ -104,6 +105,8 @@ struct Slot {
     bus: u32,
     /// The slots of the buses it sends to.
     sends: [Option<u32>; MAX_VOICE_SENDS],
+    /// Its source's length, for checking a new loop region.
+    frames: u64,
 }
 
 impl Slot {
@@ -143,6 +146,11 @@ pub struct Control {
     graph: Graph,
     processors: Vec<ProcessorSlot>,
     free_processors: Vec<u32>,
+    /// The open group's commands, and the room the queue had when it opened.
+    group: Option<(Vec<Stamped>, usize)>,
+    /// Commands sent, counting a group as its members and one more: what the engine's count of
+    /// commands received catches up to.
+    sent: u64,
     sequence: u64,
     counters: Arc<Counters>,
 }
@@ -197,6 +205,7 @@ pub fn context(config: &AudioConfig) -> Result<(Control, Engine), AudioError> {
             start: None,
             bus: 0,
             sends: [None; MAX_VOICE_SENDS],
+            frames: 0,
         };
         config.voices
     ];
@@ -212,6 +221,8 @@ pub fn context(config: &AudioConfig) -> Result<(Control, Engine), AudioError> {
         graph: Graph::new(config.buses),
         processors,
         free_processors: (0..u32::try_from(config.processors).unwrap_or(u32::MAX)).rev().collect(),
+        group: None,
+        sent: 0,
         sequence: 0,
         counters,
     };
@@ -273,6 +284,7 @@ impl Control {
         entry.start = spec.at;
         entry.bus = spec.bus.slot;
         entry.sends = spec.sends.map(|send| send.map(|send| send.bus.slot));
+        entry.frames = pcm.frames() as u64;
         Ok(voice)
     }
 
@@ -302,35 +314,81 @@ impl Control {
         Ok(true)
     }
 
-    /// Stops a voice at frame `at`, or at the next frame rendered. True if the voice hadn't
-    /// ended as far as this side knows; stopping an ended voice does nothing.
+    /// Stops a voice at frame `at`, or at the next frame rendered, fading it out over `fade`
+    /// frames first. True if the voice hadn't ended as far as this side knows; stopping an ended
+    /// voice does nothing.
     ///
     /// # Errors
     ///
     /// [`AudioError::QueueFull`] or [`AudioError::Disconnected`].
-    pub fn stop(&mut self, voice: VoiceKey, at: Option<u64>) -> Result<bool, AudioError> {
+    pub fn stop(&mut self, voice: VoiceKey, at: Option<u64>, fade: u64) -> Result<bool, AudioError> {
         self.collect();
         if !self.is_live(voice) {
             return Ok(false);
         }
-        self.send(at, Command::Stop { voice })?;
+        self.send(at, Command::Stop { voice, fade })?;
         Ok(true)
     }
 
-    /// Sets a voice's parameter at frame `at`, or at the next frame rendered. A voice not yet
-    /// started starts with it. True if the voice hadn't ended as far as this side knows.
+    /// Sets a voice's parameter at frame `at`, or at the next frame rendered, at once or over
+    /// `glide`. A voice not yet started starts with it. True if the voice hadn't ended as far as
+    /// this side knows.
     ///
     /// # Errors
     ///
-    /// [`AudioError::Parameter`] for a value the parameter can't take, [`AudioError::QueueFull`],
-    /// or [`AudioError::Disconnected`].
-    pub fn set(&mut self, voice: VoiceKey, param: VoiceParam, value: f64, at: Option<u64>) -> Result<bool, AudioError> {
+    /// [`AudioError::Parameter`] for a value the parameter, or the ramp, can't take,
+    /// [`AudioError::QueueFull`], or [`AudioError::Disconnected`].
+    pub fn set(
+        &mut self,
+        voice: VoiceKey,
+        param: VoiceParam,
+        value: f64,
+        at: Option<u64>,
+        glide: Option<Glide>,
+    ) -> Result<bool, AudioError> {
         let value = param.check(value)?;
+        if let Some(glide) = glide {
+            glide.check(param.name(), value)?;
+        }
         self.collect();
         if !self.is_live(voice) {
             return Ok(false);
         }
-        self.send(at, Command::SetVoice { voice, param, value })?;
+        self.send(
+            at,
+            Command::SetVoice {
+                voice,
+                param,
+                value,
+                glide,
+            },
+        )?;
+        Ok(true)
+    }
+
+    /// Loops a voice over `looping` from frame `at`, or from the next frame rendered; `None` lets
+    /// it play on past its loop to the end of its source. True if the voice hadn't ended.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::LoopRegion`] outside its source, [`AudioError::QueueFull`], or
+    /// [`AudioError::Disconnected`].
+    pub fn set_loop(&mut self, voice: VoiceKey, looping: Option<LoopRegion>, at: Option<u64>) -> Result<bool, AudioError> {
+        self.collect();
+        if !self.is_live(voice) {
+            return Ok(false);
+        }
+        let frames = self.slots[voice.slot as usize].frames;
+        if let Some(region) = looping
+            && (region.start >= region.end || region.end > frames)
+        {
+            return Err(AudioError::LoopRegion {
+                start: region.start,
+                end: region.end,
+                frames,
+            });
+        }
+        self.send(at, Command::SetLoop { voice, looping })?;
         Ok(true)
     }
 
@@ -428,19 +486,37 @@ impl Control {
         )
     }
 
-    /// Sets a bus's parameter at frame `at`, or at the next frame rendered. True if the bus was
-    /// live.
+    /// Sets a bus's parameter at frame `at`, or at the next frame rendered, at once or, for its
+    /// gain, over `glide`. True if the bus was live.
     ///
     /// # Errors
     ///
     /// [`AudioError::Parameter`], [`AudioError::QueueFull`], or [`AudioError::Disconnected`].
-    pub fn set_bus(&mut self, bus: BusKey, param: BusParam, value: f64, at: Option<u64>) -> Result<bool, AudioError> {
+    pub fn set_bus(
+        &mut self,
+        bus: BusKey,
+        param: BusParam,
+        value: f64,
+        at: Option<u64>,
+        glide: Option<Glide>,
+    ) -> Result<bool, AudioError> {
         let value = param.check(value)?;
+        if let Some(glide) = glide {
+            glide.check(param.name(), value)?;
+        }
         self.collect();
         if !self.graph.is_live(bus) {
             return Ok(false);
         }
-        self.send(at, Command::SetBus { bus, param, value })?;
+        self.send(
+            at,
+            Command::SetBus {
+                bus,
+                param,
+                value,
+                glide,
+            },
+        )?;
         Ok(true)
     }
 
@@ -577,8 +653,10 @@ impl Control {
         Ok(true)
     }
 
-    /// Sets a processor's parameter `name` at frame `at`, or at the next frame rendered. True if
-    /// the processor is mounted.
+    /// Sets a processor's parameter `name` at frame `at`, or at the next frame rendered, at once
+    /// or over `glide`. A ramping processor parameter moves every
+    /// [`CONTROL_QUANTUM`](crate::audio::CONTROL_QUANTUM) frames
+    /// rather than every frame. True if the processor is mounted.
     ///
     /// # Errors
     ///
@@ -591,6 +669,7 @@ impl Control {
         name: &str,
         value: f64,
         at: Option<u64>,
+        glide: Option<Glide>,
     ) -> Result<bool, AudioError> {
         self.collect();
         if !self.processor_live(processor) {
@@ -599,7 +678,18 @@ impl Control {
         let slot = self.processors[processor.slot as usize];
         let index = param_index(slot.kind, slot.params, name)?;
         let value = check_param(&slot.params[index], value)?;
-        self.send(at, Command::SetProcessor { processor, index, value })?;
+        if let Some(glide) = glide {
+            glide.check(slot.params[index].name, value)?;
+        }
+        self.send(
+            at,
+            Command::SetProcessor {
+                processor,
+                index,
+                value,
+                glide,
+            },
+        )?;
         Ok(true)
     }
 
@@ -708,7 +798,67 @@ impl Control {
                     self.free_processors.push(processor.slot);
                 }
                 Feedback::Order(order) => drop(order),
+                Feedback::Spent(group) => drop(group),
             }
+        }
+    }
+
+    /// How many more commands the queue to the engine has room for, as of the engine's last
+    /// render: never more than it really has.
+    #[must_use]
+    pub fn room(&self) -> usize {
+        let received = self.counters.received.load(Ordering::Acquire);
+        let waiting = usize::try_from(self.sent.saturating_sub(received)).unwrap_or(usize::MAX);
+        self.capacity.saturating_sub(waiting)
+    }
+
+    /// Opens a group: every command until [`Control::end_group`] reaches the engine together, in
+    /// one entry of its queue, so the ones not stamped for later are carried out on the same
+    /// frame, and no render falls between them. A group can't half-arrive: there is room for it
+    /// when it opens, and nothing else is sent until it closes.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::GroupOpen`] inside another group, or [`AudioError::QueueFull`].
+    pub fn begin_group(&mut self) -> Result<(), AudioError> {
+        if self.group.is_some() {
+            return Err(AudioError::GroupOpen);
+        }
+        self.collect();
+        let room = self.room();
+        if room == 0 {
+            return Err(AudioError::QueueFull(self.capacity));
+        }
+        self.group = Some((Vec::with_capacity(16), room));
+        Ok(())
+    }
+
+    /// Sends the group [`Control::begin_group`] opened.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::Disconnected`]; with no group open, nothing happens.
+    pub fn end_group(&mut self) -> Result<(), AudioError> {
+        let Some((members, _)) = self.group.take() else {
+            return Ok(());
+        };
+        if members.is_empty() {
+            return Ok(());
+        }
+        let count = members.len() as u64 + 1;
+        let stamped = Stamped {
+            at: None,
+            sequence: self.sequence,
+            command: Command::Group(members),
+        };
+        match self.commands.try_send(stamped) {
+            Ok(()) => {
+                self.sent += count;
+                Ok(())
+            }
+            // Room was there when the group opened, and nothing else has been sent since.
+            Err(TrySendError::Full(_)) => Err(AudioError::QueueFull(self.capacity)),
+            Err(TrySendError::Disconnected(_)) => Err(AudioError::Disconnected),
         }
     }
 
@@ -725,8 +875,19 @@ impl Control {
             sequence: self.sequence,
             command,
         };
+        if let Some((members, room)) = self.group.as_mut() {
+            // The group and its members all count against the room it opened with.
+            if members.len() + 2 > *room {
+                return Err(AudioError::QueueFull(self.capacity));
+            }
+            members.push(stamped);
+            return Ok(());
+        }
         match self.commands.try_send(stamped) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                self.sent += 1;
+                Ok(())
+            }
             Err(TrySendError::Full(_)) => Err(AudioError::QueueFull(self.capacity)),
             Err(TrySendError::Disconnected(_)) => Err(AudioError::Disconnected),
         }

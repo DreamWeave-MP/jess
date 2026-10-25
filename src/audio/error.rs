@@ -51,6 +51,8 @@ pub enum AudioError {
     Cycle,
     /// A bus or voice already has as many sends as it can.
     SendsExhausted(usize),
+    /// A group was opened inside another.
+    GroupOpen,
     /// Every processor slot is taken.
     ProcessorsExhausted(usize),
     /// A bus already runs as many processors as it can.
@@ -147,6 +149,7 @@ impl fmt::Display for AudioError {
             ),
             AudioError::Cycle => f.write_str("that routing would feed a bus back into itself"),
             AudioError::SendsExhausted(sends) => write!(f, "it already has all {sends} of its sends"),
+            AudioError::GroupOpen => f.write_str("a group of commands is already open; groups don't nest"),
             AudioError::ProcessorsExhausted(count) => write!(f, "all {count} processors are in use"),
             AudioError::ChainFull(count) => write!(f, "the bus already runs {count} processors"),
             AudioError::StaleProcessor => f.write_str("the processor was removed or belongs to another context"),

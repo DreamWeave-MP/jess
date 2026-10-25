@@ -71,6 +71,9 @@ pub trait Processor: Send {
     /// the next sample processed.
     fn set(&mut self, index: usize, value: f64);
 
+    /// Parameter `index`'s value: where a ramp of it starts.
+    fn value(&self, index: usize) -> f64;
+
     /// How many frames its output lags its input.
     fn latency(&self) -> u64 {
         0
@@ -270,6 +273,10 @@ impl Processor for Gain {
     #[allow(clippy::cast_possible_truncation)] // Ranged on the control side.
     fn set(&mut self, _index: usize, value: f64) {
         self.gain = value as f32;
+    }
+
+    fn value(&self, _index: usize) -> f64 {
+        f64::from(self.gain)
     }
 
     fn process(&mut self, block: &mut Block<'_>, _key: Option<&[f32]>) {

@@ -540,7 +540,7 @@ fn describe_voice(d: &mut ExtensionDescriptor) {
     voice
         .method("stop", |this: &LuaAudioVoice, at: Option<f64>| -> l3i::Result<bool> {
             let at = frame_option(at)?;
-            Ok(this.context.borrow_mut().control().stop(this.key, at)?)
+            Ok(this.context.borrow_mut().control().stop(this.key, at, 0)?)
         })
         .untyped();
     voice
@@ -551,7 +551,7 @@ fn describe_voice(d: &mut ExtensionDescriptor) {
                     return Err(error(format!("AudioVoice:set takes gain, pan, or rate, not {:?}", name.0)));
                 };
                 let at = frame_option(at)?;
-                Ok(this.context.borrow_mut().control().set(this.key, param, value, at)?)
+                Ok(this.context.borrow_mut().control().set(this.key, param, value, at, None)?)
             },
         )
         .untyped();
@@ -584,7 +584,11 @@ fn describe_bus(d: &mut ExtensionDescriptor) {
                 return Err(error(format!("AudioBus:set takes gain or mute, not {:?}", name.0)));
             };
             let at = frame_option(at)?;
-            Ok(this.context.borrow_mut().control().set_bus(this.key, param, value, at)?)
+            Ok(this
+                .context
+                .borrow_mut()
+                .control()
+                .set_bus(this.key, param, value, at, None)?)
         },
     )
     .untyped();
@@ -694,7 +698,7 @@ fn describe_processor(d: &mut ExtensionDescriptor) {
                     .context
                     .borrow_mut()
                     .control()
-                    .set_processor(this.key, &name.0, value, at)?)
+                    .set_processor(this.key, &name.0, value, at, None)?)
             },
         )
         .untyped();

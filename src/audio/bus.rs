@@ -4,7 +4,8 @@
 //! so buses make a tree under the master. A bus sums whatever is routed to it, applies its gain,
 //! and adds the result into its parent.
 
-use crate::audio::{AudioError, MAX_CHAIN, MAX_SENDS};
+use crate::audio::param::{Glide, Param};
+use crate::audio::{AudioError, MAX_CHAIN, MAX_SENDS, QUANTUM};
 
 /// A bus as the application names it: its slot in the engine's table and the slot's generation
 /// when it was made, so a handle outliving its bus names nothing.
@@ -109,12 +110,12 @@ pub struct Bus {
     pub length: usize,
     /// Removed, and ringing out: frames left before it goes.
     pub draining: Option<u64>,
-    gain: f32,
+    gain: Param,
     muted: bool,
 }
 
 impl Bus {
-    pub const fn new(generation: u32, parent: Option<u32>, spec: &BusSpec) -> Bus {
+    pub fn new(generation: u32, parent: Option<u32>, spec: &BusSpec) -> Bus {
         Bus {
             generation,
             parent,
@@ -122,7 +123,7 @@ impl Bus {
             chain: [0; MAX_CHAIN],
             length: 0,
             draining: None,
-            gain: spec.gain,
+            gain: Param::new(f64::from(spec.gain)),
             muted: spec.muted,
         }
     }
@@ -174,16 +175,37 @@ impl Bus {
         }
     }
 
-    #[allow(clippy::cast_possible_truncation)] // Checked finite on the control side.
-    pub fn set(&mut self, param: BusParam, value: f64) {
-        match param {
-            BusParam::Gain => self.gain = value as f32,
-            BusParam::Mute => self.muted = value != 0.0,
+    /// Sets a parameter, at once or, for the gain, over `glide`. A mute is a step.
+    pub fn set(&mut self, param: BusParam, value: f64, glide: Option<Glide>) {
+        match (param, glide) {
+            (BusParam::Gain, Some(glide)) => self.gain.ramp(value, glide),
+            (BusParam::Gain, None) => self.gain.set(value),
+            (BusParam::Mute, _) => self.muted = value != 0.0,
         }
     }
 
-    /// The gain the bus applies to what it summed.
-    pub const fn level(&self) -> f32 {
-        if self.muted { 0.0 } else { self.gain }
+    /// Applies the gain and mute to the first `frames` of each of `channels` in `block`, moving
+    /// the gain along, a frame at a time while it ramps (through `envelope`).
+    #[allow(clippy::cast_possible_truncation)] // Engine gains are f32.
+    pub fn apply(&mut self, block: &mut [f32], channels: usize, frames: usize, envelope: &mut [f32]) {
+        let steady = self.gain.steady();
+        if !steady {
+            self.gain.fill(&mut envelope[..frames]);
+        }
+        for channel in 0..channels {
+            let samples = &mut block[channel * QUANTUM..channel * QUANTUM + frames];
+            if self.muted {
+                samples.fill(0.0);
+            } else if !steady {
+                for (sample, gain) in samples.iter_mut().zip(&envelope[..frames]) {
+                    *sample *= gain;
+                }
+            } else {
+                let gain = self.gain.value() as f32;
+                for sample in samples {
+                    *sample *= gain;
+                }
+            }
+        }
     }
 }

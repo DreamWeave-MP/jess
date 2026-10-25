@@ -18,9 +18,10 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 
 use crate::audio::bus::{Bus, BusSend};
+use crate::audio::param::{Glide, Param};
 use crate::audio::processor::{Block, Processor, ProcessorKey, Tail};
 use crate::audio::voice::{Voice, VoiceKey};
-use crate::audio::{BusKey, BusParam, BusSpec, MAX_CHANNELS, Pcm, PlaySpec, QUANTUM, Tap, VoiceParam};
+use crate::audio::{BusKey, BusParam, BusSpec, LoopRegion, MAX_CHANNELS, Pcm, PlaySpec, QUANTUM, Tap, VoiceParam};
 
 /// What the control side asks of the engine.
 pub enum Command {
@@ -29,13 +30,21 @@ pub enum Command {
         pcm: Arc<Pcm>,
         spec: PlaySpec,
     },
+    /// Stops a voice, fading out over `fade` frames first.
     Stop {
         voice: VoiceKey,
+        fade: u64,
     },
     SetVoice {
         voice: VoiceKey,
         param: VoiceParam,
         value: f64,
+        glide: Option<Glide>,
+    },
+    /// Loops a voice over a new region, or lets it play on past its loop.
+    SetLoop {
+        voice: VoiceKey,
+        looping: Option<LoopRegion>,
     },
     /// A new bus, and the order with it in.
     AddBus {
@@ -57,6 +66,7 @@ pub enum Command {
         bus: BusKey,
         param: BusParam,
         value: f64,
+        glide: Option<Glide>,
     },
     /// Adds or changes a bus's send, with the new order when the send is new.
     SendBus {
@@ -89,7 +99,19 @@ pub enum Command {
         processor: ProcessorKey,
         index: usize,
         value: f64,
+        glide: Option<Glide>,
     },
+    /// Commands that arrive together, each with its own stamp.
+    Group(Vec<Stamped>),
+}
+
+impl std::fmt::Debug for Stamped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Stamped")
+            .field("at", &self.at)
+            .field("sequence", &self.sequence)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A command and when to carry it out: `at` an output frame, or `None` for the next frame the
@@ -121,6 +143,8 @@ pub enum Feedback {
     },
     /// An order the engine replaced, to drop.
     Order(Box<[u32]>),
+    /// A group's list, emptied, to drop.
+    Spent(Vec<Stamped>),
 }
 
 /// The engine's counters, shared with the control side. Each is written by the engine at the
@@ -137,6 +161,8 @@ pub struct Counters {
     pub(crate) nonfinite: AtomicU64,
     /// Commands waiting for their frame.
     pub(crate) pending: AtomicU64,
+    /// Commands taken from the queue, counting a group as its members and one more.
+    pub(crate) received: AtomicU64,
     /// Each bus's meter, by slot.
     pub(crate) meters: Box<[BusMeter]>,
 }
@@ -194,7 +220,8 @@ impl Capacity {
     /// slot is reused only after the control side reads that, and each command replaces at most
     /// one order.
     pub const fn feedback(&self) -> usize {
-        self.voices + self.buses + self.processors + self.commands
+        // A group sends its spent list back as well as whatever its members do.
+        self.voices + self.buses + self.processors + 2 * self.commands
     }
 }
 
@@ -203,6 +230,69 @@ struct Mounted {
     generation: u32,
     bus: u32,
     instance: Box<dyn Processor>,
+    /// Parameters ramping, by index: set at the start of each block of at most
+    /// [`CONTROL_QUANTUM`] frames while they move.
+    ramps: [Option<(usize, Param)>; MAX_RAMPS],
+}
+
+/// The most of one processor's parameters that ramp at once; a further ramp replaces the oldest.
+const MAX_RAMPS: usize = 4;
+
+/// The longest block the engine mixes while a processor parameter ramps: how often a processor
+/// hears where its ramp has got to.
+pub const CONTROL_QUANTUM: usize = 32;
+
+impl Mounted {
+    fn ramp(&mut self, index: usize, value: f64, glide: Option<Glide>) {
+        let Some(glide) = glide.filter(|glide| glide.frames > 0) else {
+            for ramp in &mut self.ramps {
+                if ramp.is_some_and(|(known, _)| known == index) {
+                    *ramp = None;
+                }
+            }
+            self.instance.set(index, value);
+            return;
+        };
+        let slot = self
+            .ramps
+            .iter()
+            .position(|ramp| ramp.is_some_and(|(known, _)| known == index))
+            .or_else(|| self.ramps.iter().position(Option::is_none))
+            .unwrap_or(0);
+        // The ramp starts from where the parameter is: its last ramp's value, or its own.
+        let start = self.ramps[slot]
+            .filter(|(known, _)| *known == index)
+            .map_or_else(|| self.current(index), |(_, param)| param.value());
+        let mut param = Param::new(start);
+        param.ramp(value, glide);
+        self.ramps[slot] = Some((index, param));
+    }
+
+    /// What parameter `index` was last set to; a processor that keeps its own state reports its
+    /// default until set.
+    fn current(&self, index: usize) -> f64 {
+        self.instance.value(index)
+    }
+
+    /// Tells the processor where its ramps are, and moves them `frames` along. True while any
+    /// still moves.
+    fn step_ramps(&mut self, frames: usize) -> bool {
+        let mut moving = false;
+        for ramp in &mut self.ramps {
+            let Some((index, param)) = ramp.as_mut() else {
+                continue;
+            };
+            // A block hears the value its first frame has; a ramp done by then is let go.
+            self.instance.set(*index, param.value());
+            if param.steady() {
+                *ramp = None;
+                continue;
+            }
+            param.advance(frames as u64);
+            moving = true;
+        }
+        moving
+    }
 }
 
 /// The render side of a context. See the module docs.
@@ -224,6 +314,15 @@ pub struct Engine {
     /// Commands stamped for a later frame, latest first, so the next is at the end.
     pending: Vec<Stamped>,
     scratch: Box<[f32]>,
+    /// A voice's fixed-point steps, frame by frame, while its rate ramps.
+    steps: Box<[u64]>,
+    /// A voice's or bus's levels, frame by frame, while they ramp: two blocks.
+    envelope: Box<[f32]>,
+    /// True while a processor parameter ramps, which keeps blocks to [`CONTROL_QUANTUM`].
+    ramping: bool,
+    /// A group held back until its members fit the pending list.
+    deferred: Option<Vec<Stamped>>,
+    received: u64,
     now: u64,
     late: u64,
     nonfinite: u64,
@@ -265,6 +364,11 @@ impl Engine {
             mixes: vec![0.0; capacity.buses * channels * QUANTUM].into_boxed_slice(),
             pending: Vec::with_capacity(capacity.commands),
             scratch: vec![0.0; MAX_CHANNELS * QUANTUM].into_boxed_slice(),
+            steps: vec![0; QUANTUM].into_boxed_slice(),
+            envelope: vec![0.0; 2 * QUANTUM].into_boxed_slice(),
+            ramping: false,
+            deferred: None,
+            received: 0,
             now: 0,
             late: 0,
             nonfinite: 0,
@@ -304,7 +408,8 @@ impl Engine {
         while done < frames {
             self.receive();
             self.carry_out_due();
-            let mut block = QUANTUM.min(frames - done);
+            let longest = if self.ramping { CONTROL_QUANTUM } else { QUANTUM };
+            let mut block = longest.min(frames - done);
             if let Some(next) = self.pending.last().and_then(|next| next.at) {
                 // Anything due was just carried out, so the next command is ahead of now.
                 block = block.min(usize::try_from(next - self.now).unwrap_or(usize::MAX));
@@ -320,24 +425,58 @@ impl Engine {
     /// Takes queued commands while there's room to hold the ones not yet due. When the pending
     /// list is full the rest wait in the queue, and once that fills the control side is told.
     fn receive(&mut self) {
+        if let Some(group) = self.deferred.take()
+            && !self.accept_group(group)
+        {
+            return;
+        }
         while self.pending.len() < self.pending.capacity() {
             let Ok(stamped) = self.commands.try_recv() else {
                 return;
             };
-            match stamped.at {
-                Some(at) if at > self.now => {
-                    let key = stamped.key();
-                    let index = self.pending.partition_point(|waiting| waiting.key() > key);
-                    self.pending.insert(index, stamped);
+            self.received += 1;
+            if let Command::Group(members) = stamped.command {
+                self.received += members.len() as u64;
+                if !self.accept_group(members) {
+                    return;
                 }
-                Some(at) => {
-                    if at < self.now {
-                        self.late += 1;
-                    }
-                    self.carry_out(stamped.command);
-                }
-                None => self.carry_out(stamped.command),
+                continue;
             }
+            self.accept(stamped);
+        }
+    }
+
+    /// Takes a group's members, or holds the group back until its stamped members fit the
+    /// pending list, so its members are never split. False when held back.
+    fn accept_group(&mut self, mut members: Vec<Stamped>) -> bool {
+        if self.pending.len() + members.len() > self.pending.capacity() {
+            self.deferred = Some(members);
+            return false;
+        }
+        // Drained rather than consumed: the emptied list goes back to be freed off this thread.
+        #[allow(clippy::iter_with_drain)]
+        for stamped in members.drain(..) {
+            self.accept(stamped);
+        }
+        self.send(Feedback::Spent(members));
+        true
+    }
+
+    /// Carries out a command now, or keeps it for its frame.
+    fn accept(&mut self, stamped: Stamped) {
+        match stamped.at {
+            Some(at) if at > self.now => {
+                let key = stamped.key();
+                let index = self.pending.partition_point(|waiting| waiting.key() > key);
+                self.pending.insert(index, stamped);
+            }
+            Some(at) => {
+                if at < self.now {
+                    self.late += 1;
+                }
+                self.carry_out(stamped.command);
+            }
+            None => self.carry_out(stamped.command),
         }
     }
 
@@ -367,8 +506,14 @@ impl Engine {
                 }
                 self.voices[slot] = Some(Voice::new(voice.generation, pcm, &spec, self.rate));
             }
-            Command::Stop { voice } => self.stop(voice),
-            Command::SetVoice { voice, param, value } => self.set_voice(voice, param, value),
+            Command::Stop { voice, fade } => self.stop(voice, fade),
+            Command::SetVoice {
+                voice,
+                param,
+                value,
+                glide,
+            } => self.set_voice(voice, param, value, glide),
+            Command::SetLoop { voice, looping } => self.set_loop(voice, looping),
             Command::AddBus { bus, spec, order } => {
                 self.buses[bus.slot as usize] = Some(Bus::new(bus.generation, Some(spec.parent.slot), &spec));
                 self.reorder(order);
@@ -402,9 +547,14 @@ impl Engine {
                 }
                 self.reorder(order);
             }
-            Command::SetBus { bus, param, value } => {
+            Command::SetBus {
+                bus,
+                param,
+                value,
+                glide,
+            } => {
                 if let Some(changed) = self.bus(bus) {
-                    changed.set(param, value);
+                    changed.set(param, value, glide);
                 }
             }
             Command::SendBus { bus, send, order } => {
@@ -439,6 +589,7 @@ impl Engine {
                     generation: processor.generation,
                     bus: bus.slot,
                     instance,
+                    ramps: [None; MAX_RAMPS],
                 });
             }
             Command::Unmount { processor } => {
@@ -459,12 +610,23 @@ impl Engine {
                     });
                 }
             }
-            Command::SetProcessor { processor, index, value } => {
+            Command::SetProcessor {
+                processor,
+                index,
+                value,
+                glide,
+            } => {
                 if let Some(mounted) = self.processors[processor.slot as usize].as_mut()
                     && mounted.generation == processor.generation
                 {
-                    mounted.instance.set(index, value);
+                    mounted.ramp(index, value, glide);
+                    // A ramp starts moving this block; the mix keeps the flag while one moves.
+                    self.ramping |= mounted.ramps.iter().any(Option::is_some);
                 }
+            }
+            // The control side never opens a group inside another; one would be taken whole.
+            Command::Group(members) => {
+                self.accept_group(members);
             }
         }
     }
@@ -522,12 +684,15 @@ impl Engine {
         self.send(Feedback::Order(old));
     }
 
-    fn stop(&mut self, voice: VoiceKey) {
+    fn stop(&mut self, voice: VoiceKey, fade: u64) {
         let slot = voice.slot as usize;
-        if self.voices[slot]
-            .as_ref()
-            .is_some_and(|playing| playing.generation == voice.generation)
+        if let Some(playing) = self.voices[slot].as_mut()
+            && playing.generation == voice.generation
         {
+            // A fade ends the voice when it runs out, in the mix.
+            if playing.stop(fade) {
+                return;
+            }
             if let Some(stopped) = self.voices[slot].take() {
                 self.send(Feedback::VoiceEnded { voice, pcm: stopped.pcm });
             }
@@ -541,14 +706,28 @@ impl Engine {
         }
     }
 
-    fn set_voice(&mut self, voice: VoiceKey, param: VoiceParam, value: f64) {
+    fn set_loop(&mut self, voice: VoiceKey, looping: Option<LoopRegion>) {
         if let Some(playing) = self.voices[voice.slot as usize].as_mut()
             && playing.generation == voice.generation
         {
-            playing.set(param, value);
+            playing.set_loop(looping);
             return;
         }
-        // Set before its start: it starts that way.
+        if let Some(index) = self.pending_start(voice)
+            && let Command::Start { spec, .. } = &mut self.pending[index].command
+        {
+            spec.looping = looping;
+        }
+    }
+
+    fn set_voice(&mut self, voice: VoiceKey, param: VoiceParam, value: f64, glide: Option<Glide>) {
+        if let Some(playing) = self.voices[voice.slot as usize].as_mut()
+            && playing.generation == voice.generation
+        {
+            playing.set(param, value, glide);
+            return;
+        }
+        // Set before its start, ramp or not: it starts there.
         if let Some(index) = self.pending_start(voice)
             && let Command::Start { spec, .. } = &mut self.pending[index].command
         {
@@ -597,13 +776,15 @@ impl Engine {
             let Some(voice) = self.voices[slot].as_mut() else {
                 continue;
             };
-            let rendered = voice.render(&mut self.scratch, frames);
+            let rendered = voice.render(&mut self.scratch, &mut self.steps, frames);
+            let levels = voice.levels(rendered, &mut self.envelope, self.channels);
             let bus = voice.bus as usize;
             voice.mix(
                 &self.scratch,
                 rendered,
                 &mut self.mixes[bus * stride..(bus + 1) * stride],
                 self.channels,
+                (levels, &self.envelope),
                 1.0,
             );
             for (target, level) in voice.sends.into_iter().flatten() {
@@ -613,6 +794,7 @@ impl Engine {
                     rendered,
                     &mut self.mixes[target * stride..(target + 1) * stride],
                     self.channels,
+                    (levels, &self.envelope),
                     level,
                 );
             }
@@ -627,6 +809,7 @@ impl Engine {
                 self.send(Feedback::VoiceEnded { voice, pcm: ended.pcm });
             }
         }
+        let mut ramping = false;
         for index in 0..self.order.len() {
             let slot = self.order[index] as usize;
             let Some(bus) = self.buses[slot].as_mut() else {
@@ -639,25 +822,34 @@ impl Engine {
             };
             for &processor in &bus.chain[..bus.length] {
                 if let Some(mounted) = self.processors[processor as usize].as_mut() {
+                    ramping |= mounted.step_ramps(frames);
                     mounted.instance.process(&mut block, None);
                 }
             }
             if let Some(left) = bus.draining.as_mut() {
                 *left = left.saturating_sub(frames as u64);
             }
-            let (level, parent, sends) = (bus.level(), bus.parent, bus.sends);
-            self.meter(slot, level, frames);
-            for send in sends.into_iter().flatten() {
-                let gain = match send.tap {
-                    Tap::PostFader => send.level * level,
-                    Tap::PreFader => send.level,
-                };
-                self.add(slot, send.target as usize, gain, frames);
+            let (parent, sends) = (bus.parent, bus.sends);
+            for send in sends.into_iter().flatten().filter(|send| send.tap == Tap::PreFader) {
+                self.add(slot, send.target as usize, send.level, frames);
+            }
+            if let Some(bus) = self.buses[slot].as_mut() {
+                bus.apply(
+                    &mut self.mixes[slot * stride..(slot + 1) * stride],
+                    self.channels,
+                    frames,
+                    &mut self.envelope,
+                );
+            }
+            self.meter(slot, frames);
+            for send in sends.into_iter().flatten().filter(|send| send.tap == Tap::PostFader) {
+                self.add(slot, send.target as usize, send.level, frames);
             }
             if let Some(parent) = parent {
-                self.add(slot, parent as usize, level, frames);
+                self.add(slot, parent as usize, 1.0, frames);
             }
         }
+        self.ramping = ramping;
         for index in 0..self.order.len() {
             let slot = self.order[index] as usize;
             if self.buses[slot].as_ref().is_some_and(|bus| bus.draining == Some(0)) {
@@ -666,14 +858,14 @@ impl Engine {
         }
     }
 
-    /// Meters `frames` of bus slot `slot` as it leaves the bus, at `level`.
-    fn meter(&self, slot: usize, level: f32, frames: usize) {
+    /// Meters `frames` of bus slot `slot` as it leaves the bus, after its gain.
+    fn meter(&self, slot: usize, frames: usize) {
         let stride = self.channels * QUANTUM;
         let block = &self.mixes[slot * stride..(slot + 1) * stride];
         let (mut peak, mut energy) = (0.0f32, 0.0f64);
         for channel in 0..self.channels {
             for sample in &block[channel * QUANTUM..channel * QUANTUM + frames] {
-                let sample = f64::from(sample * level);
+                let sample = f64::from(*sample);
                 let square = sample * sample;
                 #[allow(clippy::cast_possible_truncation)] // Back to the f32 it came from.
                 let magnitude = sample.abs() as f32;
@@ -697,13 +889,12 @@ impl Engine {
         }
     }
 
-    /// Interleaves `frames` of the master bus into `out`, at its gain, writing any sample that
-    /// isn't finite as silence: one bad voice must not poison a device.
+    /// Interleaves `frames` of the master bus into `out`, writing any sample that isn't finite as
+    /// silence: one bad voice must not poison a device.
     fn write(&mut self, out: &mut [f32], frames: usize) {
-        let level = self.buses[0].as_ref().map_or(1.0, Bus::level);
         for frame in 0..frames {
             for channel in 0..self.channels {
-                let sample = self.mixes[channel * QUANTUM + frame] * level;
+                let sample = self.mixes[channel * QUANTUM + frame];
                 out[frame * self.channels + channel] = if sample.is_finite() {
                     sample
                 } else {
@@ -721,6 +912,7 @@ impl Engine {
         self.counters.late.store(self.late, Ordering::Relaxed);
         self.counters.nonfinite.store(self.nonfinite, Ordering::Relaxed);
         self.counters.pending.store(self.pending.len() as u64, Ordering::Relaxed);
+        self.counters.received.store(self.received, Ordering::Release);
     }
 }
 

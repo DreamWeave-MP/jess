@@ -3,6 +3,7 @@
 use std::f32::consts::FRAC_PI_4;
 use std::sync::Arc;
 
+use crate::audio::param::{Curve, Glide, Param};
 use crate::audio::{AudioError, BusKey, MAX_PLAYBACK_RATE, MAX_VOICE_SENDS, Pcm, QUANTUM};
 
 /// One fractional frame in the 32.32 fixed point a voice's position is kept in. Positions are
@@ -48,6 +49,8 @@ pub struct PlaySpec {
     /// Buses it also sends to, each at a level relative to what it plays into `bus`: a shared
     /// reverb, say. Fixed when the voice starts; the levels can change.
     pub sends: [Option<VoiceSend>; MAX_VOICE_SENDS],
+    /// Frames to fade in over, from silence to `gain`.
+    pub fade: u64,
 }
 
 /// A voice's send: the bus, and the level relative to the voice's own gain.
@@ -70,6 +73,7 @@ impl Default for PlaySpec {
             looping: None,
             bus: BusKey::MASTER,
             sends: [None; MAX_VOICE_SENDS],
+            fade: 0,
         }
     }
 }
@@ -249,6 +253,49 @@ impl Cursor {
     }
 }
 
+/// How loud each of a voice's two coefficients is over a block: one number each, or one per
+/// frame in an envelope the engine lends (the first coefficient at 0, the second at `QUANTUM`).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Levels {
+    Steady(f32, f32),
+    Varying,
+}
+
+/// One level to mix at: `scale`, times a frame's worth of an envelope while there is one.
+#[derive(Clone, Copy)]
+struct Level<'a> {
+    envelope: Option<&'a [f32]>,
+    scale: f32,
+}
+
+// `mul_add` is a libm call on a CPU built for without FMA, many times slower than this.
+#[allow(clippy::suboptimal_flops)]
+fn add(out: &mut [f32], from: &[f32], level: Level<'_>) {
+    let Some(envelope) = level.envelope else {
+        for (out, sample) in out.iter_mut().zip(from) {
+            *out += sample * level.scale;
+        }
+        return;
+    };
+    for ((out, sample), gain) in out.iter_mut().zip(from).zip(envelope) {
+        *out += sample * gain * level.scale;
+    }
+}
+
+/// A voice's two coefficients at `gain` and `pan`, for a source of `source` channels into an
+/// output of `output`: left and right for a stereo output, and the one gain otherwise.
+fn coefficients(gain: f32, pan: f32, source: usize, output: usize) -> (f32, f32) {
+    match (source, output) {
+        (1, 2) => {
+            let angle = (pan + 1.0) * FRAC_PI_4;
+            (gain * angle.cos(), gain * angle.sin())
+        }
+        (2, 2) => (gain * (1.0 - pan.max(0.0)), gain * (1.0 + pan.min(0.0))),
+        (2, 1) => (gain * 0.5, gain * 0.5),
+        _ => (gain, gain),
+    }
+}
+
 /// A playing voice, owned by the engine.
 pub struct Voice {
     pub(crate) generation: u32,
@@ -258,14 +305,28 @@ pub struct Voice {
     /// Bus slots it sends to, and at what level.
     pub(crate) sends: [Option<(u32, f32)>; MAX_VOICE_SENDS],
     cursor: Cursor,
-    gain: f32,
-    pan: f32,
+    gain: Param,
+    pan: Param,
+    rate: Param,
+    /// Frames left of the fade a stop began; the voice ends when it runs out.
+    ending: Option<u64>,
     /// The output's rate, for working out the step when the rate changes.
     output_rate: u32,
 }
 
 impl Voice {
     pub(crate) fn new(generation: u32, pcm: Arc<Pcm>, spec: &PlaySpec, output_rate: u32) -> Voice {
+        let mut gain = Param::new(f64::from(spec.gain));
+        if spec.fade > 0 {
+            gain.set(0.0);
+            gain.ramp(
+                f64::from(spec.gain),
+                Glide {
+                    frames: spec.fade,
+                    curve: Curve::Linear,
+                },
+            );
+        }
         let mut voice = Voice {
             generation,
             bus: spec.bus.slot,
@@ -276,34 +337,79 @@ impl Voice {
                 looping: spec.looping.map(|region| (region.start, region.end)),
                 wrapped: false,
             },
-            gain: spec.gain,
-            pan: spec.pan,
+            gain,
+            pan: Param::new(f64::from(spec.pan)),
+            rate: Param::new(spec.rate),
+            ending: None,
             output_rate,
             pcm,
         };
-        voice.set_rate(spec.rate);
+        voice.cursor.step = voice.step(spec.rate);
         voice
     }
 
-    #[allow(clippy::cast_possible_truncation)] // Parameters are checked before they get here.
-    pub(crate) fn set(&mut self, param: VoiceParam, value: f64) {
-        match param {
-            VoiceParam::Gain => self.gain = value as f32,
-            VoiceParam::Pan => self.pan = value as f32,
-            VoiceParam::Rate => self.set_rate(value),
+    /// Sets a parameter, at once or over `glide`.
+    pub(crate) fn set(&mut self, param: VoiceParam, value: f64, glide: Option<Glide>) {
+        let target = match param {
+            VoiceParam::Gain => &mut self.gain,
+            VoiceParam::Pan => &mut self.pan,
+            VoiceParam::Rate => &mut self.rate,
+        };
+        match glide {
+            Some(glide) => target.ramp(value, glide),
+            None => target.set(value),
+        }
+        if param == VoiceParam::Rate {
+            self.cursor.step = self.step(self.rate.value());
         }
     }
 
+    /// Begins a stop: fades to silence over `fade` frames and then ends. False when there's no
+    /// fade, and the voice should end now.
+    pub(crate) fn stop(&mut self, fade: u64) -> bool {
+        if fade == 0 {
+            return false;
+        }
+        self.gain.ramp(
+            0.0,
+            Glide {
+                frames: fade,
+                curve: Curve::Linear,
+            },
+        );
+        self.ending = Some(self.ending.map_or(fade, |left| left.min(fade)));
+        true
+    }
+
+    /// Loops over `region` from here on, or stops looping, so playback runs on past the loop's
+    /// end: an intro, a loop, and an outro in one source.
+    pub(crate) fn set_loop(&mut self, region: Option<LoopRegion>) {
+        self.cursor.looping = region.map(|region| (region.start, region.end));
+        self.cursor.wrapped = false;
+    }
+
+    /// The fixed-point step for a playback rate.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // A positive step below 2^64.
-    fn set_rate(&mut self, rate: f64) {
+    fn step(&self, rate: f64) -> u64 {
         let ratio = rate * f64::from(self.pcm.rate()) / f64::from(self.output_rate);
-        self.cursor.step = ((ratio * 4_294_967_296.0).round() as u64).max(1);
+        ((ratio * 4_294_967_296.0).round() as u64).max(1)
     }
 
     /// Renders up to `frames` frames of each source channel into `scratch`, channel `c` at
-    /// `c * QUANTUM`. Returns how many frames it rendered: fewer than `frames` when the source
-    /// ran out, and the voice has ended.
-    pub(crate) fn render(&mut self, scratch: &mut [f32], frames: usize) -> usize {
+    /// `c * QUANTUM`, using `steps` for a rate that is ramping. Returns how many frames it
+    /// rendered: fewer than `frames` when the source ran out or a fade-out finished, and the voice
+    /// has ended.
+    pub(crate) fn render(&mut self, scratch: &mut [f32], steps: &mut [u64], frames: usize) -> usize {
+        let frames = self
+            .ending
+            .map_or(frames, |left| frames.min(usize::try_from(left).unwrap_or(usize::MAX)));
+        let gliding = !self.rate.steady();
+        if gliding {
+            for step in &mut steps[..frames] {
+                *step = self.step(self.rate.value());
+                self.rate.advance(1);
+            }
+        }
         let length = self.pcm.frames() as u64;
         let mut produced = 0;
         let mut cursor = self.cursor;
@@ -311,52 +417,108 @@ impl Voice {
             cursor = self.cursor;
             let data = self.pcm.channel(channel);
             produced = 0;
-            for sample in &mut scratch[channel * QUANTUM..channel * QUANTUM + frames] {
+            for (index, sample) in scratch[channel * QUANTUM..channel * QUANTUM + frames].iter_mut().enumerate() {
                 if cursor.looping.is_none() && cursor.position >> 32 >= length {
                     break;
                 }
                 *sample = cursor.read(data);
                 produced += 1;
+                if gliding {
+                    cursor.step = steps[index];
+                }
                 cursor.advance();
             }
         }
         self.cursor = cursor;
+        if gliding {
+            self.cursor.step = self.step(self.rate.value());
+        }
+        // A fade that runs out mid-block renders short, which ends the voice; one that runs out
+        // on the block's last frame renders nothing the next time round.
+        if let Some(left) = self.ending.as_mut() {
+            *left -= produced as u64;
+        }
         produced
     }
 
-    /// Adds `frames` of the rendered source channels in `scratch` into `bus`, `output` channels
-    /// of `QUANTUM` each, at the voice's gain and pan, scaled by `scale` (a send's level).
-    pub(crate) fn mix(&self, scratch: &[f32], frames: usize, bus: &mut [f32], output: usize, scale: f32) {
+    /// The voice's coefficients for the next `frames` frames into an output of `output`
+    /// channels, moving its gain and pan along: steady numbers, or, while either ramps, one per
+    /// frame written into `envelope`.
+    #[allow(clippy::cast_possible_truncation)] // Engine levels are f32.
+    pub(crate) fn levels(&mut self, frames: usize, envelope: &mut [f32], output: usize) -> Levels {
         let source = self.pcm.channels();
-        let gain = self.gain * scale;
-        let channel = |index: usize| &scratch[index * QUANTUM..index * QUANTUM + frames];
-        let mut add = |to: usize, from: &[f32], gain: f32| {
-            for (out, sample) in bus[to * QUANTUM..to * QUANTUM + frames].iter_mut().zip(from) {
-                *out += sample * gain;
-            }
+        if self.gain.steady() && self.pan.steady() {
+            let (first, second) = coefficients(self.gain.value() as f32, self.pan.value() as f32, source, output);
+            return Levels::Steady(first, second);
+        }
+        let (gains, pans) = envelope.split_at_mut(QUANTUM);
+        self.gain.fill(&mut gains[..frames]);
+        self.pan.fill(&mut pans[..frames]);
+        for (gain, pan) in gains[..frames].iter_mut().zip(&mut pans[..frames]) {
+            (*gain, *pan) = coefficients(*gain, *pan, source, output);
+        }
+        Levels::Varying
+    }
+
+    /// Adds `frames` of the rendered source channels in `scratch` into `bus`, `output` channels
+    /// of `QUANTUM` each, at `levels` (from [`Voice::levels`], with its `envelope`), scaled by
+    /// `scale` (a send's level).
+    pub(crate) fn mix(
+        &self,
+        scratch: &[f32],
+        frames: usize,
+        bus: &mut [f32],
+        output: usize,
+        (levels, envelope): (Levels, &[f32]),
+        scale: f32,
+    ) {
+        let (first, second) = match levels {
+            Levels::Steady(first, second) => (
+                Level {
+                    envelope: None,
+                    scale: first * scale,
+                },
+                Level {
+                    envelope: None,
+                    scale: second * scale,
+                },
+            ),
+            Levels::Varying => (
+                Level {
+                    envelope: Some(&envelope[..frames]),
+                    scale,
+                },
+                Level {
+                    envelope: Some(&envelope[QUANTUM..QUANTUM + frames]),
+                    scale,
+                },
+            ),
         };
-        match (source, output) {
+        let channel = |index: usize| &scratch[index * QUANTUM..index * QUANTUM + frames];
+        let mut out = |to: usize, from: &[f32], level: Level<'_>| {
+            add(&mut bus[to * QUANTUM..to * QUANTUM + frames], from, level);
+        };
+        match (self.pcm.channels(), output) {
             (1, 2) => {
-                let angle = (self.pan + 1.0) * FRAC_PI_4;
-                add(0, channel(0), gain * angle.cos());
-                add(1, channel(0), gain * angle.sin());
+                out(0, channel(0), first);
+                out(1, channel(0), second);
             }
             (2, 2) => {
-                add(0, channel(0), gain * (1.0 - self.pan.max(0.0)));
-                add(1, channel(1), gain * (1.0 + self.pan.min(0.0)));
+                out(0, channel(0), first);
+                out(1, channel(1), second);
             }
             (2, 1) => {
-                add(0, channel(0), gain * 0.5);
-                add(0, channel(1), gain * 0.5);
+                out(0, channel(0), first);
+                out(0, channel(1), second);
             }
             (1, _) => {
                 for to in 0..output {
-                    add(to, channel(0), gain);
+                    out(to, channel(0), first);
                 }
             }
             _ => {
                 for to in 0..output {
-                    add(to, channel(to), gain);
+                    out(to, channel(to), first);
                 }
             }
         }
