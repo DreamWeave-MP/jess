@@ -76,6 +76,14 @@ local lit = shader.program {
         constantIndex = tostring(lights[3].color),
         valueIndex = tostring(lights[input.attributes.light].direction),
       },
+      operators = {
+        negated = tostring(-camera.position),
+        negatedVector = tostring(-input.attributes.normal),
+        remainder = tostring(input.attributes.light % shader.uint(4)),
+        bitAnd = tostring(shader.bitAnd(input.attributes.light, shader.uint(3))),
+        shifted = tostring(shader.shiftLeft(input.attributes.light, shader.uint(2))),
+        bitNot = tostring(shader.bitNot(input.attributes.light)),
+      },
       texture = tostring(input.material.diffuse),
       sampler = tostring(input.material.pointSampler),
       integers = {

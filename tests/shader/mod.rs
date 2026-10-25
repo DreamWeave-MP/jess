@@ -8,6 +8,7 @@ mod folding;
 mod integers;
 mod layout;
 mod logic;
+mod operators;
 mod triangle;
 mod validation;
 mod wgsl;

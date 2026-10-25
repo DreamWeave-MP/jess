@@ -341,11 +341,23 @@ pub enum BinaryOperator {
     And,
     /// Whether either of two `Bool`s holds.
     Or,
+    /// `left % right`: what's left of truncated division, with the sign of `left`.
+    Remainder,
+    /// Bitwise and, of two integer values of one type.
+    BitAnd,
+    /// Bitwise or.
+    BitOr,
+    /// Bitwise exclusive or.
+    BitXor,
+    /// `left` shifted left by a `UInt` amount, or a `UInt` vector of its size.
+    ShiftLeft,
+    /// `left` shifted right: arithmetically for `Int`, logically for `UInt`.
+    ShiftRight,
 }
 
 impl BinaryOperator {
     /// The operator's Jess name, as errors print it: `+` for the arithmetic, which is written between
-    /// its operands, and the function's name (`less`, `logicalAnd`) for the rest.
+    /// its operands, and the function's name (`less`, `bitAnd`) for the rest.
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
@@ -361,6 +373,12 @@ impl BinaryOperator {
             BinaryOperator::GreaterEqual => "greaterEqual",
             BinaryOperator::And => "logicalAnd",
             BinaryOperator::Or => "logicalOr",
+            BinaryOperator::Remainder => "%",
+            BinaryOperator::BitAnd => "bitAnd",
+            BinaryOperator::BitOr => "bitOr",
+            BinaryOperator::BitXor => "bitXor",
+            BinaryOperator::ShiftLeft => "shiftLeft",
+            BinaryOperator::ShiftRight => "shiftRight",
         }
     }
 
@@ -380,6 +398,12 @@ impl BinaryOperator {
             BinaryOperator::GreaterEqual => ">=",
             BinaryOperator::And => "&&",
             BinaryOperator::Or => "||",
+            BinaryOperator::Remainder => "%",
+            BinaryOperator::BitAnd => "&",
+            BinaryOperator::BitOr => "|",
+            BinaryOperator::BitXor => "^",
+            BinaryOperator::ShiftLeft => "<<",
+            BinaryOperator::ShiftRight => ">>",
         }
     }
 }
@@ -389,6 +413,10 @@ impl BinaryOperator {
 pub enum UnaryOperator {
     /// Whether a `Bool` doesn't hold.
     Not,
+    /// `-value`, of a signed or float scalar or vector.
+    Negate,
+    /// Every bit of an integer value flipped.
+    BitNot,
 }
 
 impl UnaryOperator {
@@ -397,6 +425,8 @@ impl UnaryOperator {
     pub fn name(self) -> &'static str {
         match self {
             UnaryOperator::Not => "logicalNot",
+            UnaryOperator::Negate => "-",
+            UnaryOperator::BitNot => "bitNot",
         }
     }
 
@@ -405,6 +435,8 @@ impl UnaryOperator {
     pub fn symbol(self) -> &'static str {
         match self {
             UnaryOperator::Not => "!",
+            UnaryOperator::Negate => "-",
+            UnaryOperator::BitNot => "~",
         }
     }
 }

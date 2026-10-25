@@ -12,7 +12,7 @@ use crate::shader::interface::{
 };
 use crate::shader::layout::ProgramLayout;
 use crate::shader::program::{Declaration, Program};
-use crate::shader::types::Type;
+use crate::shader::types::{Scalar, Type};
 
 /// The most color outputs a fragment stage can have.
 pub const MAX_FRAGMENT_OUTPUTS: usize = 8;
@@ -200,6 +200,13 @@ pub enum ValidationErrorKind {
         /// The arithmetic.
         expression: ExpressionId,
     },
+    /// A shift by a constant of 32 or more, which WGSL rejects while compiling.
+    ShiftTooFar {
+        /// The shift.
+        expression: ExpressionId,
+        /// The amount.
+        amount: u32,
+    },
     /// A swizzle reads a component its vector does not have, or reads a non-vector.
     InvalidSwizzle {
         /// The swizzle.
@@ -365,7 +372,7 @@ impl fmt::Display for ValidationErrorKind {
                 ..
             } => {
                 if let [left, right] = operands.as_slice()
-                    && matches!(*operation, "+" | "-" | "*" | "/")
+                    && matches!(*operation, "+" | "-" | "*" | "/" | "%")
                 {
                     return write!(formatter, "{left} {operation} {right} is invalid: expected {expected}");
                 }
@@ -383,6 +390,9 @@ impl fmt::Display for ValidationErrorKind {
                 "expression {} is constant arithmetic that overflows, divides an integer by zero, or is not finite",
                 expression.index()
             ),
+            ValidationErrorKind::ShiftTooFar { amount, .. } => {
+                write!(formatter, "a shift by {amount} is too far: shift by less than 32")
+            }
             ValidationErrorKind::InvalidSwizzle { vector, swizzle, .. } => {
                 write!(formatter, "{vector}.{swizzle} is invalid: expected components a {vector} has")
             }
@@ -1091,6 +1101,12 @@ pub fn constant_out_of_range(
     {
         return Err(ValidationErrorKind::ConstantOutOfRange { expression: id });
     }
+    if let Expression::Binary(BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight, _, amount) = *expression
+        && let Expression::Literal(Literal::UInt(amount)) = expressions[amount.index()]
+        && amount >= 32
+    {
+        return Err(ValidationErrorKind::ShiftTooFar { expression: id, amount });
+    }
     Ok(())
 }
 
@@ -1132,7 +1148,7 @@ pub fn operation_type(id: ExpressionId, expression: &Expression, operands: &[Typ
             let (ty, expected) = match operator {
                 BinaryOperator::Add | BinaryOperator::Subtract if left == right && left.is_matrix() => (Some(left), ""),
                 BinaryOperator::Add | BinaryOperator::Subtract => (arithmetic(left, right), ADD_SUBTRACT),
-                BinaryOperator::Divide => (arithmetic(left, right), ARITHMETIC),
+                BinaryOperator::Divide | BinaryOperator::Remainder => (arithmetic(left, right), ARITHMETIC),
                 BinaryOperator::Multiply => (multiply(left, right), MULTIPLY),
                 BinaryOperator::Equal | BinaryOperator::NotEqual => {
                     let same = left == right && left.is_scalar();
@@ -1149,14 +1165,32 @@ pub fn operation_type(id: ExpressionId, expression: &Expression, operands: &[Typ
                     let both = left == Type::Bool && right == Type::Bool;
                     (both.then_some(Type::Bool), "two Bools")
                 }
+                BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor => {
+                    let same = left == right && left.is_integer();
+                    (same.then_some(left), "two Int or UInt values of the same type")
+                }
+                BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight => {
+                    let amount = Type::vector(Scalar::UInt, left.components());
+                    let shifts = left.is_integer() && amount == Some(right);
+                    (shifts.then_some(left), "an Int or UInt value, and a UInt amount of its size")
+                }
             };
             ty.ok_or_else(|| invalid(expected))?
         }
-        Expression::Unary(UnaryOperator::Not, _) => {
-            if operands[0] != Type::Bool {
-                return Err(invalid("a Bool"));
+        Expression::Unary(operator, _) => {
+            let value = operands[0];
+            let (accepts, expected) = match operator {
+                UnaryOperator::Not => (value == Type::Bool, "a Bool"),
+                UnaryOperator::Negate => (
+                    value.is_numeric() && value.scalar() != Scalar::UInt,
+                    "a signed or float scalar or vector",
+                ),
+                UnaryOperator::BitNot => (value.is_integer(), "an Int or UInt value"),
+            };
+            if !accepts {
+                return Err(invalid(expected));
             }
-            Type::Bool
+            value
         }
         Expression::Select { .. } => {
             let (condition, accept, reject) = (operands[0], operands[1], operands[2]);

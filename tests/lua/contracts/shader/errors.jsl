@@ -80,6 +80,11 @@ return {
     selectTypes = inFragment(
       function(input) return shader.select(true, input.material.tint, input.material.light) end
     ),
+    negateMatrix = inFragment(function(input) return shader.vec4(-input.draw.model) end),
+    negateTexture = inFragment(function(input) return -input.material.diffuse end),
+    shiftTooFar = inFragment(
+      function() return shader.vec4(shader.float(shader.shiftLeft(shader.uint(1), shader.uint(40)))) end
+    ),
     textureAsValue = inFragment(function(input) return input.material.diffuse * 2.0 end),
     structAsValue = inFragment(function(input) return input.pass.camera + 1.0 end),
 

@@ -14,6 +14,7 @@ pub enum Arithmetic {
     Subtract,
     Multiply,
     Divide,
+    Remainder,
 }
 
 impl Arithmetic {
@@ -26,6 +27,7 @@ impl Arithmetic {
             BinaryOperator::Subtract => Arithmetic::Subtract,
             BinaryOperator::Multiply => Arithmetic::Multiply,
             BinaryOperator::Divide => Arithmetic::Divide,
+            BinaryOperator::Remainder => Arithmetic::Remainder,
             _ => return None,
         };
         Some((arithmetic, left, right))
@@ -43,6 +45,7 @@ pub fn evaluate(operator: Arithmetic, left: Literal, right: Literal) -> Option<L
                 Arithmetic::Subtract => left.checked_sub(right),
                 Arithmetic::Multiply => left.checked_mul(right),
                 Arithmetic::Divide => left.checked_div(right),
+                Arithmetic::Remainder => left.checked_rem(right),
             };
             value.map(Literal::Int)
         }
@@ -52,6 +55,7 @@ pub fn evaluate(operator: Arithmetic, left: Literal, right: Literal) -> Option<L
                 Arithmetic::Subtract => left.checked_sub(right),
                 Arithmetic::Multiply => left.checked_mul(right),
                 Arithmetic::Divide => left.checked_div(right),
+                Arithmetic::Remainder => left.checked_rem(right),
             };
             value.map(Literal::UInt)
         }
@@ -68,6 +72,8 @@ pub fn evaluate(operator: Arithmetic, left: Literal, right: Literal) -> Option<L
                     Arithmetic::Subtract => left - right,
                     Arithmetic::Multiply => left * right,
                     Arithmetic::Divide => left / right,
+                    // Truncated, as WGSL's is: the sign of `left`.
+                    Arithmetic::Remainder => left % right,
                 };
                 if !value.is_finite() {
                     return None;

@@ -6,7 +6,7 @@ extra:
   kind: api
 ---
 
-{{ api_signature(value="jess.shader: { program, struct, array, float, int, uint, vec2, vec3, vec4, vec2i, vec3i, vec4i, vec2u, vec3u, vec4u, mat3, mat4, texture2d, sampler, min, max, clamp, dot, cross, normalize, length, floor, mix, equal, notEqual, less, lessEqual, greater, greaterEqual, logicalAnd, logicalOr, logicalNot, select, sample }") }}
+{{ api_signature(value="jess.shader: { program, struct, array, float, int, uint, vec2, vec3, vec4, vec2i, vec3i, vec4i, vec2u, vec3u, vec4u, mat3, mat4, texture2d, sampler, min, max, clamp, dot, cross, normalize, length, floor, mix, equal, notEqual, less, lessEqual, greater, greaterEqual, logicalAnd, logicalOr, logicalNot, select, bitAnd, bitOr, bitXor, bitNot, shiftLeft, shiftRight, sample }") }}
 
 A shader, written in Luau. `require("@jess/shader")` is the same table as `jess.shader`, and a shader module is an ordinary Luau module that runs once and returns a `ShaderProgram`.
 
@@ -71,7 +71,7 @@ return program
 
 {% usage_note(title="What this is, today") %}
 - This is the authoring half. Nothing draws with a `ShaderProgram` yet: the renderer that takes one is a later piece of work, and this page will say so when it isn't.
-- The expression set is the one the first real materials need, and no more: arithmetic, the functions below, comparisons and `select`, vector construction, swizzles, and texture sampling. There's no negation or control flow yet. They arrive when a renderer needs them, not because GLSL has them.
+- The expression set is the one the first real materials need, and no more: arithmetic, the functions below, comparisons and `select`, vector construction, swizzles, and texture sampling. There's no control flow yet. They arrive when a renderer needs them, not because GLSL has them.
 {% end %}
 
 ## shader.program
@@ -237,7 +237,7 @@ An array type: `length` values or structs, at least one. An array holds no array
 
 A symbolic value in the program under construction: an expression, its type, and the program it belongs to. It isn't a number and it isn't a GPU value; there's nothing in it to read.
 
-- **Operators:** `+`, `-`, `*`, `/`, between two values of one numeric type, or a vector and a scalar of its kind (a `Vec3f` and a `Float`, a `Vec2u` and a `UInt`). `+` and `-` also take two matrices of one size; `*` also takes a matrix and a `Float`, a matrix and a vector of its size, or two matrices of one size. `projection * view * model * position` multiplies left to right, as Luau evaluates it.
+- **Operators:** `+`, `-`, `*`, `/`, and `%`, between two values of one numeric type, or a vector and a scalar of its kind (a `Vec3f` and a `Float`, a `Vec2u` and a `UInt`). `%` is what's left of truncated division, so it has the sign of its left side: `-7 % 3` is `-1`, where Luau's own `%` gives `2`. Unary `-` negates a `Float`, an `Int`, or a vector of either; there's no negating a `UInt` or a matrix. `+` and `-` also take two matrices of one size; `*` also takes a matrix and a `Float`, a matrix and a vector of its size, or two matrices of one size. `projection * view * model * position` multiplies left to right, as Luau evaluates it.
 - **Numbers:** a Luau number where a value goes is a `Float` constant, on either side: `2 * color`, `shader.max(facing, 0)`. Integers are spelled `shader.int(3)` and `shader.uint(3)`, so `2 * cell` is a `Float` times whatever `cell` is, and fails for an integer vector. A Luau `true` or `false` is a `Bool` constant.
 - **Swizzles:** `.x`, `.xy`, `.zyx`, `.wzyx`: one to four of `x`, `y`, `z`, and `w`, giving a scalar or a vector of the same kind. They're the only names a value has.
 - **`==`:** whether two handles name the same expression. Reading `input.material.tint` twice gives equal values.
@@ -400,6 +400,38 @@ shader.program {
   end,
 }
 -- ShaderExpr(Bool)  ShaderExpr(Bool)  ShaderExpr(Bool)
+```
+
+### Bits
+
+The bitwise operators work on `Int` and `UInt` values and their vectors, both sides of one type. Luau has no bitwise operators of its own to borrow, so they're functions.
+
+| Function | Takes | Gives |
+| --- | --- | --- |
+| `shader.bitAnd(a, b)`, `shader.bitOr(a, b)`, `shader.bitXor(a, b)` | Two `Int` or `UInt` values of one type. | And, or, and exclusive or, bit by bit. |
+| `shader.bitNot(value)` | An `Int` or `UInt` value. | Every bit flipped. |
+| `shader.shiftLeft(value, amount)`, `shader.shiftRight(value, amount)` | An `Int` or `UInt` value, and a `UInt` amount, or a `UInt` vector of the value's size. | The value shifted; right shifts of an `Int` keep its sign. |
+
+A constant amount of 32 or more fails where it's written, with `a shift by 40 is too far: shift by less than 32`.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+shader.program {
+  attributes = { position = shader.vec3, packed = shader.uint },
+  vertex = function(input)
+    local packed = input.attributes.packed
+    local low = shader.bitAnd(packed, shader.uint(0xff))
+    local high = shader.shiftRight(packed, shader.uint(8))
+    print(low, high, shader.bitNot(low), -input.attributes.position)
+
+    return { position = shader.vec4(input.attributes.position, 1) }
+  end,
+
+  fragment = function() return shader.vec4(1) end,
+}
+-- ShaderExpr(UInt)  ShaderExpr(UInt)  ShaderExpr(UInt)  ShaderExpr(Vec3f)
 ```
 
 ### shader.sample

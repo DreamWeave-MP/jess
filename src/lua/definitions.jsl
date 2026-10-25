@@ -530,11 +530,11 @@ declare extern type ShaderType with
 end
 
 --- A symbolic, typed value in the shader program under construction: not a number, and not a GPU
---- value. Operators append expressions to the program and return new values; a bare number
---- beside one is a `Float`. `.x`, `.xyz`, `.zyx`: a swizzle of one to four of `x`, `y`, `z`, and
---- `w`. A mistake fails at the line that made it, with the types involved. `tostring` gives
---- `ShaderExpr(Vec4f)`, and `==` whether two handles name one expression. A value is only usable
---- while its `shader.program` call runs.
+--- value. Operators (`+ - * / %` and unary `-`) append expressions to the program and return new
+--- values; a bare number beside one is a `Float`. `.x`, `.xyz`, `.zyx`: a swizzle of one to four
+--- of `x`, `y`, `z`, and `w`. A mistake fails at the line that made it, with the types involved.
+--- `tostring` gives `ShaderExpr(Vec4f)`, and `==` whether two handles name one expression. A value
+--- is only usable while its `shader.program` call runs.
 ---
 --- The checker sees every name a binding has as one of these, as it sees every value's shader
 --- type as this one: a struct, an array, and a texture are indexed, measured, and sampled through
@@ -545,6 +545,8 @@ declare extern type ShaderExpr with
   __sub: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr
   __mul: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr
   __div: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr
+  __mod: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr
+  __unm: (self: ShaderExpr) -> ShaderExpr
   __len: (self: ShaderExpr) -> number
   __eq: (self: ShaderExpr, other: ShaderExpr) -> boolean
   __tostring: (self: ShaderExpr) -> string
@@ -689,6 +691,16 @@ export type ShaderModule = {
   logicalAnd: (left: ShaderExpr | boolean, right: ShaderExpr | boolean) -> ShaderExpr,
   logicalOr: (left: ShaderExpr | boolean, right: ShaderExpr | boolean) -> ShaderExpr,
   logicalNot: (value: ShaderExpr | boolean) -> ShaderExpr,
+  --- Bitwise and, or, and exclusive or of two `Int` or `UInt` values of one type, and every bit
+  --- flipped.
+  bitAnd: (left: ShaderExpr, right: ShaderExpr) -> ShaderExpr,
+  bitOr: (left: ShaderExpr, right: ShaderExpr) -> ShaderExpr,
+  bitXor: (left: ShaderExpr, right: ShaderExpr) -> ShaderExpr,
+  bitNot: (value: ShaderExpr) -> ShaderExpr,
+  --- An `Int` or `UInt` value shifted by a `UInt` amount, or a `UInt` vector of its size: right
+  --- shifts of an `Int` keep its sign.
+  shiftLeft: (value: ShaderExpr, amount: ShaderExpr) -> ShaderExpr,
+  shiftRight: (value: ShaderExpr, amount: ShaderExpr) -> ShaderExpr,
   --- `accept` where `condition` holds, else `reject`, two values of one scalar or vector type.
   --- Both are computed.
   select: (condition: ShaderExpr | boolean, accept: ShaderExpr | number, reject: ShaderExpr | number) -> ShaderExpr,

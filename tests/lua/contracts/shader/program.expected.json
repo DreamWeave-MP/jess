@@ -171,6 +171,14 @@
         "swizzle": "ShaderExpr(Vec2u)"
       },
       "matrix": "ShaderExpr(Mat4f)",
+      "operators": {
+        "bitAnd": "ShaderExpr(UInt)",
+        "bitNot": "ShaderExpr(UInt)",
+        "negated": "ShaderExpr(Vec3f)",
+        "negatedVector": "ShaderExpr(Vec3f)",
+        "remainder": "ShaderExpr(UInt)",
+        "shifted": "ShaderExpr(UInt)"
+      },
       "placed": "ShaderExpr(Vec4f)",
       "places": {
         "camera": "ShaderPlace(Camera)",

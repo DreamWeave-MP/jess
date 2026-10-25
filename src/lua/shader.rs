@@ -453,21 +453,21 @@ fn expression(build: &Rc<RefCell<Build>>, value: Value) -> Owned<LuaShaderExpr> 
 #[derive(Clone, Copy, Debug)]
 enum Binary {
     Operator(BinaryOperator),
-    ShaderFunction(ShaderFunction),
+    Function(ShaderFunction),
 }
 
 impl Binary {
     fn name(self) -> &'static str {
         match self {
             Self::Operator(operator) => operator.name(),
-            Self::ShaderFunction(function) => function.name(),
+            Self::Function(function) => function.name(),
         }
     }
 
     fn apply(self, site: &mut Site<'_>, left: Value, right: Value) -> Result<Value, ValidationError> {
         match self {
             Self::Operator(operator) => site.binary(operator, left, right),
-            Self::ShaderFunction(function) => site.call(function, &[left, right]),
+            Self::Function(function) => site.call(function, &[left, right]),
         }
     }
 }
@@ -476,21 +476,21 @@ impl Binary {
 #[derive(Clone, Copy, Debug)]
 enum Unary {
     Operator(UnaryOperator),
-    ShaderFunction(ShaderFunction),
+    Function(ShaderFunction),
 }
 
 impl Unary {
     fn name(self) -> &'static str {
         match self {
             Self::Operator(operator) => operator.name(),
-            Self::ShaderFunction(function) => function.name(),
+            Self::Function(function) => function.name(),
         }
     }
 
     fn apply(self, site: &mut Site<'_>, value: Value) -> Result<Value, ValidationError> {
         match self {
             Self::Operator(operator) => site.unary(operator, value),
-            Self::ShaderFunction(function) => site.call(function, &[value]),
+            Self::Function(function) => site.call(function, &[value]),
         }
     }
 }
@@ -499,31 +499,31 @@ impl Unary {
 #[derive(Clone, Copy, Debug)]
 enum Ternary {
     Select,
-    ShaderFunction(ShaderFunction),
+    Function(ShaderFunction),
 }
 
 impl Ternary {
     fn name(self) -> &'static str {
         match self {
             Self::Select => "select",
-            Self::ShaderFunction(function) => function.name(),
+            Self::Function(function) => function.name(),
         }
     }
 
     fn apply(self, site: &mut Site<'_>, first: Value, second: Value, third: Value) -> Result<Value, ValidationError> {
         match self {
             Self::Select => site.select(first, second, third),
-            Self::ShaderFunction(function) => site.call(function, &[first, second, third]),
+            Self::Function(function) => site.call(function, &[first, second, third]),
         }
     }
 }
 
 /// The `jess.shader` functions of two operands, by the name the module gives them.
-const BINARY_FUNCTIONS: [Binary; 12] = [
-    Binary::ShaderFunction(ShaderFunction::Min),
-    Binary::ShaderFunction(ShaderFunction::Max),
-    Binary::ShaderFunction(ShaderFunction::Dot),
-    Binary::ShaderFunction(ShaderFunction::Cross),
+const BINARY_FUNCTIONS: [Binary; 17] = [
+    Binary::Function(ShaderFunction::Min),
+    Binary::Function(ShaderFunction::Max),
+    Binary::Function(ShaderFunction::Dot),
+    Binary::Function(ShaderFunction::Cross),
     Binary::Operator(BinaryOperator::Equal),
     Binary::Operator(BinaryOperator::NotEqual),
     Binary::Operator(BinaryOperator::Less),
@@ -532,20 +532,26 @@ const BINARY_FUNCTIONS: [Binary; 12] = [
     Binary::Operator(BinaryOperator::GreaterEqual),
     Binary::Operator(BinaryOperator::And),
     Binary::Operator(BinaryOperator::Or),
+    Binary::Operator(BinaryOperator::BitAnd),
+    Binary::Operator(BinaryOperator::BitOr),
+    Binary::Operator(BinaryOperator::BitXor),
+    Binary::Operator(BinaryOperator::ShiftLeft),
+    Binary::Operator(BinaryOperator::ShiftRight),
 ];
 
 /// The `jess.shader` functions of one operand.
-const UNARY_FUNCTIONS: [Unary; 4] = [
-    Unary::ShaderFunction(ShaderFunction::Normalize),
-    Unary::ShaderFunction(ShaderFunction::Length),
-    Unary::ShaderFunction(ShaderFunction::Floor),
+const UNARY_FUNCTIONS: [Unary; 5] = [
+    Unary::Function(ShaderFunction::Normalize),
+    Unary::Function(ShaderFunction::Length),
+    Unary::Function(ShaderFunction::Floor),
     Unary::Operator(UnaryOperator::Not),
+    Unary::Operator(UnaryOperator::BitNot),
 ];
 
 /// The `jess.shader` functions of three operands.
 const TERNARY_FUNCTIONS: [Ternary; 3] = [
-    Ternary::ShaderFunction(ShaderFunction::Clamp),
-    Ternary::ShaderFunction(ShaderFunction::Mix),
+    Ternary::Function(ShaderFunction::Clamp),
+    Ternary::Function(ShaderFunction::Mix),
     Ternary::Select,
 ];
 
@@ -613,6 +619,15 @@ fn arithmetic(
             error(format!("{}: expected a shader value, not {found}", operation.name()))
         })?;
     binary(call, &build, operation, left, right)
+}
+
+/// `-value`.
+fn negate(call: &Call<'_>, value: ValueView<'_>) -> l3i::Result<Owned<LuaShaderExpr>> {
+    let Some(expression) = l3i::userdata::receiver::<LuaShaderExpr>(value) else {
+        return Err(error(format!("-: expected a shader value, not {}", shader_kind(value))));
+    };
+    let build = expression.build.clone();
+    unary(call, &build, Unary::Operator(UnaryOperator::Negate), value)
 }
 
 /// What a Luau value is, as an error names it: a shader handle by what it is and what to do with
@@ -1490,34 +1505,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .tag(TagPolicy::Required)
         .doc("A symbolic value in the shader program under construction.");
     crate::lua::plan::metamethod(&mut expression, "__index", swizzle);
-    crate::lua::plan::metamethod(
-        &mut expression,
-        "__add",
-        |call: &Call<'_>, left: ValueView<'_>, right: ValueView<'_>| {
-            arithmetic(call, Binary::Operator(BinaryOperator::Add), left, right)
-        },
-    );
-    crate::lua::plan::metamethod(
-        &mut expression,
-        "__sub",
-        |call: &Call<'_>, left: ValueView<'_>, right: ValueView<'_>| {
-            arithmetic(call, Binary::Operator(BinaryOperator::Subtract), left, right)
-        },
-    );
-    crate::lua::plan::metamethod(
-        &mut expression,
-        "__mul",
-        |call: &Call<'_>, left: ValueView<'_>, right: ValueView<'_>| {
-            arithmetic(call, Binary::Operator(BinaryOperator::Multiply), left, right)
-        },
-    );
-    crate::lua::plan::metamethod(
-        &mut expression,
-        "__div",
-        |call: &Call<'_>, left: ValueView<'_>, right: ValueView<'_>| {
-            arithmetic(call, Binary::Operator(BinaryOperator::Divide), left, right)
-        },
-    );
+    arithmetic_metamethods(&mut expression);
     crate::lua::plan::metamethod(&mut expression, "__eq", |this: &LuaShaderExpr, other: ValueView<'_>| {
         l3i::userdata::receiver::<LuaShaderExpr>(other)
             .is_some_and(|other| Rc::ptr_eq(&this.build, &other.build) && this.value == other.value)
@@ -1548,20 +1536,27 @@ pub fn describe(d: &mut ExtensionDescriptor) {
     describe_program(d);
 }
 
-/// Gives a handle that isn't a value the arithmetic metamethods, so `texture * 2` fails naming
-/// what the handle is instead of with Luau's own error.
-fn refuse_arithmetic<T: Userdata>(ty: &mut UserdataBuilder<'_, T>) {
+/// The arithmetic metamethods: on a value, the operators; on a handle that isn't one, an error
+/// naming what the handle is (`texture * 2`), instead of Luau's own.
+fn arithmetic_metamethods<T: Userdata>(ty: &mut UserdataBuilder<'_, T>) {
     let operations = [
         ("__add", Binary::Operator(BinaryOperator::Add)),
         ("__sub", Binary::Operator(BinaryOperator::Subtract)),
         ("__mul", Binary::Operator(BinaryOperator::Multiply)),
         ("__div", Binary::Operator(BinaryOperator::Divide)),
+        ("__mod", Binary::Operator(BinaryOperator::Remainder)),
     ];
     for (name, operation) in operations {
         crate::lua::plan::metamethod(ty, name, move |call: &Call<'_>, left: ValueView<'_>, right: ValueView<'_>| {
             arithmetic(call, operation, left, right)
         });
     }
+    // Luau passes the operand of unary `-` twice.
+    crate::lua::plan::metamethod(
+        ty,
+        "__unm",
+        |call: &Call<'_>, value: ValueView<'_>, _: Option<ValueView<'_>>| negate(call, value),
+    );
 }
 
 /// Declares places, textures, and samplers.
@@ -1571,7 +1566,7 @@ fn describe_bindings(d: &mut ExtensionDescriptor) {
         .tag(TagPolicy::Never)
         .doc("What a frequency binds, a struct, or an array, on the way to a value: `input.material`.");
     crate::lua::plan::metamethod(&mut place, "__index", place_index);
-    refuse_arithmetic(&mut place);
+    arithmetic_metamethods(&mut place);
     // Luau passes the operand of `#` twice.
     crate::lua::plan::metamethod(&mut place, "__len", |this: &LuaShaderPlace, _: Option<ValueView<'_>>| {
         place_length(this)
@@ -1586,7 +1581,7 @@ fn describe_bindings(d: &mut ExtensionDescriptor) {
 
     let mut texture = d.userdata::<LuaShaderTexture>(LuaShaderTexture::NAME);
     texture.tag(TagPolicy::Never).doc("A declared texture, for `shader.sample`.");
-    refuse_arithmetic(&mut texture);
+    arithmetic_metamethods(&mut texture);
     crate::lua::plan::metamethod(&mut texture, "__tostring", |_: &LuaShaderTexture| {
         format!("ShaderTexture({})", ResourceKind::Texture2D.name())
     });
@@ -1595,7 +1590,7 @@ fn describe_bindings(d: &mut ExtensionDescriptor) {
     sampler
         .tag(TagPolicy::Never)
         .doc("A sampler declared on its own, for `shader.sample`.");
-    refuse_arithmetic(&mut sampler);
+    arithmetic_metamethods(&mut sampler);
     crate::lua::plan::metamethod(&mut sampler, "__tostring", |_: &LuaShaderSampler| {
         format!("ShaderSampler({})", ResourceKind::Sampler.name())
     });

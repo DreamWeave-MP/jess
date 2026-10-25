@@ -137,6 +137,12 @@ impl Type {
         }
     }
 
+    /// Whether this is an `Int` or `UInt` scalar or vector: what the bitwise operators take.
+    #[must_use]
+    pub fn is_integer(self) -> bool {
+        matches!(self.scalar(), Scalar::Int | Scalar::UInt) && !self.is_matrix()
+    }
+
     /// Whether this is `Bool`, `Int`, `UInt`, or `Float`.
     #[must_use]
     pub fn is_scalar(self) -> bool {

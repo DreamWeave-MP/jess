@@ -345,9 +345,11 @@ impl Lowering<'_> {
                 emit!(self, ")");
             }
             Expression::Load(place) => self.place(&place),
+            // Parenthesized: `--1.0` is WGSL's decrement, not the negation of `-1.0`.
             Expression::Unary(operator, value) => {
-                emit!(self, "{}", operator.symbol());
+                emit!(self, "{}(", operator.symbol());
                 self.operand(value);
+                emit!(self, ")");
             }
             Expression::Binary(operator, left, right) => {
                 self.operand(left);

@@ -41,7 +41,7 @@ fn comparisons_choose_between_values() {
     for line in [
         "let e0 = input.v_shade < 0.5;",
         "let e1 = input.v_layer >= 2u;",
-        "let e2 = !e0;",
+        "let e2 = !(e0);",
         "let e3 = e2 || e1;",
         "let e4 = e3 && e0;",
         "let e5 = e4 == e3;",
