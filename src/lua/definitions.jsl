@@ -230,8 +230,9 @@ export type AudioStream = {
   rate: (self: AudioStream) -> number,
   --- Frames there is room for now.
   room: (self: AudioStream) -> number,
-  --- Writes as many whole frames of interleaved 32-bit floats as fit, and returns how many.
-  write: (self: AudioStream, samples: buffer) -> number,
+  --- Writes as many whole frames of interleaved 32-bit floats as fit, from the first `frames`
+  --- of the buffer (all of it without), and returns how many.
+  write: (self: AudioStream, samples: buffer, frames: number?) -> number,
   --- Waits until there is room for `frames`, or `timeout` seconds pass (forever without one);
   --- true if there is. It sleeps as long as playing at the stream's rate takes to make the room.
   wait: (self: AudioStream, frames: number, timeout: number?) -> boolean,

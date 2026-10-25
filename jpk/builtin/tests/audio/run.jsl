@@ -443,7 +443,8 @@ suite.describe('procedural audio', function()
     local context = audio.offline { channels = 1 }
     local stream = audio.stream { channels = 1, rate = 48000, seconds = 0.01 }
     local voice = context:play(stream)
-    expect(stream:write(buffer.create(4 * 100))).toBe(100)
+    expect(stream:write(buffer.create(4 * 100), 60)).toBe(60)
+    expect(stream:write(buffer.create(4 * 100), 40)).toBe(40)
     context:render(200)
     expect(stream:stats().missed >= 100).toBe(true)
     -- Full, it has room again only as the engine plays: offline, only as it renders.
@@ -458,6 +459,7 @@ suite.describe('procedural audio', function()
     context:render(600)
     expect(voice:state()).toBe 'ended'
     expect(function() stream:write(buffer.create(3)) end).toThrow 'whole number'
+    expect(function() stream:write(buffer.create(8), 3) end).toThrow 'more than the buffer holds'
     expect(function() context:play(audio.stream { channels = 1 }, { loop = true }) end).toThrow 'no loop for a stream'
   end)
 end)

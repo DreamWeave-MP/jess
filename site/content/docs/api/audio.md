@@ -38,14 +38,14 @@ A stream is audio written while it plays: a bounded ring of interleaved frames t
 
 A stream of `channels` (2) at `rate` (48000) frames per second holding `seconds` (1, at most 60) of audio. Given a handle from `stream:handle()`, the same stream, wherever the handle was sent: a worker opens the stream the main script plays, and writes it.
 
-{{ api_signature(value="stream:write(samples: buffer) -> number") }}
+{{ api_signature(value="stream:write(samples: buffer, frames: number?) -> number") }}
 {{ api_signature(value="stream:room() -> number") }}
 {{ api_signature(value="stream:wait(frames: number, timeout: number?) -> boolean") }}
 {{ api_signature(value="stream:finish()") }}
 {{ api_signature(value="stream:stats() -> { written: number, read: number, room: number, missed: number, finished: boolean }") }}
 {{ api_signature(value="stream:handle() -> JessHandle") }}
 
-`write` takes interleaved 32-bit floats and writes as many whole frames as there is room for, returning how many. `wait` waits until there is room for `frames`, or `timeout` seconds pass; it sleeps exactly as long as playing at the stream's rate takes to make the room, so it is for a worker feeding a device, and in an offline context (where room comes only from rendering) it waits out its timeout. `finish` says the writer is done: the voice plays what is left and ends. A stream has one writer at a time and one voice: playing it again is an error.
+`write` takes interleaved 32-bit floats and writes as many whole frames as there is room for, returning how many; given `frames`, it takes only that many from the start of the buffer, so a block that came back part full needs no copy. `wait` waits until there is room for `frames`, or `timeout` seconds pass; it sleeps exactly as long as playing at the stream's rate takes to make the room, so it is for a worker feeding a device, and in an offline context (where room comes only from rendering) it waits out its timeout. `finish` says the writer is done: the voice plays what is left and ends. A stream has one writer at a time and one voice: playing it again is an error.
 
 A stream plays once, from wherever its writer is: no `offset`, no `loop`, and a `rate` of at most 4. It is resampled to the context's rate like any source.
 

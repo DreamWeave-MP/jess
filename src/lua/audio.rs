@@ -171,14 +171,29 @@ fn describe_stream(d: &mut ExtensionDescriptor) {
         .untyped();
     stream.method("room", |this: &LuaAudioStream| number(this.0.room())).untyped();
     stream
-        .method("write", |this: &LuaAudioStream, samples: Bytes| -> l3i::Result<f64> {
-            if !samples.0.len().is_multiple_of(4) {
-                return Err(error(
-                    "AudioStream:write takes interleaved 32-bit floats: a whole number of them",
-                ));
-            }
-            Ok(number(this.0.write(&floats(&samples.0))? as u64))
-        })
+        .method(
+            "write",
+            |this: &LuaAudioStream, samples: Bytes, frames: Option<f64>| -> l3i::Result<f64> {
+                let mut data = &samples.0[..];
+                if let Some(frames) = frames {
+                    // The first `frames` frames only: a decoder or generator that filled part of
+                    // a reused buffer writes just that part.
+                    let size = count(frames, "AudioStream:write's frames")?.saturating_mul(this.0.channels() * 4);
+                    if size > data.len() {
+                        return Err(error(format!(
+                            "AudioStream:write: {frames} frames are more than the buffer holds"
+                        )));
+                    }
+                    data = &data[..size];
+                }
+                if !data.len().is_multiple_of(4) {
+                    return Err(error(
+                        "AudioStream:write takes interleaved 32-bit floats: a whole number of them",
+                    ));
+                }
+                Ok(number(this.0.write(&floats(data))? as u64))
+            },
+        )
         .untyped();
     stream
         .method(
