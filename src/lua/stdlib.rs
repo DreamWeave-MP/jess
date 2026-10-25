@@ -370,6 +370,8 @@ pub(crate) fn definitions() -> String {
            toBeNil: () -> (),\n  \
            --- A substring of a string, or an element of a list (by `toEqual`).\n  \
            toContain: (item: unknown) -> (),\n  \
+           --- A number within `tolerance` (default `1e-9`) of `expected`.\n  \
+           toBeCloseTo: (expected: number, tolerance: number?) -> (),\n  \
            --- The function raises, and its message contains `contains` when given.\n  \
            toThrow: (contains: string?) -> (),\n\
          }}\n\n\
