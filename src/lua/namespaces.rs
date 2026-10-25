@@ -31,6 +31,12 @@ const TYPES: [(&str, &str); 12] = [
     ("jess.input.Runtime", "InputRuntime"),
 ];
 
+/// The GPU's handle types, in a jess built with the `gpu` feature.
+#[cfg(feature = "gpu")]
+const GPU_TYPES: [(&str, &str); 1] = [("jess.gpu.Device", "GpuDevice")];
+#[cfg(not(feature = "gpu"))]
+const GPU_TYPES: [(&str, &str); 0] = [];
+
 /// Every handle type scripts index, with the names it registers.
 ///
 /// # Panics
@@ -54,6 +60,7 @@ pub fn userdata() -> Vec<Namespace> {
     let plan = runtime.plan().expect("a planned runtime");
     TYPES
         .iter()
+        .chain(GPU_TYPES.iter())
         .map(|(key, name)| {
             let resolved = plan.userdata_by_key(key).unwrap_or_else(|| panic!("{key} is in the plan"));
             let surface = crate::lua::plan::surface_of(key);

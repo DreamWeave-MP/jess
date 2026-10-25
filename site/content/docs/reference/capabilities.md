@@ -6,9 +6,9 @@ extra:
   kind: reference
 ---
 
-Nothing optional is granted unless the operator asks. Files, the environment, child processes, the network, input devices, and workers are named capabilities, denied by default and checked at the native seam, by the function that would do the thing. The check is not advisory: a function that needs a capability its caller doesn't hold raises, names itself, and names the capability.
+Nothing optional is granted unless the operator asks. Files, the environment, child processes, the network, input devices, the GPU, and workers are named capabilities, denied by default and checked at the native seam, by the function that would do the thing. The check is not advisory: a function that needs a capability its caller doesn't hold raises, names itself, and names the capability.
 
-There are fourteen names. Jess knows all of them up front, so a misspelled grant is an error rather than a grant of nothing.
+There are fifteen names. Jess knows all of them up front, so a misspelled grant is an error rather than a grant of nothing.
 
 ## The names
 
@@ -27,6 +27,7 @@ There are fourteen names. Jess knows all of them up front, so a misspelled grant
 | `input.configure` | Configuring the input runtime: compiling and installing action graphs, bindings, sets, and layers. | [`jess.input`](@/docs/api/input.md) |
 | `input.actions` | Reading action state and action events from the runtime. | `jess.input` |
 | `input.observe` | Observing the devices themselves. | `jess.input` |
+| `gpu.device` | Opening the GPU: drawing and computing with it, and reading back what it made. | [`jess.gpu`](@/docs/api/gpu.md) |
 | `worker.spawn` | Spawning an isolated Luau worker beside a script domain. | [`jess.worker.spawn`](@/docs/api/worker.md) |
 
 The native modules are L3i's, and L3i owns the check for each; jess decides what is granted. [The @dream modules](@/docs/api/l3i.md) says which module is which.
@@ -35,7 +36,7 @@ The native modules are L3i's, and L3i owns the check for each; jess decides what
 
 **A script you run as a program holds everything.** `jess script.jsl`, which is what a shebang line (`#!/usr/bin/env jess`) hands jess, and `jess run --trusted`, grant every capability in the table: you made the file executable and ran it, the same decision you make for any program, and a loose script has no manifest to declare what it needs in. The two forms below are for code you are inspecting rather than trusting.
 
-**A script you run holds what you already have.** Under `jess run` and `jess test`, the runtime starts with `process.stdio`, `input.actions`, `input.observe`, and `input.configure`: your terminal and the input devices in front of you. Everything else is `--capability <name>`, repeatable, and denied without it.
+**A script you run holds what you already have.** Under `jess run` and `jess test`, the runtime starts with `process.stdio`, `input.actions`, `input.observe`, `input.configure`, and `gpu.device`: your terminal, and the input devices and the GPU in front of you. Everything else is `--capability <name>`, repeatable, and denied without it.
 
 ```text
 $ jess run read.jsl
@@ -95,7 +96,7 @@ Three different texts, from three different places, and each tells you which:
 | --- | --- |
 | The function, at the seam | `dream.fs.readFileString: needs the 'filesystem.read' capability, which this runtime does not grant` |
 | `jess package run`, before activation | `cannot run target greet` followed by `required capability denied:` and the names, then `requested by:` the package, version, and target |
-| The grant itself | `unknown capability 'filesystem.raed'; a jess runtime can be granted filesystem.read, filesystem.write, input.actions, input.configure, input.observe, network.dns.resolve, network.tcp.connect, network.tcp.listen, network.tcp.public, network.transport, process.environment, process.spawn, process.stdio, worker.spawn` |
+| The grant itself | `unknown capability 'filesystem.raed'; a jess runtime can be granted filesystem.read, filesystem.write, gpu.device, input.actions, input.configure, input.observe, network.dns.resolve, network.tcp.connect, network.tcp.listen, network.tcp.public, network.transport, process.environment, process.spawn, process.stdio, worker.spawn` |
 
 The last one also fires for a target that declares a name jess doesn't know. `jess package inspect` accepts any dotted name, since the manifest format is older than any particular list; `jess package run` refuses it. Inside a script domain, the runtime's own broker reports a denial as `capability '<name>' denied to <context or worker>`, attributed to whoever asked.
 

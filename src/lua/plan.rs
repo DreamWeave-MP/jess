@@ -121,7 +121,7 @@ fn builder(capabilities: &[String], profiling: bool) -> RuntimePlanBuilder {
 
 /// The members of `@jess`, installed per runtime. Each table among them is also the module
 /// `@jess/<name>` (`require("@jess/shader")`).
-pub(crate) const MEMBERS: [&str; 13] = [
+pub(crate) const MEMBERS: [&str; 14] = [
     "version",
     "null",
     "granted",
@@ -134,6 +134,7 @@ pub(crate) const MEMBERS: [&str; 13] = [
     "application",
     "input",
     "audio",
+    "gpu",
     "bench",
 ];
 
@@ -159,12 +160,15 @@ impl Extension for JessExtension {
         crate::lua::shader::describe(d);
         crate::lua::input::describe(d);
         crate::lua::audio::describe(d);
+        #[cfg(feature = "gpu")]
+        crate::lua::gpu::describe(d);
         // `jess.input` checks these against the plan outside a domain, and the broker inside one.
         for capability in INPUT_CAPABILITIES {
             d.optional_capability(capability);
         }
         // `jess.audio.output` checks this the same way.
         d.optional_capability(crate::audio::capability::OUTPUT);
+        d.optional_capability(crate::lua::gpu::DEVICE_CAPABILITY);
         let module = d.module(MODULE);
         module.doc("Generic native services for Luau applications.");
         for name in MEMBERS {
@@ -238,6 +242,7 @@ impl Extension for JessExtension {
         module.set("application", &crate::lua::application::module(runtime)?)?;
         module.set("input", &crate::lua::input::module(runtime, &jess)?)?;
         module.set("audio", &crate::lua::audio::module(runtime, &jess)?)?;
+        module.set("gpu", &crate::lua::gpu::module(runtime, &jess)?)?;
         Ok(())
     }
 }

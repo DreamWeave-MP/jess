@@ -620,6 +620,17 @@ declare extern type ShaderInput with
   __tostring: (self: ShaderInput) -> string
 end
 
+--- The GPU a script draws and computes with: the adapter's `name`, the `backend` API wgpu reaches it
+--- through (`vulkan`, `metal`, `dx12`, `gl`), its `kind` (`discrete`, `integrated`, `virtual`,
+--- `cpu`, `other`), and its `limits`. `tostring` gives `GpuDevice(name, backend)`.
+declare extern type GpuDevice with
+  name: string
+  backend: string
+  kind: string
+  limits: { textureSize: number, textureLayers: number, bufferSize: number, workgroups: number }
+  __tostring: (self: GpuDevice) -> string
+end
+
 --- A finished, validated shader program: what a shader module returns, for jess to lower to the
 --- backend. `tostring` gives `ShaderProgram(3 attributes, 2 uniforms, 1 texture, 2 varyings)`, or
 --- for a compute program `ShaderProgram(compute 64×1×1, 1 uniform, 0 textures, 2 storage buffers)`.
@@ -1004,5 +1015,14 @@ declare jess: {
     feed: (data: buffer | string, options: AudioFeedOptions?) -> AudioFeed,
     --- The processor kinds `AudioContext:node` and `AudioNode:insert` make, a host's own included.
     processors: () -> { string },
+  },
+
+  --- The GPU in front of the script, as `jess::gpu` reaches it; `require("@jess/gpu")` is the same
+  --- table. See `@jess/render` for what drawing with it means.
+  gpu: {
+    --- The runtime's device, opened on the first call on whatever adapter the machine has, a
+    --- software one included. Needs `gpu.device`; a jess built without the `gpu` feature says
+    --- it has no GPU.
+    device: () -> GpuDevice,
   },
 }
