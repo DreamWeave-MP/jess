@@ -112,7 +112,7 @@ impl Gpu {
             let mut encoder = self
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-            encode(&mut encoder, pipeline, groups, workgroups);
+            encode(&mut encoder, pipeline, groups, workgroups, None);
             self.queue.submit([encoder.finish()]);
         })
     }
@@ -149,14 +149,23 @@ pub fn group_problem(pipeline: &ComputePipeline, groups: [Option<&BindGroup>; 3]
     None
 }
 
-/// Records a dispatch whose groups and workgroups were checked into `encoder`.
+/// Records a dispatch whose groups and workgroups were checked into `encoder`, timed as
+/// [`pass::encode`](super::pass::encode) times a pass.
 pub fn encode(
     encoder: &mut wgpu::CommandEncoder,
     pipeline: &ComputePipeline,
     groups: [Option<&BindGroup>; 3],
     workgroups: [u32; 3],
+    timed: Option<(&wgpu::QuerySet, u32)>,
 ) {
-    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+        label: None,
+        timestamp_writes: timed.map(|(query_set, first)| wgpu::ComputePassTimestampWrites {
+            query_set,
+            beginning_of_pass_write_index: Some(first),
+            end_of_pass_write_index: Some(first + 1),
+        }),
+    });
     pass.set_pipeline(&pipeline.raw);
     for (group, bound) in (0..).zip(groups) {
         if let Some(bound) = bound {

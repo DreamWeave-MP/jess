@@ -293,6 +293,18 @@ fn a_plan_draws_tests_depth_samples_and_reads_back() {
     assert_eq!(copied(&pixels, 2, 8), [0, 153, 0, 255]);
     assert_eq!(copied(&pixels, SIZE - 2, 8), [153, 0, 0, 255]);
 
+    // Each drawing pass is timed where the device can; a copy never is.
+    let timings = gpu.timings(&plan).unwrap();
+    if gpu.info().timestamps {
+        let timings = timings.expect("a device with timestamps times its plans");
+        let passes: Vec<&str> = timings.iter().map(|timing| timing.pass.as_str()).collect();
+        assert_eq!(passes, plan.order());
+        assert!(timings[..3].iter().all(|timing| timing.duration.is_some()));
+        assert_eq!(timings[3].duration, None, "the copy isn't timed");
+    } else {
+        assert_eq!(timings, None);
+    }
+
     // Draw sets change between runs; the plan doesn't.
     let hidden = scene.sets.matching(&["overlay".to_owned()]);
     hidden[0].set_visible(false);

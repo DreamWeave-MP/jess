@@ -193,6 +193,29 @@ pub struct Plan {
     /// aliases; `None` for an imported one, and for one no surviving pass uses.
     allocations: Vec<Option<Allocation>>,
     passes: Vec<PlannedPass>,
+    /// Where each surviving pass's timestamps go, on a device that times passes.
+    timing: Option<Timing>,
+}
+
+/// A plan's timestamps: a pair of queries for each drawing or compute pass, and the buffer they
+/// resolve into at the end of every run.
+#[derive(Debug)]
+struct Timing {
+    set: wgpu::QuerySet,
+    resolve: wgpu::Buffer,
+    /// Each surviving pass's first query, in order; `None` for a copy, which isn't timed.
+    first: Vec<Option<u32>>,
+    count: u32,
+}
+
+/// How long one pass of a plan's last run took on the GPU.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PassTiming {
+    /// The pass.
+    pub pass: String,
+    /// How long it took, from its first command to its last; `None` for a copy pass, which isn't
+    /// timed.
+    pub duration: Option<std::time::Duration>,
 }
 
 impl Plan {
@@ -356,13 +379,89 @@ impl Gpu {
                 .map_err(|problem| in_pass(pass.name(), problem))?;
             passes.push(PlannedPass { index, work: planned });
         }
+        let timing = self.timing(&passes)?;
         Ok(Plan {
             graph: graph.clone(),
             work,
             viewport,
             allocations,
             passes,
+            timing,
         })
+    }
+
+    /// The queries `passes` are timed with, on a device that times passes.
+    fn timing(&self, passes: &[PlannedPass]) -> Result<Option<Timing>, GpuError> {
+        if !self.info.timestamps {
+            return Ok(None);
+        }
+        let mut count = 0;
+        let first: Vec<Option<u32>> = passes
+            .iter()
+            .map(|pass| {
+                if matches!(pass.work, PlannedWork::Copy) {
+                    return None;
+                }
+                count += 2;
+                Some(count - 2)
+            })
+            .collect();
+        if count == 0 {
+            return Ok(None);
+        }
+        self.checked(|| Timing {
+            set: self.device.create_query_set(&wgpu::QuerySetDescriptor {
+                label: None,
+                ty: wgpu::QueryType::Timestamp,
+                count,
+            }),
+            resolve: self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: u64::from(count) * 8,
+                usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            }),
+            first,
+            count,
+        })
+        .map(Some)
+    }
+
+    /// How long each pass of `plan`'s last run took on the GPU, in the order they ran; `None` on a
+    /// device that doesn't time passes. A plan that hasn't run reports zeros. Reading them waits
+    /// for that run to finish.
+    ///
+    /// # Errors
+    ///
+    /// What the device refuses in reading them back.
+    pub fn timings(&self, plan: &Plan) -> Result<Option<Vec<PassTiming>>, GpuError> {
+        let Some(timing) = &plan.timing else {
+            return Ok(None);
+        };
+        let size = u64::from(timing.count) * 8;
+        let bytes = self.read_back(size, |encoder, staging| {
+            encoder.copy_buffer_to_buffer(&timing.resolve, 0, staging, 0, size);
+        })?;
+        let stamp = |index: u32| {
+            let at = index as usize * 8;
+            u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap_or([0; 8]))
+        };
+        let period = f64::from(self.queue.get_timestamp_period());
+        Ok(Some(
+            plan.passes
+                .iter()
+                .zip(&timing.first)
+                .map(|(pass, first)| PassTiming {
+                    pass: plan.graph.passes()[pass.index].name().to_owned(),
+                    // Ticks between two stamps of one pass are far below 2^53.
+                    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    duration: first.map(|first| {
+                        let ticks = stamp(first + 1).saturating_sub(stamp(first));
+                        std::time::Duration::from_nanos((ticks as f64 * period) as u64)
+                    }),
+                })
+                .collect(),
+        ))
     }
 
     /// A texture or buffer for each group of transient resources that share one, a texture at its
@@ -645,8 +744,15 @@ impl Gpu {
             let mut encoder = self
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-            for (planned, recording) in plan.passes.iter().zip(&recorded) {
-                recording.encode(&mut encoder, &graph.passes()[planned.index], &live);
+            for (position, (planned, recording)) in plan.passes.iter().zip(&recorded).enumerate() {
+                let timed = plan
+                    .timing
+                    .as_ref()
+                    .and_then(|timing| timing.first[position].map(|first| (&timing.set, first)));
+                recording.encode(&mut encoder, &graph.passes()[planned.index], &live, timed);
+            }
+            if let Some(timing) = &plan.timing {
+                encoder.resolve_query_set(&timing.set, 0..timing.count, &timing.resolve, 0);
             }
             self.queue.submit([encoder.finish()]);
         })
@@ -794,7 +900,13 @@ fn record<'a>(pass: &Pass, held: &'a Held, live: &[Option<Live<'a>>]) -> Result<
 
 impl Recording<'_> {
     /// Records the pass into `encoder`: the buffers it clears, then its work.
-    fn encode(&self, encoder: &mut wgpu::CommandEncoder, pass: &Pass, live: &[Option<Live<'_>>]) {
+    fn encode(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        pass: &Pass,
+        live: &[Option<Live<'_>>],
+        timed: Option<(&wgpu::QuerySet, u32)>,
+    ) {
         for output in &pass.outputs {
             if let (LoadOp::Clear(_), Some(Live::Buffer(buffer))) = (output.load, live[output.resource.index()]) {
                 encoder.clear_buffer(&buffer.raw, 0, None);
@@ -806,12 +918,12 @@ impl Recording<'_> {
                 depth,
                 read_only,
                 draws,
-            } => encode(encoder, colors, depth.as_ref(), *read_only, draws),
+            } => encode(encoder, colors, depth.as_ref(), *read_only, draws, timed),
             Recording::Compute {
                 pipeline,
                 groups,
                 workgroups,
-            } => compute::encode(encoder, pipeline, *groups, *workgroups),
+            } => compute::encode(encoder, pipeline, *groups, *workgroups, timed),
             Recording::Copy => {
                 let (source, destination) = (pass.inputs[0].resource.index(), pass.outputs[0].resource.index());
                 let (Some(from), Some(to)) = (live[source], live[destination]) else {

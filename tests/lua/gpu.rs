@@ -706,6 +706,14 @@ const FRAME_PLAN: &str = r"
             plan:run({ output = output, pixels = pixels })
             assert(texel(14, 8) == 0xff990000, string.format('%08x', texel(14, 8)))
 
+            local timings = plan:timings()
+            if device.timestamps then
+              assert(timings and #timings == 4 and timings[1].pass == 'opaque' and timings[1].ms >= 0)
+              assert(timings[4].pass == 'readBack' and timings[4].ms == nil, 'a copy is not timed')
+            else
+              assert(timings == nil)
+            end
+
             local small = plan:resized(8, 8)
             assert(small.viewport.width == 8 and plan.viewport.width == 16)
 ";

@@ -93,7 +93,7 @@ impl Gpu {
             let mut encoder = self
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-            encode(&mut encoder, colors, depth, false, draws);
+            encode(&mut encoder, colors, depth, false, draws, None);
             self.queue.submit([encoder.finish()]);
         })
     }
@@ -127,13 +127,15 @@ pub fn check_pass(
     Ok(())
 }
 
-/// Records a pass [`check_pass`] accepted into `encoder`.
+/// Records a pass [`check_pass`] accepted into `encoder`, with its start and end timestamps at
+/// `timed`'s query and the next, if it is timed.
 pub fn encode(
     encoder: &mut wgpu::CommandEncoder,
     colors: &[Target<'_>],
     depth: Option<&Target<'_>>,
     read_only: bool,
     draws: &[Draw<'_>],
+    timed: Option<(&wgpu::QuerySet, u32)>,
 ) {
     let views: Vec<wgpu::TextureView> = colors.iter().chain(depth).map(target_view).collect();
     let attachments: Vec<Option<wgpu::RenderPassColorAttachment<'_>>> = colors
@@ -171,7 +173,11 @@ pub fn encode(
         label: None,
         color_attachments: &attachments,
         depth_stencil_attachment: depth_attachment,
-        timestamp_writes: None,
+        timestamp_writes: timed.map(|(query_set, first)| wgpu::RenderPassTimestampWrites {
+            query_set,
+            beginning_of_pass_write_index: Some(first),
+            end_of_pass_write_index: Some(first + 1),
+        }),
         occlusion_query_set: None,
         multiview_mask: None,
     });

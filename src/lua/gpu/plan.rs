@@ -632,6 +632,27 @@ pub fn describe(d: &mut ExtensionDescriptor) {
     })
     .untyped();
     plan.method("run", run).untyped();
+    plan.method("timings", |this: &LuaGpuPlan, call: &Call<'_>| -> l3i::Result<StackResults> {
+        let timings = this
+            .gpu
+            .timings(&this.plan)
+            .map_err(|problem| gpu_error("GpuPlan:timings", &problem))?;
+        let Some(timings) = timings else {
+            call.with_frame(|frame| frame.push_nil().map(drop))?;
+            return Ok(StackResults);
+        };
+        l3i::stack::push_list(call, timings.iter(), |frame, timing| {
+            push_table(frame, 0, 2, |frame, table| {
+                table.raw_set_value(frame, "pass", timing.pass.as_str())?;
+                if let Some(duration) = timing.duration {
+                    table.raw_set_value(frame, "ms", &(duration.as_secs_f64() * 1000.0))?;
+                }
+                Ok(())
+            })
+        })?;
+        Ok(StackResults)
+    })
+    .untyped();
     plan.method("resized", resized).untyped();
     plan.method("dump", |this: &LuaGpuPlan| -> l3i::Result<String> {
         let graph = this.plan.graph();

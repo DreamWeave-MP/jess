@@ -31,6 +31,7 @@ The runtime's device. The first call opens it, on whatever adapter the machine h
 | `kind` | `string` | `discrete`, `integrated`, `virtual`, `cpu` (a software adapter), or `other`. |
 | `limits` | `{ textureSize, textureLayers, bufferSize, workgroups }` | The widest or tallest 2D texture, the most layers an array texture has, the largest buffer in bytes, and the most workgroups a dispatch has on one axis. |
 | `pipelines` | `{ compiled, reused }` | How many pipelines the device compiled, and how many times `GpuDevice:pipeline` gave back one it already had. |
+| `timestamps` | `boolean` | Whether the device times passes, which `GpuPlan:timings` reports. |
 | `live` | `{ buffers, textures, samplers, bindGroups, pipelines }` | How many of each the device has alive: made, and not yet let go of. A count that only grows is a leak. |
 
 `tostring(device)` is `GpuDevice(name, backend)`.
@@ -396,6 +397,7 @@ Mistakes in the description name the pass: `GpuDevice:plan: pass present uses no
 | `run(imports)` | `({ [string]: GpuTexture \| GpuBuffer }?) -> ()` | Runs every pass once, in one submission, with a texture or buffer for each imported target or buffer by name: a texture of its format and size at the viewport, a buffer of its size. |
 | `resized(width, height)` | `(number, number) -> GpuPlan` | The same plan for another viewport, its targets made again at the new size. |
 | `dump()` | `() -> string` | The compiled graph: the passes in order, what each reads and writes, what was culled, every target's lifetime, and what shares memory. |
+| `timings()` | `() -> { { pass, ms } }?` | How long each pass of the last run took on the GPU, in milliseconds, in the order they ran; a copy pass has no `ms`. `nil` on a device without `timestamps`. Asking waits for that run to finish, so ask once in a while, not every frame. |
 
 `tostring(plan)` is `GpuPlan(name, 4 of 5 passes, 640×480)`.
 

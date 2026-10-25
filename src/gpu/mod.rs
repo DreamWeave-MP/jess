@@ -40,7 +40,7 @@ pub use live::LiveCounts;
 pub use pass::{Draw, IndexFormat, Target};
 pub use pipeline::{Blend, ColorState, Cull, DepthState, PipelineState, RenderPipeline, Topology};
 pub(crate) use pipeline::{Group, Slot};
-pub use plan::{Import, Plan, PlanBinding, PlanGroup, Work};
+pub use plan::{Import, PassTiming, Plan, PlanBinding, PlanGroup, Work};
 pub use sampler::{AddressMode, Compare, Filter, Sampler, SamplerDesc};
 #[cfg(feature = "window")]
 pub use surface::{PresentMode, Surface, SurfaceFrame};
@@ -119,6 +119,8 @@ pub struct GpuInfo {
     pub max_buffer_size: u64,
     /// The most workgroups a dispatch may have on one axis.
     pub max_workgroups: u32,
+    /// Whether it times passes: a plan's [`Gpu::timings`] say how long each took.
+    pub timestamps: bool,
 }
 
 /// The process's wgpu instances: one of the primary backends (Vulkan, Metal, Direct3D 12), and one
@@ -192,8 +194,17 @@ impl Gpu {
             }
         }
         let (instance, adapter) = found.ok_or(GpuError::NoAdapter)?;
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-            .map_err(|error| GpuError::Device(error.to_string()))?;
+        let timestamps = adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
+        let descriptor = wgpu::DeviceDescriptor {
+            required_features: if timestamps {
+                wgpu::Features::TIMESTAMP_QUERY
+            } else {
+                wgpu::Features::empty()
+            },
+            ..wgpu::DeviceDescriptor::default()
+        };
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&descriptor)).map_err(|error| GpuError::Device(error.to_string()))?;
         // An error no scope catches would panic in wgpu's default handler; every call here opens a
         // scope, so this only ever sees what slips past one, and drops it rather than abort.
         device.on_uncaptured_error(Arc::new(|_| {}));
@@ -213,6 +224,7 @@ impl Gpu {
             max_texture_layers: limits.max_texture_array_layers,
             max_buffer_size: limits.max_buffer_size,
             max_workgroups: limits.max_compute_workgroups_per_dimension,
+            timestamps,
         };
         Ok(Gpu {
             instance,
@@ -261,7 +273,7 @@ impl Gpu {
     }
 
     /// Copies `size` bytes of `source` from `offset` into a buffer the CPU can read, and reads it.
-    fn read_back(
+    pub(crate) fn read_back(
         &self,
         size: u64,
         copy: impl FnOnce(&mut wgpu::CommandEncoder, &wgpu::Buffer),

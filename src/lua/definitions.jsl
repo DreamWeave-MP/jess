@@ -899,7 +899,8 @@ export type GpuPlanDesc = {
 --- A render graph compiled for its device and a viewport: the passes that run, in `order`, and the
 --- textures and buffers it allocated (`allocations`) for its own targets and buffers. `run` runs every pass
 --- once, in one submission, with a texture or buffer for each imported one by name; `resized` is
---- the same plan for another viewport, and `dump` the compiled graph. `tostring` gives
+--- the same plan for another viewport, `dump` the compiled graph, and `timings` how long each
+--- pass of the last run took on the GPU, on a device with `timestamps`. `tostring` gives
 --- `GpuPlan(scene, 4 of 5 passes, 640×480)`.
 declare extern type GpuPlan with
   name: string
@@ -909,6 +910,7 @@ declare extern type GpuPlan with
   function run(self, imports: { [string]: GpuTexture | GpuBuffer }?): ()
   function resized(self, width: number, height: number): GpuPlan
   function dump(self): string
+  function timings(self): { { pass: string, ms: number? } }?
   __tostring: (self: GpuPlan) -> string
 end
 
@@ -954,6 +956,7 @@ declare extern type GpuDevice with
   kind: string
   limits: { textureSize: number, textureLayers: number, bufferSize: number, workgroups: number }
   pipelines: { compiled: number, reused: number }
+  timestamps: boolean
   live: { buffers: number, textures: number, samplers: number, bindGroups: number, pipelines: number }
   function buffer(self, size: number, usage: GpuBufferUsage | { GpuBufferUsage }): GpuBuffer
   function texture(self, desc: GpuTextureDesc): GpuTexture

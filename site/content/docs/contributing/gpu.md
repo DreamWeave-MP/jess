@@ -40,6 +40,8 @@ A copy between a target and a buffer lays each row out as its texels padded to a
 
 `Gpu::run` takes the draw sets its draw passes choose from, and an `Import` for each imported target and buffer: a texture of the declared format and size at the plan's viewport, a buffer of the declared size. `Plan::resized(viewport)` is the same plan for another viewport, its transient targets and the groups that bind them made again. `Plan::order()` names the passes that run, and `Plan::allocations()` counts what the plan allocated.
 
+On a device whose adapter offers timestamp queries (`GpuInfo::timestamps`, requested when the device opens), a plan times every drawing and compute pass: a query pair per pass written at its start and end, resolved into a buffer at the end of each run. `Gpu::timings(plan)` reads the last run's back as a `PassTiming` per pass, in nanoseconds converted by the queue's timestamp period. Copies aren't timed: timing one would need timestamps inside an encoder, which isn't portable.
+
 ## Generations and Teardown
 
 Every buffer, texture, sampler, bind group, and pipeline holds a token of its device's `LiveCounts`, given back when it drops; `Gpu::live` reads them. wgpu keeps an object the GPU is still using until it is done with it, so dropping one is always safe, whatever is in flight.

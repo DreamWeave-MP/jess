@@ -114,6 +114,9 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         )
         .untyped();
     device
+        .getter("timestamps", |this: &LuaGpuDevice| this.gpu.info().timestamps)
+        .untyped();
+    device
         .getter("live", |this: &LuaGpuDevice, call: &Call<'_>| -> l3i::Result<StackResults> {
             let live = this.gpu.live();
             push_table(call, 0, 5, |frame, table| {
