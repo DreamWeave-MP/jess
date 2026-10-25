@@ -9,8 +9,8 @@ use std::sync::Arc;
 use common::{assert_golden, assert_valid_wgsl};
 use jess::shader::wgsl::{self, WgslModule};
 use jess::shader::{
-    Literal, Program, ProgramBuilder, Semantic, Site, SourceOrigin, Swizzle, Type, ValidationError, ValidationErrorKind,
-    Value,
+    Literal, Program, ProgramBuilder, Rate, Semantic, Site, SourceOrigin, Swizzle, Type, ValidationError,
+    ValidationErrorKind, Value,
 };
 
 fn origin(line: u32, column: u32) -> SourceOrigin {
@@ -45,7 +45,8 @@ fn lowered(builder: ProgramBuilder) -> (Program, WgslModule) {
 fn solid_color() -> Result<ProgramBuilder, ValidationError> {
     let mut builder = ProgramBuilder::new();
     let mut site = builder.site();
-    let position = site.vertex_input("position", Type::Vec3f)?;
+    let position = site.attribute(Rate::Vertex, "position", Type::Vec3f)?;
+    let position = site.read_attribute(position);
     let color = site.parameter("color", Type::Vec4f)?;
     let clip = clip(&mut site, position)?;
     site.set_position(clip)?;
@@ -58,9 +59,12 @@ fn solid_color() -> Result<ProgramBuilder, ValidationError> {
 fn textured_lit() -> Result<ProgramBuilder, ValidationError> {
     let mut builder = ProgramBuilder::new();
     let mut site = builder.site();
-    let position = site.vertex_input("position", Type::Vec3f)?;
-    let normal = site.vertex_input("normal", Type::Vec3f)?;
-    let uv = site.vertex_input("uv", Type::Vec2f)?;
+    let position = site.attribute(Rate::Vertex, "position", Type::Vec3f)?;
+    let position = site.read_attribute(position);
+    let normal = site.attribute(Rate::Vertex, "normal", Type::Vec3f)?;
+    let normal = site.read_attribute(normal);
+    let uv = site.attribute(Rate::Vertex, "uv", Type::Vec2f)?;
+    let uv = site.read_attribute(uv);
     let normal_matrix = site.parameter("normalMatrix", Type::Mat3f)?;
     let light_direction = site.parameter("lightDirection", Type::Vec3f)?;
     let ambient = site.parameter("ambient", Type::Float)?;
@@ -116,8 +120,10 @@ fn vertex_transform_and_color_keep_their_origins() {
     let mut builder = ProgramBuilder::new();
     let mut site = builder.at(origin(4, 5));
     let tint = site.parameter("tint", Type::Vec4f).unwrap();
-    let position = site.vertex_input("position", Type::Vec3f).unwrap();
-    let color = site.vertex_input("color", Type::Vec4f).unwrap();
+    let position = site.attribute(Rate::Vertex, "position", Type::Vec3f).unwrap();
+    let position = site.read_attribute(position);
+    let color = site.attribute(Rate::Vertex, "color", Type::Vec4f).unwrap();
+    let color = site.read_attribute(color);
 
     let mut site = builder.at(origin(9, 17));
     let projection = site.semantic(Semantic::Projection);
@@ -142,7 +148,7 @@ fn vertex_transform_and_color_keep_their_origins() {
 
     let program = builder.program();
     assert_eq!(program.parameters()[0].origin, Some(origin(4, 5)));
-    assert_eq!(program.vertex_inputs()[1].origin, Some(origin(4, 5)));
+    assert_eq!(program.attributes()[1].origin, Some(origin(4, 5)));
     assert_eq!(program.varyings()[0].name, "color");
     assert_eq!(program.varyings()[0].origin, Some(origin(14, 7)));
     assert_eq!(program.origin(clip.expression()), Some(&origin(9, 17)));
@@ -161,7 +167,8 @@ fn vertex_transform_and_color_keep_their_origins() {
 fn swizzles_and_constructions_are_typed_as_they_are_built() {
     let mut builder = ProgramBuilder::new();
     let mut site = builder.site();
-    let position = site.vertex_input("position", Type::Vec2f).unwrap();
+    let position = site.attribute(Rate::Vertex, "position", Type::Vec2f).unwrap();
+    let position = site.read_attribute(position);
     let tint = site.parameter("tint", Type::Vec3f).unwrap();
     let zero = site.float(0.0).unwrap();
     let one = site.float(1.0).unwrap();
@@ -344,8 +351,10 @@ fn declarations_are_checked_at_their_site() {
     let messages = [
         site.parameter("tint", Type::Vec3f).unwrap_err().to_string(),
         site.parameter("visible", Type::Bool).unwrap_err().to_string(),
-        site.vertex_input("1st", Type::Float).unwrap_err().to_string(),
-        site.vertex_input("diffuse", Type::Texture2D).unwrap_err().to_string(),
+        site.attribute(Rate::Vertex, "1st", Type::Float).unwrap_err().to_string(),
+        site.attribute(Rate::Vertex, "diffuse", Type::Texture2D)
+            .unwrap_err()
+            .to_string(),
         site.pass("transform", model).unwrap_err().to_string(),
         site.pass("uv", uv).unwrap_err().to_string(),
         site.pass("light-direction", uv).unwrap_err().to_string(),
@@ -356,10 +365,10 @@ fn declarations_are_checked_at_their_site() {
             "shaders/lit.jsl:1:1 (@test/viewer): parameter \"tint\" is declared twice",
             "shaders/lit.jsl:1:1 (@test/viewer): parameter \"visible\" cannot be Bool: expected Int, UInt, Float, \
              a vector, a matrix, Texture2D, or Sampler",
-            "shaders/lit.jsl:1:1 (@test/viewer): vertex input name \"1st\" is invalid: expected ASCII letters, \
+            "shaders/lit.jsl:1:1 (@test/viewer): attribute name \"1st\" is invalid: expected ASCII letters, \
              digits, and underscores, not starting with a digit",
-            "shaders/lit.jsl:1:1 (@test/viewer): vertex input \"diffuse\" cannot be Texture2D: expected Int, \
-             UInt, Float, or a vector",
+            "shaders/lit.jsl:1:1 (@test/viewer): attribute \"diffuse\" cannot be Texture2D: expected Int, \
+             UInt, Float, a vector, or a matrix",
             "shaders/lit.jsl:1:1 (@test/viewer): varying \"transform\" cannot be Mat4f: expected Int, UInt, \
              Float, or a vector",
             "shaders/lit.jsl:1:1 (@test/viewer): varying \"uv\" is declared twice",
@@ -369,7 +378,7 @@ fn declarations_are_checked_at_their_site() {
     );
     let program = builder.program();
     assert_eq!((program.parameters().len(), program.varyings().len()), declared);
-    assert_eq!(program.vertex_inputs(), []);
+    assert_eq!(program.attributes(), []);
     assert_eq!(program.varying_writes().len(), 1, "a rejected pass writes nothing");
 }
 
@@ -406,11 +415,13 @@ fn values_from_another_program_are_refused() {
 fn finish_reports_whole_program_mistakes_with_origins() {
     let mut builder = ProgramBuilder::new();
     let mut site = builder.at(origin(3, 1));
-    let position = site.vertex_input("position", Type::Vec3f).unwrap();
+    let position = site.attribute(Rate::Vertex, "position", Type::Vec3f).unwrap();
+    let position = site.read_attribute(position);
     site.set_position(position).unwrap();
 
     let mut site = builder.at(origin(9, 2));
-    let color = site.vertex_input("color", Type::Vec4f).unwrap();
+    let color = site.attribute(Rate::Vertex, "color", Type::Vec4f).unwrap();
+    let color = site.read_attribute(color);
     site.output(color).unwrap();
 
     let mut site = builder.at(origin(20, 3));
@@ -430,7 +441,7 @@ fn finish_reports_whole_program_mistakes_with_origins() {
     assert_eq!(
         messages,
         [
-            "shaders/lit.jsl:9:2 (@test/viewer): vertex input \"color\" is read in the fragment stage: pass it \
+            "shaders/lit.jsl:9:2 (@test/viewer): attribute \"color\" is read in the fragment stage: pass it \
              through a varying",
             "shaders/lit.jsl:20:3 (@test/viewer): semantic sceneColor is not supported by the WGSL lowering yet",
             "shaders/lit.jsl:25:4 (@test/viewer): sample is used in the vertex stage: textures are sampled in the \

@@ -2,13 +2,14 @@
 //! [`jess::shader`](crate::shader)'s [`ProgramBuilder`].
 //!
 //! A shader module is an ordinary Luau module that runs once and returns a [`LuaShaderProgram`]
-//! from `shader.program { parameters, textures, vertex, fragment }`. Its vertex and fragment
-//! functions don't run on the GPU or per frame: each is called once, during `shader.program`,
-//! with an input handle whose names are the declared parameters and textures, the semantic
-//! inputs (`model`, `view`, `projection`, ...), and, per stage, the vertex attributes or the
-//! varyings the vertex function returned. Every read and every operation appends one typed
-//! expression to the program and hands back a symbolic value ([`LuaShaderExpr`]); operators and
-//! swizzles on those values do the same. A bare Luau number in a shader position is a `Float`.
+//! from `shader.program { attributes, instance, parameters, textures, vertex, fragment }`. Its
+//! vertex and fragment functions don't run on the GPU or per frame: each is called once, during
+//! `shader.program`, with an input handle whose names are the declared parameters and textures,
+//! the semantic inputs (`model`, `view`, `projection`, ...), and, per stage, the declared
+//! `attributes` and `instance` or the varyings the vertex function returned. Every read and every
+//! operation appends one typed expression to the program and hands back a symbolic value
+//! ([`LuaShaderExpr`]); operators and swizzles on those values do the same. A bare Luau number in
+//! a shader position is a `Float`.
 //!
 //! Every expression records where the Luau source wrote it (`file:line`, plus the module that
 //! called `shader.program`), so a mistake fails at the call that made it, in Jess terms:
@@ -20,7 +21,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::shader::{Program, ProgramBuilder, Scalar, Semantic, Site, SourceOrigin, Swizzle, Type, ValidationError, Value};
+use crate::shader::{
+    AttributeId, Program, ProgramBuilder, Rate, Scalar, Semantic, Site, SourceOrigin, Swizzle, Type, ValidationError, Value,
+};
 use l3i::Runtime;
 use l3i::bind::{ArgView, Call, StackResults};
 use l3i::debug::DebugScope;
@@ -33,15 +36,11 @@ use crate::lua::plan::Functions;
 use crate::lua::{Jess, error, kind, push_table};
 
 /// What `shader.program` takes.
-const PROGRAM_KEYS: &[&str] = &["fragment", "parameters", "textures", "vertex"];
+const PROGRAM_KEYS: &[&str] = &["attributes", "fragment", "instance", "parameters", "textures", "vertex"];
 
-/// The per-vertex attributes a vertex function reads from its input, by name.
-const VERTEX_ATTRIBUTES: [(&str, Type); 4] = [
-    ("position", Type::Vec3f),
-    ("normal", Type::Vec3f),
-    ("uv", Type::Vec2f),
-    ("color", Type::Vec4f),
-];
+/// The names a stage input answers with a namespace of declarations, by the attribute rate they
+/// read.
+const NAMESPACES: [(&str, Rate); 2] = [("attributes", Rate::Vertex), ("instance", Rate::Instance)];
 
 /// The shader module's state in one runtime: the programs under construction, innermost last,
 /// so a call with no shader value among its arguments (`shader.vec4(1, 1, 1, 1)`) knows which
@@ -119,7 +118,9 @@ struct Info {
     textures: BTreeMap<String, Value>,
     /// The sampler declared with each texture, by the texture's value.
     samplers: HashMap<Value, Value>,
-    vertex_inputs: HashMap<&'static str, Value>,
+    /// The declared attributes of each rate, by name, with the value of the first read, where it
+    /// was written.
+    attributes: [BTreeMap<String, (AttributeId, Option<Value>)>; 2],
     semantics: HashMap<Semantic, Value>,
     /// What the vertex function returned, as the fragment stage reads it.
     varyings: BTreeMap<String, Value>,
@@ -133,7 +134,7 @@ impl Info {
             parameters: BTreeMap::new(),
             textures: BTreeMap::new(),
             samplers: HashMap::new(),
-            vertex_inputs: HashMap::new(),
+            attributes: [BTreeMap::new(), BTreeMap::new()],
             semantics: HashMap::new(),
             varyings: BTreeMap::new(),
         }
@@ -160,14 +161,13 @@ impl Info {
     }
 
     /// Why `name` can't be declared as `what`: it's the name of an input every program has (a
-    /// semantic, or a vertex attribute when `stage` is the vertex stage; a varying may share an
-    /// attribute's name, since the fragment stage never sees attributes), or of something this
-    /// program declared already.
-    fn name_taken(&self, name: &str, what: &str, stage: Stage) -> l3i::Result<()> {
+    /// semantic, or a namespace such as `attributes`), or of something this program declared
+    /// already.
+    fn name_taken(&self, name: &str, what: &str) -> l3i::Result<()> {
         let taken = if Semantic::ALL.iter().any(|semantic| semantic.name() == name) {
             "semantic input"
-        } else if stage == Stage::Vertex && VERTEX_ATTRIBUTES.iter().any(|(attribute, _)| *attribute == name) {
-            "vertex attribute"
+        } else if NAMESPACES.iter().any(|(namespace, _)| *namespace == name) {
+            "namespace of the input"
         } else if self.parameters.contains_key(name) {
             "parameter"
         } else if self.textures.contains_key(name) {
@@ -189,7 +189,7 @@ impl Info {
             .map(String::as_str)
             .collect();
         match stage {
-            Stage::Vertex => names.extend(VERTEX_ATTRIBUTES.iter().map(|(name, _)| *name)),
+            Stage::Vertex => names.extend(NAMESPACES.iter().map(|(name, _)| *name)),
             Stage::Fragment => names.extend(self.varyings.keys().map(String::as_str)),
         }
         names.extend(Semantic::ALL.iter().map(|semantic| semantic.name()));
@@ -235,6 +235,18 @@ pub struct LuaShaderInput {
 // SAFETY: an `Rc` to plain Rust state; the destructor never touches the Lua API.
 unsafe impl Userdata for LuaShaderInput {
     const NAME: &'static str = "jess.shader.Input";
+}
+
+/// `input.attributes` or `input.instance`: the declared attributes of one rate, by name.
+#[derive(Clone, Debug)]
+pub struct LuaShaderAttributes {
+    build: Rc<RefCell<Build>>,
+    rate: Rate,
+}
+
+// SAFETY: an `Rc` to plain Rust state; the destructor never touches the Lua API.
+unsafe impl Userdata for LuaShaderAttributes {
+    const NAME: &'static str = "jess.shader.Attributes";
 }
 
 /// A finished, validated shader program: what a shader module returns.
@@ -582,8 +594,8 @@ fn swizzle(this: &LuaShaderExpr, call: &Call<'_>, key: ValueView<'_>) -> l3i::Re
     Ok(expression(&this.build, value))
 }
 
-/// `input.<name>` in a stage function.
-fn input(this: &LuaShaderInput, call: &Call<'_>, key: ValueView<'_>) -> l3i::Result<Owned<LuaShaderExpr>> {
+/// `input.<name>` in a stage function: a value, or `input.attributes` and `input.instance`.
+fn input(this: &LuaShaderInput, call: &Call<'_>, key: ValueView<'_>) -> l3i::Result<StackResults> {
     if !key.is_string() {
         return Err(error(format!(
             "the {} input is indexed by name, not {}",
@@ -593,32 +605,28 @@ fn input(this: &LuaShaderInput, call: &Call<'_>, key: ValueView<'_>) -> l3i::Res
     }
     let name = key.read::<&str>()?;
     let stage = this.stage;
+    if let Some((_, rate)) = NAMESPACES.iter().find(|(namespace, _)| *namespace == name) {
+        if stage == Stage::Fragment {
+            return Err(error(format!(
+                "the {} are only readable in the vertex function; return what the fragment function \
+                 needs from them, to pass it as a varying",
+                rate_phrase(*rate)
+            )));
+        }
+        call.push(&Owned(LuaShaderAttributes {
+            build: this.build.clone(),
+            rate: *rate,
+        }))?;
+        return Ok(StackResults);
+    }
     let value = at_site(call, &this.build, |site, info| {
         if let Some(value) = info.parameters.get(name).or_else(|| info.textures.get(name)) {
             return Ok(*value);
         }
-        match stage {
-            Stage::Vertex => {
-                if let Some((attribute, ty)) = VERTEX_ATTRIBUTES.iter().find(|(attribute, _)| *attribute == name) {
-                    if let Some(value) = info.vertex_inputs.get(attribute) {
-                        return Ok(*value);
-                    }
-                    let value = site.vertex_input(attribute, *ty).map_err(invalid)?;
-                    info.vertex_inputs.insert(attribute, value);
-                    return Ok(value);
-                }
-            }
-            Stage::Fragment => {
-                if let Some(value) = info.varyings.get(name) {
-                    return Ok(*value);
-                }
-                if VERTEX_ATTRIBUTES.iter().any(|(attribute, _)| *attribute == name) {
-                    return Err(error(format!(
-                        "vertex input \"{name}\" is only readable in the vertex function; return it from there to \
-                         pass it to the fragment function as a varying"
-                    )));
-                }
-            }
+        if stage == Stage::Fragment
+            && let Some(value) = info.varyings.get(name)
+        {
+            return Ok(*value);
         }
         if let Some(semantic) = Semantic::ALL.iter().copied().find(|semantic| semantic.name() == name) {
             if let Some(value) = info.semantics.get(&semantic) {
@@ -634,7 +642,50 @@ fn input(this: &LuaShaderInput, call: &Call<'_>, key: ValueView<'_>) -> l3i::Res
             info.names(stage).join(", ")
         )))
     })?;
+    call.push(&expression(&this.build, value))?;
+    Ok(StackResults)
+}
+
+/// `input.attributes.<name>` and `input.instance.<name>`: a declared attribute.
+fn attribute(this: &LuaShaderAttributes, call: &Call<'_>, key: ValueView<'_>) -> l3i::Result<Owned<LuaShaderExpr>> {
+    let namespace = rate_phrase(this.rate);
+    if !key.is_string() {
+        return Err(error(format!("the {namespace} are indexed by name, not {}", kind(key))));
+    }
+    let name = key.read::<&str>()?;
+    let value = at_site(call, &this.build, |site, info| {
+        let declared = &mut info.attributes[this.rate as usize];
+        let Some((attribute, read)) = declared.get_mut(name) else {
+            let names: Vec<&str> = declared.keys().map(String::as_str).collect();
+            if names.is_empty() {
+                return Err(error(format!(
+                    "the {namespace} have no \"{name}\": the program declares none"
+                )));
+            }
+            return Err(error(format!(
+                "the {namespace} have no \"{name}\": they have {}",
+                names.join(", ")
+            )));
+        };
+        Ok(*read.get_or_insert_with(|| site.read_attribute(*attribute)))
+    })?;
     Ok(expression(&this.build, value))
+}
+
+/// What errors call the attributes of `rate`.
+fn rate_phrase(rate: Rate) -> &'static str {
+    match rate {
+        Rate::Vertex => "attributes",
+        Rate::Instance => "instance attributes",
+    }
+}
+
+/// The namespace that reads attributes of `rate`.
+fn namespace_name(rate: Rate) -> &'static str {
+    NAMESPACES
+        .iter()
+        .find(|(_, of)| *of == rate)
+        .map_or("attributes", |(name, _)| name)
 }
 
 /// The `parameters` or `textures` table of a program spec: names to types, sorted by name.
@@ -721,26 +772,42 @@ fn origin_of(builder: &ProgramBuilder, value: Value, fallback: &SourceOrigin) ->
 
 /// Builds the program: declares, runs the vertex function and passes what it returned, runs the
 /// fragment function and outputs what it returned, then validates.
-fn construct_program(
-    call: &Call<'_>,
-    build: &Rc<RefCell<Build>>,
+/// What `shader.program` was given, read before anything is built.
+struct Spec {
+    /// The `attributes` and `instance` declarations, by rate.
+    attributes: [Vec<(String, Type)>; 2],
     parameters: Vec<(String, Type)>,
     textures: Vec<(String, Type)>,
-    vertex: &Function,
-    fragment: &Function,
-) -> l3i::Result<Finished> {
+    vertex: Function,
+    fragment: Function,
+}
+
+fn construct_program(call: &Call<'_>, build: &Rc<RefCell<Build>>, spec: Spec) -> l3i::Result<Finished> {
+    let Spec {
+        attributes,
+        parameters,
+        textures,
+        vertex,
+        fragment,
+    } = spec;
     let declared_at = {
         let Build { builder, info } = &mut *build.borrow_mut();
         let origin = info.origin(call);
         let builder = builder.as_mut().expect("a program under construction has its builder");
         let mut site = builder.at(origin.clone());
+        for (rate, declared) in Rate::ALL.into_iter().zip(attributes) {
+            for (name, ty) in declared {
+                let attribute = site.attribute(rate, &name, ty).map_err(invalid)?;
+                info.attributes[rate as usize].insert(name, (attribute, None));
+            }
+        }
         for (name, ty) in parameters {
             if ty == Type::Texture2D {
                 return Err(error(format!(
                     "parameter \"{name}\" is a Texture2D: textures are declared in textures"
                 )));
             }
-            info.name_taken(&name, "parameter", Stage::Vertex)?;
+            info.name_taken(&name, "parameter")?;
             let value = site.parameter(&name, ty).map_err(invalid)?;
             info.parameters.insert(name, value);
         }
@@ -750,7 +817,7 @@ fn construct_program(
                     "texture \"{name}\" is {ty}: textures are shader.texture2d; values go in parameters"
                 )));
             }
-            info.name_taken(&name, "texture", Stage::Vertex)?;
+            info.name_taken(&name, "texture")?;
             let texture = site.parameter(&name, Type::Texture2D).map_err(invalid)?;
             let sampler = site.parameter(&name, Type::Sampler).map_err(invalid)?;
             info.samplers.insert(texture, sampler);
@@ -772,7 +839,7 @@ fn construct_program(
         let at = origin_of(builder, position, &declared_at);
         builder.at(at).set_position(position).map_err(invalid)?;
         for (name, value) in outputs {
-            info.name_taken(&name, "vertex output", Stage::Fragment)?;
+            info.name_taken(&name, "vertex output")?;
             let at = origin_of(builder, value, &declared_at);
             let read = builder.at(at).pass(&name, value).map_err(invalid)?;
             info.varyings.insert(name, read);
@@ -825,21 +892,27 @@ fn program(shader: &Rc<Shader>, call: &Call<'_>, spec: ValueView<'_>) -> l3i::Re
         return Err(error(format!("shader.program takes a table, not {}", kind(spec))));
     }
     let owner: Arc<str> = Arc::from(call_site(call).0);
-    let (parameters, textures, vertex, fragment) = call.with_frame(|frame| {
+    let spec = call.with_frame(|frame| {
         crate::lua::check_options(frame, spec, "jess.shader.program", PROGRAM_KEYS)?;
         let table = spec.as_table()?;
-        let parameters = declarations(frame, table.raw_get(frame, "parameters")?, "parameters")?;
-        let textures = declarations(frame, table.raw_get(frame, "textures")?, "textures")?;
-        let vertex = stage_function(table.raw_get(frame, "vertex")?, "vertex")?;
-        let fragment = stage_function(table.raw_get(frame, "fragment")?, "fragment")?;
-        Ok((parameters, textures, vertex, fragment))
+        let attributes = [
+            declarations(frame, table.raw_get(frame, "attributes")?, "attributes")?,
+            declarations(frame, table.raw_get(frame, "instance")?, "instance")?,
+        ];
+        Ok(Spec {
+            attributes,
+            parameters: declarations(frame, table.raw_get(frame, "parameters")?, "parameters")?,
+            textures: declarations(frame, table.raw_get(frame, "textures")?, "textures")?,
+            vertex: stage_function(table.raw_get(frame, "vertex")?, "vertex")?,
+            fragment: stage_function(table.raw_get(frame, "fragment")?, "fragment")?,
+        })
     })?;
     let build = Rc::new(RefCell::new(Build {
         builder: Some(ProgramBuilder::new()),
         info: Info::new(owner),
     }));
     shader.current.borrow_mut().push(build.clone());
-    let finished = construct_program(call, &build, parameters, textures, &vertex, &fragment);
+    let finished = construct_program(call, &build, spec);
     shader.current.borrow_mut().pop();
     // Whatever happened, the values handed out during construction belong to no program now.
     build.borrow_mut().builder = None;
@@ -971,6 +1044,20 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         format!("ShaderInput({})", this.stage.name())
     });
 
+    let mut attributes = d.userdata::<LuaShaderAttributes>(LuaShaderAttributes::NAME);
+    attributes
+        .tag(TagPolicy::Never)
+        .doc("The declared attributes of one rate, by name: `input.attributes` or `input.instance`.");
+    crate::lua::plan::metamethod(&mut attributes, "__index", attribute);
+    crate::lua::plan::metamethod(&mut attributes, "__tostring", |this: &LuaShaderAttributes| {
+        format!("ShaderAttributes({})", namespace_name(this.rate))
+    });
+
+    describe_program(d);
+}
+
+/// Declares the finished program and what it reflects.
+fn describe_program(d: &mut ExtensionDescriptor) {
     let mut program = d.userdata::<LuaShaderProgram>(LuaShaderProgram::NAME);
     program.tag(TagPolicy::Never).doc("A finished, validated shader program.");
     program
@@ -998,6 +1085,26 @@ pub fn describe(d: &mut ExtensionDescriptor) {
             },
         )
         .untyped();
+    for rate in Rate::ALL {
+        program
+            .getter(namespace_name(rate), move |this: &LuaShaderProgram, call: &Call<'_>| {
+                let attributes: Vec<_> = this
+                    .0
+                    .program
+                    .attributes()
+                    .iter()
+                    .filter(|attribute| attribute.rate == rate)
+                    .collect();
+                l3i::stack::push_list(call, attributes.iter().copied(), |frame, attribute| {
+                    push_table(frame, 0, 2, |frame, table| {
+                        table.raw_set_value(frame, "name", &attribute.name)?;
+                        table.raw_set_value(frame, "type", attribute.ty.name())
+                    })
+                })?;
+                Ok(StackResults)
+            })
+            .untyped();
+    }
     program
         .getter("varyings", |this: &LuaShaderProgram, call: &Call<'_>| {
             push_declarations(call, this.0.program.varyings())
@@ -1012,7 +1119,8 @@ pub fn describe(d: &mut ExtensionDescriptor) {
             .filter(|declaration| !declaration.ty.is_resource())
             .count();
         format!(
-            "ShaderProgram({}, {}, {})",
+            "ShaderProgram({}, {}, {}, {})",
+            plural(this.0.program.attributes().len(), "attribute"),
             plural(parameters, "parameter"),
             plural(this.0.textures.len(), "texture"),
             plural(this.0.program.varyings().len(), "varying")

@@ -8,14 +8,17 @@
     "argument: parameter \"diffuse\" is a Texture2D: textures are declared in textures",
     "argument: texture \"diffuse\" is Vec4f: textures are shader.texture2d; values go in parameters",
     "argument: parameter \"model\" has the name of a semantic input, which the input would hide",
-    "argument: texture \"color\" has the name of a vertex attribute, which the input would hide",
+    "argument: texture \"attributes\" has the name of a namespace of the input, which the input would hide",
+    "argument: attribute \"diffuse\" cannot be Texture2D: expected Int, UInt, Float, a vector, or a matrix",
     "argument: vertex output \"tint\" has the name of a parameter, which the input would hide",
     "argument: the vertex function returned number: expected a table with position and the values to pass to the fragment function",
     "argument: the vertex function's table has no position",
     "argument: vertex output \"uv\" is number: expected a shader value",
     "argument: the fragment function returned table: expected a shader value, the Vec4f color",
-    "unknownName: the vertex input has no \"foo\": it has cameraPosition, color, model, normal, position, previousPass, projection, sceneColor, sceneDepth, time, tint, uv, view, viewportSize",
-    "unknownName: vertex input \"normal\" is only readable in the vertex function; return it from there to pass it to the fragment function as a varying",
+    "unknownName: the vertex input has no \"foo\": it has attributes, cameraPosition, instance, model, previousPass, projection, sceneColor, sceneDepth, time, tint, view, viewportSize",
+    "unknownName: the attributes are only readable in the vertex function; return what the fragment function needs from them, to pass it as a varying",
+    "unknownName: the attributes have no \"normals\": they have normal, position",
+    "unknownName: the instance attributes have no \"transform\": the program declares none",
     "argument: the fragment input is indexed by name, not number",
     "unknownName: a shader value has no field 'rgb': its components are read by a swizzle of one to four of x, y, z, and w, such as .xyz",
     "argument: a shader value is indexed by a swizzle such as .xyz, not number",
@@ -25,11 +28,13 @@
     "argument: shader.dot is only usable inside shader.program's vertex or fragment function"
   ],
   "result": {
-    "finished": "ShaderProgram(1 parameter, 0 textures, 0 varyings)",
+    "finished": "ShaderProgram(0 attributes, 1 parameter, 0 textures, 0 varyings)",
     "input": {
-      "attributeInFragment": "unknownName",
+      "attributesInFragment": "unknownName",
       "indexKind": "argument",
-      "unknown": "unknownName"
+      "noInstanceAttributes": "unknownName",
+      "unknown": "unknownName",
+      "unknownAttribute": "unknownName"
     },
     "operations": {
       "add": "$REPO/tests/lua/contracts/shader/errors.jsl:44 ($REPO/tests/lua/contracts/shader/errors.jsl): Vec4f + Mat4f is invalid: expected two values of the same numeric type, a vector and a scalar of its kind, or two matrices of the same size",
@@ -47,14 +52,15 @@
     },
     "program": {
       "fragmentType": "$REPO/tests/lua/contracts/shader/errors.jsl: the shader program is invalid\n$REPO/tests/lua/contracts/shader/errors.jsl:63 ($REPO/tests/lua/contracts/shader/errors.jsl): fragment output 0 is Vec3f: expected Vec4f",
-      "position": "$REPO/tests/lua/contracts/shader/errors.jsl: the shader program is invalid\n$REPO/tests/lua/contracts/shader/errors.jsl:66 ($REPO/tests/lua/contracts/shader/errors.jsl): the vertex position is Vec3f: expected Vec4f",
-      "sampleInVertex": "$REPO/tests/lua/contracts/shader/errors.jsl: the shader program is invalid\n$REPO/tests/lua/contracts/shader/errors.jsl:74 ($REPO/tests/lua/contracts/shader/errors.jsl): sample is used in the vertex stage: textures are sampled in the fragment stage",
-      "several": "$REPO/tests/lua/contracts/shader/errors.jsl: the shader program is invalid\n$REPO/tests/lua/contracts/shader/errors.jsl:89 ($REPO/tests/lua/contracts/shader/errors.jsl): sample is used in the vertex stage: textures are sampled in the fragment stage\n$REPO/tests/lua/contracts/shader/errors.jsl:88 ($REPO/tests/lua/contracts/shader/errors.jsl): the vertex position is Vec3f: expected Vec4f\n$REPO/tests/lua/contracts/shader/errors.jsl:92 ($REPO/tests/lua/contracts/shader/errors.jsl): fragment output 0 is Vec3f: expected Vec4f",
-      "unsupportedSemantic": "$REPO/tests/lua/contracts/shader/errors.jsl: the shader program is invalid\n$REPO/tests/lua/contracts/shader/errors.jsl:81 ($REPO/tests/lua/contracts/shader/errors.jsl): semantic sceneColor is not supported by the WGSL lowering yet"
+      "position": "$REPO/tests/lua/contracts/shader/errors.jsl: the shader program is invalid\n$REPO/tests/lua/contracts/shader/errors.jsl:67 ($REPO/tests/lua/contracts/shader/errors.jsl): the vertex position is Vec3f: expected Vec4f",
+      "sampleInVertex": "$REPO/tests/lua/contracts/shader/errors.jsl: the shader program is invalid\n$REPO/tests/lua/contracts/shader/errors.jsl:76 ($REPO/tests/lua/contracts/shader/errors.jsl): sample is used in the vertex stage: textures are sampled in the fragment stage",
+      "several": "$REPO/tests/lua/contracts/shader/errors.jsl: the shader program is invalid\n$REPO/tests/lua/contracts/shader/errors.jsl:92 ($REPO/tests/lua/contracts/shader/errors.jsl): sample is used in the vertex stage: textures are sampled in the fragment stage\n$REPO/tests/lua/contracts/shader/errors.jsl:91 ($REPO/tests/lua/contracts/shader/errors.jsl): the vertex position is Vec3f: expected Vec4f\n$REPO/tests/lua/contracts/shader/errors.jsl:95 ($REPO/tests/lua/contracts/shader/errors.jsl): fragment output 0 is Vec3f: expected Vec4f",
+      "unsupportedSemantic": "$REPO/tests/lua/contracts/shader/errors.jsl: the shader program is invalid\n$REPO/tests/lua/contracts/shader/errors.jsl:83 ($REPO/tests/lua/contracts/shader/errors.jsl): semantic sceneColor is not supported by the WGSL lowering yet"
     },
     "spec": {
-      "attributeName": "argument",
+      "attributeType": "argument",
       "fragmentReturn": "argument",
+      "namespaceName": "argument",
       "noPosition": "argument",
       "noVertex": "argument",
       "notTable": "argument",

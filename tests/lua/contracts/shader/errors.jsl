@@ -6,7 +6,7 @@ local oracle, env = ...
 local shader = require '@jess/shader'
 
 local function vertex(input: ShaderInput): { [string]: ShaderExpr }
-  return { position = shader.vec4(input.position, 1.0) }
+  return { position = shader.vec4(0.0, 0.0, 0.0, 1.0) }
 end
 
 local function white(): ShaderExpr return shader.vec4(1.0) end
@@ -63,15 +63,17 @@ return {
     fragmentType = inFragment(function(input) return input.light.xyz end),
 
     position = build {
-      vertex = function(input) return { position = input.position } end,
+      attributes = { position = shader.vec3 },
+      vertex = function(input) return { position = input.attributes.position } end,
       fragment = white,
     },
 
     sampleInVertex = build {
+      attributes = { uv = shader.vec2 },
       textures = { diffuse = shader.texture2d },
       vertex = function(input)
         return {
-          position = shader.vec4(shader.sample(input.diffuse, input.uv).xyz, 1.0),
+          position = shader.vec4(shader.sample(input.diffuse, input.attributes.uv).xyz, 1.0),
         }
       end,
       fragment = white,
@@ -82,11 +84,12 @@ return {
     ),
 
     several = build {
+      attributes = { position = shader.vec3, uv = shader.vec2 },
       textures = { diffuse = shader.texture2d },
       vertex = function(input)
         return {
-          position = input.position,
-          shade = shader.sample(input.diffuse, input.uv),
+          position = input.attributes.position,
+          shade = shader.sample(input.diffuse, input.attributes.uv),
         }
       end,
       fragment = function(input) return input.shade.xyz end,
@@ -142,20 +145,27 @@ return {
       shader.program,
       { parameters = { model = shader.mat4 }, vertex = vertex, fragment = white }
     ),
-    attributeName = oracle.raises(
+    namespaceName = oracle.raises(
       'argument',
-      'texture "color" has the name of a vertex attribute, which the input would hide',
+      'texture "attributes" has the name of a namespace of the input, which the input would hide',
       shader.program,
-      { textures = { color = shader.texture2d }, vertex = vertex, fragment = white }
+      { textures = { attributes = shader.texture2d }, vertex = vertex, fragment = white }
+    ),
+    attributeType = oracle.raises(
+      'argument',
+      'attribute "diffuse" cannot be Texture2D: expected Int, UInt, Float, a vector, or a matrix',
+      shader.program,
+      { attributes = { diffuse = shader.texture2d }, vertex = vertex, fragment = white }
     ),
     varyingName = oracle.raises(
       'argument',
       'vertex output "tint" has the name of a parameter, which the input would hide',
       shader.program,
       {
+        attributes = { color = shader.vec4 },
         parameters = { tint = shader.vec4 },
         vertex = function(input)
-          return { position = shader.vec4(input.position, 1.0), tint = input.color }
+          return { position = shader.vec4(1.0), tint = input.attributes.color }
         end,
         fragment = white,
       }
@@ -170,14 +180,18 @@ return {
       'argument',
       'the vertex function\'s table has no position',
       shader.program,
-      { vertex = function(input) return { uv = input.uv } end, fragment = white }
+      {
+        attributes = { uv = shader.vec2 },
+        vertex = function(input) return { uv = input.attributes.uv } end,
+        fragment = white,
+      }
     ),
     vertexOutput = oracle.raises(
       'argument',
       'vertex output "uv" is number: expected a shader value',
       shader.program,
       {
-        vertex = function(input) return { position = shader.vec4(input.position, 1.0), uv = 3 } end,
+        vertex = function() return { position = shader.vec4(1.0), uv = 3 } end,
         fragment = white,
       }
     ),
@@ -192,7 +206,7 @@ return {
   input = {
     unknown = oracle.raises(
       'unknownName',
-      'the vertex input has no "foo": it has cameraPosition, color, model, normal, position, previousPass, projection, sceneColor, sceneDepth, time, tint, uv, view, viewportSize',
+      'the vertex input has no "foo": it has attributes, cameraPosition, instance, model, previousPass, projection, sceneColor, sceneDepth, time, tint, view, viewportSize',
       shader.program,
       {
         parameters = { tint = shader.vec4 },
@@ -200,11 +214,31 @@ return {
         fragment = white,
       }
     ),
-    attributeInFragment = oracle.raises(
+    attributesInFragment = oracle.raises(
       'unknownName',
-      'vertex input "normal" is only readable in the vertex function; return it from there to pass it to the fragment function as a varying',
+      'the attributes are only readable in the vertex function; return what the fragment function needs from them, to pass it as a varying',
       shader.program,
-      { vertex = vertex, fragment = function(input) return input.normal end }
+      {
+        attributes = { normal = shader.vec3 },
+        vertex = vertex,
+        fragment = function(input) return input.attributes.normal end,
+      }
+    ),
+    unknownAttribute = oracle.raises(
+      'unknownName',
+      'the attributes have no "normals": they have normal, position',
+      shader.program,
+      {
+        attributes = { normal = shader.vec3, position = shader.vec3 },
+        vertex = function(input) return { position = shader.vec4(input.attributes.normals, 1.0) } end,
+        fragment = white,
+      }
+    ),
+    noInstanceAttributes = oracle.raises(
+      'unknownName',
+      'the instance attributes have no "transform": the program declares none',
+      shader.program,
+      { vertex = function(input) return { position = input.instance.transform } end, fragment = white }
     ),
     indexKind = oracle.raises(
       'argument',

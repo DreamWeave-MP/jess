@@ -53,12 +53,20 @@ fn declared(declarations: &[jess::shader::Declaration]) -> Vec<(&str, Type)> {
         .collect()
 }
 
+fn attributes(program: &Program) -> Vec<(&str, Type)> {
+    program
+        .attributes()
+        .iter()
+        .map(|attribute| (attribute.name.as_str(), attribute.ty))
+        .collect()
+}
+
 #[test]
 fn solid_color_lowers_to_valid_wgsl() {
     let runtime = common::runtime();
     let (program, module) = lowered(&runtime, "solid-color.jsl");
     assert_eq!(declared(program.parameters()), [("tint", Type::Vec4f)]);
-    assert_eq!(declared(program.vertex_inputs()), [("position", Type::Vec3f)]);
+    assert_eq!(attributes(&program), [("position", Type::Vec3f)]);
     assert_eq!(program.varyings(), []);
     assert_eq!(module.fragment_outputs, 1);
     assert!(module.source.contains("parameters.p_tint"), "{}", module.source);
@@ -68,10 +76,7 @@ fn solid_color_lowers_to_valid_wgsl() {
 fn vertex_transform_passes_a_varying_and_keeps_luau_evaluation_order() {
     let runtime = common::runtime();
     let (program, module) = lowered(&runtime, "vertex-transform.jsl");
-    assert_eq!(
-        declared(program.vertex_inputs()),
-        [("position", Type::Vec3f), ("color", Type::Vec4f)]
-    );
+    assert_eq!(attributes(&program), [("color", Type::Vec4f), ("position", Type::Vec3f)]);
     assert_eq!(declared(program.varyings()), [("color", Type::Vec4f)]);
     // Luau multiplies left to right: the matrix products come first.
     assert!(
@@ -151,7 +156,7 @@ fn an_invalid_dot_fails_at_the_line_that_wrote_it() {
     let file = path.display().to_string();
     assert_eq!(
         error,
-        format!("{file}:15 ({file}): dot(Vec3f, Vec4f) is invalid: expected two vectors of the same type")
+        format!("{file}:20 ({file}): dot(Vec3f, Vec4f) is invalid: expected two vectors of the same type")
     );
 }
 

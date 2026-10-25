@@ -544,19 +544,33 @@ declare extern type ShaderExpr with
   __tostring: (self: ShaderExpr) -> string
 end
 
+--- The declared attributes of one rate, by name: `input.attributes` (per vertex) or
+--- `input.instance` (per instance), readable in the vertex function. A name the program didn't
+--- declare is an error listing the ones it did.
+declare extern type ShaderAttributes with
+  [string]: ShaderExpr
+  __tostring: (self: ShaderAttributes) -> string
+end
+
 --- A stage function's input. Every name is a declared parameter or texture, a semantic input
 --- (`model`, `view`, `projection`: `Mat4f`; `cameraPosition`: `Vec3f`; `viewportSize`: `Vec2f`;
---- `time`: `Float`), or, in the vertex function, a vertex attribute (`position` and `normal`:
---- `Vec3f`; `uv`: `Vec2f`; `color`: `Vec4f`) and, in the fragment function, a value the vertex
---- function returned. A name it doesn't have is an error listing the ones it does.
+--- `time`: `Float`), or, in the fragment function, a value the vertex function returned. In the
+--- vertex function, `attributes` and `instance` are the declared attributes. A name it doesn't
+--- have is an error listing the ones it does.
 declare extern type ShaderInput with
+  attributes: ShaderAttributes
+  instance: ShaderAttributes
   [string]: ShaderExpr
   __tostring: (self: ShaderInput) -> string
 end
 
 --- A finished, validated shader program: what a shader module returns, for jess to lower to the
---- backend. `tostring` gives `ShaderProgram(2 parameters, 1 texture, 2 varyings)`.
+--- backend. `tostring` gives `ShaderProgram(3 attributes, 2 parameters, 1 texture, 2 varyings)`.
 declare extern type ShaderProgram with
+  --- The per-vertex attributes, sorted by name, each with its type's name (`Vec3f`).
+  attributes: { { name: string, type: string } }
+  --- The per-instance attributes, the same way.
+  instance: { { name: string, type: string } }
   --- The value parameters (not the textures and samplers), sorted by name, each with its type's
   --- name (`Vec4f`).
   parameters: { { name: string, type: string } }
@@ -568,12 +582,16 @@ declare extern type ShaderProgram with
   __tostring: (self: ShaderProgram) -> string
 end
 
---- What `shader.program` takes. `parameters` are values (`float`, the vectors, the matrices, and
---- `sampler`), `textures` are `texture2d`, each declared with a sampler of the same name; both
---- are declared sorted by name. Neither may be named like a semantic input or a vertex attribute.
+--- What `shader.program` takes. `attributes` and `instance` are what each vertex and each
+--- instance has (`Int`, `UInt`, `Float`, vectors, and matrices), read from its vertex buffers.
+--- `parameters` are values (`float`, the vectors, the matrices, and `sampler`), `textures` are
+--- `texture2d`, each declared with a sampler of the same name; all are declared sorted by name.
+--- A parameter or texture may not be named like a semantic input, `attributes`, or `instance`.
 --- `vertex` returns `position` (a `Vec4f`) and the values to pass to the fragment stage, each
 --- named; `fragment` returns the `Vec4f` color. Both run once, while `shader.program` runs.
 export type ShaderProgramSpec = {
+  attributes: { [string]: ShaderType }?,
+  instance: { [string]: ShaderType }?,
   parameters: { [string]: ShaderType }?,
   textures: { [string]: ShaderType }?,
   vertex: (input: ShaderInput) -> { [string]: ShaderExpr },

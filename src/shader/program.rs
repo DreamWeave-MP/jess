@@ -1,13 +1,13 @@
 //! A shader program: its declarations, its expression arena, and what each stage outputs.
 
-use crate::shader::expression::{Expression, ExpressionId, ParameterId, SourceOrigin, VaryingId, VertexInputId};
+use crate::shader::expression::{Expression, ExpressionId, ParameterId, SourceOrigin, VaryingId};
 use crate::shader::interface::{
     Attribute, AttributeId, Frequency, Resource, ResourceId, StructDecl, StructId, Uniform, UniformId,
 };
 use crate::shader::layout::ProgramLayout;
 use crate::shader::types::Type;
 
-/// A named, typed parameter, vertex input, or varying.
+/// A named, typed parameter or varying.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Declaration {
     /// The name the author gave it. The lowering derives every backend name from it.
@@ -20,9 +20,11 @@ pub struct Declaration {
 
 /// A vertex stage and a fragment stage over one expression arena.
 ///
-/// The vertex stage writes the clip position and any varyings; the fragment stage reads those
-/// varyings and writes color outputs. Parameters, textures, samplers, and semantics are resources
-/// the lowering binds: the author never picks a bind group or binding.
+/// The vertex stage reads the declared attributes and writes the clip position and any varyings;
+/// the fragment stage reads those varyings and writes color outputs. Parameters, textures,
+/// samplers, and semantics are resources the lowering binds, and attributes come from the vertex
+/// buffers [`layout`](crate::shader::layout) describes: the author never picks a bind group,
+/// binding, or location.
 ///
 /// Expressions are appended and never removed, so an [`ExpressionId`] stays valid for the
 /// program's lifetime; [`fold_constants`](Program::fold_constants) rewrites nodes in place.
@@ -36,7 +38,6 @@ pub struct Program {
     pub(crate) uniforms: Vec<Uniform>,
     pub(crate) resources: Vec<Resource>,
     pub(crate) parameters: Vec<Declaration>,
-    pub(crate) vertex_inputs: Vec<Declaration>,
     pub(crate) varyings: Vec<Declaration>,
     pub(crate) position: Option<ExpressionId>,
     pub(crate) varying_writes: Vec<(VaryingId, ExpressionId)>,
@@ -79,16 +80,6 @@ impl Program {
     /// [`parameter`](Program::parameter), recording where it was declared.
     pub fn parameter_at(&mut self, name: &str, ty: Type, origin: SourceOrigin) -> ParameterId {
         ParameterId::at(push_declaration(&mut self.parameters, name, ty, Some(origin)))
-    }
-
-    /// Declares a per-vertex attribute: `Int`, `UInt`, `Float`, or a vector.
-    pub fn vertex_input(&mut self, name: &str, ty: Type) -> VertexInputId {
-        VertexInputId::at(push_declaration(&mut self.vertex_inputs, name, ty, None))
-    }
-
-    /// [`vertex_input`](Program::vertex_input), recording where it was declared.
-    pub fn vertex_input_at(&mut self, name: &str, ty: Type, origin: SourceOrigin) -> VertexInputId {
-        VertexInputId::at(push_declaration(&mut self.vertex_inputs, name, ty, Some(origin)))
     }
 
     /// Declares a value the vertex stage passes to the fragment stage: `Int`, `UInt` (both
@@ -207,12 +198,6 @@ impl Program {
     #[must_use]
     pub fn parameters(&self) -> &[Declaration] {
         &self.parameters
-    }
-
-    /// The declared vertex inputs, in order.
-    #[must_use]
-    pub fn vertex_inputs(&self) -> &[Declaration] {
-        &self.vertex_inputs
     }
 
     /// The declared varyings, in order.

@@ -4,14 +4,16 @@
 use super::common::assert_valid_wgsl;
 
 use jess::shader::wgsl;
-use jess::shader::{ProgramBuilder, Swizzle, Type, ValidationErrorKind};
+use jess::shader::{ProgramBuilder, Rate, Swizzle, Type, ValidationErrorKind};
 
 #[test]
 fn integer_vectors_compute_and_pass_flat() {
     let mut builder = ProgramBuilder::new();
     let mut site = builder.site();
-    let position = site.vertex_input("position", Type::Vec4f).unwrap();
-    let ids = site.vertex_input("ids", Type::Vec4u).unwrap();
+    let position = site.attribute(Rate::Vertex, "position", Type::Vec4f).unwrap();
+    let position = site.read_attribute(position);
+    let ids = site.attribute(Rate::Vertex, "ids", Type::Vec4u).unwrap();
+    let ids = site.read_attribute(ids);
     let offset = site.parameter("offset", Type::Vec3i).unwrap();
     let scale = site.parameter("scale", Type::UInt).unwrap();
     site.set_position(position).unwrap();

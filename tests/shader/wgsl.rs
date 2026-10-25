@@ -4,7 +4,7 @@ use super::common;
 
 use common::{assert_golden, assert_valid_wgsl};
 use jess::shader::wgsl::{self, PARAMETER_GROUP, ResourceBinding, SEMANTIC_GROUP, UniformMember};
-use jess::shader::{Expression, ExpressionId, Literal, Program, Semantic, Swizzle, Type};
+use jess::shader::{Attribute, Expression, ExpressionId, Literal, Program, Rate, Semantic, Swizzle, Type};
 
 fn float(program: &mut Program, value: f32) -> ExpressionId {
     program.push(Expression::Literal(Literal::Float(value)))
@@ -24,9 +24,9 @@ fn clip_position(program: &mut Program, position: ExpressionId) -> ExpressionId 
 
 fn solid_color() -> Program {
     let mut program = Program::new();
-    let position = program.vertex_input("position", Type::Vec3f);
+    let position = program.attribute(Attribute::new(Rate::Vertex, "position", Type::Vec3f));
     let color = program.parameter("color", Type::Vec4f);
-    let position = program.push(Expression::VertexInput(position));
+    let position = program.push(Expression::Attribute(position));
     let clip = clip_position(&mut program, position);
     program.set_position(clip);
     let color = program.push(Expression::Parameter(color));
@@ -37,9 +37,9 @@ fn solid_color() -> Program {
 /// A textured, lit mesh with the common transform, lighting, and texture inputs.
 fn textured_lit() -> Program {
     let mut program = Program::new();
-    let position = program.vertex_input("position", Type::Vec3f);
-    let normal = program.vertex_input("normal", Type::Vec3f);
-    let uv = program.vertex_input("uv", Type::Vec2f);
+    let position = program.attribute(Attribute::new(Rate::Vertex, "position", Type::Vec3f));
+    let normal = program.attribute(Attribute::new(Rate::Vertex, "normal", Type::Vec3f));
+    let uv = program.attribute(Attribute::new(Rate::Vertex, "uv", Type::Vec2f));
     let normal_matrix = program.parameter("normalMatrix", Type::Mat3f);
     let light_direction = program.parameter("lightDirection", Type::Vec3f);
     let ambient = program.parameter("ambient", Type::Float);
@@ -48,14 +48,14 @@ fn textured_lit() -> Program {
     let world_normal = program.varying("normal", Type::Vec3f);
     let texture_coordinates = program.varying("uv", Type::Vec2f);
 
-    let position = program.push(Expression::VertexInput(position));
+    let position = program.push(Expression::Attribute(position));
     let clip = clip_position(&mut program, position);
     program.set_position(clip);
-    let normal = program.push(Expression::VertexInput(normal));
+    let normal = program.push(Expression::Attribute(normal));
     let normal_matrix = program.push(Expression::Parameter(normal_matrix));
     let transformed = program.push(Expression::Multiply(normal_matrix, normal));
     program.write_varying(world_normal, transformed);
-    let uv = program.push(Expression::VertexInput(uv));
+    let uv = program.push(Expression::Attribute(uv));
     program.write_varying(texture_coordinates, uv);
 
     let texture = program.push(Expression::Parameter(diffuse_texture));
@@ -93,17 +93,17 @@ fn textured_lit() -> Program {
 /// Integer varyings, several outputs, and the rest of the operations.
 fn assorted() -> Program {
     let mut program = Program::new();
-    let position = program.vertex_input("position", Type::Vec4f);
-    let index = program.vertex_input("index", Type::UInt);
+    let position = program.attribute(Attribute::new(Rate::Vertex, "position", Type::Vec4f));
+    let index = program.attribute(Attribute::new(Rate::Vertex, "index", Type::UInt));
     let tint = program.parameter("tint", Type::Vec3f);
     let offset = program.parameter("offset", Type::Int);
     let flat_index = program.varying("index", Type::UInt);
     let signed = program.varying("signed", Type::Int);
     program.varying("unused", Type::Vec2f);
 
-    let position = program.push(Expression::VertexInput(position));
+    let position = program.push(Expression::Attribute(position));
     program.set_position(position);
-    let index = program.push(Expression::VertexInput(index));
+    let index = program.push(Expression::Attribute(index));
     program.write_varying(flat_index, index);
     let offset = program.push(Expression::Parameter(offset));
     let minimum = program.push(Expression::Literal(Literal::Int(i32::MIN)));
@@ -148,7 +148,7 @@ fn solid_color_matches_golden() {
         (PARAMETER_GROUP, 0, 16)
     );
     assert_eq!(module.resources, []);
-    assert_eq!(module.vertex_attributes.len(), 1);
+    assert_eq!(module.layout.vertex_buffers[0].attributes.len(), 1);
     assert_eq!(module.fragment_outputs, 1);
 }
 
@@ -166,8 +166,8 @@ fn textured_lit_matches_golden() {
         resources,
         [(PARAMETER_GROUP, 1, Type::Texture2D), (PARAMETER_GROUP, 2, Type::Sampler)]
     );
-    let locations: Vec<(u32, Type)> = module
-        .vertex_attributes
+    let locations: Vec<(u32, Type)> = module.layout.vertex_buffers[0]
+        .attributes
         .iter()
         .map(|attribute| (attribute.location, attribute.ty))
         .collect();
@@ -186,9 +186,9 @@ fn assorted_matches_golden() {
 #[test]
 fn folded_program_matches_golden() {
     let mut program = Program::new();
-    let position = program.vertex_input("position", Type::Vec2f);
+    let position = program.attribute(Attribute::new(Rate::Vertex, "position", Type::Vec2f));
     let color = program.parameter("color", Type::Vec4f);
-    let position = program.push(Expression::VertexInput(position));
+    let position = program.push(Expression::Attribute(position));
     let zero = float(&mut program, 0.0);
     let one = float(&mut program, 1.0);
     let clip = program.push(Expression::construct(Type::Vec4f, &[position, zero, one]).unwrap());
@@ -228,7 +228,7 @@ fn only_reachable_expressions_are_lowered() {
 #[test]
 fn uniform_layout_follows_wgsl_alignment() {
     let mut program = Program::new();
-    let position = program.vertex_input("position", Type::Vec4f);
+    let position = program.attribute(Attribute::new(Rate::Vertex, "position", Type::Vec4f));
     let names = [
         ("scale", Type::Float),
         ("tint", Type::Vec3f),
@@ -241,7 +241,7 @@ fn uniform_layout_follows_wgsl_alignment() {
         let parameter = program.parameter(name, ty);
         reads.push(program.push(Expression::Parameter(parameter)));
     }
-    let position = program.push(Expression::VertexInput(position));
+    let position = program.push(Expression::Attribute(position));
     program.set_position(position);
     let rotated = program.push(Expression::Multiply(reads[3], reads[1]));
     let scaled = program.push(Expression::Multiply(rotated, reads[0]));
@@ -259,4 +259,51 @@ fn uniform_layout_follows_wgsl_alignment() {
         .collect();
     assert_eq!(layout, [(0, 4), (16, 12), (28, 4), (32, 48), (80, 8)]);
     assert_eq!(parameters.size, 96);
+}
+
+#[test]
+fn instance_attributes_follow_the_vertex_attributes_and_matrices_arrive_by_column() {
+    let mut program = Program::new();
+    let position = program.attribute(Attribute::new(Rate::Vertex, "position", Type::Vec3f));
+    let transform = program.attribute(Attribute::new(Rate::Instance, "transform", Type::Mat4f));
+    let tint = program.attribute(Attribute::new(Rate::Instance, "tint", Type::Vec4f));
+    let position = program.push(Expression::Attribute(position));
+    let one = float(&mut program, 1.0);
+    let local = program.push(Expression::construct(Type::Vec4f, &[position, one]).unwrap());
+    let transform = program.push(Expression::Attribute(transform));
+    let clip = program.push(Expression::Multiply(transform, local));
+    program.set_position(clip);
+    let passed = program.varying("tint", Type::Vec4f);
+    let tint = program.push(Expression::Attribute(tint));
+    program.write_varying(passed, tint);
+    let read = program.push(Expression::Varying(passed));
+    program.push_fragment_output(read);
+
+    let module = lowered(&program);
+    for line in [
+        "@location(0) a_position: vec3<f32>",
+        "@location(1) m1_transform: vec4<f32>",
+        "@location(4) m4_transform: vec4<f32>",
+        "@location(5) i_tint: vec4<f32>",
+        "mat4x4<f32>(input.m1_transform, input.m2_transform, input.m3_transform, input.m4_transform)",
+    ] {
+        assert!(module.source.contains(line), "no {line:?} in:\n{}", module.source);
+    }
+    let [vertices, instances] = &module.layout.vertex_buffers;
+    assert_eq!((vertices.stride, instances.stride), (12, 80));
+}
+
+#[test]
+fn attributes_take_at_most_sixteen_locations() {
+    let mut program = Program::new();
+    for name in ["a", "b", "c", "d", "e"] {
+        program.attribute(Attribute::new(Rate::Instance, name, Type::Mat4f));
+    }
+    let position = float(&mut program, 0.0);
+    let clip = program.push(Expression::construct(Type::Vec4f, &[position]).unwrap());
+    program.set_position(clip);
+
+    let errors = wgsl::lower(&program).unwrap_err();
+    let messages: Vec<String> = errors.iter().map(ToString::to_string).collect();
+    assert_eq!(messages, ["the attributes take 20 locations: at most 16"]);
 }

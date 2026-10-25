@@ -7,6 +7,17 @@ local shader = require '@jess/shader'
 local observed: { [string]: any } = {}
 
 local lit = shader.program {
+  attributes = {
+    normal = shader.vec3,
+    position = shader.vec3,
+    uv = shader.vec2,
+  },
+
+  instance = {
+    shade = shader.vec4u,
+    transform = shader.mat4,
+  },
+
   parameters = {
     normalMatrix = shader.mat3,
     lightDirection = shader.vec3,
@@ -20,14 +31,19 @@ local lit = shader.program {
   },
 
   vertex = function(input)
-    local clip = input.projection * input.view * input.model * shader.vec4(input.position, 1.0)
+    local clip = input.projection * input.view * input.model * shader.vec4(input.attributes.position, 1.0)
     observed.vertex = {
       input = tostring(input),
-      position = tostring(input.position),
+      attributes = tostring(input.attributes),
+      instance = tostring(input.instance),
+      position = tostring(input.attributes.position),
+      transform = tostring(input.instance.transform),
+      shade = tostring(input.instance.shade),
+      placed = tostring(input.instance.transform * shader.vec4(input.attributes.position, 1.0)),
       clip = tostring(clip),
       matrix = tostring(input.projection * input.view),
-      sameRead = input.position == input.position,
-      differentValues = input.position == input.normal,
+      sameRead = input.attributes.position == input.attributes.position,
+      differentValues = input.attributes.position == input.attributes.normal,
       texture = tostring(input.diffuse),
       integers = {
         cell = tostring(shader.vec3i(1, -2, 3)),
@@ -41,8 +57,8 @@ local lit = shader.program {
 
     return {
       position = clip,
-      normal = input.normalMatrix * input.normal,
-      uv = input.uv,
+      normal = input.normalMatrix * input.attributes.normal,
+      uv = input.attributes.uv,
     }
   end,
 
@@ -84,13 +100,16 @@ local lit = shader.program {
 }
 
 local constant = shader.program {
-  vertex = function(input) return { position = shader.vec4(input.position, 1.0) } end,
+  attributes = { position = shader.vec3 },
+  vertex = function(input) return { position = shader.vec4(input.attributes.position, 1.0) } end,
   fragment = function() return shader.vec4(1.0, 0.5, 0.0, 1.0) end,
 }
 
 local function describe(program: ShaderProgram): { [string]: any }
   return {
     tostring = tostring(program),
+    attributes = program.attributes,
+    instance = program.instance,
     parameters = program.parameters,
     textures = program.textures,
     varyings = program.varyings,

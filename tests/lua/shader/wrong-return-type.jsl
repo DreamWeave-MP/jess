@@ -3,7 +3,11 @@
 local shader = require '@jess/shader'
 
 local program = shader.program {
-  vertex = function(input) return { position = shader.vec4(input.position, 1.0) } end,
+  attributes = {
+    position = shader.vec3,
+  },
+
+  vertex = function(input) return { position = shader.vec4(input.attributes.position, 1.0) } end,
   fragment = function() return shader.vec4(1.0, 0.5, 0.0, 1.0) end,
 }
 print(program)

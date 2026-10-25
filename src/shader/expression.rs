@@ -4,6 +4,7 @@ use std::fmt;
 use std::ops::Deref;
 use std::sync::Arc;
 
+use crate::shader::interface::AttributeId;
 use crate::shader::types::Type;
 
 arena_id!(
@@ -18,11 +19,6 @@ arena_id!(
     /// A parameter declared with [`Program::parameter`](crate::shader::Program::parameter).
     ParameterId,
     "parameter's position in declaration order"
-);
-arena_id!(
-    /// A vertex input declared with [`Program::vertex_input`](crate::shader::Program::vertex_input).
-    VertexInputId,
-    "vertex input's position in declaration order"
 );
 arena_id!(
     /// A varying declared with [`Program::varying`](crate::shader::Program::varying).
@@ -315,8 +311,8 @@ pub enum Expression {
     Literal(Literal),
     /// A declared parameter's value, texture, or sampler.
     Parameter(ParameterId),
-    /// A declared vertex input. Vertex stage only.
-    VertexInput(VertexInputId),
+    /// A declared vertex attribute, per vertex or per instance. Vertex stage only.
+    Attribute(AttributeId),
     /// A declared varying, as the vertex stage wrote it and the rasterizer interpolated it.
     /// Fragment stage only.
     Varying(VaryingId),
@@ -388,7 +384,7 @@ impl Expression {
         let ids: &[ExpressionId] = match self {
             Expression::Literal(_)
             | Expression::Parameter(_)
-            | Expression::VertexInput(_)
+            | Expression::Attribute(_)
             | Expression::Varying(_)
             | Expression::Semantic(_) => &[],
             Expression::Sample {
@@ -417,7 +413,7 @@ impl Expression {
         match self {
             Expression::Literal(_)
             | Expression::Parameter(_)
-            | Expression::VertexInput(_)
+            | Expression::Attribute(_)
             | Expression::Varying(_)
             | Expression::Semantic(_) => {}
             Expression::Sample {
@@ -458,7 +454,7 @@ impl Expression {
             self,
             Expression::Literal(_)
                 | Expression::Parameter(_)
-                | Expression::VertexInput(_)
+                | Expression::Attribute(_)
                 | Expression::Varying(_)
                 | Expression::Semantic(_)
         )
@@ -470,7 +466,7 @@ impl Expression {
         match self {
             Expression::Literal(_) => "literal",
             Expression::Parameter(_) => "parameter",
-            Expression::VertexInput(_) => "vertex input",
+            Expression::Attribute(_) => "attribute",
             Expression::Varying(_) => "varying",
             Expression::Semantic(_) => "semantic",
             Expression::Sample { .. } => "sample",

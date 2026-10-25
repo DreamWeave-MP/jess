@@ -4,6 +4,12 @@
 local shader = require '@jess/shader'
 
 return shader.program {
+  attributes = {
+    normal = shader.vec3,
+    position = shader.vec3,
+    uv = shader.vec2,
+  },
+
   parameters = {
     normalMatrix = shader.mat3,
     lightDirection = shader.vec3,
@@ -16,9 +22,9 @@ return shader.program {
 
   vertex = function(input)
     return {
-      position = input.projection * input.view * input.model * shader.vec4(input.position, 1.0),
-      normal = input.normalMatrix * input.normal,
-      uv = input.uv,
+      position = input.projection * input.view * input.model * shader.vec4(input.attributes.position, 1.0),
+      normal = input.normalMatrix * input.attributes.normal,
+      uv = input.attributes.uv,
     }
   end,
 

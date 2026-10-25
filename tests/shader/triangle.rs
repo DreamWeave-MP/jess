@@ -1,11 +1,13 @@
-//! The native proof: shader IR, to WGSL, to wgpu, to a triangle read back from an offscreen texture.
+//! The native proof: shader IR, to WGSL, to wgpu, to two instances of a triangle read back from an
+//! offscreen texture, drawn from nothing but the layout the lowering reported.
 //!
 //! Skips, loudly, when the machine has no adapter at all (not even a software one).
 
 use super::common;
 
+use jess::shader::layout::VertexBufferLayout;
 use jess::shader::wgsl::{self, FRAGMENT_ENTRY_POINT, PARAMETER_GROUP, VERTEX_ENTRY_POINT, WgslModule};
-use jess::shader::{Expression, Literal, Program, Type};
+use jess::shader::{Attribute, Expression, Literal, Program, Rate, Type};
 
 const SIZE: u32 = 64;
 const CLEAR: [u8; 4] = [0, 0, 255, 255];
@@ -13,12 +15,15 @@ const TRIANGLE: [u8; 4] = [0, 255, 0, 255];
 
 fn triangle_program() -> Program {
     let mut program = Program::new();
-    let position = program.vertex_input("position", Type::Vec2f);
+    let position = program.attribute(Attribute::new(Rate::Vertex, "position", Type::Vec2f));
+    let transform = program.attribute(Attribute::new(Rate::Instance, "transform", Type::Mat4f));
     let color = program.parameter("color", Type::Vec4f);
-    let position = program.push(Expression::VertexInput(position));
+    let position = program.push(Expression::Attribute(position));
     let depth = program.push(Expression::Literal(Literal::Float(0.0)));
     let one = program.push(Expression::Literal(Literal::Float(1.0)));
-    let clip = program.push(Expression::construct(Type::Vec4f, &[position, depth, one]).unwrap());
+    let local = program.push(Expression::construct(Type::Vec4f, &[position, depth, one]).unwrap());
+    let transform = program.push(Expression::Attribute(transform));
+    let clip = program.push(Expression::Multiply(transform, local));
     program.set_position(clip);
     let color = program.push(Expression::Parameter(color));
     let unchanged = program.push(Expression::Multiply(color, one));
@@ -42,7 +47,7 @@ fn request_adapter(instance: &wgpu::Instance) -> Option<wgpu::Adapter> {
 }
 
 #[test]
-fn shader_ir_draws_a_triangle() {
+fn shader_ir_draws_instanced_triangles() {
     let mut program = triangle_program();
     assert_eq!(program.fold_constants(), Ok(1));
     let module = wgsl::lower(&program).unwrap_or_else(|errors| panic!("{errors:#?}"));
@@ -50,7 +55,7 @@ fn shader_ir_draws_a_triangle() {
 
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
     let Some(adapter) = request_adapter(&instance) else {
-        eprintln!("SKIPPED shader_ir_draws_a_triangle: no wgpu adapter on this machine, not even a software one");
+        eprintln!("SKIPPED shader_ir_draws_instanced_triangles: no wgpu adapter on this machine, not even a software one");
         return;
     };
     let info = adapter.get_info();
@@ -61,7 +66,9 @@ fn shader_ir_draws_a_triangle() {
         let start = ((y * SIZE + x) * 4) as usize;
         [pixels[start], pixels[start + 1], pixels[start + 2], pixels[start + 3]]
     };
-    assert_eq!(pixel(SIZE / 2, SIZE / 2), TRIANGLE, "the center is the triangle");
+    assert_eq!(pixel(SIZE / 4, SIZE / 2), TRIANGLE, "the first instance is on the left");
+    assert_eq!(pixel(SIZE * 3 / 4, SIZE / 2), TRIANGLE, "the second instance is on the right");
+    assert_eq!(pixel(SIZE / 2, SIZE / 2), CLEAR, "the instances are apart");
     assert_eq!(pixel(0, 0), CLEAR, "a corner is the clear color");
     assert_eq!(pixel(SIZE - 1, SIZE - 1), CLEAR, "a corner is the clear color");
 }
@@ -115,22 +122,20 @@ fn render(adapter: &wgpu::Adapter, module: &WgslModule) -> Vec<u8> {
         immediate_size: 0,
     });
 
-    let attribute = module.vertex_attributes[0];
-    assert_eq!(attribute.ty, Type::Vec2f);
-    let vertices: [f32; 6] = [-0.5, -0.5, 0.5, -0.5, 0.0, 0.5];
-    let vertex_bytes: Vec<u8> = vertices.iter().flat_map(|value| value.to_le_bytes()).collect();
-    let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("vertices"),
-        size: vertex_bytes.len() as u64,
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    queue.write_buffer(&vertex_buffer, 0, &vertex_bytes);
-    let attributes = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32x2,
-        offset: 0,
-        shader_location: attribute.location,
-    }];
+    let [vertices, instances] = &module.layout.vertex_buffers;
+    assert_eq!((vertices.stride, instances.stride), (8, 64));
+    let vertex_attributes = wgpu_attributes(vertices);
+    let instance_attributes = wgpu_attributes(instances);
+    // The triangle at half size, once left of the center and once right of it: column-major.
+    let corners = [-0.5f32, -0.5, 0.5, -0.5, 0.0, 0.5];
+    let mut transforms = Vec::new();
+    for offset in [-0.5f32, 0.5] {
+        transforms.extend([
+            0.5, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, offset, 0.0, 0.0, 1.0,
+        ]);
+    }
+    let vertex_buffer = upload(&device, &queue, "vertices", &corners);
+    let instance_buffer = upload(&device, &queue, "instances", &transforms);
 
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -140,11 +145,18 @@ fn render(adapter: &wgpu::Adapter, module: &WgslModule) -> Vec<u8> {
             module: &shader,
             entry_point: Some(VERTEX_ENTRY_POINT),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
-            buffers: &[Some(wgpu::VertexBufferLayout {
-                array_stride: 8,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &attributes,
-            })],
+            buffers: &[
+                Some(wgpu::VertexBufferLayout {
+                    array_stride: u64::from(vertices.stride),
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &vertex_attributes,
+                }),
+                Some(wgpu::VertexBufferLayout {
+                    array_stride: u64::from(instances.stride),
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &instance_attributes,
+                }),
+            ],
         },
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: None,
@@ -213,7 +225,8 @@ fn render(adapter: &wgpu::Adapter, module: &WgslModule) -> Vec<u8> {
         pass.set_pipeline(&pipeline);
         pass.set_bind_group(PARAMETER_GROUP, &parameters_group, &[]);
         pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-        pass.draw(0..3, 0..1);
+        pass.set_vertex_buffer(1, instance_buffer.slice(..));
+        pass.draw(0..3, 0..2);
     }
     encoder.copy_texture_to_buffer(
         target.as_image_copy(),
@@ -234,4 +247,37 @@ fn render(adapter: &wgpu::Adapter, module: &WgslModule) -> Vec<u8> {
     let pixels = readback.slice(..).get_mapped_range().unwrap().to_vec();
     readback.unmap();
     pixels
+}
+
+/// One buffer's attributes as wgpu takes them: a value at its location, or a matrix as one
+/// `Float32x4` column per location.
+fn wgpu_attributes(buffer: &VertexBufferLayout) -> Vec<wgpu::VertexAttribute> {
+    let mut attributes = Vec::new();
+    for attribute in &buffer.attributes {
+        let (format, size) = match attribute.ty {
+            Type::Vec2f => (wgpu::VertexFormat::Float32x2, 8),
+            Type::Mat4f => (wgpu::VertexFormat::Float32x4, 16),
+            other => panic!("the proof draws no {other} attribute"),
+        };
+        for column in 0..attribute.locations {
+            attributes.push(wgpu::VertexAttribute {
+                format,
+                offset: u64::from(attribute.offset + column * size),
+                shader_location: attribute.location + column,
+            });
+        }
+    }
+    attributes
+}
+
+fn upload(device: &wgpu::Device, queue: &wgpu::Queue, label: &str, values: &[f32]) -> wgpu::Buffer {
+    let bytes: Vec<u8> = values.iter().flat_map(|value| value.to_le_bytes()).collect();
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size: bytes.len() as u64,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    queue.write_buffer(&buffer, 0, &bytes);
+    buffer
 }

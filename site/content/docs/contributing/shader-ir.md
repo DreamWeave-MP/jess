@@ -50,7 +50,7 @@ Not the entire WGSL type system. If a first-party shader needs another type, it 
 
 Expressions live in an arena and name each other by `ExpressionId`. Ids only point backwards: an operand always comes before the expression that reads it. The arena is already in dependency order, so validation, folding, and lowering are single passes over a vector. No recursion, no boxed trees, no visitor.
 
-The leaves are literals, declared parameters, vertex inputs, varyings, and semantics. The operations are `sample`, `+ - * /`, `min`, `max`, `clamp`, `dot`, `cross`, `normalize`, `length`, `mix`, vector constructors, and swizzles. `*` covers matrix × vector and matrix × matrix. `min`, `max`, and `clamp` take a scalar of a vector's kind where the vector is expected, and `mix` a `Float` amount, because every shader author writes `clamp(color, 0.0, 1.0)` and WGSL refusing it helps nobody. Integer vectors get the same arithmetic, constructors, and swizzles as float vectors; what only makes sense for floats (`normalize`, `length`, `floor`, `mix`, `cross`) refuses them.
+The leaves are literals, declared parameters, attributes, varyings, and semantics. The operations are `sample`, `+ - * /`, `min`, `max`, `clamp`, `dot`, `cross`, `normalize`, `length`, `mix`, vector constructors, and swizzles. `*` covers matrix × vector and matrix × matrix. `min`, `max`, and `clamp` take a scalar of a vector's kind where the vector is expected, and `mix` a `Float` amount, because every shader author writes `clamp(color, 0.0, 1.0)` and WGSL refusing it helps nobody. Integer vectors get the same arithmetic, constructors, and swizzles as float vectors; what only makes sense for floats (`normalize`, `length`, `floor`, `mix`, `cross`) refuses them.
 
 Semantics are values the renderer provides, named by what they mean rather than where they live:
 
@@ -73,11 +73,11 @@ dot(Vec3f, Vec4f) is invalid: expected two vectors of the same type
 sample(Texture2D, Sampler, Vec3f) is invalid: expected sample(Texture2D, Sampler, Vec2f)
 fragment output 0 is Vec3f: expected Vec4f
 varying "uv" is read by the fragment stage but never written by the vertex stage
-vertex input "position" is read in the fragment stage: pass it through a varying
+attribute "position" is read in the fragment stage: pass it through a varying
 semantic sceneColor is not supported by the WGSL lowering yet
 ```
 
-It checks declarations (names, duplicates, and types their kind can't have, such as a `Bool` parameter, which no uniform buffer can hold), references to anything undeclared or from another program, operand types, which stage reads what (vertex inputs are vertex-only, varyings fragment-only, and `sample` needs the fragment stage's derivatives), the stage interface, and output types. Constant arithmetic that WGSL would reject while compiling (integer overflow, integer division by zero, a non-finite float) is rejected here first, along with NaN and infinite literals, which WGSL can't write at all.
+It checks declarations (names, duplicates, and types their kind can't have, such as a `Bool` parameter, which no uniform buffer can hold), references to anything undeclared or from another program, operand types, which stage reads what (attributes are vertex-only, varyings fragment-only, and `sample` needs the fragment stage's derivatives), the stage interface, and output types. Constant arithmetic that WGSL would reject while compiling (integer overflow, integer division by zero, a non-finite float) is rejected here first, along with NaN and infinite literals, which WGSL can't write at all.
 
 Errors are collected, not thrown one at a time. An expression whose operand already failed is left untyped and not reported again, so one bad `dot` is one error, not one per expression downstream of it. Expressions no stage reads aren't checked. They aren't lowered either.
 
@@ -85,7 +85,7 @@ naga validating the output is a test, not a diagnostic. If naga ever rejects a p
 
 ## Source Attribution
 
-Every expression and declaration can carry a `SourceOrigin`: owner, file, line, and column. `push_at`, `parameter_at`, `vertex_input_at`, and `varying_at` record one; plain `push` doesn't. Origins are stored sparsely beside the arena, so native Rust that never records one pays nothing for them.
+Every expression and declaration can carry a `SourceOrigin`: owner, file, line, and column. `push_at`, `parameter_at`, and `varying_at` record one, as does an `origin` on a declaration such as an `Attribute`; plain `push` doesn't. Origins are stored sparsely beside the arena, so native Rust that never records one pays nothing for them.
 
 Errors carry the origin of the expression or declaration at fault:
 
@@ -119,7 +119,8 @@ One module writes all WGSL, with one naming scheme:
 | --- | --- |
 | value parameter `color` | `parameters.p_color` |
 | texture and sampler `diffuse` | `t_diffuse`, `s_diffuse` |
-| vertex input `uv` | `input.a_uv` |
+| attribute `uv` | `input.a_uv`; per instance, `input.i_uv` |
+| matrix attribute `transform` at location 3 | its columns, `input.m3_transform` to `input.m6_transform` |
 | varying `uv` | `input.v_uv` |
 | semantic `cameraPosition` | `semantics.camera_position` |
 | fragment output 0 | `color0` |

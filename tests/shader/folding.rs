@@ -1,6 +1,6 @@
 //! Trivial constant folding: constant arithmetic, constant vectors, and identities. Nothing else.
 
-use jess::shader::{Expression, ExpressionId, Literal, Program, Semantic, Type, ValidationErrorKind};
+use jess::shader::{Attribute, Expression, ExpressionId, Literal, Program, Rate, Semantic, Type, ValidationErrorKind};
 
 fn literal(program: &mut Program, literal: Literal) -> ExpressionId {
     program.push(Expression::Literal(literal))
@@ -9,8 +9,8 @@ fn literal(program: &mut Program, literal: Literal) -> ExpressionId {
 /// A program whose single fragment output is `output(program)`, with a pass-through position.
 fn fragment(output: impl FnOnce(&mut Program) -> ExpressionId) -> Program {
     let mut program = Program::new();
-    let position = program.vertex_input("position", Type::Vec4f);
-    let position = program.push(Expression::VertexInput(position));
+    let position = program.attribute(Attribute::new(Rate::Vertex, "position", Type::Vec4f));
+    let position = program.push(Expression::Attribute(position));
     program.set_position(position);
     let color = output(&mut program);
     program.push_fragment_output(color);
@@ -40,8 +40,8 @@ fn constant_arithmetic_folds() {
 #[test]
 fn integer_arithmetic_folds() {
     let mut program = Program::new();
-    let position = program.vertex_input("position", Type::Vec4f);
-    let position = program.push(Expression::VertexInput(position));
+    let position = program.attribute(Attribute::new(Rate::Vertex, "position", Type::Vec4f));
+    let position = program.push(Expression::Attribute(position));
     program.set_position(position);
     let seven = literal(&mut program, Literal::Int(-7));
     let two = literal(&mut program, Literal::Int(2));

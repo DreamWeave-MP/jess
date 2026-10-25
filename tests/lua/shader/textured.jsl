@@ -3,14 +3,19 @@
 local shader = require '@jess/shader'
 
 return shader.program {
+  attributes = {
+    position = shader.vec3,
+    uv = shader.vec2,
+  },
+
   textures = {
     diffuse = shader.texture2d,
   },
 
   vertex = function(input)
     return {
-      position = input.projection * input.view * input.model * shader.vec4(input.position, 1.0),
-      uv = input.uv,
+      position = input.projection * input.view * input.model * shader.vec4(input.attributes.position, 1.0),
+      uv = input.attributes.uv,
     }
   end,
 

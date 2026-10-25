@@ -1,10 +1,11 @@
 //! Lowering a validated [`Program`] to one WGSL module.
 //!
 //! Every backend name comes from here and follows one scheme: `p_` parameters (fields of the
-//! `parameters` uniform), `t_`/`s_` textures and samplers, `a_` vertex inputs, `v_` varyings,
+//! `parameters` uniform), `t_`/`s_` textures and samplers, `a_` per-vertex and `i_` per-instance attributes
+//! (a matrix attribute's columns are `mN_name`, N its location), `v_` varyings,
 //! `colorN` fragment outputs, `semantics.snake_case` semantics, and `eN` temporaries numbered
 //! from 0 in each entry point, in arena order. Every non-leaf expression a stage reads becomes one
-//! `let`; leaves (literals, parameters, inputs, semantics) are written in place.
+//! `let`; leaves (literals, parameters, attributes, semantics) are written in place.
 //!
 //! Bindings are Jess's: semantics are one uniform block at `@group(0) @binding(0)`; value
 //! parameters are one uniform block at `@group(1) @binding(0)`, followed in `@group(1)` by every
@@ -12,8 +13,9 @@
 
 use std::fmt::Write as _;
 
-use crate::shader::expression::{Expression, ExpressionId, Literal, ParameterId, Semantic, VertexInputId};
-use crate::shader::layout::{Extent, value_extent};
+use crate::shader::expression::{Expression, ExpressionId, Literal, ParameterId, Semantic};
+use crate::shader::interface::{AttributeId, Rate};
+use crate::shader::layout::{Extent, ProgramLayout, value_extent};
 use crate::shader::program::Program;
 use crate::shader::types::Type;
 use crate::shader::validate::{Analysis, FRAGMENT, VERTEX, ValidationError, analyze};
@@ -66,17 +68,6 @@ pub struct ResourceBinding {
     pub ty: Type,
 }
 
-/// A vertex input's attribute location.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct VertexAttribute {
-    /// The `@location`.
-    pub location: u32,
-    /// The vertex input.
-    pub input: VertexInputId,
-    /// Its type.
-    pub ty: Type,
-}
-
 /// A lowered program: the WGSL, and every binding and location the renderer must match.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WgslModule {
@@ -88,8 +79,8 @@ pub struct WgslModule {
     pub parameters: Option<UniformBlock<ParameterId>>,
     /// Every texture and sampler parameter, in declaration order.
     pub resources: Vec<ResourceBinding>,
-    /// Every vertex input, at its declaration index.
-    pub vertex_attributes: Vec<VertexAttribute>,
+    /// Where everything the program declares lives, its vertex buffers among it.
+    pub layout: ProgramLayout,
     /// How many color targets the fragment stage writes.
     pub fragment_outputs: u32,
 }
@@ -106,9 +97,11 @@ pub fn lower(program: &Program) -> Result<WgslModule, Vec<ValidationError>> {
     // Validation caps the outputs at `MAX_FRAGMENT_OUTPUTS`.
     #[allow(clippy::cast_possible_truncation)]
     let output_count = program.fragment_outputs.len() as u32;
+    let layout = program.layout();
     let mut lowering = Lowering {
         program,
         analysis: &analysis,
+        layout: &layout,
         source: String::with_capacity(1024 + program.expressions.len() * 48),
         temporaries: vec![0; program.expressions.len()],
     };
@@ -116,7 +109,7 @@ pub fn lower(program: &Program) -> Result<WgslModule, Vec<ValidationError>> {
     let semantics = lowering.semantics_block();
     let parameters = lowering.parameters_block();
     let resources = lowering.resources(parameters.is_some());
-    let vertex_attributes = lowering.vertex_input_struct();
+    lowering.vertex_input_struct();
     lowering.vertex_output_struct();
     lowering.fragment_output_struct();
     lowering.vertex_entry_point();
@@ -127,7 +120,7 @@ pub fn lower(program: &Program) -> Result<WgslModule, Vec<ValidationError>> {
         semantics,
         parameters,
         resources,
-        vertex_attributes,
+        layout,
         fragment_outputs: output_count,
     })
 }
@@ -142,6 +135,7 @@ macro_rules! emit {
 struct Lowering<'a> {
     program: &'a Program,
     analysis: &'a Analysis,
+    layout: &'a ProgramLayout,
     source: String,
     /// Each non-leaf expression's temporary number in the entry point being written.
     temporaries: Vec<u32>,
@@ -228,27 +222,34 @@ impl Lowering<'_> {
         resources
     }
 
-    fn vertex_input_struct(&mut self) -> Vec<VertexAttribute> {
-        if self.program.vertex_inputs.is_empty() {
-            return Vec::new();
+    fn vertex_input_struct(&mut self) {
+        if self.program.attributes.is_empty() {
+            return;
         }
         emit!(self, "struct VertexInput {{\n");
-        let mut attributes = Vec::with_capacity(self.program.vertex_inputs.len());
-        for (location, declaration) in (0..).zip(&self.program.vertex_inputs) {
-            emit!(
-                self,
-                "    @location({location}) a_{}: {},\n",
-                declaration.name,
-                wgsl_type(declaration.ty)
-            );
-            attributes.push(VertexAttribute {
-                location,
-                input: VertexInputId(location),
-                ty: declaration.ty,
-            });
+        let layout = self.layout;
+        for attribute in layout.vertex_buffers.iter().flat_map(|buffer| &buffer.attributes) {
+            let declaration = &self.program.attributes[attribute.attribute.index()];
+            let Some(column) = declaration.ty.column() else {
+                let name = attribute_name(declaration.rate, &declaration.name);
+                emit!(
+                    self,
+                    "    @location({}) {name}: {},\n",
+                    attribute.location,
+                    wgsl_type(declaration.ty)
+                );
+                continue;
+            };
+            for location in attribute.location..attribute.location + attribute.locations {
+                emit!(
+                    self,
+                    "    @location({location}) m{location}_{}: {},\n",
+                    declaration.name,
+                    wgsl_type(column)
+                );
+            }
         }
         emit!(self, "}}\n\n");
-        attributes
     }
 
     /// The varyings the vertex stage writes, in declaration order, with what it writes.
@@ -295,7 +296,7 @@ impl Lowering<'_> {
     }
 
     fn vertex_entry_point(&mut self) {
-        let input = if self.program.vertex_inputs.is_empty() {
+        let input = if self.program.attributes.is_empty() {
             ""
         } else {
             "input: VertexInput"
@@ -393,7 +394,7 @@ impl Lowering<'_> {
             }
             Expression::Literal(_)
             | Expression::Parameter(_)
-            | Expression::VertexInput(_)
+            | Expression::Attribute(_)
             | Expression::Varying(_)
             | Expression::Semantic(_) => self.operand(id),
         }
@@ -432,11 +433,28 @@ impl Lowering<'_> {
                     _ => emit!(self, "parameters.p_{}", declaration.name),
                 }
             }
-            Expression::VertexInput(input) => emit!(self, "input.a_{}", program.vertex_inputs[input.index()].name),
+            Expression::Attribute(attribute) => self.attribute(attribute),
             Expression::Varying(varying) => emit!(self, "input.v_{}", program.varyings[varying.index()].name),
             Expression::Semantic(semantic) => emit!(self, "semantics.{}", semantic_field(semantic)),
             _ => emit!(self, "e{}", self.temporaries[id.index()]),
         }
+    }
+
+    /// An attribute read: the input field, or a matrix rebuilt from its columns.
+    fn attribute(&mut self, attribute: AttributeId) {
+        let declaration = &self.program.attributes[attribute.index()];
+        let Some(placed) = declaration.ty.column().and_then(|_| self.layout.attribute(attribute)) else {
+            emit!(self, "input.{}", attribute_name(declaration.rate, &declaration.name));
+            return;
+        };
+        emit!(self, "{}(", wgsl_type(declaration.ty));
+        for location in placed.location..placed.location + placed.locations {
+            if location > placed.location {
+                emit!(self, ", ");
+            }
+            emit!(self, "input.m{location}_{}", declaration.name);
+        }
+        emit!(self, ")");
     }
 
     fn literal(&mut self, literal: Literal) {
@@ -505,6 +523,14 @@ fn semantic_field(semantic: Semantic) -> &'static str {
         Semantic::SceneColor => "scene_color",
         Semantic::SceneDepth => "scene_depth",
         Semantic::PreviousPass => "previous_pass",
+    }
+}
+
+/// A scalar or vector attribute's input field: `a_name` per vertex, `i_name` per instance.
+fn attribute_name(rate: Rate, name: &str) -> String {
+    match rate {
+        Rate::Vertex => format!("a_{name}"),
+        Rate::Instance => format!("i_{name}"),
     }
 }
 

@@ -1,9 +1,16 @@
 {
   "result": {
     "constant": {
+      "attributes": [
+        {
+          "name": "position",
+          "type": "Vec3f"
+        }
+      ],
+      "instance": {},
       "parameters": {},
       "textures": {},
-      "tostring": "ShaderProgram(0 parameters, 0 textures, 0 varyings)",
+      "tostring": "ShaderProgram(1 attribute, 0 parameters, 0 textures, 0 varyings)",
       "varyings": {}
     },
     "fragment": {
@@ -34,6 +41,30 @@
       "viewport": "ShaderExpr(Vec2f)"
     },
     "lit": {
+      "attributes": [
+        {
+          "name": "normal",
+          "type": "Vec3f"
+        },
+        {
+          "name": "position",
+          "type": "Vec3f"
+        },
+        {
+          "name": "uv",
+          "type": "Vec2f"
+        }
+      ],
+      "instance": [
+        {
+          "name": "shade",
+          "type": "Vec4u"
+        },
+        {
+          "name": "transform",
+          "type": "Mat4f"
+        }
+      ],
       "parameters": [
         {
           "name": "ambient",
@@ -55,7 +86,7 @@
       "textures": [
         "diffuse"
       ],
-      "tostring": "ShaderProgram(4 parameters, 1 texture, 2 varyings)",
+      "tostring": "ShaderProgram(5 attributes, 4 parameters, 1 texture, 2 varyings)",
       "varyings": [
         {
           "name": "normal",
@@ -87,9 +118,11 @@
       "vec4u": "Vec4u"
     },
     "vertex": {
+      "attributes": "ShaderAttributes(attributes)",
       "clip": "ShaderExpr(Vec4f)",
       "differentValues": false,
       "input": "ShaderInput(vertex)",
+      "instance": "ShaderAttributes(instance)",
       "integers": {
         "cell": "ShaderExpr(Vec3i)",
         "count": "ShaderExpr(UInt)",
@@ -99,9 +132,12 @@
         "swizzle": "ShaderExpr(Vec2u)"
       },
       "matrix": "ShaderExpr(Mat4f)",
+      "placed": "ShaderExpr(Vec4f)",
       "position": "ShaderExpr(Vec3f)",
       "sameRead": true,
-      "texture": "ShaderExpr(Texture2D)"
+      "shade": "ShaderExpr(Vec4u)",
+      "texture": "ShaderExpr(Texture2D)",
+      "transform": "ShaderExpr(Mat4f)"
     }
   }
 }

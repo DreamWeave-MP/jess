@@ -3,14 +3,17 @@
 use std::fmt;
 
 use crate::shader::expression::{
-    Expression, ExpressionId, Literal, ParameterId, Semantic, SourceOrigin, Swizzle, VaryingId, VertexInputId,
+    Expression, ExpressionId, Literal, ParameterId, Semantic, SourceOrigin, Swizzle, VaryingId,
 };
 use crate::shader::fold::{Arithmetic, evaluate};
+use crate::shader::interface::{Attribute, AttributeId, Rate};
 use crate::shader::program::{Declaration, Program};
 use crate::shader::types::Type;
 
 /// The most color outputs a fragment stage can have.
 pub const MAX_FRAGMENT_OUTPUTS: usize = 8;
+/// The most shader locations a program's attributes can take, both rates together.
+pub const MAX_ATTRIBUTE_LOCATIONS: u32 = 16;
 
 pub const VERTEX: u8 = 1;
 pub const FRAGMENT: u8 = 2;
@@ -20,8 +23,8 @@ pub const FRAGMENT: u8 = 2;
 pub enum DeclarationKind {
     /// A parameter.
     Parameter,
-    /// A vertex input.
-    VertexInput,
+    /// A vertex attribute of the rate.
+    Attribute(Rate),
     /// A varying.
     Varying,
 }
@@ -30,7 +33,7 @@ impl DeclarationKind {
     fn name(self) -> &'static str {
         match self {
             DeclarationKind::Parameter => "parameter",
-            DeclarationKind::VertexInput => "vertex input",
+            DeclarationKind::Attribute(rate) => rate.name(),
             DeclarationKind::Varying => "varying",
         }
     }
@@ -97,12 +100,12 @@ pub enum ValidationErrorKind {
         /// The parameter.
         parameter: ParameterId,
     },
-    /// An expression reads a vertex input that was never declared.
-    UndefinedVertexInput {
+    /// An expression reads an attribute that was never declared.
+    UndefinedAttribute {
         /// The reader.
         expression: ExpressionId,
-        /// The vertex input.
-        input: VertexInputId,
+        /// The attribute.
+        attribute: AttributeId,
     },
     /// An expression reads, or the vertex stage writes, a varying that was never declared.
     UndefinedVarying {
@@ -142,12 +145,17 @@ pub enum ValidationErrorKind {
         /// The components.
         swizzle: Swizzle,
     },
-    /// The fragment stage reads a vertex input; it only sees varyings.
-    VertexInputInFragment {
+    /// The fragment stage reads an attribute; it only sees varyings.
+    AttributeInFragment {
         /// The reader.
         expression: ExpressionId,
-        /// The vertex input's name.
-        input: String,
+        /// The attribute's name.
+        attribute: String,
+    },
+    /// The attributes take more than [`MAX_ATTRIBUTE_LOCATIONS`] locations.
+    TooManyAttributeLocations {
+        /// How many they take.
+        count: u32,
     },
     /// The vertex stage reads a varying; it only writes them.
     VaryingInVertex {
@@ -223,7 +231,8 @@ impl fmt::Display for ValidationErrorKind {
             ValidationErrorKind::UnsupportedDeclarationType { kind, name, ty } => {
                 let expected = match kind {
                     DeclarationKind::Parameter => "Int, UInt, Float, a vector, a matrix, Texture2D, or Sampler",
-                    DeclarationKind::VertexInput | DeclarationKind::Varying => "Int, UInt, Float, or a vector",
+                    DeclarationKind::Attribute(_) => "Int, UInt, Float, a vector, or a matrix",
+                    DeclarationKind::Varying => "Int, UInt, Float, or a vector",
                 };
                 write!(formatter, "{} {name:?} cannot be {ty}: expected {expected}", kind.name())
             }
@@ -249,11 +258,11 @@ impl fmt::Display for ValidationErrorKind {
                 expression.index(),
                 parameter.index()
             ),
-            ValidationErrorKind::UndefinedVertexInput { expression, input } => write!(
+            ValidationErrorKind::UndefinedAttribute { expression, attribute } => write!(
                 formatter,
-                "expression {} reads vertex input {}, which is not declared",
+                "expression {} reads attribute {}, which is not declared",
                 expression.index(),
-                input.index()
+                attribute.index()
             ),
             ValidationErrorKind::UndefinedVarying { expression, varying } => write!(
                 formatter,
@@ -294,9 +303,13 @@ impl fmt::Display for ValidationErrorKind {
             ValidationErrorKind::InvalidSwizzle { vector, swizzle, .. } => {
                 write!(formatter, "{vector}.{swizzle} is invalid: expected components a {vector} has")
             }
-            ValidationErrorKind::VertexInputInFragment { input, .. } => write!(
+            ValidationErrorKind::AttributeInFragment { attribute, .. } => write!(
                 formatter,
-                "vertex input {input:?} is read in the fragment stage: pass it through a varying"
+                "attribute {attribute:?} is read in the fragment stage: pass it through a varying"
+            ),
+            ValidationErrorKind::TooManyAttributeLocations { count } => write!(
+                formatter,
+                "the attributes take {count} locations: at most {MAX_ATTRIBUTE_LOCATIONS}"
             ),
             ValidationErrorKind::VaryingInVertex { varying, .. } => write!(
                 formatter,
@@ -384,27 +397,70 @@ pub fn analyze(program: &Program) -> Result<Analysis, Vec<ValidationError>> {
 }
 
 fn check_declarations(program: &Program, errors: &mut Vec<ValidationError>) {
-    let kinds = [
-        (DeclarationKind::Parameter, &program.parameters),
-        (DeclarationKind::VertexInput, &program.vertex_inputs),
-        (DeclarationKind::Varying, &program.varyings),
-    ];
-    for (kind, declarations) in kinds {
-        for (index, declaration) in declarations.iter().enumerate() {
-            let Declaration { name, ty, origin } = declaration;
-            for kind in declaration_errors(kind, &declarations[..index], name, *ty) {
-                errors.push(ValidationError {
-                    kind,
-                    origin: origin.clone(),
-                });
-            }
+    check_named(DeclarationKind::Parameter, &program.parameters, errors);
+    for (index, attribute) in program.attributes.iter().enumerate() {
+        for kind in attribute_errors(&program.attributes[..index], attribute) {
+            errors.push(ValidationError {
+                kind,
+                origin: attribute.origin.clone(),
+            });
+        }
+    }
+    check_named(DeclarationKind::Varying, &program.varyings, errors);
+    let count = program
+        .layout()
+        .vertex_buffers
+        .iter()
+        .flat_map(|buffer| &buffer.attributes)
+        .map(|layout| layout.locations)
+        .sum();
+    if count > MAX_ATTRIBUTE_LOCATIONS {
+        errors.push(ValidationError {
+            kind: ValidationErrorKind::TooManyAttributeLocations { count },
+            origin: None,
+        });
+    }
+}
+
+/// Checks each of `declarations` against the ones before it.
+fn check_named(kind: DeclarationKind, declarations: &[Declaration], errors: &mut Vec<ValidationError>) {
+    for (index, declaration) in declarations.iter().enumerate() {
+        let Declaration { name, ty, origin } = declaration;
+        let earlier = declarations[..index]
+            .iter()
+            .map(|earlier| (earlier.name.as_str(), earlier.ty));
+        for kind in declaration_errors(kind, earlier, name, *ty) {
+            errors.push(ValidationError {
+                kind,
+                origin: origin.clone(),
+            });
         }
     }
 }
 
+/// What is wrong with declaring `attribute` after `earlier` attributes: an invalid name, a name
+/// already taken at its rate, or a type no vertex buffer holds. Empty when nothing is.
+pub fn attribute_errors(earlier: &[Attribute], attribute: &Attribute) -> Vec<ValidationErrorKind> {
+    let earlier = earlier
+        .iter()
+        .filter(|earlier| earlier.rate == attribute.rate)
+        .map(|earlier| (earlier.name.as_str(), earlier.ty));
+    declaration_errors(
+        DeclarationKind::Attribute(attribute.rate),
+        earlier,
+        &attribute.name,
+        attribute.ty,
+    )
+}
+
 /// What is wrong with declaring `name` as `ty` after `earlier` declarations of the same `kind`:
 /// an invalid name, a name already taken, or a type the kind cannot have. Empty when nothing is.
-pub fn declaration_errors(kind: DeclarationKind, earlier: &[Declaration], name: &str, ty: Type) -> Vec<ValidationErrorKind> {
+pub fn declaration_errors<'a>(
+    kind: DeclarationKind,
+    mut earlier: impl Iterator<Item = (&'a str, Type)>,
+    name: &str,
+    ty: Type,
+) -> Vec<ValidationErrorKind> {
     let mut errors = Vec::new();
     if !is_valid_name(name) {
         errors.push(ValidationErrorKind::InvalidName {
@@ -414,10 +470,7 @@ pub fn declaration_errors(kind: DeclarationKind, earlier: &[Declaration], name: 
     }
     // Textures, samplers, and values of the same name lower to different prefixes.
     let key = |ty: Type| (ty == Type::Texture2D, ty == Type::Sampler);
-    if earlier
-        .iter()
-        .any(|declaration| declaration.name == name && key(declaration.ty) == key(ty))
-    {
+    if earlier.any(|(earlier, earlier_ty)| earlier == name && key(earlier_ty) == key(ty)) {
         errors.push(ValidationErrorKind::DuplicateName {
             kind,
             name: name.to_owned(),
@@ -425,7 +478,8 @@ pub fn declaration_errors(kind: DeclarationKind, earlier: &[Declaration], name: 
     }
     let supported = match kind {
         DeclarationKind::Parameter => ty != Type::Bool,
-        DeclarationKind::VertexInput | DeclarationKind::Varying => ty.is_numeric_scalar() || ty.is_vector(),
+        DeclarationKind::Attribute(_) => ty.is_numeric() || ty.is_matrix(),
+        DeclarationKind::Varying => ty.is_numeric(),
     };
     if !supported {
         errors.push(ValidationErrorKind::UnsupportedDeclarationType {
@@ -592,14 +646,17 @@ fn infer(
             };
             declaration.ty
         }
-        Expression::VertexInput(input) => {
-            let Some(declaration) = program.vertex_inputs.get(input.index()) else {
-                return Err(ValidationErrorKind::UndefinedVertexInput { expression: id, input });
+        Expression::Attribute(attribute) => {
+            let Some(declaration) = program.attributes.get(attribute.index()) else {
+                return Err(ValidationErrorKind::UndefinedAttribute {
+                    expression: id,
+                    attribute,
+                });
             };
             if stage & FRAGMENT != 0 {
-                return Err(ValidationErrorKind::VertexInputInFragment {
+                return Err(ValidationErrorKind::AttributeInFragment {
                     expression: id,
-                    input: declaration.name.clone(),
+                    attribute: declaration.name.clone(),
                 });
             }
             declaration.ty
@@ -689,7 +746,7 @@ pub fn operation_type(id: ExpressionId, expression: &Expression, operands: &[Typ
     let ty = match *expression {
         Expression::Literal(_)
         | Expression::Parameter(_)
-        | Expression::VertexInput(_)
+        | Expression::Attribute(_)
         | Expression::Varying(_)
         | Expression::Semantic(_) => unreachable!("leaves are typed by their declaration"),
         Expression::Sample { .. } => {

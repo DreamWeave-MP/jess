@@ -182,14 +182,19 @@ end
 
 local function build(mode: number, ditherSize: number): ShaderProgram
   return shader.program {
+    attributes = {
+      position = shader.vec3,
+      uv = shader.vec2,
+    },
+
     textures = {
       source = shader.texture2d,
     },
 
     vertex = function(input)
       return {
-        position = shader.vec4(input.position, 1.0),
-        uv = input.uv,
+        position = shader.vec4(input.attributes.position, 1.0),
+        uv = input.attributes.uv,
       }
     end,
 

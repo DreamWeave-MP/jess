@@ -4,6 +4,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::shader::expression::{Expression, ExpressionId, Literal, Semantic, SourceOrigin, Swizzle};
+use crate::shader::interface::{Attribute, AttributeId, Rate};
 use crate::shader::program::{Declaration, Program};
 use crate::shader::types::Type;
 use crate::shader::validate::{self, DeclarationKind, ValidationError, ValidationErrorKind};
@@ -139,21 +140,39 @@ impl Site<'_> {
         Ok(self.push(Expression::Parameter(parameter), ty))
     }
 
-    /// Declares a per-vertex attribute and returns its value, which only the vertex stage may
-    /// read.
+    /// Declares a vertex attribute, per vertex or per instance. [`read_attribute`](Site::read_attribute)
+    /// reads it, in the vertex stage only.
     ///
     /// # Errors
     ///
-    /// The first problem with the declaration: an invalid name, a name already declared, or a
-    /// type a vertex input cannot have.
-    pub fn vertex_input(&mut self, name: &str, ty: Type) -> Result<Value, ValidationError> {
-        self.check_declaration(DeclarationKind::VertexInput, &self.builder.program.vertex_inputs, name, ty)?;
-        let program = &mut self.builder.program;
-        let input = match &self.origin {
-            Some(origin) => program.vertex_input_at(name, ty, origin.clone()),
-            None => program.vertex_input(name, ty),
+    /// The first problem with the declaration: an invalid name, a name already declared at its
+    /// rate, or a type no vertex buffer holds.
+    pub fn attribute(&mut self, rate: Rate, name: &str, ty: Type) -> Result<AttributeId, ValidationError> {
+        let attribute = Attribute {
+            name: name.to_owned(),
+            rate,
+            ty,
+            origin: self.origin.clone(),
         };
-        Ok(self.push(Expression::VertexInput(input), ty))
+        let problem = validate::attribute_errors(&self.builder.program.attributes, &attribute)
+            .into_iter()
+            .next();
+        if let Some(kind) = problem {
+            return Err(self.error(kind));
+        }
+        Ok(self.builder.program.attribute(attribute))
+    }
+
+    /// A declared attribute's value, read at this site. An id this program didn't declare is
+    /// reported by [`ProgramBuilder::finish`].
+    pub fn read_attribute(&mut self, attribute: AttributeId) -> Value {
+        let ty = self
+            .builder
+            .program
+            .attributes
+            .get(attribute.index())
+            .map_or(Type::Float, |declared| declared.ty);
+        self.push(Expression::Attribute(attribute), ty)
     }
 
     /// Passes `value` from the vertex stage to the fragment stage as the varying `name`, declared
@@ -442,6 +461,7 @@ impl Site<'_> {
         name: &str,
         ty: Type,
     ) -> Result<(), ValidationError> {
+        let earlier = earlier.iter().map(|declaration| (declaration.name.as_str(), declaration.ty));
         let first = validate::declaration_errors(kind, earlier, name, ty).into_iter().next();
         first.map_or(Ok(()), |kind| Err(self.error(kind)))
     }

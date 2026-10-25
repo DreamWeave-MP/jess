@@ -1,22 +1,22 @@
 //! A typed shader IR that lowers to WGSL.
 //!
-//! A [`Program`] is an arena of [`Expression`]s plus a vertex stage (clip position and varyings)
-//! and a fragment stage (color outputs). Expressions name parameters, vertex inputs, varyings, and
-//! [`Semantic`] inputs by what they mean; [`wgsl::lower`] picks every binding and location.
-//! [`Program::validate`] reports mistakes in Jess terms, with the author's [`SourceOrigin`] when
-//! one was recorded, before any backend sees the program. [`Program::fold_constants`] folds
-//! constant arithmetic and trivial identities, and nothing more.
+//! A [`Program`] is an arena of [`Expression`]s over a declared interface (see [`layout`]), plus a
+//! vertex stage (clip position and varyings) and a fragment stage (color outputs). Expressions name
+//! parameters, attributes, varyings, and [`Semantic`] inputs by what they mean; [`wgsl::lower`]
+//! picks every binding and location. [`Program::validate`] reports mistakes in Jess terms, with the
+//! author's [`SourceOrigin`] when one was recorded, before any backend sees the program.
+//! [`Program::fold_constants`] folds constant arithmetic and trivial identities, and nothing more.
 //!
 //! WGSL is backend output, not the interface: nothing here takes WGSL or exposes a GPU API.
 //!
 //! ```
-//! use jess::shader::{Expression, Literal, Program, Semantic, Type, wgsl};
+//! use jess::shader::{Attribute, Expression, Literal, Program, Rate, Semantic, Type, wgsl};
 //!
 //! let mut program = Program::new();
-//! let position = program.vertex_input("position", Type::Vec3f);
+//! let position = program.attribute(Attribute::new(Rate::Vertex, "position", Type::Vec3f));
 //! let color = program.parameter("color", Type::Vec4f);
 //!
-//! let position = program.push(Expression::VertexInput(position));
+//! let position = program.push(Expression::Attribute(position));
 //! let one = program.push(Expression::Literal(Literal::Float(1.0)));
 //! let local = program.push(Expression::construct(Type::Vec4f, &[position, one]).unwrap());
 //! let projection = program.push(Expression::Semantic(Semantic::Projection));
@@ -38,11 +38,12 @@
 //! cross into another builder. The same program:
 //!
 //! ```
-//! use jess::shader::{ProgramBuilder, Semantic, Type, wgsl};
+//! use jess::shader::{ProgramBuilder, Rate, Semantic, Type, wgsl};
 //!
 //! let mut builder = ProgramBuilder::new();
 //! let mut site = builder.site();
-//! let position = site.vertex_input("position", Type::Vec3f)?;
+//! let position = site.attribute(Rate::Vertex, "position", Type::Vec3f)?;
+//! let position = site.read_attribute(position);
 //! let color = site.parameter("color", Type::Vec4f)?;
 //!
 //! let one = site.float(1.0)?;
@@ -97,7 +98,6 @@ pub mod wgsl;
 pub use build::{ProgramBuilder, Site, Value};
 pub use expression::{
     Component, Expression, ExpressionId, Literal, Operands, ParameterId, Semantic, SourceOrigin, Swizzle, VaryingId,
-    VertexInputId,
 };
 pub use interface::{
     Attribute, AttributeId, DataType, Element, Field, Frequency, Rate, Resource, ResourceId, ResourceKind, StructDecl,
@@ -105,4 +105,4 @@ pub use interface::{
 };
 pub use program::{Declaration, Program};
 pub use types::{Scalar, Type};
-pub use validate::{DeclarationKind, MAX_FRAGMENT_OUTPUTS, ValidationError, ValidationErrorKind};
+pub use validate::{DeclarationKind, MAX_ATTRIBUTE_LOCATIONS, MAX_FRAGMENT_OUTPUTS, ValidationError, ValidationErrorKind};

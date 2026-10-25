@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use jess::shader::{
-    DeclarationKind, Expression, ExpressionId, Literal, Program, Semantic, SourceOrigin, Swizzle, Type, ValidationError,
-    ValidationErrorKind, wgsl,
+    Attribute, DeclarationKind, Expression, ExpressionId, Literal, Program, Rate, Semantic, SourceOrigin, Swizzle, Type,
+    ValidationError, ValidationErrorKind, wgsl,
 };
 
 fn float(program: &mut Program, value: f32) -> ExpressionId {
@@ -14,8 +14,8 @@ fn float(program: &mut Program, value: f32) -> ExpressionId {
 /// A valid vertex stage, so each test only breaks what it means to.
 fn with_position() -> Program {
     let mut program = Program::new();
-    let position = program.vertex_input("position", Type::Vec4f);
-    let position = program.push(Expression::VertexInput(position));
+    let position = program.attribute(Attribute::new(Rate::Vertex, "position", Type::Vec4f));
+    let position = program.push(Expression::Attribute(position));
     program.set_position(position);
     program
 }
@@ -100,8 +100,8 @@ fn a_texture_is_not_a_value() {
 #[test]
 fn stage_outputs_must_be_vec4f() {
     let mut program = Program::new();
-    let position = program.vertex_input("position", Type::Vec3f);
-    let position = program.push_at(Expression::VertexInput(position), origin(3, 1));
+    let position = program.attribute(Attribute::new(Rate::Vertex, "position", Type::Vec3f));
+    let position = program.push_at(Expression::Attribute(position), origin(3, 1));
     program.set_position(position);
     let color = program.push(Expression::Literal(Literal::Vec3f([1.0, 0.0, 0.0])));
     program.push_fragment_output(color);
@@ -130,14 +130,14 @@ fn undefined_references_are_reported() {
     let mut other = Program::new();
     other.parameter("color", Type::Vec4f);
     let foreign_parameter = other.parameter("tint", Type::Vec4f);
-    other.vertex_input("position", Type::Vec4f);
-    let foreign_input = other.vertex_input("normal", Type::Vec4f);
+    other.attribute(Attribute::new(Rate::Vertex, "position", Type::Vec4f));
+    let foreign_input = other.attribute(Attribute::new(Rate::Vertex, "normal", Type::Vec4f));
     let foreign_varying = other.varying("uv", Type::Vec4f);
 
     let mut program = with_position();
     let parameter = program.push(Expression::Parameter(foreign_parameter));
     program.push_fragment_output(parameter);
-    let input = program.push(Expression::VertexInput(foreign_input));
+    let input = program.push(Expression::Attribute(foreign_input));
     program.write_varying(foreign_varying, input);
 
     assert_eq!(
@@ -151,9 +151,9 @@ fn undefined_references_are_reported() {
                 expression: parameter,
                 parameter: foreign_parameter
             },
-            ValidationErrorKind::UndefinedVertexInput {
+            ValidationErrorKind::UndefinedAttribute {
                 expression: input,
-                input: foreign_input
+                attribute: foreign_input
             },
         ]
     );
@@ -218,11 +218,11 @@ fn the_stage_interface_is_checked() {
 #[test]
 fn inputs_belong_to_their_stage() {
     let mut program = Program::new();
-    let position = program.vertex_input("position", Type::Vec4f);
+    let position = program.attribute(Attribute::new(Rate::Vertex, "position", Type::Vec4f));
     let uv = program.varying("uv", Type::Vec2f);
     let texture = program.parameter("diffuse", Type::Texture2D);
     let sampler = program.parameter("diffuse", Type::Sampler);
-    let position = program.push(Expression::VertexInput(position));
+    let position = program.push(Expression::Attribute(position));
     let texture = program.push(Expression::Parameter(texture));
     let sampler = program.push(Expression::Parameter(sampler));
     let read_uv = program.push(Expression::Varying(uv));
@@ -239,9 +239,9 @@ fn inputs_belong_to_their_stage() {
     assert_eq!(
         kinds(&program),
         [
-            ValidationErrorKind::VertexInputInFragment {
+            ValidationErrorKind::AttributeInFragment {
                 expression: position,
-                input: "position".to_owned()
+                attribute: "position".to_owned()
             },
             ValidationErrorKind::VaryingInVertex {
                 expression: read_uv,
@@ -297,7 +297,7 @@ fn declarations_are_checked() {
     program.parameter("tint", Type::Vec3f);
     program.parameter("tint", Type::Texture2D);
     program.parameter("visible", Type::Bool);
-    program.vertex_input("diffuse", Type::Texture2D);
+    program.attribute(Attribute::new(Rate::Vertex, "diffuse", Type::Texture2D));
     program.varying("transform", Type::Mat4f);
     program.varying("light-direction", Type::Vec3f);
 
@@ -318,7 +318,7 @@ fn declarations_are_checked() {
                 ty: Type::Bool,
             },
             ValidationErrorKind::UnsupportedDeclarationType {
-                kind: DeclarationKind::VertexInput,
+                kind: DeclarationKind::Attribute(Rate::Vertex),
                 name: "diffuse".to_owned(),
                 ty: Type::Texture2D,
             },
