@@ -2,6 +2,7 @@
 
 use std::ops::BitOr;
 
+use super::live::{Kind, Token};
 use super::{Gpu, GpuError};
 use crate::render::TextureFormat;
 
@@ -126,6 +127,7 @@ pub struct Texture {
     /// The view of all of it, of its shape, as shaders read it.
     pub(crate) view: wgpu::TextureView,
     desc: TextureDesc,
+    _live: Token,
 }
 
 impl Texture {
@@ -142,9 +144,14 @@ const ROW_ALIGNMENT: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
 #[cfg(feature = "window")]
 impl Texture {
     /// `raw`, a texture wgpu made elsewhere (a surface's image), described as `desc`.
-    pub(crate) fn wrap(raw: wgpu::Texture, desc: TextureDesc) -> Texture {
+    pub(crate) fn wrap(gpu: &Gpu, raw: wgpu::Texture, desc: TextureDesc) -> Texture {
         let view = raw.create_view(&wgpu::TextureViewDescriptor::default());
-        Texture { raw, view, desc }
+        Texture {
+            raw,
+            view,
+            desc,
+            _live: gpu.live.token(Kind::Texture),
+        }
     }
 }
 
@@ -195,7 +202,12 @@ impl Gpu {
             });
             (raw, view)
         })?;
-        Ok(Texture { raw, view, desc: *desc })
+        Ok(Texture {
+            raw,
+            view,
+            desc: *desc,
+            _live: self.live.token(Kind::Texture),
+        })
     }
 
     /// Writes all of mip `level` of `layer` (a cube's face, an array's layer; 0 for a 2D texture

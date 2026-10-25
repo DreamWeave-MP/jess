@@ -182,7 +182,7 @@ impl Surface {
             mips: 1,
             usage: TextureUsage::TARGET,
         };
-        let texture = Texture::wrap(raw.texture.clone(), desc);
+        let texture = Texture::wrap(gpu, raw.texture.clone(), desc);
         Ok(Some(SurfaceFrame { raw, texture }))
     }
 }

@@ -42,7 +42,7 @@ impl Pipeline {
 /// A program ready to draw or to compute.
 #[derive(Debug)]
 pub struct LuaGpuPipeline {
-    gpu: Rc<Gpu>,
+    gpu: Arc<Gpu>,
     pipeline: Rc<Pipeline>,
 }
 

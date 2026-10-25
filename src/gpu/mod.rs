@@ -17,6 +17,7 @@ mod buffer;
 mod cache;
 mod compute;
 mod draw_set;
+mod live;
 mod pass;
 mod pipeline;
 mod plan;
@@ -35,6 +36,7 @@ pub use buffer::{Buffer, BufferUsage};
 pub use cache::PipelineStats;
 pub use compute::ComputePipeline;
 pub use draw_set::{DrawSet, DrawSetDesc, DrawSets};
+pub use live::LiveCounts;
 pub use pass::{Draw, IndexFormat, Target};
 pub use pipeline::{Blend, ColorState, Cull, DepthState, PipelineState, RenderPipeline, Topology};
 pub(crate) use pipeline::{Group, Slot};
@@ -151,6 +153,8 @@ pub struct Gpu {
     layouts: Mutex<HashMap<Vec<wgpu::BindGroupLayoutEntry>, Arc<pipeline::Layout>>>,
     /// The pipelines it compiled, by what they were compiled from.
     cache: Mutex<cache::Cache>,
+    /// How many of each object it has alive.
+    live: Arc<live::Live>,
 }
 
 impl fmt::Debug for Gpu {
@@ -218,7 +222,15 @@ impl Gpu {
             info,
             layouts: Mutex::default(),
             cache: Mutex::default(),
+            live: Arc::default(),
         })
+    }
+
+    /// How many buffers, textures, samplers, bind groups, and pipelines it has alive: what was
+    /// made on it and not yet dropped.
+    #[must_use]
+    pub fn live(&self) -> LiveCounts {
+        self.live.counts()
     }
 
     /// The adapter this runs on, and what it allows.

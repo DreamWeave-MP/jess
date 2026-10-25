@@ -547,6 +547,9 @@ pub(crate) fn launch(
             step: FRAME,
             max_catch_up: MAX_CATCH_UP,
         });
+    // One GPU device for every generation, so a restart reloads code without reopening it.
+    #[cfg(feature = "gpu")]
+    let spec = spec.service(Arc::new(crate::lua::SharedDevice::default()));
     // A target that may open windows hears their keyboard and pointer, whatever else its host
     // polls; one that may not stays as headless as it was asked to be.
     #[cfg(feature = "window")]

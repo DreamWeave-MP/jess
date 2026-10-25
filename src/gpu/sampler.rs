@@ -1,5 +1,6 @@
 //! Samplers: how a shader reads a texture between and outside its texels.
 
+use super::live::{Kind, Token};
 use super::{Gpu, GpuError};
 
 /// How a sampler blends neighbouring texels, or mip levels.
@@ -79,6 +80,7 @@ pub struct SamplerDesc {
 pub struct Sampler {
     pub(crate) raw: wgpu::Sampler,
     desc: SamplerDesc,
+    _live: Token,
 }
 
 impl Sampler {
@@ -121,6 +123,10 @@ impl Gpu {
                 ..Default::default()
             })
         })?;
-        Ok(Sampler { raw, desc: *desc })
+        Ok(Sampler {
+            raw,
+            desc: *desc,
+            _live: self.live.token(Kind::Sampler),
+        })
     }
 }

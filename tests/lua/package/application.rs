@@ -1272,3 +1272,67 @@ fn diagnostics_collapse_repeats_and_stay_bounded() {
     assert_eq!(held[4_096], "904 more diagnostics were dropped: nothing read them in time");
     application.stop().unwrap();
 }
+
+/// Every generation of an application draws on the domain's one GPU device, and a restart releases
+/// everything the old generation made on it: its buffers, textures, samplers, bind groups, and
+/// pipelines go with its runtime, and the new generation starts from nothing but the device.
+#[cfg(feature = "gpu")]
+#[test]
+fn a_restart_keeps_the_gpu_device_and_releases_what_the_old_generation_made() {
+    if crate::gpu::gpu("a_restart_keeps_the_gpu_device_and_releases_what_the_old_generation_made").is_none() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("drawing");
+    single(
+        &root,
+        &[(
+            "drawing",
+            "local shader = jess.shader\n\
+             local device = jess.gpu.device()\n\
+             local program = shader.program({\n\
+               material = { tint = shader.vec4, diffuse = shader.texture2d },\n\
+               vertex = function() return { position = shader.vec4(0, 0, 0, 1) } end,\n\
+               fragment = function(input) return input.material.tint end,\n\
+             })\n\
+             local pipeline = device:pipeline(program, { colors = { 'rgba8Unorm' } })\n\
+             local bindings = { [0] = device:buffer(32, 'uniform') }\n\
+             for _, binding in program.layout.material.bindings do\n\
+               bindings[binding.binding] = if binding.kind == 'Sampler' then device:sampler() else \
+             device:texture({ width = 4, height = 4, format = 'rgba8Unorm', usage = 'sampled' })\n\
+             end\n\
+             local kept = { pipeline:bind('material', bindings), device:buffer(64, 'vertex') }\n\
+             return { on = { host = { update = function() assert(#kept == 2) end } } }\n",
+            None,
+        )],
+        "return nil\n",
+        &["gpu.device"],
+    );
+    let mut application = launch(&request(&root, "app", &[]));
+    let shared = application.domain().service::<jess::lua::SharedDevice>().unwrap();
+    let first = shared.opened().expect("the first generation opened the device");
+    assert_eq!(
+        first.live(),
+        jess::gpu::LiveCounts {
+            buffers: 2,
+            textures: 1,
+            samplers: 1,
+            bind_groups: 1,
+            pipelines: 1,
+        }
+    );
+
+    application.restart().unwrap();
+    let second = shared.opened().unwrap();
+    assert!(std::sync::Arc::ptr_eq(&first, &second), "the device outlives the generation");
+    // The new generation made its own again; the old one's are gone with its runtime.
+    assert_eq!(second.live().buffers, 2);
+    assert_eq!(second.live().textures, 1);
+
+    application.stop().unwrap();
+    assert_eq!(
+        first.live(),
+        jess::gpu::LiveCounts::default(),
+        "teardown leaves nothing behind"
+    );
+}

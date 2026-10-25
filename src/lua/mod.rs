@@ -18,6 +18,9 @@ use l3i::value::{Function, Table, Value};
 
 pub use l3i;
 
+#[cfg(feature = "gpu")]
+pub use gpu::SharedDevice;
+
 pub mod application;
 mod audio;
 pub mod bench;

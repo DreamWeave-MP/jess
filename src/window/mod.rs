@@ -138,7 +138,7 @@ pub struct Showing {
 struct State {
     raw: Option<Arc<RawWindow>>,
     surface: Option<Surface>,
-    gpu: Rc<Gpu>,
+    gpu: Arc<Gpu>,
     title: String,
     size: Extent,
     scale: f64,
@@ -273,7 +273,7 @@ fn resized(state: &mut State, size: PhysicalSize<u32>) {
         width: size.width.max(1),
         height: size.height.max(1),
     };
-    let gpu = Rc::clone(&state.gpu);
+    let gpu = Arc::clone(&state.gpu);
     if let Some(surface) = &mut state.surface
         && let Err(problem) = surface.resize(&gpu, state.size.width, state.size.height)
     {
@@ -300,7 +300,7 @@ fn close(state: &mut State) {
 ///
 /// No window system (no display), an event loop another thread made, a window the system
 /// refuses to open, or a surface the device can't present to.
-pub fn open(gpu: &Rc<Gpu>, desc: &WindowDesc) -> Result<Window, WindowError> {
+pub fn open(gpu: &Arc<Gpu>, desc: &WindowDesc) -> Result<Window, WindowError> {
     SYSTEM.with_borrow_mut(|system| {
         if system.is_none() {
             *system = Some(System::new()?);
@@ -337,7 +337,7 @@ pub fn open(gpu: &Rc<Gpu>, desc: &WindowDesc) -> Result<Window, WindowError> {
             scale: raw.scale_factor(),
             raw: Some(raw),
             surface: Some(surface),
-            gpu: Rc::clone(gpu),
+            gpu: Arc::clone(gpu),
             title: desc.title.clone(),
             size: Extent {
                 width: size.width.max(1),
@@ -420,7 +420,7 @@ fn draw(state: &mut State) -> Result<(), WindowError> {
     if let Some(problem) = state.problem.take() {
         return Err(problem);
     }
-    let gpu = Rc::clone(&state.gpu);
+    let gpu = Arc::clone(&state.gpu);
     let (Some(surface), Some(showing)) = (&mut state.surface, &state.showing) else {
         return Ok(());
     };

@@ -40,6 +40,12 @@ A copy between a target and a buffer lays each row out as its texels padded to a
 
 `Gpu::run` takes the draw sets its draw passes choose from, and an `Import` for each imported target and buffer: a texture of the declared format and size at the plan's viewport, a buffer of the declared size. `Plan::resized(viewport)` is the same plan for another viewport, its transient targets and the groups that bind them made again. `Plan::order()` names the passes that run, and `Plan::allocations()` counts what the plan allocated.
 
+## Generations and Teardown
+
+Every buffer, texture, sampler, bind group, and pipeline holds a token of its device's `LiveCounts`, given back when it drops; `Gpu::live` reads them. wgpu keeps an object the GPU is still using until it is done with it, so dropping one is always safe, whatever is in flight.
+
+A script domain's generations share one device through `jess::lua::SharedDevice`, a service an application's host gives its domain: the first `jess.gpu.device()` opens it and every later generation's gets it again. A generation's handles live in its runtime, so they go when it does, draw sets and plans with them, and its successor can't name them. The test that restarts an application on a GPU checks exactly that: the same device after the restart, and none of the old generation's objects alive on it.
+
 ## Windows
 
 `jess::window` (`src/window`, feature `window`, which brings `gpu`) opens native windows through winit, each with a `Surface` made on the device's own wgpu instance from the window's handle. A surface's next image is a `SurfaceFrame` whose texture is an ordinary jess `Texture`, so a window is drawn the way anything is: as the imported target of a plan. `Window::show` keeps a plan, resized with the window, and `window::present` runs it into every shown window's next image and presents it, with no Luau on the way.

@@ -29,7 +29,7 @@ mod resources;
 mod window;
 
 #[cfg(feature = "gpu")]
-pub use device::describe;
+pub use device::{SharedDevice, describe};
 
 /// The `jess.gpu` table.
 pub fn module(runtime: &Runtime, jess: &Rc<Jess>) -> l3i::Result<Table> {

@@ -19,6 +19,7 @@ A jess built without the `gpu` feature still has `jess.gpu`, and says so when as
 The runtime's device. The first call opens it, on whatever adapter the machine has: a hardware one if there is one, else a software one, which is what an offscreen render or a test on a machine without a GPU wants. Every later call is the same device.
 
 - **Capability:** `gpu.device`. A script you run holds it, as it holds the input devices in front of you; a package target declares it. Without it: `jess.gpu.device: needs the 'gpu.device' capability, which this runtime does not grant`.
+- **Generations:** in an application, the device is the application's: the first generation to ask opens it, and every later one gets the same device, so a restart reloads code without opening the GPU again. Everything a generation made on it (buffers, textures, pipelines, draw sets, plans, windows) goes with that generation's runtime, and no handle of one generation can reach the next.
 - **Errors:** `jess.gpu.device: no GPU adapter, not even a software one`, and an adapter that opens no device.
 
 ## GpuDevice
@@ -30,6 +31,7 @@ The runtime's device. The first call opens it, on whatever adapter the machine h
 | `kind` | `string` | `discrete`, `integrated`, `virtual`, `cpu` (a software adapter), or `other`. |
 | `limits` | `{ textureSize, textureLayers, bufferSize, workgroups }` | The widest or tallest 2D texture, the most layers an array texture has, the largest buffer in bytes, and the most workgroups a dispatch has on one axis. |
 | `pipelines` | `{ compiled, reused }` | How many pipelines the device compiled, and how many times `GpuDevice:pipeline` gave back one it already had. |
+| `live` | `{ buffers, textures, samplers, bindGroups, pipelines }` | How many of each the device has alive: made, and not yet let go of. A count that only grows is a leak. |
 
 `tostring(device)` is `GpuDevice(name, backend)`.
 

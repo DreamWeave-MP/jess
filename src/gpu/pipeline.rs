@@ -4,6 +4,7 @@
 use std::num::NonZeroU64;
 use std::sync::{Arc, PoisonError};
 
+use super::live::{Kind, Token};
 use super::texture::raw_format;
 use super::{Compare, Gpu, GpuError};
 use crate::render::{SampleKind, TextureFormat};
@@ -143,6 +144,7 @@ pub struct RenderPipeline {
     state: PipelineState,
     /// The bytes per vertex and per instance; 0 for a rate without attributes.
     pub(crate) strides: [u32; 2],
+    _live: Token,
 }
 
 impl RenderPipeline {
@@ -252,6 +254,7 @@ impl Gpu {
             groups,
             state: state.clone(),
             strides: module.layout.vertex_buffers.each_ref().map(|buffer| buffer.stride),
+            _live: self.live.token(Kind::Pipeline),
         })
     }
 

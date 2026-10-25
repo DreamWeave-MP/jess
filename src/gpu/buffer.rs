@@ -3,6 +3,7 @@
 use std::fmt;
 use std::ops::BitOr;
 
+use super::live::{Kind, Token};
 use super::{Gpu, GpuError};
 
 /// What a buffer is bound as, any number at once. Every buffer can be written and read back.
@@ -74,6 +75,7 @@ pub struct Buffer {
     pub(crate) raw: wgpu::Buffer,
     size: u64,
     usage: BufferUsage,
+    _live: Token,
 }
 
 impl Buffer {
@@ -114,7 +116,12 @@ impl Gpu {
                 mapped_at_creation: false,
             })
         })?;
-        Ok(Buffer { raw, size, usage })
+        Ok(Buffer {
+            raw,
+            size,
+            usage,
+            _live: self.live.token(Kind::Buffer),
+        })
     }
 
     /// Writes `bytes` into `buffer` from `offset`, before the next work the GPU is given.

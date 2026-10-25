@@ -1,6 +1,7 @@
 //! Compute pipelines and dispatches: a compute program run over a grid of workgroups.
 
 use super::bind::{BindGroup, Binding};
+use super::live::{Kind, Token};
 use super::pipeline::{Group, invalid_program};
 use super::{Gpu, GpuError};
 use crate::shader::wgsl::{self, COMPUTE_ENTRY_POINT, WgslModule};
@@ -12,6 +13,7 @@ pub struct ComputePipeline {
     raw: wgpu::ComputePipeline,
     pub(crate) groups: [Group; 3],
     workgroup_size: [u32; 3],
+    _live: Token,
 }
 
 impl ComputePipeline {
@@ -70,6 +72,7 @@ impl Gpu {
             raw,
             groups,
             workgroup_size,
+            _live: self.live.token(Kind::Pipeline),
         })
     }
 

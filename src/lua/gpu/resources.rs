@@ -1,7 +1,6 @@
 //! Buffers, textures, and samplers from Luau: made on the device, written from a Luau `buffer` or
 //! string without a copy on the way in, and read back as a new `buffer`.
 
-use std::rc::Rc;
 use std::sync::Arc;
 
 use l3i::bind::{Call, StackResults};
@@ -21,7 +20,7 @@ use crate::render::TextureFormat;
 /// Bytes on the GPU.
 #[derive(Debug)]
 pub struct LuaGpuBuffer {
-    pub(crate) gpu: Rc<Gpu>,
+    pub(crate) gpu: Arc<Gpu>,
     pub(crate) buffer: Arc<Buffer>,
 }
 
@@ -33,7 +32,7 @@ unsafe impl Userdata for LuaGpuBuffer {
 /// An image on the GPU.
 #[derive(Debug)]
 pub struct LuaGpuTexture {
-    pub(crate) gpu: Rc<Gpu>,
+    pub(crate) gpu: Arc<Gpu>,
     pub(crate) texture: Arc<Texture>,
 }
 

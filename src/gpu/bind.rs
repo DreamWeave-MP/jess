@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use super::live::{Kind, Token};
 use super::pipeline::{Group, Layout, Slot};
 use super::{Buffer, BufferUsage, Gpu, GpuError, Sampler, Texture, TextureShape, TextureUsage};
 use crate::render::SampleKind;
@@ -27,6 +28,7 @@ pub struct BindGroup {
     pub(crate) raw: wgpu::BindGroup,
     pub(crate) frequency: Frequency,
     layout: Arc<Layout>,
+    _live: Token,
 }
 
 impl BindGroup {
@@ -106,6 +108,7 @@ impl Gpu {
             raw,
             frequency,
             layout: layout.clone(),
+            _live: self.live.token(Kind::BindGroup),
         })
     }
 }

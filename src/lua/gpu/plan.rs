@@ -26,7 +26,7 @@ use crate::shader::Frequency;
 /// A plan compiled from Luau, and the device and draw sets it runs with.
 #[derive(Debug)]
 pub struct LuaGpuPlan {
-    pub gpu: Rc<Gpu>,
+    pub gpu: Arc<Gpu>,
     pub sets: Rc<DrawSets>,
     pub plan: Plan,
 }
