@@ -1,6 +1,10 @@
 //! A shader program: its declarations, its expression arena, and what each stage outputs.
 
 use crate::shader::expression::{Expression, ExpressionId, ParameterId, SourceOrigin, VaryingId, VertexInputId};
+use crate::shader::interface::{
+    Attribute, AttributeId, Frequency, Resource, ResourceId, StructDecl, StructId, Uniform, UniformId,
+};
+use crate::shader::layout::ProgramLayout;
 use crate::shader::types::Type;
 
 /// A named, typed parameter, vertex input, or varying.
@@ -27,6 +31,10 @@ pub struct Program {
     pub(crate) expressions: Vec<Expression>,
     /// Sparse and sorted by id: native construction rarely has origins, and only errors read them.
     pub(crate) origins: Vec<(ExpressionId, SourceOrigin)>,
+    pub(crate) structs: Vec<StructDecl>,
+    pub(crate) attributes: Vec<Attribute>,
+    pub(crate) uniforms: Vec<Uniform>,
+    pub(crate) resources: Vec<Resource>,
     pub(crate) parameters: Vec<Declaration>,
     pub(crate) vertex_inputs: Vec<Declaration>,
     pub(crate) varyings: Vec<Declaration>,
@@ -40,6 +48,26 @@ impl Program {
     #[must_use]
     pub fn new() -> Program {
         Program::default()
+    }
+
+    /// Declares a struct. Its fields may only name structs declared before it.
+    pub fn structure(&mut self, declaration: StructDecl) -> StructId {
+        StructId::at(push(&mut self.structs, declaration))
+    }
+
+    /// Declares a vertex attribute.
+    pub fn attribute(&mut self, attribute: Attribute) -> AttributeId {
+        AttributeId::at(push(&mut self.attributes, attribute))
+    }
+
+    /// Declares a member of a frequency's uniform block.
+    pub fn uniform(&mut self, uniform: Uniform) -> UniformId {
+        UniformId::at(push(&mut self.uniforms, uniform))
+    }
+
+    /// Declares a texture or sampler a frequency binds.
+    pub fn resource(&mut self, resource: Resource) -> ResourceId {
+        ResourceId::at(push(&mut self.resources, resource))
     }
 
     /// Declares a parameter: a value (`Int`, `UInt`, `Float`, a vector, or a matrix), a
@@ -117,6 +145,45 @@ impl Program {
         location
     }
 
+    /// The declared structs, in order.
+    #[must_use]
+    pub fn structs(&self) -> &[StructDecl] {
+        &self.structs
+    }
+
+    /// The declared vertex attributes, of both rates, in order.
+    #[must_use]
+    pub fn attributes(&self) -> &[Attribute] {
+        &self.attributes
+    }
+
+    /// The declared uniform members, of every frequency, in order.
+    #[must_use]
+    pub fn uniforms(&self) -> &[Uniform] {
+        &self.uniforms
+    }
+
+    /// The uniform members `frequency` binds, with their ids, in order.
+    pub fn uniforms_of(&self, frequency: Frequency) -> impl Iterator<Item = (UniformId, &Uniform)> {
+        self.uniforms
+            .iter()
+            .enumerate()
+            .filter(move |(_, uniform)| uniform.frequency == frequency)
+            .map(|(index, uniform)| (UniformId::at(index), uniform))
+    }
+
+    /// The declared textures and samplers, of every frequency, in order.
+    #[must_use]
+    pub fn resources(&self) -> &[Resource] {
+        &self.resources
+    }
+
+    /// Where everything the program declares lives: see [`layout`](crate::shader::layout).
+    #[must_use]
+    pub fn layout(&self) -> ProgramLayout {
+        ProgramLayout::of(self)
+    }
+
     /// Every expression, in arena order.
     #[must_use]
     pub fn expressions(&self) -> &[Expression] {
@@ -174,12 +241,17 @@ impl Program {
 }
 
 fn push_declaration(declarations: &mut Vec<Declaration>, name: &str, ty: Type, origin: Option<SourceOrigin>) -> usize {
-    let index = declarations.len();
-    assert!(u32::try_from(index).is_ok(), "more than u32::MAX shader declarations");
-    declarations.push(Declaration {
+    let declaration = Declaration {
         name: name.to_owned(),
         ty,
         origin,
-    });
+    };
+    push(declarations, declaration)
+}
+
+fn push<T>(declarations: &mut Vec<T>, declaration: T) -> usize {
+    let index = declarations.len();
+    assert!(u32::try_from(index).is_ok(), "more than u32::MAX shader declarations");
+    declarations.push(declaration);
     index
 }

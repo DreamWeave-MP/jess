@@ -61,9 +61,34 @@
 
 #![warn(missing_docs)]
 
+/// An index into one of a program's arenas or declaration lists, only ever made by the program.
+macro_rules! arena_id {
+    ($(#[$attribute:meta])* $name:ident, $position:literal) => {
+        $(#[$attribute])*
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        pub struct $name(pub(crate) u32);
+
+        impl $name {
+            #[doc = concat!("The ", $position, ".")]
+            #[must_use]
+            pub fn index(self) -> usize {
+                self.0 as usize
+            }
+
+            /// The id at `index`, which the program's push already bounded to `u32`.
+            #[allow(clippy::cast_possible_truncation)]
+            pub(crate) fn at(index: usize) -> $name {
+                $name(index as u32)
+            }
+        }
+    };
+}
+
 mod build;
 mod expression;
 mod fold;
+mod interface;
+pub mod layout;
 mod program;
 mod types;
 mod validate;
@@ -73,6 +98,10 @@ pub use build::{ProgramBuilder, Site, Value};
 pub use expression::{
     Component, Expression, ExpressionId, Literal, Operands, ParameterId, Semantic, SourceOrigin, Swizzle, VaryingId,
     VertexInputId,
+};
+pub use interface::{
+    Attribute, AttributeId, DataType, Element, Field, Frequency, Rate, Resource, ResourceId, ResourceKind, StructDecl,
+    StructId, Uniform, UniformId,
 };
 pub use program::{Declaration, Program};
 pub use types::{Scalar, Type};

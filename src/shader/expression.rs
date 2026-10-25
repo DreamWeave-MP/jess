@@ -6,28 +6,6 @@ use std::sync::Arc;
 
 use crate::shader::types::Type;
 
-macro_rules! arena_id {
-    ($(#[$attribute:meta])* $name:ident, $position:literal) => {
-        $(#[$attribute])*
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-        pub struct $name(pub(crate) u32);
-
-        impl $name {
-            #[doc = concat!("The ", $position, ".")]
-            #[must_use]
-            pub fn index(self) -> usize {
-                self.0 as usize
-            }
-
-            /// The id at `index`, which the program's push already bounded to `u32`.
-            #[allow(clippy::cast_possible_truncation)]
-            pub(crate) fn at(index: usize) -> $name {
-                $name(index as u32)
-            }
-        }
-    };
-}
-
 arena_id!(
     /// An expression in a [`Program`](crate::shader::Program)'s arena.
     ///

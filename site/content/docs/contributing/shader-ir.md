@@ -101,6 +101,16 @@ The Luau front end fills these in from the module that built the expression. The
 
 A folded expression becomes a literal in place. An identity's readers read `x` instead. Ids stay valid. The program is validated first and left untouched when it's invalid. Folding is a separate step: `wgsl::lower` lowers exactly what it's given.
 
+## Layout
+
+A program declares structs, vertex attributes, uniform members, and textures and samplers, each by what it is and how often it changes: an attribute advances per vertex or per instance, and a uniform member or resource is bound per pass, per material, or per draw (the three `Frequency` values). Where any of it lives is `jess::shader::layout`'s decision, and `Program::layout` asks for it. Nothing about it is the author's to choose, so it's the same for every program that declares the same things.
+
+- **Buffers** follow WebGPU's rules for memory the host shares with the GPU, plus one rule of jess's: a struct or array member aligns to a multiple of 16 bytes, and a struct member's slot rounds up to one. That's what a uniform block demands, so every struct is valid in every buffer and one layout serves them all. Members lie largest alignment first, then in declaration order, so no member pads the next: a `Float` after two `Vec3f`s sits in the second one's padding.
+- **Bindings:** each frequency is one bind group, pass 0, material 1, draw 2. Its uniform members are one block at binding 0; its resources follow in declaration order.
+- **Vertex buffers:** per-vertex attributes are buffer 0 and per-instance attributes buffer 1, each packed in declaration order with no padding. Locations count across both, per-vertex first, and a matrix takes one per column.
+
+`ProgramLayout` reports every offset, size, stride, binding, and location, so whatever writes a buffer for a program writes it from the layout rather than from the generated source.
+
 ## Lowering
 
 One module writes all WGSL, with one naming scheme:

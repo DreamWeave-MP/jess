@@ -120,6 +120,16 @@ impl Type {
         Type::vector(self.scalar()?, 1)
     }
 
+    /// A matrix's column type; `None` for anything else.
+    #[must_use]
+    pub fn column(self) -> Option<Type> {
+        match self {
+            Type::Mat3f => Some(Type::Vec3f),
+            Type::Mat4f => Some(Type::Vec4f),
+            _ => None,
+        }
+    }
+
     /// How many float components a `Float` or float vector has; 0 for every other type.
     #[must_use]
     pub fn float_components(self) -> u8 {

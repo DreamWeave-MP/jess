@@ -5,6 +5,7 @@ mod builder;
 mod common;
 mod folding;
 mod integers;
+mod layout;
 mod triangle;
 mod validation;
 mod wgsl;

@@ -13,6 +13,7 @@
 use std::fmt::Write as _;
 
 use crate::shader::expression::{Expression, ExpressionId, Literal, ParameterId, Semantic, VertexInputId};
+use crate::shader::layout::{Extent, value_extent};
 use crate::shader::program::Program;
 use crate::shader::types::Type;
 use crate::shader::validate::{Analysis, FRAGMENT, VERTEX, ValidationError, analyze};
@@ -91,21 +92,6 @@ pub struct WgslModule {
     pub vertex_attributes: Vec<VertexAttribute>,
     /// How many color targets the fragment stage writes.
     pub fragment_outputs: u32,
-}
-
-/// A value type's uniform buffer `(alignment, size)` in bytes, by WGSL's layout rules; `None` for
-/// `Bool` and resources, which cannot live in a uniform buffer.
-#[must_use]
-pub fn uniform_layout(ty: Type) -> Option<(u32, u32)> {
-    match ty {
-        Type::Int | Type::UInt | Type::Float => Some((4, 4)),
-        Type::Vec2f | Type::Vec2i | Type::Vec2u => Some((8, 8)),
-        Type::Vec3f | Type::Vec3i | Type::Vec3u => Some((16, 12)),
-        Type::Vec4f | Type::Vec4i | Type::Vec4u => Some((16, 16)),
-        Type::Mat3f => Some((16, 48)),
-        Type::Mat4f => Some((16, 64)),
-        Type::Bool | Type::Texture2D | Type::Sampler => None,
-    }
 }
 
 /// Validates `program` and lowers it as it is; run
@@ -490,7 +476,7 @@ fn uniform_block<Source>(
     let mut block_alignment = 1;
     for (source, ty) in members {
         // Validation rejects `Bool` parameters, the only value type without a layout.
-        let (alignment, size) = uniform_layout(ty)?;
+        let Extent { align: alignment, size } = value_extent(ty)?;
         let offset = end.next_multiple_of(alignment);
         block.members.push(UniformMember {
             source,
