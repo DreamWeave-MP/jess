@@ -31,9 +31,9 @@ PCM from interleaved bytes: `channels` samples per frame (1 to 8), each stored a
 
 ## Contexts
 
-{{ api_signature(value="audio.offline(options: { rate: number?, channels: number?, voices: number?, buses: number?, processors: number?, commands: number? }?) -> AudioContext") }}
+{{ api_signature(value="audio.offline(options: { rate: number?, channels: number?, voices: number?, buses: number?, processors: number?, commands: number?, speedOfSound: number?, handedness: ('right' | 'left')? }?) -> AudioContext") }}
 
-A context the script renders. Defaults: 48000 frames per second, 2 channels, 256 voices, 64 buses (the master included), 256 processors, and room for 4096 commands waiting for their frame.
+A context the script renders. Defaults: 48000 frames per second, 2 channels, 256 voices, 64 buses (the master included), 256 processors, and room for 4096 commands waiting for their frame. `speedOfSound` (343) and `handedness` (`right`) describe the world's space; see [Space](#space).
 
 `voices` counts voices playing or stamped for later; `commands` bounds the queue to the engine. Every count is fixed when the context is made, so the engine never allocates while it mixes. Running out of one is an error at the call that ran out (`all 256 voices are playing or scheduled`, `the audio command queue is full`), never a sound quietly not played.
 
@@ -53,6 +53,7 @@ Starts a voice. Options:
 | `bus` | the master | The bus it plays into |
 | `sends` | none | Up to two `{ bus, level }`: buses it also plays into, at `level` (1) times its own gain |
 | `fade` | `0` | Frames to fade in over, from silence to `gain` |
+| `place` | none | Where it is in space, which then sets its level, pan, and pitch; see [Space](#space) |
 
 A source at a different rate from the context is resampled; at the same rate and `rate = 1` it plays sample for sample. Mono mixes into any output, stereo into mono (averaged), and otherwise the channel counts must match.
 
@@ -172,6 +173,58 @@ ducker:listen(dialogue)
 The bus a processor listens to is mixed before the processor's own, so listening to a bus that the processor's bus feeds (its parent, say) would be a loop, and is refused. A bus being listened to can't be removed until nothing listens. `listen(nil)` goes back to the processor's own input.
 
 A name the processor doesn't have, or a value outside its range, is an error naming what it does take. A processor's parameters ramp in steps of 32 frames rather than every frame: while one ramps, the engine mixes in blocks of 32 and tells the processor where the ramp has got to at the start of each.
+
+## Space
+
+A voice played with a `place` is in space: where it is relative to the listener sets its level, its pan, and its pitch, worked out once a block and glided across it, so a moving voice slides rather than steps. Positions, velocities, and directions are in the world's own units and axes; the only thing the context needs to know about the axes is which way they turn (`handedness`), and the only thing about the units is `speedOfSound` in them. A voice not given a `place` is not in space, and costs nothing for it.
+
+What lies between a voice and the listener isn't the engine's to know. Occlusion, obstruction, a door half open: the application works those out however it likes (a ray against its own geometry, a room graph) and hands the result over as the place's `gain` and `lowpass`.
+
+{{ api_signature(value="context:listener(listener: { position: vector?, forward: vector?, up: vector?, velocity: vector? }, at: number?)") }}
+
+Moves the listener on frame `at`; fields left out stay as they were. It starts at the origin, facing `-z` with `y` up, standing still.
+
+{{ api_signature(value="voice:place(place: AudioPlace, at: number?) -> boolean") }}
+
+Moves a voice in space on frame `at`, changing the fields given. False for a voice that ended or was never in space; a voice can't be put into space after it starts.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `position`, `velocity` | origin, still | Where it is, and how fast it moves (units a second) |
+| `direction` | none | The way it faces, if it's directional |
+| `cone` | everywhere | `{ inner, outer, outside }`: whole angles in degrees around `direction`. Full level inside `inner`, `outside` (0 to 1) beyond `outer`, in between in between |
+| `distance` | `inverse` | How distance turns it down: `inverse`, `linear`, `exponential`, or `none`, clamped between `reference` and `maximum` the way OpenAL's models are |
+| `reference` | `1` | The distance it's at full level within |
+| `maximum` | none | The distance beyond which it gets no quieter |
+| `rolloff` | `1` | How quickly it gets quieter |
+| `doppler` | `1` | How much its and the listener's motion shift its pitch: 0 not at all, 1 as sound does |
+| `gain` | `1` | A further gain: what the application found between it and the listener |
+| `lowpass` | none | A low-pass cutoff in hertz, for the same |
+
+The pan comes from where the voice is around the listener, left to right; stereo has no front and back, so a voice behind is panned as one in front. Doppler follows OpenAL 1.1: both velocities along the line between them, held under the speed of sound.
+
+```luau
+--!strict
+local audio = require '@jess/audio'
+
+local rate = 48000
+local context = audio.offline { rate = rate }
+local hum = audio.pcm(buffer.create(rate * 4), { format = 'f32', channels = 1, rate = rate })
+
+-- A machine two metres to the right of where the listener stands, behind a thin wall.
+local machine = context:play(hum, {
+  loop = true,
+  place = { position = vector.create(2, 0, 0), gain = 0.5, lowpass = 1200 },
+})
+
+-- The listener walks past it, and the wall ends at x = 3.
+for step = 0, 59 do
+  context:listener({ position = vector.create(step / 10, 0, 0) }, context:now())
+  if step == 30 then machine:place({ gain = 1, lowpass = 20000 }, context:now()) end
+
+  context:render(rate // 30)
+end
+```
 
 ## Time
 
