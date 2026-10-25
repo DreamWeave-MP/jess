@@ -132,6 +132,73 @@ export type InputRuntime = {
   stats: (self: InputRuntime) -> InputStats,
 }
 
+--- How one sample is stored in interleaved bytes, little-endian: unsigned 8-bit, signed 16-,
+--- 24- (three bytes), and 32-bit, and 32- and 64-bit floats.
+export type AudioSampleFormat = 'u8' | 's16' | 's24' | 's32' | 'f32' | 'f64'
+
+--- Decoded audio from `jess.audio.pcm`: planar float channels at one rate, shared by every voice
+--- that plays it.
+export type AudioPcm = {
+  --- Frames per second.
+  rate: (self: AudioPcm) -> number,
+  channels: (self: AudioPcm) -> number,
+  --- The length in frames.
+  frames: (self: AudioPcm) -> number,
+}
+
+--- How to start a voice. `at` is an output frame, and the voice starts on exactly that frame;
+--- without one it starts on the next frame rendered. `gain` is linear (1), `pan` -1 to 1 (0;
+--- equal power for mono, balance for stereo), `rate` the playback rate, pitch with it (1),
+--- `offset` the source frame to start from (0). With `loop`, playback that reaches `loopEnd` (the
+--- source's end) continues at `loopStart` (0), without a gap.
+export type AudioPlayOptions = {
+  at: number?,
+  gain: number?,
+  pan: number?,
+  rate: number?,
+  offset: number?,
+  loop: boolean?,
+  loopStart: number?,
+  loopEnd: number?,
+}
+
+--- What a context's engine has done, as of its last render: `frames` rendered (the clock), voices
+--- `active` in it and `allocated` (playing or waiting to start), commands carried out `late`
+--- (stamped for a frame already rendered), output samples that weren't finite and were written as
+--- silence (`nonfinite`), and commands `pending` for a later frame.
+export type AudioStats = {
+  frames: number,
+  active: number,
+  allocated: number,
+  late: number,
+  nonfinite: number,
+  pending: number,
+}
+
+export type AudioVoiceState = 'scheduled' | 'playing' | 'ended'
+
+--- One playback of a Pcm. Every command takes an optional `at`, an output frame to carry it out
+--- on; without one, the next frame rendered. Once the voice ends the handle names nothing, and
+--- its commands do nothing and return false.
+export type AudioVoice = {
+  stop: (self: AudioVoice, at: number?) -> boolean,
+  set: (self: AudioVoice, param: 'gain' | 'pan' | 'rate', value: number, at: number?) -> boolean,
+  state: (self: AudioVoice) -> AudioVoiceState,
+}
+
+--- An audio context: voices mixed on a sample clock. The clock is output frames rendered, and
+--- moves only when the engine renders.
+export type AudioContext = {
+  rate: (self: AudioContext) -> number,
+  channels: (self: AudioContext) -> number,
+  --- The next frame the engine renders. A command stamped for it or later lands on its frame.
+  now: (self: AudioContext) -> number,
+  play: (self: AudioContext, pcm: AudioPcm, options: AudioPlayOptions?) -> AudioVoice,
+  --- Renders `frames` frames and returns them as interleaved 32-bit floats.
+  render: (self: AudioContext, frames: number) -> buffer,
+  stats: (self: AudioContext) -> AudioStats,
+}
+
 --- A shader type, from `jess.shader` (`float`, `vec2`, `vec3`, `vec4`, `mat3`, `mat4`,
 --- `texture2d`, `sampler`): what a program's `parameters` and `textures` declare
 --- (`tint = shader.vec4`). Called, the vector types build a vector from values and numbers whose
@@ -319,5 +386,15 @@ declare jess: {
     control: (control: string) -> string,
     --- The domain's live input runtime under a host; a headless one of the script's own otherwise.
     runtime: () -> InputRuntime,
+  },
+
+  --- The native half of `@jess/audio`, which wraps it: PCM from interleaved bytes, and contexts
+  --- that mix voices on a sample clock. See `jess::audio`.
+  audio: {
+    --- PCM from interleaved bytes, `channels` samples per frame, each stored as `format`.
+    pcm: (data: buffer | string, options: { format: AudioSampleFormat, channels: number, rate: number }) -> AudioPcm,
+    --- A context the script renders: 48000 frames per second, 2 channels, 256 voices, and room for
+    --- 4096 waiting commands, unless told otherwise.
+    offline: (options: { rate: number?, channels: number?, voices: number?, commands: number? }?) -> AudioContext,
   },
 }

@@ -1,0 +1,165 @@
+--!strict
+-- @jess/audio's cases: WAV in and out, time in frames, and voices on the sample clock, rendered
+-- offline.
+local audio = require '@jess/audio'
+local test = require '@jess/test'
+local expect = test.expect
+local suite = test.new()
+
+--- Interleaved 32-bit floats, the way `render` returns them.
+local function floats(values: { number }): buffer
+  local out = buffer.create(#values * 4)
+  for index, value in values do
+    buffer.writef32(out, (index - 1) * 4, value)
+  end
+
+  return out
+end
+
+local function samples(data: buffer): { number }
+  local out = {}
+  for index = 0, buffer.len(data) // 4 - 1 do
+    table.insert(out, buffer.readf32(data, index * 4))
+  end
+
+  return out
+end
+
+--- A mono WAV of `values`, 16-bit, at 8000 frames per second.
+local function wav16(values: { number }): buffer
+  return audio.writeWav(floats(values), { channels = 1, rate = 8000, format = 's16' })
+end
+
+suite.describe('time', function()
+  suite.it('rounds seconds to the nearest frame, halves up', function()
+    expect(audio.frames(1, 48000)).toBe(48000)
+    expect(audio.frames(0.5 / 48000, 48000)).toBe(1)
+    expect(audio.frames(0.49 / 48000, 48000)).toBe(0)
+    expect(audio.seconds(24000, 48000)).toBe(0.5)
+  end)
+end)
+
+suite.describe('WAV', function()
+  suite.it('writes 16-bit samples that read back as the same values', function()
+    local values = { 0, 0.5, -1, 32767 / 32768, -0.25 }
+    local wav = audio.readWav(wav16(values))
+    expect(wav.format).toBe 's16'
+    expect(wav.channels).toBe(1)
+    expect(wav.rate).toBe(8000)
+    expect(wav.frames).toBe(5)
+    expect(buffer.readi16(wav.data, 2)).toBe(16384)
+    expect(buffer.readi16(wav.data, 4)).toBe(-32768)
+    expect(buffer.readi16(wav.data, 6)).toBe(32767)
+
+    local pcm = audio.loadWav(wav16(values))
+    local context = audio.offline { rate = 8000, channels = 1 }
+    context:play(pcm, { at = 0 })
+    expect(samples(context:render(5))).toEqual(values)
+  end)
+
+  suite.it('clips at full scale and keeps a file it read byte for byte', function()
+    local clipped = audio.readWav(wav16 { 2, -2 })
+    expect(buffer.readi16(clipped.data, 0)).toBe(32767)
+    expect(buffer.readi16(clipped.data, 2)).toBe(-32768)
+
+    local original = wav16 { 0.125, -0.75, 0.001 }
+    local pcm, wav = audio.loadWav(original)
+    local context = audio.offline { rate = wav.rate, channels = 1 }
+    context:play(pcm)
+    local again = audio.writeWav(context:render(wav.frames), { channels = 1, rate = wav.rate, format = 's16' })
+    expect(buffer.tostring(again)).toBe(buffer.tostring(original))
+  end)
+
+  suite.it('writes 24-bit and float samples, and reads them as what they are', function()
+    local values = { 0.5, -0.5, 8388607 / 8388608, -1 }
+    local deep = audio.readWav(audio.writeWav(floats(values), { channels = 2, rate = 44100, format = 's24' }))
+    expect(deep.format).toBe 's24'
+    expect(deep.frames).toBe(2)
+    local pcm = audio.pcm(deep.data, { format = 's24', channels = 2, rate = 44100 })
+    expect(pcm:channels()).toBe(2)
+    expect(pcm:frames()).toBe(2)
+
+    local float = audio.readWav(audio.writeWav(floats { 0.1, 2.5 }, { channels = 1, rate = 48000 }))
+    expect(float.format).toBe 'f32'
+    expect(samples(float.data)).toEqual(samples(floats { 0.1, 2.5 }))
+  end)
+
+  suite.it("reads a smpl chunk's first loop, its end exclusive", function()
+    local plain = wav16 { 0, 0, 0, 0 }
+    local smpl = buffer.create(8 + 60)
+    buffer.writestring(smpl, 0, 'smpl')
+    buffer.writeu32(smpl, 4, 60)
+    buffer.writeu32(smpl, 8 + 28, 1)
+    buffer.writeu32(smpl, 8 + 44, 1)
+    buffer.writeu32(smpl, 8 + 48, 2)
+    local file = buffer.create(buffer.len(plain) + buffer.len(smpl))
+    buffer.copy(file, 0, plain)
+    buffer.copy(file, buffer.len(plain), smpl)
+    buffer.writeu32(file, 4, buffer.len(file) - 8)
+
+    local wav = audio.readWav(file)
+    expect(wav.loopStart).toBe(1)
+    expect(wav.loopEnd).toBe(3)
+  end)
+
+  suite.it('refuses what is not a WAV it can read', function()
+    expect(function() audio.readWav 'RIFX....WAVE' end).toThrow 'no RIFF WAVE header'
+    expect(function() audio.writeWav(floats { 0 }, { channels = 1, rate = 8000, format = ('u8' :: unknown) :: audio.WavFormat }) end).toThrow 'writes s16, s24, or f32'
+    expect(function() audio.writeWav(floats { 0, 0, 0 }, { channels = 2, rate = 8000 }) end).toThrow "aren't whole frames"
+  end)
+end)
+
+suite.describe('voices', function()
+  suite.it('stamped for the same frame start on the same sample, whatever the render blocks', function()
+    local click = audio.pcm(floats { 1 }, { format = 'f32', channels = 1, rate = 48000 })
+    local context = audio.offline { channels = 1 }
+    context:play(click, { at = 300 })
+    context:play(click, { at = 300 })
+    context:play(click, { at = 301, gain = 0.5 })
+    local out = samples(context:render(299))
+    for _, sample in samples(context:render(4)) do
+      table.insert(out, sample)
+    end
+
+    -- Frame n is out[n + 1].
+    expect(out[301]).toBe(2)
+    expect(out[302]).toBe(0.5)
+    expect(out[303]).toBe(0)
+    expect(context:now()).toBe(303)
+  end)
+
+  suite.it('stop and change on their frame, and an ended voice names nothing', function()
+    local tone = audio.pcm(floats { 1, 1, 1, 1, 1, 1, 1, 1 }, { format = 'f32', channels = 1, rate = 48000 })
+    local context = audio.offline { channels = 1 }
+    local voice = context:play(tone, { at = 1 })
+    expect(voice:state()).toBe 'scheduled'
+    expect(voice:set('gain', 0.25, 3)).toBe(true)
+    expect(voice:stop(5)).toBe(true)
+    expect(samples(context:render(6))).toEqual { 0, 1, 1, 0.25, 0.25, 0 }
+    expect(voice:state()).toBe 'ended'
+    expect(voice:set('gain', 1)).toBe(false)
+    expect(context:stats().allocated).toBe(0)
+  end)
+
+  suite.it('loop without a gap between their region and the intro', function()
+    local source = audio.pcm(floats { 9, 1, 2, 3 }, { format = 'f32', channels = 1, rate = 48000 })
+    local context = audio.offline { channels = 1 }
+    context:play(source, { loop = true, loopStart = 1 })
+    expect(samples(context:render(8))).toEqual { 9, 1, 2, 3, 1, 2, 3, 1 }
+  end)
+
+  suite.it('refuse options and values the engine would not play', function()
+    local click = audio.pcm(floats { 1 }, { format = 'f32', channels = 1, rate = 48000 })
+    local context = audio.offline { channels = 1, voices = 1 }
+    expect(function() context:play(click, ({ volume = 1 } :: unknown) :: audio.PlayOptions) end).toThrow 'volume'
+    expect(function() context:play(click, { loopStart = 0 }) end).toThrow 'need loop = true'
+    expect(function() context:play(click, { rate = 0 }) end).toThrow 'rate must be above 0'
+    expect(function() context:play(click, { at = 1.5 }) end).toThrow 'whole number of frames'
+    context:play(click, { at = 10 })
+    expect(function() context:play(click) end).toThrow 'all 1 voices'
+    expect(function() audio.pcm(buffer.create(3), { format = 's16', channels = 1, rate = 8000 }) end).toThrow "aren't whole frames"
+    expect(function() audio.offline { channels = 9 } end).toThrow 'channel count is 1 to 8'
+  end)
+end)
+
+return suite

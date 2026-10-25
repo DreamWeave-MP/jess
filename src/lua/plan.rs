@@ -120,7 +120,7 @@ fn builder(capabilities: &[String], profiling: bool) -> RuntimePlanBuilder {
 
 /// The members of `@jess`, installed per runtime. Each table among them is also the module
 /// `@jess/<name>` (`require("@jess/shader")`).
-pub(crate) const MEMBERS: [&str; 12] = [
+pub(crate) const MEMBERS: [&str; 13] = [
     "version",
     "null",
     "granted",
@@ -132,6 +132,7 @@ pub(crate) const MEMBERS: [&str; 12] = [
     "interfaces",
     "application",
     "input",
+    "audio",
     "bench",
 ];
 
@@ -156,6 +157,7 @@ impl Extension for JessExtension {
         d.requires(crate::runtime::luau::EXTENSION_ID);
         crate::lua::shader::describe(d);
         crate::lua::input::describe(d);
+        crate::lua::audio::describe(d);
         // `jess.input` checks these against the plan outside a domain, and the broker inside one.
         for capability in INPUT_CAPABILITIES {
             d.optional_capability(capability);
@@ -232,6 +234,7 @@ impl Extension for JessExtension {
         module.set("interfaces", &modules.interfaces)?;
         module.set("application", &crate::lua::application::module(runtime)?)?;
         module.set("input", &crate::lua::input::module(runtime, &jess)?)?;
+        module.set("audio", &crate::lua::audio::module(runtime)?)?;
         Ok(())
     }
 }
