@@ -38,6 +38,7 @@ type Results = {
 }
 
 local Canaries: { Canary } = {
+  require './canaries/audio' :: Canary,
   require './canaries/buffer' :: Canary,
   require './canaries/math' :: Canary,
   require './canaries/safeenv' :: Canary,
