@@ -2,11 +2,11 @@
 //!
 //! Luau reads and writes file formats (`@jess/audio` parses WAV, and a package parses whatever
 //! else) and hands the engine samples: `pcm` turns interleaved bytes into a `Pcm` every voice
-//! can share. A context plays voices on its sample clock; every command takes an optional `at`,
-//! an output frame, and is carried out on exactly that frame. `offline` makes a context the
-//! script renders itself, into a buffer of interleaved 32-bit floats: the same engine a device
-//! runs, for tests, exports, and audio as data. Nothing here is a callback: the engine never
-//! calls into Luau.
+//! can share. A context plays voices on its sample clock through a tree of buses that run
+//! processors; every command takes an optional `at`, an output frame, and is carried out on
+//! exactly that frame. `offline` makes a context the script renders itself, into a buffer of
+//! interleaved 32-bit floats: the same engine a device runs, for tests, exports, and audio as
+//! data. Nothing here is a callback: the engine never calls into Luau.
 //!
 //! Frames, not seconds, are the unit everywhere: they are what the clock counts, and converting
 //! (and rounding) is the caller's choice. `@jess/audio` has the helpers.
@@ -15,7 +15,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::audio::{AudioConfig, AudioError, LoopRegion, OfflineContext, Pcm, PlaySpec, SampleFormat, VoiceKey, VoiceParam};
+use crate::audio::processor::{Setting, Settings};
+use crate::audio::{
+    AudioConfig, AudioError, BusKey, BusParam, BusSpec, LoopRegion, MAX_VOICE_SENDS, OfflineContext, Pcm, PlaySpec,
+    ProcessorKey, SampleFormat, Tap, VoiceKey, VoiceParam, VoiceSend,
+};
 use crate::lua::plan::Functions;
 use crate::lua::{Bytes, Text, error, kind, push_table};
 use l3i::Runtime;
@@ -30,8 +34,24 @@ use l3i::value::Table;
 const MAX_FRAME: f64 = 9_007_199_254_740_992.0;
 
 const PCM_KEYS: &[&str] = &["channels", "format", "rate"];
-const CONTEXT_KEYS: &[&str] = &["channels", "commands", "rate", "voices"];
-const PLAY_KEYS: &[&str] = &["at", "gain", "loop", "loopEnd", "loopStart", "offset", "pan", "rate"];
+const CONTEXT_KEYS: &[&str] = &["buses", "channels", "commands", "processors", "rate", "voices"];
+const PLAY_KEYS: &[&str] = &[
+    "at",
+    "bus",
+    "gain",
+    "loop",
+    "loopEnd",
+    "loopStart",
+    "offset",
+    "pan",
+    "rate",
+    "sends",
+];
+const SEND_KEYS: &[&str] = &["bus", "level"];
+const BUS_KEYS: &[&str] = &["gain", "muted", "parent"];
+const BUS_SEND_KEYS: &[&str] = &["at", "level", "tap"];
+
+type Shared = Rc<RefCell<OfflineContext>>;
 
 /// Decoded audio, shared by every voice that plays it.
 #[derive(Clone)]
@@ -44,7 +64,7 @@ unsafe impl Userdata for LuaAudioPcm {
 
 /// A context the script renders.
 #[derive(Clone)]
-pub struct LuaAudioContext(Rc<RefCell<OfflineContext>>);
+pub struct LuaAudioContext(Shared);
 
 // SAFETY: shared Rust state; the destructor never touches the Lua API.
 unsafe impl Userdata for LuaAudioContext {
@@ -54,13 +74,38 @@ unsafe impl Userdata for LuaAudioContext {
 /// One voice of a context.
 #[derive(Clone)]
 pub struct LuaAudioVoice {
-    context: Rc<RefCell<OfflineContext>>,
+    context: Shared,
     key: VoiceKey,
 }
 
 // SAFETY: shared Rust state; the destructor never touches the Lua API.
 unsafe impl Userdata for LuaAudioVoice {
     const NAME: &'static str = "jess.audio.Voice";
+}
+
+/// One bus of a context.
+#[derive(Clone)]
+pub struct LuaAudioBus {
+    context: Shared,
+    key: BusKey,
+}
+
+// SAFETY: shared Rust state; the destructor never touches the Lua API.
+unsafe impl Userdata for LuaAudioBus {
+    const NAME: &'static str = "jess.audio.Bus";
+}
+
+/// One processor in a bus's chain.
+#[derive(Clone)]
+pub struct LuaAudioProcessor {
+    context: Shared,
+    key: ProcessorKey,
+    kind: &'static str,
+}
+
+// SAFETY: shared Rust state; the destructor never touches the Lua API.
+unsafe impl Userdata for LuaAudioProcessor {
+    const NAME: &'static str = "jess.audio.Processor";
 }
 
 impl From<AudioError> for l3i::Error {
@@ -117,6 +162,35 @@ fn optional<T: for<'a> l3i::convert::FromView<'a>>(
     table.map_or_else(|| Ok(None), |table| table.raw_get_optional(frame, key, function))
 }
 
+/// The bus a value is, which must belong to `context`.
+fn bus_of(value: ValueView<'_>, context: &Shared, what: &str) -> l3i::Result<BusKey> {
+    let Some(bus) = l3i::userdata::receiver::<LuaAudioBus>(value) else {
+        return Err(error(format!("{what} is an AudioBus, not {}", kind(value))));
+    };
+    if !Rc::ptr_eq(&bus.context, context) {
+        return Err(AudioError::StaleBus.into());
+    }
+    Ok(bus.key)
+}
+
+/// The bus in field `key` of `table`, if there is one.
+fn bus_field(frame: &Frame<'_>, table: Option<&TableView<'_>>, key: &str, context: &Shared) -> l3i::Result<Option<BusKey>> {
+    let Some(table) = table else {
+        return Ok(None);
+    };
+    frame.with_frame(|frame| {
+        let value = table.raw_get(frame, key)?;
+        if value.is_nil() {
+            return Ok(None);
+        }
+        bus_of(value, context, key).map(Some)
+    })
+}
+
+fn rate_of(rate: f64) -> l3i::Result<u32> {
+    u32::try_from(whole(rate, "rate")?).map_err(|_| AudioError::Rate(u32::MAX).into())
+}
+
 /// `audio.pcm(data, { format, channels, rate })`.
 fn pcm(call: &Call<'_>, data: &Bytes, options: Option<ValueView<'_>>) -> l3i::Result<Owned<LuaAudioPcm>> {
     const FUNCTION: &str = "jess.audio.pcm";
@@ -132,39 +206,41 @@ fn pcm(call: &Call<'_>, data: &Bytes, options: Option<ValueView<'_>>) -> l3i::Re
             _ => Err(error(format!("{FUNCTION} needs format, channels, and rate"))),
         }
     })?;
-    let format: SampleFormat = format.parse().map_err(l3i::Error::from)?;
-    let rate = u32::try_from(whole(rate, "rate")?).map_err(|_| l3i::Error::from(AudioError::Rate(u32::MAX)))?;
-    let pcm = Pcm::from_interleaved(&data.0, format, count(channels, "channels")?, rate).map_err(l3i::Error::from)?;
+    let format: SampleFormat = format.parse()?;
+    let pcm = Pcm::from_interleaved(&data.0, format, count(channels, "channels")?, rate_of(rate)?)?;
     Ok(Owned(LuaAudioPcm(Arc::new(pcm))))
 }
 
-/// `audio.offline({ rate, channels, voices, commands })`.
+/// `audio.offline({ rate, channels, voices, buses, processors, commands })`.
 fn offline(call: &Call<'_>, options: Option<ValueView<'_>>) -> l3i::Result<Owned<LuaAudioContext>> {
     const FUNCTION: &str = "jess.audio.offline";
     let mut config = AudioConfig::default();
     call.with_frame(|frame| {
         let table = table(frame, options, FUNCTION, CONTEXT_KEYS)?;
-        if let Some(rate) = optional::<f64>(frame, table.as_ref(), "rate", FUNCTION)? {
-            config.rate = u32::try_from(whole(rate, "rate")?).map_err(|_| l3i::Error::from(AudioError::Rate(u32::MAX)))?;
+        let table = table.as_ref();
+        if let Some(rate) = optional::<f64>(frame, table, "rate", FUNCTION)? {
+            config.rate = rate_of(rate)?;
         }
-        if let Some(channels) = optional::<f64>(frame, table.as_ref(), "channels", FUNCTION)? {
-            config.channels = count(channels, "channels")?;
-        }
-        if let Some(voices) = optional::<f64>(frame, table.as_ref(), "voices", FUNCTION)? {
-            config.voices = count(voices, "voices")?;
-        }
-        if let Some(commands) = optional::<f64>(frame, table.as_ref(), "commands", FUNCTION)? {
-            config.commands = count(commands, "commands")?;
+        for (key, field) in [
+            ("channels", &mut config.channels),
+            ("voices", &mut config.voices),
+            ("buses", &mut config.buses),
+            ("processors", &mut config.processors),
+            ("commands", &mut config.commands),
+        ] {
+            if let Some(value) = optional::<f64>(frame, table, key, FUNCTION)? {
+                *field = count(value, key)?;
+            }
         }
         Ok(())
     })?;
-    let context = OfflineContext::new(&config).map_err(l3i::Error::from)?;
+    let context = OfflineContext::new(&config)?;
     Ok(Owned(LuaAudioContext(Rc::new(RefCell::new(context)))))
 }
 
-/// `context:play(pcm, { at, gain, pan, rate, offset, loop, loopStart, loopEnd })`.
+/// `context:play(pcm, { at, bus, sends, gain, pan, rate, offset, loop, loopStart, loopEnd })`.
 #[allow(clippy::cast_possible_truncation)] // Gain and pan are f32 in the engine; range is checked there.
-fn play_spec(call: &Call<'_>, pcm: &Pcm, options: Option<ValueView<'_>>) -> l3i::Result<PlaySpec> {
+fn play_spec(call: &Call<'_>, context: &Shared, pcm: &Pcm, options: Option<ValueView<'_>>) -> l3i::Result<PlaySpec> {
     const FUNCTION: &str = "AudioContext:play";
     let mut spec = PlaySpec::default();
     call.with_frame(|frame| {
@@ -172,10 +248,10 @@ fn play_spec(call: &Call<'_>, pcm: &Pcm, options: Option<ValueView<'_>>) -> l3i:
         let table = table.as_ref();
         spec.at = frame_option(optional(frame, table, "at", FUNCTION)?)?;
         if let Some(gain) = optional::<f64>(frame, table, "gain", FUNCTION)? {
-            spec.gain = VoiceParam::Gain.check(gain).map_err(l3i::Error::from)? as f32;
+            spec.gain = VoiceParam::Gain.check(gain)? as f32;
         }
         if let Some(pan) = optional::<f64>(frame, table, "pan", FUNCTION)? {
-            spec.pan = VoiceParam::Pan.check(pan).map_err(l3i::Error::from)? as f32;
+            spec.pan = VoiceParam::Pan.check(pan)? as f32;
         }
         if let Some(rate) = optional::<f64>(frame, table, "rate", FUNCTION)? {
             spec.rate = rate;
@@ -183,6 +259,10 @@ fn play_spec(call: &Call<'_>, pcm: &Pcm, options: Option<ValueView<'_>>) -> l3i:
         if let Some(offset) = optional::<f64>(frame, table, "offset", FUNCTION)? {
             spec.offset = whole(offset, "offset")?;
         }
+        if let Some(bus) = bus_field(frame, table, "bus", context)? {
+            spec.bus = bus;
+        }
+        spec.sends = voice_sends(frame, table, context)?;
         let looping = optional::<bool>(frame, table, "loop", FUNCTION)?.unwrap_or(false);
         let start = optional::<f64>(frame, table, "loopStart", FUNCTION)?;
         let end = optional::<f64>(frame, table, "loopEnd", FUNCTION)?;
@@ -200,8 +280,136 @@ fn play_spec(call: &Call<'_>, pcm: &Pcm, options: Option<ValueView<'_>>) -> l3i:
     Ok(spec)
 }
 
+/// `sends = { { bus, level }, ... }` of a play's options.
+#[allow(clippy::cast_possible_truncation)] // Levels are f32 in the engine.
+fn voice_sends(
+    frame: &Frame<'_>,
+    table: Option<&TableView<'_>>,
+    context: &Shared,
+) -> l3i::Result<[Option<VoiceSend>; MAX_VOICE_SENDS]> {
+    const FUNCTION: &str = "AudioContext:play's sends";
+    let mut sends = [None; MAX_VOICE_SENDS];
+    let Some(table) = table else {
+        return Ok(sends);
+    };
+    frame.with_frame(|frame| {
+        let list = table.raw_get(frame, "sends")?;
+        if list.is_nil() {
+            return Ok(sends);
+        }
+        if !list.is_table() {
+            return Err(error(format!("{FUNCTION} is a list of {{ bus, level }}, not {}", kind(list))));
+        }
+        let list = list.as_table()?;
+        for index in 1.. {
+            let more = frame.with_frame(|frame| {
+                let entry = list.raw_get_index(frame, index)?;
+                if entry.is_nil() {
+                    return Ok(false);
+                }
+                let slot = usize::try_from(index - 1).unwrap_or(usize::MAX);
+                if slot >= MAX_VOICE_SENDS {
+                    return Err(AudioError::SendsExhausted(MAX_VOICE_SENDS).into());
+                }
+                let send = table_of(frame, entry, FUNCTION, SEND_KEYS)?;
+                let Some(bus) = bus_field(frame, Some(&send), "bus", context)? else {
+                    return Err(error(format!("{FUNCTION}: each send names its bus")));
+                };
+                let level = optional::<f64>(frame, Some(&send), "level", FUNCTION)?.unwrap_or(1.0);
+                sends[slot] = Some(VoiceSend {
+                    bus,
+                    level: level as f32,
+                });
+                Ok(true)
+            })?;
+            if !more {
+                break;
+            }
+        }
+        Ok(sends)
+    })
+}
+
+/// A table that must be there.
+fn table_of<'v>(frame: &Frame<'_>, value: ValueView<'v>, function: &str, keys: &[&str]) -> l3i::Result<TableView<'v>> {
+    table(frame, Some(value), function, keys)?.ok_or_else(|| error(format!("{function} takes a table")))
+}
+
+/// `context:bus({ parent, gain, muted })`.
+#[allow(clippy::cast_possible_truncation)] // Gain is f32 in the engine.
+fn bus_spec(call: &Call<'_>, context: &Shared, options: Option<ValueView<'_>>) -> l3i::Result<BusSpec> {
+    const FUNCTION: &str = "AudioContext:bus";
+    let mut spec = BusSpec::default();
+    call.with_frame(|frame| {
+        let table = table(frame, options, FUNCTION, BUS_KEYS)?;
+        let table = table.as_ref();
+        if let Some(parent) = bus_field(frame, table, "parent", context)? {
+            spec.parent = parent;
+        }
+        if let Some(gain) = optional::<f64>(frame, table, "gain", FUNCTION)? {
+            spec.gain = BusParam::Gain.check(gain)? as f32;
+        }
+        spec.muted = optional::<bool>(frame, table, "muted", FUNCTION)?.unwrap_or(false);
+        Ok(())
+    })?;
+    Ok(spec)
+}
+
+/// A processor's settings: every key of its options table but `index`, a number or a name.
+fn settings(frame: &Frame<'_>, options: Option<ValueView<'_>>, function: &str) -> l3i::Result<(Settings, Option<usize>)> {
+    let mut settings = Settings::new();
+    let mut index = None;
+    let Some(options) = options.filter(|options| !options.is_nil()) else {
+        return Ok((settings, index));
+    };
+    if !options.is_table() {
+        return Err(error(format!("{function} takes a table of settings, not {}", kind(options))));
+    }
+    let mut problem = None;
+    options.as_table()?.for_each(frame, |_, key, value| {
+        if problem.is_some() {
+            return Ok(());
+        }
+        let name = if key.is_string() {
+            String::from_utf8_lossy(key.read::<&[u8]>()?).into_owned()
+        } else {
+            problem = Some(error(format!("{function}'s settings are named")));
+            return Ok(());
+        };
+        if name == "index" {
+            let position = if value.is_number() { value.read::<f64>()? } else { 0.0 };
+            if position >= 1.0 {
+                index = Some(count(position - 1.0, "index")?);
+            } else {
+                problem = Some(error(format!("{function}'s index is a position in the chain from 1")));
+            }
+            return Ok(());
+        }
+        if value.is_number() {
+            settings.insert(&name, Setting::Number(value.read::<f64>()?));
+        } else if value.is_string() {
+            let text = String::from_utf8_lossy(value.read::<&[u8]>()?).into_owned();
+            settings.insert(&name, Setting::Text(text));
+        } else {
+            problem = Some(error(format!(
+                "{function}'s {name} is a number or a name, not {}",
+                kind(value)
+            )));
+        }
+        Ok(())
+    })?;
+    problem.map_or(Ok((settings, index)), Err)
+}
+
 fn interleaved_bytes(samples: &[f32]) -> Vec<u8> {
     samples.iter().flat_map(|sample| sample.to_le_bytes()).collect()
+}
+
+fn bus_handle(context: &Shared, key: BusKey) -> Owned<LuaAudioBus> {
+    Owned(LuaAudioBus {
+        context: Rc::clone(context),
+        key,
+    })
 }
 
 pub fn module(runtime: &Runtime) -> l3i::Result<Table> {
@@ -212,12 +420,26 @@ pub fn module(runtime: &Runtime) -> l3i::Result<Table> {
     module.function("offline", |call: &Call<'_>, options: Option<ValueView<'_>>| {
         offline(call, options)
     })?;
+    module.function("processors", |call: &Call<'_>| -> l3i::Result<StackResults> {
+        l3i::stack::push_list(call, crate::audio::processor::KINDS.iter(), |frame, kind| {
+            frame.push(*kind)?;
+            Ok(())
+        })?;
+        Ok(StackResults)
+    })?;
     module.finish()
 }
 
-/// Declares the PCM, context, and voice types.
-#[allow(clippy::too_many_lines)] // one method per operation
+/// Declares the PCM, context, voice, bus, and processor types.
 pub fn describe(d: &mut ExtensionDescriptor) {
+    describe_pcm(d);
+    describe_context(d);
+    describe_voice(d);
+    describe_bus(d);
+    describe_processor(d);
+}
+
+fn describe_pcm(d: &mut ExtensionDescriptor) {
     let mut pcm = d.userdata::<LuaAudioPcm>(LuaAudioPcm::NAME);
     pcm.tag(TagPolicy::Never)
         .doc("Decoded audio: planar float channels at one rate, shared by every voice that plays it.");
@@ -226,11 +448,14 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .untyped();
     pcm.method("frames", |this: &LuaAudioPcm| number(this.0.frames() as u64))
         .untyped();
+}
 
+#[allow(clippy::too_many_lines)] // one method per operation
+fn describe_context(d: &mut ExtensionDescriptor) {
     let mut context = d.userdata::<LuaAudioContext>(LuaAudioContext::NAME);
     context
         .tag(TagPolicy::Never)
-        .doc("An audio context: voices on a sample clock, rendered by the script.");
+        .doc("An audio context: voices on a sample clock through a tree of buses, rendered by the script.");
     context
         .method("rate", |this: &LuaAudioContext| {
             f64::from(this.0.borrow_mut().control().rate())
@@ -259,12 +484,25 @@ pub fn describe(d: &mut ExtensionDescriptor) {
                     )));
                 };
                 let source = Arc::clone(&source.0);
-                let spec = play_spec(call, &source, options)?;
-                let key = this.0.borrow_mut().control().play(&source, &spec).map_err(l3i::Error::from)?;
+                let spec = play_spec(call, &this.0, &source, options)?;
+                let key = this.0.borrow_mut().control().play(&source, &spec)?;
                 Ok(Owned(LuaAudioVoice {
                     context: Rc::clone(&this.0),
                     key,
                 }))
+            },
+        )
+        .untyped();
+    context
+        .method("master", |this: &LuaAudioContext| bus_handle(&this.0, BusKey::MASTER))
+        .untyped();
+    context
+        .method(
+            "bus",
+            |this: &LuaAudioContext, call: &Call<'_>, options: Option<ValueView<'_>>| -> l3i::Result<Owned<LuaAudioBus>> {
+                let spec = bus_spec(call, &this.0, options)?;
+                let key = this.0.borrow_mut().control().add_bus(&spec)?;
+                Ok(bus_handle(&this.0, key))
             },
         )
         .untyped();
@@ -292,7 +530,9 @@ pub fn describe(d: &mut ExtensionDescriptor) {
             },
         )
         .untyped();
+}
 
+fn describe_voice(d: &mut ExtensionDescriptor) {
     let mut voice = d.userdata::<LuaAudioVoice>(LuaAudioVoice::NAME);
     voice
         .tag(TagPolicy::Never)
@@ -300,11 +540,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
     voice
         .method("stop", |this: &LuaAudioVoice, at: Option<f64>| -> l3i::Result<bool> {
             let at = frame_option(at)?;
-            this.context
-                .borrow_mut()
-                .control()
-                .stop(this.key, at)
-                .map_err(l3i::Error::from)
+            Ok(this.context.borrow_mut().control().stop(this.key, at)?)
         })
         .untyped();
     voice
@@ -315,17 +551,162 @@ pub fn describe(d: &mut ExtensionDescriptor) {
                     return Err(error(format!("AudioVoice:set takes gain, pan, or rate, not {:?}", name.0)));
                 };
                 let at = frame_option(at)?;
-                this.context
-                    .borrow_mut()
-                    .control()
-                    .set(this.key, param, value, at)
-                    .map_err(l3i::Error::from)
+                Ok(this.context.borrow_mut().control().set(this.key, param, value, at)?)
+            },
+        )
+        .untyped();
+    voice
+        .method(
+            "send",
+            |this: &LuaAudioVoice, bus: ValueView<'_>, level: f64, at: Option<f64>| -> l3i::Result<bool> {
+                let bus = bus_of(bus, &this.context, "AudioVoice:send's bus")?;
+                let at = frame_option(at)?;
+                Ok(this.context.borrow_mut().control().set_send(this.key, bus, level, at)?)
             },
         )
         .untyped();
     voice
         .method("state", |this: &LuaAudioVoice| {
             this.context.borrow_mut().control().state(this.key).name()
+        })
+        .untyped();
+}
+
+#[allow(clippy::too_many_lines)] // one method per operation
+fn describe_bus(d: &mut ExtensionDescriptor) {
+    let mut bus = d.userdata::<LuaAudioBus>(LuaAudioBus::NAME);
+    bus.tag(TagPolicy::Never)
+        .doc("A bus: where voices and buses sum, runs its processors, applies its gain, and feeds its parent.");
+    bus.method(
+        "set",
+        |this: &LuaAudioBus, name: Text, value: f64, at: Option<f64>| -> l3i::Result<bool> {
+            let Some(param) = BusParam::named(&name.0) else {
+                return Err(error(format!("AudioBus:set takes gain or mute, not {:?}", name.0)));
+            };
+            let at = frame_option(at)?;
+            Ok(this.context.borrow_mut().control().set_bus(this.key, param, value, at)?)
+        },
+    )
+    .untyped();
+    bus.method(
+        "route",
+        |this: &LuaAudioBus, parent: ValueView<'_>, at: Option<f64>| -> l3i::Result<()> {
+            let parent = bus_of(parent, &this.context, "AudioBus:route's parent")?;
+            let at = frame_option(at)?;
+            Ok(this.context.borrow_mut().control().route_bus(this.key, parent, at)?)
+        },
+    )
+    .untyped();
+    bus.method(
+        "send",
+        |this: &LuaAudioBus, call: &Call<'_>, target: ValueView<'_>, options: Option<ValueView<'_>>| -> l3i::Result<()> {
+            const FUNCTION: &str = "AudioBus:send";
+            let target = bus_of(target, &this.context, "AudioBus:send's target")?;
+            let (level, tap, at) = call.with_frame(|frame| {
+                let table = table(frame, options, FUNCTION, BUS_SEND_KEYS)?;
+                let table = table.as_ref();
+                let level = optional::<f64>(frame, table, "level", FUNCTION)?.unwrap_or(1.0);
+                let tap = match optional::<String>(frame, table, "tap", FUNCTION)?.as_deref() {
+                    None | Some("post") => Tap::PostFader,
+                    Some("pre") => Tap::PreFader,
+                    Some(other) => {
+                        return Err(error(format!("{FUNCTION}'s tap is post or pre, not {other:?}")));
+                    }
+                };
+                let at = frame_option(optional(frame, table, "at", FUNCTION)?)?;
+                Ok((level, tap, at))
+            })?;
+            Ok(this
+                .context
+                .borrow_mut()
+                .control()
+                .send_bus(this.key, target, level, tap, at)?)
+        },
+    )
+    .untyped();
+    bus.method(
+        "unsend",
+        |this: &LuaAudioBus, target: ValueView<'_>, at: Option<f64>| -> l3i::Result<bool> {
+            let target = bus_of(target, &this.context, "AudioBus:unsend's target")?;
+            let at = frame_option(at)?;
+            Ok(this.context.borrow_mut().control().unsend_bus(this.key, target, at)?)
+        },
+    )
+    .untyped();
+    bus.method("remove", |this: &LuaAudioBus, at: Option<f64>| -> l3i::Result<bool> {
+        let at = frame_option(at)?;
+        Ok(this.context.borrow_mut().control().remove_bus(this.key, at)?)
+    })
+    .untyped();
+    bus.method("live", |this: &LuaAudioBus| {
+        this.context.borrow_mut().control().bus_live(this.key)
+    })
+    .untyped();
+    bus.method("latency", |this: &LuaAudioBus| -> l3i::Result<f64> {
+        Ok(number(this.context.borrow_mut().control().latency(this.key)?))
+    })
+    .untyped();
+    bus.method("meter", |this: &LuaAudioBus, call: &Call<'_>| -> l3i::Result<StackResults> {
+        let meter = this.context.borrow_mut().control().meter(this.key)?;
+        push_table(call, 0, 2, |frame, table| {
+            table.raw_set_value(frame, "peak", &f64::from(meter.peak))?;
+            table.raw_set_value(frame, "rms", &f64::from(meter.rms))
+        })?;
+        Ok(StackResults)
+    })
+    .untyped();
+    bus.method(
+        "insert",
+        |this: &LuaAudioBus,
+         call: &Call<'_>,
+         name: Text,
+         options: Option<ValueView<'_>>|
+         -> l3i::Result<Owned<LuaAudioProcessor>> {
+            let (settings, index) = call.with_frame(|frame| settings(frame, options, "AudioBus:insert"))?;
+            let mut context = this.context.borrow_mut();
+            let control = context.control();
+            let processor = crate::audio::processor::create(&name.0, control.rate(), control.channels(), settings)?;
+            let kind = processor.kind();
+            let key = control.mount(processor, this.key, index)?;
+            drop(context);
+            Ok(Owned(LuaAudioProcessor {
+                context: Rc::clone(&this.context),
+                key,
+                kind,
+            }))
+        },
+    )
+    .untyped();
+}
+
+fn describe_processor(d: &mut ExtensionDescriptor) {
+    let mut processor = d.userdata::<LuaAudioProcessor>(LuaAudioProcessor::NAME);
+    processor
+        .tag(TagPolicy::Never)
+        .doc("A processor in a bus's chain; once removed, the handle names nothing.");
+    processor.method("kind", |this: &LuaAudioProcessor| this.kind).untyped();
+    processor
+        .method(
+            "set",
+            |this: &LuaAudioProcessor, name: Text, value: f64, at: Option<f64>| -> l3i::Result<bool> {
+                let at = frame_option(at)?;
+                Ok(this
+                    .context
+                    .borrow_mut()
+                    .control()
+                    .set_processor(this.key, &name.0, value, at)?)
+            },
+        )
+        .untyped();
+    processor
+        .method("remove", |this: &LuaAudioProcessor, at: Option<f64>| -> l3i::Result<bool> {
+            let at = frame_option(at)?;
+            Ok(this.context.borrow_mut().control().unmount(this.key, at)?)
+        })
+        .untyped();
+    processor
+        .method("live", |this: &LuaAudioProcessor| {
+            this.context.borrow_mut().control().processor_live(this.key)
         })
         .untyped();
 }

@@ -57,6 +57,22 @@ pub enum AudioError {
     ChainFull(usize),
     /// A processor handle from one that was removed, or another context.
     StaleProcessor,
+    /// A processor kind there isn't.
+    UnknownProcessor {
+        /// The kind asked for.
+        kind: String,
+        /// The kinds there are.
+        known: String,
+    },
+    /// A processor setting of the wrong type.
+    Setting {
+        /// The processor's kind.
+        kind: &'static str,
+        /// The setting.
+        name: String,
+        /// What it should be.
+        expected: &'static str,
+    },
     /// A parameter name a processor doesn't have.
     UnknownParameter {
         /// The processor's kind.
@@ -134,6 +150,12 @@ impl fmt::Display for AudioError {
             AudioError::ProcessorsExhausted(count) => write!(f, "all {count} processors are in use"),
             AudioError::ChainFull(count) => write!(f, "the bus already runs {count} processors"),
             AudioError::StaleProcessor => f.write_str("the processor was removed or belongs to another context"),
+            AudioError::UnknownProcessor { kind, known } => {
+                write!(f, "there is no {kind:?} processor; there are {known}")
+            }
+            AudioError::Setting { kind, name, expected } => {
+                write!(f, "a {kind} processor's {name} is {expected}")
+            }
             AudioError::UnknownParameter { kind, name, known } => {
                 write!(f, "a {kind} processor has no parameter {name:?}; it has {known}")
             }

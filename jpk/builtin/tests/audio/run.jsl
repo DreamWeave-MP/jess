@@ -162,4 +162,73 @@ suite.describe('voices', function()
   end)
 end)
 
+--- A mono source of `values` at 48000 frames per second.
+local function source(values: { number }): audio.Pcm
+  return audio.pcm(floats(values), { format = 'f32', channels = 1, rate = 48000 })
+end
+
+suite.describe('buses', function()
+  suite.it('mix music, effects, and dialogue apart, each at its own gain and mute', function()
+    local tone = source { 1, 1, 1, 1 }
+    local context = audio.offline { channels = 1 }
+    local music = context:bus { gain = 0.5 }
+    local effects = context:bus { gain = 0.25 }
+    local dialogue = context:bus()
+    context:play(tone, { bus = music, at = 0 })
+    context:play(tone, { bus = effects, at = 0 })
+    context:play(tone, { bus = dialogue, at = 0 })
+    expect(effects:set('mute', 1, 2)).toBe(true)
+    expect(context:master():set('gain', 2, 3)).toBe(true)
+    expect(samples(context:render(4))).toEqual { 1.75, 1.75, 1.5, 3 }
+  end)
+
+  suite.it('share one effect bus between routes, which mixes what they send once', function()
+    local click = source { 1 }
+    local context = audio.offline { channels = 1 }
+    local music, effects = context:bus(), context:bus()
+    local room = context:bus { gain = 0.5 }
+    context:play(click, { bus = music, sends = { { bus = room, level = 0.5 } } })
+    context:play(click, { bus = effects, sends = { { bus = room } } })
+    expect(samples(context:render(1))).toEqual { 2.75 }
+    expect(room:meter().peak).toBe(0.75)
+
+    music:send(room, { level = 1, tap = 'pre' })
+    music:set('mute', 1)
+    context:play(click, { bus = music })
+    expect(samples(context:render(1))).toEqual { 0.5 }
+    expect(room:meter()).toEqual { peak = 0.5, rms = 0.5 }
+  end)
+
+  suite.it('run processors in a chain, settable by name on a frame', function()
+    local tone = source { 1, 1, 1, 1 }
+    local context = audio.offline { channels = 1 }
+    local group = context:bus()
+    local trim = group:insert('gain', { gain = 0.5 })
+    expect(trim:kind()).toBe 'gain'
+    expect(audio.processors()).toContain 'gain'
+    context:play(tone, { bus = group, at = 0 })
+    expect(trim:set('gain', 2, 2)).toBe(true)
+    expect(trim:remove(3)).toBe(true)
+    expect(samples(context:render(4))).toEqual { 0.5, 0.5, 2, 1 }
+    expect(trim:live()).toBe(false)
+    expect(group:latency()).toBe(0)
+  end)
+
+  suite.it('refuse loops, removals while in use, and processors that are not there', function()
+    local context = audio.offline { channels = 1 }
+    local outer = context:bus()
+    local inner = context:bus { parent = outer }
+    expect(function() outer:route(inner) end).toThrow 'feed a bus back into itself'
+    expect(function() context:master():remove() end).toThrow 'master bus'
+    expect(function() outer:remove() end).toThrow 'still has 0 voices and 1 buses'
+    expect(function() inner:insert 'flanger' end).toThrow 'no "flanger" processor'
+    expect(function() inner:insert('gain', { volume = 1 }) end).toThrow 'no parameter "volume"'
+    expect(function() inner:insert('gain', { gain = 100 }) end).toThrow 'inside its range'
+    expect(inner:remove()).toBe(true)
+    expect(inner:live()).toBe(false)
+    local other = audio.offline { channels = 1 }
+    expect(function() other:play(source { 1 }, { bus = outer }) end).toThrow 'another context'
+  end)
+end)
+
 return suite

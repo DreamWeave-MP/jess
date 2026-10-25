@@ -160,6 +160,49 @@ export type AudioPlayOptions = {
   loop: boolean?,
   loopStart: number?,
   loopEnd: number?,
+  --- The bus it plays into: the master unless told otherwise.
+  bus: AudioBus?,
+  --- Up to two buses it also sends to, each at a level relative to its own gain (1).
+  sends: { { bus: AudioBus, level: number? } }?,
+}
+
+--- A bus's level since it was last read, after its gain: the peak sample's magnitude and the
+--- RMS, linear, across its channels.
+export type AudioMeter = { peak: number, rms: number }
+
+--- How a bus sends to another: at `level` (1), tapped after its gain and mute (`post`, the usual)
+--- or before them (`pre`), from frame `at`.
+export type AudioSendOptions = { level: number?, tap: ('post' | 'pre')?, at: number? }
+
+--- A bus: where voices and buses sum. It runs its processors over the sum, applies its gain, and
+--- adds the result into its parent and its sends. Every command takes an optional `at`, an output
+--- frame; without one, the next frame rendered.
+export type AudioBus = {
+  --- Sets `gain` (linear) or `mute` (0 off, anything else on).
+  set: (self: AudioBus, param: 'gain' | 'mute', value: number, at: number?) -> boolean,
+  --- Routes the bus into another; a route that would loop back into it is an error.
+  route: (self: AudioBus, parent: AudioBus, at: number?) -> (),
+  --- Adds a send to `target`, or changes the one there; up to four besides the parent.
+  send: (self: AudioBus, target: AudioBus, options: AudioSendOptions?) -> (),
+  unsend: (self: AudioBus, target: AudioBus, at: number?) -> boolean,
+  --- Removes the bus once nothing routes into it; its processors ring out their tails first.
+  remove: (self: AudioBus, at: number?) -> boolean,
+  live: (self: AudioBus) -> boolean,
+  --- Frames its output lags the voices that reach it, by the longest path's processors.
+  latency: (self: AudioBus) -> number,
+  meter: (self: AudioBus) -> AudioMeter,
+  --- Puts a processor of `kind` in the chain, last or at `index` (from 1), made with `settings`:
+  --- its parameters by name, and whatever the kind is made with.
+  insert: (self: AudioBus, kind: string, settings: { [string]: number | string }?) -> AudioProcessor,
+}
+
+--- A processor in a bus's chain. Once removed, the handle names nothing.
+export type AudioProcessor = {
+  kind: (self: AudioProcessor) -> string,
+  --- Sets a parameter by name; a name it doesn't have, or a value out of range, is an error.
+  set: (self: AudioProcessor, param: string, value: number, at: number?) -> boolean,
+  remove: (self: AudioProcessor, at: number?) -> boolean,
+  live: (self: AudioProcessor) -> boolean,
 }
 
 --- What a context's engine has done, as of its last render: `frames` rendered (the clock), voices
@@ -183,6 +226,8 @@ export type AudioVoiceState = 'scheduled' | 'playing' | 'ended'
 export type AudioVoice = {
   stop: (self: AudioVoice, at: number?) -> boolean,
   set: (self: AudioVoice, param: 'gain' | 'pan' | 'rate', value: number, at: number?) -> boolean,
+  --- Changes the level of a send it started with.
+  send: (self: AudioVoice, bus: AudioBus, level: number, at: number?) -> boolean,
   state: (self: AudioVoice) -> AudioVoiceState,
 }
 
@@ -194,6 +239,10 @@ export type AudioContext = {
   --- The next frame the engine renders. A command stamped for it or later lands on its frame.
   now: (self: AudioContext) -> number,
   play: (self: AudioContext, pcm: AudioPcm, options: AudioPlayOptions?) -> AudioVoice,
+  --- The master bus: the output. It has no parent and is never removed.
+  master: (self: AudioContext) -> AudioBus,
+  --- A bus under `parent` (the master), at `gain` (1), muted or not; voices can play into it at once.
+  bus: (self: AudioContext, options: { parent: AudioBus?, gain: number?, muted: boolean? }?) -> AudioBus,
   --- Renders `frames` frames and returns them as interleaved 32-bit floats.
   render: (self: AudioContext, frames: number) -> buffer,
   stats: (self: AudioContext) -> AudioStats,
@@ -393,8 +442,17 @@ declare jess: {
   audio: {
     --- PCM from interleaved bytes, `channels` samples per frame, each stored as `format`.
     pcm: (data: buffer | string, options: { format: AudioSampleFormat, channels: number, rate: number }) -> AudioPcm,
-    --- A context the script renders: 48000 frames per second, 2 channels, 256 voices, and room for
-    --- 4096 waiting commands, unless told otherwise.
-    offline: (options: { rate: number?, channels: number?, voices: number?, commands: number? }?) -> AudioContext,
+    --- A context the script renders: 48000 frames per second, 2 channels, 256 voices, 64 buses, 256
+    --- processors, and room for 4096 waiting commands, unless told otherwise.
+    offline: (options: {
+      rate: number?,
+      channels: number?,
+      voices: number?,
+      buses: number?,
+      processors: number?,
+      commands: number?,
+    }?) -> AudioContext,
+    --- The processor kinds `AudioBus:insert` makes.
+    processors: () -> { string },
   },
 }

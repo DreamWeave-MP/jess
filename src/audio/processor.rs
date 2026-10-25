@@ -85,6 +85,120 @@ pub trait Processor: Send {
     fn process(&mut self, block: &mut Block<'_>, key: Option<&[f32]>);
 }
 
+/// A setting a processor is made with: a number, or a name for a choice (a filter's shape).
+#[derive(Clone, PartialEq, Debug)]
+pub enum Setting {
+    /// A number.
+    Number(f64),
+    /// A choice, by name.
+    Text(String),
+}
+
+/// The settings a processor is made with, by name. A kind takes the ones fixed at creation
+/// (a delay's longest time); every number left over sets the parameter of that name.
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct Settings {
+    entries: Vec<(String, Setting)>,
+}
+
+impl Settings {
+    /// No settings.
+    #[must_use]
+    pub const fn new() -> Settings {
+        Settings { entries: Vec::new() }
+    }
+
+    /// Adds a setting.
+    pub fn insert(&mut self, name: &str, setting: Setting) {
+        self.entries.push((name.to_owned(), setting));
+    }
+
+    /// Takes the number called `name`, if there is one.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::Setting`] when it's a name rather than a number.
+    pub fn number(&mut self, kind: &'static str, name: &str) -> Result<Option<f64>, AudioError> {
+        match self.take(name) {
+            None => Ok(None),
+            Some(Setting::Number(value)) => Ok(Some(value)),
+            Some(Setting::Text(_)) => Err(AudioError::Setting {
+                kind,
+                name: name.to_owned(),
+                expected: "a number",
+            }),
+        }
+    }
+
+    /// Takes the name called `name`, if there is one.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::Setting`] when it's a number rather than a name.
+    pub fn text(&mut self, kind: &'static str, name: &str) -> Result<Option<String>, AudioError> {
+        match self.take(name) {
+            None => Ok(None),
+            Some(Setting::Text(value)) => Ok(Some(value)),
+            Some(Setting::Number(_)) => Err(AudioError::Setting {
+                kind,
+                name: name.to_owned(),
+                expected: "a name",
+            }),
+        }
+    }
+
+    fn take(&mut self, name: &str) -> Option<Setting> {
+        let index = self.entries.iter().position(|(known, _)| known == name)?;
+        Some(self.entries.remove(index).1)
+    }
+
+    /// Sets every setting left as the parameter of its name.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::UnknownParameter`], [`AudioError::Parameter`] outside its range, or
+    /// [`AudioError::Setting`] for a name where a number goes.
+    pub fn apply(self, processor: &mut dyn Processor) -> Result<(), AudioError> {
+        for (name, setting) in self.entries {
+            let index = param_index(processor.kind(), processor.params(), &name)?;
+            let Setting::Number(value) = setting else {
+                return Err(AudioError::Setting {
+                    kind: processor.kind(),
+                    name,
+                    expected: "a number",
+                });
+            };
+            let value = check_param(&processor.params()[index], value)?;
+            processor.set(index, value);
+        }
+        Ok(())
+    }
+}
+
+/// The kinds of processor [`create`] makes.
+pub const KINDS: &[&str] = &["gain"];
+
+/// Makes a processor of `kind` for a context of `rate` and `channels`, with `settings`: the
+/// ones the kind is made with, and the rest as parameters.
+///
+/// # Errors
+///
+/// [`AudioError::UnknownProcessor`] for a kind there isn't, and whatever its settings are wrong
+/// with.
+pub fn create(kind: &str, _rate: u32, _channels: usize, settings: Settings) -> Result<Box<dyn Processor>, AudioError> {
+    let mut processor: Box<dyn Processor> = match kind {
+        "gain" => Box::new(Gain::new()),
+        other => {
+            return Err(AudioError::UnknownProcessor {
+                kind: other.to_owned(),
+                known: KINDS.join(", "),
+            });
+        }
+    };
+    settings.apply(processor.as_mut())?;
+    Ok(processor)
+}
+
 /// The index of the parameter called `name` among a `kind` processor's `params`.
 ///
 /// # Errors
