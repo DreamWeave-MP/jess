@@ -19,6 +19,67 @@
       "tostring": "ShaderProgram(0 attributes, 0 uniforms, 0 textures, 0 varyings)",
       "varyings": {}
     },
+    "buffersLayout": {
+      "attributes": {
+        "attributes": {},
+        "stride": 0
+      },
+      "draw": {
+        "bindings": {},
+        "group": 2
+      },
+      "instance": {
+        "attributes": {},
+        "stride": 0
+      },
+      "material": {
+        "bindings": [
+          {
+            "access": "read",
+            "binding": 0,
+            "element": "Particle",
+            "kind": "Storage",
+            "name": "particles",
+            "stride": 32
+          }
+        ],
+        "group": 1
+      },
+      "pass": {
+        "bindings": [
+          {
+            "access": "readWrite",
+            "binding": 0,
+            "element": "UInt",
+            "kind": "Storage",
+            "name": "counts",
+            "stride": 4
+          }
+        ],
+        "group": 0
+      },
+      "structs": [
+        {
+          "align": 16,
+          "fields": [
+            {
+              "name": "position",
+              "offset": 0,
+              "size": 16,
+              "type": "Vec4f"
+            },
+            {
+              "name": "size",
+              "offset": 16,
+              "size": 4,
+              "type": "Float"
+            }
+          ],
+          "name": "Particle",
+          "size": 32
+        }
+      ]
+    },
     "computed": {
       "builtin": "ShaderBuiltins(compute)",
       "count": "ShaderExpr(Vec3u)",
@@ -130,6 +191,192 @@
       8,
       1
     ],
+    "layout": {
+      "attributes": {
+        "attributes": [
+          {
+            "location": 0,
+            "locations": 1,
+            "name": "light",
+            "offset": 0,
+            "type": "UInt"
+          },
+          {
+            "location": 1,
+            "locations": 1,
+            "name": "normal",
+            "offset": 4,
+            "type": "Vec3f"
+          },
+          {
+            "location": 2,
+            "locations": 1,
+            "name": "position",
+            "offset": 16,
+            "type": "Vec3f"
+          },
+          {
+            "location": 3,
+            "locations": 1,
+            "name": "uv",
+            "offset": 28,
+            "type": "Vec2f"
+          }
+        ],
+        "stride": 36
+      },
+      "draw": {
+        "bindings": {},
+        "group": 2,
+        "members": [
+          {
+            "name": "model",
+            "offset": 0,
+            "size": 64,
+            "type": "Mat4f"
+          }
+        ],
+        "size": 64
+      },
+      "instance": {
+        "attributes": [
+          {
+            "location": 4,
+            "locations": 1,
+            "name": "shade",
+            "offset": 0,
+            "type": "Vec4u"
+          },
+          {
+            "location": 5,
+            "locations": 4,
+            "name": "transform",
+            "offset": 16,
+            "type": "Mat4f"
+          }
+        ],
+        "stride": 80
+      },
+      "material": {
+        "bindings": [
+          {
+            "binding": 1,
+            "kind": "Texture2D",
+            "name": "diffuse"
+          },
+          {
+            "binding": 2,
+            "kind": "Sampler",
+            "name": "diffuse"
+          },
+          {
+            "binding": 3,
+            "kind": "Sampler",
+            "name": "pointSampler"
+          }
+        ],
+        "group": 1,
+        "members": [
+          {
+            "name": "ambient",
+            "offset": 64,
+            "size": 4,
+            "type": "Float"
+          },
+          {
+            "name": "normalMatrix",
+            "offset": 0,
+            "size": 48,
+            "type": "Mat3f"
+          },
+          {
+            "name": "tint",
+            "offset": 48,
+            "size": 16,
+            "type": "Vec4f"
+          }
+        ],
+        "size": 80
+      },
+      "pass": {
+        "bindings": {},
+        "group": 0,
+        "members": [
+          {
+            "name": "camera",
+            "offset": 0,
+            "size": 144,
+            "type": "Camera"
+          },
+          {
+            "name": "lights",
+            "offset": 144,
+            "size": 128,
+            "stride": 32,
+            "type": "Light[4]"
+          },
+          {
+            "name": "time",
+            "offset": 280,
+            "size": 4,
+            "type": "Float"
+          },
+          {
+            "name": "viewportSize",
+            "offset": 272,
+            "size": 8,
+            "type": "Vec2f"
+          }
+        ],
+        "size": 288
+      },
+      "structs": [
+        {
+          "align": 16,
+          "fields": [
+            {
+              "name": "position",
+              "offset": 0,
+              "size": 12,
+              "type": "Vec3f"
+            },
+            {
+              "name": "projection",
+              "offset": 16,
+              "size": 64,
+              "type": "Mat4f"
+            },
+            {
+              "name": "view",
+              "offset": 80,
+              "size": 64,
+              "type": "Mat4f"
+            }
+          ],
+          "name": "Camera",
+          "size": 144
+        },
+        {
+          "align": 16,
+          "fields": [
+            {
+              "name": "color",
+              "offset": 0,
+              "size": 12,
+              "type": "Vec3f"
+            },
+            {
+              "name": "direction",
+              "offset": 16,
+              "size": 12,
+              "type": "Vec3f"
+            }
+          ],
+          "name": "Light",
+          "size": 32
+        }
+      ]
+    },
     "lit": {
       "attributes": [
         {

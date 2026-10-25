@@ -21,6 +21,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use std::sync::Arc;
 
+use crate::shader::layout::{GroupLayout, MemberLayout, StructLayout};
 use crate::shader::{
     Access, AttributeId, BinaryOperator, Builtin, DataType, Element, Field, Frequency, Function as ShaderFunction, LocalId,
     Place, PlaceRoot, Program, ProgramBuilder, Rate, ResourceId, ResourceKind, Scalar, Site, SourceOrigin, Stage, Step,
@@ -2000,6 +2001,139 @@ fn run_program(shader: &Rc<Shader>, call: &Call<'_>, owner: Arc<str>, spec: Spec
     Ok(Owned(LuaShaderProgram(Rc::new(finished?))))
 }
 
+/// A data type's name, as reflection prints it: `Vec4f`, `Light`, `Light[4]`.
+fn data_type_name(program: &Program, ty: DataType) -> String {
+    let struct_name = |id: StructId| {
+        program
+            .structs()
+            .get(id.index())
+            .map_or("?", |declared| declared.name.as_str())
+    };
+    match ty {
+        DataType::Value(ty) => ty.name().to_owned(),
+        DataType::Struct(id) => struct_name(id).to_owned(),
+        DataType::Array { element, length } => match element {
+            Element::Value(ty) => format!("{}[{length}]", ty.name()),
+            Element::Struct(id) => format!("{}[{length}]", struct_name(id)),
+        },
+    }
+}
+
+/// Pushes `{ name, offset, size, type, stride }` for each named member of a struct or block, in
+/// declaration order: `stride` only for an array.
+fn push_members<'a>(
+    frame: &Frame<'_>,
+    program: &Program,
+    members: impl Iterator<Item = (&'a str, DataType)>,
+    layout: &StructLayout,
+) -> l3i::Result<()> {
+    let rows: Vec<(&str, DataType, MemberLayout)> = members
+        .zip(&layout.members)
+        .map(|((name, ty), member)| (name, ty, *member))
+        .collect();
+    l3i::stack::push_list(frame, rows.iter(), |frame, (name, ty, member)| {
+        push_table(frame, 0, 5, |frame, row| {
+            row.raw_set_value(frame, "name", *name)?;
+            row.raw_set_value(frame, "offset", &f64::from(member.offset))?;
+            row.raw_set_value(frame, "size", &f64::from(member.size))?;
+            row.raw_set_value(frame, "type", data_type_name(program, *ty).as_str())?;
+            if let Some(stride) = member.stride {
+                row.raw_set_value(frame, "stride", &f64::from(stride))?;
+            }
+            Ok(())
+        })
+    })
+}
+
+/// `program.layout`: where everything the program declares lives, so whatever fills its buffers
+/// writes them from this and never works out an offset.
+fn push_layout(call: &Call<'_>, program: &Program) -> l3i::Result<StackResults> {
+    let layout = program.layout();
+    push_table(call, 0, 6, |frame, table| {
+        l3i::stack::push_list(
+            frame,
+            program.structs().iter().zip(&layout.structs),
+            |frame, (declared, struct_layout)| {
+                push_table(frame, 0, 4, |frame, row| {
+                    row.raw_set_value(frame, "name", declared.name.as_str())?;
+                    row.raw_set_value(frame, "size", &f64::from(struct_layout.size))?;
+                    row.raw_set_value(frame, "align", &f64::from(struct_layout.align))?;
+                    let fields = declared.fields.iter().map(|field| (field.name.as_str(), field.ty));
+                    push_members(frame, program, fields, struct_layout)?;
+                    row.raw_set(frame, "fields")
+                })
+            },
+        )?;
+        table.raw_set(frame, "structs")?;
+        for group in &layout.groups {
+            push_group(frame, program, group)?;
+            table.raw_set(frame, group.frequency.name())?;
+        }
+        for (rate, buffer) in Rate::ALL.into_iter().zip(&layout.vertex_buffers) {
+            push_table(frame, 0, 2, |frame, row| {
+                row.raw_set_value(frame, "stride", &f64::from(buffer.stride))?;
+                l3i::stack::push_list(frame, buffer.attributes.iter(), |frame, attribute| {
+                    push_table(frame, 0, 5, |frame, row| {
+                        let name = program.attributes()[attribute.attribute.index()].name.as_str();
+                        row.raw_set_value(frame, "name", name)?;
+                        row.raw_set_value(frame, "offset", &f64::from(attribute.offset))?;
+                        row.raw_set_value(frame, "location", &f64::from(attribute.location))?;
+                        row.raw_set_value(frame, "locations", &f64::from(attribute.locations))?;
+                        row.raw_set_value(frame, "type", attribute.ty.name())
+                    })
+                })?;
+                row.raw_set(frame, "attributes")
+            })?;
+            table.raw_set(frame, namespace_name(rate))?;
+        }
+        Ok(())
+    })?;
+    Ok(StackResults)
+}
+
+/// One frequency's bind group: its uniform block, if it has one, and its other bindings.
+fn push_group(frame: &Frame<'_>, program: &Program, group: &GroupLayout) -> l3i::Result<()> {
+    push_table(frame, 0, 4, |frame, row| {
+        row.raw_set_value(frame, "group", &f64::from(group.frequency.group()))?;
+        if let Some(block) = &group.uniform {
+            row.raw_set_value(frame, "size", &f64::from(block.size))?;
+            let members = program
+                .uniforms_of(group.frequency)
+                .map(|(_, uniform)| (uniform.name.as_str(), uniform.ty));
+            push_members(frame, program, members, block)?;
+            row.raw_set(frame, "members")?;
+        }
+        let resources = group.resources.iter().map(|binding| {
+            let resource = &program.resources()[binding.resource.index()];
+            (resource.name.as_str(), resource.kind.name().to_owned(), binding.binding, None)
+        });
+        let storage = group.storage.iter().map(|binding| {
+            let buffer = &program.storage_buffers()[binding.storage.index()];
+            let element = match buffer.element {
+                Element::Value(ty) => DataType::Value(ty),
+                Element::Struct(id) => DataType::Struct(id),
+            };
+            let detail = (data_type_name(program, element), buffer.access.name(), binding.stride);
+            (buffer.name.as_str(), "Storage".to_owned(), binding.binding, Some(detail))
+        });
+        let bindings: Vec<_> = resources.chain(storage).collect();
+        l3i::stack::push_list(frame, bindings.iter(), |frame, (name, kind, binding, storage)| {
+            push_table(frame, 0, 6, |frame, row| {
+                row.raw_set_value(frame, "name", *name)?;
+                row.raw_set_value(frame, "kind", kind.as_str())?;
+                row.raw_set_value(frame, "binding", &f64::from(*binding))?;
+                if let Some((element, access, stride)) = storage {
+                    row.raw_set_value(frame, "element", element.as_str())?;
+                    row.raw_set_value(frame, "access", *access)?;
+                    row.raw_set_value(frame, "stride", &f64::from(*stride))?;
+                }
+                Ok(())
+            })
+        })?;
+        row.raw_set(frame, "bindings")
+    })
+}
+
 /// Pushes `{ name, type }` for each declaration.
 fn push_declarations(call: &Call<'_>, declarations: &[crate::shader::Declaration]) -> l3i::Result<StackResults> {
     l3i::stack::push_list(call, declarations.iter(), |frame, declaration| {
@@ -2281,6 +2415,11 @@ fn describe_program(d: &mut ExtensionDescriptor) {
     program
         .getter("varyings", |this: &LuaShaderProgram, call: &Call<'_>| {
             push_declarations(call, this.0.program.varyings())
+        })
+        .untyped();
+    program
+        .getter("layout", |this: &LuaShaderProgram, call: &Call<'_>| {
+            push_layout(call, &this.0.program)
         })
         .untyped();
     program

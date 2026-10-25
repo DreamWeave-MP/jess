@@ -122,7 +122,8 @@ local integrate = shader.compute {
     local index = input.builtin.globalInvocationId.x
     local pass = input.pass
     shader.when(shader.less(index, shader.arrayLength(pass.positions)), function()
-      shader.write(pass.positions, index, pass.positions[index] + pass.velocities[index] * pass.step)
+      local moved = pass.positions[index] + pass.velocities[index] * pass.step
+      shader.write(pass.positions, index, moved)
     end)
   end,
 }
@@ -269,7 +270,7 @@ Each frequency's table names what it binds:
 
 Reading goes one step at a time. `input.pass.camera` is the camera; `.view` is its view matrix, a value. An array is indexed from 0 by a number or by a shader value, `#` is its length, and an element is a value or a struct to go on into: `input.pass.lights[i].color`. A step that reaches a value reads it; a texture or sampler is a handle for `sample`. Until then it's a `ShaderPlace`, which isn't a value: `input.pass.camera + 1` fails with `+: expected a shader value, not Camera, a struct: read one of its fields`.
 
-Where it all lives is jess's decision, never yours. Each frequency is one bind group, its uniform block first and its textures and samplers after it, and every member is laid out by its alignment, largest first, so nothing pads what follows it. The layout is reported with the lowered program, so whatever writes the buffers writes them from that. One rule of the layout shows: in a uniform block, an array's elements must be a multiple of 16 bytes apart, so a `shader.array(shader.float, 4)` there fails when the program finishes, with `uniform material.weights is an array of elements 4 bytes apart`. Use `shader.vec4` elements, or a struct.
+Where it all lives is jess's decision, never yours. Each frequency is one bind group, its uniform block first and its textures, samplers, and storage buffers after it, and every member is laid out by its alignment, largest first, so nothing pads what follows it. The layout is reported with the lowered program and as [program.layout](#layout), so whatever writes the buffers writes them from that. One rule of the layout shows: in a uniform block, an array's elements must be a multiple of 16 bytes apart, so a `shader.array(shader.float, 4)` there fails when the program finishes, with `uniform material.weights is an array of elements 4 bytes apart`. Use `shader.vec4` elements, or a struct.
 
 - **Errors:** `the material has no "tnit": it has diffuse, tint`; `Light has no field "colour": it has color, direction`; `Light[4] has no element 4: its elements are 0 to 3`; `Light[4] is indexed by a number or a shader value, not string`; `Camera has no length: only an array does`.
 
@@ -343,9 +344,10 @@ shader.program {
   material = { particles = shader.storage(Particle) },
   vertex = function(input)
     local particle = input.material.particles[input.builtin.instanceIndex]
+    local offset = shader.vec4(input.attributes.corner * particle.size, 0, 0)
     print(input.material.particles, particle, particle.size)
 
-    return { position = particle.position + shader.vec4(input.attributes.corner * particle.size, 0, 0) }
+    return { position = particle.position + offset }
   end,
 
   fragment = function(input)
@@ -825,8 +827,47 @@ What `shader.program` and `shader.compute` return and a shader module hands back
 | `pass`, `material`, `draw` | `{ { name: string, type: string } }` | What each frequency binds, sorted by name: `Vec4f`, `Camera`, `Light[4]`, `Texture2D`, `Sampler`. A texture's own sampler is part of the texture. |
 | `varyings` | `{ { name: string, type: string } }` | What `vertex` passes to `fragment`, sorted by name. |
 | `workgroupSize` | `{ number }?` | A compute program's workgroup size, `{ x, y, z }`; `nil` for a vertex and fragment program. |
+| `layout` | `ShaderLayout` | Where everything lives: see [layout](#layout). |
 
 `tostring(program)` counts them, both kinds of attribute together and the uniform members of every frequency together: `ShaderProgram(3 attributes, 4 uniforms, 1 texture, 2 varyings)`. A compute program says so, with its workgroup and its storage buffers: `ShaderProgram(compute 64×1×1, 1 uniform, 0 textures, 2 storage buffers)`.
+
+### layout
+
+`program.layout` is where everything the program declares lives, worked out by jess, so whatever fills a buffer writes it from this and never decides an offset itself:
+
+- **`pass`, `material`, `draw`:** each frequency's bind `group`; its uniform block's `size` and `members`, each with its `offset`, `size`, `type`, and, for an array, `stride`; and its other `bindings`, each texture, sampler, and storage buffer with its `binding` and `kind` (a storage buffer with its `element`, `access`, and `stride`).
+- **`structs`:** each struct's `size`, `align`, and `fields`, laid out as its members are.
+- **`attributes`, `instance`:** each vertex buffer's `stride`, and each attribute's `offset`, `location`, and `locations`: a matrix takes one per column.
+
+Members and fields are listed in declaration order, which is sorted by name; their offsets say where they really are, largest alignment first.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+local Light = shader.struct('Light', { color = shader.vec3, direction = shader.vec3 })
+
+local program = shader.program {
+  attributes = { normal = shader.vec3, position = shader.vec3 },
+  pass = { exposure = shader.float, lights = shader.array(Light, 4) },
+  vertex = function(input)
+    local vertex = input.attributes
+
+    return { position = shader.vec4(vertex.position, 1), normal = vertex.normal }
+  end,
+
+  fragment = function(input) return shader.vec4(input.normal * input.pass.exposure, 1) end,
+}
+
+local layout = program.layout
+for _, member in layout.pass.members :: { ShaderMemberLayout } do
+  print(member.name, member.offset, member.size, member.stride)
+end
+print(layout.pass.size, layout.attributes.stride, layout.structs[1].fields[2].offset)
+-- exposure  128  4  nil
+-- lights  0  128  32
+-- 144  24  16
+```
 
 ```luau
 --!strict

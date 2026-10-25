@@ -624,6 +624,9 @@ end
 --- backend. `tostring` gives `ShaderProgram(3 attributes, 2 uniforms, 1 texture, 2 varyings)`, or
 --- for a compute program `ShaderProgram(compute 64×1×1, 1 uniform, 0 textures, 2 storage buffers)`.
 declare extern type ShaderProgram with
+  --- Where everything the program declares lives: every block member's and struct field's
+  --- offset, every binding, and every vertex buffer's stride and attribute offsets.
+  layout: ShaderLayout
   --- A compute program's workgroup size, `{ x, y, z }`; `nil` for a vertex and fragment program.
   workgroupSize: { number }?
   --- The per-vertex attributes, sorted by name, each with its type's name (`Vec3f`).
@@ -658,6 +661,53 @@ export type ShaderProgramSpec = {
   draw: { [string]: ShaderType }?,
   vertex: (input: ShaderInput) -> { [string]: ShaderExpr },
   fragment: (input: ShaderInput) -> ShaderExpr,
+}
+
+--- A member of a struct or uniform block, where it is: `stride` is an array's, from one element
+--- to the next.
+export type ShaderMemberLayout = {
+  name: string,
+  offset: number,
+  size: number,
+  type: string,
+  stride: number?,
+}
+
+--- A binding of a frequency's group besides its uniform block: a texture, sampler, or storage
+--- buffer (`kind` `Storage`, with its `element`, `access`, and `stride`).
+export type ShaderBindingLayout = {
+  name: string,
+  kind: string,
+  binding: number,
+  element: string?,
+  access: string?,
+  stride: number?,
+}
+
+--- One frequency's bind group: its uniform block at binding 0, if it has members, and its other
+--- bindings after it.
+export type ShaderGroupLayout = {
+  group: number,
+  size: number?,
+  members: { ShaderMemberLayout }?,
+  bindings: { ShaderBindingLayout },
+}
+
+--- One vertex buffer: the bytes from one vertex or instance to the next, and each attribute's
+--- place in it, a matrix taking a location per column.
+export type ShaderVertexLayout = {
+  stride: number,
+  attributes: { { name: string, offset: number, location: number, locations: number, type: string } },
+}
+
+--- Where everything a program declares lives, for whatever fills its buffers.
+export type ShaderLayout = {
+  structs: { { name: string, size: number, align: number, fields: { ShaderMemberLayout } } },
+  pass: ShaderGroupLayout,
+  material: ShaderGroupLayout,
+  draw: ShaderGroupLayout,
+  attributes: ShaderVertexLayout,
+  instance: ShaderVertexLayout,
 }
 
 --- What `shader.compute` takes.

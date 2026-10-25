@@ -15,7 +15,8 @@ return shader.compute {
     local index = input.builtin.globalInvocationId.x
     local pass = input.pass
     shader.when(shader.less(index, shader.arrayLength(pass.positions)), function()
-      shader.write(pass.positions, index, pass.positions[index] + pass.velocities[index] * pass.step)
+      local moved = pass.positions[index] + pass.velocities[index] * pass.step
+      shader.write(pass.positions, index, moved)
     end)
   end,
 }

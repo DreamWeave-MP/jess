@@ -358,6 +358,8 @@ return {
   constant = describe(constant),
   flow = describe(flow),
   buffers = describe(buffers),
+  layout = lit.layout,
+  buffersLayout = buffers.layout,
   integrate = describe(integrate),
   integrateSize = integrate.workgroupSize,
   litSize = lit.workgroupSize == nil,
