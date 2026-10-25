@@ -85,7 +85,7 @@ impl Gpu {
     ///
     /// No target, a target that isn't one or hasn't the level or layer, a clear value of the
     /// wrong kind, or a draw whose pipeline's targets aren't the pass's, whose bind groups or
-    /// buffers are missing or of another pipeline's layout, or whose count runs past its
+    /// buffers are missing or laid out for another program, or whose count runs past its
     /// vertices.
     pub fn render(&self, colors: &[Target<'_>], depth: Option<&Target<'_>>, draws: &[Draw<'_>]) -> Result<(), GpuError> {
         if colors.is_empty() && depth.is_none() {
@@ -225,17 +225,15 @@ fn check_draw(index: usize, draw: &Draw<'_>, colors: &[Target<'_>], depth: Optio
 /// What is wrong with a draw's bind groups, if anything.
 pub fn group_problem(draw: &Draw<'_>) -> Option<String> {
     for (frequency, (group, bound)) in Frequency::ALL.into_iter().zip(draw.pipeline.groups.iter().zip(draw.groups)) {
-        match (group.raw.is_some(), bound) {
-            (true, None) => return Some(format!("its program binds a {frequency} group, and the draw gives none")),
-            (false, Some(_)) => {
+        match (&group.layout, bound) {
+            (Some(_), None) => return Some(format!("its program binds a {frequency} group, and the draw gives none")),
+            (None, Some(_)) => {
                 return Some(format!(
                     "its program binds nothing per {frequency}, and the draw gives a group"
                 ));
             }
-            (true, Some(bound)) if bound.frequency != frequency || bound.pipeline != draw.pipeline.token => {
-                return Some(format!(
-                    "its {frequency} bind group was made for another pipeline or frequency"
-                ));
+            (Some(layout), Some(bound)) if !bound.fits(frequency, layout) => {
+                return Some(format!("its {frequency} bind group was made for another frequency or layout"));
             }
             _ => {}
         }

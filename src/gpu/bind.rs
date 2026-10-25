@@ -1,7 +1,9 @@
 //! Bind groups: what one frequency binds for a pipeline, checked against what its program
 //! declares there.
 
-use super::pipeline::{Group, Slot};
+use std::sync::Arc;
+
+use super::pipeline::{Group, Layout, Slot};
 use super::{Buffer, BufferUsage, Gpu, GpuError, Sampler, Texture, TextureShape, TextureUsage};
 use crate::render::SampleKind;
 use crate::shader::{Frequency, ResourceId, ResourceKind, StorageId};
@@ -19,12 +21,12 @@ pub enum Binding<'a> {
     Storage(StorageId, &'a Buffer),
 }
 
-/// What one frequency binds, for the pipelines laid out like the one it was made for.
+/// What one frequency binds, for every pipeline whose program lays that frequency out the same.
 #[derive(Debug)]
 pub struct BindGroup {
     pub(crate) raw: wgpu::BindGroup,
     pub(crate) frequency: Frequency,
-    pub(crate) pipeline: u64,
+    layout: Arc<Layout>,
 }
 
 impl BindGroup {
@@ -32,6 +34,11 @@ impl BindGroup {
     #[must_use]
     pub fn frequency(&self) -> Frequency {
         self.frequency
+    }
+
+    /// Whether it binds for `frequency` laid out as `layout`.
+    pub(crate) fn fits(&self, frequency: Frequency, layout: &Arc<Layout>) -> bool {
+        self.frequency == frequency && Arc::ptr_eq(&self.layout, layout)
     }
 }
 
@@ -52,17 +59,12 @@ impl Gpu {
         frequency: Frequency,
         bindings: &[Binding<'_>],
     ) -> Result<BindGroup, GpuError> {
-        self.bind_group_of(&pipeline.groups[frequency as usize], pipeline.token, bindings)
+        self.bind_group_of(&pipeline.groups[frequency as usize], bindings)
     }
 
-    pub(crate) fn bind_group_of(
-        &self,
-        group: &Group,
-        pipeline: u64,
-        bindings: &[Binding<'_>],
-    ) -> Result<BindGroup, GpuError> {
+    pub(crate) fn bind_group_of(&self, group: &Group, bindings: &[Binding<'_>]) -> Result<BindGroup, GpuError> {
         let frequency = group.frequency;
-        let Some(layout) = &group.raw else {
+        let Some(layout) = &group.layout else {
             return Err(GpuError::Invalid(format!(
                 "the program binds nothing per {frequency}: it needs no {frequency} bind group"
             )));
@@ -96,14 +98,14 @@ impl Gpu {
         let raw = self.checked(|| {
             self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: None,
-                layout,
+                layout: &layout.raw,
                 entries: &entries,
             })
         })?;
         Ok(BindGroup {
             raw,
             frequency,
-            pipeline,
+            layout: layout.clone(),
         })
     }
 }

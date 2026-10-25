@@ -392,3 +392,54 @@ fn what_doesnt_fit_is_refused() {
         assert_eq!(error.to_string(), message);
     }
 }
+
+#[test]
+fn a_bind_group_binds_for_every_program_laid_out_alike() {
+    let Some(gpu) = gpu("a_bind_group_binds_for_every_program_laid_out_alike") else {
+        return;
+    };
+    let state = PipelineState {
+        colors: vec![ColorState::new(TextureFormat::Rgba8Unorm)],
+        ..PipelineState::default()
+    };
+    let near = gpu.render_pipeline(&flat(0.25), &state).unwrap();
+    let far = gpu.render_pipeline(&flat(0.75), &state).unwrap();
+    let (_uniforms, green) = colored(&gpu, &near, [0.0, 1.0, 0.0, 1.0]);
+    let draw = Draw {
+        groups: [None, Some(&green), None],
+        ..Draw::new(&far, 3)
+    };
+    let pixels = draw_one(&gpu, TextureFormat::Rgba8Unorm, ClearValue::Color([0.0; 4]), draw);
+    assert_eq!(
+        texel(&pixels, SIZE / 2, SIZE / 2),
+        GREEN,
+        "another program's material group binds"
+    );
+
+    // A second member makes the material's block larger, and its layout another.
+    let mut builder = ProgramBuilder::new();
+    let mut site = builder.site();
+    site.uniform(Frequency::Material, "color", jess::shader::DataType::Value(Type::Vec4f))
+        .unwrap();
+    site.uniform(Frequency::Material, "fade", jess::shader::DataType::Value(Type::Vec4f))
+        .unwrap();
+    let position = covering(&mut site, 0.5);
+    site.set_position(position).unwrap();
+    let color = site.float(1.0).unwrap();
+    let color = site.construct(Type::Vec4f, &[color]).unwrap();
+    site.output(color).unwrap();
+    let wider = gpu.render_pipeline(&builder.finish().unwrap(), &state).unwrap();
+    let color = target(&gpu, TextureFormat::Rgba8Unorm);
+    let refused = gpu.render(
+        &[Target::cleared(&color, ClearValue::Color([0.0; 4]))],
+        None,
+        &[Draw {
+            groups: [None, Some(&green), None],
+            ..Draw::new(&wider, 3)
+        }],
+    );
+    assert_eq!(
+        refused.unwrap_err().to_string(),
+        "draw 0 is invalid: its material bind group was made for another frequency or layout"
+    );
+}

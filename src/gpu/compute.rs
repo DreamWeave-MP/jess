@@ -1,9 +1,7 @@
 //! Compute pipelines and dispatches: a compute program run over a grid of workgroups.
 
-use std::sync::atomic::Ordering;
-
 use super::bind::{BindGroup, Binding};
-use super::pipeline::{Group, NEXT_PIPELINE, invalid_program};
+use super::pipeline::{Group, invalid_program};
 use super::{Gpu, GpuError};
 use crate::shader::wgsl::{self, COMPUTE_ENTRY_POINT};
 use crate::shader::{Frequency, Program};
@@ -13,7 +11,6 @@ use crate::shader::{Frequency, Program};
 pub struct ComputePipeline {
     raw: wgpu::ComputePipeline,
     pub(crate) groups: [Group; 3],
-    token: u64,
     workgroup_size: [u32; 3],
 }
 
@@ -44,7 +41,7 @@ impl Gpu {
                 label: None,
                 source: wgpu::ShaderSource::Wgsl(module.source.as_str().into()),
             });
-            let layouts: Vec<Option<&wgpu::BindGroupLayout>> = groups.iter().map(|group| group.raw.as_ref()).collect();
+            let layouts: Vec<Option<&wgpu::BindGroupLayout>> = groups.iter().map(Group::raw_layout).collect();
             let layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: None,
                 bind_group_layouts: &layouts,
@@ -62,7 +59,6 @@ impl Gpu {
         Ok(ComputePipeline {
             raw,
             groups,
-            token: NEXT_PIPELINE.fetch_add(1, Ordering::Relaxed),
             workgroup_size,
         })
     }
@@ -79,7 +75,7 @@ impl Gpu {
         frequency: Frequency,
         bindings: &[Binding<'_>],
     ) -> Result<BindGroup, GpuError> {
-        self.bind_group_of(&pipeline.groups[frequency as usize], pipeline.token, bindings)
+        self.bind_group_of(&pipeline.groups[frequency as usize], bindings)
     }
 
     /// Runs `pipeline` over `workgroups` workgroups on each axis, each of the pipeline's workgroup
@@ -96,14 +92,14 @@ impl Gpu {
         workgroups: [u32; 3],
     ) -> Result<(), GpuError> {
         for (frequency, (group, bound)) in Frequency::ALL.into_iter().zip(pipeline.groups.iter().zip(groups)) {
-            let problem = match (group.raw.is_some(), bound) {
-                (true, None) => Some(format!("its program binds a {frequency} group, and the dispatch gives none")),
-                (false, Some(_)) => Some(format!(
+            let problem = match (&group.layout, bound) {
+                (Some(_), None) => Some(format!("its program binds a {frequency} group, and the dispatch gives none")),
+                (None, Some(_)) => Some(format!(
                     "its program binds nothing per {frequency}, and the dispatch gives a group"
                 )),
-                (true, Some(bound)) if bound.frequency != frequency || bound.pipeline != pipeline.token => Some(format!(
-                    "its {frequency} bind group was made for another pipeline or frequency"
-                )),
+                (Some(layout), Some(bound)) if !bound.fits(frequency, layout) => {
+                    Some(format!("its {frequency} bind group was made for another frequency or layout"))
+                }
                 _ => None,
             };
             if let Some(problem) = problem {

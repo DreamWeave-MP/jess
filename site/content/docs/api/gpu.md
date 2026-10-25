@@ -181,7 +181,7 @@ Names belong to whatever builds on this: the kernel takes numbers, so a Luau lib
 
 ## GpuBindGroup
 
-What one frequency binds for one pipeline, and for no other. `frequency` is `pass`, `material`, or `draw`, and `tostring(group)` is `GpuBindGroup(material)`.
+What one frequency binds. It binds for every pipeline whose program lays that frequency out the same way (a uniform block of the same size, and the same kinds of texture, sampler, and storage buffer at the same binding numbers), whichever pipeline it was made for, so one camera block serves every program that declares it alike. `frequency` is `pass`, `material`, or `draw`, and `tostring(group)` is `GpuBindGroup(material)`.
 
 ## Passes
 
@@ -205,7 +205,7 @@ A draw is a table:
 | `pipeline` | `GpuPipeline` | A render pipeline whose targets are the pass's. |
 | `count` | `number` | How many vertices, or with `indices`, how many indices. |
 | `instanceCount` | `number?` | How many instances; 1 by default. |
-| `pass`, `material`, `draw` | `GpuBindGroup?` | A bind group for each frequency its program binds anything for, made for its pipeline. |
+| `pass`, `material`, `draw` | `GpuBindGroup?` | A bind group for each frequency its program binds anything for, laid out as its program lays that frequency out. |
 | `vertices`, `instances` | `GpuBuffer?` | The per-vertex and per-instance attributes, if the program has any, in vertex buffers holding every one drawn. |
 | `indices`, `indexFormat` | `GpuBuffer?`, `('u16' \| 'u32')?` | An index buffer, and how wide its indices are (`u32` by default). |
 

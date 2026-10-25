@@ -2,7 +2,7 @@
 //! buffer layouts its declarations need, every one from the program's own layout.
 
 use std::num::NonZeroU64;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, PoisonError};
 
 use super::texture::raw_format;
 use super::{Compare, Gpu, GpuError};
@@ -117,18 +117,29 @@ pub struct Group {
     pub(crate) frequency: Frequency,
     /// Each binding number, what is declared there, and its name.
     pub(crate) slots: Vec<(u32, Slot, String)>,
-    pub(crate) raw: Option<wgpu::BindGroupLayout>,
+    /// The layout, shared with every group on the device laid out alike.
+    pub(crate) layout: Option<Arc<Layout>>,
 }
 
-/// Numbers every pipeline, so a bind group knows which it was laid out for.
-pub static NEXT_PIPELINE: AtomicU64 = AtomicU64::new(0);
+impl Group {
+    /// The layout's wgpu object, for a pipeline layout.
+    pub(crate) fn raw_layout(&self) -> Option<&wgpu::BindGroupLayout> {
+        self.layout.as_deref().map(|layout| &layout.raw)
+    }
+}
+
+/// A bind group layout. A device makes one per distinct layout, so groups laid out alike share it
+/// and a bind group made for one binds for all of them.
+#[derive(Debug)]
+pub struct Layout {
+    pub(crate) raw: wgpu::BindGroupLayout,
+}
 
 /// A program ready to draw, with its fixed-function state.
 #[derive(Debug)]
 pub struct RenderPipeline {
     pub(crate) raw: wgpu::RenderPipeline,
     pub(crate) groups: [Group; 3],
-    pub(crate) token: u64,
     state: PipelineState,
     /// The bytes per vertex and per instance; 0 for a rate without attributes.
     pub(crate) strides: [u32; 2],
@@ -192,7 +203,7 @@ impl Gpu {
                 label: None,
                 source: wgpu::ShaderSource::Wgsl(module.source.as_str().into()),
             });
-            let layouts: Vec<Option<&wgpu::BindGroupLayout>> = groups.iter().map(|group| group.raw.as_ref()).collect();
+            let layouts: Vec<Option<&wgpu::BindGroupLayout>> = groups.iter().map(Group::raw_layout).collect();
             let layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: None,
                 bind_group_layouts: &layouts,
@@ -229,7 +240,6 @@ impl Gpu {
         Ok(RenderPipeline {
             raw,
             groups,
-            token: NEXT_PIPELINE.fetch_add(1, Ordering::Relaxed),
             state: state.clone(),
             strides: module.layout.vertex_buffers.each_ref().map(|buffer| buffer.stride),
         })
@@ -263,23 +273,36 @@ impl Gpu {
                 .iter()
                 .map(|(binding, slot, _)| layout_entry(*binding, *slot, stages))
                 .collect();
-            let raw = if entries.is_empty() {
+            let shared = if entries.is_empty() {
                 None
             } else {
-                Some(self.checked(|| {
-                    self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                        label: None,
-                        entries: &entries,
-                    })
-                })?)
+                Some(self.layout(entries)?)
             };
             groups.push(Group {
                 frequency: layout.frequency,
                 slots,
-                raw,
+                layout: shared,
             });
         }
         Ok(groups.try_into().unwrap_or_else(|_| unreachable!("a group per frequency")))
+    }
+
+    /// The device's layout of `entries`, made the first time it is asked for.
+    fn layout(&self, entries: Vec<wgpu::BindGroupLayoutEntry>) -> Result<Arc<Layout>, GpuError> {
+        let mut layouts = self.layouts.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(layout) = layouts.get(&entries) {
+            return Ok(layout.clone());
+        }
+        let raw = self.checked(|| {
+            self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                entries: &entries,
+            })
+        })?;
+        let layout = Arc::new(Layout { raw });
+        layouts.insert(entries, layout.clone());
+        drop(layouts);
+        Ok(layout)
     }
 }
 

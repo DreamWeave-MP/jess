@@ -21,9 +21,10 @@ mod pipeline;
 mod sampler;
 mod texture;
 
+use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 pub use bind::{BindGroup, Binding};
 pub use buffer::{Buffer, BufferUsage};
@@ -133,6 +134,8 @@ pub struct Gpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
     info: GpuInfo,
+    /// Every bind group layout the device has made, by its entries.
+    layouts: Mutex<HashMap<Vec<wgpu::BindGroupLayoutEntry>, Arc<pipeline::Layout>>>,
 }
 
 impl fmt::Debug for Gpu {
@@ -174,7 +177,7 @@ impl Gpu {
             .map_err(|error| GpuError::Device(error.to_string()))?;
         // An error no scope catches would panic in wgpu's default handler; every call here opens a
         // scope, so this only ever sees what slips past one, and drops it rather than abort.
-        device.on_uncaptured_error(std::sync::Arc::new(|_| {}));
+        device.on_uncaptured_error(Arc::new(|_| {}));
         let adapter_info = adapter.get_info();
         let limits = device.limits();
         let info = GpuInfo {
@@ -192,7 +195,12 @@ impl Gpu {
             max_buffer_size: limits.max_buffer_size,
             max_workgroups: limits.max_compute_workgroups_per_dimension,
         };
-        Ok(Gpu { device, queue, info })
+        Ok(Gpu {
+            device,
+            queue,
+            info,
+            layouts: Mutex::default(),
+        })
     }
 
     /// The adapter this runs on, and what it allows.
