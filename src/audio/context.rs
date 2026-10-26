@@ -675,14 +675,15 @@ impl Control {
     }
 
     /// Removes the send from `bus` to `target` at frame `at`, or at the next frame rendered.
-    /// True if there was one.
+    /// True if there was one; a bus that was removed has none, whatever bus has its slot now.
     ///
     /// # Errors
     ///
     /// [`AudioError::QueueFull`] or [`AudioError::Disconnected`].
     pub fn unsend_bus(&mut self, bus: BusKey, target: BusKey, at: Option<u64>) -> Result<bool, AudioError> {
         self.collect();
-        if !self.graph.is_live(bus) {
+        // A bus being removed has no sends into it: it can't be removed while it has.
+        if !self.graph.is_live(bus) || !self.graph.is_live(target) {
             return Ok(false);
         }
         let Some(order) = self.graph.unsend(bus, target) else {

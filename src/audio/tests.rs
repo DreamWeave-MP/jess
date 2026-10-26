@@ -573,6 +573,27 @@ fn a_routing_change_the_queue_has_no_room_for_leaves_the_routing_as_it_was() {
 }
 
 #[test]
+fn a_stale_bus_handle_names_no_send_to_the_bus_in_its_slot_now() {
+    let mut context = mono(AudioConfig::default());
+    let source = bus(&mut context, BusKey::MASTER, 1.0);
+    let old = bus(&mut context, BusKey::MASTER, 1.0);
+    context.control().send_bus(source, old, 1.0, Tap::PostFader, None).unwrap();
+    assert!(context.control().unsend_bus(source, old, None).unwrap());
+    assert!(context.control().remove_bus(old, None).unwrap());
+    context.render(1);
+    let new = bus(&mut context, BusKey::MASTER, 1.0);
+    assert_eq!(new.slot, old.slot);
+    context.control().send_bus(source, new, 1.0, Tap::PostFader, None).unwrap();
+
+    assert!(!context.control().unsend_bus(source, old, None).unwrap());
+    assert_eq!(
+        context.control().remove_bus(new, None),
+        Err(AudioError::BusInUse { voices: 0, buses: 1 }),
+        "the send to the new bus is still there"
+    );
+}
+
+#[test]
 fn sends_that_would_loop_or_feed_a_removed_bus_are_refused() {
     let click = pcm(&[1.0], 48_000);
     let mut context = mono(AudioConfig::default());
