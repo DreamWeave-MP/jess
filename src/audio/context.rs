@@ -581,15 +581,19 @@ impl Control {
         self.collect();
         self.graph.check_live(bus)?;
         self.graph.check_live(parent)?;
+        let old = self.graph.parent(bus);
         let order = self.graph.route(bus, parent)?;
-        self.send(
-            at,
-            Command::RouteBus {
-                bus,
-                parent: parent.slot,
-                order,
-            },
-        )?;
+        let command = Command::RouteBus {
+            bus,
+            parent: parent.slot,
+            order,
+        };
+        if let Err(error) = self.send(at, command) {
+            if let Some(old) = old {
+                self.graph.unroute(bus, old);
+            }
+            return Err(error);
+        }
         self.compensate(at);
         Ok(())
     }
@@ -684,15 +688,16 @@ impl Control {
         let Some(order) = self.graph.unsend(bus, target) else {
             return Ok(false);
         };
-        let target = target.slot;
-        self.send(
-            at,
-            Command::UnsendBus {
-                bus,
-                target,
-                order: Some(order),
-            },
-        )?;
+        let command = Command::UnsendBus {
+            bus,
+            target: target.slot,
+            order: Some(order),
+        };
+        if let Err(error) = self.send(at, command) {
+            // It was there a moment ago, so putting it back can neither loop nor overflow.
+            self.graph.send(bus, target).ok();
+            return Err(error);
+        }
         self.compensate(at);
         Ok(true)
     }

@@ -205,6 +205,16 @@ impl Graph {
         }
     }
 
+    /// Puts back the parent `route` replaced, `old`, for a reroute that never reached the engine.
+    pub fn unroute(&mut self, bus: BusKey, old: u32) {
+        self.nodes[bus.slot as usize].parent = Some(old);
+    }
+
+    /// The slot of the bus `bus` is routed into; the master has none.
+    pub fn parent(&self, bus: BusKey) -> Option<u32> {
+        self.nodes[bus.slot as usize].parent
+    }
+
     /// How many frames each bus's output lags the voices that reach it by the longest way round,
     /// by slot, given what each bus's own processors add (`own`, by slot). Compensation makes
     /// every path into a bus as late as its latest, so this is also how late each bus is.

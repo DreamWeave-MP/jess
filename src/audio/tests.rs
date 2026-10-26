@@ -542,6 +542,37 @@ fn a_bus_send_taps_after_the_fader_unless_asked_to_tap_before_it() {
 }
 
 #[test]
+fn a_routing_change_the_queue_has_no_room_for_leaves_the_routing_as_it_was() {
+    let mut context = mono(AudioConfig {
+        commands: 4,
+        ..AudioConfig::default()
+    });
+    let first = bus(&mut context, BusKey::MASTER, 1.0);
+    let second = bus(&mut context, BusKey::MASTER, 1.0);
+    let aux = bus(&mut context, BusKey::MASTER, 1.0);
+    context.control().send_bus(first, aux, 1.0, Tap::PostFader, None).unwrap();
+    context.render(1);
+    while context.control().set_bus(first, BusParam::Gain, 1.0, None, None).is_ok() {}
+
+    assert_eq!(
+        context.control().route_bus(first, second, None),
+        Err(AudioError::QueueFull(4))
+    );
+    assert_eq!(context.control().unsend_bus(first, aux, None), Err(AudioError::QueueFull(4)));
+    context.render(1);
+    assert_eq!(
+        context.control().route_bus(second, first, None),
+        Ok(()),
+        "the first bus never went under the second, so this is no loop"
+    );
+    assert_eq!(
+        context.control().remove_bus(aux, None),
+        Err(AudioError::BusInUse { voices: 0, buses: 1 }),
+        "the send the engine still mixes is still there"
+    );
+}
+
+#[test]
 fn sends_that_would_loop_or_feed_a_removed_bus_are_refused() {
     let click = pcm(&[1.0], 48_000);
     let mut context = mono(AudioConfig::default());
