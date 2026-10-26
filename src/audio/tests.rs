@@ -223,6 +223,32 @@ fn a_loop_wraps_without_a_gap() {
 }
 
 #[test]
+fn a_loop_shorter_than_the_resampler_reaches_reads_only_itself_once_it_has_wrapped() {
+    for length in [2, 4, 8] {
+        for rate in [0.75, 1.5] {
+            // An intro of nines the kernel must never reach back into once the loop has wrapped.
+            let mut samples = vec![9.0; 8];
+            samples.resize(8 + length, 1.0);
+            let mut context = mono(AudioConfig::default());
+            let spec = PlaySpec {
+                rate,
+                offset: 8,
+                looping: Some(LoopRegion {
+                    start: 8,
+                    end: 8 + length as u64,
+                }),
+                ..at(0)
+            };
+            context.control().play(&pcm(&samples, 48_000), &spec).unwrap();
+            let out = context.render(QUANTUM * 2);
+            for (frame, sample) in out.iter().enumerate().skip(4 * length + 2) {
+                assert!((sample - 1.0).abs() < 1e-5, "{length} frames at {rate}: {sample} at {frame}");
+            }
+        }
+    }
+}
+
+#[test]
 fn a_centred_mono_voice_pans_with_equal_power_and_a_stereo_one_balances() {
     let mut context = OfflineContext::new(&AudioConfig::default()).unwrap();
     context.control().play(&pcm(&[1.0], 48_000), &at(0)).unwrap();

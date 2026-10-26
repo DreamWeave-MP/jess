@@ -346,15 +346,14 @@ impl Cursor {
     }
 
     /// The sample at frame `index`, through the loop: past its end is its start again, and
-    /// before its start, once it has wrapped, is its end. Outside the source is silence.
+    /// before its start, once it has wrapped, is its end, however many times round the kernel
+    /// reaches on a loop shorter than it. Outside the source is silence.
     fn sample(&self, data: &[f32], index: i64) -> f32 {
         let index = match self.looping {
             Some((start, end)) => {
                 let (start, end) = (to_signed(start), to_signed(end));
-                if index >= end {
-                    start + (index - end) % (end - start)
-                } else if self.wrapped && index < start {
-                    end - (start - index)
+                if index >= end || (self.wrapped && index < start) {
+                    start + (index - start).rem_euclid(end - start)
                 } else {
                     index
                 }
