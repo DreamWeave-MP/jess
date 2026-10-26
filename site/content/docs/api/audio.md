@@ -80,7 +80,7 @@ end
 
 A context the script renders. Defaults: 48000 frames per second, 2 channels, 256 voices, 64 buses (the master included), 256 processors, and room for 4096 commands waiting for their frame. `speedOfSound` (343) and `handedness` (`right`) describe the world's space; see [Space](#space).
 
-`voices` counts voices playing or stamped for later; `commands` bounds the queue to the engine. Every count is fixed when the context is made, so the engine never allocates while it mixes. Running out of one is an error at the call that ran out (`all 256 voices are playing or scheduled`, `the audio command queue is full`), never a sound quietly not played.
+`voices` counts voices playing or stamped for later; `commands` bounds the queue to the engine, and again the commands stamped for later that the engine holds until their frames. A command for now never waits behind those, so a schedule full of later work can't keep a `stop` from landing. Every count is fixed when the context is made, so the engine never allocates while it mixes. Running out of one is an error at the call that ran out (`all 256 voices are playing or scheduled`, `the audio command queue is full`, `all 4096 commands the engine can hold for later are waiting for their frames`), never a sound quietly not played.
 
 {{ api_signature(value="audio.output(options: AudioOutputOptions?) -> AudioContext") }}
 

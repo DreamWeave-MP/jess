@@ -37,6 +37,8 @@ Samples that aren't finite are written as silence and counted. Filters and rever
 
 The clock is output frames rendered, a `u64` only the engine moves. A command carries `at`, an output frame, or none for "the next frame rendered". The engine keeps commands for later in a list sorted by frame and then by the order they were sent, and splits whatever block it is mixing at each command's frame, so a start, stop, or change lands on its exact sample, not at the next block boundary.
 
+That list is allocated once, so it has a size, and a command for later can't go in it when it's full. The control side keeps the frames of the commands for later it has sent and refuses one more than the list holds (`ScheduleFull`). The engine can then take every queued command whenever it renders, and a command for now never waits behind ones that are minutes away.
+
 Musical time, application time, and a device's presentation latency are not the engine's. `@jess/audio`'s tempo map turns beats into frames from a formula (never by adding up beats); a device reports its latency for whoever needs to line pictures up with sound.
 
 A group sends several commands as one queue entry, so the ones that say "now" are carried out on the same frame. It can't half-arrive: there is room in the queue when it opens, and nothing else is sent until it closes.

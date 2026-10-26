@@ -1,5 +1,7 @@
 //! Contexts: an engine and the control side that drives it.
 
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
@@ -36,7 +38,8 @@ pub struct AudioConfig {
     /// Processors on all buses together.
     pub processors: usize,
     /// Commands that can wait for the engine at once, in the queue and again in the engine's
-    /// list of commands stamped for later.
+    /// list of commands stamped for later. A command for later past that list's room is refused
+    /// with [`AudioError::ScheduleFull`]; a command for now never waits for room in it.
     pub commands: usize,
     /// The speed of sound in the world's units a second, for Doppler: 343 for metres.
     pub speed_of_sound: f64,
@@ -57,6 +60,39 @@ impl Default for AudioConfig {
             processors: 256,
             commands: 4096,
         }
+    }
+}
+
+impl AudioConfig {
+    /// Why a context can't be made this way, if it can't: as [`context`].
+    fn check(&self) -> Result<(), AudioError> {
+        check_layout(self.channels, self.rate)?;
+        if self.physical.is_some_and(|physical| physical == 0 || physical > self.voices) {
+            return Err(AudioError::Capacity(
+                "a context's physical voice count",
+                self.physical.unwrap_or(0),
+            ));
+        }
+        if self.voices == 0 || self.voices > MAX_VOICES {
+            return Err(AudioError::Capacity("a context's voice count", self.voices));
+        }
+        if self.buses == 0 || self.buses > MAX_BUSES {
+            return Err(AudioError::Capacity("a context's bus count", self.buses));
+        }
+        if self.processors > MAX_PROCESSORS {
+            return Err(AudioError::Capacity("a context's processor count", self.processors));
+        }
+        if self.commands == 0 {
+            return Err(AudioError::Capacity("a context's command capacity", 0));
+        }
+        if !(self.speed_of_sound > 0.0 && self.speed_of_sound.is_finite()) {
+            return Err(AudioError::Parameter {
+                name: "speed of sound",
+                value: self.speed_of_sound,
+                expected: "a finite speed above 0",
+            });
+        }
+        Ok(())
     }
 }
 
@@ -153,6 +189,9 @@ struct ProcessorSlot {
 
 /// The application side of a context: it starts, stops, and changes voices and buses by sending
 /// the engine commands, and hears back what ended. It never touches the engine's state.
+///
+/// Every command stamped for a frame the engine hasn't reached can also be refused with
+/// [`AudioError::ScheduleFull`].
 #[derive(Debug)]
 pub struct Control {
     rate: u32,
@@ -173,6 +212,10 @@ pub struct Control {
     /// commands received catches up to.
     sent: u64,
     sequence: u64,
+    /// The frames of the commands sent for later that the engine may still be holding, earliest
+    /// on top. There are never more than its list for them holds, so it never has to leave one
+    /// in the queue, and a command for now is never stuck behind it.
+    scheduled: BinaryHeap<Reverse<u64>>,
     counters: Arc<Counters>,
     listener: Listener,
     /// The delays last sent to the engine, as `(from, to, frames)`.
@@ -189,30 +232,9 @@ pub struct Control {
 /// [`AudioError::Capacity`] for no voices or more than [`MAX_VOICES`], no buses or more than
 /// [`MAX_BUSES`], more than [`MAX_PROCESSORS`], or no command room.
 pub fn context(config: &AudioConfig) -> Result<(Control, Engine), AudioError> {
-    check_layout(config.channels, config.rate)?;
+    config.check()?;
     // Built here, the first time, so no engine builds it while rendering.
     crate::audio::resample::table();
-    if config
-        .physical
-        .is_some_and(|physical| physical == 0 || physical > config.voices)
-    {
-        return Err(AudioError::Capacity(
-            "a context's physical voice count",
-            config.physical.unwrap_or(0),
-        ));
-    }
-    if config.voices == 0 || config.voices > MAX_VOICES {
-        return Err(AudioError::Capacity("a context's voice count", config.voices));
-    }
-    if config.buses == 0 || config.buses > MAX_BUSES {
-        return Err(AudioError::Capacity("a context's bus count", config.buses));
-    }
-    if config.processors > MAX_PROCESSORS {
-        return Err(AudioError::Capacity("a context's processor count", config.processors));
-    }
-    if config.commands == 0 {
-        return Err(AudioError::Capacity("a context's command capacity", 0));
-    }
     let capacity = Capacity {
         voices: config.voices,
         buses: config.buses,
@@ -223,13 +245,6 @@ pub fn context(config: &AudioConfig) -> Result<(Control, Engine), AudioError> {
     let (commands, receive) = sync_channel(config.commands);
     let (send, feedback) = sync_channel(capacity.feedback());
     let counters = Arc::new(Counters::new(config.buses));
-    if !(config.speed_of_sound > 0.0 && config.speed_of_sound.is_finite()) {
-        return Err(AudioError::Parameter {
-            name: "speed of sound",
-            value: config.speed_of_sound,
-            expected: "a finite speed above 0",
-        });
-    }
     let space = Space {
         speed: config.speed_of_sound,
         handedness: config.handedness,
@@ -284,6 +299,7 @@ pub fn context(config: &AudioConfig) -> Result<(Control, Engine), AudioError> {
         group: None,
         sent: 0,
         sequence: 0,
+        scheduled: BinaryHeap::with_capacity(config.commands),
         counters,
         listener: Listener::default(),
         delays: Vec::new(),
@@ -1113,6 +1129,17 @@ impl Control {
     }
 
     fn send(&mut self, at: Option<u64>, command: Command) -> Result<(), AudioError> {
+        let now = self.now();
+        let later = at.filter(|at| *at > now);
+        if later.is_some() {
+            // The engine carries out everything stamped before the frame it last rendered up to.
+            while self.scheduled.peek().is_some_and(|Reverse(at)| *at < now) {
+                self.scheduled.pop();
+            }
+            if self.scheduled.len() >= self.capacity {
+                return Err(AudioError::ScheduleFull(self.capacity));
+            }
+        }
         self.sequence += 1;
         let stamped = Stamped {
             at,
@@ -1125,11 +1152,13 @@ impl Control {
                 return Err(AudioError::QueueFull(self.capacity));
             }
             members.push(stamped);
+            self.scheduled.extend(later.map(Reverse));
             return Ok(());
         }
         match self.commands.try_send(stamped) {
             Ok(()) => {
                 self.sent += 1;
+                self.scheduled.extend(later.map(Reverse));
                 Ok(())
             }
             Err(TrySendError::Full(_)) => Err(AudioError::QueueFull(self.capacity)),

@@ -264,9 +264,12 @@ fn a_full_queue_and_bad_parameters_are_errors() {
         commands: 2,
         ..AudioConfig::default()
     });
-    context.control().play(&click, &at(10)).unwrap();
-    context.control().play(&click, &at(10)).unwrap();
-    assert_eq!(context.control().play(&click, &at(10)), Err(AudioError::QueueFull(2)));
+    context.control().play(&click, &PlaySpec::default()).unwrap();
+    context.control().play(&click, &PlaySpec::default()).unwrap();
+    assert_eq!(
+        context.control().play(&click, &PlaySpec::default()),
+        Err(AudioError::QueueFull(2))
+    );
     assert_eq!(context.control().stats().allocated, 2, "the refused voice gave its slot back");
     context.render(1);
     context.control().play(&click, &at(10)).unwrap();
@@ -289,6 +292,40 @@ fn a_full_queue_and_bad_parameters_are_errors() {
         context.control().play(&surround, &at(0)),
         Err(AudioError::Layout { source: 6, output: 1 })
     );
+}
+
+#[test]
+fn commands_for_later_never_hold_up_a_command_for_now() {
+    let tone = pcm(&[1.0; 8], 48_000);
+    let mut context = mono(AudioConfig {
+        commands: 4,
+        ..AudioConfig::default()
+    });
+    let looping = PlaySpec {
+        looping: Some(LoopRegion { start: 0, end: 8 }),
+        ..PlaySpec::default()
+    };
+    let first = context.control().play(&tone, &looping).unwrap();
+    let second = context.control().play(&tone, &looping).unwrap();
+    assert_eq!(context.render(1), [2.0]);
+    let minute = Some(48_000 * 60);
+    for _ in 0..4 {
+        context.control().set(first, VoiceParam::Gain, 0.5, minute, None).unwrap();
+    }
+    assert_eq!(
+        context.control().set(first, VoiceParam::Gain, 0.5, minute, None),
+        Err(AudioError::ScheduleFull(4)),
+        "a fifth command for later is refused, not queued behind the four"
+    );
+    context.render(1);
+    assert_eq!(context.control().stats().pending, 4);
+
+    context.control().stop(first, None, 0).unwrap();
+    assert_eq!(context.render(1), [1.0], "the stop for now went straight past the full list");
+    context.control().begin_group().unwrap();
+    context.control().stop(second, None, 0).unwrap();
+    context.control().end_group().unwrap();
+    assert_eq!(context.render(1), [0.0], "and so did a group with nothing for later");
 }
 
 #[test]

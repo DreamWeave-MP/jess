@@ -352,8 +352,8 @@ pub struct Engine {
     ramping: bool,
     /// The listener, and how the world's space works.
     space: Space,
-    /// A group held back until its members fit the pending list.
-    deferred: Option<Vec<Stamped>>,
+    /// A command, or a group, held back until what it stamps for later fits the pending list.
+    deferred: Option<Stamped>,
     received: u64,
     physical: usize,
     /// Each live voice's priority, loudness, and slot, for choosing which are mixed.
@@ -466,44 +466,56 @@ impl Engine {
         self.publish();
     }
 
-    /// Takes queued commands while there's room to hold the ones not yet due. When the pending
-    /// list is full the rest wait in the queue, and once that fills the control side is told.
+    /// Takes every queued command. Only one that stamps more for later than the pending list
+    /// has room for waits, and everything behind it with it, so a group is never split and the
+    /// order is kept. The control side never sends one (it refuses with
+    /// [`AudioError::ScheduleFull`](crate::audio::AudioError::ScheduleFull)), so commands for
+    /// now are never stuck behind commands for later.
     fn receive(&mut self) {
-        if let Some(group) = self.deferred.take()
-            && !self.accept_group(group)
-        {
-            return;
-        }
-        while self.pending.len() < self.pending.capacity() {
-            let Ok(stamped) = self.commands.try_recv() else {
+        while let Some(stamped) = self.incoming() {
+            if self.pending.len() + self.later(&stamped) > self.pending.capacity() {
+                self.deferred = Some(stamped);
                 return;
-            };
-            self.received += 1;
+            }
             if let Command::Group(members) = stamped.command {
-                self.received += members.len() as u64;
-                if !self.accept_group(members) {
-                    return;
-                }
+                self.accept_group(members);
                 continue;
             }
             self.accept(stamped);
         }
     }
 
-    /// Takes a group's members, or holds the group back until its stamped members fit the
-    /// pending list, so its members are never split. False when held back.
-    fn accept_group(&mut self, mut members: Vec<Stamped>) -> bool {
-        if self.pending.len() + members.len() > self.pending.capacity() {
-            self.deferred = Some(members);
-            return false;
+    /// The command held back, or the next one queued.
+    fn incoming(&mut self) -> Option<Stamped> {
+        if let Some(stamped) = self.deferred.take() {
+            return Some(stamped);
         }
+        let stamped = self.commands.try_recv().ok()?;
+        self.received += 1;
+        if let Command::Group(members) = &stamped.command {
+            self.received += members.len() as u64;
+        }
+        Some(stamped)
+    }
+
+    /// Takes a group's members, which the pending list has room for.
+    fn accept_group(&mut self, mut members: Vec<Stamped>) {
         // Drained rather than consumed: the emptied list goes back to be freed off this thread.
         #[allow(clippy::iter_with_drain)]
         for stamped in members.drain(..) {
             self.accept(stamped);
         }
         self.send(Feedback::Spent(members));
-        true
+    }
+
+    /// How many commands `stamped` would add to the pending list: a group's members stamped for
+    /// a frame not reached yet, or the command itself if it is.
+    fn later(&self, stamped: &Stamped) -> usize {
+        let later = |stamped: &Stamped| stamped.at.is_some_and(|at| at > self.now);
+        match &stamped.command {
+            Command::Group(members) => members.iter().filter(|member| later(member)).count(),
+            _ => usize::from(later(stamped)),
+        }
     }
 
     /// Carries out a command now, or keeps it for its frame.

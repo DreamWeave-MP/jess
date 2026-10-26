@@ -32,6 +32,9 @@ pub enum AudioError {
     VoicesExhausted(usize),
     /// The command queue to the engine is full: the engine is behind, or isn't running.
     QueueFull(usize),
+    /// Every command the engine can hold for a later frame is waiting for its frame. Commands
+    /// for now still go through.
+    ScheduleFull(usize),
     /// The engine is gone (its device closed, or it was dropped).
     Disconnected,
     /// A voice handle from a voice that already ended, or another context.
@@ -144,6 +147,10 @@ impl fmt::Display for AudioError {
             AudioError::QueueFull(capacity) => write!(
                 f,
                 "the audio command queue is full ({capacity} commands): the engine is behind or not running"
+            ),
+            AudioError::ScheduleFull(capacity) => write!(
+                f,
+                "all {capacity} commands the engine can hold for later are waiting for their frames"
             ),
             AudioError::Disconnected => f.write_str("the audio engine is gone: its output was closed"),
             AudioError::StaleVoice => f.write_str("the voice has ended or belongs to another context"),
