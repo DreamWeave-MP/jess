@@ -1255,6 +1255,56 @@ fn a_culled_voice_keeps_time_or_holds_its_place_or_is_gone() {
 }
 
 #[test]
+fn a_culled_stream_keeps_time_or_holds_its_place_as_a_voice_does() {
+    let ramp: Vec<f32> = (0..1000u16).map(f32::from).collect();
+    let loud = pcm(&[100.0; 200], 48_000);
+    for (culled, expected) in [(Culled::Advance, 301.0), (Culled::Pause, 100.0)] {
+        let mut context = budget(1);
+        let stream = Stream::new(1, 48_000, 1.0).unwrap();
+        assert_eq!(stream.write(&ramp).unwrap(), 1000);
+        let spec = PlaySpec { culled, ..at(0) };
+        context.control().play_stream(&stream, &spec).unwrap();
+        context.render(100);
+        let urgent = PlaySpec {
+            priority: 1.0,
+            ..PlaySpec::default()
+        };
+        context.control().play(&loud, &urgent).unwrap();
+        context.render(201);
+        let out = context.render(1);
+        assert!((out[0] - expected).abs() < 1e-3, "{culled:?}: {}", out[0]);
+        assert_eq!(stream.stats().missed, 0, "{culled:?}");
+    }
+
+    // A culled stream its writer is behind on keeps time through silence, as a mixed one does.
+    let mut context = budget(1);
+    let stream = Stream::new(1, 48_000, 1.0).unwrap();
+    stream.write(&ramp[..150]).unwrap();
+    context.control().play_stream(&stream, &at(0)).unwrap();
+    context.render(100);
+    let urgent = PlaySpec {
+        priority: 1.0,
+        ..PlaySpec::default()
+    };
+    context.control().play(&loud, &urgent).unwrap();
+    context.render(201);
+    assert_eq!(stream.stats().read, 150);
+    assert!(stream.stats().missed > 100, "{:?}", stream.stats());
+
+    // A finished one that runs out while culled ends there.
+    let mut context = budget(1);
+    let stream = Stream::new(1, 48_000, 1.0).unwrap();
+    stream.write(&ramp[..150]).unwrap();
+    stream.finish();
+    let voice = context.control().play_stream(&stream, &at(0)).unwrap();
+    context.render(100);
+    context.control().play(&loud, &urgent).unwrap();
+    context.render(201);
+    assert_eq!(context.control().state(voice), VoiceState::Ended);
+    assert_eq!(stream.stats().missed, 0);
+}
+
+#[test]
 fn choosing_voices_over_a_budget_never_allocates() {
     let tone = pcm(&[0.5; 3000], 48_000);
     let mut context = OfflineContext::new(&AudioConfig {

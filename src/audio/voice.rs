@@ -572,6 +572,32 @@ impl Reader<'_> {
         cursor.step = relative.step;
         produced
     }
+
+    /// Lets go of what `cursor`, moved on without reading, has passed, in the order rendering
+    /// would have played it: the window's frames, then the stream's, then silence counted as
+    /// missed where the stream had nothing yet. It keeps the frames resampling reads around the
+    /// cursor. False once a finished stream has nothing left to play.
+    fn skip(self, cursor: &Cursor) -> bool {
+        let frame = cursor.position >> 32;
+        let keep = frame.saturating_sub(resample::REACH as u64);
+        if keep > *self.base {
+            let passed = usize::try_from(keep - *self.base).unwrap_or(usize::MAX).min(*self.filled);
+            for channel in 0..self.stream.channels() {
+                let line = &mut self.window[channel * STREAM_WINDOW..(channel + 1) * STREAM_WINDOW];
+                line.copy_within(passed..*self.filled, 0);
+            }
+            *self.base += passed as u64;
+            *self.filled -= passed;
+            // Only past the end of the window, which is now empty.
+            let beyond = keep - *self.base;
+            let skipped = self.stream.skip(beyond);
+            if !self.stream.finished() {
+                self.stream.miss(beyond - skipped);
+            }
+            *self.base = keep;
+        }
+        !(self.stream.finished() && self.stream.unread() == 0 && frame >= *self.base + *self.filled as u64)
+    }
 }
 
 /// A playing voice, owned by the engine.
@@ -653,10 +679,6 @@ impl Voice {
     /// Keeps time for `frames` frames without mixing anything: its ramps, its fade, and its place in
     /// its source all move on. False once it has run out.
     pub(crate) fn skip(&mut self, frames: usize) -> bool {
-        // A stream has nothing to skip but what it has been given: culled, it holds its place.
-        if matches!(self.source, Source::Stream(..)) {
-            return true;
-        }
         let frames = frames as u64;
         if let Some(left) = self.ending.as_mut() {
             if *left <= frames {
@@ -671,9 +693,17 @@ impl Voice {
             self.cursor.step = self.step(self.rate.value());
         }
         self.cursor.skip(frames);
-        match &self.source {
+        match &mut self.source {
             Source::Pcm(pcm) => self.cursor.looping.is_some() || self.cursor.position >> 32 < pcm.frames() as u64,
-            Source::Stream(..) => true,
+            Source::Stream(stream, window) => {
+                let reader = Reader {
+                    stream,
+                    window,
+                    base: &mut self.base,
+                    filled: &mut self.filled,
+                };
+                reader.skip(&self.cursor)
+            }
         }
     }
 

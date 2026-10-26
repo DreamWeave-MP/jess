@@ -243,7 +243,7 @@ A name the processor doesn't have, or a value outside its range, is an error nam
 
 A context can hold far more voices than it mixes. With `physical` set below `voices`, each block the engine ranks the live voices by `priority`, then by how loud they would be (their gain, times what distance and cones give them in space), and mixes the top `physical`; the rest are culled for that block. A voice that was mixed holds its place against one only a little louder, so voices near the line don't flicker in and out. Ties go to the voice that started in the lower slot, so the same score culls the same voices every time.
 
-What a culled voice does is its own: `advance` (the default) keeps its place in its source moving, silently, so a looping hum out of earshot is where it would have been when it comes back; `pause` holds it where it was; `stop` ends it, which is voice stealing. Music and dialogue that must never drop out get a high `priority`. Rules like "no more than four footsteps at once" are the application's: count them in Luau and stop the oldest.
+What a culled voice does is its own: `advance` (the default) keeps its place in its source moving, silently, so a looping hum out of earshot is where it would have been when it comes back. A stream does the same: it lets go of what it would have played, so its writer keeps going and a stem stays in step with the others; `pause` holds it where it was; `stop` ends it, which is voice stealing. Music and dialogue that must never drop out get a high `priority`. Rules like "no more than four footsteps at once" are the application's: count them in Luau and stop the oldest.
 
 ## Space
 

@@ -234,6 +234,21 @@ impl Stream {
         frames
     }
 
+    /// For the engine: lets up to `frames` frames go unread, as a voice that keeps time without
+    /// being mixed does, and returns how many it had.
+    pub(crate) fn skip(&self, frames: u64) -> u64 {
+        let read = self.read.load(Ordering::Relaxed);
+        let written = self.written.load(Ordering::Acquire);
+        let frames = frames.min(written - read);
+        self.read.store(read + frames, Ordering::Release);
+        frames
+    }
+
+    /// For the engine: frames written and not yet read.
+    pub(crate) fn unread(&self) -> u64 {
+        self.written.load(Ordering::Acquire) - self.read.load(Ordering::Relaxed)
+    }
+
     /// For the engine: counts frames played as silence for want of data.
     pub(crate) fn miss(&self, frames: u64) {
         self.missed.fetch_add(frames, Ordering::Relaxed);
