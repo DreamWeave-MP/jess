@@ -1,3 +1,4 @@
+#!/usr/bin/env jess
 --!strict
 
 -- Run from the repository root: jess run --capability filesystem.read --capability process.spawn packJpks.jsl
