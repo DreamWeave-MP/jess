@@ -190,6 +190,14 @@ struct State {
     present: PresentMode,
 }
 
+impl Drop for State {
+    /// The surface goes here, on the window's thread, never on the presenter's: it holds the
+    /// window, which macOS lets go only on the thread that made it.
+    fn drop(&mut self) {
+        close(self);
+    }
+}
+
 impl State {
     fn happened(&mut self, event: WindowEvent) {
         if self.events.len() == EVENTS {
@@ -536,6 +544,14 @@ impl System {
         if MADE.swap(true, Ordering::AcqRel) {
             return Err(WindowError::System(
                 "windows belong to the thread that opened the first one".to_owned(),
+            ));
+        }
+        // macOS has one thread a window system may run on, and winit panics on any other.
+        #[cfg(target_os = "macos")]
+        if std::thread::current().name() != Some("main") {
+            MADE.store(false, Ordering::Release);
+            return Err(WindowError::System(
+                "on macOS, windows open on the process's main thread".to_owned(),
             ));
         }
         let mut builder = EventLoop::builder();
