@@ -1,0 +1,112 @@
+--!strict
+-- A small multitrack arrangement over @jess/audio, bounced offline to a WAV file and read back:
+-- tracks as buses with their own automation, clips placed on a tempo map, a shared room, and a
+-- master the bounce is taken from. The sequencer here is a test's: a DAW would own one.
+local audio = require '@jess/audio'
+local test = require '@jess/test'
+local expect = test.expect
+local suite = test.new()
+
+local Rate = 8000
+
+--- A clip: `count` frames of `shape(frame)`, mono.
+local function clip(count: number, shape: (number) -> number): audio.Pcm
+  local out = buffer.create(count * 4)
+  for frame = 0, count - 1 do
+    buffer.writef32(out, frame * 4, shape(frame))
+  end
+
+  return audio.pcm(out, { format = 'f32', channels = 1, rate = Rate })
+end
+
+--- Where a clip goes: on `track`, from `bar`/`beat`, starting `offset` frames into the source.
+type Placement = { track: string, clip: audio.Pcm, beat: number, offset: number? }
+
+--- An automation point on a track's gain: `value` reached over `beats` beats from `beat`.
+type Point = { track: string, beat: number, beats: number, value: number }
+
+type Song = { tracks: { [string]: audio.Node }, room: audio.Node, context: audio.Context, tempo: audio.Tempo }
+
+local function song(): Song
+  local context = audio.offline { rate = Rate, channels = 1 }
+  local tempo = audio.tempo { rate = Rate, bpm = 120 }
+  local room = context:bus { gain = 0.5 }
+  local tracks = {
+    drums = context:bus(),
+    bass = context:bus { gain = 0.8 },
+    lead = context:bus { gain = 0 },
+  }
+  tracks.lead:send(room, { level = 1 })
+  return { tracks = tracks, room = room, context = context, tempo = tempo }
+end
+
+--- Schedules every clip and automation point, ahead, on the sample clock.
+local function arrange(arrangement: Song, clips: { Placement }, automation: { Point })
+  local context, tempo = arrangement.context, arrangement.tempo
+  context:group(function()
+    for _, placement in clips do
+      context:play(placement.clip, {
+        bus = arrangement.tracks[placement.track],
+        at = tempo:frame(placement.beat),
+        offset = placement.offset,
+      })
+    end
+
+    for _, point in automation do
+      local from = tempo:frame(point.beat)
+      arrangement.tracks[point.track]:ramp('gain', point.value, tempo:frame(point.beat + point.beats) - from, from)
+    end
+  end)
+end
+
+suite.describe('a multitrack arrangement', function()
+  suite.it('bounces three tracks, their automation, and a shared room to a WAV file, frame for frame', function()
+    local arrangement = song()
+    local beat = arrangement.tempo:frame(1)
+    local kick = clip(80, function(frame: number): number return 0.5 * (1 - frame / 80) end)
+    local bass = clip(beat * 4, function(): number return 0.25 end)
+    local lead = clip(beat * 2, function(): number return 0.4 end)
+    local clips: { Placement } = {}
+    for step = 0, 7 do
+      table.insert(clips, { track = 'drums', clip = kick, beat = step })
+    end
+
+    table.insert(clips, { track = 'bass', clip = bass, beat = 0 })
+    -- The second bass note is the same clip trimmed: it starts a beat into the source.
+    table.insert(clips, { track = 'bass', clip = bass, beat = 4, offset = beat })
+    table.insert(clips, { track = 'lead', clip = lead, beat = 4 })
+    arrange(arrangement, clips, {
+      -- The lead fades in over its first beat; the drums duck for the last two.
+      { track = 'lead', beat = 4, beats = 1, value = 1 },
+      { track = 'drums', beat = 6, beats = 0, value = 0.25 },
+    })
+
+    local length = arrangement.tempo:bar(2)
+    local mix = arrangement.context:render(length)
+    local file = audio.writeWav(mix, { channels = 1, rate = Rate, format = 's24' })
+    local wav = audio.readWav(file)
+    expect(wav.frames).toBe(length)
+    expect(wav.rate).toBe(Rate)
+
+    local bounced = audio.offline { rate = Rate, channels = 1 }
+    bounced:play(audio.loadWav(file), { at = 0 })
+    local back = bounced:render(length)
+    local function at(frame: number): number return buffer.readf32(back, frame * 4) end
+
+    -- Bar one: kicks over the bass at 0.8.
+    expect(math.abs(at(0) - (0.5 + 0.2)) < 1e-4).toBe(true)
+    expect(math.abs(at(100) - 0.2) < 1e-4).toBe(true)
+    -- Beat five: the trimmed bass, a kick, and the lead fading in, dry and through the room.
+    local five = arrangement.tempo:frame(4)
+    expect(math.abs(at(five) - (0.5 + 0.2)) < 1e-4).toBe(true)
+    local halfway = five + beat // 2
+    expect(math.abs(at(halfway) - (0.2 + 0.4 * 0.5 * 1.5)) < 1e-3).toBe(true)
+    -- Beat seven: the drums ducked to a quarter.
+    local seven = arrangement.tempo:frame(6)
+    expect(math.abs(at(seven) - (0.5 * 0.25 + 0.2)) < 1e-4).toBe(true)
+    -- The bass's second note ends with its clip, a beat early, where the lead has ended too.
+    expect(math.abs(at(arrangement.tempo:frame(7) + 100)) < 1e-4).toBe(true)
+  end)
+end)
+
+return suite

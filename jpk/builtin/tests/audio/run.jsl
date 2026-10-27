@@ -1,0 +1,654 @@
+--!strict
+-- @jess/audio's cases: WAV in and out, time in frames, and voices on the sample clock, rendered
+-- offline.
+local audio = require '@jess/audio'
+local test = require '@jess/test'
+local expect = test.expect
+local suite = test.new()
+
+--- Interleaved 32-bit floats, the way `render` returns them.
+local function floats(values: { number }): buffer
+  local out = buffer.create(#values * 4)
+  for index, value in values do
+    buffer.writef32(out, (index - 1) * 4, value)
+  end
+
+  return out
+end
+
+local function samples(data: buffer): { number }
+  local out = {}
+  for index = 0, buffer.len(data) // 4 - 1 do
+    table.insert(out, buffer.readf32(data, index * 4))
+  end
+
+  return out
+end
+
+--- A mono WAV of `values`, 16-bit, at 8000 frames per second.
+local function wav16(values: { number }): buffer
+  return audio.writeWav(floats(values), { channels = 1, rate = 8000, format = 's16' })
+end
+
+suite.describe('time', function()
+  suite.it('rounds seconds to the nearest frame, halves up', function()
+    expect(audio.frames(1, 48000)).toBe(48000)
+    expect(audio.frames(0.5 / 48000, 48000)).toBe(1)
+    expect(audio.frames(0.49 / 48000, 48000)).toBe(0)
+    expect(audio.seconds(24000, 48000)).toBe(0.5)
+  end)
+end)
+
+suite.describe('WAV', function()
+  suite.it('writes 16-bit samples that read back as the same values', function()
+    local values = { 0, 0.5, -1, 32767 / 32768, -0.25 }
+    local wav = audio.readWav(wav16(values))
+    expect(wav.format).toBe 's16'
+    expect(wav.channels).toBe(1)
+    expect(wav.rate).toBe(8000)
+    expect(wav.frames).toBe(5)
+    expect(buffer.readi16(wav.data, 2)).toBe(16384)
+    expect(buffer.readi16(wav.data, 4)).toBe(-32768)
+    expect(buffer.readi16(wav.data, 6)).toBe(32767)
+
+    local pcm = audio.loadWav(wav16(values))
+    local context = audio.offline { rate = 8000, channels = 1 }
+    context:play(pcm, { at = 0 })
+    expect(samples(context:render(5))).toEqual(values)
+  end)
+
+  suite.it('clips at full scale and keeps a file it read byte for byte', function()
+    local clipped = audio.readWav(wav16 { 2, -2 })
+    expect(buffer.readi16(clipped.data, 0)).toBe(32767)
+    expect(buffer.readi16(clipped.data, 2)).toBe(-32768)
+
+    local original = wav16 { 0.125, -0.75, 0.001 }
+    local pcm, wav = audio.loadWav(original)
+    local context = audio.offline { rate = wav.rate, channels = 1 }
+    context:play(pcm)
+    local again = audio.writeWav(context:render(wav.frames), { channels = 1, rate = wav.rate, format = 's16' })
+    expect(buffer.tostring(again)).toBe(buffer.tostring(original))
+  end)
+
+  suite.it('writes 24-bit and float samples, and reads them as what they are', function()
+    local values = { 0.5, -0.5, 8388607 / 8388608, -1 }
+    local deep = audio.readWav(audio.writeWav(floats(values), { channels = 2, rate = 44100, format = 's24' }))
+    expect(deep.format).toBe 's24'
+    expect(deep.frames).toBe(2)
+    local pcm = audio.pcm(deep.data, { format = 's24', channels = 2, rate = 44100 })
+    expect(pcm:channels()).toBe(2)
+    expect(pcm:frames()).toBe(2)
+
+    local float = audio.readWav(audio.writeWav(floats { 0.1, 2.5 }, { channels = 1, rate = 48000 }))
+    expect(float.format).toBe 'f32'
+    expect(samples(float.data)).toEqual(samples(floats { 0.1, 2.5 }))
+  end)
+
+  suite.it("reads a smpl chunk's first loop, its end exclusive", function()
+    local plain = wav16 { 0, 0, 0, 0 }
+    local smpl = buffer.create(8 + 60)
+    buffer.writestring(smpl, 0, 'smpl')
+    buffer.writeu32(smpl, 4, 60)
+    buffer.writeu32(smpl, 8 + 28, 1)
+    buffer.writeu32(smpl, 8 + 44, 1)
+    buffer.writeu32(smpl, 8 + 48, 2)
+    local file = buffer.create(buffer.len(plain) + buffer.len(smpl))
+    buffer.copy(file, 0, plain)
+    buffer.copy(file, buffer.len(plain), smpl)
+    buffer.writeu32(file, 4, buffer.len(file) - 8)
+
+    local wav = audio.readWav(file)
+    expect(wav.loopStart).toBe(1)
+    expect(wav.loopEnd).toBe(3)
+  end)
+
+  suite.it('refuses what is not a WAV it can read', function()
+    expect(function() audio.readWav 'RIFX....WAVE' end).toThrow 'no RIFF WAVE header'
+    expect(function() audio.writeWav(floats { 0 }, { channels = 1, rate = 8000, format = ('u8' :: unknown) :: audio.WavFormat }) end).toThrow 'writes s16, s24, or f32'
+    expect(function() audio.writeWav(floats { 0, 0, 0 }, { channels = 2, rate = 8000 }) end).toThrow "aren't whole frames"
+  end)
+end)
+
+suite.describe('voices', function()
+  suite.it('stamped for the same frame start on the same sample, whatever the render blocks', function()
+    local click = audio.pcm(floats { 1 }, { format = 'f32', channels = 1, rate = 48000 })
+    local context = audio.offline { channels = 1 }
+    context:play(click, { at = 300 })
+    context:play(click, { at = 300 })
+    context:play(click, { at = 301, gain = 0.5 })
+    local out = samples(context:render(299))
+    for _, sample in samples(context:render(4)) do
+      table.insert(out, sample)
+    end
+
+    -- Frame n is out[n + 1].
+    expect(out[301]).toBe(2)
+    expect(out[302]).toBe(0.5)
+    expect(out[303]).toBe(0)
+    expect(context:now()).toBe(303)
+  end)
+
+  suite.it('stop and change on their frame, and an ended voice names nothing', function()
+    local tone = audio.pcm(floats { 1, 1, 1, 1, 1, 1, 1, 1 }, { format = 'f32', channels = 1, rate = 48000 })
+    local context = audio.offline { channels = 1 }
+    local voice = context:play(tone, { at = 1 })
+    expect(voice:state()).toBe 'scheduled'
+    expect(voice:set('gain', 0.25, 3)).toBe(true)
+    expect(voice:stop(5)).toBe(true)
+    expect(samples(context:render(6))).toEqual { 0, 1, 1, 0.25, 0.25, 0 }
+    expect(voice:state()).toBe 'ended'
+    expect(voice:set('gain', 1)).toBe(false)
+    expect(context:stats().allocated).toBe(0)
+  end)
+
+  suite.it('loop without a gap between their region and the intro', function()
+    local source = audio.pcm(floats { 9, 1, 2, 3 }, { format = 'f32', channels = 1, rate = 48000 })
+    local context = audio.offline { channels = 1 }
+    context:play(source, { loop = true, loopStart = 1 })
+    expect(samples(context:render(8))).toEqual { 9, 1, 2, 3, 1, 2, 3, 1 }
+  end)
+
+  suite.it('refuse options and values the engine would not play', function()
+    local click = audio.pcm(floats { 1 }, { format = 'f32', channels = 1, rate = 48000 })
+    local context = audio.offline { channels = 1, voices = 1 }
+    expect(function() context:play(click, ({ volume = 1 } :: unknown) :: audio.PlayOptions) end).toThrow 'volume'
+    expect(function() context:play(click, { loopStart = 0 }) end).toThrow 'need loop = true'
+    expect(function() context:play(click, { rate = 0 }) end).toThrow 'rate must be above 0'
+    expect(function() context:play(click, { at = 1.5 }) end).toThrow 'whole number of frames'
+    context:play(click, { at = 10 })
+    expect(function() context:play(click) end).toThrow 'all 1 voices'
+    expect(function() audio.pcm(buffer.create(3), { format = 's16', channels = 1, rate = 8000 }) end).toThrow "aren't whole frames"
+    expect(function() audio.offline { channels = 9 } end).toThrow 'channel count is 1 to 8'
+  end)
+
+  suite.it('refuse a misspelled or mistyped option however deep it sits', function()
+    local click = audio.pcm(floats { 1 }, { format = 'f32', channels = 1, rate = 48000 })
+    local context = audio.offline { channels = 1 }
+    local room = context:bus()
+    local here = vector.create(0, 0, 1)
+    expect(function() context:play(click, ({ gain = 'loud' } :: unknown) :: audio.PlayOptions) end).toThrow 'gain'
+    expect(function() context:play(click, ({ [1] = 2 } :: unknown) :: audio.PlayOptions) end).toThrow 'option 1'
+    expect(function() context:play(click, ({ place = 5 } :: unknown) :: audio.PlayOptions) end).toThrow 'takes a table'
+    expect(function() context:listener(({ pos = here } :: unknown) :: audio.Listener) end).toThrow 'pos'
+
+    expect(function()
+      context:play(click, ({ place = { posiiton = here } } :: unknown) :: audio.PlayOptions)
+    end).toThrow 'posiiton'
+
+    expect(function()
+      context:play(click, ({ place = { position = here, cone = { wide = 1 } } } :: unknown) :: audio.PlayOptions)
+    end).toThrow 'wide'
+
+    expect(function()
+      context:play(click, ({ place = { distance = 'far' } } :: unknown) :: audio.PlayOptions)
+    end).toThrow 'none, inverse, linear, or exponential'
+
+    expect(function()
+      context:play(click, ({ sends = { { level = 0.5 } } } :: unknown) :: audio.PlayOptions)
+    end).toThrow 'each send names its bus'
+
+    expect(function()
+      context:play(click, ({ sends = { { bus = room, amount = 1 } } } :: unknown) :: audio.PlayOptions)
+    end).toThrow 'amount'
+
+    expect(context:stats().allocated).toBe(0)
+  end)
+end)
+
+--- A mono source of `values` at 48000 frames per second.
+local function source(values: { number }): audio.Pcm
+  return audio.pcm(floats(values), { format = 'f32', channels = 1, rate = 48000 })
+end
+
+suite.describe('buses', function()
+  suite.it('mix music, effects, and dialogue apart, each at its own gain and mute', function()
+    local tone = source { 1, 1, 1, 1 }
+    local context = audio.offline { channels = 1 }
+    local music = context:bus { gain = 0.5 }
+    local effects = context:bus { gain = 0.25 }
+    local dialogue = context:bus()
+    context:play(tone, { bus = music, at = 0 })
+    context:play(tone, { bus = effects, at = 0 })
+    context:play(tone, { bus = dialogue, at = 0 })
+    expect(effects:set('mute', 1, 2)).toBe(true)
+    expect(context:master():set('gain', 2, 3)).toBe(true)
+    expect(samples(context:render(4))).toEqual { 1.75, 1.75, 1.5, 3 }
+  end)
+
+  suite.it('share one effect bus between routes, which mixes what they send once', function()
+    local click = source { 1 }
+    local context = audio.offline { channels = 1 }
+    local music, effects = context:bus(), context:bus()
+    local room = context:bus { gain = 0.5 }
+    context:play(click, { bus = music, sends = { { bus = room, level = 0.5 } } })
+    context:play(click, { bus = effects, sends = { { bus = room } } })
+    expect(samples(context:render(1))).toEqual { 2.75 }
+    expect(room:meter().peak).toBe(0.75)
+
+    music:send(room, { level = 1, tap = 'pre' })
+    music:set('mute', 1)
+    context:play(click, { bus = music })
+    expect(samples(context:render(1))).toEqual { 0.5 }
+    expect(room:meter()).toEqual { peak = 0.5, rms = 0.5 }
+  end)
+
+  suite.it('run processors in a chain, settable by name on a frame', function()
+    local tone = source { 1, 1, 1, 1 }
+    local context = audio.offline { channels = 1 }
+    local group = context:bus()
+    local trim = group:insert('gain', { gain = 0.5 })
+    expect(trim:kind()).toBe 'gain'
+    expect(audio.processors()).toContain 'gain'
+    context:play(tone, { bus = group, at = 0 })
+    expect(trim:set('gain', 2, 2)).toBe(true)
+    expect(trim:remove(3)).toBe(true)
+    expect(samples(context:render(4))).toEqual { 0.5, 0.5, 2, 1 }
+    expect(trim:live()).toBe(false)
+    expect(group:latency()).toBe(0)
+  end)
+
+  suite.it('refuse loops, removals while in use, and processors that are not there', function()
+    local context = audio.offline { channels = 1 }
+    local outer = context:bus()
+    local inner = context:bus { parent = outer }
+    expect(function() outer:route(inner) end).toThrow 'feed a node back into itself'
+    expect(function() context:master():remove() end).toThrow 'master bus'
+    expect(function() outer:remove() end).toThrow 'still has 0 voices and 1 connections'
+    expect(function() inner:insert 'flanger' end).toThrow 'no "flanger" processor'
+    expect(function() inner:insert('gain', { volume = 1 }) end).toThrow 'no parameter "volume"'
+    expect(function() inner:insert('gain', { gain = 100 }) end).toThrow 'inside its range'
+    expect(inner:remove()).toBe(true)
+    expect(inner:live()).toBe(false)
+    local other = audio.offline { channels = 1 }
+    expect(function() other:play(source { 1 }, { bus = outer }) end).toThrow 'another context'
+  end)
+end)
+
+--- `count` frames of `value`.
+local function constant(value: number, count: number): audio.Pcm
+  local values = {}
+  for _ = 1, count do
+    table.insert(values, value)
+  end
+
+  return source(values)
+end
+
+suite.describe('automation', function()
+  suite.it('ramps a voice, a bus, and a processor from their frames', function()
+    local context = audio.offline { channels = 1 }
+    local voice = context:play(constant(1, 8), { at = 0 })
+    expect(voice:ramp('gain', 0, 4, 2)).toBe(true)
+    expect(samples(context:render(8))).toEqual { 1, 1, 1, 0.75, 0.5, 0.25, 0, 0 }
+
+    local group = context:bus()
+    context:play(constant(1, 8), { bus = group })
+    expect(group:ramp('gain', 8, 3, nil, 'exponential')).toBe(true)
+    local out = samples(context:render(4))
+    for index, expected in { 1, 2, 4, 8 } do
+      expect(math.abs(out[index] - expected) < 1e-5).toBe(true)
+    end
+
+    expect(function() group:ramp('volume', 1, 4) end).toThrow 'no parameter "volume"'
+    expect(function() group:ramp('gain', 0, 4, nil, 'exponential') end).toThrow 'above 0 for an exponential ramp'
+    expect(function() voice:ramp('gain', 1, 4, nil, ('cubic' :: unknown) :: audio.Curve) end).toThrow 'linear or exponential'
+  end)
+
+  suite.it('fades a voice in and out, and ends it when the fade is done', function()
+    local context = audio.offline { channels = 1 }
+    local voice = context:play(constant(1, 16), { at = 0, fade = 4 })
+    voice:stop(6, 4)
+    expect(samples(context:render(12))).toEqual { 0, 0.25, 0.5, 0.75, 1, 1, 1, 0.75, 0.5, 0.25, 0, 0 }
+    expect(voice:state()).toBe 'ended'
+  end)
+
+  suite.it('loops a voice and lets go of the loop on a frame, into its outro', function()
+    local context = audio.offline { channels = 1 }
+    local voice = context:play(source { 10, 1, 2, 30, 31 }, { at = 0 })
+    expect(voice:loop(1, 3, 0)).toBe(true)
+    expect(voice:release(6)).toBe(true)
+    expect(samples(context:render(10))).toEqual { 10, 1, 2, 1, 2, 1, 2, 30, 31, 0 }
+    expect(function() context:play(source { 1 }):loop(0, 5) end).toThrow 'loop region'
+  end)
+
+  suite.it('sends a group together, and still sends what came before an error in it', function()
+    local context = audio.offline { channels = 1, commands = 8 }
+    local click = source { 1 }
+    context:group(function()
+      context:play(click)
+      context:play(click)
+    end)
+    expect(samples(context:render(1))).toEqual { 2 }
+
+    expect(function()
+      context:group(function()
+        context:play(click)
+        error 'the director changed its mind'
+      end)
+    end).toThrow 'changed its mind'
+    expect(samples(context:render(1))).toEqual { 1 }
+    expect(function() context:group(function() context:group(function() end) end) end).toThrow "groups don't nest"
+    expect(context:room()).toBe(8)
+  end)
+end)
+
+--- `count` frames of a sine at `frequency`, at 48000 frames per second.
+local function sine(frequency: number, count: number, level: number?): audio.Pcm
+  local values = {}
+  for frame = 0, count - 1 do
+    table.insert(values, (level or 1) * math.sin(2 * math.pi * frequency * frame / 48000))
+  end
+
+  return source(values)
+end
+
+suite.describe('effects', function()
+  suite.it('has every processor kind by name', function()
+    expect(audio.processors()).toEqual {
+      'mixer', 'gain', 'pan', 'filter', 'delay', 'compressor', 'limiter', 'reverb', 'drive', 'crossfade', 'oscillator', 'envelope',
+    }
+  end)
+
+  suite.it('runs many voices through one shared room', function()
+    local context = audio.offline { channels = 2 }
+    local room = context:bus()
+    room:insert('reverb', { room = 0.8, wet = 0.5 })
+    local click = source { 1 }
+    for index = 1, 24 do
+      context:play(click, { at = index * 100, pan = (index % 3) - 1, sends = { { bus = room, level = 0.3 } } })
+    end
+
+    context:render(48000)
+    local tail = room:meter()
+    expect(tail.rms > 1e-4).toBe(true)
+    -- Long after the last click the room is still ringing.
+    context:render(4800)
+    expect(room:meter().peak > 1e-5).toBe(true)
+  end)
+
+  suite.it('ducks the music while the dialogue speaks', function()
+    local context = audio.offline { channels = 1 }
+    local music, dialogue = context:bus(), context:bus()
+    local ducker = music:insert('compressor', { threshold = -30, ratio = 20, knee = 0, attack = 0.001, release = 0.05 })
+    expect(ducker:listen(dialogue)).toBe(true)
+    context:play(sine(220, 96000, 0.2), { bus = music, at = 0 })
+    context:play(sine(440, 24000, 0.5), { bus = dialogue, at = 24000 })
+    context:render(24000)
+    local open = music:meter().rms
+    context:render(24000)
+    local ducked = music:meter().rms
+    -- A tenth of a second to recover, then the music is back where it was.
+    context:render(4800)
+    music:meter()
+    context:render(43200)
+    expect(ducked < open / 4).toBe(true)
+    expect(math.abs(music:meter().rms - open) < open * 0.05).toBe(true)
+    expect(function() ducker:listen(context:master()) end).toThrow 'back into itself'
+    expect(ducker:listen(nil)).toBe(true)
+  end)
+
+  suite.it('holds the master under its ceiling and filters what it is asked to', function()
+    local context = audio.offline { channels = 1 }
+    local limiter = context:master():insert('limiter', { ceiling = -6, lookahead = 0.002 })
+    expect(limiter:kind()).toBe 'limiter'
+    expect(context:master():latency()).toBe(96)
+    for _ = 1, 8 do
+      context:play(sine(300, 4800, 0.9), { at = 0 })
+    end
+
+    local out = samples(context:render(9600))
+    local ceiling = 10 ^ (-6 / 20)
+    local loudest = 0
+    for _, sample in out do
+      loudest = math.max(loudest, math.abs(sample))
+    end
+
+    expect(loudest <= ceiling + 1e-5).toBe(true)
+
+    local dark = audio.offline { channels = 1 }
+    dark:master():insert('filter', { shape = 'lowpass', frequency = 500 })
+    dark:play(sine(8000, 4800), { at = 0 })
+    dark:render(2400)
+    expect(dark:master():meter().peak < 0.05).toBe(true)
+    expect(function() dark:master():insert('filter', { shape = 'bell' }) end).toThrow 'one of lowpass'
+    expect(function() dark:master():insert('delay', { longest = 60 }) end).toThrow 'at most 10'
+  end)
+end)
+
+suite.describe('the graph', function()
+  suite.it('sends voices through processors of their own into one bus', function()
+    local tone = constant(1, 8)
+    local context = audio.offline { channels = 1 }
+    local effects = context:bus { gain = 0.5 }
+    for index, level in { 1, 2, 4 } do
+      local trim = context:node('gain', { gain = level })
+      context:patch(function(graph) graph:connect(trim, effects) end)
+      context:play(tone, { bus = trim, at = index - 1 })
+    end
+
+    expect(samples(context:render(3))).toEqual { 0.5, 1.5, 3.5 }
+    expect(context:stats().revisions).toBe(7)
+  end)
+
+  suite.it('makes a patch whole on its frame, or not at all', function()
+    local tone = constant(1, 16)
+    local context = audio.offline { channels = 1 }
+    local half = context:node('gain', { gain = 0.5 })
+    local group = context:bus()
+    context:patch(function(graph) graph:connect(half, context:master()) end)
+    context:play(tone, { bus = group, at = 0 })
+    expect(function()
+      context:patch(function(graph)
+        graph:disconnect(group, context:master())
+        graph:connect(group, half, { to = 'volume' })
+      end)
+    end).toThrow 'no port or parameter "volume"'
+
+    expect(function()
+      context:patch(function(graph)
+        graph:disconnect(group, context:master())
+        error('changed my mind', 0)
+      end)
+    end).toThrow 'changed my mind'
+
+    context:patch(function(graph)
+      graph:disconnect(group, context:master())
+      graph:connect(group, half)
+    end, 2)
+    expect(samples(context:render(4))).toEqual { 1, 1, 0.5, 0.5 }
+
+    expect(function()
+      context:patch(function(graph) graph:connect(half, group) end)
+    end).toThrow 'feed a node back into itself'
+  end)
+
+  suite.it('moves a voice between nodes and inside a patch, without revising the graph for it', function()
+    local tone = constant(1, 16)
+    local context = audio.offline { channels = 1 }
+    local quiet = context:bus { gain = 0.25 }
+    local loud = context:bus { gain = 2 }
+    local voice = context:play(tone, { at = 0 })
+    expect(voice:route(quiet, 2)).toBe(true)
+    expect(voice:send(loud, 0.5, 4)).toBe(true)
+    expect(voice:unsend(quiet, 6)).toBe(true)
+    expect(samples(context:render(8))).toEqual { 1, 1, 0.25, 0.25, 1.25, 1.25, 1, 1 }
+    expect(context:stats().revisions).toBe(2)
+    context:patch(function(graph)
+      graph:disconnect(voice, loud)
+      graph:connect(voice, quiet, { level = 4 })
+    end, 10)
+    expect(samples(context:render(4))).toEqual { 1, 1, 1, 1 }
+  end)
+
+  suite.it('closes a loop only through a feedback delay', function()
+    local context = audio.offline { channels = 1 }
+    local echo = context:bus()
+    local half = context:node('gain', { gain = 0.5 })
+    expect(function()
+      context:patch(function(graph)
+        graph:connect(echo, half)
+        graph:connect(half, echo)
+      end)
+    end).toThrow 'needs a feedback delay'
+
+    context:patch(function(graph)
+      graph:connect(echo, half)
+      graph:connect(half, echo, { feedback = 128 })
+    end)
+    context:play(constant(1, 1), { bus = echo, at = 0 })
+    local out = samples(context:render(400))
+    expect({ out[1], out[129], out[257], out[385] }).toEqual { 1, 0.5, 0.25, 0.125 }
+  end)
+
+  suite.it('modulates a parameter from another node, sample by sample, with no script in the loop', function()
+    local context = audio.offline { channels = 1 }
+    local amplifier = context:node('gain', { gain = 1 })
+    local lfo = context:node('oscillator', { frequency = 12000, channels = 1 })
+    context:patch(function(graph)
+      graph:connect(amplifier, context:master())
+      graph:connect(lfo, amplifier, { to = 'gain', level = 0.5 })
+    end)
+    context:play(constant(1, 8), { bus = amplifier, at = 0 })
+    local out = samples(context:render(4))
+    for index, expected in { 1, 1.5, 1, 0.5 } do
+      expect(math.abs(out[index] - expected) < 1e-5).toBe(true)
+    end
+
+    local gate = context:node('envelope', { attack = 0, decay = 0, sustain = 0.5, release = 0 })
+    context:patch(function(graph) graph:connect(gate, amplifier, { to = 'gain', level = 2 }) end)
+    expect(gate:set('gate', 1, 6)).toBe(true)
+    out = samples(context:render(4))
+    -- Frame 6 opens the gate: the envelope jumps to 1, and to its sustain the frame after.
+    expect(math.abs(out[1] - 1) < 1e-5 and math.abs(out[3] - 3) < 1e-5 and math.abs(out[4] - 1.5) < 1e-5).toBe(true)
+  end)
+
+  suite.it('describes a node: its kind and its parameters', function()
+    local context = audio.offline()
+    local cutoff = context:node('filter', { frequency = 500 })
+    expect(cutoff:kind()).toBe('filter')
+    local frequency = cutoff:params()[1]
+    expect(frequency.name).toBe('frequency')
+    expect(frequency.unit).toBe('Hz')
+    expect(frequency.rate).toBe('control')
+    expect(context:master():params()[1].rate).toBe('audio')
+    expect(context:master():meter().peak).toBe(0)
+    expect(function() cutoff:meter() end).toThrow 'a bus is metered'
+  end)
+end)
+
+suite.describe('transport', function()
+  suite.it('pauses, plays on, and seeks a voice on its frames, and says where it is', function()
+    local context = audio.offline { channels = 1 }
+    local values = {}
+    for frame = 0, 63 do
+      table.insert(values, frame)
+    end
+
+    local voice = context:voice(source(values), { at = 0 })
+    expect(voice:state()).toBe('paused')
+    expect(voice:position()).toBe(0)
+    expect(voice:play(2)).toBe(true)
+    expect(voice:pause(4)).toBe(true)
+    expect(voice:play(6)).toBe(true)
+    expect(voice:seek(30, 7)).toBe(true)
+    expect(samples(context:render(9))).toEqual { 0, 0, 0, 1, 0, 0, 2, 30, 31 }
+    expect(voice:position()).toBe(32)
+    expect(voice:seekLead()).toBe(nil)
+    expect(function() voice:seek(100) end).toThrow 'a frame inside the source'
+  end)
+
+  suite.it('refuses to seek a stream a script writes', function()
+    local context = audio.offline { channels = 1 }
+    local stream = audio.stream { channels = 1, rate = 48000, seconds = 0.1 }
+    local voice = context:play(stream)
+    expect(voice:seekLead()).toBe(nil)
+    expect(function() voice:seek(10) end).toThrow "can't seek"
+    expect(stream:stats().late).toBe(0)
+  end)
+end)
+
+suite.describe('a voice budget', function()
+  suite.it('mixes the voices that matter most and keeps the rest in time', function()
+    local context = audio.offline { channels = 1, physical = 2 }
+    local tone = constant(1, 256)
+    context:play(tone, { gain = 0.1, priority = 5, at = 0 })
+    context:play(tone, { gain = 0.9, at = 0 })
+    context:play(tone, { gain = 0.5, at = 0, culled = 'stop' })
+    context:play(tone, { gain = 0.2, at = 0 })
+    expect(samples(context:render(1))).toEqual { 1 }
+    local stats = context:stats()
+    expect(stats.culled).toBe(2)
+    expect(stats.stolen).toBe(1)
+    expect(stats.allocated).toBe(3)
+    expect(function() audio.offline { voices = 4, physical = 8 } end).toThrow 'physical voice count'
+    expect(function() context:play(tone, { culled = ('drop' :: unknown) :: 'stop' }) end).toThrow 'advance, pause, or stop'
+  end)
+end)
+
+suite.describe('procedural audio', function()
+  suite.it('plays what Luau generates a chunk ahead, the same as if it were all there at once', function()
+    local rate = 16000
+    local function sample(frame: number): number return 0.25 * math.sin(2 * math.pi * 220 * frame / rate) end
+
+    local length = 8000
+    local whole = buffer.create(length * 4)
+    for frame = 0, length - 1 do
+      buffer.writef32(whole, frame * 4, sample(frame))
+    end
+
+    local reference = audio.offline { channels = 1, rate = 48000 }
+    reference:play(audio.pcm(whole, { format = 'f32', channels = 1, rate = rate }), { at = 0 })
+    local expected = buffer.tostring(reference:render(30000))
+
+    local context = audio.offline { channels = 1, rate = 48000 }
+    local stream = audio.stream { channels = 1, rate = rate, seconds = 0.05 }
+    context:play(stream, { at = 0 })
+    expect(function() context:play(stream) end).toThrow 'plays once'
+    local generated, chunks = 0, {}
+    while #chunks < 30 do
+      -- The generator fills whatever room there is, then the engine renders a block of time.
+      local room = math.min(stream:room(), length - generated)
+      if room > 0 then
+        local chunk = buffer.create(room * 4)
+        for index = 0, room - 1 do
+          buffer.writef32(chunk, index * 4, sample(generated + index))
+        end
+
+        generated += stream:write(chunk)
+      end
+
+      if generated == length then stream:finish() end
+
+      table.insert(chunks, buffer.tostring(context:render(1000)))
+    end
+
+    expect(table.concat(chunks) == expected).toBe(true)
+    expect(stream:stats().missed).toBe(0)
+  end)
+
+  suite.it('plays silence when the generator falls behind, and finds itself from a handle', function()
+    local context = audio.offline { channels = 1 }
+    local stream = audio.stream { channels = 1, rate = 48000, seconds = 0.01 }
+    local voice = context:play(stream)
+    expect(stream:write(buffer.create(4 * 100), 60)).toBe(60)
+    expect(stream:write(buffer.create(4 * 100), 40)).toBe(40)
+    context:render(200)
+    expect(stream:stats().missed >= 100).toBe(true)
+    -- Full, it has room again only as the engine plays: offline, only as it renders.
+    expect(stream:write(buffer.create(4 * 1000))).toBe(480)
+    expect(stream:wait(10, 0)).toBe(false)
+    context:render(10)
+    expect(stream:wait(10, 0)).toBe(true)
+
+    local again = audio.stream(stream:handle())
+    again:finish()
+    expect(stream:stats().finished).toBe(true)
+    context:render(600)
+    expect(voice:state()).toBe 'ended'
+    expect(function() stream:write(buffer.create(3)) end).toThrow 'whole number'
+    expect(function() stream:write(buffer.create(8), 3) end).toThrow 'more than the buffer holds'
+    expect(function() context:play(audio.stream { channels = 1 }, { loop = true }) end).toThrow 'no loop for a stream'
+  end)
+end)
+
+return suite

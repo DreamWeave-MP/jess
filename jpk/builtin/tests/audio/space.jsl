@@ -1,0 +1,119 @@
+--!strict
+-- A listener walking through a scene, rendered offline: voices that fade with distance, pan to
+-- where they are, and go dull behind a wall the scene's own code finds. The occlusion here is a
+-- test's: a game would ask its physics.
+local audio = require '@jess/audio'
+local test = require '@jess/test'
+local expect = test.expect
+local suite = test.new()
+
+local Rate = 16000
+
+local function tone(frequency: number, seconds: number): audio.Pcm
+  local count = math.floor(seconds * Rate)
+  local out = buffer.create(count * 4)
+  for frame = 0, count - 1 do
+    buffer.writef32(out, frame * 4, 0.5 * math.sin(2 * math.pi * frequency * frame / Rate))
+  end
+
+  return audio.pcm(out, { format = 'f32', channels = 1, rate = Rate })
+end
+
+--- The RMS of each side of an interleaved stereo render.
+local function sides(data: buffer): (number, number)
+  local left, right, frames = 0, 0, buffer.len(data) // 8
+  for frame = 0, frames - 1 do
+    left += buffer.readf32(data, frame * 8) ^ 2
+    right += buffer.readf32(data, frame * 8 + 4) ^ 2
+  end
+
+  return math.sqrt(left / frames), math.sqrt(right / frames)
+end
+
+--- Whether the straight line from the listener to a voice crosses the wall: the plane z = -5,
+--- from x = -3 to x = 3.
+local function blocked(from: vector, to: vector): boolean
+  if (from.z + 5) * (to.z + 5) >= 0 then return false end
+
+  local through = (-5 - from.z) / (to.z - from.z)
+  local crossing = from.x + (to.x - from.x) * through
+  return math.abs(crossing) <= 3
+end
+
+suite.describe('a scene in space', function()
+  suite.it('fades a voice with distance and pans it to its side', function()
+    local context = audio.offline { rate = Rate }
+    local hum = context:bus()
+    context:play(tone(120, 4), { bus = hum, loop = true, place = { position = vector.create(-5, 0, -2) } })
+
+    -- The listener walks from x = -10 to 10 along z = 0, ten steps a second.
+    local near, far, left, right = 0, math.huge, 0, 0
+    for step = 0, 39 do
+      local along = -10 + step / 2
+      context:listener({ position = vector.create(along, 0, 0) }, context:now())
+      local block = context:render(Rate // 10)
+      local level = hum:meter().rms
+      if math.abs(along + 5) < 0.6 then near = math.max(near, level) end
+
+      if math.abs(along - 9.5) < 0.6 then far = math.min(far, level) end
+
+      local heardLeft, heardRight = sides(block)
+      if along < -8 then
+        -- The hum is ahead and to the right.
+        left, right = left + heardLeft, right + heardRight
+      end
+    end
+
+    expect(near > far * 3).toBe(true)
+    expect(right > left).toBe(true)
+  end)
+
+  suite.it('turns a directional voice down for a listener behind it', function()
+    local context = audio.offline { rate = Rate }
+    local speaker = context:bus()
+    local place: audio.Place = { position = vector.create(0, 0, -4), direction = vector.create(0, 0, -1), cone = { inner = 60, outer = 120, outside = 0.1 } }
+    local voice = context:play(tone(300, 1), { bus = speaker, loop = true, place = place })
+    context:render(Rate // 10)
+    local behind = speaker:meter().rms
+    voice:place { direction = vector.create(0, 0, 1) }
+    context:render(Rate // 10)
+    speaker:meter()
+    context:render(Rate // 10)
+    local facing = speaker:meter().rms
+    expect(math.abs(behind / facing - 0.1) < 0.01).toBe(true)
+  end)
+
+  suite.it("darkens and quietens a voice behind a wall, as the scene's code decides", function()
+    local context = audio.offline { rate = Rate }
+    local water = context:bus()
+    local position = vector.create(0, 0, -8)
+    local voice = context:play(tone(2000, 1), { bus = water, loop = true, place = { position = position, distance = 'none' } })
+    local function walk(along: number)
+      local listener = vector.create(along, 0, 0)
+      context:listener({ position = listener }, context:now())
+      local hidden = blocked(listener, position)
+      voice:place({ gain = if hidden then 0.3 else 1, lowpass = if hidden then 500 else 20000 }, context:now())
+      context:render(Rate // 10)
+      water:meter()
+      context:render(Rate // 10)
+      return water:meter().rms
+    end
+
+    local open = walk(-12)
+    local walled = walk(0)
+    expect(walled < open * 0.1).toBe(true)
+    expect(math.abs(walk(12) - open) < open * 0.02).toBe(true)
+  end)
+
+  suite.it('refuses places it could not hear', function()
+    local context = audio.offline { rate = Rate }
+    local pcm = tone(100, 0.1)
+    expect(function() context:play(pcm, { place = { distance = ('square' :: unknown) :: 'none' } }) end).toThrow 'none, inverse, linear, or exponential'
+    expect(function() context:play(pcm, { place = { reference = 0 } }) end).toThrow 'reference'
+    expect(function() context:play(pcm, { place = { cone = { inner = 90, outer = 45 } } }) end).toThrow 'cone'
+    expect(context:play(pcm):place { position = vector.create(1, 0, 0) }).toBe(false)
+    expect(function() audio.offline { handedness = ('up' :: unknown) :: 'left' } end).toThrow 'right or left'
+  end)
+end)
+
+return suite

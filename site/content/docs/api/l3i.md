@@ -6,7 +6,7 @@ extra:
   kind: api
 ---
 
-{{ api_signature(value="require('@dream/bytes' | '@dream/data' | '@dream/dns' | '@dream/fs' | '@dream/intern' | '@dream/intl' | '@dream/luau' | '@dream/process' | '@dream/tcp' | '@dream/tls' | '@dream/udp')") }}
+{{ api_signature(value="require('@dream/audio' | '@dream/bytes' | '@dream/data' | '@dream/dns' | '@dream/fs' | '@dream/intern' | '@dream/intl' | '@dream/luau' | '@dream/process' | '@dream/tcp' | '@dream/tls' | '@dream/udp')") }}
 
 Jess runs Luau on [L3i](https://DreamWeave-MP.github.io/l3i/), and L3i brings the modules that touch the operating system: the `@dream/*` names. They are the whole native floor under a script. Everything jess adds on top is Luau, and everything below them is L3i's.
 
@@ -24,6 +24,7 @@ error: dream.process.env: needs the 'process.environment' capability, which this
 
 | Module | What it is | Capability |
 | --- | --- | --- |
+| [`@dream/audio`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-audio) | Decoders for MP3, Ogg Vorbis and Ogg Opus into float frames; what [`@jess/audio`](@/docs/api/audio.md) loads and streams compressed files with | none |
 | [`@dream/bytes`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-bytes) | Buffer search and slicing, digests, Deflate, Zstandard and LZMA, text encodings, varints, and [regular expressions](@/docs/api/regex.md) as `bytes.regex` | none |
 | [`@dream/data`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-data) | Whole-buffer arithmetic: sums, extrema, sorting, gathering, scattering, and partitioning over typed buffers | none |
 | [`@dream/dns`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-dns) | Name resolution | `network.dns.resolve` |

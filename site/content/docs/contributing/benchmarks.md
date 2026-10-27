@@ -35,6 +35,9 @@ jess run --capability filesystem.read --capability filesystem.write tools/bench/
 | `math` | `math.*` in a tight loop. |
 | `buffer` | `buffer.*` reads and writes. |
 | `vector` | Native vectors packed into a buffer and read back. |
+| `audio` | A crowded scene rendered offline through `jess.audio`, a tick at a time: 600 positioned loops for 96 mixed voices, six one-shots a tick, a moving listener, a ducked music bus, a reverb send, and a limiter. Measures the script, the binding, and the engine together, and fails if anything came out late or not finite, or nothing was culled. |
+| `audio-churn` | Voice churn: 64 short one-shots started a tick on their own frames, a quarter of the last tick's stopped early with a fade, 384 on one frame every half second, every fourth pitched and half sent to a reverb, into a context mixing 128 of the 4096 it holds. Nothing is routed, so it's the cost of starting, mixing, and ending voices. Fails if anything came out late or not finite, nothing was stolen, or slots weren't given back. |
+| `audio-render` | The same scene as `audio-churn`, timing only the renders: the engine apart from the script and the binding. |
 
 `safeenv` is the one that can't pass by accident. Luau calls builtins on its fast path only in an environment marked safe; when jess once stopped marking it, every workload got an order of magnitude slower and nothing failed. The ratio doesn't depend on the machine. The others' times do, so a canary result is only ever compared with another from the same machine.
 

@@ -1,0 +1,122 @@
+--!strict
+-- A crowded scene through jess.audio, offline: hundreds of positioned machines on loop, far more
+-- than the context mixes, bursts of short one-shots every game tick, a moving listener, music held
+-- by priority under a ducker, and a shared room. The time is the whole stack's: the Luau a game
+-- would run each tick, the binding, and the engine mixing, culling, spatializing, and
+-- reverberating. It checks what came out before it posts a time.
+local Rate = 48000
+local Tick = Rate // 60
+local Machines = 600
+
+local function tone(frequency: number, seconds: number, level: number): AudioPcm
+  local count = math.floor(seconds * Rate)
+  local data = buffer.create(count * 4)
+  for frame = 0, count - 1 do
+    buffer.writef32(data, frame * 4, level * math.sin(2 * math.pi * frequency * frame / Rate))
+  end
+
+  return jess.audio.pcm(data, { format = 'f32', channels = 1, rate = Rate })
+end
+
+local function burst(seconds: number, seed: number): AudioPcm
+  local count = math.floor(seconds * Rate)
+  local data = buffer.create(count * 4)
+  local state = seed
+  for frame = 0, count - 1 do
+    -- A cheap deterministic noise, falling away: a shot or an impact without a sample file.
+    state = (state * 1103515245 + 12345) % 2147483648
+    local noise = state / 1073741824 - 1
+    buffer.writef32(data, frame * 4, 0.4 * noise * (1 - frame / count))
+  end
+
+  return jess.audio.pcm(data, { format = 'f32', channels = 1, rate = Rate })
+end
+
+--- A point on the ground `radius` metres out from the origin at `angle`.
+local function around(angle: number, radius: number): vector
+  return vector.create(math.cos(angle) * radius, 0, math.sin(angle) * radius)
+end
+
+local function run(scale: number): number
+  -- Two seconds of scene a step of scale: twenty at the harness's default, about as long a run
+  -- as the other canaries take.
+  local seconds = math.max(1, math.floor(2 * scale))
+  local context = jess.audio.offline {
+    rate = Rate,
+    voices = 2048,
+    physical = 96,
+    nodes = 48,
+  }
+  local music, effects, dialogue = context:bus(), context:bus { gain = 0.7 }, context:bus()
+  local room = context:bus { gain = 0.6 }
+  room:insert('reverb', { room = 0.7, wet = 0.4 })
+  music:insert('compressor', { threshold = -30, ratio = 6, release = 0.2 }):listen(dialogue)
+  context:master():insert('limiter', { ceiling = -1 })
+
+  for index = 1, 4 do
+    context:play(tone(110 * index, 4, 0.08), { bus = music, at = 0, loop = true, priority = 100 })
+  end
+
+  local hum = tone(60, 2, 0.2)
+  local machines: { AudioVoice } = {}
+  for index = 1, Machines do
+    table.insert(machines, context:play(hum, {
+      bus = effects,
+      loop = true,
+      place = { position = around(index * 2.399, index / 6), rolloff = 1.5 },
+      sends = { { bus = room, level = 0.2 } },
+    }))
+  end
+
+  local shots = { burst(0.15, 7), burst(0.3, 11), burst(0.08, 13) }
+  local line = tone(300, 1, 0.3)
+  local frames = seconds * Rate
+  local started = os.clock()
+  local tick = 0
+  while context:now() < frames do
+    tick += 1
+    local at = context:now()
+    -- The listener walks a circle, a tenth of the machines move, and shots land each tick.
+    local walk = tick / 120
+    local here, facing = around(walk, 30), vector.create(-math.sin(walk), 0, math.cos(walk))
+    context:listener({ position = here, forward = facing }, at)
+    local first = (tick % 10) * Machines // 10
+    for index = first + 1, first + Machines // 10 do
+      machines[index]:place({ position = around(index * 2.399 + tick / 200, index / 6) }, at)
+    end
+
+    for shot = 1, 6 do
+      -- Half land beside the listener; the rest across the map, where the machines drown them.
+      local position = if shot % 2 == 0
+        then here + vector.create(shot * 3 - 9, 0, 4)
+        else around(walk + math.pi, 90) + vector.create(0, 0, shot)
+      context:play(shots[(tick + shot) % 3 + 1], {
+        bus = effects,
+        at = at + shot * 97,
+        place = { position = position },
+        culled = 'stop',
+        sends = { { bus = room, level = 0.5 } },
+      })
+    end
+
+    if tick % 180 == 0 then
+      context:play(line, { bus = dialogue, at = at })
+    end
+
+    context:render(Tick)
+  end
+
+  local elapsed = os.clock() - started
+  local stats = context:stats()
+  assert(stats.nonfinite == 0, 'every sample came out finite')
+  assert(stats.late == 0, 'nothing was carried out late')
+  assert(stats.culled > 0 and stats.stolen > 0, 'the scene had more voices than the context mixes')
+  assert(music:meter().peak > 0, 'the music held its place')
+  return elapsed
+end
+
+return table.freeze {
+  name = 'audio',
+  path = 'tools/bench/canaries/audio.jsl',
+  run = run,
+}

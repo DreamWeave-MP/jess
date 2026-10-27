@@ -15,7 +15,7 @@ const PRELOADED: [&str; 6] = ["coroutine", "math", "string", "table", "utf8", "o
 
 /// The members the built-in package wraps in a Luau module of the same `@jess/` name: `jess.input`
 /// is the native half of `@jess/input`.
-const WRAPPED: [&str; 1] = ["input"];
+const WRAPPED: [&str; 2] = ["input", "audio"];
 
 /// Fills `require`'s cache with what it hands out by name: the preloaded standard libraries, and
 /// the installed modules by their global names, with and without a leading `@`. Luau's own

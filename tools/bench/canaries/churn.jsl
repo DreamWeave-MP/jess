@@ -1,0 +1,82 @@
+--!strict
+-- Voice churn through jess.audio, offline: a firefight's worth of short one-shots started every
+-- game tick on their own frames, a quarter stopped early with a fade, a burst of hundreds on one
+-- frame now and then, half the shots sent to a shared room, all of it into a context that mixes
+-- far fewer than it holds. Nothing here routes or reroutes anything: it is the cost of starting,
+-- mixing, and ending voices, which a game pays every tick and must never pay for in graph work.
+local Rate = 48000
+local Tick = Rate // 60
+
+export type Timing = 'all' | 'render'
+
+local function burst(seconds: number, seed: number): AudioPcm
+  local count = math.floor(seconds * Rate)
+  local data = buffer.create(count * 4)
+  local state = seed
+  for frame = 0, count - 1 do
+    -- A cheap deterministic noise, falling away: a shot or an impact without a sample file.
+    state = (state * 1103515245 + 12345) % 2147483648
+    local noise = state / 1073741824 - 1
+    buffer.writef32(data, frame * 4, 0.3 * noise * (1 - frame / count))
+  end
+
+  return jess.audio.pcm(data, { format = 'f32', channels = 1, rate = Rate })
+end
+
+--- Runs the scene for two seconds a step of `scale`, and returns the CPU time of all of it or of
+--- the renders alone.
+local function scene(scale: number, timing: Timing): number
+  local seconds = math.max(1, math.floor(2 * scale))
+  local context = jess.audio.offline { rate = Rate, voices = 4096, physical = 128 }
+  local effects, room = context:bus { gain = 0.8 }, context:bus { gain = 0.5 }
+  room:insert('reverb', { room = 0.6, wet = 0.5 })
+  context:master():insert('limiter', { ceiling = -1 })
+
+  local shots = { burst(0.03, 3), burst(0.08, 5), burst(0.15, 7), burst(0.25, 11) }
+  local frames = seconds * Rate
+  local started = os.clock()
+  local rendering = 0
+  local tick = 0
+  local last: { AudioVoice } = {}
+  while context:now() < frames do
+    tick += 1
+    local at = context:now()
+    -- A quarter of last tick's shots are cut short.
+    for index = 1, #last, 4 do
+      last[index]:stop(at + index, 64)
+    end
+
+    local count = if tick % 30 == 0 then 384 else 64
+    local current: { AudioVoice } = table.create(count)
+    for index = 1, count do
+      local spread = if count > 64 then 0 else index * 12
+      current[index] = context:play(shots[(tick + index) % 4 + 1], {
+        bus = effects,
+        at = at + spread,
+        gain = 0.2 + (index % 5) * 0.1,
+        pan = (index % 9) / 4 - 1,
+        -- Every fourth is pitched, and pays for resampling; the rest play at their own rate.
+        rate = if index % 4 == 0 then 0.9 + (index % 7) * 0.03 else 1,
+        priority = index % 3,
+        culled = 'stop',
+        sends = if index % 2 == 0 then { { bus = room, level = 0.4 } } else nil,
+      })
+    end
+
+    last = current
+    local before = os.clock()
+    context:render(Tick)
+    rendering += os.clock() - before
+  end
+
+  local elapsed = os.clock() - started
+  local stats = context:stats()
+  assert(stats.nonfinite == 0, 'every sample came out finite')
+  assert(stats.late == 0, 'nothing was carried out late')
+  assert(stats.stolen > 0, 'the bursts had more voices than the context mixes')
+  assert(stats.allocated < 4096, 'ended voices gave their slots back')
+  assert(effects:meter().peak > 0 and room:meter().peak > 0, 'the shots and their room were heard')
+  return if timing == 'render' then rendering else elapsed
+end
+
+return table.freeze { scene = scene }

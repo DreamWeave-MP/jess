@@ -104,6 +104,7 @@ fn builder(capabilities: &[String], profiling: bool) -> RuntimePlanBuilder {
     }
     RuntimePlan::builder()
         .policy(policy)
+        .extension(l3i::audio::AudioExtension)
         .extension(l3i::bytes::BytesExtension)
         .extension(l3i::data::DataExtension)
         .extension(l3i::dns::DnsExtension::default())
@@ -120,7 +121,7 @@ fn builder(capabilities: &[String], profiling: bool) -> RuntimePlanBuilder {
 
 /// The members of `@jess`, installed per runtime. Each table among them is also the module
 /// `@jess/<name>` (`require("@jess/shader")`).
-pub(crate) const MEMBERS: [&str; 12] = [
+pub(crate) const MEMBERS: [&str; 13] = [
     "version",
     "null",
     "granted",
@@ -132,6 +133,7 @@ pub(crate) const MEMBERS: [&str; 12] = [
     "interfaces",
     "application",
     "input",
+    "audio",
     "bench",
 ];
 
@@ -156,10 +158,13 @@ impl Extension for JessExtension {
         d.requires(crate::runtime::luau::EXTENSION_ID);
         crate::lua::shader::describe(d);
         crate::lua::input::describe(d);
+        crate::lua::audio::describe(d);
         // `jess.input` checks these against the plan outside a domain, and the broker inside one.
         for capability in INPUT_CAPABILITIES {
             d.optional_capability(capability);
         }
+        // `jess.audio.output` checks this the same way.
+        d.optional_capability(crate::audio::capability::OUTPUT);
         let module = d.module(MODULE);
         module.doc("Generic native services for Luau applications.");
         for name in MEMBERS {
@@ -232,6 +237,7 @@ impl Extension for JessExtension {
         module.set("interfaces", &modules.interfaces)?;
         module.set("application", &crate::lua::application::module(runtime)?)?;
         module.set("input", &crate::lua::input::module(runtime, &jess)?)?;
+        module.set("audio", &crate::lua::audio::module(runtime, &jess)?)?;
         Ok(())
     }
 }
@@ -251,6 +257,9 @@ impl Jess {
             builtin: RefCell::new(None),
             toml_decode: RefCell::new(None),
             granted,
+            outputs: crate::lua::audio::Outputs::default(),
+            feeds: crate::lua::audio::Feeds::default(),
+            processors: RefCell::new(crate::audio::Registry::builtin()),
         })
     }
 }

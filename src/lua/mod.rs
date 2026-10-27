@@ -13,12 +13,13 @@ use l3i::Runtime;
 use l3i::bind::Call;
 use l3i::extension::RuntimePlan;
 use l3i::source::LoadScope;
-use l3i::stack::{Frame, Scope, ValueView};
+use l3i::stack::{Frame, Scope, TableView, ValueView};
 use l3i::value::{Function, Table, Value};
 
 pub use l3i;
 
 pub mod application;
+mod audio;
 pub mod bench;
 pub mod builtin;
 pub mod check;
@@ -66,7 +67,11 @@ pub fn definitions() -> String {
 
 /// Host options for a generic runtime; no application configuration is loaded implicitly.
 #[derive(Clone, Debug, Default)]
-pub struct Options {}
+pub struct Options {
+    /// The processor kinds scripts can make by name: the built-in ones, and any the host adds
+    /// with [`Registry::register`](crate::audio::Registry::register).
+    pub processors: crate::audio::Registry,
+}
 
 /// The generic runtime plan, cached per thread on first use.
 ///
@@ -164,7 +169,7 @@ pub fn runtime_with_capabilities(options: Options, capabilities: &[String]) -> l
 /// # Errors
 ///
 /// Returns an error if the runtime plan doesn't finalize or the VM can't be set up.
-pub fn runtime_with_profile(_options: Options, capabilities: &[String], profiling: bool) -> l3i::Result<Runtime> {
+pub fn runtime_with_profile(options: Options, capabilities: &[String], profiling: bool) -> l3i::Result<Runtime> {
     check_capabilities(capabilities)?;
     let runtime_plan = if profiling {
         plan::plan_with_profiling(capabilities)?
@@ -174,6 +179,7 @@ pub fn runtime_with_profile(_options: Options, capabilities: &[String], profilin
     let runtime = Runtime::from_plan(&runtime_plan)?;
     let jess = state(&runtime)?;
     *jess.compile_options.borrow_mut() = Some(runtime.compile_options());
+    *jess.processors.borrow_mut() = options.processors;
     runtime.set_global("jess", &jess.module)?;
     require::seed_require(&runtime, &jess)?;
     let require = runtime.bind_function("jess.require", move |call: &Call<'_>, name: Text| {
@@ -224,6 +230,12 @@ pub(crate) struct Jess {
     /// Every capability the runtime's plan grants: what [`guard`] allows, and `jess.granted`
     /// answers, outside a domain.
     pub(crate) granted: Vec<String>,
+    /// The audio outputs the runtime opened, which play until closed or the runtime ends.
+    pub(crate) outputs: audio::Outputs,
+    /// The feeds the runtime started, which it stops and waits for when it ends.
+    pub(crate) feeds: audio::Feeds,
+    /// The processor kinds `jess.audio` makes by name: the built-in ones and the host's.
+    pub(crate) processors: RefCell<crate::audio::Registry>,
 }
 
 impl Jess {
@@ -344,6 +356,42 @@ pub(crate) fn check_options(frame: &Frame<'_>, options: ValueView<'_>, function:
         Ok(())
     })?;
     unknown.map_or(Ok(()), Err)
+}
+
+/// Visits each entry of an options table once, by name: `visit` reads an option it takes and
+/// returns false for one it doesn't, which is the error naming `keys`. A call costs what the
+/// table holds, not what `function` could take, which matters to one made thousands of times a
+/// second.
+pub(crate) fn read_options(
+    frame: &Frame<'_>,
+    options: &TableView<'_>,
+    function: &str,
+    keys: &[&str],
+    mut visit: impl FnMut(&Frame<'_>, &[u8], ValueView<'_>) -> l3i::Result<bool>,
+) -> l3i::Result<()> {
+    options.for_each(frame, |frame, key, value| {
+        if let Ok(name) = key.read::<&[u8]>()
+            && visit(frame, name, value)?
+        {
+            return Ok(());
+        }
+        Err(unknown_option(function, key, keys))
+    })
+}
+
+/// The value of option `key`, as `T`.
+pub(crate) fn option_value<'v, T: l3i::convert::FromView<'v>>(
+    value: ValueView<'v>,
+    key: &str,
+    function: &str,
+) -> l3i::Result<T> {
+    if T::matches(value) {
+        return value.read::<T>();
+    }
+    Err(l3i::Error::logic(format!(
+        "{function} \"{key}\" has an invalid value \"{}\"",
+        l3i::diagnostics::describe_value(value, 64)
+    )))
 }
 
 /// The error for an option `function` doesn't take, listing the ones it does.

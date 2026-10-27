@@ -1,0 +1,381 @@
+--!strict
+-- @jess/audio: what audio bytes mean and what a time is in frames, over the native half
+-- (`jess.audio`).
+--
+-- Rust owns samples, voices, the sample clock, and mixing. Everything that decides what a file's
+-- bytes are, or which frame a second lands on, is here: WAV in and out, seconds to frames and
+-- back, and compressed files (MP3, Ogg Vorbis, Ogg Opus) through @dream/audio's decoders, loaded
+-- whole; the native side decodes one into a stream on a thread of its own (`feed`).
+
+local Decoders = require '@dream/audio'
+local Native = jess.audio
+
+export type SampleFormat = AudioSampleFormat
+export type Pcm = AudioPcm
+export type Context = AudioContext
+export type Voice = AudioVoice
+export type VoiceState = AudioVoiceState
+export type PlayOptions = AudioPlayOptions
+export type Stats = AudioStats
+export type Node = AudioNode
+export type Param = AudioParam
+export type Patch = AudioPatch
+export type ConnectOptions = AudioConnectOptions
+export type Meter = AudioMeter
+export type SendOptions = AudioSendOptions
+export type Curve = AudioCurve
+export type Place = AudioPlace
+export type Listener = AudioListener
+export type ContextOptions = AudioContextOptions
+export type Stream = AudioStream
+export type Device = AudioDevice
+export type OutputOptions = AudioOutputOptions
+export type Decoder = dream_audio_Decoder
+export type DecoderFormat = dream_audio_Format
+export type Feed = AudioFeed
+export type FeedOptions = AudioFeedOptions
+export type FeedStatus = AudioFeedStatus
+
+--- A WAV file: what its samples are, and the `data` chunk's interleaved bytes. `loopStart` and
+--- `loopEnd` are the first loop of a `smpl` chunk, in frames, the end exclusive the way
+--- `AudioPlayOptions` takes it.
+export type Wav = {
+  format: SampleFormat,
+  channels: number,
+  rate: number,
+  frames: number,
+  data: buffer,
+  loopStart: number?,
+  loopEnd: number?,
+}
+
+--- The sample formats `writeWav` writes.
+export type WavFormat = 's16' | 's24' | 'f32'
+
+export type WavOptions = { channels: number, rate: number, format: WavFormat? }
+
+local FormatPcm = 0x0001
+local FormatFloat = 0x0003
+local FormatExtensible = 0xfffe
+
+local IntegerFormats: { [number]: SampleFormat } = { [8] = 'u8', [16] = 's16', [24] = 's24', [32] = 's32' }
+local FloatFormats: { [number]: SampleFormat } = { [32] = 'f32', [64] = 'f64' }
+local SampleBytes: { [SampleFormat]: number } = { u8 = 1, s16 = 2, s24 = 3, s32 = 4, f32 = 4, f64 = 8 }
+local Writable: { [string]: boolean } = { s16 = true, s24 = true, f32 = true }
+
+-- Time ----------------------------------------------------------------------------------------
+
+--- The frame `seconds` lands on at `rate`, to the nearest frame, halves up.
+local function frames(seconds: number, rate: number): number
+  return math.floor(seconds * rate + 0.5)
+end
+
+--- How long `count` frames last at `rate`.
+local function seconds(count: number, rate: number): number return count / rate end
+
+-- Tempo ---------------------------------------------------------------------------------------
+
+--- From `beat` on (counted from 0 at the tempo's start), `bpm` beats a minute.
+export type TempoChange = { beat: number, bpm: number }
+
+export type TempoOptions = {
+  --- The output's frames per second.
+  rate: number,
+  --- Beats a minute from the start.
+  bpm: number,
+  --- Beats in a bar (4).
+  beatsPerBar: number?,
+  --- The frame beat 0 lands on (0).
+  start: number?,
+  --- Later tempos, in any order.
+  changes: { TempoChange }?,
+}
+
+--- A stretch of the tempo map: from `beat`, which falls `seconds` after the start, at `bpm`.
+type Segment = { beat: number, seconds: number, bpm: number }
+
+type TempoState = { rate: number, start: number, beatsPerBar: number, segments: { Segment } }
+
+local TempoMethods = {}
+TempoMethods.__index = TempoMethods
+TempoMethods.__metatable = false
+
+--- The segment `beat` falls in.
+local function segmentOfBeat(tempo: TempoState, beat: number): Segment
+  local found = tempo.segments[1]
+  for _, segment in tempo.segments do
+    if segment.beat > beat then break end
+
+    found = segment
+  end
+
+  return found
+end
+
+--- The frame `beat` lands on, to the nearest frame, halves up. Every beat's frame is worked out
+--- from the tempo map itself, never from the beat before, so nothing drifts however far in.
+function TempoMethods.frame(tempo: TempoState, beat: number): number
+  local segment = segmentOfBeat(tempo, beat)
+  local at = segment.seconds + (beat - segment.beat) * 60 / segment.bpm
+  return tempo.start + math.floor(at * tempo.rate + 0.5)
+end
+
+--- The beat at `frame`, fractional: 2.5 is halfway through the third beat.
+function TempoMethods.beat(tempo: TempoState, frame: number): number
+  local at = (frame - tempo.start) / tempo.rate
+  local found = tempo.segments[1]
+  for _, segment in tempo.segments do
+    if segment.seconds > at then break end
+
+    found = segment
+  end
+
+  return found.beat + (at - found.seconds) * found.bpm / 60
+end
+
+--- The frame of the first beat at or after `frame` that is a whole number of `every` beats
+--- from the start: the next beat with `every = 1`, the next bar with the bar's length.
+function TempoMethods.next(tempo: TempoState, frame: number, every: number): number
+  if every <= 0 then error(`a boundary comes every so many beats above 0, not {every}`, 2) end
+
+  -- Start a step early: the beat at a frame is rounded, and the boundary may be the one before.
+  local step = math.floor(TempoMethods.beat(tempo, frame) / every) - 1
+  while true do
+    local candidate = TempoMethods.frame(tempo, step * every)
+    if candidate >= frame then return candidate end
+
+    step += 1
+  end
+end
+
+--- The frame bar `bar` (from 0) starts on.
+function TempoMethods.bar(tempo: TempoState, bar: number): number
+  return TempoMethods.frame(tempo, bar * tempo.beatsPerBar)
+end
+
+--- The frame of the first bar line at or after `frame`.
+function TempoMethods.nextBar(tempo: TempoState, frame: number): number
+  return TempoMethods.next(tempo, frame, tempo.beatsPerBar)
+end
+
+local TempoMetatable = table.freeze(TempoMethods)
+
+export type Tempo = typeof(setmetatable({} :: TempoState, TempoMetatable))
+
+--- A tempo map: beats to frames and back, through tempo changes, for scheduling music on the
+--- sample clock. Musical time is the script's: the engine only ever sees frames.
+local function tempo(options: TempoOptions): Tempo
+  if not (options.rate > 0) then error(`a tempo's rate is frames per second above 0, not {options.rate}`, 2) end
+
+  local changes = table.clone(options.changes or {})
+  table.sort(changes, function(first: TempoChange, second: TempoChange): boolean return first.beat < second.beat end)
+  local segments: { Segment } = { { beat = 0, seconds = 0, bpm = options.bpm } }
+  for _, change in changes do
+    if not (change.bpm > 0) then error(`a tempo is beats a minute above 0, not {change.bpm}`, 2) end
+
+    if change.beat <= 0 then
+      segments[1].bpm = change.bpm
+      continue
+    end
+
+    local last = segments[#segments]
+    local at = last.seconds + (change.beat - last.beat) * 60 / last.bpm
+    table.insert(segments, { beat = change.beat, seconds = at, bpm = change.bpm })
+  end
+
+  if not (segments[1].bpm > 0) then error(`a tempo is beats a minute above 0, not {segments[1].bpm}`, 2) end
+
+  local state: TempoState = {
+    rate = options.rate,
+    start = options.start or 0,
+    beatsPerBar = options.beatsPerBar or 4,
+    segments = segments,
+  }
+  return setmetatable(state, TempoMetatable)
+end
+
+-- WAV -----------------------------------------------------------------------------------------
+
+--- The format a `fmt ` chunk describes. The sample size is the container's (block alignment over
+--- channels), not the significant bits: 20-bit audio in 24-bit containers reads as `s24`.
+local function wavFormat(data: buffer, body: number, length: number): (SampleFormat, number, number)
+  if length < 16 then error(`a WAV fmt chunk is at least 16 bytes, not {length}`, 3) end
+
+  local tag = buffer.readu16(data, body)
+  local channels = buffer.readu16(data, body + 2)
+  local rate = buffer.readu32(data, body + 4)
+  local blockAlign = buffer.readu16(data, body + 12)
+  if tag == FormatExtensible and length >= 26 then tag = buffer.readu16(data, body + 24) end
+
+  if channels == 0 or blockAlign % channels ~= 0 then
+    error(`a WAV of {channels} channels can't have {blockAlign}-byte frames`, 3)
+  end
+
+  local bits = blockAlign // channels * 8
+  local format = if tag == FormatPcm then IntegerFormats[bits] elseif tag == FormatFloat then FloatFormats[bits] else nil
+  if not format then
+    error(`WAV format {string.format('0x%04x', tag)} with {bits}-bit samples is neither integer PCM nor float`, 3)
+  end
+
+  return format, channels, rate
+end
+
+--- Reads a WAV file's chunks: the format, the samples, and a `smpl` chunk's first loop.
+local function readWav(data: buffer | string): Wav
+  local bytes = if type(data) == 'string' then buffer.fromstring(data) else data
+  local size = buffer.len(bytes)
+  if size < 12 or buffer.readstring(bytes, 0, 4) ~= 'RIFF' or buffer.readstring(bytes, 8, 4) ~= 'WAVE' then
+    error('not a WAV file: it has no RIFF WAVE header', 2)
+  end
+
+  local format: SampleFormat?
+  local samples: buffer?
+  local channels, rate = 0, 0
+  local loopStart: number?
+  local loopEnd: number?
+  local offset = 12
+  while offset + 8 <= size do
+    local id = buffer.readstring(bytes, offset, 4)
+    local length = buffer.readu32(bytes, offset + 4)
+    local body = offset + 8
+    if body + length > size then
+      error(`the WAV {id} chunk is {length} bytes, past the end of the file`, 2)
+    end
+
+    if id == 'fmt ' then
+      format, channels, rate = wavFormat(bytes, body, length)
+    elseif id == 'data' then
+      samples = buffer.create(length)
+      buffer.copy(samples, 0, bytes, body, length)
+    elseif id == 'smpl' and length >= 36 and buffer.readu32(bytes, body + 28) > 0 then
+      -- A loop's end is the last frame it plays.
+      loopStart = buffer.readu32(bytes, body + 44)
+      loopEnd = buffer.readu32(bytes, body + 48) + 1
+    end
+
+    offset = body + length + length % 2
+  end
+
+  if not format then error('the WAV file has no fmt chunk', 2) end
+
+  if not samples then error('the WAV file has no data chunk', 2) end
+
+  local frameSize = channels * SampleBytes[format]
+  return {
+    format = format,
+    channels = channels,
+    rate = rate,
+    frames = buffer.len(samples) // frameSize,
+    data = samples,
+    loopStart = loopStart,
+    loopEnd = loopEnd,
+  }
+end
+
+--- Reads a WAV file into PCM, and what the file says about it. A `data` chunk that ends partway
+--- through a frame plays its whole frames.
+local function loadWav(data: buffer | string): (Pcm, Wav)
+  local wav = readWav(data)
+  local whole = wav.frames * wav.channels * SampleBytes[wav.format]
+  local samples = wav.data
+  if whole ~= buffer.len(samples) then
+    samples = buffer.create(whole)
+    buffer.copy(samples, 0, wav.data, 0, whole)
+  end
+
+  local pcm = Native.pcm(samples, { format = wav.format, channels = wav.channels, rate = wav.rate })
+  return pcm, wav
+end
+
+-- Compressed files ------------------------------------------------------------------------------
+
+--- Reads a WAV, MP3, Ogg Vorbis, or Ogg Opus file whole into PCM, at the file's own rate.
+local function load(data: buffer | string): Pcm
+  local bytes = if type(data) == 'string' then buffer.fromstring(data) else data
+  if buffer.len(bytes) >= 12 and buffer.readstring(bytes, 0, 4) == 'RIFF' then
+    return (loadWav(bytes))
+  end
+
+  local decoded = Decoders.decode(bytes)
+  return Native.pcm(decoded.data, { format = 'f32', channels = decoded.channels, rate = decoded.rate })
+end
+
+--- Writes interleaved 32-bit float samples (what `AudioContext:render` returns) as a WAV file:
+--- 32-bit float unless `format` asks for 16- or 24-bit integers. Integers round to nearest and
+--- clip at full scale; a sample read from a file of that format writes back as the same bytes.
+local function writeWav(samples: buffer, options: WavOptions): buffer
+  local format: WavFormat = options.format or 'f32'
+  if not Writable[format] then error(`writeWav writes s16, s24, or f32, not {format}`, 2) end
+
+  local size = SampleBytes[format]
+  local count = buffer.len(samples) // 4
+  if count % options.channels ~= 0 then
+    error(`{count} samples aren't whole frames of {options.channels} channels`, 2)
+  end
+
+  local float = format == 'f32'
+  -- A float file carries the extension size in fmt and a fact chunk with its frame count.
+  local fmtLength = if float then 18 else 16
+  local header = 12 + 8 + fmtLength + (if float then 12 else 0) + 8
+  local dataLength = count * size
+  local out = buffer.create(header + dataLength + dataLength % 2)
+  buffer.writestring(out, 0, 'RIFF')
+  buffer.writeu32(out, 4, buffer.len(out) - 8)
+  buffer.writestring(out, 8, 'WAVEfmt ')
+  buffer.writeu32(out, 16, fmtLength)
+  buffer.writeu16(out, 20, if float then FormatFloat else FormatPcm)
+  buffer.writeu16(out, 22, options.channels)
+  buffer.writeu32(out, 24, options.rate)
+  buffer.writeu32(out, 28, options.rate * options.channels * size)
+  buffer.writeu16(out, 32, options.channels * size)
+  buffer.writeu16(out, 34, size * 8)
+  local at = 20 + fmtLength
+  if float then
+    buffer.writeu16(out, 36, 0)
+    buffer.writestring(out, at, 'fact')
+    buffer.writeu32(out, at + 4, 4)
+    buffer.writeu32(out, at + 8, count // options.channels)
+    at += 12
+  end
+
+  buffer.writestring(out, at, 'data')
+  buffer.writeu32(out, at + 4, dataLength)
+  at += 8
+  if float then
+    buffer.copy(out, at, samples, 0, dataLength)
+    return out
+  end
+
+  local scale = if format == 's16' then 32768 else 8388608
+  for index = 0, count - 1 do
+    local value = math.clamp(math.floor(buffer.readf32(samples, index * 4) * scale + 0.5), -scale, scale - 1)
+    if format == 's16' then
+      buffer.writei16(out, at + index * 2, value)
+      continue
+    end
+
+    -- Three bytes, little-endian, of a two's-complement 24-bit integer.
+    local unsigned = if value < 0 then value + 16777216 else value
+    buffer.writeu16(out, at + index * 3, unsigned % 65536)
+    buffer.writeu8(out, at + index * 3 + 2, unsigned // 65536)
+  end
+
+  return out
+end
+
+return {
+  pcm = Native.pcm,
+  offline = Native.offline,
+  output = Native.output,
+  processors = Native.processors,
+  stream = Native.stream,
+  feed = Native.feed,
+  frames = frames,
+  seconds = seconds,
+  tempo = tempo,
+  readWav = readWav,
+  loadWav = loadWav,
+  writeWav = writeWav,
+  decoder = Decoders.decoder,
+  load = load,
+}

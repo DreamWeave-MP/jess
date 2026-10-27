@@ -42,6 +42,7 @@ pub const FILES: &[(&str, &str)] = &[
         "src/analysis/init.jsl",
         include_str!("../../jpk/builtin/src/analysis/init.jsl"),
     ),
+    ("src/audio/init.jsl", include_str!("../../jpk/builtin/src/audio/init.jsl")),
     ("src/backup/init.jsl", include_str!("../../jpk/builtin/src/backup/init.jsl")),
     ("src/data/common.jsl", include_str!("../../jpk/builtin/src/data/common.jsl")),
     ("src/data/json.jsl", include_str!("../../jpk/builtin/src/data/json.jsl")),
@@ -65,6 +66,27 @@ pub const FILES: &[(&str, &str)] = &[
     (
         "tests/analysis/run.jsl",
         include_str!("../../jpk/builtin/tests/analysis/run.jsl"),
+    ),
+    (
+        "tests/audio/adaptive.jsl",
+        include_str!("../../jpk/builtin/tests/audio/adaptive.jsl"),
+    ),
+    (
+        "tests/audio/arrangement.jsl",
+        include_str!("../../jpk/builtin/tests/audio/arrangement.jsl"),
+    ),
+    (
+        "tests/audio/graph.jsl",
+        include_str!("../../jpk/builtin/tests/audio/graph.jsl"),
+    ),
+    ("tests/audio/run.jsl", include_str!("../../jpk/builtin/tests/audio/run.jsl")),
+    (
+        "tests/audio/session.jsl",
+        include_str!("../../jpk/builtin/tests/audio/session.jsl"),
+    ),
+    (
+        "tests/audio/space.jsl",
+        include_str!("../../jpk/builtin/tests/audio/space.jsl"),
     ),
     ("tests/backup/run.jsl", include_str!("../../jpk/builtin/tests/backup/run.jsl")),
     ("tests/data/run.jsl", include_str!("../../jpk/builtin/tests/data/run.jsl")),

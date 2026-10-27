@@ -11,8 +11,8 @@ fn only_generic_members_are_installed() {
         &runtime,
         r"
         local expected = {
-            'application', 'bench', 'context', 'events', 'granted', 'input', 'interfaces', 'null',
-            'payload', 'shader', 'version', 'worker',
+            'application', 'audio', 'bench', 'context', 'events', 'granted', 'input', 'interfaces',
+            'null', 'payload', 'shader', 'version', 'worker',
         }
         local members = {}
         for name in jess do table.insert(members, name) end
@@ -23,6 +23,8 @@ fn only_generic_members_are_installed() {
         end
         -- @jess/input is the built-in package's Luau, over jess.input.
         assert(require('@jess/input') ~= jess.input and require('@jess/input').runtime == jess.input.runtime)
+        -- So is @jess/audio, over jess.audio.
+        assert(require('@jess/audio') ~= jess.audio and require('@jess/audio').offline == jess.audio.offline)
         local luau = {
             _G = true, _VERSION = true, assert = true, bit32 = true, buffer = true, coroutine = true,
             error = true, gcinfo = true, getmetatable = true, ipairs = true, math = true, newproxy = true,
@@ -99,6 +101,7 @@ fn the_types_cover_exactly_the_kernel_s_modules() {
             "@jess",
             "@jess/analysis",
             "@jess/application",
+            "@jess/audio",
             "@jess/backup",
             "@jess/bench",
             "@jess/context",

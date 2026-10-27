@@ -11,7 +11,7 @@ repository.workspace = true
 homepage.workspace = true
 license.workspace = true
 readme.workspace = true
-include = ["/src", "/jpk/builtin", "/README.md", "/LICENSE-MIT", "/LICENSE-APACHE"]
+include = ["/src", "/jpk/builtin", "/vendor/miniaudio", "/build.rs", "/README.md", "/LICENSE-MIT", "/LICENSE-APACHE"]
 autotests = false
 
 [workspace.package]
@@ -29,16 +29,20 @@ exclude = ["/tests", "/tools"]
 [workspace]
 
 [features]
-default = []
-# Real device backends are opt-in; the native kernel stays headless by default.
+default = ["audio-device"]
+# Input device backends are opt-in; the native kernel reads no input device by default.
 linux-evdev = ["dep:evdev"]
 gilrs = ["dep:gilrs"]
+# An audio output device, through miniaudio's device layer (vendor/miniaudio), compiled with cc.
+# On by default: miniaudio links no audio library at build time and loads the platform's at run
+# time, so a jess on a machine with no sound system still starts, and finds only the null device.
+audio-device = ["dep:cc"]
 
 [dependencies]
 clap = { version = "^4.5", features = ["derive", "env", "wrap_help"] }
 clap_complete = "^4.5"
 clap_mangen = "^0.2"
-l3i = { version = "2.2.0", features = ["analysis", "jit", "bytes-text", "bytes-codecs", "bytes-digests", "bytes-regex", "data", "dns", "fs", "intern", "intl", "process", "syntax", "tcp", "tls"] }
+l3i = { version = "2.3.0", features = ["analysis", "audio", "jit", "bytes-text", "bytes-codecs", "bytes-digests", "bytes-regex", "data", "dns", "fs", "intern", "intl", "process", "syntax", "tcp", "tls"] }
 serde = { version = "^1.0", features = ["derive"] }
 serde-value = "^0.7"
 serde_json = { version = "^1.0", features = ["preserve_order"] }
@@ -57,9 +61,13 @@ evdev = { version = "^0.13", optional = true }
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 gilrs = { version = "^0.11", optional = true }
 
+[build-dependencies]
+# Compiles the audio device's C, the same crate l3i builds Luau with.
+cc = { version = "^1.2", optional = true }
+
 
 [dev-dependencies]
-l3i = { version = "2.2.0", features = ["analysis"] }
+l3i = { version = "2.3.0", features = ["analysis"] }
 naga = { version = "30.0.1", features = ["wgsl-in"] }
 pollster = "0.4.0"
 serde_yaml = "^0.9"

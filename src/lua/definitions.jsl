@@ -2,6 +2,12 @@
 
 declare extern type JessNull with end
 
+--- A handle to a native resource that may cross domain and worker boundaries in a message: its
+--- `kind`, in the vocabulary of whatever made it.
+declare extern type JessHandle with
+  kind: string
+end
+
 --- The handlers `jess.context.bind` takes, by phase name. Each gets the phase's payload: seconds
 --- for `update`, `fixedUpdate`, and `lateUpdate`, the event for `event`, nothing for `startup` and
 --- `shutdown`.
@@ -130,6 +136,384 @@ export type InputRuntime = {
   action: (self: InputRuntime, name: string) -> InputActionState?,
   devices: (self: InputRuntime) -> { InputDevice },
   stats: (self: InputRuntime) -> InputStats,
+}
+
+--- How one sample is stored in interleaved bytes, little-endian: unsigned 8-bit, signed 16-,
+--- 24- (three bytes), and 32-bit, and 32- and 64-bit floats.
+export type AudioSampleFormat = 'u8' | 's16' | 's24' | 's32' | 'f32' | 'f64'
+
+--- Decoded audio from `jess.audio.pcm`: planar float channels at one rate, shared by every voice
+--- that plays it.
+export type AudioPcm = {
+  --- Frames per second.
+  rate: (self: AudioPcm) -> number,
+  channels: (self: AudioPcm) -> number,
+  --- The length in frames.
+  frames: (self: AudioPcm) -> number,
+}
+
+--- How to start a voice. `at` is an output frame, and the voice starts on exactly that frame;
+--- without one it starts on the next frame rendered. `gain` is linear (1), `pan` -1 to 1 (0;
+--- equal power for mono, balance for stereo), `rate` the playback rate, pitch with it (1),
+--- `offset` the source frame to start from (0). With `loop`, playback that reaches `loopEnd` (the
+--- source's end) continues at `loopStart` (0), without a gap.
+export type AudioPlayOptions = {
+  at: number?,
+  gain: number?,
+  pan: number?,
+  rate: number?,
+  offset: number?,
+  loop: boolean?,
+  loopStart: number?,
+  loopEnd: number?,
+  --- The node it plays into: a bus, usually, and the master unless told otherwise; or a processor
+  --- only it goes through.
+  bus: AudioNode?,
+  --- Up to fifteen nodes it also sends to, each at a level relative to its own gain (1).
+  sends: { { bus: AudioNode, level: number? } }?,
+  --- Frames to fade in over, from silence to `gain` (0).
+  fade: number?,
+  --- Where it is, if it's in space: then distance, direction, and motion set its level, pan, and
+  --- pitch, and `pan` is not used.
+  place: AudioPlace?,
+  --- How much it matters when there are more voices than the context mixes (0): higher keeps its
+  --- place over lower, whatever their levels.
+  priority: number?,
+  --- What it does while culled: keeps time silently (`advance`, the default), holds its place
+  --- (`pause`), or ends (`stop`).
+  culled: ('advance' | 'pause' | 'stop')?,
+}
+
+--- A voice's place in space, in the world's own units and axes. Every field is optional: on
+--- `play` the rest are the defaults, on `AudioVoice:place` what they were. `cone` angles are whole
+--- angles in degrees: full level inside `inner` of `direction`, `outside` (0 to 1) beyond `outer`.
+--- `distance` is the model (`inverse` by default, `linear`, `exponential`, `none`) between
+--- `reference` (1, full level) and `maximum` (no quieter beyond), at `rolloff` (1). `doppler` (1)
+--- scales the pitch shift from motion. `gain` (1) and `lowpass` (a cutoff in hertz) are for what
+--- lies between the voice and the listener, as the application works it out.
+export type AudioPlace = {
+  position: vector?,
+  velocity: vector?,
+  direction: vector?,
+  cone: { inner: number?, outer: number?, outside: number? }?,
+  distance: ('none' | 'inverse' | 'linear' | 'exponential')?,
+  reference: number?,
+  maximum: number?,
+  rolloff: number?,
+  doppler: number?,
+  gain: number?,
+  lowpass: number?,
+}
+
+--- How to make a context: 48000 frames per second, 2 channels, 256 voices, 256 nodes (buses and
+--- processors, the master included), 1024 connections between them, and room for 4096 waiting
+--- commands, unless told otherwise. Space is right-handed (forward crossed with up points right)
+--- unless `handedness` is `left`, and sound travels at `speedOfSound` (343) of the world's units a
+--- second.
+export type AudioContextOptions = {
+  rate: number?,
+  channels: number?,
+  voices: number?,
+  nodes: number?,
+  connections: number?,
+  commands: number?,
+  speedOfSound: number?,
+  handedness: ('right' | 'left')?,
+  --- Voices mixed at once, if fewer than `voices`: the rest are culled, by priority and then by
+  --- loudness, until there is room.
+  physical: number?,
+}
+
+--- A stream: a bounded ring of interleaved frames that one writer fills, from any worker, while
+--- one voice plays it. The voice plays silence where the writer has fallen behind (`missed`
+--- counts it), and ends once the writer has finished and everything written has played. A
+--- script's stream plays every frame it is given, late ones after the gap; a feed's keeps time,
+--- letting go of what came too late. `late` counts the silence played after a seek's frame
+--- because the feed hadn't decoded from the new frame yet.
+export type AudioStream = {
+  channels: (self: AudioStream) -> number,
+  rate: (self: AudioStream) -> number,
+  --- Frames there is room for now.
+  room: (self: AudioStream) -> number,
+  --- Writes as many whole frames of interleaved 32-bit floats as fit, from the first `frames`
+  --- of the buffer (all of it without), and returns how many.
+  write: (self: AudioStream, samples: buffer, frames: number?) -> number,
+  --- Waits until there is room for `frames`, or `timeout` seconds pass (forever without one);
+  --- true if there is. It sleeps as long as playing at the stream's rate takes to make the room.
+  wait: (self: AudioStream, frames: number, timeout: number?) -> boolean,
+  --- Says the writer is done: once played to its end, the voice ends.
+  finish: (self: AudioStream) -> (),
+  stats: (self: AudioStream) -> {
+    written: number,
+    read: number,
+    room: number,
+    missed: number,
+    late: number,
+    finished: boolean,
+  },
+  --- A handle to send a worker, which opens the same stream with `jess.audio.stream`.
+  handle: (self: AudioStream) -> JessHandle,
+}
+
+--- How a feed reads its file: as `format` (detected unless named), `seconds` (1) of it ahead in
+--- its stream, `block` frames (4096) at a time, from frame `start` (0); and with `loop`, from
+--- `loopStart` (0) again at the end instead of finishing the stream.
+export type AudioFeedOptions = {
+  format: ('mp3' | 'vorbis' | 'opus')?,
+  seconds: number?,
+  block: number?,
+  start: number?,
+  loop: boolean?,
+  loopStart: number?,
+}
+
+--- What a feed has done: whether its thread is `done`, how many times it went back to its
+--- `loopStart`, and the `error` the decoder failed with, if it did (the stream finished there).
+export type AudioFeedStatus = { done: boolean, loops: number, error: string? }
+
+--- A compressed file decoded into a stream on a thread of its own. It ends at the file's end
+--- (unless it loops), when stopped, on a decoding error, or once nothing else holds its stream;
+--- the runtime's end stops it.
+export type AudioFeed = {
+  --- The stream it fills, at the file's rate and channels, to play.
+  stream: (self: AudioFeed) -> AudioStream,
+  status: (self: AudioFeed) -> AudioFeedStatus,
+  --- Stops decoding, leaving what it wrote to play; the stream isn't finished.
+  stop: (self: AudioFeed) -> (),
+}
+
+--- An output's options: a context's, and the device's.
+export type AudioOutputOptions = AudioContextOptions & { device: ('default' | 'null')?, period: number? }
+
+--- An output device: the platform API it plays through, its rate and channels, the frames it
+--- asks for at a time and how many periods it buffers (`latency`, about, in frames, is how far
+--- what you hear lags `now`), and what has happened to it: `stopped`, `rerouted` to a new default
+--- device, `interrupted` by the system, whether the engine `failed` on its thread, and whether
+--- the output was `closed`.
+export type AudioDevice = {
+  backend: string,
+  rate: number,
+  channels: number,
+  period: number,
+  periods: number,
+  latency: number,
+  stopped: number,
+  rerouted: number,
+  interrupted: number,
+  failed: boolean,
+  closed: boolean,
+}
+
+--- Where the listener is and which way it faces; any field left out stays as it was.
+export type AudioListener = { position: vector?, forward: vector?, up: vector?, velocity: vector? }
+
+--- A ramp's shape: a straight line, or the same ratio every frame (both ends above 0), which is
+--- even steps in decibels.
+export type AudioCurve = 'linear' | 'exponential'
+
+--- A bus's level since it was last read, after its gain: the peak sample's magnitude and the
+--- RMS, linear, across its channels.
+export type AudioMeter = { peak: number, rms: number }
+
+--- How a node sends to another: at `level` (1), tapped after its processing (`post`, the usual: a
+--- bus's gain and mute) or before it (`pre`), from frame `at`.
+export type AudioSendOptions = { level: number?, tap: ('post' | 'pre')?, at: number? }
+
+--- One of a node's parameters: its range, default, and unit (`Hz`, `dB`, `s`, or empty), and how
+--- often it can change: on every frame that is a multiple of 32 while it moves (`control`), or
+--- every sample (`audio`).
+export type AudioParam = {
+  name: string,
+  min: number,
+  max: number,
+  default: number,
+  unit: string,
+  rate: 'control' | 'audio',
+}
+
+--- A node of a context's graph: a bus (a mixer, `kind` `mixer`), or a processor. A bus sums what
+--- reaches it, runs its insert chain, applies its gain and mute, and feeds its route and sends.
+--- Every command takes an optional `at`, an output frame; without one, the next frame rendered.
+--- Once the node is removed the handle names nothing.
+export type AudioNode = {
+  kind: (self: AudioNode) -> string,
+  --- Its parameters, in order.
+  params: (self: AudioNode) -> { AudioParam },
+  --- Sets a parameter by name (a bus has `gain`, linear, and `mute`, 0 or 1); a name it doesn't
+  --- have, or a value out of range, is an error.
+  set: (self: AudioNode, param: string, value: number, at: number?) -> boolean,
+  --- Ramps a parameter to `value` over `frames` frames from `at`: every frame for an audio-rate
+  --- parameter, every 32 for a control-rate one.
+  ramp: (self: AudioNode, param: string, value: number, frames: number, at: number?, curve: AudioCurve?) -> boolean,
+  --- From `at`, drops every change of a parameter sent before this one and still waiting for its
+  --- frame, and stops a ramp of it where it has got to. Changes sent after it stand.
+  cancel: (self: AudioNode, param: string, at: number?) -> boolean,
+  --- Routes the node into another, replacing its route; a route that would loop back is an error.
+  route: (self: AudioNode, parent: AudioNode, at: number?) -> (),
+  --- Adds a send to `target`, or changes the one there.
+  send: (self: AudioNode, target: AudioNode, options: AudioSendOptions?) -> (),
+  unsend: (self: AudioNode, target: AudioNode, at: number?) -> boolean,
+  --- Listens to `key` on its sidechain from `at`, or to nothing with nil (a compressor then follows
+  --- its own input). The key runs first; a key the node feeds is a loop, and an error.
+  listen: (self: AudioNode, key: AudioNode?, at: number?) -> boolean,
+  --- Removes the node once nothing feeds it, with its insert chain; what has a tail rings out
+  --- first. Its connections out go with it.
+  remove: (self: AudioNode, at: number?) -> boolean,
+  live: (self: AudioNode) -> boolean,
+  --- Frames its output lags the voices that reach it, by the longest path's processors.
+  latency: (self: AudioNode) -> number,
+  --- A bus's output since it was last read; an error for another node.
+  meter: (self: AudioNode) -> AudioMeter,
+  --- Puts a processor of `kind` in the node's insert chain, last or at `index` (from 1), made with
+  --- `settings`: its parameters by name, and whatever the kind is made with.
+  insert: (self: AudioNode, kind: string, settings: { [string]: number | string }?) -> AudioNode,
+}
+
+--- How a patch connects two nodes: from output `from` (the first) to input `to` (the first audio
+--- input, or any input port, or a parameter to modulate), at `level` (1), tapped after the source's
+--- processing (`post`) or before it (`pre`), and, for a connection that closes a loop, delayed by
+--- `feedback` frames (at least 128). A voice connects at a level, to an audio input.
+export type AudioConnectOptions = {
+  from: string?,
+  to: string?,
+  level: number?,
+  tap: ('post' | 'pre')?,
+  feedback: number?,
+}
+
+--- The graph as an `AudioContext:patch` body sees it. Every change is collected; once the body
+--- returns, they take effect together on the patch's frame, or, if any is wrong or the body
+--- raises, none of them does.
+export type AudioPatch = {
+  connect: (self: AudioPatch, from: AudioNode | AudioVoice, to: AudioNode, options: AudioConnectOptions?) -> (),
+  disconnect: (
+    self: AudioPatch,
+    from: AudioNode | AudioVoice,
+    to: AudioNode,
+    options: { from: string?, to: string? }?
+  ) -> (),
+  --- Routes `node` into `parent`, replacing its route.
+  route: (self: AudioPatch, node: AudioNode, parent: AudioNode) -> (),
+  --- Puts an unconnected processor in `host`'s insert chain, last or at `index` (from 1).
+  insert: (self: AudioPatch, host: AudioNode, node: AudioNode, index: number?) -> (),
+  --- Removes a node once nothing feeds it.
+  remove: (self: AudioPatch, node: AudioNode) -> (),
+}
+
+--- What a context's engine has done, as of its last render: `frames` rendered (the clock), voices
+--- `active` in it and `allocated` (playing or waiting to start), commands carried out `late`
+--- (stamped for a frame already rendered), output samples that weren't finite and were written as
+--- silence (`nonfinite`), commands `pending` for a later frame, voices `culled` in the last block
+--- for want of room, and voices `stolen`, ended for it, all told, and graph `revisions` carried out
+--- (playing and stopping voices revises nothing).
+export type AudioStats = {
+  frames: number,
+  active: number,
+  allocated: number,
+  late: number,
+  nonfinite: number,
+  pending: number,
+  culled: number,
+  stolen: number,
+  revisions: number,
+}
+
+export type AudioVoiceState = 'scheduled' | 'playing' | 'paused' | 'ended'
+
+--- One playback of a Pcm. Every command takes an optional `at`, an output frame to carry it out
+--- on; without one, the next frame rendered. Once the voice ends the handle names nothing, and
+--- its commands do nothing and return false.
+export type AudioVoice = {
+  --- Stops it on frame `at`, fading out over `fade` frames first (0).
+  stop: (self: AudioVoice, at: number?, fade: number?) -> boolean,
+  set: (self: AudioVoice, param: 'gain' | 'pan' | 'rate', value: number, at: number?) -> boolean,
+  --- Ramps a parameter to `value` over `frames` frames from `at`, sample by sample.
+  ramp: (
+    self: AudioVoice,
+    param: 'gain' | 'pan' | 'rate',
+    value: number,
+    frames: number,
+    at: number?,
+    curve: AudioCurve?
+  ) -> boolean,
+  --- Loops over source frames `start` up to `stop` from `at`: playback reaching `stop` goes on at
+  --- `start`.
+  loop: (self: AudioVoice, start: number, stop: number, at: number?) -> boolean,
+  --- Lets go of the loop from `at`: playback runs on past it, into whatever follows (an outro).
+  release: (self: AudioVoice, at: number?) -> boolean,
+  --- Moves a voice in space from `at`, changing the fields given; false for a voice not in space.
+  place: (self: AudioVoice, place: AudioPlace, at: number?) -> boolean,
+  --- Sends it to `node` at `level` as well as wherever it plays, or changes the level it plays
+  --- there at (where it plays first included).
+  send: (self: AudioVoice, node: AudioNode, level: number, at: number?) -> boolean,
+  --- Stops it playing into `node`; false if it didn't.
+  unsend: (self: AudioVoice, node: AudioNode, at: number?) -> boolean,
+  --- Plays it into `node` instead of where it plays first, keeping its sends. Moving a voice
+  --- changes nothing in the graph.
+  route: (self: AudioVoice, node: AudioNode, at: number?) -> boolean,
+  --- Pauses it on frame `at`, holding its place: unmixed, and counted against no budget.
+  pause: (self: AudioVoice, at: number?) -> boolean,
+  --- Plays it on from where it was paused, on frame `at`; a voice made with
+  --- `AudioContext:voice` starts here.
+  play: (self: AudioVoice, at: number?) -> boolean,
+  --- Moves it to source frame `frame` on frame `at`: at once for PCM, and for a stream a feed
+  --- decodes once the feed has decoded from there. Stamped at least `seekLead()` ahead, the seek
+  --- is prepared and lands on `at` without a gap; if the feed is still late on `at`, the voice
+  --- keeps time in silence and joins where it would have got to. A stream a script writes can't
+  --- seek, and says so.
+  seek: (self: AudioVoice, frame: number, at: number?) -> boolean,
+  --- How far ahead, in frames, a seek has to be stamped to be prepared: half its stream. Nil for a
+  --- voice that isn't a stream a feed decodes, which needs no lead.
+  seekLead: (self: AudioVoice) -> number?,
+  --- The source frame it is at, as of the last render (for a stream, counted from where it
+  --- started or last sought to); nil once it has ended.
+  position: (self: AudioVoice) -> number?,
+  state: (self: AudioVoice) -> AudioVoiceState,
+}
+
+--- An audio context: voices mixed on a sample clock. The clock is output frames rendered, and
+--- moves only when the engine renders.
+export type AudioContext = {
+  rate: (self: AudioContext) -> number,
+  channels: (self: AudioContext) -> number,
+  --- The next frame the engine renders. A command stamped for it or later lands on its frame.
+  now: (self: AudioContext) -> number,
+  --- Starts a voice playing decoded audio or a stream (which plays once, with no offset or loop).
+  play: (self: AudioContext, source: AudioPcm | AudioStream, options: AudioPlayOptions?) -> AudioVoice,
+  --- A voice as `play` makes it, paused: it holds a slot and waits for `AudioVoice:play`.
+  voice: (self: AudioContext, source: AudioPcm | AudioStream, options: AudioPlayOptions?) -> AudioVoice,
+  --- The master bus: the output. It has no route and is never removed.
+  master: (self: AudioContext) -> AudioNode,
+  --- A bus routed into `parent` (the master), at `gain` (1), muted or not, with `channels` (the
+  --- context's); voices can play into it at once.
+  bus: (
+    self: AudioContext,
+    options: { parent: AudioNode?, gain: number?, muted: boolean?, channels: number? }?
+  ) -> AudioNode,
+  --- A node running a processor of `kind` (`audio.processors()` lists them), made with `settings`:
+  --- its parameters by name, `channels` (the context's), and whatever the kind is made with.
+  --- It is connected to nothing.
+  node: (self: AudioContext, kind: string, settings: { [string]: number | string }?) -> AudioNode,
+  --- Runs `body` with the graph, and makes every change it asks for together from frame `at`, or
+  --- none of them. Changes to the graph take effect in the order they're made: one stamped
+  --- earlier than one still waiting is an error.
+  patch: (self: AudioContext, body: (graph: AudioPatch) -> (), at: number?) -> (),
+  --- Renders `frames` frames and returns them as interleaved 32-bit floats.
+  render: (self: AudioContext, frames: number) -> buffer,
+  stats: (self: AudioContext) -> AudioStats,
+  --- Moves the listener from `at`, changing the fields given. It starts at the origin facing
+  --- `-z` with `y` up, still.
+  listener: (self: AudioContext, listener: AudioListener, at: number?) -> (),
+  --- The device rendering an output, or nil for an offline context.
+  device: (self: AudioContext) -> AudioDevice?,
+  --- Stops an output's device and drops every voice it played; commands after it are errors.
+  --- An output plays until it is closed or its runtime ends, held or not.
+  close: (self: AudioContext) -> (),
+  --- How many more commands the queue to the engine has room for.
+  room: (self: AudioContext) -> number,
+  --- Runs `body`, and sends every command it makes to the engine together: ones not stamped for
+  --- later are carried out on the same frame. Groups don't nest.
+  group: (self: AudioContext, body: () -> ()) -> (),
 }
 
 --- A shader type, from `jess.shader` (`float`, `vec2`, `vec3`, `vec4`, `mat3`, `mat4`,
@@ -319,5 +703,27 @@ declare jess: {
     control: (control: string) -> string,
     --- The domain's live input runtime under a host; a headless one of the script's own otherwise.
     runtime: () -> InputRuntime,
+  },
+
+  --- The native half of `@jess/audio`, which wraps it: PCM from interleaved bytes, and contexts
+  --- that mix voices on a sample clock. See `jess::audio`.
+  audio: {
+    --- PCM from interleaved bytes, `channels` samples per frame, each stored as `format`.
+    pcm: (data: buffer | string, options: { format: AudioSampleFormat, channels: number, rate: number }) -> AudioPcm,
+    --- A context the script renders.
+    offline: (options: AudioContextOptions?) -> AudioContext,
+    --- A context an output device renders: the default one, or `null`, which plays to nowhere in
+    --- real time. It runs at the device's own rate unless `rate` asks for another, and asks for
+    --- `period` frames at a time as a hint. Needs `audio.output`, and a jess built with the
+    --- audio-device feature.
+    output: (options: AudioOutputOptions?) -> AudioContext,
+    --- A stream of `channels` (2) at `rate` (48000) holding `seconds` (1, at most 60) of frames; or,
+    --- given a stream's handle, the stream itself, in whatever worker the handle was sent to.
+    stream: (options: { channels: number?, rate: number?, seconds: number? } | JessHandle) -> AudioStream,
+    --- An MP3, Ogg Vorbis, or Ogg Opus file decoded into a stream of its own layout on a thread
+    --- of its own, which keeps the stream full whatever the script is doing.
+    feed: (data: buffer | string, options: AudioFeedOptions?) -> AudioFeed,
+    --- The processor kinds `AudioContext:node` and `AudioNode:insert` make, a host's own included.
+    processors: () -> { string },
   },
 }

@@ -1,6 +1,9 @@
 //! Everything Luau sees: the API contracts, the kernel from a script's side, the style gate,
 //! capabilities, packages, workspaces, applications, the shader front end, and the stdlib.
 
+mod audio_codecs;
+mod audio_device;
+mod audio_extension;
 mod common;
 mod contracts;
 mod kernel;
