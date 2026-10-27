@@ -31,9 +31,9 @@
 //!
 //! # Culling
 //!
-//! Imported targets and buffers are what the graph produces. A pass survives compilation when the
-//! host can observe its work: it is the last to store into an imported resource, or a surviving
-//! pass reads or loads what it stored. Every other pass is culled and listed as such.
+//! Imported and kept targets and buffers are what the graph produces. A pass survives compilation
+//! when the host can observe its work: it is the last to store into an imported or kept resource,
+//! or a surviving pass reads or loads what it stored. Every other pass is culled and listed as such.
 
 #![warn(missing_docs)]
 
@@ -53,4 +53,4 @@ pub use pass::{
     Attachment, ClearValue, CopyAt, CopyRegion, CopySize, LoadOp, Pass, PassInput, PassKind, PassMetadata, PassOutput,
     ReadUsage, SourceLocation, StoreOp, Subresource,
 };
-pub use target::{COPY_ROW_ALIGNMENT, Extent, SampleKind, TargetSize, TextureFormat};
+pub use target::{BufferSize, COPY_ROW_ALIGNMENT, Extent, SampleKind, TargetSize, TextureFormat};

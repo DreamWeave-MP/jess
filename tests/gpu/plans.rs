@@ -314,7 +314,7 @@ fn a_plan_draws_tests_depth_samples_and_reads_back() {
 }
 
 /// Adds 0.2 to every element of a pass storage buffer of four `Vec4f`s; with its declaration.
-fn brighten(gpu: &Gpu) -> (Arc<ComputePipeline>, StorageId) {
+pub(super) fn brighten(gpu: &Gpu) -> (Arc<ComputePipeline>, StorageId) {
     let mut builder = ProgramBuilder::compute([4, 1, 1]);
     let mut site = builder.site();
     let colors = site

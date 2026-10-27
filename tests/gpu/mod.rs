@@ -6,6 +6,7 @@ mod compute;
 mod controls;
 mod draw;
 mod draw_sets;
+mod kept;
 mod levels;
 mod plans;
 mod resources;

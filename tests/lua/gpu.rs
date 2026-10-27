@@ -873,6 +873,38 @@ const LEVELS_PLAN: &str = r"
             assert(buffer.readu32(screen:read(), 0) == 0xff00ff00, string.format('%08x', buffer.readu32(screen:read(), 0)))
 ";
 
+/// A plan keeps a frame in a buffer sized by its viewport, for the script to read from the plan.
+#[cfg(feature = "gpu")]
+#[test]
+fn a_script_reads_what_a_plan_kept() {
+    let Some(runtime) = gpu_runtime("a_script_reads_what_a_plan_kept") else {
+        return;
+    };
+    runtime
+        .exec(
+            r"
+            local device = jess.gpu.device()
+            local plan = device:plan({
+              viewport = { width = 4, height = 2 },
+              targets = { { name = 'color', format = 'rgba8Unorm' } },
+              buffers = { { name = 'pixels', image = 'rgba8Unorm', kept = true } },
+              passes = {
+                { name = 'clear', kind = 'draw', colors = { { target = 'color', clear = { 0, 1, 0, 1 } } } },
+                { name = 'readBack', kind = 'copy', from = 'color', to = 'pixels' },
+              },
+            })
+            assert(plan:bytes('pixels') == 512, tostring(plan:bytes('pixels')))
+            local extent = plan:extent('color')
+            assert(extent.width == 4 and extent.height == 2)
+            plan:run()
+            assert(buffer.readu32(plan:read('pixels'), 256) == 0xff00ff00)
+            assert(buffer.len(plan:readLater('pixels'):wait()) == 512)
+            assert(plan:resized(8, 8):bytes('pixels') == 256 * 8)
+        ",
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+}
+
 /// A plan described in Luau whose compute passes write a transient buffer, which a fullscreen pass
 /// reads and a copy keeps.
 #[cfg(feature = "gpu")]
@@ -958,7 +990,16 @@ fn a_script_plans_compute_for_later_passes() {
 /// What `device:plan` and `plan:run` refuse, each naming the mistake: (script, what the error
 /// says).
 #[cfg(feature = "gpu")]
-const PLAN_MISTAKES: [(&str, &str); 22] = [
+const PLAN_MISTAKES: [(&str, &str); 24] = [
+    (
+        "device:plan({ viewport = viewport, targets = { { name = 't', format = 'rgba8Unorm', imported = true, \
+         kept = true } } })",
+        "GpuDevice:plan: target 1 is imported and kept: the run gives it, or the plan keeps it",
+    ),
+    (
+        "plan:read('output')",
+        "GpuPlan:read: output is imported, not kept: only the plan's kept resources are read from it",
+    ),
     ("plan:setEnabled('p', 1)", "GpuPlan:setEnabled: enabled is a boolean, not 1"),
     (
         "plan:setEnabled('nowhere', false)",

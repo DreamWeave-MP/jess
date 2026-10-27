@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use l3i::bind::{Call, StackResults};
+use l3i::convert::NewBuffer;
 use l3i::extension::{ExtensionDescriptor, TagPolicy, UserdataBuilder};
 use l3i::stack::{Frame, Scope, TableView, ValueView};
 use l3i::userdata::{Owned, Userdata, receiver};
@@ -14,12 +15,12 @@ use super::draw_set::collection;
 use super::pipeline::{
     LuaGpuBindGroup, Pipeline, clear_value, flag, gpu_error, number, options, pipeline_field, slot_name, table, workgroups,
 };
-use super::resources::{LuaGpuBuffer, LuaGpuSampler, LuaGpuTexture, format_of, shown, whole};
+use super::resources::{LuaGpuBuffer, LuaGpuRead, LuaGpuSampler, LuaGpuTexture, format_of, shown, whole};
 use crate::gpu::{DrawSets, Gpu, Group, Import, Plan, PlanBinding, PlanGroup, Slot, Work};
 use crate::lua::{check_options, error, kind, push_table};
 use crate::render::{
-    ClearValue, CopyAt, CopyRegion, CopySize, Extent, LoadOp, Pass, PassKind, PassMetadata, PassOutput, ReadUsage,
-    RenderGraph, ResourceDesc, ResourceKind, StoreOp, Subresource, TargetDesc, TargetSize,
+    BufferSize, ClearValue, CopyAt, CopyRegion, CopySize, Extent, LoadOp, Pass, PassKind, PassMetadata, PassOutput,
+    ReadUsage, RenderGraph, ResourceDesc, ResourceKind, ResourceOrigin, StoreOp, Subresource, TargetDesc, TargetSize,
 };
 use crate::shader::Frequency;
 
@@ -40,11 +41,11 @@ const FUNCTION: &str = "GpuDevice:plan";
 
 const PLAN_KEYS: [&str; 5] = ["buffers", "name", "passes", "targets", "viewport"];
 
-const TARGET_KEYS: [&str; 9] = [
-    "format", "height", "imported", "layers", "mips", "name", "samples", "scale", "width",
+const TARGET_KEYS: [&str; 10] = [
+    "format", "height", "imported", "kept", "layers", "mips", "name", "samples", "scale", "width",
 ];
 
-const BUFFER_KEYS: [&str; 3] = ["imported", "name", "size"];
+const BUFFER_KEYS: [&str; 6] = ["image", "imported", "kept", "name", "scale", "size"];
 
 const WRITE_KEYS: [&str; 7] = ["clear", "layer", "level", "load", "resolve", "store", "target"];
 
@@ -172,16 +173,30 @@ fn add_targets(frame: &Frame<'_>, graph: &mut RenderGraph, targets: ValueView<'_
             .mips(count("mips")?)
             .layers(count("layers")?)
             .samples(count("samples")?);
-        let added = if flag(frame, FUNCTION, &fields, "imported", false)? {
-            graph.import_target(name, target)
-        } else {
-            graph.add_target(name, target)
-        };
-        added.map(drop).map_err(|problem| graph_error(&problem))
+        let origin = origin(frame, &what, &fields)?;
+        graph
+            .add(name, ResourceDesc::Texture(target), origin)
+            .map(drop)
+            .map_err(|problem| graph_error(&problem))
     })
 }
 
-/// Registers each of `buffers`: `{ name, size, imported }`.
+/// Who owns a target or buffer: the graph, unless it is `imported` or `kept`.
+fn origin(frame: &Frame<'_>, what: &str, fields: &TableView<'_>) -> l3i::Result<ResourceOrigin> {
+    match (
+        flag(frame, FUNCTION, fields, "imported", false)?,
+        flag(frame, FUNCTION, fields, "kept", false)?,
+    ) {
+        (false, false) => Ok(ResourceOrigin::Transient),
+        (true, false) => Ok(ResourceOrigin::Imported),
+        (false, true) => Ok(ResourceOrigin::Kept),
+        (true, true) => Err(error(format!(
+            "{FUNCTION}: {what} is imported and kept: the run gives it, or the plan keeps it"
+        ))),
+    }
+}
+
+/// Registers each of `buffers`: `{ name, size | image and scale, imported, kept }`.
 fn add_buffers(frame: &Frame<'_>, graph: &mut RenderGraph, buffers: ValueView<'_>) -> l3i::Result<()> {
     if buffers.is_nil() {
         return Ok(());
@@ -190,13 +205,34 @@ fn add_buffers(frame: &Frame<'_>, graph: &mut RenderGraph, buffers: ValueView<'_
         let what = format!("buffer {index}");
         let fields = options(frame, FUNCTION, &what, buffer, &BUFFER_KEYS)?;
         let name = required(frame, &what, &fields, "name")?;
-        let bytes = bytes(FUNCTION, "a buffer's size", fields.raw_get(frame, "size")?)?;
-        let added = if flag(frame, FUNCTION, &fields, "imported", false)? {
-            graph.import_buffer(name, bytes)
-        } else {
-            graph.add_buffer(name, bytes)
+        let size = fields.raw_get(frame, "size")?;
+        let size = match text(frame, &what, &fields, "image")? {
+            Some(format) if size.is_nil() => {
+                let scale = fields.raw_get(frame, "scale")?;
+                // A buffer's scale is a small factor; f32 holds it as the graph needs it.
+                #[allow(clippy::cast_possible_truncation)]
+                let scale = if scale.is_nil() {
+                    1.0
+                } else {
+                    number(FUNCTION, "a scale", scale)? as f32
+                };
+                BufferSize::Image {
+                    format: format_of(FUNCTION, &format)?,
+                    scale,
+                }
+            }
+            Some(_) => {
+                return Err(error(format!(
+                    "{FUNCTION}: {what} has a size and an image: expected one or the other"
+                )));
+            }
+            None => BufferSize::Bytes(bytes(FUNCTION, "a buffer's size", size)?),
         };
-        added.map(drop).map_err(|problem| graph_error(&problem))
+        let origin = origin(frame, &what, &fields)?;
+        graph
+            .add(name, ResourceDesc::Buffer(size), origin)
+            .map(drop)
+            .map_err(|problem| graph_error(&problem))
     })
 }
 
@@ -805,6 +841,23 @@ fn set_region(this: &LuaGpuPlan, call: &Call<'_>, pass: ValueView<'_>, region: V
         .map_err(|problem| gpu_error(FUNCTION, &problem))
 }
 
+/// A kept resource's name, and the level and layer of it read: 0 and 0 unless named.
+fn kept_args(
+    function: &str,
+    name: ValueView<'_>,
+    level: Option<ValueView<'_>>,
+    layer: Option<ValueView<'_>>,
+) -> l3i::Result<(String, u32, u32)> {
+    if !name.is_string() {
+        return Err(error(format!("{function} takes a kept resource's name, not {}", shown(name))));
+    }
+    Ok((
+        name.read::<&str>()?.to_owned(),
+        whole(function, "the level", level, Some(0))?,
+        whole(function, "the layer", layer, Some(0))?,
+    ))
+}
+
 /// `plan:resized(width, height)`: the same plan for another viewport.
 fn resized(this: &LuaGpuPlan, width: ValueView<'_>, height: ValueView<'_>) -> l3i::Result<Owned<LuaGpuPlan>> {
     const RESIZED: &str = "GpuPlan:resized";
@@ -859,6 +912,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
     })
     .untyped();
     plan.method("run", run).untyped();
+    describe_reads(&mut plan);
     plan.method("setEnabled", set_enabled).untyped();
     plan.method("setRegion", set_region).untyped();
     plan.method("enabled", |this: &LuaGpuPlan, pass: ValueView<'_>| -> l3i::Result<bool> {
@@ -911,4 +965,76 @@ pub fn describe(d: &mut ExtensionDescriptor) {
             viewport.height
         )
     });
+}
+
+/// Declares the plan's methods that read what it keeps and say how big its resources are.
+fn describe_reads(plan: &mut UserdataBuilder<'_, LuaGpuPlan>) {
+    plan.method(
+        "read",
+        |this: &LuaGpuPlan,
+         name: ValueView<'_>,
+         level: Option<ValueView<'_>>,
+         layer: Option<ValueView<'_>>|
+         -> l3i::Result<NewBuffer> {
+            const READ: &str = "GpuPlan:read";
+            let (name, level, layer) = kept_args(READ, name, level, layer)?;
+            this.gpu
+                .read_kept(&this.plan, &name, level, layer)
+                .map(NewBuffer)
+                .map_err(|problem| gpu_error(READ, &problem))
+        },
+    )
+    .untyped();
+    plan.method(
+        "readLater",
+        |this: &LuaGpuPlan,
+         name: ValueView<'_>,
+         level: Option<ValueView<'_>>,
+         layer: Option<ValueView<'_>>|
+         -> l3i::Result<Owned<LuaGpuRead>> {
+            const READ: &str = "GpuPlan:readLater";
+            let (name, level, layer) = kept_args(READ, name, level, layer)?;
+            let read = this
+                .gpu
+                .read_kept_later(&this.plan, &name, level, layer)
+                .map_err(|problem| gpu_error(READ, &problem))?;
+            Ok(Owned(LuaGpuRead {
+                read: std::cell::RefCell::new(read),
+            }))
+        },
+    )
+    .untyped();
+    plan.method("bytes", |this: &LuaGpuPlan, name: ValueView<'_>| -> l3i::Result<f64> {
+        const BYTES: &str = "GpuPlan:bytes";
+        if !name.is_string() {
+            return Err(error(format!("{BYTES} takes a buffer's name, not {}", shown(name))));
+        }
+        let bytes = this
+            .plan
+            .buffer_bytes(name.read::<&str>()?)
+            .map_err(|problem| gpu_error(BYTES, &problem))?;
+        // A buffer's bytes stay far below 2^53.
+        #[allow(clippy::cast_precision_loss)]
+        Ok(bytes as f64)
+    })
+    .untyped();
+    plan.method(
+        "extent",
+        |this: &LuaGpuPlan, call: &Call<'_>, name: ValueView<'_>| -> l3i::Result<StackResults> {
+            const EXTENT: &str = "GpuPlan:extent";
+            if !name.is_string() {
+                return Err(error(format!("{EXTENT} takes a target's name, not {}", shown(name))));
+            }
+            let extent = this
+                .plan
+                .target_extent(name.read::<&str>()?)
+                .map_err(|problem| gpu_error(EXTENT, &problem))?;
+            push_table(call, 0, 2, |frame, table| {
+                table.raw_set_value(frame, "width", &f64::from(extent.width))?;
+                table.raw_set_value(frame, "height", &f64::from(extent.height))
+            })?;
+            Ok(StackResults)
+        },
+    )
+    .untyped();
 }

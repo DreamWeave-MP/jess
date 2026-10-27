@@ -199,6 +199,73 @@ impl fmt::Display for TextureFormat {
     }
 }
 
+/// How big a buffer is: so many bytes, or room for a copy of a target that is a multiple of the
+/// viewport, which grows and shrinks with it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BufferSize {
+    /// A fixed size: a nonzero multiple of 4 bytes.
+    Bytes(u64),
+    /// Room for all of a `format` target the viewport's size times `scale`, copied in: each row
+    /// padded to [`COPY_ROW_ALIGNMENT`], as a copy lays it out.
+    Image {
+        /// The target's format, which has a layout in a buffer.
+        format: TextureFormat,
+        /// The factor applied to both viewport dimensions.
+        scale: f32,
+    },
+}
+
+impl BufferSize {
+    /// The size in bytes, if it doesn't depend on the viewport.
+    #[must_use]
+    pub const fn fixed(self) -> Option<u64> {
+        match self {
+            Self::Bytes(bytes) => Some(bytes),
+            Self::Image { .. } => None,
+        }
+    }
+
+    /// The size in bytes at `viewport`.
+    #[must_use]
+    pub fn resolve(self, viewport: Extent) -> u64 {
+        match self {
+            Self::Bytes(bytes) => bytes,
+            Self::Image { format, scale } => {
+                let size = TargetSize::Relative { scale }.resolve(viewport);
+                u64::from(format.copy_row(size.width).unwrap_or(0)) * u64::from(size.height)
+            }
+        }
+    }
+
+    /// What is wrong with it, if anything.
+    #[must_use]
+    pub fn problem(self) -> Option<String> {
+        match self {
+            Self::Bytes(bytes) if bytes == 0 || !bytes.is_multiple_of(4) => {
+                Some(format!("a nonzero multiple of 4 bytes, not {bytes}"))
+            }
+            Self::Image { format, .. } if format.texel_bytes().is_none() => {
+                Some(format!("a format with a layout in a buffer, not {format}"))
+            }
+            Self::Image { scale, .. } if !TargetSize::Relative { scale }.is_valid() => {
+                Some(format!("a finite, positive scale, not {scale}"))
+            }
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for BufferSize {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::Bytes(bytes) => write!(formatter, "{bytes} bytes"),
+            Self::Image { format, scale } => {
+                write!(formatter, "{format} rows at {}", TargetSize::Relative { scale })
+            }
+        }
+    }
+}
+
 /// What a row of a target is padded to in a buffer it is copied to or from, in bytes: what every
 /// backend asks of copies between targets and buffers.
 pub const COPY_ROW_ALIGNMENT: u32 = 256;

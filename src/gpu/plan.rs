@@ -108,7 +108,7 @@ impl Import<'_> {
 
 /// A resource of the graph as one run sees it.
 #[derive(Clone, Copy, Debug)]
-enum Live<'a> {
+pub enum Live<'a> {
     Texture(&'a Texture),
     Buffer(&'a Buffer),
 }
@@ -331,6 +331,55 @@ impl Plan {
         Ok(resolved)
     }
 
+    /// The resource called `name`.
+    fn resource(&self, name: &str) -> Result<(usize, &crate::render::Resource), GpuError> {
+        let id = self
+            .graph
+            .resource_id(name)
+            .ok_or_else(|| GpuError::Invalid(format!("the plan has no target or buffer called {name}")))?;
+        Ok((id.index(), &self.graph.resources()[id.index()]))
+    }
+
+    /// How many bytes the buffer `name` holds at the plan's viewport.
+    ///
+    /// # Errors
+    ///
+    /// A name the plan has no buffer by.
+    pub fn buffer_bytes(&self, name: &str) -> Result<u64, GpuError> {
+        let (_, resource) = self.resource(name)?;
+        resource
+            .bytes_at(Some(self.viewport))
+            .ok_or_else(|| GpuError::Invalid(format!("{name} is a target, not a buffer")))
+    }
+
+    /// How big level 0 of the target `name` is at the plan's viewport.
+    ///
+    /// # Errors
+    ///
+    /// A name the plan has no target by.
+    pub fn target_extent(&self, name: &str) -> Result<Extent, GpuError> {
+        let (_, resource) = self.resource(name)?;
+        resource
+            .target()
+            .map(|target| target.resolve(self.viewport))
+            .ok_or_else(|| GpuError::Invalid(format!("{name} is a buffer, not a target")))
+    }
+
+    /// The plan's own texture or buffer for the kept resource `name`.
+    pub(crate) fn kept(&self, name: &str) -> Result<Live<'_>, GpuError> {
+        let (index, resource) = self.resource(name)?;
+        if resource.origin != ResourceOrigin::Kept {
+            return Err(GpuError::Invalid(format!(
+                "{name} is {}, not kept: only the plan's kept resources are read from it",
+                resource.origin.name()
+            )));
+        }
+        self.allocations[index]
+            .as_ref()
+            .map(Allocation::live)
+            .ok_or_else(|| GpuError::Invalid(format!("{name} was never made")))
+    }
+
     /// Where the surviving pass `name` runs.
     fn position(&self, name: &str) -> Result<usize, GpuError> {
         let Some(id) = self.graph.pass_id(name) else {
@@ -455,7 +504,8 @@ impl Plan {
                     }
                     Live::Texture(texture)
                 }
-                (Import::Buffer(_, buffer), ResourceDesc::Buffer { bytes }) => {
+                (Import::Buffer(_, buffer), ResourceDesc::Buffer(size)) => {
+                    let bytes = size.resolve(self.viewport);
                     if buffer.size() != bytes {
                         return Err(GpuError::Invalid(format!(
                             "the run gives {name} a {}-byte buffer: expected {bytes} bytes",
@@ -464,7 +514,7 @@ impl Plan {
                     }
                     Live::Buffer(buffer)
                 }
-                (Import::Texture(..), ResourceDesc::Buffer { .. }) => {
+                (Import::Texture(..), ResourceDesc::Buffer(_)) => {
                     return Err(GpuError::Invalid(format!(
                         "the run gives {name} a texture, and it is a buffer"
                     )));
@@ -641,33 +691,41 @@ impl Gpu {
         ))
     }
 
-    /// A texture or buffer for each group of transient resources that share one, a texture at its
-    /// size for `viewport`.
+    /// A texture or buffer for each group of transient resources that share one, and for each kept
+    /// resource, at its size for `viewport`.
     fn allocate(
         &self,
         graph: &RenderGraph,
         groups: &[AliasGroup],
         viewport: Extent,
     ) -> Result<Vec<Option<Allocation>>, GpuError> {
-        let mut allocations = vec![None; graph.resources().len()];
-        for group in groups {
-            let first = &graph.resources()[group.resources[0].index()];
+        let resources = graph.resources();
+        let mut allocations = vec![None; resources.len()];
+        let shared = groups
+            .iter()
+            .map(|group| group.resources.iter().map(|member| member.index()).collect::<Vec<_>>());
+        let kept = (0..resources.len())
+            .filter(|&index| resources[index].origin == ResourceOrigin::Kept)
+            .map(|index| vec![index]);
+        for members in shared.chain(kept) {
+            let first = &resources[members[0]];
             let allocation = match first.desc {
                 ResourceDesc::Texture(target) => self
                     .texture(&texture_desc(target, viewport))
                     .map(|texture| Allocation::Texture(Arc::new(texture))),
-                ResourceDesc::Buffer { bytes } => {
+                ResourceDesc::Buffer(size) => {
                     let usage = BufferUsage::VERTEX
                         | BufferUsage::INDEX
                         | BufferUsage::UNIFORM
                         | BufferUsage::STORAGE
                         | BufferUsage::INDIRECT;
-                    self.buffer(bytes, usage).map(|buffer| Allocation::Buffer(Arc::new(buffer)))
+                    self.buffer(size.resolve(viewport), usage)
+                        .map(|buffer| Allocation::Buffer(Arc::new(buffer)))
                 }
             }
             .map_err(|problem| GpuError::Invalid(format!("{} can't be made: {problem}", first.name)))?;
-            for member in &group.resources {
-                allocations[member.index()] = Some(allocation.clone());
+            for member in members {
+                allocations[member] = Some(allocation.clone());
             }
         }
         Ok(allocations)

@@ -46,6 +46,9 @@ Targets and buffers are both resources, and each has an origin:
 
 - **Transient** resources belong to the graph. They hold nothing before their first write and nothing after their last use, and they may share memory with other transient resources.
 - **Imported** resources belong to the host, like the window's backbuffer, or a buffer the next frame draws instances from. Their contents exist before the graph runs and are observed after it. They're what the graph produces, and they never share memory.
+- **Kept** resources belong to whatever runs the graph, a plan. They hold what the last run left, so a first write can load them (a frame's history), and are observed after each run, the way the host reads one back from the plan. They're what the graph produces too, and they never share memory either.
+
+`RenderGraph::add` registers a resource of any description and origin; the `add_*` and `import_*` methods are the common cases. A buffer's `BufferSize` is a number of bytes or, sized by the viewport, room for all of a target of a format at the viewport times a scale, each row padded to `COPY_ROW_ALIGNMENT` as a copy lays it out.
 
 ## Passes
 
@@ -101,7 +104,7 @@ The rules hold for each level of each layer on its own: a pass that reads level 
 
 ## Culling
 
-Imported resources are what the graph produces, so a pass survives when the host can see its work: it is the last pass to store into an imported target or buffer, or a surviving pass reads or loads what it stored. Everything else is culled.
+Imported and kept resources are what the graph produces, so a pass survives when the host can see its work: it is the last pass to store into an imported or kept target or buffer, or a surviving pass reads or loads what it stored. Everything else is culled.
 
 Culling is not silent. `CompiledGraph::culled` lists the culled passes and the dump prints them. A pass that clears a target that the next writer clears again is dead work, and the dump says so. A graph where nothing reaches an imported target is an error, not an empty frame.
 

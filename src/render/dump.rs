@@ -138,7 +138,7 @@ impl CompiledGraph<'_> {
                     .concat();
                     format!("{}{extras}", target.size)
                 }
-                ResourceDesc::Buffer { bytes } => format!("{bytes} bytes"),
+                ResourceDesc::Buffer(size) => size.to_string(),
             })
             .collect();
         let name_width = resources.iter().map(|resource| resource.name.len()).max().unwrap_or(0);

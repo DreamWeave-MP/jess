@@ -865,7 +865,8 @@ export type GpuDrawSetDesc = {
 }
 
 --- A target a plan declares: a color or depth format, the viewport's size times `scale` (1 by
---- default) or a fixed `width` and `height`, and whether the run gives it (`imported`). It has
+--- default) or a fixed `width` and `height`, and whether the run gives it (`imported`) or the
+--- plan keeps it from run to run (`kept`), for the script to read with `GpuPlan:read`. It has
 --- `mips` levels and `layers` layers, 1 of each by default, and `samples` samples a texel: 1, or 4
 --- for a multisampled target of one level and one layer, drawn into and resolved.
 export type GpuPlanTarget = {
@@ -878,10 +879,20 @@ export type GpuPlanTarget = {
   layers: number?,
   samples: number?,
   imported: boolean?,
+  kept: boolean?,
 }
 
---- A buffer a plan declares: `size` bytes, a multiple of 4, and whether the run gives it.
-export type GpuPlanBuffer = { name: string, size: number, imported: boolean? }
+--- A buffer a plan declares: `size` bytes, a multiple of 4, or room for all of an `image` target
+--- of that format at the viewport's size times `scale` (1), rows padded as a copy lays them; and
+--- whether the run gives it (`imported`) or the plan keeps it (`kept`).
+export type GpuPlanBuffer = {
+  name: string,
+  size: number?,
+  image: GpuTextureFormat?,
+  scale: number?,
+  imported: boolean?,
+  kept: boolean?,
+}
 
 --- A target, all of it or one `level` of one `layer` of it.
 export type GpuPlanLevel = string | { target: string, level: number?, layer: number? }
@@ -973,6 +984,8 @@ export type GpuPlanDesc = {
 --- `dump` the compiled graph, and `timings` how long each pass of the last run took on the GPU,
 --- on a device with `timestamps`. `setEnabled` leaves passes out of later runs or puts them back,
 --- and `setRegion` changes what a copy pass copies, in this plan and every plan resized from it.
+--- `read` and `readLater` read a kept target or buffer as the last run left it, and `bytes` and
+--- `extent` say how big a buffer or target is at the plan's viewport.
 --- `tostring` gives `GpuPlan(scene, 4 of 5 passes, 640×480)`.
 declare extern type GpuPlan with
   name: string
@@ -983,6 +996,10 @@ declare extern type GpuPlan with
   function setEnabled(self, passes: string | { string }, enabled: boolean): ()
   function enabled(self, pass: string): boolean
   function setRegion(self, pass: string, region: GpuCopyRegion): ()
+  function read(self, name: string, level: number?, layer: number?): buffer
+  function readLater(self, name: string, level: number?, layer: number?): GpuRead
+  function bytes(self, buffer: string): number
+  function extent(self, target: string): { width: number, height: number }
   function resized(self, width: number, height: number): GpuPlan
   function dump(self): string
   function timings(self): { { pass: string, ms: number? } }?

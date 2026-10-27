@@ -5,7 +5,7 @@ use std::fmt;
 
 use crate::render::error::GraphError;
 use crate::render::pass::{Attachment, ClearValue, LoadOp, Pass, PassKind, PassOutput, ReadUsage, Subresource};
-use crate::render::target::{Extent, TargetSize, TextureFormat};
+use crate::render::target::{BufferSize, Extent, TargetSize, TextureFormat};
 
 /// A pass in one [`RenderGraph`]. Only meaningful for the graph that returned it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
@@ -51,7 +51,7 @@ pub enum ResourceKind {
     /// A depth target: written through the depth attachment, read for depth testing or sampled
     /// as a depth texture.
     DepthTarget,
-    /// Bytes: written by compute passes, read by shaders, drawn from, and copied.
+    /// Bytes: written by compute passes, read by shaders, drawn from, and copied into and out of.
     Buffer,
 }
 
@@ -82,6 +82,10 @@ pub enum ResourceOrigin {
     /// The host, such as the window's backbuffer. Its contents exist before the graph runs and
     /// are observed after it; it never shares memory.
     Imported,
+    /// The plan that runs the graph: it holds what the last run left, the first run zeros, and
+    /// is observed after each, the way the host reads it back from the plan; it never shares
+    /// memory. A history target, say, or a buffer of what a frame found.
+    Kept,
 }
 
 impl ResourceOrigin {
@@ -91,6 +95,7 @@ impl ResourceOrigin {
         match self {
             Self::Transient => "transient",
             Self::Imported => "imported",
+            Self::Kept => "kept",
         }
     }
 }
@@ -228,11 +233,8 @@ pub enum LevelSize {
 pub enum ResourceDesc {
     /// A render or depth target: a depth target exactly when its format is a depth format.
     Texture(TargetDesc),
-    /// A buffer.
-    Buffer {
-        /// How many bytes it holds: a nonzero multiple of 4.
-        bytes: u64,
-    },
+    /// A buffer of a fixed size, or one sized by the viewport.
+    Buffer(BufferSize),
 }
 
 /// A registered target or buffer.
@@ -253,8 +255,14 @@ impl Resource {
         match self.desc {
             ResourceDesc::Texture(target) if target.format.is_depth() => ResourceKind::DepthTarget,
             ResourceDesc::Texture(_) => ResourceKind::RenderTarget,
-            ResourceDesc::Buffer { .. } => ResourceKind::Buffer,
+            ResourceDesc::Buffer(_) => ResourceKind::Buffer,
         }
+    }
+
+    /// Whether what it holds is seen after a run: an imported or kept resource's is.
+    #[must_use]
+    pub const fn is_observed(&self) -> bool {
+        !matches!(self.origin, ResourceOrigin::Transient)
     }
 
     /// A target's pixel format; `None` for a buffer.
@@ -262,7 +270,7 @@ impl Resource {
     pub const fn format(&self) -> Option<TextureFormat> {
         match self.desc {
             ResourceDesc::Texture(target) => Some(target.format),
-            ResourceDesc::Buffer { .. } => None,
+            ResourceDesc::Buffer(_) => None,
         }
     }
 
@@ -271,7 +279,7 @@ impl Resource {
     pub const fn size(&self) -> Option<TargetSize> {
         match self.desc {
             ResourceDesc::Texture(target) => Some(target.size),
-            ResourceDesc::Buffer { .. } => None,
+            ResourceDesc::Buffer(_) => None,
         }
     }
 
@@ -280,7 +288,7 @@ impl Resource {
     pub const fn target(&self) -> Option<TargetDesc> {
         match self.desc {
             ResourceDesc::Texture(target) => Some(target),
-            ResourceDesc::Buffer { .. } => None,
+            ResourceDesc::Buffer(_) => None,
         }
     }
 
@@ -289,7 +297,7 @@ impl Resource {
     pub const fn subresources(&self) -> u32 {
         match self.desc {
             ResourceDesc::Texture(target) => target.mips * target.layers,
-            ResourceDesc::Buffer { .. } => 1,
+            ResourceDesc::Buffer(_) => 1,
         }
     }
 
@@ -298,7 +306,7 @@ impl Resource {
     pub const fn samples(&self) -> u32 {
         match self.desc {
             ResourceDesc::Texture(target) => target.samples,
-            ResourceDesc::Buffer { .. } => 1,
+            ResourceDesc::Buffer(_) => 1,
         }
     }
 
@@ -307,16 +315,36 @@ impl Resource {
     pub const fn has(&self, subresource: Subresource) -> bool {
         match self.desc {
             ResourceDesc::Texture(target) => subresource.level < target.mips && subresource.layer < target.layers,
-            ResourceDesc::Buffer { .. } => subresource.level == 0 && subresource.layer == 0,
+            ResourceDesc::Buffer(_) => subresource.level == 0 && subresource.layer == 0,
         }
     }
 
-    /// A buffer's size in bytes; `None` for a target.
+    /// A buffer's size in bytes, if it doesn't depend on the viewport; `None` for a target.
     #[must_use]
     pub const fn bytes(&self) -> Option<u64> {
         match self.desc {
             ResourceDesc::Texture(_) => None,
-            ResourceDesc::Buffer { bytes } => Some(bytes),
+            ResourceDesc::Buffer(size) => size.fixed(),
+        }
+    }
+
+    /// A buffer's size; `None` for a target.
+    #[must_use]
+    pub const fn buffer_size(&self) -> Option<BufferSize> {
+        match self.desc {
+            ResourceDesc::Texture(_) => None,
+            ResourceDesc::Buffer(size) => Some(size),
+        }
+    }
+
+    /// A buffer's size in bytes at `viewport`, or without one if it doesn't need one; `None` for
+    /// a target, and for a buffer sized by the viewport without one.
+    #[must_use]
+    pub fn bytes_at(&self, viewport: Option<Extent>) -> Option<u64> {
+        match (self.desc, viewport) {
+            (ResourceDesc::Texture(_), _) => None,
+            (ResourceDesc::Buffer(size), None) => size.fixed(),
+            (ResourceDesc::Buffer(size), Some(viewport)) => Some(size.resolve(viewport)),
         }
     }
 }
@@ -447,7 +475,29 @@ impl RenderGraph {
     ///
     /// When the name is empty or taken, or `bytes` isn't a nonzero multiple of 4.
     pub fn add_buffer(&mut self, name: impl Into<String>, bytes: u64) -> Result<ResourceId, GraphError> {
-        self.add_resource(name.into(), ResourceDesc::Buffer { bytes }, ResourceOrigin::Transient)
+        self.add_resource(
+            name.into(),
+            ResourceDesc::Buffer(BufferSize::Bytes(bytes)),
+            ResourceOrigin::Transient,
+        )
+    }
+
+    /// Registers a resource of any description and origin: a target of any shape, a buffer of
+    /// any size, owned by the graph, the host, or the plan that runs it.
+    ///
+    /// # Errors
+    ///
+    /// When the name is empty or taken, or the description is invalid.
+    pub fn add(
+        &mut self,
+        name: impl Into<String>,
+        desc: ResourceDesc,
+        origin: ResourceOrigin,
+    ) -> Result<ResourceId, GraphError> {
+        match desc {
+            ResourceDesc::Texture(target) => self.register_target(name.into(), None, target, origin),
+            ResourceDesc::Buffer(_) => self.add_resource(name.into(), desc, origin),
+        }
     }
 
     /// Registers a buffer of `bytes` bytes the host owns: one read back after the graph runs, say,
@@ -457,7 +507,11 @@ impl RenderGraph {
     ///
     /// When the name is empty or taken, or `bytes` isn't a nonzero multiple of 4.
     pub fn import_buffer(&mut self, name: impl Into<String>, bytes: u64) -> Result<ResourceId, GraphError> {
-        self.add_resource(name.into(), ResourceDesc::Buffer { bytes }, ResourceOrigin::Imported)
+        self.add_resource(
+            name.into(),
+            ResourceDesc::Buffer(BufferSize::Bytes(bytes)),
+            ResourceOrigin::Imported,
+        )
     }
 
     /// Registers `target`, of `kind` where the caller named one.
@@ -520,10 +574,13 @@ impl RenderGraph {
 
     fn add_resource(&mut self, name: String, desc: ResourceDesc, origin: ResourceOrigin) -> Result<ResourceId, GraphError> {
         self.check_name(&name)?;
-        if let ResourceDesc::Buffer { bytes } = desc
-            && (bytes == 0 || !bytes.is_multiple_of(4))
+        if let ResourceDesc::Buffer(size) = desc
+            && let Some(problem) = size.problem()
         {
-            return Err(GraphError::InvalidBufferSize { resource: name, bytes });
+            return Err(match size {
+                BufferSize::Bytes(bytes) => GraphError::InvalidBufferSize { resource: name, bytes },
+                BufferSize::Image { .. } => GraphError::InvalidBufferShape { resource: name, problem },
+            });
         }
 
         let id = ResourceId(self.resources.len());

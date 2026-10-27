@@ -56,7 +56,7 @@ unsafe impl Userdata for LuaGpuSampler {
 /// Bytes on their way back from the GPU, from `readLater`.
 #[derive(Debug)]
 pub struct LuaGpuRead {
-    read: RefCell<PendingRead>,
+    pub(crate) read: RefCell<PendingRead>,
 }
 
 // SAFETY: plain Rust state; the destructor never touches the Lua API.

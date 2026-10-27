@@ -3,7 +3,8 @@
 
 use std::sync::{Arc, Mutex, PoisonError};
 
-use super::{Buffer, Gpu, GpuError, Texture};
+use super::plan::Live;
+use super::{Buffer, Gpu, GpuError, Plan, Texture};
 
 /// What a mapping callback reports, once the GPU has copied the bytes and the buffer is mapped.
 type Mapped = Arc<Mutex<Option<Result<(), wgpu::BufferAsyncError>>>>;
@@ -151,5 +152,33 @@ impl Gpu {
     /// As [`Gpu::read_texture`].
     pub fn read_texture_later(&self, texture: &Texture, level: u32, layer: u32) -> Result<PendingRead, GpuError> {
         super::texture::read_later(self, texture, level, layer)
+    }
+}
+
+impl Gpu {
+    /// What the kept resource `name` of `plan` held when the last run before this call finished:
+    /// a buffer whole, or `level` of `layer` of a target. Without waiting.
+    ///
+    /// # Errors
+    ///
+    /// A name the plan has no kept resource by, a level or layer of a buffer, or what reading a
+    /// texture refuses.
+    pub fn read_kept_later(&self, plan: &Plan, name: &str, level: u32, layer: u32) -> Result<PendingRead, GpuError> {
+        match plan.kept(name)? {
+            Live::Buffer(buffer) if level == 0 && layer == 0 => self.read_buffer_later(buffer, 0, buffer.size()),
+            Live::Buffer(_) => Err(GpuError::Invalid(format!(
+                "{name} is a buffer, read whole: it has no level {level} of layer {layer}"
+            ))),
+            Live::Texture(texture) => self.read_texture_later(texture, level, layer),
+        }
+    }
+
+    /// As [`Gpu::read_kept_later`], waiting for the bytes.
+    ///
+    /// # Errors
+    ///
+    /// As [`Gpu::read_kept_later`].
+    pub fn read_kept(&self, plan: &Plan, name: &str, level: u32, layer: u32) -> Result<Vec<u8>, GpuError> {
+        self.read_kept_later(plan, name, level, layer)?.wait().map(<[u8]>::to_vec)
     }
 }

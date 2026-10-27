@@ -90,53 +90,22 @@ impl RenderGraph {
         let from = input.one().unwrap_or_default();
         let to = output.subresource;
         match (source.desc, destination.desc) {
-            (ResourceDesc::Buffer { bytes: held }, ResourceDesc::Buffer { bytes: room }) => {
-                buffers(source, destination, held, room, region).map(Some)
-            }
-            (ResourceDesc::Texture(have), ResourceDesc::Texture(room)) => {
-                if have.format != room.format {
-                    return Err(format!(
-                        "\"{}\" is {} and \"{}\" is {}: a copy between targets keeps the format",
-                        source.name, have.format, destination.name, room.format
-                    ));
-                }
-
-                let start = texel(region.from, "source")?;
-                let end = texel(region.to, "destination")?;
-                let (Some(held), Some(space)) = (have.extent(from.level, viewport), room.extent(to.level, viewport)) else {
-                    whole_depth(have, region, None)?;
-                    // All of one level into another fits at every viewport only when they are the
-                    // same size at every viewport.
-                    if region.is_whole() && have.level_size(from.level) != room.level_size(to.level) {
-                        return Err(format!(
-                            "{} and {}: copying all of one into the other needs the same size",
-                            sized(source, have, from.level),
-                            sized(destination, room, to.level)
-                        ));
+            (ResourceDesc::Buffer(_), ResourceDesc::Buffer(_)) => {
+                let (Some(held), Some(room)) = (source.bytes_at(viewport), destination.bytes_at(viewport)) else {
+                    byte(region.from, "source")?;
+                    byte(region.to, "destination")?;
+                    if let Some(CopySize::Texels { .. }) = region.size {
+                        return Err("a copy between buffers copies bytes, not texels".to_owned());
                     }
                     return Ok(None);
                 };
-
-                let extent = texels(region.size, held, start, &source.name)?;
-                fits(source, from, held, start, extent)?;
-                fits(destination, to, space, end, extent)?;
-                whole_depth(have, region, Some((held, extent)))?;
-                whole_depth(room, region, Some((space, extent)))?;
-                Ok(Some(ResolvedCopy::Targets {
-                    from: TexelAt {
-                        subresource: from,
-                        x: start.0,
-                        y: start.1,
-                    },
-                    to: TexelAt {
-                        subresource: to,
-                        x: end.0,
-                        y: end.1,
-                    },
-                    extent,
-                }))
+                buffers(source, destination, held, room, region).map(Some)
             }
-            (ResourceDesc::Texture(target), ResourceDesc::Buffer { bytes }) => {
+            (ResourceDesc::Texture(have), ResourceDesc::Texture(room)) => {
+                targets((source, have, from), (destination, room, to), region, viewport)
+            }
+            (ResourceDesc::Texture(target), ResourceDesc::Buffer(_)) => {
+                let bytes = destination.bytes_at(viewport);
                 let at = TexelAt {
                     subresource: from,
                     ..Default::default()
@@ -154,7 +123,8 @@ impl RenderGraph {
                     extent,
                 }))
             }
-            (ResourceDesc::Buffer { bytes }, ResourceDesc::Texture(target)) => {
+            (ResourceDesc::Buffer(_), ResourceDesc::Texture(target)) => {
+                let bytes = source.bytes_at(viewport);
                 if target.format.is_depth() {
                     return Err(format!(
                         "it copies a buffer into \"{}\", a depth target, which only a pass can write",
@@ -256,10 +226,10 @@ fn buffers(
 
 /// A copy between a target and a buffer, either way: the target's first texel, the buffer's first
 /// byte, the bytes a row takes in it, and the rectangle, or `None` without a viewport to size a
-/// relative target.
+/// relative target or a buffer sized by the viewport.
 fn between(
     (target, desc, at, start, side): (&Resource, TargetDesc, TexelAt, Option<CopyAt>, &str),
-    (buffer, bytes, offset, other): (&Resource, u64, Option<CopyAt>, &str),
+    (buffer, bytes, offset, other): (&Resource, Option<u64>, Option<CopyAt>, &str),
     amount: Option<CopySize>,
     viewport: Option<Extent>,
 ) -> Result<Option<(TexelAt, u64, u32, Extent)>, String> {
@@ -300,6 +270,9 @@ fn between(
         .copy_row(extent.width)
         .expect("a format with a texel size has a row in a buffer");
     let needed = u64::from(row) * u64::from(extent.height);
+    let Some(bytes) = bytes else {
+        return Ok(None);
+    };
     if offset.saturating_add(needed) > bytes {
         let from = if offset == 0 {
             String::new()
@@ -393,4 +366,54 @@ fn whole_depth(desc: TargetDesc, region: CopyRegion, sizes: Option<(Extent, Exte
         "a copy with a {} target copies a whole level of a layer",
         desc.format
     ))
+}
+
+/// A copy between two targets: `source`, `have` at `from`, into `destination`, `room` at `to`.
+fn targets(
+    (source, have, from): (&Resource, TargetDesc, Subresource),
+    (destination, room, to): (&Resource, TargetDesc, Subresource),
+    region: CopyRegion,
+    viewport: Option<Extent>,
+) -> Result<Option<ResolvedCopy>, String> {
+    if have.format != room.format {
+        return Err(format!(
+            "\"{}\" is {} and \"{}\" is {}: a copy between targets keeps the format",
+            source.name, have.format, destination.name, room.format
+        ));
+    }
+
+    let start = texel(region.from, "source")?;
+    let end = texel(region.to, "destination")?;
+    let (Some(held), Some(space)) = (have.extent(from.level, viewport), room.extent(to.level, viewport)) else {
+        whole_depth(have, region, None)?;
+        // All of one level into another fits at every viewport only when they are the
+        // same size at every viewport.
+        if region.is_whole() && have.level_size(from.level) != room.level_size(to.level) {
+            return Err(format!(
+                "{} and {}: copying all of one into the other needs the same size",
+                sized(source, have, from.level),
+                sized(destination, room, to.level)
+            ));
+        }
+        return Ok(None);
+    };
+
+    let extent = texels(region.size, held, start, &source.name)?;
+    fits(source, from, held, start, extent)?;
+    fits(destination, to, space, end, extent)?;
+    whole_depth(have, region, Some((held, extent)))?;
+    whole_depth(room, region, Some((space, extent)))?;
+    Ok(Some(ResolvedCopy::Targets {
+        from: TexelAt {
+            subresource: from,
+            x: start.0,
+            y: start.1,
+        },
+        to: TexelAt {
+            subresource: to,
+            x: end.0,
+            y: end.1,
+        },
+        extent,
+    }))
 }

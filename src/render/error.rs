@@ -53,6 +53,13 @@ pub enum GraphError {
         /// What it would need to be.
         problem: String,
     },
+    /// A buffer sized by the viewport whose format or scale can't size one.
+    InvalidBufferShape {
+        /// The buffer.
+        resource: String,
+        /// What it would need.
+        problem: String,
+    },
     /// A buffer's size is zero or not a multiple of 4.
     InvalidBufferSize {
         /// The buffer.
@@ -285,6 +292,9 @@ impl fmt::Display for GraphError {
             Self::InvalidSize { resource, size } => write!(formatter, "target \"{resource}\" has invalid size {size}"),
             Self::InvalidTargetShape { resource, problem } => {
                 write!(formatter, "target \"{resource}\" needs {problem}")
+            }
+            Self::InvalidBufferShape { resource, problem } => {
+                write!(formatter, "buffer \"{resource}\" needs {problem}")
             }
             Self::InvalidBufferSize { resource, bytes } => write!(
                 formatter,

@@ -492,7 +492,7 @@ impl RenderGraph {
         let mut live = vec![false; passes.len()];
         let mut worklist = Vec::new();
         for (index, resource) in resources.iter().enumerate() {
-            if resource.origin != ResourceOrigin::Imported {
+            if !resource.is_observed() {
                 continue;
             }
 
