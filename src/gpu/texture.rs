@@ -4,7 +4,7 @@ use std::ops::BitOr;
 use std::sync::OnceLock;
 
 use super::live::{Kind, Token};
-use super::{Gpu, GpuError};
+use super::{Gpu, GpuError, PendingRead};
 use crate::render::TextureFormat;
 
 /// A texture's shape.
@@ -308,52 +308,53 @@ impl Gpu {
     /// A level or layer the texture doesn't have, or `Depth24Plus`, whose layout is the
     /// backend's.
     pub fn read_texture(&self, texture: &Texture, level: u32, layer: u32) -> Result<Vec<u8>, GpuError> {
-        let desc = &texture.desc;
-        single_sample(desc)?;
-        let Some(texel) = desc.format.texel_bytes() else {
-            return Err(GpuError::Invalid(format!(
-                "a {} texture can't be read back: its layout is the GPU's own",
-                desc.format
-            )));
-        };
-        let (width, height, depth) = check_level(desc, level, layer)?;
-        let row = width * texel;
-        let padded = row.next_multiple_of(ROW_ALIGNMENT);
-        let size = u64::from(padded) * u64::from(height) * u64::from(depth);
-        let aspect = if desc.format.is_depth() {
-            wgpu::TextureAspect::DepthOnly
-        } else {
-            wgpu::TextureAspect::All
-        };
-        let bytes = self.read_back(size, |encoder, staging| {
-            encoder.copy_texture_to_buffer(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &texture.raw,
-                    mip_level: level,
-                    origin: wgpu::Origin3d { x: 0, y: 0, z: layer },
-                    aspect,
-                },
-                wgpu::TexelCopyBufferInfo {
-                    buffer: staging,
-                    layout: wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(padded),
-                        rows_per_image: Some(height),
-                    },
-                },
-                wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: depth,
-                },
-            );
-        })?;
-        Ok(bytes
-            .chunks(padded as usize)
-            .flat_map(|line| &line[..row as usize])
-            .copied()
-            .collect())
+        read_later(self, texture, level, layer)?.wait().map(<[u8]>::to_vec)
     }
+}
+
+/// Mip `level` of `layer` of `texture`, copied back without waiting, as
+/// [`Gpu::read_texture`] reads it.
+pub(super) fn read_later(gpu: &Gpu, texture: &Texture, level: u32, layer: u32) -> Result<PendingRead, GpuError> {
+    let desc = &texture.desc;
+    single_sample(desc)?;
+    let Some(texel) = desc.format.texel_bytes() else {
+        return Err(GpuError::Invalid(format!(
+            "a {} texture can't be read back: its layout is the GPU's own",
+            desc.format
+        )));
+    };
+    let (width, height, depth) = check_level(desc, level, layer)?;
+    let row = width * texel;
+    let padded = row.next_multiple_of(ROW_ALIGNMENT);
+    let size = u64::from(padded) * u64::from(height) * u64::from(depth);
+    let aspect = if desc.format.is_depth() {
+        wgpu::TextureAspect::DepthOnly
+    } else {
+        wgpu::TextureAspect::All
+    };
+    gpu.read_later(size, Some((row as usize, padded as usize)), |encoder, staging| {
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture.raw,
+                mip_level: level,
+                origin: wgpu::Origin3d { x: 0, y: 0, z: layer },
+                aspect,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: staging,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: depth,
+            },
+        );
+    })
 }
 
 fn check_desc(gpu: &Gpu, desc: &TextureDesc) -> Result<(), GpuError> {

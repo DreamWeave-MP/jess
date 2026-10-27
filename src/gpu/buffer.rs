@@ -102,7 +102,7 @@ impl Buffer {
 }
 
 /// Copies move whole 4-byte words.
-const COPY_ALIGNMENT: u64 = wgpu::COPY_BUFFER_ALIGNMENT;
+pub(super) const COPY_ALIGNMENT: u64 = wgpu::COPY_BUFFER_ALIGNMENT;
 
 impl Gpu {
     /// A buffer of `size` bytes, zeroed, bound as `usage`.
@@ -161,7 +161,7 @@ impl Gpu {
 }
 
 /// Whether `length` bytes from `offset` are whole words inside `buffer`.
-fn check_range(buffer: &Buffer, offset: u64, length: u64) -> Result<(), GpuError> {
+pub(super) fn check_range(buffer: &Buffer, offset: u64, length: u64) -> Result<(), GpuError> {
     let aligned = offset.is_multiple_of(COPY_ALIGNMENT) && length.is_multiple_of(COPY_ALIGNMENT);
     if !aligned || offset.checked_add(length).is_none_or(|end| end > buffer.size) {
         return Err(GpuError::Invalid(format!(

@@ -1,6 +1,7 @@
 //! Buffers, textures, and samplers from Luau: made on the device, written from a Luau `buffer` or
 //! string without a copy on the way in, and read back as a new `buffer`.
 
+use std::cell::RefCell;
 use std::sync::Arc;
 
 use l3i::bind::{Call, StackResults};
@@ -11,8 +12,8 @@ use l3i::userdata::{Owned, Userdata};
 
 use super::device::LuaGpuDevice;
 use crate::gpu::{
-    AddressMode, Buffer, BufferUsage, Compare, Filter, Gpu, Sampler, SamplerDesc, Texture, TextureDesc, TextureShape,
-    TextureUsage,
+    AddressMode, Buffer, BufferUsage, Compare, Filter, Gpu, PendingRead, Sampler, SamplerDesc, Texture, TextureDesc,
+    TextureShape, TextureUsage,
 };
 use crate::lua::{check_options, error, kind};
 use crate::render::TextureFormat;
@@ -50,6 +51,42 @@ pub struct LuaGpuSampler {
 // SAFETY: plain Rust state; the destructor never touches the Lua API.
 unsafe impl Userdata for LuaGpuSampler {
     const NAME: &'static str = "jess.gpu.Sampler";
+}
+
+/// Bytes on their way back from the GPU, from `readLater`.
+#[derive(Debug)]
+pub struct LuaGpuRead {
+    read: RefCell<PendingRead>,
+}
+
+// SAFETY: plain Rust state; the destructor never touches the Lua API.
+unsafe impl Userdata for LuaGpuRead {
+    const NAME: &'static str = "jess.gpu.Read";
+}
+
+/// Declares the read type.
+fn describe_read(d: &mut ExtensionDescriptor) {
+    let mut read = d.userdata::<LuaGpuRead>(LuaGpuRead::NAME);
+    read.tag(TagPolicy::Never)
+        .doc("Bytes on their way back from the GPU: polled without waiting, or waited for.");
+    read.method("poll", |this: &LuaGpuRead| -> l3i::Result<Option<NewBuffer>> {
+        let mut read = this.read.borrow_mut();
+        let bytes = read.poll().map_err(|problem| gpu_error("GpuRead:poll", &problem))?;
+        Ok(bytes.map(|bytes| NewBuffer(bytes.to_vec())))
+    })
+    .untyped();
+    read.method("wait", |this: &LuaGpuRead| -> l3i::Result<NewBuffer> {
+        let mut read = this.read.borrow_mut();
+        let bytes = read.wait().map_err(|problem| gpu_error("GpuRead:wait", &problem))?;
+        Ok(NewBuffer(bytes.to_vec()))
+    })
+    .untyped();
+    read.getter("ready", |this: &LuaGpuRead| this.read.borrow().is_ready())
+        .untyped();
+    crate::lua::plan::metamethod(&mut read, "__tostring", |this: &LuaGpuRead| {
+        let state = if this.read.borrow().is_ready() { "ready" } else { "waiting" };
+        format!("GpuRead({state})")
+    });
 }
 
 const BUFFER_USAGES: [(&str, BufferUsage); 5] = [
@@ -362,6 +399,7 @@ pub fn device_methods(device: &mut UserdataBuilder<'_, LuaGpuDevice>) {
 /// Declares the resource types.
 #[allow(clippy::too_many_lines)] // one registration per method
 pub fn describe(d: &mut ExtensionDescriptor) {
+    describe_read(d);
     let mut buffer = d.userdata::<LuaGpuBuffer>(LuaGpuBuffer::NAME);
     buffer
         .tag(TagPolicy::Never)
@@ -413,6 +451,27 @@ pub fn describe(d: &mut ExtensionDescriptor) {
                     .read_buffer(&this.buffer, offset, u64::from(length))
                     .map(NewBuffer)
                     .map_err(|problem| gpu_error(FUNCTION, &problem))
+            },
+        )
+        .untyped();
+    buffer
+        .method(
+            "readLater",
+            |this: &LuaGpuBuffer,
+             offset: Option<ValueView<'_>>,
+             length: Option<ValueView<'_>>|
+             -> l3i::Result<Owned<LuaGpuRead>> {
+                const FUNCTION: &str = "GpuBuffer:readLater";
+                let offset = u64::from(whole(FUNCTION, "the offset", offset, Some(0))?);
+                let rest = this.buffer.size().saturating_sub(offset);
+                let length = whole(FUNCTION, "the length", length, Some(u32::try_from(rest).unwrap_or(u32::MAX)))?;
+                let read = this
+                    .gpu
+                    .read_buffer_later(&this.buffer, offset, u64::from(length))
+                    .map_err(|problem| gpu_error(FUNCTION, &problem))?;
+                Ok(Owned(LuaGpuRead {
+                    read: RefCell::new(read),
+                }))
             },
         )
         .untyped();
@@ -472,6 +531,26 @@ pub fn describe(d: &mut ExtensionDescriptor) {
                     .read_texture(&this.texture, level, layer)
                     .map(NewBuffer)
                     .map_err(|problem| gpu_error(FUNCTION, &problem))
+            },
+        )
+        .untyped();
+    texture
+        .method(
+            "readLater",
+            |this: &LuaGpuTexture,
+             level: Option<ValueView<'_>>,
+             layer: Option<ValueView<'_>>|
+             -> l3i::Result<Owned<LuaGpuRead>> {
+                const FUNCTION: &str = "GpuTexture:readLater";
+                let level = whole(FUNCTION, "the level", level, Some(0))?;
+                let layer = whole(FUNCTION, "the layer", layer, Some(0))?;
+                let read = this
+                    .gpu
+                    .read_texture_later(&this.texture, level, layer)
+                    .map_err(|problem| gpu_error(FUNCTION, &problem))?;
+                Ok(Owned(LuaGpuRead {
+                    read: RefCell::new(read),
+                }))
             },
         )
         .untyped();

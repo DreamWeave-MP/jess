@@ -665,20 +665,32 @@ export type GpuCompare =
 --- Bytes on the GPU. `write` copies a Luau `buffer` or string, or `length` bytes of it from
 --- `from`, into the buffer at `offset`, before the next work the GPU is given; `read` waits for
 --- everything submitted so far and returns `length` bytes from `offset` (the rest of the buffer
---- by default) as a new `buffer`. Offsets and lengths are multiples of 4. `tostring` gives
---- `GpuBuffer(16 bytes, vertex, storage)`.
+--- by default) as a new `buffer`, and `readLater` the same without waiting. Offsets and lengths
+--- are multiples of 4. `tostring` gives `GpuBuffer(16 bytes, vertex, storage)`.
 declare extern type GpuBuffer with
   size: number
   usage: { GpuBufferUsage }
   function write(self, offset: number, bytes: buffer | string, from: number?, length: number?): ()
   function read(self, offset: number?, length: number?): buffer
+  function readLater(self, offset: number?, length: number?): GpuRead
   __tostring: (self: GpuBuffer) -> string
+end
+
+--- Bytes on their way back from the GPU, from `readLater`: what a copy saw when it was asked
+--- for, taken when the GPU has finished it. `poll` gives them once they are there and `nil` until
+--- then, never waiting; `wait` waits for them. Both give the same bytes every time after. `ready`
+--- says whether the last `poll` or `wait` found them. `tostring` gives `GpuRead(waiting)`.
+declare extern type GpuRead with
+  ready: boolean
+  function poll(self): buffer?
+  function wait(self): buffer
+  __tostring: (self: GpuRead) -> string
 end
 
 --- An image on the GPU. `write` replaces every texel of one mip `level` of one `layer` (an array's
 --- layer, a cube's face), rows packed tightly, top row first; `read` returns them the same way,
---- once everything submitted so far is done. Both default to level 0 of layer 0. `tostring`
---- gives `GpuTexture(2×2 rgba8Unorm, 2d)`.
+--- once everything submitted so far is done, and `readLater` without waiting. All default to
+--- level 0 of layer 0. `tostring` gives `GpuTexture(2×2 rgba8Unorm, 2d)`.
 declare extern type GpuTexture with
   width: number
   height: number
@@ -688,6 +700,7 @@ declare extern type GpuTexture with
   mips: number
   function write(self, bytes: buffer | string, level: number?, layer: number?): ()
   function read(self, level: number?, layer: number?): buffer
+  function readLater(self, level: number?, layer: number?): GpuRead
   __tostring: (self: GpuTexture) -> string
 end
 

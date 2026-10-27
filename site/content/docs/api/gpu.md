@@ -95,6 +95,7 @@ A name the table doesn't take is an error listing the ones it does, so `layer = 
 | `usage` | `{ GpuBufferUsage }` | What it is for, in the order `vertex`, `index`, `uniform`, `storage`, `indirect`. |
 | `write` | `(self, offset: number, bytes: buffer \| string, from: number?, length: number?) -> ()` | Copies `bytes` (or `length` of them from `from`) into the buffer at `offset`, before the next work the GPU is given. Luau's bytes are read in place, not copied first. |
 | `read` | `(self, offset: number?, length: number?) -> buffer` | Waits for everything submitted so far, and returns `length` bytes from `offset` (by default, all of it) as a new `buffer`. |
+| `readLater` | `(self, offset: number?, length: number?) -> GpuRead` | The same bytes, without waiting: a [read](#gpuread) the GPU fills once it has done everything submitted before it. |
 
 Offsets and lengths are multiples of 4, and a range past the end is an error. `tostring(gpuBuffer)` is `GpuBuffer(16 bytes, vertex, storage)`.
 
@@ -124,6 +125,7 @@ print(positions, buffer.readf32(back, 0), buffer.readstring(back, 4, 4), buffer.
 | `mips` | `number` | How many mip levels. |
 | `write` | `(self, bytes: buffer \| string, level: number?, layer: number?) -> ()` | Replaces every texel of mip `level` of `layer` (every slice, for a `3d` texture), rows packed tightly, top row first. Both default to 0. |
 | `read` | `(self, level: number?, layer: number?) -> buffer` | Waits for everything submitted so far, and returns that level of that layer the way `write` takes it. |
+| `readLater` | `(self, level: number?, layer: number?) -> GpuRead` | The same, without waiting: a [read](#gpuread). |
 
 The bytes are exactly the level's: width × height × the format's texel size. A pass writes a depth texture; a script can't, and `depth24Plus`, whose layout is the backend's, can't be read back either. `tostring(texture)` is `GpuTexture(2×2 rgba8Unorm, 2dArray)`.
 
@@ -146,6 +148,18 @@ local level = atlas:read(1, 3)
 print(atlas, atlas.layers, atlas.mips, buffer.len(level), buffer.readu8(level, 2))
 -- GpuTexture(2×2 rgba8Unorm, 2dArray)  4  2  4  255
 ```
+
+## GpuRead
+
+Bytes on their way back from the GPU, from `readLater`. They are what the copy saw when it was asked for, so a script that wants a frame's picking id asks after the run and takes it a frame or two later, and never waits on the GPU to finish the frame it is drawing.
+
+| Member | Type | Does |
+| --- | --- | --- |
+| `poll()` | `() -> buffer?` | The bytes, once the GPU has copied them; `nil` until then. It never waits. |
+| `wait()` | `() -> buffer` | The bytes, waiting for the GPU if it hasn't copied them yet. |
+| `ready` | `boolean` | Whether the last `poll` or `wait` found them. |
+
+Once there, the same bytes come back every time. `tostring(read)` is `GpuRead(waiting)` or `GpuRead(ready)`.
 
 ## GpuSampler
 

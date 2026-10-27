@@ -82,6 +82,22 @@ fn a_buffer_round_trips_bytes() {
             assert(buffer.readstring(gpuBuffer:read(4, 4), 0, 4) == 'cdef')
             assert(buffer.len(gpuBuffer:read(8)) == 8)
             assert(device:buffer(4, 'uniform').usage[1] == 'uniform')
+
+            -- A read later has what its copy saw, whatever is written after it is asked for.
+            local later = gpuBuffer:readLater(4, 4)
+            gpuBuffer:write(4, 'wxyz')
+            local polls = 0
+            local found = later:poll()
+            while not found do
+                polls += 1
+                assert(polls < 10000000, 'the GPU never finished a copy of four bytes')
+                found = later:poll()
+            end
+            assert(later.ready and tostring(later) == 'GpuRead(ready)', tostring(later))
+            assert(buffer.tostring(found) == 'cdef' and buffer.tostring(later:wait()) == 'cdef')
+            local texture = device:texture({ width = 2, height = 1, format = 'rgba8Unorm', usage = 'sampled' })
+            texture:write('abcdefgh')
+            assert(buffer.tostring(texture:readLater():wait()) == 'abcdefgh')
         ",
         )
         .unwrap_or_else(|error| panic!("{error}"));

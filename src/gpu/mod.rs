@@ -21,6 +21,7 @@ mod live;
 mod pass;
 mod pipeline;
 mod plan;
+mod read;
 mod sampler;
 #[cfg(feature = "window")]
 mod surface;
@@ -41,6 +42,7 @@ pub use pass::{Draw, IndexFormat, Resolve, Target};
 pub use pipeline::{Blend, ColorState, Cull, DepthState, PipelineState, RenderPipeline, Topology};
 pub(crate) use pipeline::{Group, Slot};
 pub use plan::{Import, PassTiming, Plan, PlanBinding, PlanGroup, Work};
+pub use read::PendingRead;
 pub use sampler::{AddressMode, Compare, Filter, Sampler, SamplerDesc};
 #[cfg(feature = "window")]
 pub use surface::{PresentMode, Surface, SurfaceFrame};
@@ -271,51 +273,13 @@ impl Gpu {
         Ok(value)
     }
 
-    /// Waits until the GPU has finished everything submitted so far.
-    fn wait(&self) -> Result<(), GpuError> {
-        self.device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .map(|_| ())
-            .map_err(|error| GpuError::Backend(error.to_string()))
-    }
-
     /// Copies `size` bytes of `source` from `offset` into a buffer the CPU can read, and reads it.
     pub(crate) fn read_back(
         &self,
         size: u64,
         copy: impl FnOnce(&mut wgpu::CommandEncoder, &wgpu::Buffer),
     ) -> Result<Vec<u8>, GpuError> {
-        let staging = self.checked(|| {
-            let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("jess readback"),
-                size,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
-            });
-            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("jess readback"),
-            });
-            copy(&mut encoder, &staging);
-            self.queue.submit([encoder.finish()]);
-            staging
-        })?;
-        let (sender, receiver) = std::sync::mpsc::channel();
-        staging.slice(..).map_async(wgpu::MapMode::Read, move |result| {
-            // The receiver waits below; a send can only fail once it has gone.
-            let _ = sender.send(result);
-        });
-        self.wait()?;
-        receiver
-            .recv()
-            .map_err(|error| GpuError::Backend(error.to_string()))?
-            .map_err(|error| GpuError::Backend(error.to_string()))?;
-        let bytes = staging
-            .slice(..)
-            .get_mapped_range()
-            .map_err(|error| GpuError::Backend(error.to_string()))?
-            .to_vec();
-        staging.unmap();
-        Ok(bytes)
+        self.read_later(size, None, copy)?.wait().map(<[u8]>::to_vec)
     }
 }
 
