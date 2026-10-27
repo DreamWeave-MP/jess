@@ -1,10 +1,18 @@
 //! Windows: native windows through winit, each with a GPU surface, and their keyboard and pointer
 //! as input.
 //!
-//! A window is what a person sees an application in, and nothing more yet: what a window means to
-//! an application (which ones it has, how they are managed) is a later decision and Luau's. The
-//! kernel opens one, sizes its surface with it, shows a plan in it every frame, and reports what
-//! the person does in it.
+//! A window is what a person sees an application in. The kernel opens one, sizes its surface with
+//! it, shows a plan in it every frame, reports what happens to it and what the person does in it,
+//! and keeps it through a reload when the application asks; which windows an application has,
+//! what they hold, and when they close are the application's, in Luau.
+//!
+//! # Keeping windows
+//!
+//! A window opened with a key ([`WindowDesc::key`]) belongs to the window system, not to the
+//! handles to it: when the code that opened it is replaced, it stays open, still drawing its last
+//! plan, and the new code opening the same key gets it back, size and place and all. An
+//! application restarting runs its load inside [`reclaim`], which closes the kept windows the new
+//! code didn't open again once it has loaded, and none if it failed to.
 //!
 //! # The event loop
 //!
@@ -101,6 +109,11 @@ pub struct WindowDesc {
     /// Whether the person asking it to close closes it, or only says so in its events, for the
     /// application to decide.
     pub closes: bool,
+    /// What the application calls it, if it keeps it: a window with a key stays open when every
+    /// handle to it drops, still showing what it showed, and opening the key again hands it back
+    /// instead of opening another. That is how a window outlives the generation of code that
+    /// opened it: see [`reclaim`].
+    pub key: Option<String>,
 }
 
 /// What happened to a window, in the order it happened, for whoever drives it to read.
@@ -131,6 +144,7 @@ impl Default for WindowDesc {
             present: PresentMode::Vsync,
             format: None,
             closes: true,
+            key: None,
         }
     }
 }
@@ -172,6 +186,8 @@ struct State {
     /// What happened to it since the last read, oldest first.
     events: Vec<WindowEvent>,
     closes: bool,
+    key: Option<String>,
+    present: PresentMode,
 }
 
 impl State {
@@ -206,6 +222,15 @@ impl fmt::Debug for Window {
 struct System {
     event_loop: EventLoop<()>,
     windows: Vec<(WindowId, Weak<RefCell<State>>)>,
+    /// The windows opened with a key, held open for whoever opens the key next.
+    kept: Vec<Kept>,
+}
+
+/// A window opened with a key, and whether code opened the key since the last [`reclaim`] began.
+struct Kept {
+    key: String,
+    window: Window,
+    claimed: bool,
 }
 
 thread_local! {
@@ -370,6 +395,11 @@ pub fn open(gpu: &Arc<Gpu>, desc: &WindowDesc) -> Result<Window, WindowError> {
         let Some(system) = system else {
             unreachable!("made above");
         };
+        if let Some(key) = &desc.key
+            && let Some(window) = system.claim(gpu, key, &desc.title)?
+        {
+            return Ok(window);
+        }
         let attributes = WindowAttributes::default()
             .with_title(desc.title.clone())
             .with_inner_size(PhysicalSize::new(desc.width.max(1), desc.height.max(1)))
@@ -409,10 +439,77 @@ pub fn open(gpu: &Arc<Gpu>, desc: &WindowDesc) -> Result<Window, WindowError> {
             problem: None,
             events: Vec::new(),
             closes: desc.closes,
+            key: desc.key.clone(),
+            present: desc.present,
         }));
         system.windows.push((id, Rc::downgrade(&state)));
-        Ok(Window { id, state })
+        let window = Window { id, state };
+        if let Some(key) = &desc.key {
+            system.kept.push(Kept {
+                key: key.clone(),
+                window: window.clone(),
+                claimed: true,
+            });
+        }
+        Ok(window)
     })
+}
+
+/// Runs `load`, then closes every kept window it didn't open again.
+///
+/// `load` is the next generation of an application's code loading: a window the new code still
+/// wants keeps its place, its size, and what it was showing until the new code shows something
+/// else.
+///
+/// A load that fails closes nothing: the windows keep showing the last code that worked, for
+/// the next load to take back.
+///
+/// # Errors
+///
+/// What `load` returns.
+pub fn reclaim<T, E>(load: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
+    SYSTEM.with_borrow_mut(|system| {
+        for kept in system.iter_mut().flat_map(|system| &mut system.kept) {
+            kept.claimed = false;
+        }
+    });
+    let loaded = load();
+    if loaded.is_ok() {
+        SYSTEM.with_borrow_mut(|system| {
+            if let Some(system) = system {
+                system.kept.retain(|kept| {
+                    if kept.claimed {
+                        return true;
+                    }
+                    close(&mut kept.window.state.borrow_mut());
+                    false
+                });
+            }
+        });
+    }
+    loaded
+}
+
+/// The keys of the open windows kept by one, in the order they opened.
+#[must_use]
+pub fn kept() -> Vec<String> {
+    SYSTEM.with_borrow(|system| {
+        system
+            .iter()
+            .flat_map(|system| &system.kept)
+            .filter(|kept| kept.window.is_open())
+            .map(|kept| kept.key.clone())
+            .collect()
+    })
+}
+
+/// Closes every window kept by a key, as an application that stops does.
+pub fn release() {
+    SYSTEM.with_borrow_mut(|system| {
+        for kept in system.iter_mut().flat_map(|system| system.kept.drain(..)) {
+            close(&mut kept.window.state.borrow_mut());
+        }
+    });
 }
 
 impl System {
@@ -435,7 +532,42 @@ impl System {
         Ok(System {
             event_loop,
             windows: Vec::new(),
+            kept: Vec::new(),
         })
+    }
+
+    /// The open window kept by `key`, claimed for `gpu`, its title made `title`; `None` when
+    /// there is none, after forgetting one that closed.
+    ///
+    /// Claimed for another device than its own, its surface is made again on that one and it
+    /// stops showing the plan it showed, which was the other device's.
+    fn claim(&mut self, gpu: &Arc<Gpu>, key: &str, title: &str) -> Result<Option<Window>, WindowError> {
+        let Some(position) = self.kept.iter().position(|kept| kept.key == key) else {
+            return Ok(None);
+        };
+        let kept = &mut self.kept[position];
+        let mut state = kept.window.state.borrow_mut();
+        let Some(raw) = state.raw.clone() else {
+            drop(state);
+            self.kept.remove(position);
+            return Ok(None);
+        };
+        if !Arc::ptr_eq(&state.gpu, gpu) {
+            let format = state.surface.as_ref().map(Surface::format);
+            // A window has one surface at a time: the old one goes before the new one is made.
+            state.surface = None;
+            state.showing = None;
+            let surface = gpu.surface(raw.clone(), state.size.width, state.size.height, format, state.present)?;
+            state.surface = Some(surface);
+            state.gpu = Arc::clone(gpu);
+        }
+        if state.title != title {
+            raw.set_title(title);
+            title.clone_into(&mut state.title);
+        }
+        drop(state);
+        kept.claimed = true;
+        Ok(Some(kept.window.clone()))
     }
 }
 
@@ -525,6 +657,12 @@ impl Window {
     #[must_use]
     pub fn format(&self) -> Option<TextureFormat> {
         self.state.borrow().surface.as_ref().map(Surface::format)
+    }
+
+    /// The key it is kept by, if it was opened with one.
+    #[must_use]
+    pub fn key(&self) -> Option<String> {
+        self.state.borrow().key.clone()
     }
 
     /// What happened to it since the last call, oldest first: at most the last 256 of it.

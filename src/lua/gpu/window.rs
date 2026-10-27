@@ -26,7 +26,7 @@ unsafe impl Userdata for LuaGpuWindow {
     const NAME: &'static str = "jess.gpu.Window";
 }
 
-const WINDOW_KEYS: [&str; 7] = ["closes", "format", "height", "resizable", "title", "vsync", "width"];
+const WINDOW_KEYS: [&str; 8] = ["closes", "format", "height", "key", "resizable", "title", "vsync", "width"];
 
 /// `jess.gpu.window(device, { title, width, height, resizable, vsync, format })`.
 pub fn open(call: &Call<'_>, device: ValueView<'_>, desc: Option<ValueView<'_>>) -> l3i::Result<Owned<LuaGpuWindow>> {
@@ -59,6 +59,12 @@ pub fn open(call: &Call<'_>, device: ValueView<'_>, desc: Option<ValueView<'_>>)
             )?;
             wanted.resizable = flag(frame, FUNCTION, &fields, "resizable", true)?;
             wanted.closes = flag(frame, FUNCTION, &fields, "closes", true)?;
+            let key = fields.raw_get(frame, "key")?;
+            if key.is_string() {
+                wanted.key = Some(key.read::<&str>()?.to_owned());
+            } else if !key.is_nil() {
+                return Err(error(format!("{FUNCTION}: the key is a string, not {}", kind(key))));
+            }
             wanted.present = if flag(frame, FUNCTION, &fields, "vsync", true)? {
                 PresentMode::Vsync
             } else {
@@ -139,6 +145,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .tag(TagPolicy::Never)
         .doc("A native window, its surface on a GPU device, and the plan it draws every frame.");
     window.getter("title", |this: &LuaGpuWindow| this.window.title()).untyped();
+    window.getter("key", |this: &LuaGpuWindow| this.window.key()).untyped();
     window
         .getter("width", |this: &LuaGpuWindow| this.window.size().width)
         .untyped();

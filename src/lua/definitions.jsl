@@ -1010,6 +1010,8 @@ end
 --- whether the person may resize it, whether presenting waits for the display (`vsync`, the
 --- default), and the format its surface draws in, the first plain 8-bit one it offers by default;
 --- and whether asking it to close closes it (`closes`, the default) or only says so in its events.
+--- A window opened with a `key` is kept: it outlives the code that opened it, and opening the
+--- key again, in the next generation of the application, say, hands it back.
 export type GpuWindowDesc = {
   title: string?,
   width: number?,
@@ -1018,6 +1020,7 @@ export type GpuWindowDesc = {
   vsync: boolean?,
   format: GpuTextureFormat?,
   closes: boolean?,
+  key: string?,
 }
 
 --- What happened to a window, from `GpuWindow:events`: it was `resized` (to `width` by `height`),
@@ -1036,6 +1039,7 @@ export type GpuWindowEvent =
 --- call, oldest first. `tostring` gives `GpuWindow(title, 800×600)`.
 declare extern type GpuWindow with
   title: string
+  key: string?
   width: number
   height: number
   scale: number

@@ -565,7 +565,7 @@ print(string.unpack('BBBB', buffer.tostring(pixels:read(0, 4))))
 
 {{ api_signature(value="jess.gpu.window(device: GpuDevice, desc: GpuWindowDesc?) -> GpuWindow") }}
 
-Opens a native window with a surface on `device`. The window is what a person sees an application in, and so far nothing more: which windows an application has and how they're managed come later.
+Opens a native window with a surface on `device`. The window is what a person sees an application in; which windows an application has, what they show, and when they close are the application's to decide, from Luau, with what follows.
 
 | Field | Type | Holds |
 | --- | --- | --- |
@@ -574,6 +574,7 @@ Opens a native window with a surface on `device`. The window is what a person se
 | `resizable` | `boolean?` | Whether the person can resize it; `true` by default. |
 | `vsync` | `boolean?` | Whether presenting waits for the display's refresh, one image a refresh; `true` by default. |
 | `format` | `GpuTextureFormat?` | The format its surface draws in; by default the first of `bgra8Unorm`, `rgba8Unorm`, `bgra8UnormSrgb`, and `rgba8UnormSrgb` it offers. |
+| `key` | `string?` | What the application calls it, to keep it: a window opened with a key stays open when every handle to it is gone, still showing what it showed, and opening the key again hands it back instead of opening another. |
 | `closes` | `boolean?` | Whether the person asking it to close (its close button, say) closes it; `true` by default. With `false`, the request is only an event, and the application decides: asks to save, say, then calls `close`. |
 
 - **Capability:** `gpu.window`. A script you run holds it, as it holds the GPU; a package target declares it.
@@ -588,6 +589,7 @@ Handles what the window system reported since the last call, without waiting (si
 | Member | Type | Holds |
 | --- | --- | --- |
 | `title` | `string` | Its title. |
+| `key` | `string?` | The key it is kept by, if it was opened with one. |
 | `width`, `height` | `number` | Its inner size in physical pixels, which its surface and the plan it shows are sized to. |
 | `scale` | `number` | How many physical pixels a logical one is on its display. |
 | `format` | `GpuTextureFormat?` | What its images are; `nil` once it's closed. |
@@ -595,6 +597,8 @@ Handles what the window system reported since the last call, without waiting (si
 | `show(plan, target, imports?, sets?)` | `(GpuPlan, string, { [string]: GpuTexture \| GpuBuffer }?, GpuDrawSets?) -> ()` | Draws `plan` into it every frame from the next on, its image as the plan's imported target `target`, which must have the window's format, with `imports` for the plan's other imported targets and buffers, drawing from `sets` or the device's own. The plan is resized with the window, and passes left out of `plan` and its regions are the shown plan's too. |
 | `hide()`, `close()` | `() -> ()` | Stops drawing, or closes it. |
 | `events()` | `() -> { GpuWindowEvent }` | What happened to it since the last call, oldest first, the last 256 at most: `{ kind = 'resized', width, height }`, `{ kind = 'scaled', scale }`, `{ kind = 'focused', focused }`, `{ kind = 'closeRequested' }`, and `{ kind = 'closed' }`. A shown plan is resized already when its `resized` is read; this is for what the application does about it (a camera's aspect, say). |
+
+A window kept by a key outlives the code that opened it. When an application restarts with new code (its `restart`, a reload), its kept windows stay open through the load, each showing the last frame the old code drew, and the new code's `jess.gpu.window(device, { key = 'main' })` gets its window back, size, place, and all, with the title it asks for. Once the new code has loaded, the kept windows it didn't open again close; if it failed to load, none do, so the next load can take them back. A window the new code reclaims on another device has its surface made again on that one, and shows nothing until the new code gives it a plan.
 
 `tostring(window)` is `GpuWindow(title, 800×600)`. Drawing a shown plan runs no Luau: each frame takes the window's next image, runs the plan into it with the draw sets as they are, and presents it, so a scene that doesn't change costs a script nothing at all.
 

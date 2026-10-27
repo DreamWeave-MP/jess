@@ -661,6 +661,10 @@ impl Application {
     /// As [`Host::restart`]; a failed load leaves nothing running.
     pub fn restart(&mut self) -> Result<Generation, RuntimeError> {
         let loading = Rc::clone(&self.setup);
+        // Windows the new code opens again by key stay open through the load, showing the last.
+        #[cfg(feature = "window")]
+        let generation = crate::window::reclaim(|| self.host.restart(|runtime| loading.load(runtime)));
+        #[cfg(not(feature = "window"))]
         let generation = self.host.restart(|runtime| loading.load(runtime));
         self.remember_contexts();
         generation
@@ -706,7 +710,10 @@ impl Application {
     ///
     /// As [`ScriptDomain::stop`].
     pub fn stop(self) -> Result<TeardownReport, RuntimeError> {
-        self.host.stop()
+        let stopped = self.host.stop();
+        #[cfg(feature = "window")]
+        crate::window::release();
+        stopped
     }
 
     /// Runs the application to the end: starts it, drives frames of [`FRAME`] at that pace until

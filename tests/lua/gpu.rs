@@ -1201,6 +1201,31 @@ fn a_script_shows_a_plan_in_a_window() {
         ",
         )
         .unwrap_or_else(|error| panic!("{error}"));
+
+    // A window kept by a key outlives the code that opened it, and the next code takes it back,
+    // on its own device.
+    let generation = || jess::lua::runtime_with_capabilities(jess::lua::Options::default(), &capabilities).unwrap();
+    generation()
+        .exec(
+            "local window = jess.gpu.window(jess.gpu.device(), { key = 'kept', title = 'one', width = 64, height = 48 })
+             assert(window.key == 'kept' and window.open)",
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+    jess::window::pump();
+    assert_eq!(jess::window::kept(), ["kept"], "every handle dropped with its runtime");
+    let reclaimed: Result<(), l3i::Error> = jess::window::reclaim(|| {
+        generation().exec(
+            "local window = jess.gpu.window(jess.gpu.device(), { key = 'kept', title = 'two' })
+             assert(window.open and window.title == 'two' and window.format ~= nil, tostring(window))",
+        )
+    });
+    reclaimed.unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(jess::window::kept(), ["kept"]);
+    assert!(jess::window::reclaim(|| Err::<(), _>("the load failed")).is_err());
+    assert_eq!(jess::window::kept(), ["kept"], "a failed load closes nothing");
+    jess::window::reclaim(|| Ok::<(), ()>(())).unwrap();
+    jess::window::pump();
+    assert!(jess::window::kept().is_empty(), "a load that didn't open it closed it");
 }
 
 /// A compute program compacts what it keeps through an atomic counter: every invocation that
