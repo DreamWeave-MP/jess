@@ -180,6 +180,7 @@ impl Surface {
             shape: TextureShape::D2,
             format: self.format,
             mips: 1,
+            samples: 1,
             usage: TextureUsage::TARGET,
         };
         let texture = Texture::wrap(gpu, raw.texture.clone(), desc);

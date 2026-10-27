@@ -35,7 +35,11 @@ The backend is [`jess::gpu`](@/docs/contributing/gpu.md#plans): `Gpu::plan` comp
 
 A target is a render target (color) or a depth target, with a name, a `TextureFormat`, and a `TargetSize`: absolute pixels, or the viewport times a scale. `TargetSize::resolve` turns a relative size into pixels, rounding to the nearest pixel and never going below one, so a minimized window doesn't ask the backend for a zero-sized texture.
 
-Registration rejects an empty or duplicate name, a depth format on a render target (or the reverse), and a size of zero pixels or a scale that isn't finite and positive.
+A target also has mip levels, array layers, and samples a pixel, one of each unless its `TargetDesc` says otherwise (`add_target` and `import_target` take one; the `add_render_target` family makes the plain kind). Each level is half the one before, never below a pixel. A multisampled target has 4 samples, one level, and one layer: passes draw into it and resolve it into a single-sample target, and nothing samples or copies it.
+
+Registration rejects an empty or duplicate name, a depth format on a render target (or the reverse), a size of zero pixels or a scale that isn't finite and positive, and a shape that doesn't fit together: no levels or layers, more levels than an absolute size halves to, a sample count other than 1 or 4, or a multisampled target with more than one level or layer.
+
+A relative target with several levels needs pixels for all of them, so `TargetDesc::resolve` never makes its level 0 smaller than 2^(levels - 1) pixels each way: a minimized window still has every level of its bloom chain. Two relative targets are the same size at every viewport only when they have the same scale and the same number of levels, which is what attachments of one pass have to agree on.
 
 A buffer is a name and a size in bytes, a nonzero multiple of four: `add_buffer` for one the graph owns, `import_buffer` for one the host does. Buffers are what compute passes write and what copies read back into.
 
@@ -69,9 +73,11 @@ Reads come in five kinds, and the resource's kind has to match:
 
 Writes go through a color attachment (render targets), the depth attachment (depth targets), a storage binding (`Storage`, buffers), or a copy's destination (`Copy`, anything), with a `LoadOp` (`Clear(value)`, `Load`, `DontCare`) and a `StoreOp` (`Store`, `Discard`). A clear value has to fit: `Color` for float and normalized formats, `Uint` for unsigned integer formats such as `R32Uint` picking ids, `Sint` for signed integer formats, `Depth` within `0.0..=1.0` for depth, and `Zero` for a buffer, the only value one clears to. A compute pass that writes a buffer with `Load` continues the previous writer's contents, the way a draw does a target's.
 
-A copy pass reads exactly one source and writes exactly one destination, which can't be cleared, because the copy writes it. A target copies into a target of the same format and size, and a buffer into a buffer at least as large. Copies between a target and a buffer need a format whose texels have a layout in a buffer, which `Depth24Plus`'s doesn't; how many bytes a row takes is the backend's rule, so the backend checks that the buffer is big enough.
+A write goes to one level of one layer of a target, level 0 of layer 0 unless `PassOutput::at` names another, and a multisampled color write can resolve (`PassOutput::resolving`) into a level of a layer of a single-sample target of its format and size when the pass ends. A sampled read takes a whole target unless `Pass::read_at` names one level of one layer; a depth test and a copy read one, level 0 of layer 0 unless they name another.
 
-`add_pass` rejects a pass that is wrong on its own: empty name or owner, a duplicate name, no writes, a resource id from another graph, a read or write the resource's kind or the pass's kind doesn't allow, a clear value that doesn't fit, the same resource used twice, a resource both read and written (a feedback loop, or a depth test on the depth it's also writing), more than one depth attachment, attachments of different sizes, or a copy that doesn't fit. Sampled reads aren't attachments, so their size is free.
+A copy pass reads exactly one source and writes exactly one destination, which can't be cleared, because the copy writes it. It copies one level of one layer, and its `CopyRegion` says what part: where in the source it starts (a texel, or a byte of a buffer), where in the destination it lands, and how much (a rectangle of texels, or bytes between buffers); whatever the region leaves out is the start, and the rest of the source from there. Targets copy into targets of the same format, a depth target only a whole level of a layer at a time. Copies between a target and a buffer need a format whose texels have a layout in a buffer, which `Depth24Plus`'s doesn't, and lay each row out padded to `COPY_ROW_ALIGNMENT`, 256 bytes; nothing copies a buffer into a depth target. `RenderGraph::resolve_copy` resolves a copy to offsets and extents for a viewport; registration checks everything a viewport doesn't change, and every bound of a copy between fixed sizes, so a backend resolves the rest once it has a viewport.
+
+`add_pass` rejects a pass that is wrong on its own: empty name or owner, a duplicate name, no writes, a resource id from another graph, a level or layer its target doesn't have, a read or write the resource's kind or the pass's kind doesn't allow, a multisampled target sampled or copied, a resolve that doesn't fit, a clear value that doesn't fit, the same level of a layer used twice in one direction, a level of a layer both read and written (a feedback loop, or a depth test on the depth it's also writing), more than one depth attachment, attachments of different sizes or sample counts, a copy that doesn't fit, or a copy region on any other pass. Sampled reads aren't attachments, so their size is free.
 
 ## Ordering
 
@@ -92,6 +98,8 @@ Where the rules leave passes unordered, the earliest-registered ready pass goes 
 
 Buffers follow the same rules as targets. Compiling also rejects a transient resource no pass uses and a read of a transient resource no pass writes.
 
+The rules hold for each level of each layer on its own: a pass that reads level 0 of a target and draws into level 1 depends only on the writers of level 0, so a mip chain is a run of passes over one target, each reading the level the last one drew. A read of the whole target follows the last writer of every level of every layer, and needs each written; the error names the one that isn't (`pass "composite" reads level 2 of layer 0 of "chain", which no pass writes`). A dependency names its resource, and two passes are linked once a resource and kind, however many levels link them.
+
 ## Culling
 
 Imported resources are what the graph produces, so a pass survives when the host can see its work: it is the last pass to store into an imported target or buffer, or a surviving pass reads or loads what it stored. Everything else is culled.
@@ -102,7 +110,7 @@ Culling is not silent. `CompiledGraph::culled` lists the culled passes and the d
 
 Each resource used by a surviving pass gets a `Lifetime`: the positions of its first and last pass in the compiled order, both inclusive. Two lifetimes that share a pass overlap, because both resources are bound during it.
 
-Transient targets with the same format and size, or transient buffers with the same size, and lifetimes that don't overlap, can share one allocation. The compiler walks the resources in order of first use and puts each into the earliest group whose last member is finished before it starts. Every used transient resource lands in exactly one `AliasGroup`; each group is one allocation. In a bloom chain at half resolution, `bright` is done before `blurVertical` starts, so they share:
+Transient targets with the same description (format, size, levels, layers, and samples), or transient buffers with the same size, and lifetimes that don't overlap, can share one allocation. The compiler walks the resources in order of first use and puts each into the earliest group whose last member is finished before it starts. Every used transient resource lands in exactly one `AliasGroup`; each group is one allocation. In a bloom chain at half resolution, `bright` is done before `blurVertical` starts, so they share:
 
 ```text
 aliasing
@@ -115,7 +123,7 @@ aliasing
 
 ## The Dump
 
-`CompiledGraph`'s `Display` prints the graph's name, every surviving pass in order with where it was declared (`from:`, when its metadata knows) and what it reads and writes, the culled passes if there are any, then every resource with its format (`buffer` for a buffer), size, origin, and the passes that bound its lifetime, then the alias groups:
+`CompiledGraph`'s `Display` prints the graph's name, every surviving pass in order with where it was declared (`from:`, when its metadata knows) and what it reads and writes, the culled passes if there are any, then every resource with its format (`buffer` for a buffer), size, origin, and the passes that bound its lifetime, then the alias groups. A use of one level or layer of a target that has several says which (`chain[level 1]`, `faces[layer 2]`), a resolve follows its write (`samples -> screen`), and a size goes on with the levels, layers, and samples a target has more than one of (`64x64, 4 levels`):
 
 ```text
 mesh.standard

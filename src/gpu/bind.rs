@@ -16,6 +16,9 @@ pub enum Binding<'a> {
     Uniform(&'a Buffer),
     /// A declared texture.
     Texture(ResourceId, &'a Texture),
+    /// A declared 2D texture, bound to one level of one layer of a texture: the level, then the
+    /// layer.
+    Level(ResourceId, &'a Texture, u32, u32),
     /// A declared sampler, its own or a texture's.
     Sampler(ResourceId, &'a Sampler),
     /// A declared storage buffer.
@@ -117,7 +120,9 @@ impl Gpu {
 fn answers(binding: Binding<'_>, slot: Slot) -> bool {
     match (binding, slot) {
         (Binding::Uniform(_), Slot::Uniform(_)) => true,
-        (Binding::Texture(id, _) | Binding::Sampler(id, _), Slot::Resource(declared, _)) => id == declared,
+        (Binding::Texture(id, _) | Binding::Level(id, ..) | Binding::Sampler(id, _), Slot::Resource(declared, _)) => {
+            id == declared
+        }
         (Binding::Storage(id, _), Slot::Storage(declared, ..)) => id == declared,
         _ => false,
     }
@@ -144,7 +149,10 @@ fn check_binding(binding: Binding<'_>, slot: Slot) -> Result<(), String> {
                 )
             })
         }
-        (Binding::Texture(_, texture), Slot::Resource(_, kind)) => texture_problem(texture, kind),
+        (Binding::Texture(_, texture), Slot::Resource(_, kind)) => texture_problem(texture, kind, None),
+        (Binding::Level(_, texture, level, layer), Slot::Resource(_, kind)) => {
+            texture_problem(texture, kind, Some((level, layer)))
+        }
         (Binding::Sampler(_, sampler), Slot::Resource(_, kind)) => {
             let comparing = sampler.desc().compare.is_some();
             match kind {
@@ -161,13 +169,26 @@ fn check_binding(binding: Binding<'_>, slot: Slot) -> Result<(), String> {
     problem.map_or(Ok(()), Err)
 }
 
-/// What is wrong with binding `texture` where a texture of `kind` is declared, if anything.
-fn texture_problem(texture: &Texture, kind: ResourceKind) -> Option<String> {
+/// What is wrong with binding `texture`, or `level` of a layer of it, where a texture of `kind`
+/// is declared, if anything.
+fn texture_problem(texture: &Texture, kind: ResourceKind, level: Option<(u32, u32)>) -> Option<String> {
     if kind.is_sampler() {
         return Some("a sampler, not a texture".to_owned());
     }
     let desc = texture.desc();
-    let shape = match desc.shape {
+    if let Some((level, layer)) = level
+        && (level >= desc.mips || layer >= desc.shape.layers() || matches!(desc.shape, TextureShape::D3 { .. }))
+    {
+        return Some(format!(
+            "one of the {} levels and {} 2D layers of a {:?}, not level {level} of layer {layer}",
+            desc.mips,
+            desc.shape.layers(),
+            desc.shape
+        ));
+    }
+    // One level of one layer is a 2D texture, whatever the whole is.
+    let shape = if level.is_some() { TextureShape::D2 } else { desc.shape };
+    let shape = match shape {
         TextureShape::D2 => {
             matches!(
                 kind,
@@ -187,7 +208,7 @@ fn texture_problem(texture: &Texture, kind: ResourceKind) -> Option<String> {
     };
     let wanted = format!("a {} texture", kind.name());
     if !shape {
-        return Some(format!("{wanted}, not a {:?}", desc.shape));
+        return Some(format!("{wanted}, not a {shape:?}"));
     }
     if !samples {
         return Some(format!("{wanted} of a format it reads, not {}", desc.format));
@@ -204,6 +225,7 @@ fn resource(binding: Binding<'_>) -> wgpu::BindingResource<'_> {
         Binding::Sampler(_, sampler) => wgpu::BindingResource::Sampler(&sampler.raw),
         // A texture's own view is of its shape, which check_binding matched to the declaration.
         Binding::Texture(_, texture) => wgpu::BindingResource::TextureView(&texture.view),
+        Binding::Level(_, texture, level, layer) => wgpu::BindingResource::TextureView(texture.level_view(level, layer)),
     }
 }
 
@@ -218,7 +240,7 @@ fn slot_name(slot: Slot, name: &str) -> String {
 fn binding_name(binding: Binding<'_>) -> String {
     match binding {
         Binding::Uniform(_) => "uniform block".to_owned(),
-        Binding::Texture(id, _) => format!("texture {}", id.index()),
+        Binding::Texture(id, _) | Binding::Level(id, ..) => format!("texture {}", id.index()),
         Binding::Sampler(id, _) => format!("sampler {}", id.index()),
         Binding::Storage(id, _) => format!("storage buffer {}", id.index()),
     }

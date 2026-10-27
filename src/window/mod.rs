@@ -50,7 +50,7 @@ use crate::input::{
     Backend, BackendError, Control, DeviceDescriptor, DeviceId, DeviceIdentity, EventSender, Key, PointerAxis,
     PointerButton, Timestamp,
 };
-use crate::render::{Extent, ResourceDesc, ResourceOrigin, TextureFormat};
+use crate::render::{Extent, ResourceOrigin, TargetDesc, TextureFormat};
 
 /// Why a window couldn't open or draw.
 #[derive(Debug)]
@@ -493,9 +493,9 @@ impl Window {
                 showing.target
             )));
         };
-        if !matches!(resource.desc, ResourceDesc::Texture { format: declared, .. } if declared == format) {
+        if !matches!(resource.target(), Some(target) if target == TargetDesc::new(format, target.size)) {
             return Err(WindowError::Invalid(format!(
-                "the plan's {} isn't a {format} target, which the window's image is",
+                "the plan's {} isn't a {format} target of one level, one layer, and one sample, which the window's image is",
                 showing.target
             )));
         }

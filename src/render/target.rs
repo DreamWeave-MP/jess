@@ -156,6 +156,16 @@ impl TextureFormat {
         Some(bytes)
     }
 
+    /// The bytes a row of `width` texels takes in a buffer it is copied to or from: its texels,
+    /// padded to a multiple of [`COPY_ROW_ALIGNMENT`]. `None` where [`Self::texel_bytes`] is.
+    #[must_use]
+    pub const fn copy_row(self, width: u32) -> Option<u32> {
+        let Some(texel) = self.texel_bytes() else {
+            return None;
+        };
+        Some((texel * width).next_multiple_of(COPY_ROW_ALIGNMENT))
+    }
+
     /// The format's name, as the debug dump prints it.
     #[must_use]
     pub const fn name(self) -> &'static str {
@@ -189,6 +199,10 @@ impl fmt::Display for TextureFormat {
     }
 }
 
+/// What a row of a target is padded to in a buffer it is copied to or from, in bytes: what every
+/// backend asks of copies between targets and buffers.
+pub const COPY_ROW_ALIGNMENT: u32 = 256;
+
 /// A width and height in pixels.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct Extent {
@@ -196,6 +210,25 @@ pub struct Extent {
     pub width: u32,
     /// Height in pixels.
     pub height: u32,
+}
+
+impl Extent {
+    /// The size of mip level `level` of an image this size: each level halves, rounding down, and
+    /// never below one pixel.
+    #[must_use]
+    pub fn level(self, level: u32) -> Self {
+        let halve = |dimension: u32| {
+            let halved = dimension.checked_shr(level);
+            match halved {
+                Some(0) | None => 1,
+                Some(halved) => halved,
+            }
+        };
+        Self {
+            width: halve(self.width),
+            height: halve(self.height),
+        }
+    }
 }
 
 /// How big a target is: fixed, or a multiple of the viewport it is rendered for.

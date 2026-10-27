@@ -1,6 +1,7 @@
 //! Textures: images on the GPU, uploaded from bytes, drawn into, and read back.
 
 use std::ops::BitOr;
+use std::sync::OnceLock;
 
 use super::live::{Kind, Token};
 use super::{Gpu, GpuError};
@@ -91,6 +92,9 @@ pub struct TextureDesc {
     pub format: TextureFormat,
     /// How many mip levels, the first the full size and each after it half the last.
     pub mips: u32,
+    /// Samples a texel: 1, or 4 for a multisampled 2D target of one level, which a pass draws
+    /// into and resolves and nothing samples, copies, writes, or reads back.
+    pub samples: u32,
     /// What it is for.
     pub usage: TextureUsage,
 }
@@ -105,6 +109,7 @@ impl TextureDesc {
             shape: TextureShape::D2,
             format,
             mips: 1,
+            samples: 1,
             usage,
         }
     }
@@ -126,6 +131,9 @@ pub struct Texture {
     pub(crate) raw: wgpu::Texture,
     /// The view of all of it, of its shape, as shaders read it.
     pub(crate) view: wgpu::TextureView,
+    /// A 2D view of each level of each layer, level by level, made the first time one is asked
+    /// for and kept.
+    levels: Box<[OnceLock<wgpu::TextureView>]>,
     desc: TextureDesc,
     _live: Token,
 }
@@ -135,6 +143,31 @@ impl Texture {
     #[must_use]
     pub fn desc(&self) -> &TextureDesc {
         &self.desc
+    }
+
+    /// A 2D view of `level` of `layer`, which it has: what a pass draws into, and what a shader
+    /// reads one level of one layer through. Made once.
+    pub(crate) fn level_view(&self, level: u32, layer: u32) -> &wgpu::TextureView {
+        let layers = self.desc.shape.layers();
+        self.levels[(level * layers + layer) as usize].get_or_init(|| {
+            self.raw.create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::D2),
+                base_mip_level: level,
+                mip_level_count: Some(1),
+                base_array_layer: layer,
+                array_layer_count: Some(1),
+                ..Default::default()
+            })
+        })
+    }
+
+    fn levels(desc: &TextureDesc) -> Box<[OnceLock<wgpu::TextureView>]> {
+        // A volume's levels aren't 2D, so it has none of these.
+        let layers = match desc.shape {
+            TextureShape::D3 { .. } => 0,
+            shape => shape.layers(),
+        };
+        (0..desc.mips * layers).map(|_| OnceLock::new()).collect()
     }
 }
 
@@ -149,6 +182,7 @@ impl Texture {
         Texture {
             raw,
             view,
+            levels: Texture::levels(&desc),
             desc,
             _live: gpu.live.token(Kind::Texture),
         }
@@ -161,14 +195,20 @@ impl Gpu {
     /// # Errors
     ///
     /// A size of 0 or past the device's limits, a cube that isn't square, more mip levels than
-    /// the size halves to, a depth format on a volume, or no usage.
+    /// the size halves to, a depth format on a volume, no usage, or a sample count other than 1
+    /// or 4, or 4 on anything but a 2D target of one level, or of a format the device can't
+    /// multisample.
     pub fn texture(&self, desc: &TextureDesc) -> Result<Texture, GpuError> {
         check_desc(self, desc)?;
         let dimension = match desc.shape {
             TextureShape::D3 { .. } => wgpu::TextureDimension::D3,
             _ => wgpu::TextureDimension::D2,
         };
-        let mut usage = wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC;
+        let mut usage = wgpu::TextureUsages::empty();
+        // A multisampled texture is only drawn into and resolved.
+        if desc.samples == 1 {
+            usage |= wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC;
+        }
         if desc.usage.contains(TextureUsage::SAMPLED) {
             usage |= wgpu::TextureUsages::TEXTURE_BINDING;
         }
@@ -190,7 +230,7 @@ impl Gpu {
                     depth_or_array_layers: desc.shape.depth(),
                 },
                 mip_level_count: desc.mips,
-                sample_count: 1,
+                sample_count: desc.samples,
                 dimension,
                 format: raw_format(desc.format),
                 usage,
@@ -205,6 +245,7 @@ impl Gpu {
         Ok(Texture {
             raw,
             view,
+            levels: Texture::levels(desc),
             desc: *desc,
             _live: self.live.token(Kind::Texture),
         })
@@ -220,6 +261,7 @@ impl Gpu {
     /// depth format, which only a pass writes.
     pub fn write_texture(&self, texture: &Texture, level: u32, layer: u32, bytes: &[u8]) -> Result<(), GpuError> {
         let desc = &texture.desc;
+        single_sample(desc)?;
         let texel = writable(desc)?;
         let (width, height, depth) = check_level(desc, level, layer)?;
         let expected = u64::from(width) * u64::from(height) * u64::from(depth) * u64::from(texel);
@@ -262,6 +304,7 @@ impl Gpu {
     /// backend's.
     pub fn read_texture(&self, texture: &Texture, level: u32, layer: u32) -> Result<Vec<u8>, GpuError> {
         let desc = &texture.desc;
+        single_sample(desc)?;
         let Some(texel) = desc.format.texel_bytes() else {
             return Err(GpuError::Invalid(format!(
                 "a {} texture can't be read back: its layout is the GPU's own",
@@ -325,6 +368,12 @@ fn check_desc(gpu: &Gpu, desc: &TextureDesc) -> Result<(), GpuError> {
         Some("to be sampled only: a pass draws into 2D layers, not a volume".to_owned())
     } else if desc.usage == TextureUsage::default() {
         Some("a usage: sampled, a target, or both".to_owned())
+    } else if !matches!(desc.samples, 1 | 4) {
+        Some(format!("1 or 4 samples a texel, not {}", desc.samples))
+    } else if desc.samples > 1 && (desc.shape != TextureShape::D2 || desc.mips > 1 || desc.usage != TextureUsage::TARGET) {
+        Some("one 2D level, made only to be a target, being multisampled".to_owned())
+    } else if desc.samples > 1 && !gpu.multisamples(desc.format) {
+        Some(format!("a format the device multisamples, not {}", desc.format))
     } else {
         None
     };
@@ -334,6 +383,27 @@ fn check_desc(gpu: &Gpu, desc: &TextureDesc) -> Result<(), GpuError> {
     Err(GpuError::Invalid(format!(
         "a {}×{} {} {shape} is invalid: expected {expected}",
         desc.width, desc.height, desc.format
+    )))
+}
+
+impl Gpu {
+    /// Whether the device draws into `format` four samples a texel.
+    pub(crate) fn multisamples(&self, format: TextureFormat) -> bool {
+        raw_format(format)
+            .guaranteed_format_features(self.device.features())
+            .flags
+            .sample_count_supported(4)
+    }
+}
+
+/// Whether the CPU can write or read `desc`'s texels: not a multisampled texture's.
+fn single_sample(desc: &TextureDesc) -> Result<(), GpuError> {
+    if desc.samples == 1 {
+        return Ok(());
+    }
+    Err(GpuError::Invalid(format!(
+        "a multisampled {} texture can't be written or read back: resolve it into one that can",
+        desc.format
     )))
 }
 

@@ -246,6 +246,7 @@ fn texture(this: &LuaGpuDevice, call: &Call<'_>, desc: ValueView<'_>) -> l3i::Re
             shape,
             format: format_of(FUNCTION, format.read::<&str>()?)?,
             mips: whole(FUNCTION, "mips", Some(get("mips")?), Some(1))?,
+            samples: whole(FUNCTION, "samples", Some(get("samples")?), Some(1))?,
             usage: usages(frame, FUNCTION, get("usage")?, &TEXTURE_USAGES)?,
         })
     })?;

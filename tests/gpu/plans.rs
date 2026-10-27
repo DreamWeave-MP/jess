@@ -135,7 +135,7 @@ fn rectangle(
 }
 
 /// A triangle covering the target, from the vertex index alone: (-1, -1), (3, -1), (-1, 3).
-fn covering(site: &mut Site<'_>) -> Value {
+pub(super) fn covering(site: &mut Site<'_>) -> Value {
     let index = site.builtin(Builtin::VertexIndex);
     let one = site.uint(1);
     let two = site.uint(2);

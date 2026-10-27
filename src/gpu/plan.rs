@@ -16,11 +16,11 @@ use super::compute::{self, ComputePipeline};
 use super::draw_set::{DrawSet, DrawSets};
 use super::pass::{check_pass, encode};
 use super::pipeline::Slot;
-use super::texture::{TextureDesc, TextureUsage};
-use super::{Buffer, BufferUsage, Draw, Gpu, GpuError, Group, RenderPipeline, Sampler, Target, Texture};
+use super::texture::{TextureDesc, TextureShape, TextureUsage};
+use super::{Buffer, BufferUsage, Draw, Gpu, GpuError, Group, RenderPipeline, Resolve, Sampler, Target, Texture};
 use crate::render::{
-    AliasGroup, Attachment, Extent, LoadOp, Pass, PassKind, ReadUsage, RenderGraph, ResourceDesc, ResourceOrigin, StoreOp,
-    TextureFormat,
+    AliasGroup, Attachment, Extent, LoadOp, Pass, PassKind, ReadUsage, RenderGraph, ResolvedCopy, ResourceDesc,
+    ResourceOrigin, StoreOp, Subresource, TargetDesc, TexelAt,
 };
 use crate::shader::{Access, Frequency, ResourceId, StorageId};
 
@@ -80,7 +80,8 @@ pub enum PlanBinding {
     Sampler(ResourceId, Arc<Sampler>),
     /// A declared storage buffer.
     Storage(StorageId, Arc<Buffer>),
-    /// A declared texture, bound to the graph's target of this name, which the pass reads.
+    /// A declared texture, bound to the graph's target of this name, which the pass reads: all of
+    /// it, or the one level of one layer the pass reads.
     Target(ResourceId, String),
     /// A declared storage buffer, bound to the graph's buffer of this name: one the pass reads,
     /// for a read-only declaration, or writes, for a read-write one.
@@ -172,7 +173,7 @@ enum PlannedWork {
         groups: [Option<Planned>; 3],
         workgroups: [u32; 3],
     },
-    Copy,
+    Copy(ResolvedCopy),
 }
 
 /// A pass that survived, ready to record.
@@ -291,17 +292,25 @@ impl Plan {
                 )));
             }
             let given = match (*import, resource.desc) {
-                (Import::Texture(_, texture), ResourceDesc::Texture { format, size }) => {
+                (Import::Texture(_, texture), ResourceDesc::Texture(target)) => {
                     let desc = texture.desc();
-                    let size = size.resolve(self.viewport);
+                    let size = target.resolve(self.viewport);
                     let given = Extent {
                         width: desc.width,
                         height: desc.height,
                     };
-                    if desc.format != format || given != size {
+                    if desc.format != target.format || given != size {
                         return Err(GpuError::Invalid(format!(
-                            "the run gives {name} a {}×{} {} texture: expected {}×{} {format}",
-                            given.width, given.height, desc.format, size.width, size.height
+                            "the run gives {name} a {}×{} {} texture: expected {}×{} {}",
+                            given.width, given.height, desc.format, size.width, size.height, target.format
+                        )));
+                    }
+                    let shape = (desc.mips, desc.shape.layers(), desc.samples);
+                    let wanted = (target.mips, target.layers, target.samples);
+                    if shape != wanted || matches!(desc.shape, TextureShape::D3 { .. }) {
+                        return Err(GpuError::Invalid(format!(
+                            "the run gives {name} a texture of {} levels, {} layers, and {} samples: expected {}, {}, and {}",
+                            shape.0, shape.1, shape.2, wanted.0, wanted.1, wanted.2
                         )));
                     }
                     Live::Texture(texture)
@@ -339,15 +348,10 @@ fn in_pass(name: &str, problem: impl std::fmt::Display) -> GpuError {
     GpuError::Invalid(format!("pass {name} is invalid: {problem}"))
 }
 
-/// The bytes one row of a target takes in a buffer it is copied to or from: its texels, padded to
-/// a multiple of 256 bytes.
-fn copy_row(format: TextureFormat, width: u32) -> Option<u32> {
-    Some((format.texel_bytes()? * width).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT))
-}
-
 impl Gpu {
     /// Compiles `graph` with `work`, one for each of its passes in the order they were added,
-    /// for a viewport of `viewport` pixels.
+    /// for a viewport of `viewport` pixels, or as many more as its relative targets' mip levels
+    /// need.
     ///
     /// # Errors
     ///
@@ -399,7 +403,7 @@ impl Gpu {
         let first: Vec<Option<u32>> = passes
             .iter()
             .map(|pass| {
-                if matches!(pass.work, PlannedWork::Copy) {
+                if matches!(pass.work, PlannedWork::Copy(_)) {
                     return None;
                 }
                 count += 2;
@@ -476,12 +480,9 @@ impl Gpu {
         for group in groups {
             let first = &graph.resources()[group.resources[0].index()];
             let allocation = match first.desc {
-                ResourceDesc::Texture { format, size } => {
-                    let size = size.resolve(viewport);
-                    let usage = TextureUsage::TARGET | TextureUsage::SAMPLED;
-                    self.texture(&TextureDesc::d2(size.width, size.height, format, usage))
-                        .map(|texture| Allocation::Texture(Arc::new(texture)))
-                }
+                ResourceDesc::Texture(target) => self
+                    .texture(&texture_desc(target, viewport))
+                    .map(|texture| Allocation::Texture(Arc::new(texture))),
                 ResourceDesc::Buffer { bytes } => {
                     let usage = BufferUsage::VERTEX
                         | BufferUsage::INDEX
@@ -563,8 +564,8 @@ impl Gpu {
                 })
             }
             (Work::Copy, PassKind::Copy) => {
-                check_copy(graph, pass, viewport)?;
-                Ok(PlannedWork::Copy)
+                let copy = graph.resolve_copy(pass, pass.region, Some(viewport))?;
+                Ok(PlannedWork::Copy(copy.expect("a viewport resolves every copy")))
             }
             (work, kind) => {
                 let does = match work {
@@ -630,17 +631,19 @@ impl Gpu {
                 .resource_id(name)
                 .and_then(|id| allocations[id.index()].as_ref().map(Allocation::live))
         };
-        self.make_group(owner.group(frequency), bindings, &live)
+        self.make_group(owner.group(frequency), bindings, &live, &|name| read_level(graph, pass, name))
             .map(|group| Planned::Made(Arc::new(group)))
             .map_err(|problem| problem.to_string())
     }
 
-    /// The group `bindings` make for `group`'s layout, with `live` finding each graph resource.
+    /// The group `bindings` make for `group`'s layout, with `live` finding each graph resource
+    /// and `level` the level of a layer of a target the pass reads only one of.
     fn make_group<'a>(
         &self,
         group: &Group,
         bindings: &'a [PlanBinding],
         live: &dyn Fn(&str) -> Option<Live<'a>>,
+        level: &dyn Fn(&str) -> Option<Subresource>,
     ) -> Result<BindGroup, GpuError> {
         let missing = |name: &str| GpuError::Invalid(format!("the run gives nothing for {name}"));
         let mut bound = Vec::with_capacity(bindings.len());
@@ -650,12 +653,13 @@ impl Gpu {
                 PlanBinding::Texture(id, texture) => Binding::Texture(*id, texture),
                 PlanBinding::Sampler(id, sampler) => Binding::Sampler(*id, sampler),
                 PlanBinding::Storage(id, buffer) => Binding::Storage(*id, buffer),
-                PlanBinding::Target(id, name) => match live(name) {
-                    Some(Live::Texture(texture)) => Binding::Texture(*id, texture),
-                    Some(Live::Buffer(_)) => {
+                PlanBinding::Target(id, name) => match (live(name), level(name)) {
+                    (Some(Live::Texture(texture)), None) => Binding::Texture(*id, texture),
+                    (Some(Live::Texture(texture)), Some(one)) => Binding::Level(*id, texture, one.level, one.layer),
+                    (Some(Live::Buffer(_)), _) => {
                         return Err(GpuError::Invalid(format!("{name} is a buffer, bound as a texture")));
                     }
-                    None => return Err(missing(name)),
+                    (None, _) => return Err(missing(name)),
                 },
                 PlanBinding::Buffer(id, name) => match live(name) {
                     Some(Live::Buffer(buffer)) => Binding::Storage(*id, buffer),
@@ -688,8 +692,7 @@ impl Gpu {
         for planned in &plan.passes {
             let pass = &graph.passes()[planned.index];
             let name = pass.name();
-            let used = pass.inputs.iter().map(|input| input.resource);
-            for resource in used.chain(pass.outputs.iter().map(|output| output.resource)) {
+            for resource in pass.resources() {
                 if live[resource.index()].is_none() {
                     let missing = &graph.resources()[resource.index()].name;
                     return Err(in_pass(name, format!("the run gives nothing for {missing}")));
@@ -704,7 +707,8 @@ impl Gpu {
                         bindings,
                     } => {
                         let find = |target: &str| graph.resource_id(target).and_then(|id| live[id.index()]);
-                        self.make_group(owner.group(*frequency), bindings, &find)
+                        let level = |target: &str| read_level(graph, pass, target);
+                        self.make_group(owner.group(*frequency), bindings, &find, &level)
                             .map(Arc::new)
                             .map_err(|problem| in_pass(name, problem))
                     }
@@ -735,7 +739,7 @@ impl Gpu {
                     groups: made_all(groups)?,
                     workgroups: *workgroups,
                 },
-                PlannedWork::Copy => Held::Copy,
+                PlannedWork::Copy(copy) => Held::Copy(*copy),
             });
         }
 
@@ -814,7 +818,7 @@ enum Held {
         groups: [Option<Arc<BindGroup>>; 3],
         workgroups: [u32; 3],
     },
-    Copy,
+    Copy(ResolvedCopy),
 }
 
 /// One pass of one run, checked and ready to encode.
@@ -830,7 +834,7 @@ enum Recording<'a> {
         groups: [Option<&'a BindGroup>; 3],
         workgroups: [u32; 3],
     },
-    Copy,
+    Copy(ResolvedCopy),
 }
 
 /// `pass` with what it holds, checked as a pass or a dispatch is.
@@ -853,7 +857,7 @@ fn record<'a>(pass: &Pass, held: &'a Held, live: &[Option<Live<'a>>]) -> Result<
             groups,
             workgroups,
         } => (Some((pipeline, groups, workgroups)), Vec::new()),
-        Held::Copy => return Ok(Recording::Copy),
+        Held::Copy(copy) => return Ok(Recording::Copy(*copy)),
     };
     if let Some((pipeline, groups, workgroups)) = pipeline_groups {
         let groups = [groups[0].as_deref(), groups[1].as_deref(), groups[2].as_deref()];
@@ -872,10 +876,15 @@ fn record<'a>(pass: &Pass, held: &'a Held, live: &[Option<Live<'a>>]) -> Result<
     for output in &pass.outputs {
         let target = Target {
             texture: texture(output.resource.index()),
-            level: 0,
-            layer: 0,
+            level: output.subresource.level,
+            layer: output.subresource.layer,
             load: output.load,
             store: output.store,
+            resolve: output.resolve.map(|(resource, into)| Resolve {
+                texture: texture(resource.index()),
+                level: into.level,
+                layer: into.layer,
+            }),
         };
         match output.attachment {
             Attachment::Color => colors.push(target),
@@ -885,12 +894,14 @@ fn record<'a>(pass: &Pass, held: &'a Held, live: &[Option<Live<'a>>]) -> Result<
     }
     let tested = pass.inputs.iter().find(|input| input.usage == ReadUsage::DepthTest);
     if let Some(input) = tested {
+        let one = input.one().unwrap_or_default();
         depth = Some(Target {
             texture: texture(input.resource.index()),
-            level: 0,
-            layer: 0,
+            level: one.level,
+            layer: one.layer,
             load: LoadOp::Load,
             store: StoreOp::Store,
+            resolve: None,
         });
     }
     check_pass(&colors, depth.as_ref(), tested.is_some(), &draws).map_err(|problem| problem.to_string())?;
@@ -928,25 +939,28 @@ impl Recording<'_> {
                 groups,
                 workgroups,
             } => compute::encode(encoder, pipeline, *groups, *workgroups, timed),
-            Recording::Copy => {
+            Recording::Copy(copy) => {
                 let (source, destination) = (pass.inputs[0].resource.index(), pass.outputs[0].resource.index());
                 let (Some(from), Some(to)) = (live[source], live[destination]) else {
                     unreachable!("the run checked every resource a pass uses is there");
                 };
-                encode_copy(encoder, from, to);
+                encode_copy(encoder, *copy, from, to);
             }
         }
     }
 }
 
-/// Records a copy of `from` into `to`, rows padded as [`copy_row`] says between a target and a
-/// buffer.
-fn encode_copy(encoder: &mut wgpu::CommandEncoder, from: Live<'_>, to: Live<'_>) {
-    fn image(texture: &Texture) -> wgpu::TexelCopyTextureInfo<'_> {
+/// Records `copy` of `from` into `to`.
+fn encode_copy(encoder: &mut wgpu::CommandEncoder, copy: ResolvedCopy, from: Live<'_>, to: Live<'_>) {
+    fn image(texture: &Texture, at: TexelAt) -> wgpu::TexelCopyTextureInfo<'_> {
         wgpu::TexelCopyTextureInfo {
             texture: &texture.raw,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
+            mip_level: at.subresource.level,
+            origin: wgpu::Origin3d {
+                x: at.x,
+                y: at.y,
+                z: at.subresource.layer,
+            },
             aspect: if texture.desc().format.is_depth() {
                 wgpu::TextureAspect::DepthOnly
             } else {
@@ -954,35 +968,95 @@ fn encode_copy(encoder: &mut wgpu::CommandEncoder, from: Live<'_>, to: Live<'_>)
             },
         }
     }
-    let layout = |texture: &Texture| wgpu::TexelCopyBufferLayout {
-        offset: 0,
-        bytes_per_row: copy_row(texture.desc().format, texture.desc().width),
-        rows_per_image: Some(texture.desc().height),
-    };
-    let extent = |texture: &Texture| wgpu::Extent3d {
-        width: texture.desc().width,
-        height: texture.desc().height,
+    fn rows(buffer: &Buffer, offset: u64, row: u32, extent: Extent) -> wgpu::TexelCopyBufferInfo<'_> {
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer.raw,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset,
+                bytes_per_row: Some(row),
+                rows_per_image: Some(extent.height),
+            },
+        }
+    }
+    let size = |extent: Extent| wgpu::Extent3d {
+        width: extent.width,
+        height: extent.height,
         depth_or_array_layers: 1,
     };
-    match (from, to) {
-        (Live::Buffer(from), Live::Buffer(to)) => encoder.copy_buffer_to_buffer(&from.raw, 0, &to.raw, 0, from.size()),
-        (Live::Texture(from), Live::Texture(to)) => encoder.copy_texture_to_texture(image(from), image(to), extent(from)),
-        (Live::Texture(from), Live::Buffer(to)) => encoder.copy_texture_to_buffer(
-            image(from),
-            wgpu::TexelCopyBufferInfo {
-                buffer: &to.raw,
-                layout: layout(from),
+    match (copy, from, to) {
+        (
+            ResolvedCopy::Buffers {
+                from: start,
+                to: end,
+                bytes,
             },
-            extent(from),
-        ),
-        (Live::Buffer(from), Live::Texture(to)) => encoder.copy_buffer_to_texture(
-            wgpu::TexelCopyBufferInfo {
-                buffer: &from.raw,
-                layout: layout(to),
+            Live::Buffer(from),
+            Live::Buffer(to),
+        ) => {
+            encoder.copy_buffer_to_buffer(&from.raw, start, &to.raw, end, bytes);
+        }
+        (
+            ResolvedCopy::Targets {
+                from: start,
+                to: end,
+                extent,
             },
-            image(to),
-            extent(to),
-        ),
+            Live::Texture(from),
+            Live::Texture(to),
+        ) => {
+            encoder.copy_texture_to_texture(image(from, start), image(to, end), size(extent));
+        }
+        (
+            ResolvedCopy::TargetToBuffer {
+                from: start,
+                offset,
+                row,
+                extent,
+            },
+            Live::Texture(from),
+            Live::Buffer(to),
+        ) => encoder.copy_texture_to_buffer(image(from, start), rows(to, offset, row, extent), size(extent)),
+        (
+            ResolvedCopy::BufferToTarget {
+                offset,
+                row,
+                to: end,
+                extent,
+            },
+            Live::Buffer(from),
+            Live::Texture(to),
+        ) => encoder.copy_buffer_to_texture(rows(from, offset, row, extent), image(to, end), size(extent)),
+        _ => unreachable!("a copy resolves to the kinds of its resources"),
+    }
+}
+
+/// The level of the layer of `name` that `pass` reads, when it reads one, not all of it.
+fn read_level(graph: &RenderGraph, pass: &Pass, name: &str) -> Option<Subresource> {
+    let resource = graph.resource_id(name)?;
+    pass.inputs
+        .iter()
+        .find(|input| input.resource == resource && matches!(input.usage, ReadUsage::Texture | ReadUsage::DepthTexture))
+        .and_then(|input| input.subresource)
+}
+
+/// The texture a transient target of `target` is at `viewport`: an array where it has several
+/// layers, and sampled unless it is multisampled.
+fn texture_desc(target: TargetDesc, viewport: Extent) -> TextureDesc {
+    let size = target.resolve(viewport);
+    let usage = if target.samples > 1 {
+        TextureUsage::TARGET
+    } else {
+        TextureUsage::TARGET | TextureUsage::SAMPLED
+    };
+    TextureDesc {
+        shape: if target.layers > 1 {
+            TextureShape::D2Array { layers: target.layers }
+        } else {
+            TextureShape::D2
+        },
+        mips: target.mips,
+        samples: target.samples,
+        ..TextureDesc::d2(size.width, size.height, target.format, usage)
     }
 }
 
@@ -1014,39 +1088,13 @@ fn check_fullscreen(graph: &RenderGraph, pass: &Pass, pipeline: &RenderPipeline)
             "its pipeline draws into {wanted:?} and depth {wanted_depth:?}, and the pass into {colors:?} and depth {depth:?}"
         ));
     }
-    Ok(())
-}
-
-/// Whether a copy between a target and a buffer fits at `viewport`, and doesn't write a depth
-/// target from a buffer, which no backend can.
-fn check_copy(graph: &RenderGraph, pass: &Pass, viewport: Extent) -> Result<(), String> {
-    let source = &graph.resources()[pass.inputs[0].resource.index()];
-    let destination = &graph.resources()[pass.outputs[0].resource.index()];
-    let (target, buffer) = match (source.desc, destination.desc) {
-        (ResourceDesc::Texture { .. }, ResourceDesc::Buffer { .. }) => (source, destination),
-        (ResourceDesc::Buffer { .. }, ResourceDesc::Texture { format, .. }) => {
-            if format.is_depth() {
-                return Err(format!(
-                    "it copies a buffer into {}, a depth target, which only a pass can write",
-                    destination.name
-                ));
-            }
-            (destination, source)
-        }
-        _ => return Ok(()),
-    };
-    let (Some(format), Some(size), Some(bytes)) = (target.format(), target.size(), buffer.bytes()) else {
-        unreachable!("one is a target and the other a buffer");
-    };
-    let size = size.resolve(viewport);
-    let Some(row) = copy_row(format, size.width) else {
-        unreachable!("the graph refuses copies of formats with no layout in a buffer");
-    };
-    let needed = u64::from(row) * u64::from(size.height);
-    if bytes < needed {
+    // The graph has every attachment of a pass agree on its samples, so the first speaks for all.
+    let attachment = pass.outputs.first().map(|output| output.resource);
+    let samples = attachment.map_or(1, |resource| graph.resources()[resource.index()].samples());
+    if samples != state.samples() {
         return Err(format!(
-            "{} at {}×{} takes {needed} bytes in a buffer, rows of {row}, and {} holds {bytes}",
-            target.name, size.width, size.height, buffer.name
+            "its pipeline draws {} samples a texel, and the pass's targets have {samples}",
+            state.samples()
         ));
     }
     Ok(())

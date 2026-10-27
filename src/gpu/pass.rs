@@ -17,6 +17,20 @@ pub struct Target<'a> {
     pub load: LoadOp,
     /// Whether what the pass drew is kept.
     pub store: StoreOp,
+    /// Where a multisampled color target's samples average into when the pass ends: a level of a
+    /// layer of a single-sample texture of its format and size.
+    pub resolve: Option<Resolve<'a>>,
+}
+
+/// A level of a layer of a texture a multisampled color target resolves into.
+#[derive(Clone, Copy, Debug)]
+pub struct Resolve<'a> {
+    /// The texture, made to be a target.
+    pub texture: &'a Texture,
+    /// The mip level.
+    pub level: u32,
+    /// The layer.
+    pub layer: u32,
 }
 
 impl<'a> Target<'a> {
@@ -29,6 +43,7 @@ impl<'a> Target<'a> {
             layer: 0,
             load: LoadOp::Clear(clear),
             store: StoreOp::Store,
+            resolve: None,
         }
     }
 }
@@ -144,15 +159,15 @@ pub fn encode(
     draws: &[Draw<'_>],
     timed: Option<(&wgpu::QuerySet, u32)>,
 ) {
-    let views: Vec<wgpu::TextureView> = colors.iter().chain(depth).map(target_view).collect();
     let attachments: Vec<Option<wgpu::RenderPassColorAttachment<'_>>> = colors
         .iter()
-        .zip(&views)
-        .map(|(target, view)| {
+        .map(|target| {
             Some(wgpu::RenderPassColorAttachment {
-                view,
+                view: target.texture.level_view(target.level, target.layer),
                 depth_slice: None,
-                resolve_target: None,
+                resolve_target: target
+                    .resolve
+                    .map(|resolve| resolve.texture.level_view(resolve.level, resolve.layer)),
                 ops: wgpu::Operations {
                     load: match target.load {
                         LoadOp::Clear(clear) => wgpu::LoadOp::Clear(clear_color(clear)),
@@ -165,7 +180,7 @@ pub fn encode(
         })
         .collect();
     let depth_attachment = depth.map(|target| wgpu::RenderPassDepthStencilAttachment {
-        view: &views[colors.len()],
+        view: target.texture.level_view(target.level, target.layer),
         depth_ops: (!read_only).then(|| wgpu::Operations {
             load: match target.load {
                 LoadOp::Clear(ClearValue::Depth(depth)) => wgpu::LoadOp::Clear(depth),
@@ -231,6 +246,8 @@ fn check_target(target: &Target<'_>, is_depth: bool) -> Result<(), GpuError> {
         Some(if is_depth { "a depth format" } else { "a color format" }.to_owned())
     } else if target.level >= desc.mips || target.layer >= desc.shape.layers() {
         Some(format!("one of its {} levels and {} layers", desc.mips, desc.shape.layers()))
+    } else if let Some(problem) = target.resolve.and_then(|resolve| resolve_problem(target, resolve, is_depth)) {
+        Some(problem)
     } else if let LoadOp::Clear(clear) = target.load
         && !(clear.fits(format) && clear.is_valid())
     {
@@ -248,6 +265,31 @@ fn check_target(target: &Target<'_>, is_depth: bool) -> Result<(), GpuError> {
     )))
 }
 
+/// What is wrong with resolving `target` into `resolve`, if anything.
+fn resolve_problem(target: &Target<'_>, resolve: Resolve<'_>, is_depth: bool) -> Option<String> {
+    let (from, into) = (target.texture.desc(), resolve.texture.desc());
+    let size = |desc: &super::TextureDesc, level: u32| ((desc.width >> level).max(1), (desc.height >> level).max(1));
+    if is_depth {
+        Some("a color target: depth doesn't resolve".to_owned())
+    } else if from.samples == 1 {
+        Some("a multisampled target, being resolved".to_owned())
+    } else if into.samples > 1 || !into.usage.contains(TextureUsage::TARGET) {
+        Some("to resolve into a single-sample texture made to be a target".to_owned())
+    } else if into.format != from.format {
+        Some(format!("to resolve into {}, not {}", from.format, into.format))
+    } else if resolve.level >= into.mips || resolve.layer >= into.shape.layers() {
+        Some(format!(
+            "to resolve into one of its {} levels and {} layers",
+            into.mips,
+            into.shape.layers()
+        ))
+    } else if size(into, resolve.level) != size(from, target.level) {
+        Some("to resolve into a level of its own size".to_owned())
+    } else {
+        None
+    }
+}
+
 fn check_draw(index: usize, draw: &Draw<'_>, colors: &[Target<'_>], depth: Option<&Target<'_>>) -> Result<(), GpuError> {
     let pipeline = draw.pipeline;
     let state = pipeline.state();
@@ -257,6 +299,16 @@ fn check_draw(index: usize, draw: &Draw<'_>, colors: &[Target<'_>], depth: Optio
         Some(format!("its pipeline draws into {wanted:?}, and the pass has {formats:?}"))
     } else if state.depth.map(|depth| depth.format) != depth.map(|target| target.texture.desc().format) {
         Some("its pipeline's depth target and the pass's differ".to_owned())
+    } else if let Some(target) = colors
+        .iter()
+        .chain(depth)
+        .find(|target| target.texture.desc().samples != state.samples())
+    {
+        Some(format!(
+            "its pipeline draws {} samples a texel, and the pass's targets have {}",
+            state.samples(),
+            target.texture.desc().samples
+        ))
     } else if draw.instance_count == 0 && draw.indirect.is_none() {
         Some("at least one instance".to_owned())
     } else {
@@ -353,18 +405,6 @@ pub fn buffer_problem(draw: &Draw<'_>) -> Option<String> {
             draw.count,
             buffer.size()
         )
-    })
-}
-
-/// A view of exactly the level and layer a target draws into.
-fn target_view(target: &Target<'_>) -> wgpu::TextureView {
-    target.texture.raw.create_view(&wgpu::TextureViewDescriptor {
-        dimension: Some(wgpu::TextureViewDimension::D2),
-        base_mip_level: target.level,
-        mip_level_count: Some(1),
-        base_array_layer: target.layer,
-        array_layer_count: Some(1),
-        ..Default::default()
     })
 }
 

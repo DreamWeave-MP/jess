@@ -18,8 +18,8 @@ use super::resources::{LuaGpuBuffer, LuaGpuSampler, LuaGpuTexture, format_of, sh
 use crate::gpu::{DrawSets, Gpu, Group, Import, Plan, PlanBinding, PlanGroup, Slot, Work};
 use crate::lua::{check_options, error, kind, push_table};
 use crate::render::{
-    ClearValue, Extent, LoadOp, Pass, PassKind, PassMetadata, PassOutput, ReadUsage, RenderGraph, ResourceDesc,
-    ResourceKind, StoreOp, TargetSize,
+    ClearValue, CopyAt, CopyRegion, CopySize, Extent, LoadOp, Pass, PassKind, PassMetadata, PassOutput, ReadUsage,
+    RenderGraph, ResourceDesc, ResourceKind, StoreOp, Subresource, TargetDesc, TargetSize,
 };
 use crate::shader::Frequency;
 
@@ -40,11 +40,17 @@ const FUNCTION: &str = "GpuDevice:plan";
 
 const PLAN_KEYS: [&str; 5] = ["buffers", "name", "passes", "targets", "viewport"];
 
-const TARGET_KEYS: [&str; 6] = ["format", "height", "imported", "name", "scale", "width"];
+const TARGET_KEYS: [&str; 9] = [
+    "format", "height", "imported", "layers", "mips", "name", "samples", "scale", "width",
+];
 
 const BUFFER_KEYS: [&str; 3] = ["imported", "name", "size"];
 
-const WRITE_KEYS: [&str; 4] = ["clear", "load", "store", "target"];
+const WRITE_KEYS: [&str; 7] = ["clear", "layer", "level", "load", "resolve", "store", "target"];
+
+const LEVEL_KEYS: [&str; 3] = ["layer", "level", "target"];
+
+const END_KEYS: [&str; 7] = ["buffer", "column", "layer", "level", "offset", "row", "target"];
 
 const STORAGE_KEYS: [&str; 4] = ["buffer", "clear", "load", "store"];
 
@@ -88,7 +94,7 @@ const COMPUTE_KEYS: [&str; 10] = [
     "workgroups",
 ];
 
-const COPY_KEYS: [&str; 6] = ["from", "kind", "load", "name", "owner", "to"];
+const COPY_KEYS: [&str; 7] = ["from", "kind", "load", "name", "owner", "size", "to"];
 
 const KINDS: [&str; 4] = ["draw", "fullscreen", "compute", "copy"];
 
@@ -129,7 +135,8 @@ fn graph_error(problem: &crate::render::GraphError) -> l3i::Error {
     error(format!("{FUNCTION}: {problem}"))
 }
 
-/// Registers each of `targets`: `{ name, format, scale | width and height, imported }`.
+/// Registers each of `targets`: `{ name, format, scale | width and height, mips, layers,
+/// samples, imported }`.
 fn add_targets(frame: &Frame<'_>, graph: &mut RenderGraph, targets: ValueView<'_>) -> l3i::Result<()> {
     if targets.is_nil() {
         return Ok(());
@@ -160,12 +167,15 @@ fn add_targets(frame: &Frame<'_>, graph: &mut RenderGraph, targets: ValueView<'_
                 "{FUNCTION}: {what} has a scale and a width and height: expected one or the other"
             )));
         };
-        let imported = flag(frame, FUNCTION, &fields, "imported", false)?;
-        let added = match (format.is_depth(), imported) {
-            (false, false) => graph.add_render_target(name, format, size),
-            (true, false) => graph.add_depth_target(name, format, size),
-            (false, true) => graph.import_render_target(name, format, size),
-            (true, true) => graph.import_depth_target(name, format, size),
+        let count = |key: &str| -> l3i::Result<u32> { whole(FUNCTION, key, Some(fields.raw_get(frame, key)?), Some(1)) };
+        let target = TargetDesc::new(format, size)
+            .mips(count("mips")?)
+            .layers(count("layers")?)
+            .samples(count("samples")?);
+        let added = if flag(frame, FUNCTION, &fields, "imported", false)? {
+            graph.import_target(name, target)
+        } else {
+            graph.add_target(name, target)
         };
         added.map(drop).map_err(|problem| graph_error(&problem))
     })
@@ -180,13 +190,7 @@ fn add_buffers(frame: &Frame<'_>, graph: &mut RenderGraph, buffers: ValueView<'_
         let what = format!("buffer {index}");
         let fields = options(frame, FUNCTION, &what, buffer, &BUFFER_KEYS)?;
         let name = required(frame, &what, &fields, "name")?;
-        let size = number(FUNCTION, "a buffer's size", fields.raw_get(frame, "size")?)?;
-        if size.fract() != 0.0 || size < 0.0 {
-            return Err(error(format!("{FUNCTION}: a buffer's size is whole bytes, not {size}")));
-        }
-        // Whole and non-negative, so the cast is exact below 2^53.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let bytes = size as u64;
+        let bytes = bytes(FUNCTION, "a buffer's size", fields.raw_get(frame, "size")?)?;
         let added = if flag(frame, FUNCTION, &fields, "imported", false)? {
             graph.import_buffer(name, bytes)
         } else {
@@ -205,8 +209,36 @@ fn resource(graph: &RenderGraph, pass: &str, name: &str) -> l3i::Result<crate::r
     })
 }
 
-/// A write: a resource's name, or `{ target | buffer, clear, load, store }`. A target clears to
-/// what `clear` gives; a buffer, to zero, when `clear` is `true`.
+/// The `level` and `layer` of `fields`, or `None` where it names neither.
+fn level_of(frame: &Frame<'_>, fields: &TableView<'_>) -> l3i::Result<Option<Subresource>> {
+    let (level, layer) = (fields.raw_get(frame, "level")?, fields.raw_get(frame, "layer")?);
+    if level.is_nil() && layer.is_nil() {
+        return Ok(None);
+    }
+    Ok(Some(Subresource {
+        level: whole(FUNCTION, "a level", Some(level), Some(0))?,
+        layer: whole(FUNCTION, "a layer", Some(layer), Some(0))?,
+    }))
+}
+
+/// A target and maybe one level of one layer of it: a name, or `{ target, level, layer }`.
+fn named_level(
+    frame: &Frame<'_>,
+    graph: &RenderGraph,
+    pass: &str,
+    what: &str,
+    view: ValueView<'_>,
+) -> l3i::Result<(crate::render::ResourceId, Option<Subresource>)> {
+    if view.is_string() {
+        return Ok((resource(graph, pass, view.read::<&str>()?)?, None));
+    }
+    let fields = options(frame, FUNCTION, &format!("{what}, a name or"), view, &LEVEL_KEYS)?;
+    let name = required(frame, what, &fields, "target")?;
+    Ok((resource(graph, pass, &name)?, level_of(frame, &fields)?))
+}
+
+/// A write: a resource's name, or `{ target | buffer, clear, load, store, level, layer, resolve
+/// }`. A target clears to what `clear` gives; a buffer, to zero, when `clear` is `true`.
 fn output(
     frame: &Frame<'_>,
     graph: &RenderGraph,
@@ -248,7 +280,7 @@ fn output(
                     shown(clear)
                 )));
             }
-            ResourceDesc::Texture { format, .. } => LoadOp::Clear(clear_value(frame, FUNCTION, &what, format, clear)?),
+            ResourceDesc::Texture(target) => LoadOp::Clear(clear_value(frame, FUNCTION, &what, target.format, clear)?),
         },
     };
     let store = if flag(frame, FUNCTION, &fields, "store", true)? {
@@ -256,7 +288,98 @@ fn output(
     } else {
         StoreOp::Discard
     };
-    Ok(attachment(id, load, store))
+    let mut written = attachment(id, load, store);
+    if buffer {
+        return Ok(written);
+    }
+    if let Some(level) = level_of(frame, &fields)? {
+        written = written.at(level.level, level.layer);
+    }
+    let resolve = fields.raw_get(frame, "resolve")?;
+    if !resolve.is_nil() {
+        let (into, level) = named_level(frame, graph, pass, &format!("{what}'s resolve"), resolve)?;
+        let level = level.unwrap_or_default();
+        written = written.resolving(into, level.level, level.layer);
+    }
+    Ok(written)
+}
+
+/// One end of a copy: a resource's name, `{ target, level, layer, column, row }`, or `{ buffer, offset
+/// }`. The resource, the level of the layer it copies, and where in it the copy starts.
+fn copy_end(
+    frame: &Frame<'_>,
+    graph: &RenderGraph,
+    pass: &str,
+    what: &str,
+    view: ValueView<'_>,
+) -> l3i::Result<(crate::render::ResourceId, Option<Subresource>, Option<CopyAt>)> {
+    if view.is_string() {
+        return Ok((resource(graph, pass, view.read::<&str>()?)?, None, None));
+    }
+    let fields = options(frame, FUNCTION, &format!("{what}, a name or"), view, &END_KEYS)?;
+    let field = |key: &str| fields.raw_get(frame, key);
+    if let Some(name) = text(frame, what, &fields, "buffer")? {
+        for key in ["target", "level", "layer", "column", "row"] {
+            if !field(key)?.is_nil() {
+                return Err(error(format!("{FUNCTION}: {what} is a buffer, which has no {key}")));
+            }
+        }
+        let offset = field("offset")?;
+        let at = if offset.is_nil() {
+            None
+        } else {
+            Some(CopyAt::Byte(bytes(FUNCTION, "an offset", offset)?))
+        };
+        return Ok((resource(graph, pass, &name)?, None, at));
+    }
+    let name = required(frame, what, &fields, "target")?;
+    if !field("offset")?.is_nil() {
+        return Err(error(format!(
+            "{FUNCTION}: {what} is a target, which starts at a column and row, not an offset"
+        )));
+    }
+    let (column, row) = (field("column")?, field("row")?);
+    let at = if column.is_nil() && row.is_nil() {
+        None
+    } else {
+        Some(CopyAt::Texel {
+            x: whole(FUNCTION, "the column", Some(column), Some(0))?,
+            y: whole(FUNCTION, "the row", Some(row), Some(0))?,
+        })
+    };
+    Ok((resource(graph, pass, &name)?, level_of(frame, &fields)?, at))
+}
+
+/// Whole bytes: a non-negative integer.
+fn bytes(function: &str, what: &str, view: ValueView<'_>) -> l3i::Result<u64> {
+    let value = number(function, what, view)?;
+    if value.fract() != 0.0 || value < 0.0 {
+        return Err(error(format!("{function}: {what} is whole bytes, not {value}")));
+    }
+    // Whole and non-negative, so the cast is exact below 2^53.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    Ok(value as u64)
+}
+
+/// How much a copy copies: `{ width, height }` texels, or a number of bytes.
+fn copy_size(frame: &Frame<'_>, what: &str, view: ValueView<'_>) -> l3i::Result<Option<CopySize>> {
+    if view.is_nil() {
+        return Ok(None);
+    }
+    if !view.is_table() {
+        return Ok(Some(CopySize::Bytes(bytes(FUNCTION, &format!("{what}'s size"), view)?)));
+    }
+    let fields = options(
+        frame,
+        FUNCTION,
+        &format!("{what}'s size, bytes or"),
+        view,
+        &["height", "width"],
+    )?;
+    Ok(Some(CopySize::Texels {
+        width: whole(FUNCTION, "a width", Some(fields.raw_get(frame, "width")?), None)?,
+        height: whole(FUNCTION, "a height", Some(fields.raw_get(frame, "height")?), None)?,
+    }))
 }
 
 /// A group a pass gives: a bind group, or bindings by binding number for `group`'s layout, each a
@@ -342,8 +465,13 @@ fn attachments(frame: &Frame<'_>, graph: &RenderGraph, fields: &TableView<'_>, m
         pass.outputs
             .push(output(frame, graph, &name, depth, false, PassOutput::depth)?);
     }
-    if let Some(tested) = text(frame, &format!("pass {name}"), fields, "depthTest")? {
-        pass = pass.read(resource(graph, &name, &tested)?, ReadUsage::DepthTest);
+    let tested = fields.raw_get(frame, "depthTest")?;
+    if !tested.is_nil() {
+        let (id, level) = named_level(frame, graph, &name, &format!("pass {name}'s depth test"), tested)?;
+        pass = match level {
+            Some(level) => pass.read_at(id, ReadUsage::DepthTest, level.level, level.layer),
+            None => pass.read(id, ReadUsage::DepthTest),
+        };
     }
     Ok(pass)
 }
@@ -408,14 +536,25 @@ fn pass_and_work(
     // A pass is a table, which has no place of its own: it was declared where the plan was.
     let metadata = PassMetadata::new(name.clone(), owner).with_source(site.0.clone(), site.1, 0);
     let mut pass = Pass::new(pass_kind, metadata);
-    for read in names(frame, &format!("pass {name}'s reads"), fields.raw_get(frame, "reads")?)? {
-        let id = resource(graph, &name, &read)?;
-        let usage = match graph.resources()[id.index()].kind() {
-            ResourceKind::RenderTarget => ReadUsage::Texture,
-            ResourceKind::DepthTarget => ReadUsage::DepthTexture,
-            ResourceKind::Buffer => ReadUsage::Buffer,
-        };
-        pass = pass.read(id, usage);
+    let reads = fields.raw_get(frame, "reads")?;
+    if !reads.is_nil() {
+        let what = format!("pass {name}'s reads");
+        let mut read = Vec::new();
+        table(FUNCTION, &what, reads)?.for_each_array(frame, |frame, _, view| {
+            read.push(named_level(frame, graph, &name, &format!("a read of pass {name}"), view)?);
+            Ok(())
+        })?;
+        for (id, level) in read {
+            let usage = match graph.resources()[id.index()].kind() {
+                ResourceKind::RenderTarget => ReadUsage::Texture,
+                ResourceKind::DepthTarget => ReadUsage::DepthTexture,
+                ResourceKind::Buffer => ReadUsage::Buffer,
+            };
+            pass = match level {
+                Some(level) => pass.read_at(id, usage, level.level, level.layer),
+                None => pass.read(id, usage),
+            };
+        }
     }
     let pipeline = || pipeline_field(frame, FUNCTION, &fields);
     let render = |pipeline: &Pipeline| match pipeline {
@@ -463,20 +602,38 @@ fn pass_and_work(
             }
         }
         _ => {
-            let from = required(frame, &format!("pass {name}"), &fields, "from")?;
-            let to = required(frame, &format!("pass {name}"), &fields, "to")?;
-            let load = if flag(frame, FUNCTION, &fields, "load", false)? {
-                LoadOp::Load
-            } else {
-                LoadOp::DontCare
-            };
-            pass = pass
-                .read(resource(graph, &name, &from)?, ReadUsage::Copy)
-                .write(PassOutput::copy(resource(graph, &name, &to)?, load, StoreOp::Store));
+            pass = copy_pass(frame, graph, &fields, pass)?;
             Work::Copy
         }
     };
     Ok((pass, work))
+}
+
+/// Adds what a copy pass reads and writes to `pass`: `from`, `to`, `size`, and `load`.
+fn copy_pass(frame: &Frame<'_>, graph: &RenderGraph, fields: &TableView<'_>, pass: Pass) -> l3i::Result<Pass> {
+    let name = pass.name().to_owned();
+    let what = format!("pass {name}");
+    let end = |key: &str| -> l3i::Result<_> {
+        let view = fields.raw_get(frame, key)?;
+        if view.is_nil() {
+            return Err(error(format!("{FUNCTION}: {what} needs a {key}")));
+        }
+        copy_end(frame, graph, &name, &format!("{what}'s {key}"), view)
+    };
+    let (source, from_level, from) = end("from")?;
+    let (destination, to_level, to) = end("to")?;
+    let load = if flag(frame, FUNCTION, fields, "load", false)? {
+        LoadOp::Load
+    } else {
+        LoadOp::DontCare
+    };
+    let amount = copy_size(frame, &what, fields.raw_get(frame, "size")?)?;
+    let from_level = from_level.unwrap_or_default();
+    let to_level = to_level.unwrap_or_default();
+    Ok(pass
+        .read_at(source, ReadUsage::Copy, from_level.level, from_level.layer)
+        .write(PassOutput::copy(destination, load, StoreOp::Store).at(to_level.level, to_level.layer))
+        .region(CopyRegion { from, to, size: amount }))
 }
 
 /// `device:plan { name, viewport, targets, buffers, passes }`.

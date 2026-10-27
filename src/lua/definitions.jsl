@@ -698,7 +698,8 @@ declare extern type GpuSampler with
 end
 
 --- What `GpuDevice:texture` makes. `layers` is a `2dArray`'s and `depth` a `3d` texture's; `mips`
---- is 1 by default, `shape` `2d`.
+--- is 1 by default, `shape` `2d`. `samples = 4` makes a multisampled 2D `target` of one level,
+--- which a pass draws into and resolves, and nothing samples, writes, or reads back.
 export type GpuTextureDesc = {
   width: number,
   height: number,
@@ -708,6 +709,7 @@ export type GpuTextureDesc = {
   layers: number?,
   depth: number?,
   mips: number?,
+  samples: number?,
 }
 
 --- What `GpuDevice:sampler` makes: `nearest` filters and `clamp` addressing by default, and a
@@ -746,23 +748,28 @@ export type GpuBlend = 'replace' | 'alpha' | 'premultiplied' | 'additive'
 --- A render pipeline's fixed-function state: a color target per fragment output (a format's name,
 --- or one with a `blend`), the depth target it tests against (a format's name tests `less` and
 --- writes), and how it assembles and culls primitives. A triangle facing the camera runs
---- counter-clockwise unless `clockwise` says otherwise.
+--- counter-clockwise unless `clockwise` says otherwise. A `multisampled` pipeline draws into
+--- targets of 4 samples a texel.
 export type GpuPipelineState = {
   colors: { GpuTextureFormat | { format: GpuTextureFormat, blend: GpuBlend? } },
   depth: (GpuTextureFormat | { format: GpuTextureFormat, compare: GpuCompare?, write: boolean? })?,
   topology: ('triangles' | 'triangleStrip' | 'lines' | 'lineStrip' | 'points')?,
   cull: ('none' | 'front' | 'back')?,
   clockwise: boolean?,
+  multisampled: boolean?,
 }
 
 --- A level of a layer of a texture a pass draws into: a texture alone keeps what it holds, and a
 --- `clear` (four channels, or a depth) replaces it. `store = false` throws away what the pass drew.
+--- A multisampled color target's samples average into its `resolve` when the pass ends: level 0
+--- of layer 0 of a texture, or the level and layer named.
 export type GpuTarget = GpuTexture | {
   texture: GpuTexture,
   clear: ({ number } | number)?,
   level: number?,
   layer: number?,
   store: boolean?,
+  resolve: (GpuTexture | { texture: GpuTexture, level: number?, layer: number? })?,
 }
 
 --- One draw: `count` vertices (or indices, with `indices`) of `instanceCount` instances, or the
@@ -833,27 +840,50 @@ export type GpuDrawSetDesc = {
 }
 
 --- A target a plan declares: a color or depth format, the viewport's size times `scale` (1 by
---- default) or a fixed `width` and `height`, and whether the run gives it (`imported`).
+--- default) or a fixed `width` and `height`, and whether the run gives it (`imported`). It has
+--- `mips` levels and `layers` layers, 1 of each by default, and `samples` samples a texel: 1, or 4
+--- for a multisampled target of one level and one layer, drawn into and resolved.
 export type GpuPlanTarget = {
   name: string,
   format: GpuTextureFormat,
   scale: number?,
   width: number?,
   height: number?,
+  mips: number?,
+  layers: number?,
+  samples: number?,
   imported: boolean?,
 }
 
 --- A buffer a plan declares: `size` bytes, a multiple of 4, and whether the run gives it.
 export type GpuPlanBuffer = { name: string, size: number, imported: boolean? }
 
+--- A target, all of it or one `level` of one `layer` of it.
+export type GpuPlanLevel = string | { target: string, level: number?, layer: number? }
+
 --- A target a pass draws into: its name, or one cleared first (four channels, or a depth), loaded
---- from what it held, or neither, and stored unless `store` is `false`.
+--- from what it held, or neither, and stored unless `store` is `false`. It draws into level 0 of
+--- layer 0 unless it names a `level` and `layer`, and a multisampled color target's samples
+--- average into its `resolve` when the pass ends.
 export type GpuPlanWrite = string | {
   target: string,
   clear: ({ number } | number)?,
   load: boolean?,
   store: boolean?,
+  level: number?,
+  layer: number?,
+  resolve: GpuPlanLevel?,
 }
+
+--- One end of a copy: a target or buffer's name; a level of a layer of a target from the texel
+--- at `column` and `row`; or a buffer from byte `offset`.
+export type GpuPlanCopyEnd = string | {
+  target: string,
+  level: number?,
+  layer: number?,
+  column: number?,
+  row: number?,
+} | { buffer: string, offset: number? }
 
 --- A buffer a compute pass writes: its name, or one zeroed first (`clear = true`) or loaded.
 export type GpuPlanStorage = string | {
@@ -870,8 +900,9 @@ export type GpuPlanGroup = GpuBindGroup | { [number]: GpuBuffer | GpuTexture | G
 --- One pass of a plan and what it does: a `draw` pass draws the device's visible draw sets carrying
 --- any of its `tags` with its `pass` group, a `fullscreen` pass draws one triangle of its
 --- `pipeline`, a `compute` pass dispatches its `pipeline`, and a `copy` pass copies `from` into
---- `to`. `reads` names the targets and buffers its shaders read, and `depthTest` the depth target
---- it tests against without writing.
+--- `to`: everything from where `from` starts, or `size`, a rectangle of texels or a number of
+--- bytes. `reads` names the targets and buffers its shaders read, all of each or one level of one
+--- layer of a target, and `depthTest` the depth target it tests against without writing.
 export type GpuPlanPass = {
   name: string,
   kind: 'draw' | 'fullscreen' | 'compute' | 'copy',
@@ -883,12 +914,13 @@ export type GpuPlanPass = {
   draw: GpuPlanGroup?,
   colors: { GpuPlanWrite }?,
   depth: GpuPlanWrite?,
-  depthTest: string?,
-  reads: { string }?,
+  depthTest: GpuPlanLevel?,
+  reads: { GpuPlanLevel }?,
   storage: { GpuPlanStorage }?,
   workgroups: (number | { number })?,
-  from: string?,
-  to: string?,
+  from: GpuPlanCopyEnd?,
+  to: GpuPlanCopyEnd?,
+  size: (number | { width: number, height: number })?,
   load: boolean?,
 }
 

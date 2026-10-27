@@ -37,7 +37,7 @@ pub use cache::PipelineStats;
 pub use compute::ComputePipeline;
 pub use draw_set::{DrawSet, DrawSetDesc, DrawSets};
 pub use live::LiveCounts;
-pub use pass::{Draw, IndexFormat, Target};
+pub use pass::{Draw, IndexFormat, Resolve, Target};
 pub use pipeline::{Blend, ColorState, Cull, DepthState, PipelineState, RenderPipeline, Topology};
 pub(crate) use pipeline::{Group, Slot};
 pub use plan::{Import, PassTiming, Plan, PlanBinding, PlanGroup, Work};

@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::fmt;
 
 use crate::render::error::GraphError;
-use crate::render::pass::{Attachment, ClearValue, LoadOp, Pass, PassKind, ReadUsage};
-use crate::render::target::{TargetSize, TextureFormat};
+use crate::render::pass::{Attachment, ClearValue, LoadOp, Pass, PassKind, PassOutput, ReadUsage, Subresource};
+use crate::render::target::{Extent, TargetSize, TextureFormat};
 
 /// A pass in one [`RenderGraph`]. Only meaningful for the graph that returned it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
@@ -95,16 +95,139 @@ impl ResourceOrigin {
     }
 }
 
+/// What a target is made as: a format, a size, and how many mip levels, array layers, and samples
+/// a pixel it has.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TargetDesc {
+    /// Pixel format: a depth target's is a depth format.
+    pub format: TextureFormat,
+    /// Size of level 0, fixed or relative to the viewport.
+    pub size: TargetSize,
+    /// Mip levels, each half the one before: at least 1, at most as many as the size halves to.
+    pub mips: u32,
+    /// Array layers: at least 1.
+    pub layers: u32,
+    /// Samples a pixel: 1, or 4 for a multisampled target, which has one level and one layer, is
+    /// drawn into and resolved, and never sampled or copied.
+    pub samples: u32,
+}
+
+impl TargetDesc {
+    /// One level, one layer, one sample of `format` at `size`.
+    #[must_use]
+    pub const fn new(format: TextureFormat, size: TargetSize) -> Self {
+        Self {
+            format,
+            size,
+            mips: 1,
+            layers: 1,
+            samples: 1,
+        }
+    }
+
+    /// The same target with `mips` levels.
+    #[must_use]
+    pub const fn mips(self, mips: u32) -> Self {
+        Self { mips, ..self }
+    }
+
+    /// The same target with `layers` layers.
+    #[must_use]
+    pub const fn layers(self, layers: u32) -> Self {
+        Self { layers, ..self }
+    }
+
+    /// The same target with `samples` samples a pixel.
+    #[must_use]
+    pub const fn samples(self, samples: u32) -> Self {
+        Self { samples, ..self }
+    }
+
+    /// What is wrong with its shape, if anything.
+    #[must_use]
+    pub fn problem(&self) -> Option<String> {
+        if !self.size.is_valid() {
+            return Some(format!("its size, {}, is zero, negative, or not finite", self.size));
+        }
+        if self.mips == 0 || self.layers == 0 {
+            return Some("at least one mip level and one layer".to_owned());
+        }
+        if !matches!(self.samples, 1 | 4) {
+            return Some(format!("1 or 4 samples a pixel, not {}", self.samples));
+        }
+        if self.samples > 1 && (self.mips > 1 || self.layers > 1) {
+            return Some("one level and one layer, being multisampled".to_owned());
+        }
+        let most = match self.size {
+            TargetSize::Absolute { width, height } => 32 - width.max(height).leading_zeros(),
+            TargetSize::Relative { .. } => 32,
+        };
+        if self.mips > most {
+            return Some(format!("at most {most} mip levels at {}, not {}", self.size, self.mips));
+        }
+        None
+    }
+
+    /// The size of level 0 at `viewport`. A relative size with several levels never resolves
+    /// smaller than they need, 2^(levels - 1) pixels each way, so every level exists however
+    /// small the viewport.
+    #[must_use]
+    pub fn resolve(&self, viewport: Extent) -> Extent {
+        let size = self.size.resolve(viewport);
+        if matches!(self.size, TargetSize::Absolute { .. }) {
+            return size;
+        }
+
+        let floor = self.floor();
+        Extent {
+            width: size.width.max(floor),
+            height: size.height.max(floor),
+        }
+    }
+
+    /// The size of `level` at `viewport`, or `None` for a relative size without one.
+    #[must_use]
+    pub fn extent(&self, level: u32, viewport: Option<Extent>) -> Option<Extent> {
+        match (self.size, viewport) {
+            (TargetSize::Absolute { width, height }, _) => Some(Extent { width, height }.level(level)),
+            (_, Some(viewport)) => Some(self.resolve(viewport).level(level)),
+            (TargetSize::Relative { .. }, None) => None,
+        }
+    }
+
+    /// What decides the size of `level`: two levels of targets with the same one are the same
+    /// size at every viewport.
+    pub(crate) fn level_size(&self, level: u32) -> LevelSize {
+        match self.size {
+            TargetSize::Absolute { width, height } => LevelSize::Fixed(Extent { width, height }.level(level)),
+            TargetSize::Relative { scale } => LevelSize::Relative {
+                scale,
+                level,
+                floor: self.floor(),
+            },
+        }
+    }
+
+    /// The fewest pixels level 0 of a relative size has each way: what its last level needs.
+    const fn floor(&self) -> u32 {
+        1 << (self.mips - 1)
+    }
+}
+
+/// A level's size, as far as a graph knows it before a viewport.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LevelSize {
+    /// Fixed pixels.
+    Fixed(Extent),
+    /// A level of the viewport times a scale, level 0 never under `floor` pixels each way.
+    Relative { scale: f32, level: u32, floor: u32 },
+}
+
 /// What a resource is made as.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ResourceDesc {
-    /// A render or depth target: a depth target exactly when `format` is a depth format.
-    Texture {
-        /// Pixel format.
-        format: TextureFormat,
-        /// Size, fixed or relative to the viewport.
-        size: TargetSize,
-    },
+    /// A render or depth target: a depth target exactly when its format is a depth format.
+    Texture(TargetDesc),
     /// A buffer.
     Buffer {
         /// How many bytes it holds: a nonzero multiple of 4.
@@ -128,8 +251,8 @@ impl Resource {
     #[must_use]
     pub const fn kind(&self) -> ResourceKind {
         match self.desc {
-            ResourceDesc::Texture { format, .. } if format.is_depth() => ResourceKind::DepthTarget,
-            ResourceDesc::Texture { .. } => ResourceKind::RenderTarget,
+            ResourceDesc::Texture(target) if target.format.is_depth() => ResourceKind::DepthTarget,
+            ResourceDesc::Texture(_) => ResourceKind::RenderTarget,
             ResourceDesc::Buffer { .. } => ResourceKind::Buffer,
         }
     }
@@ -138,7 +261,7 @@ impl Resource {
     #[must_use]
     pub const fn format(&self) -> Option<TextureFormat> {
         match self.desc {
-            ResourceDesc::Texture { format, .. } => Some(format),
+            ResourceDesc::Texture(target) => Some(target.format),
             ResourceDesc::Buffer { .. } => None,
         }
     }
@@ -147,8 +270,44 @@ impl Resource {
     #[must_use]
     pub const fn size(&self) -> Option<TargetSize> {
         match self.desc {
-            ResourceDesc::Texture { size, .. } => Some(size),
+            ResourceDesc::Texture(target) => Some(target.size),
             ResourceDesc::Buffer { .. } => None,
+        }
+    }
+
+    /// A target's description; `None` for a buffer.
+    #[must_use]
+    pub const fn target(&self) -> Option<TargetDesc> {
+        match self.desc {
+            ResourceDesc::Texture(target) => Some(target),
+            ResourceDesc::Buffer { .. } => None,
+        }
+    }
+
+    /// How many subresources it has: a target's levels times its layers, and 1 for a buffer.
+    #[must_use]
+    pub const fn subresources(&self) -> u32 {
+        match self.desc {
+            ResourceDesc::Texture(target) => target.mips * target.layers,
+            ResourceDesc::Buffer { .. } => 1,
+        }
+    }
+
+    /// A target's samples a pixel; 1 for a buffer.
+    #[must_use]
+    pub const fn samples(&self) -> u32 {
+        match self.desc {
+            ResourceDesc::Texture(target) => target.samples,
+            ResourceDesc::Buffer { .. } => 1,
+        }
+    }
+
+    /// Whether `subresource` is one of its own.
+    #[must_use]
+    pub const fn has(&self, subresource: Subresource) -> bool {
+        match self.desc {
+            ResourceDesc::Texture(target) => subresource.level < target.mips && subresource.layer < target.layers,
+            ResourceDesc::Buffer { .. } => subresource.level == 0 && subresource.layer == 0,
         }
     }
 
@@ -156,7 +315,7 @@ impl Resource {
     #[must_use]
     pub const fn bytes(&self) -> Option<u64> {
         match self.desc {
-            ResourceDesc::Texture { .. } => None,
+            ResourceDesc::Texture(_) => None,
             ResourceDesc::Buffer { bytes } => Some(bytes),
         }
     }
@@ -201,7 +360,7 @@ impl RenderGraph {
         format: TextureFormat,
         size: TargetSize,
     ) -> Result<ResourceId, GraphError> {
-        self.add_target(
+        self.add_target_of(
             name.into(),
             ResourceKind::RenderTarget,
             format,
@@ -221,7 +380,7 @@ impl RenderGraph {
         format: TextureFormat,
         size: TargetSize,
     ) -> Result<ResourceId, GraphError> {
-        self.add_target(
+        self.add_target_of(
             name.into(),
             ResourceKind::DepthTarget,
             format,
@@ -241,7 +400,7 @@ impl RenderGraph {
         format: TextureFormat,
         size: TargetSize,
     ) -> Result<ResourceId, GraphError> {
-        self.add_target(
+        self.add_target_of(
             name.into(),
             ResourceKind::RenderTarget,
             format,
@@ -261,7 +420,25 @@ impl RenderGraph {
         format: TextureFormat,
         size: TargetSize,
     ) -> Result<ResourceId, GraphError> {
-        self.add_target(name.into(), ResourceKind::DepthTarget, format, size, ResourceOrigin::Imported)
+        self.add_target_of(name.into(), ResourceKind::DepthTarget, format, size, ResourceOrigin::Imported)
+    }
+
+    /// Registers a transient target of any shape: levels, layers, and samples.
+    ///
+    /// # Errors
+    ///
+    /// When the name is empty or taken, or the shape is invalid.
+    pub fn add_target(&mut self, name: impl Into<String>, target: TargetDesc) -> Result<ResourceId, GraphError> {
+        self.register_target(name.into(), None, target, ResourceOrigin::Transient)
+    }
+
+    /// Registers a target of any shape that the host owns.
+    ///
+    /// # Errors
+    ///
+    /// When the name is empty or taken, or the shape is invalid.
+    pub fn import_target(&mut self, name: impl Into<String>, target: TargetDesc) -> Result<ResourceId, GraphError> {
+        self.register_target(name.into(), None, target, ResourceOrigin::Imported)
     }
 
     /// Registers a transient buffer of `bytes` bytes.
@@ -283,7 +460,40 @@ impl RenderGraph {
         self.add_resource(name.into(), ResourceDesc::Buffer { bytes }, ResourceOrigin::Imported)
     }
 
-    fn add_target(
+    /// Registers `target`, of `kind` where the caller named one.
+    fn register_target(
+        &mut self,
+        name: String,
+        kind: Option<ResourceKind>,
+        target: TargetDesc,
+        origin: ResourceOrigin,
+    ) -> Result<ResourceId, GraphError> {
+        self.check_name(&name)?;
+        if let Some(kind) = kind
+            && target.format.is_depth() != (kind == ResourceKind::DepthTarget)
+        {
+            return Err(GraphError::FormatKind {
+                resource: name,
+                format: target.format,
+                kind,
+            });
+        }
+
+        if !target.size.is_valid() {
+            return Err(GraphError::InvalidSize {
+                resource: name,
+                size: target.size,
+            });
+        }
+
+        if let Some(problem) = target.problem() {
+            return Err(GraphError::InvalidTargetShape { resource: name, problem });
+        }
+
+        self.add_resource(name, ResourceDesc::Texture(target), origin)
+    }
+
+    fn add_target_of(
         &mut self,
         name: String,
         kind: ResourceKind,
@@ -291,20 +501,7 @@ impl RenderGraph {
         size: TargetSize,
         origin: ResourceOrigin,
     ) -> Result<ResourceId, GraphError> {
-        self.check_name(&name)?;
-        if format.is_depth() != (kind == ResourceKind::DepthTarget) {
-            return Err(GraphError::FormatKind {
-                resource: name,
-                format,
-                kind,
-            });
-        }
-
-        if !size.is_valid() {
-            return Err(GraphError::InvalidSize { resource: name, size });
-        }
-
-        self.add_resource(name, ResourceDesc::Texture { format, size }, origin)
+        self.register_target(name, Some(kind), TargetDesc::new(format, size), origin)
     }
 
     fn check_name(&self, name: &str) -> Result<(), GraphError> {
@@ -406,6 +603,46 @@ impl RenderGraph {
             return Err(GraphError::NoOutputs { pass: name.to_owned() });
         }
 
+        self.check_inputs(pass)?;
+        self.check_outputs(pass)?;
+
+        let writes: Vec<(ResourceId, Subresource)> = pass.writes().collect();
+        for (index, &(id, subresource)) in writes.iter().enumerate() {
+            let resource = &self.resources[id.0];
+            if writes[..index].contains(&(id, subresource)) {
+                return Err(GraphError::DuplicateAccess {
+                    pass: name.to_owned(),
+                    resource: resource.name.clone(),
+                });
+            }
+
+            if pass
+                .inputs
+                .iter()
+                .any(|input| input.resource == id && overlap(input.one(), Some(subresource)))
+            {
+                return Err(GraphError::ReadWriteConflict {
+                    pass: name.to_owned(),
+                    resource: resource.name.clone(),
+                });
+            }
+        }
+
+        if pass.kind == PassKind::Copy {
+            return self.check_copy(pass);
+        }
+
+        if !pass.region.is_whole() {
+            return Err(GraphError::RegionOutsideCopy { pass: name.to_owned() });
+        }
+
+        self.check_attachments(pass)
+    }
+
+    /// Whether each of `pass`'s reads is one its resource and its kind of pass allow, of a level and
+    /// layer the resource has, and touching nothing another read does.
+    fn check_inputs(&self, pass: &Pass) -> Result<(), GraphError> {
+        let name = pass.name();
         // A pass touches a handful of resources, so the duplicate scans stay quadratic.
         for (index, input) in pass.inputs.iter().enumerate() {
             let resource = self.registered(name, input.resource)?;
@@ -426,7 +663,29 @@ impl RenderGraph {
                 });
             }
 
-            if pass.inputs[..index].iter().any(|earlier| earlier.resource == input.resource) {
+            if let Some(subresource) = input.subresource
+                && !resource.has(subresource)
+            {
+                return Err(GraphError::SubresourceOutOfRange {
+                    pass: name.to_owned(),
+                    resource: resource.name.clone(),
+                    subresource,
+                });
+            }
+
+            if resource.samples() > 1 && input.usage != ReadUsage::DepthTest {
+                return Err(GraphError::Multisampled {
+                    pass: name.to_owned(),
+                    resource: resource.name.clone(),
+                    usage: input.usage.description(),
+                });
+            }
+
+            let one = input.one();
+            if pass.inputs[..index]
+                .iter()
+                .any(|earlier| earlier.resource == input.resource && overlap(earlier.one(), one))
+            {
                 return Err(GraphError::DuplicateAccess {
                     pass: name.to_owned(),
                     resource: resource.name.clone(),
@@ -434,7 +693,14 @@ impl RenderGraph {
             }
         }
 
-        for (index, output) in pass.outputs.iter().enumerate() {
+        Ok(())
+    }
+
+    /// Whether each of `pass`'s writes is one its resource and its kind of pass allow, cleared to a
+    /// value that fits, into a level and layer the resource has, resolving where it can.
+    fn check_outputs(&self, pass: &Pass) -> Result<(), GraphError> {
+        let name = pass.name();
+        for output in &pass.outputs {
             let resource = self.registered(name, output.resource)?;
             if !output.attachment.allows(resource.kind()) {
                 return Err(GraphError::IncompatibleWrite {
@@ -457,91 +723,104 @@ impl RenderGraph {
                 check_clear(name, resource, clear)?;
             }
 
-            if pass.outputs[..index]
-                .iter()
-                .any(|earlier| earlier.resource == output.resource)
+            if !resource.has(output.subresource) {
+                return Err(GraphError::SubresourceOutOfRange {
+                    pass: name.to_owned(),
+                    resource: resource.name.clone(),
+                    subresource: output.subresource,
+                });
+            }
+
+            let usage = match output.attachment {
+                Attachment::Storage => Some("a storage texture"),
+                Attachment::Copy => Some("a copy's destination"),
+                Attachment::Color | Attachment::Depth => None,
+            };
+            if let Some(usage) = usage
+                && resource.samples() > 1
             {
-                return Err(GraphError::DuplicateAccess {
+                return Err(GraphError::Multisampled {
                     pass: name.to_owned(),
                     resource: resource.name.clone(),
+                    usage,
                 });
             }
 
-            if pass.inputs.iter().any(|input| input.resource == output.resource) {
-                return Err(GraphError::ReadWriteConflict {
-                    pass: name.to_owned(),
-                    resource: resource.name.clone(),
-                });
+            if let Some((target, subresource)) = output.resolve {
+                self.check_resolve(name, output, resource, target, subresource)?;
             }
         }
 
-        if pass.kind == PassKind::Copy {
-            return self.check_copy(pass);
-        }
-
-        self.check_attachments(pass)
+        Ok(())
     }
 
-    /// Whether a copy pass copies one resource into one it fits.
-    fn check_copy(&self, pass: &Pass) -> Result<(), GraphError> {
-        let invalid = |problem: String| GraphError::InvalidCopy {
-            pass: pass.name().to_owned(),
+    /// Whether `output`, a write of `source`, can resolve into `subresource` of `target`.
+    fn check_resolve(
+        &self,
+        pass: &str,
+        output: &PassOutput,
+        source: &Resource,
+        target: ResourceId,
+        subresource: Subresource,
+    ) -> Result<(), GraphError> {
+        let invalid = |problem: String| GraphError::InvalidResolve {
+            pass: pass.to_owned(),
+            resource: source.name.clone(),
             problem,
         };
-        let ([input], [output]) = (&pass.inputs[..], &pass.outputs[..]) else {
-            return Err(invalid("expected one source and one destination".to_owned()));
-        };
-
-        if let LoadOp::Clear(_) = output.load {
-            return Err(invalid(
-                "the copy writes its destination, so clearing it first is wasted: load it or don't care".to_owned(),
-            ));
+        if output.attachment != Attachment::Color {
+            return Err(invalid("only a color attachment resolves".to_owned()));
         }
 
-        let source = &self.resources[input.resource.0];
-        let destination = &self.resources[output.resource.0];
-        let problem = match (source.desc, destination.desc) {
-            (ResourceDesc::Buffer { bytes: from }, ResourceDesc::Buffer { bytes: to }) if to < from => {
-                format!(
-                    "\"{}\" holds {from} bytes and \"{}\" only {to}",
-                    source.name, destination.name
-                )
-            }
-            (
-                ResourceDesc::Texture { format, size },
-                ResourceDesc::Texture {
-                    format: into,
-                    size: sized,
-                },
-            ) if (format, size) != (into, sized) => {
-                format!(
-                    "\"{}\" is {size} {format} and \"{}\" is {sized} {into}: expected the same format and size",
-                    source.name, destination.name
-                )
-            }
-            (ResourceDesc::Texture { format, .. }, ResourceDesc::Buffer { .. })
-            | (ResourceDesc::Buffer { .. }, ResourceDesc::Texture { format, .. })
-                if format.texel_bytes().is_none() =>
-            {
-                format!("{format} has no layout in a buffer: the backend chooses it")
-            }
-            _ => return Ok(()),
+        let into = self.registered(pass, target)?;
+        let (Some(from), Some(to), ResourceKind::RenderTarget) = (source.target(), into.target(), into.kind()) else {
+            return Err(invalid(format!("\"{}\" is a {}", into.name, into.kind())));
         };
-        Err(invalid(problem))
+
+        if from.samples == 1 {
+            return Err(invalid("it has one sample, so there is nothing to resolve".to_owned()));
+        }
+
+        if to.samples > 1 {
+            return Err(invalid(format!("\"{}\" is multisampled too", into.name)));
+        }
+
+        if from.format != to.format {
+            return Err(invalid(format!(
+                "it is {} and \"{}\" is {}",
+                from.format, into.name, to.format
+            )));
+        }
+
+        if !into.has(subresource) {
+            return Err(GraphError::SubresourceOutOfRange {
+                pass: pass.to_owned(),
+                resource: into.name.clone(),
+                subresource,
+            });
+        }
+
+        if from.level_size(output.subresource.level) != to.level_size(subresource.level) {
+            return Err(invalid(format!("\"{}\" is another size at {subresource}", into.name)));
+        }
+
+        Ok(())
     }
 
+    /// Whether a drawing pass's attachments fit together: at most one depth attachment, and one
+    /// size and one sample count among them all.
     fn check_attachments(&self, pass: &Pass) -> Result<(), GraphError> {
         let outputs = pass
             .outputs
             .iter()
             .filter(|output| matches!(output.attachment, Attachment::Color | Attachment::Depth))
-            .map(|output| (output.resource, output.attachment == Attachment::Depth));
+            .map(|output| (output.resource, output.subresource, output.attachment == Attachment::Depth));
         let depth_tests = pass.inputs.iter().filter(|input| input.usage == ReadUsage::DepthTest);
-        let attachments = outputs.chain(depth_tests.map(|input| (input.resource, true)));
+        let attachments = outputs.chain(depth_tests.map(|input| (input.resource, input.one().unwrap_or_default(), true)));
 
         let mut depth: Option<&Resource> = None;
-        let mut sized: Option<&Resource> = None;
-        for (id, is_depth) in attachments {
+        let mut first: Option<(&Resource, LevelSize)> = None;
+        for (id, subresource, is_depth) in attachments {
             let resource = &self.resources[id.0];
             if is_depth {
                 if let Some(first) = depth {
@@ -555,13 +834,26 @@ impl RenderGraph {
                 depth = Some(resource);
             }
 
-            let Some(first) = sized else {
-                sized = Some(resource);
+            let Some(target) = resource.target() else {
                 continue;
             };
 
-            if first.size() != resource.size() {
+            let size = target.level_size(subresource.level);
+            let Some((first, first_size)) = first else {
+                first = Some((resource, size));
+                continue;
+            };
+
+            if first_size != size {
                 return Err(GraphError::AttachmentSizeMismatch {
+                    pass: pass.name().to_owned(),
+                    first: first.name.clone(),
+                    second: resource.name.clone(),
+                });
+            }
+
+            if first.samples() != resource.samples() {
+                return Err(GraphError::SampleCountMismatch {
                     pass: pass.name().to_owned(),
                     first: first.name.clone(),
                     second: resource.name.clone(),
@@ -613,4 +905,13 @@ fn check_clear(pass: &str, resource: &Resource, clear: ClearValue) -> Result<(),
     }
 
     Ok(())
+}
+
+/// Whether two reads or writes of one resource touch a level of a layer in common: `None` is
+/// every one.
+fn overlap(first: Option<Subresource>, second: Option<Subresource>) -> bool {
+    match (first, second) {
+        (Some(first), Some(second)) => first == second,
+        _ => true,
+    }
 }

@@ -152,6 +152,14 @@ impl ReadUsage {
         self.target_kind().is_none_or(|allowed| allowed == kind)
     }
 
+    /// Whether it reads one level of one layer, whether or not it names which: a depth test binds
+    /// one as an attachment, and a copy copies one. The others read the whole target unless they
+    /// name one.
+    #[must_use]
+    pub const fn reads_one(self) -> bool {
+        matches!(self, Self::DepthTest | Self::Copy)
+    }
+
     /// The usage's description, as errors print it.
     #[must_use]
     pub const fn description(self) -> &'static str {
@@ -165,6 +173,30 @@ impl ReadUsage {
     }
 }
 
+/// One mip level of one array layer of a target: what an attachment draws into, and what a read
+/// or a copy can name instead of the whole target.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+pub struct Subresource {
+    /// The mip level, from 0, the full size.
+    pub level: u32,
+    /// The array layer, from 0.
+    pub layer: u32,
+}
+
+impl Subresource {
+    /// `level` of `layer`.
+    #[must_use]
+    pub const fn new(level: u32, layer: u32) -> Self {
+        Self { level, layer }
+    }
+}
+
+impl fmt::Display for Subresource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "level {} of layer {}", self.level, self.layer)
+    }
+}
+
 /// A resource a pass reads.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct PassInput {
@@ -172,6 +204,19 @@ pub struct PassInput {
     pub resource: ResourceId,
     /// How it is read.
     pub usage: ReadUsage,
+    /// The one level of one layer read, or `None` for the whole target (a buffer is always
+    /// whole). A copy reads level 0 of layer 0 unless it names another.
+    pub subresource: Option<Subresource>,
+}
+
+impl PassInput {
+    /// The one level of one layer it reads, or `None` when it reads every one: a usage that
+    /// [reads one](ReadUsage::reads_one) reads level 0 of layer 0 unless it names another.
+    #[must_use]
+    pub fn one(&self) -> Option<Subresource> {
+        self.subresource
+            .or_else(|| self.usage.reads_one().then_some(Subresource { level: 0, layer: 0 }))
+    }
 }
 
 /// How a pass writes a resource: the attachment slot a target is bound to, a storage binding, or
@@ -289,9 +334,34 @@ pub struct PassOutput {
     pub load: LoadOp,
     /// What happens to it when the pass ends.
     pub store: StoreOp,
+    /// The level of the layer of a target it writes; level 0 of layer 0 by default. A buffer is
+    /// written whole.
+    pub subresource: Subresource,
+    /// A multisampled color attachment's resolve: the single-sample target, and its level and
+    /// layer, that its samples average into at the end of the pass.
+    pub resolve: Option<(ResourceId, Subresource)>,
 }
 
 impl PassOutput {
+    /// The same write, into `level` of `layer`.
+    #[must_use]
+    pub const fn at(self, level: u32, layer: u32) -> Self {
+        Self {
+            subresource: Subresource { level, layer },
+            ..self
+        }
+    }
+
+    /// The same write, its samples resolved into `level` of `layer` of `target` when the pass
+    /// ends.
+    #[must_use]
+    pub const fn resolving(self, target: ResourceId, level: u32, layer: u32) -> Self {
+        Self {
+            resolve: Some((target, Subresource { level, layer })),
+            ..self
+        }
+    }
+
     /// A color attachment write.
     #[must_use]
     pub const fn color(resource: ResourceId, load: LoadOp, store: StoreOp) -> Self {
@@ -300,6 +370,8 @@ impl PassOutput {
             attachment: Attachment::Color,
             load,
             store,
+            subresource: Subresource { level: 0, layer: 0 },
+            resolve: None,
         }
     }
 
@@ -311,6 +383,8 @@ impl PassOutput {
             attachment: Attachment::Depth,
             load,
             store,
+            subresource: Subresource { level: 0, layer: 0 },
+            resolve: None,
         }
     }
 
@@ -322,6 +396,8 @@ impl PassOutput {
             attachment: Attachment::Storage,
             load,
             store,
+            subresource: Subresource { level: 0, layer: 0 },
+            resolve: None,
         }
     }
 
@@ -333,7 +409,57 @@ impl PassOutput {
             attachment: Attachment::Copy,
             load,
             store,
+            subresource: Subresource { level: 0, layer: 0 },
+            resolve: None,
         }
+    }
+}
+
+/// Where a copy starts in a resource: a texel of a target's subresource, or a byte of a buffer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum CopyAt {
+    /// The texel `x` across and `y` down.
+    Texel {
+        /// Across.
+        x: u32,
+        /// Down.
+        y: u32,
+    },
+    /// A byte offset, a multiple of 4.
+    Byte(u64),
+}
+
+/// How much a copy copies.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum CopySize {
+    /// A rectangle of texels.
+    Texels {
+        /// Across.
+        width: u32,
+        /// Down.
+        height: u32,
+    },
+    /// Bytes, a multiple of 4, between buffers.
+    Bytes(u64),
+}
+
+/// What part of its source a copy pass copies, and where into its destination. Everything left
+/// out is the start, and the whole of what the source has from there.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+pub struct CopyRegion {
+    /// Where in the source it starts.
+    pub from: Option<CopyAt>,
+    /// Where in the destination it lands.
+    pub to: Option<CopyAt>,
+    /// How much it copies.
+    pub size: Option<CopySize>,
+}
+
+impl CopyRegion {
+    /// Whether it is the whole copy: everything from the start.
+    #[must_use]
+    pub const fn is_whole(&self) -> bool {
+        self.from.is_none() && self.to.is_none() && self.size.is_none()
     }
 }
 
@@ -348,6 +474,8 @@ pub struct Pass {
     pub inputs: Vec<PassInput>,
     /// Resources written, in declaration order. A pass writes at least one.
     pub outputs: Vec<PassOutput>,
+    /// A copy pass's region; only a copy has one other than the whole.
+    pub region: CopyRegion,
 }
 
 impl Pass {
@@ -359,13 +487,40 @@ impl Pass {
             kind,
             inputs: Vec::new(),
             outputs: Vec::new(),
+            region: CopyRegion {
+                from: None,
+                to: None,
+                size: None,
+            },
         }
     }
 
     /// The same pass, also reading `resource` as `usage`.
     #[must_use]
     pub fn read(mut self, resource: ResourceId, usage: ReadUsage) -> Self {
-        self.inputs.push(PassInput { resource, usage });
+        self.inputs.push(PassInput {
+            resource,
+            usage,
+            subresource: None,
+        });
+        self
+    }
+
+    /// The same pass, also reading `level` of `layer` of `resource` as `usage`.
+    #[must_use]
+    pub fn read_at(mut self, resource: ResourceId, usage: ReadUsage, level: u32, layer: u32) -> Self {
+        self.inputs.push(PassInput {
+            resource,
+            usage,
+            subresource: Some(Subresource { level, layer }),
+        });
+        self
+    }
+
+    /// The same copy pass, copying `region`.
+    #[must_use]
+    pub fn region(mut self, region: CopyRegion) -> Self {
+        self.region = region;
         self
     }
 
@@ -380,5 +535,18 @@ impl Pass {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.metadata.name
+    }
+
+    /// The level and layer of each resource it writes: each output's, then each resolve's.
+    pub fn writes(&self) -> impl Iterator<Item = (ResourceId, Subresource)> + '_ {
+        let outputs = self.outputs.iter().map(|output| (output.resource, output.subresource));
+        outputs.chain(self.outputs.iter().filter_map(|output| output.resolve))
+    }
+
+    /// Every resource it reads or writes, resolves included, in declaration order; a resource
+    /// used several ways appears once for each.
+    pub fn resources(&self) -> impl Iterator<Item = ResourceId> + '_ {
+        let inputs = self.inputs.iter().map(|input| input.resource);
+        inputs.chain(self.writes().map(|(resource, _)| resource))
     }
 }

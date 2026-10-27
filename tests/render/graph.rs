@@ -306,7 +306,8 @@ fn loading_before_the_first_write_depends_on_registration_order() {
         compile_error(&graph),
         GraphError::LoadWithoutContents {
             pass: "transparent".to_owned(),
-            resource: "sceneColor".to_owned()
+            resource: "sceneColor".to_owned(),
+            subresource: None
         }
     );
 }
@@ -518,7 +519,8 @@ fn reading_a_transient_target_nobody_writes_is_rejected() {
         error,
         GraphError::ReadWithoutWriter {
             pass: "outline".to_owned(),
-            resource: "selectionMask".to_owned()
+            resource: "selectionMask".to_owned(),
+            subresource: None
         }
     );
     assert_eq!(
@@ -572,6 +574,7 @@ fn reading_discarded_contents_is_rejected() {
         GraphError::ReadDiscarded {
             pass: "opaque".to_owned(),
             resource: "depth".to_owned(),
+            subresource: None,
             writer: "depth".to_owned()
         }
     );
@@ -598,6 +601,7 @@ fn loading_discarded_contents_is_rejected() {
         GraphError::ReadDiscarded {
             pass: "transparent".to_owned(),
             resource: "sceneColor".to_owned(),
+            subresource: None,
             writer: "opaque".to_owned()
         }
     );
@@ -1481,7 +1485,7 @@ fn a_copy_copies_one_resource_into_one_it_fits() {
         graph.add_pass(copy("halve").read(color, ReadUsage::Copy).write(dont_care(half))),
         Err(invalid(
             "halve",
-            "\"color\" is viewport Rgba8Unorm and \"half\" is viewport*0.5 Rgba8Unorm: expected the same format and size"
+            "\"color\" is viewport and \"half\" is viewport*0.5: copying all of one into the other needs the same size"
         ))
     );
     assert!(matches!(

@@ -38,6 +38,7 @@
 #![warn(missing_docs)]
 
 mod compile;
+mod copy;
 mod dump;
 mod error;
 mod graph;
@@ -45,9 +46,11 @@ mod pass;
 mod target;
 
 pub use compile::{AliasGroup, CompiledGraph, Dependency, DependencyKind, Lifetime};
+pub use copy::{ResolvedCopy, TexelAt};
 pub use error::GraphError;
-pub use graph::{PassId, RenderGraph, Resource, ResourceDesc, ResourceId, ResourceKind, ResourceOrigin};
+pub use graph::{PassId, RenderGraph, Resource, ResourceDesc, ResourceId, ResourceKind, ResourceOrigin, TargetDesc};
 pub use pass::{
-    Attachment, ClearValue, LoadOp, Pass, PassInput, PassKind, PassMetadata, PassOutput, ReadUsage, SourceLocation, StoreOp,
+    Attachment, ClearValue, CopyAt, CopyRegion, CopySize, LoadOp, Pass, PassInput, PassKind, PassMetadata, PassOutput,
+    ReadUsage, SourceLocation, StoreOp, Subresource,
 };
-pub use target::{Extent, SampleKind, TargetSize, TextureFormat};
+pub use target::{COPY_ROW_ALIGNMENT, Extent, SampleKind, TargetSize, TextureFormat};

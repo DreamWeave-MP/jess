@@ -719,6 +719,119 @@ const FRAME_PLAN: &str = r"
             assert(small.viewport.width == 8 and plan.viewport.width == 16)
 ";
 
+/// A plan described in Luau over levels, layers, and samples: a mip chain drawn level by level
+/// inside one target, a corner of its last level copied into a buffer, and a multisampled target
+/// resolved into the host's.
+#[cfg(feature = "gpu")]
+#[test]
+fn a_script_plans_levels_and_samples() {
+    let Some(runtime) = gpu_runtime("a_script_plans_levels_and_samples") else {
+        return;
+    };
+    runtime.exec(LEVELS_PLAN).unwrap_or_else(|error| panic!("{error}"));
+}
+
+/// What `a_script_plans_levels_and_samples` runs.
+#[cfg(feature = "gpu")]
+const LEVELS_PLAN: &str = r"
+            local shader = require('@jess/shader')
+            local device = jess.gpu.device()
+            local function covering(input)
+              local index = input.builtin.vertexIndex
+              local corner = shader.vec2(
+                shader.float(shader.bitAnd(shader.shiftLeft(index, shader.uint(1)), shader.uint(2))),
+                shader.float(shader.bitAnd(index, shader.uint(2)))
+              )
+              return { position = shader.vec4(corner * 2 - 1, 0, 1) }
+            end
+            local flat = shader.program({
+              material = { color = shader.vec4 },
+              vertex = covering,
+              fragment = function(input) return input.material.color end,
+            })
+            local halve = shader.program({
+              material = { above = shader.texture2d },
+              vertex = covering,
+              fragment = function(input)
+                local at = shader.vec2u(input.builtin.position.xy * 2)
+                return shader.load(input.material.above, at, 0) * 0.5
+              end,
+            })
+            local fill = device:pipeline(flat, { colors = { 'rgba8Unorm' } })
+            local fillSamples = device:pipeline(flat, { colors = { 'rgba8Unorm' }, multisampled = true })
+            local down = device:pipeline(halve, { colors = { 'rgba8Unorm' } })
+            local function color(values: { number })
+              local bytes = buffer.create(16)
+              for index, value in values do
+                buffer.writef32(bytes, (index - 1) * 4, value)
+              end
+              local block = device:buffer(16, 'uniform')
+              block:write(0, bytes)
+              return { [0] = block }
+            end
+            local above = {}
+            for _, binding in halve.layout.material.bindings do
+              above[binding.binding] = if binding.kind == 'Sampler' then device:sampler() else 'chain'
+            end
+
+            local plan = device:plan({
+              name = 'levels',
+              viewport = { width = 8, height = 8 },
+              targets = {
+                { name = 'chain', format = 'rgba8Unorm', width = 16, height = 16, mips = 3 },
+                { name = 'samples', format = 'rgba8Unorm', samples = 4 },
+                { name = 'screen', format = 'rgba8Unorm', imported = true },
+              },
+              buffers = { { name = 'pixels', size = 256 * 4, imported = true } },
+              passes = {
+                { name = 'fill', kind = 'fullscreen', pipeline = fill, material = color({ 1, 0, 0, 1 }), colors = { 'chain' } },
+                {
+                  name = 'down1',
+                  kind = 'fullscreen',
+                  pipeline = down,
+                  material = above,
+                  reads = { { target = 'chain', level = 0 } },
+                  colors = { { target = 'chain', level = 1 } },
+                },
+                {
+                  name = 'down2',
+                  kind = 'fullscreen',
+                  pipeline = down,
+                  material = above,
+                  reads = { { target = 'chain', level = 1 } },
+                  colors = { { target = 'chain', level = 2 } },
+                },
+                {
+                  name = 'corner',
+                  kind = 'copy',
+                  from = { target = 'chain', level = 2, column = 1, row = 1 },
+                  to = { buffer = 'pixels', offset = 256 },
+                  size = { width = 2, height = 2 },
+                },
+                {
+                  name = 'smooth',
+                  kind = 'fullscreen',
+                  pipeline = fillSamples,
+                  material = color({ 0, 1, 0, 1 }),
+                  colors = { { target = 'samples', store = false, resolve = 'screen' } },
+                },
+              },
+            })
+            local dump = plan:dump()
+            assert(string.find(dump, 'reads:  chain[level 1]\n    writes: chain[level 2]', 1, true), dump)
+            assert(string.find(dump, 'writes: samples -> screen', 1, true), dump)
+            assert(string.find(dump, '16x16, 3 levels', 1, true), dump)
+
+            local screen = device:texture({ width = 8, height = 8, format = 'rgba8Unorm', usage = 'target' })
+            local pixels = device:buffer(256 * 4, {})
+            plan:run({ screen = screen, pixels = pixels })
+            local corner = pixels:read(256, 8)
+            local red = buffer.readu8(corner, 0)
+            assert(red >= 63 and red <= 65, `a quarter of 255, not {red}`)
+            assert(buffer.readu32(pixels:read(0, 4), 0) == 0, 'the first row is untouched')
+            assert(buffer.readu32(screen:read(), 0) == 0xff00ff00, string.format('%08x', buffer.readu32(screen:read(), 0)))
+";
+
 /// A plan described in Luau whose compute passes write a transient buffer, which a fullscreen pass
 /// reads and a copy keeps.
 #[cfg(feature = "gpu")]
@@ -804,7 +917,21 @@ fn a_script_plans_compute_for_later_passes() {
 /// What `device:plan` and `plan:run` refuse, each naming the mistake: (script, what the error
 /// says).
 #[cfg(feature = "gpu")]
-const PLAN_MISTAKES: [(&str, &str); 15] = [
+const PLAN_MISTAKES: [(&str, &str); 18] = [
+    (
+        "device:plan({ viewport = viewport, targets = { { name = 't', format = 'rgba8Unorm', samples = 3 } } })",
+        "GpuDevice:plan: target \"t\" needs 1 or 4 samples a pixel, not 3",
+    ),
+    (
+        "device:plan({ viewport = viewport, targets = targets, passes = { { name = 'p', kind = 'fullscreen', \
+         pipeline = filling, colors = { { target = 'output', level = 1 } } } } })",
+        "GpuDevice:plan: pass \"p\" uses level 1 of layer 0 of \"output\", which it doesn't have",
+    ),
+    (
+        "device:plan({ viewport = viewport, targets = targets, passes = { { name = 'q', kind = 'copy', \
+         from = { target = 'output', offset = 4 }, to = 'output' } } })",
+        "GpuDevice:plan: pass q's from is a target, which starts at a column and row, not an offset",
+    ),
     ("device:plan(1)", "GpuDevice:plan takes a table, not number"),
     (
         "device:plan({ viewport = viewport, pass = {} })",

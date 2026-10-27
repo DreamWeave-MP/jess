@@ -3,7 +3,7 @@
 use std::fmt;
 
 use crate::render::graph::{ResourceId, ResourceKind};
-use crate::render::pass::{Attachment, ClearValue, PassKind, ReadUsage};
+use crate::render::pass::{Attachment, ClearValue, PassKind, ReadUsage, Subresource};
 use crate::render::target::{TargetSize, TextureFormat};
 
 /// Why registering a target or pass, or compiling a graph, failed.
@@ -46,6 +46,13 @@ pub enum GraphError {
         /// The size it was given.
         size: TargetSize,
     },
+    /// A target's levels, layers, or samples don't fit together or its size.
+    InvalidTargetShape {
+        /// The target.
+        resource: String,
+        /// What it would need to be.
+        problem: String,
+    },
     /// A buffer's size is zero or not a multiple of 4.
     InvalidBufferSize {
         /// The buffer.
@@ -65,14 +72,56 @@ pub enum GraphError {
         /// The id it used.
         resource: ResourceId,
     },
-    /// A pass reads the same target twice, or writes it twice.
+    /// A pass names a level or layer its target doesn't have, or one of a buffer.
+    SubresourceOutOfRange {
+        /// The pass.
+        pass: String,
+        /// The resource.
+        resource: String,
+        /// What it named.
+        subresource: Subresource,
+    },
+    /// A pass samples, copies, or stores into a multisampled target, which is only drawn into and
+    /// resolved.
+    Multisampled {
+        /// The pass.
+        pass: String,
+        /// The target.
+        resource: String,
+        /// How the pass uses it.
+        usage: &'static str,
+    },
+    /// A pass resolves a color attachment into a target it can't.
+    InvalidResolve {
+        /// The pass.
+        pass: String,
+        /// The attachment resolved.
+        resource: String,
+        /// What is wrong.
+        problem: String,
+    },
+    /// A pass binds attachments of different sample counts.
+    SampleCountMismatch {
+        /// The pass.
+        pass: String,
+        /// The first attachment.
+        first: String,
+        /// The first attachment whose sample count differs from it.
+        second: String,
+    },
+    /// A pass other than a copy names a copy region.
+    RegionOutsideCopy {
+        /// The pass.
+        pass: String,
+    },
+    /// A pass reads the same level of a layer of a target twice, or writes it twice.
     DuplicateAccess {
         /// The pass.
         pass: String,
         /// The target.
         resource: String,
     },
-    /// A pass reads and writes the same target.
+    /// A pass reads and writes the same level of a layer of a target.
     ReadWriteConflict {
         /// The pass.
         pass: String,
@@ -180,12 +229,14 @@ pub enum GraphError {
         /// The target.
         resource: String,
     },
-    /// A pass reads a transient target no pass writes.
+    /// A pass reads a transient target, or a level of a layer of one, no pass writes.
     ReadWithoutWriter {
         /// The first pass that reads it.
         pass: String,
         /// The target.
         resource: String,
+        /// The level of the layer, for a target with more than one.
+        subresource: Option<Subresource>,
     },
     /// The first pass to write a transient target loads its contents, which don't exist yet.
     LoadWithoutContents {
@@ -193,6 +244,8 @@ pub enum GraphError {
         pass: String,
         /// The target.
         resource: String,
+        /// The level of the layer, for a target with more than one.
+        subresource: Option<Subresource>,
     },
     /// A pass reads or loads contents the previous writer discarded.
     ReadDiscarded {
@@ -200,6 +253,8 @@ pub enum GraphError {
         pass: String,
         /// The target.
         resource: String,
+        /// The level of the layer, for a target with more than one.
+        subresource: Option<Subresource>,
         /// The pass that discarded it.
         writer: String,
     },
@@ -228,6 +283,9 @@ impl fmt::Display for GraphError {
                 write!(formatter, "{kind} \"{resource}\" can't have format {format}")
             }
             Self::InvalidSize { resource, size } => write!(formatter, "target \"{resource}\" has invalid size {size}"),
+            Self::InvalidTargetShape { resource, problem } => {
+                write!(formatter, "target \"{resource}\" needs {problem}")
+            }
             Self::InvalidBufferSize { resource, bytes } => write!(
                 formatter,
                 "buffer \"{resource}\" has invalid size {bytes}: expected a nonzero multiple of 4 bytes"
@@ -238,6 +296,30 @@ impl fmt::Display for GraphError {
                     formatter,
                     "pass \"{pass}\" uses {resource}, which this graph never registered"
                 )
+            }
+            Self::SubresourceOutOfRange {
+                pass,
+                resource,
+                subresource,
+            } => {
+                write!(
+                    formatter,
+                    "pass \"{pass}\" uses {subresource} of \"{resource}\", which it doesn't have"
+                )
+            }
+            Self::Multisampled { pass, resource, usage } => write!(
+                formatter,
+                "pass \"{pass}\" uses multisampled \"{resource}\" as {usage}: a multisampled target is drawn into and resolved"
+            ),
+            Self::InvalidResolve { pass, resource, problem } => {
+                write!(formatter, "pass \"{pass}\" can't resolve \"{resource}\": {problem}")
+            }
+            Self::SampleCountMismatch { pass, first, second } => write!(
+                formatter,
+                "pass \"{pass}\" binds attachments \"{first}\" and \"{second}\" of different sample counts"
+            ),
+            Self::RegionOutsideCopy { pass } => {
+                write!(formatter, "pass \"{pass}\" names a copy region, and only a copy pass copies")
             }
             Self::DuplicateAccess { pass, resource } => {
                 write!(formatter, "pass \"{pass}\" uses \"{resource}\" twice in the same direction")
@@ -312,19 +394,32 @@ impl fmt::Display for GraphError {
                 )
             }
             Self::UnusedResource { resource } => write!(formatter, "no pass uses \"{resource}\""),
-            Self::ReadWithoutWriter { pass, resource } => {
-                write!(formatter, "pass \"{pass}\" reads \"{resource}\", which no pass writes")
+            Self::ReadWithoutWriter {
+                pass,
+                resource,
+                subresource,
+            } => {
+                let resource = Named(resource, *subresource);
+                write!(formatter, "pass \"{pass}\" reads {resource}, which no pass writes")
             }
-            Self::LoadWithoutContents { pass, resource } => {
+            Self::LoadWithoutContents {
+                pass,
+                resource,
+                subresource,
+            } => {
+                let resource = Named(resource, *subresource);
+                write!(formatter, "pass \"{pass}\" loads {resource} before any pass has written it")
+            }
+            Self::ReadDiscarded {
+                pass,
+                resource,
+                subresource,
+                writer,
+            } => {
+                let resource = Named(resource, *subresource);
                 write!(
                     formatter,
-                    "pass \"{pass}\" loads \"{resource}\" before any pass has written it"
-                )
-            }
-            Self::ReadDiscarded { pass, resource, writer } => {
-                write!(
-                    formatter,
-                    "pass \"{pass}\" reads \"{resource}\", which pass \"{writer}\" discards"
+                    "pass \"{pass}\" reads {resource}, which pass \"{writer}\" discards"
                 )
             }
             Self::Cycle { passes } => write!(formatter, "dependency cycle: {}", passes.join(" -> ")),
@@ -339,3 +434,15 @@ impl fmt::Display for GraphError {
 }
 
 impl std::error::Error for GraphError {}
+
+/// A resource's quoted name, and the level of the layer meant where there is one.
+struct Named<'a>(&'a str, Option<Subresource>);
+
+impl fmt::Display for Named<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.1 {
+            Some(subresource) => write!(formatter, "{subresource} of \"{}\"", self.0),
+            None => write!(formatter, "\"{}\"", self.0),
+        }
+    }
+}

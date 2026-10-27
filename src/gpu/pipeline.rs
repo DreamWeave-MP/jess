@@ -99,6 +99,16 @@ pub struct PipelineState {
     pub colors: Vec<ColorState>,
     /// The depth target, if there is one.
     pub depth: Option<DepthState>,
+    /// Whether it draws into multisampled targets, 4 samples a texel.
+    pub multisampled: bool,
+}
+
+impl PipelineState {
+    /// Samples a texel of the targets it draws into.
+    #[must_use]
+    pub fn samples(&self) -> u32 {
+        if self.multisampled { 4 } else { 1 }
+    }
 }
 
 /// One binding of a group, as a program declares it.
@@ -238,7 +248,10 @@ impl Gpu {
                     stencil: wgpu::StencilState::default(),
                     bias: wgpu::DepthBiasState::default(),
                 }),
-                multisample: wgpu::MultisampleState::default(),
+                multisample: wgpu::MultisampleState {
+                    count: state.samples(),
+                    ..Default::default()
+                },
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
                     entry_point: Some(FRAGMENT_ENTRY_POINT),

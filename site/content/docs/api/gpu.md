@@ -70,6 +70,7 @@ A device makes three kinds of resource. Each lives as long as a script holds it,
 | `layers` | `number?` | A `2dArray`'s layers. |
 | `depth` | `number?` | A `3d` texture's slices. |
 | `mips` | `number?` | How many mip levels, the first full size and each after it half the last; 1 by default. |
+| `samples` | `number?` | Samples a texel: 1 (the default), or 4 for a multisampled `2d` `target` of one level, which a pass draws into and [resolves](#gpudevice-render). Nothing samples, writes, or reads one back; only formats the device multisamples take 4. |
 
 A name the table doesn't take is an error listing the ones it does, so `layer = 2` doesn't quietly make a one-layer texture.
 
@@ -163,6 +164,7 @@ A [shader program](@/docs/api/shader.md), lowered, validated by the backend, and
 | `topology` | `string?` | `triangles` (the default), `triangleStrip`, `lines`, `lineStrip`, or `points`. |
 | `cull` | `string?` | Which triangles it throws away: `none` (the default), `front`, or `back`. |
 | `clockwise` | `boolean?` | Whether a triangle running clockwise faces the camera; by default a counter-clockwise one does. |
+| `multisampled` | `boolean?` | Whether it draws into targets of 4 samples a texel; single-sample ones by default. A pass's targets and its pipelines agree on it. |
 
 The program's own layout decides everything else: its bind groups, its vertex buffers' strides and attributes. A pipeline can't disagree with its program.
 
@@ -203,6 +205,7 @@ Draws `draws`, in order, into `colors` (by location) and `depth`, and submits th
 | `clear` | `({ number } \| number)?` | What it is cleared to first: four channels (whole numbers for an integer format), or a depth from 0 to 1. Without one, the pass draws over what's there. |
 | `level`, `layer` | `number?` | The mip level, and the array layer or cube face, drawn into; 0 by default. |
 | `store` | `boolean?` | `false` throws away what the pass drew. |
+| `resolve` | `(GpuTexture \| { texture, level, layer })?` | Where a multisampled color target's samples average into when the pass ends: level 0 of layer 0 of a single-sample `target` texture of its format, or the level and layer named, of its size. The samples themselves can then go unstored. |
 
 A draw is a table:
 
@@ -365,7 +368,7 @@ Compiles a [render graph](@/docs/contributing/render-graph.md) for the device: t
 | --- | --- | --- |
 | `name` | `string?` | The plan's name, `plan` by default, and every pass's owner unless the pass names one. |
 | `viewport` | `{ width, height }` | The pixels relative targets are sized against. |
-| `targets` | `{ GpuPlanTarget }?` | `{ name, format, scale \| width and height, imported }`: a color or depth target the viewport's size times `scale` (1 by default), or a fixed size. An `imported` one is given to each run, a window's backbuffer, say. |
+| `targets` | `{ GpuPlanTarget }?` | `{ name, format, scale \| width and height, mips, layers, samples, imported }`: a color or depth target the viewport's size times `scale` (1 by default), or a fixed size, of `mips` levels and `layers` layers (1 of each by default) and `samples` samples a texel (1, or 4 for a multisampled target of one level and one layer). An `imported` one is given to each run, a window's backbuffer, say. |
 | `buffers` | `{ GpuPlanBuffer }?` | `{ name, size, imported }`: `size` bytes, a multiple of 4. |
 | `passes` | `{ GpuPlanPass }` | What runs: below. |
 
@@ -376,14 +379,17 @@ Every pass has a `name` and a `kind`. What it reads and writes depends on the ki
 | `draw` | Draws the device's visible draw sets carrying any of `tags`, in the order they were made, each with `pass` as its pass group. | `tags`, `pass`, `pipeline` (the one whose layout a `pass` of bindings is made for), `colors`, `depth`, `depthTest`, `reads` |
 | `fullscreen` | Draws three vertices of `pipeline`: one triangle over its targets. | `pipeline`, `pass`, `material`, `draw`, `colors`, `depth`, `depthTest`, `reads` |
 | `compute` | Dispatches `pipeline` over `workgroups` (1 by default). | `pipeline`, `pass`, `material`, `draw`, `storage`, `workgroups`, `reads` |
-| `copy` | Copies `from` into `to`; `load` keeps what the copy doesn't cover. | `from`, `to`, `load` |
+| `copy` | Copies `from` into `to`; `load` keeps what the copy doesn't cover. | `from`, `to`, `size`, `load` |
 
-- `colors` and `depth` are the targets drawn into: a name, or `{ target, clear, load, store }`, cleared first, loaded from what it held, or neither, and stored unless `store` is `false`. The first pass to write a target can't load it: nothing is there yet.
-- `depthTest` names a depth target the pass tests against without writing it. A draw set whose pipeline writes depth isn't drawn in such a pass: the run refuses it.
-- `reads` names what the pass reads: targets as textures, and buffers its shaders read as storage or its draws take vertices, instances, or indirect counts from. A draw set's buffers aren't the graph's, so a draw pass names the imported buffers its sets draw from here, and the passes that write them run first.
+- `colors` and `depth` are the targets drawn into: a name, or `{ target, clear, load, store, level, layer, resolve }`, cleared first, loaded from what it held, or neither, and stored unless `store` is `false`. A write draws into level 0 of layer 0 unless it names another. The first pass to write a target can't load it: nothing is there yet. A multisampled color target's samples average into its `resolve` when the pass ends, a target's name or `{ target, level, layer }`, single-sample, of its format, and the same size.
+- `depthTest` names a depth target the pass tests against without writing it, or `{ target, level, layer }` for one level of one layer. A draw set whose pipeline writes depth isn't drawn in such a pass: the run refuses it.
+- `reads` names what the pass reads: targets as textures, and buffers its shaders read as storage or its draws take vertices, instances, or indirect counts from. A draw set's buffers aren't the graph's, so a draw pass names the imported buffers its sets draw from here, and the passes that write them run first. A target read by name is read whole, bound as a `texture2dArray` where it has layers; `{ target, level, layer }` reads one level of one layer, bound as a `texture2d`. A multisampled target is only drawn into and resolved, never read.
+- Each level of each layer is a target of its own as far as order goes: a pass that reads level 0 and draws into level 1 of the same target is a step of a mip chain, not a conflict, and a read of a whole target waits for the last writer of every level of every layer, all of which some pass has to write.
 - `storage` names the buffers a compute pass writes: a name, or `{ buffer, clear, load, store }`, where `clear = true` zeroes it first, at every run.
 - A group (`pass`, `material`, `draw`) is a `GpuBindGroup`, or bindings by binding number, as `GpuPipeline:bind` takes them, where a binding can also be a target's or a buffer's name. A texture binding names a target the pass `reads`; a storage binding names a buffer the pass reads, for a `'read'` declaration, or writes in `storage`, for a `'readWrite'` one.
-- A copy between a target and a buffer lays out each row padded to a multiple of 256 bytes, the way the GPU copies, and the buffer has to hold every row.
+- A copy's `from` and `to` are names, `{ target, level, layer, column, row }` for a level of a layer of a target from a texel, or `{ buffer, offset }` for a buffer from a byte, a multiple of 4. It copies everything from where `from` starts, or `size`: `{ width, height }` texels, or a number of bytes between buffers. A depth target is copied a whole level of a layer at a time.
+- A copy between a target and a buffer lays out each row padded to a multiple of 256 bytes, the way the GPU copies, and the buffer has to hold every row from its offset.
+- A relative target with more than one level never resolves smaller than its levels need: half the viewport with 5 levels is at least 16 pixels each way, so at a 10×600 viewport it is 16×300. A pass draws into relative targets of one scale and one number of levels together, which stay one size at every viewport.
 
 Mistakes in the description name the pass: `GpuDevice:plan: pass present uses nowhere, which the plan has no target or buffer called`, `pass "q" both reads and writes "output"`.
 
@@ -455,6 +461,66 @@ print(string.unpack('BBBB', buffer.tostring(pixels:read(0, 4))))
 ```
 
 The last number is `string.unpack`'s, again. A run draws the draw sets as they are when it runs: change one, and the next run draws it changed, with nothing planned again.
+
+A mip chain lives in one target: each pass reads one level and draws the next, and a copy takes a corner of the last level.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+local device = jess.gpu.device()
+local function covering(input: ShaderInput): { [string]: ShaderExpr }
+  local index = input.builtin.vertexIndex
+  local across = shader.bitAnd(shader.shiftLeft(index, shader.uint(1)), shader.uint(2))
+  local down = shader.bitAnd(index, shader.uint(2))
+  local corner = shader.vec2(shader.float(across), shader.float(down))
+  return { position = shader.vec4(corner * 2 - 1, 0, 1) }
+end
+
+local fill = device:pipeline(shader.program {
+  vertex = covering,
+  fragment = function() return shader.vec4(1, 0.5, 0, 1) end,
+}, { colors = { 'rgba8Unorm' } })
+
+local halve = device:pipeline(shader.program {
+  material = { above = shader.texture2d },
+  vertex = covering,
+  fragment = function(input)
+    local at = shader.vec2u(input.builtin.position.xy * 2)
+    return shader.load(input.material.above, at, 0) * 0.5
+  end,
+}, { colors = { 'rgba8Unorm' } })
+
+local plan = device:plan {
+  name = 'chain',
+  viewport = { width = 1, height = 1 },
+  targets = { { name = 'chain', format = 'rgba8Unorm', width = 8, height = 8, mips = 3 } },
+  buffers = { { name = 'pixels', size = 256 * 2, imported = true } },
+  passes = {
+    { name = 'fill', kind = 'fullscreen', pipeline = fill, colors = { 'chain' } },
+    {
+      name = 'down',
+      kind = 'fullscreen',
+      pipeline = halve,
+      material = { [0] = 'chain', [1] = device:sampler() },
+      reads = { { target = 'chain', level = 0 } },
+      colors = { { target = 'chain', level = 1 } },
+    },
+    {
+      name = 'corner',
+      kind = 'copy',
+      from = { target = 'chain', level = 1, column = 2, row = 2 },
+      to = 'pixels',
+      size = { width = 2, height = 2 },
+    },
+  },
+}
+
+local pixels = device:buffer(256 * 2, {})
+plan:run { pixels = pixels }
+print(string.unpack('BBBB', buffer.tostring(pixels:read(0, 4))))
+-- 128  64  0  128  5
+```
 
 ## Windows
 

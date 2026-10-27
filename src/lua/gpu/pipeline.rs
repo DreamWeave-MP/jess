@@ -14,7 +14,7 @@ use super::device::LuaGpuDevice;
 use super::resources::{LuaGpuBuffer, LuaGpuSampler, LuaGpuTexture, choice, compare_of, format_of, shown, whole};
 use crate::gpu::{
     BindGroup, Binding, Blend, Buffer, ColorState, Compare, ComputePipeline, Cull, DepthState, Draw, Gpu, GpuError, Group,
-    IndexFormat, PipelineState, RenderPipeline, Sampler, Slot, Target, Texture, Topology,
+    IndexFormat, PipelineState, RenderPipeline, Resolve, Sampler, Slot, Target, Texture, Topology,
 };
 use crate::lua::shader::LuaShaderProgram;
 use crate::lua::{check_options, error, kind};
@@ -62,13 +62,15 @@ unsafe impl Userdata for LuaGpuBindGroup {
     const NAME: &'static str = "jess.gpu.BindGroup";
 }
 
-const STATE_KEYS: [&str; 5] = ["clockwise", "colors", "cull", "depth", "topology"];
+const STATE_KEYS: [&str; 6] = ["clockwise", "colors", "cull", "depth", "multisampled", "topology"];
 
 const COLOR_KEYS: [&str; 2] = ["blend", "format"];
 
 const DEPTH_KEYS: [&str; 3] = ["compare", "format", "write"];
 
-const TARGET_KEYS: [&str; 5] = ["clear", "layer", "level", "store", "texture"];
+const TARGET_KEYS: [&str; 6] = ["clear", "layer", "level", "resolve", "store", "texture"];
+
+const RESOLVE_KEYS: [&str; 3] = ["layer", "level", "texture"];
 
 const RENDER_KEYS: [&str; 3] = ["colors", "depth", "draws"];
 
@@ -232,6 +234,7 @@ fn pipeline_state(frame: &Frame<'_>, function: &str, state: ValueView<'_>) -> l3
         clockwise: flag(frame, function, &state, "clockwise", false)?,
         colors,
         depth,
+        multisampled: flag(frame, function, &state, "multisampled", false)?,
     })
 }
 
@@ -400,6 +403,8 @@ struct HeldTarget {
     layer: u32,
     load: LoadOp,
     store: StoreOp,
+    /// The texture its samples resolve into, and its level and layer.
+    resolve: Option<(Arc<Texture>, u32, u32)>,
 }
 
 impl HeldTarget {
@@ -410,6 +415,11 @@ impl HeldTarget {
             layer: self.layer,
             load: self.load,
             store: self.store,
+            resolve: self.resolve.as_ref().map(|(texture, level, layer)| Resolve {
+                texture,
+                level: *level,
+                layer: *layer,
+            }),
         }
     }
 }
@@ -459,6 +469,7 @@ fn target(frame: &Frame<'_>, function: &str, what: &str, view: ValueView<'_>) ->
             layer: 0,
             load: LoadOp::Load,
             store: StoreOp::Store,
+            resolve: None,
         });
     }
     let table = options(frame, function, &format!("{what}, a GpuTexture or"), view, &TARGET_KEYS)?;
@@ -485,7 +496,38 @@ fn target(frame: &Frame<'_>, function: &str, what: &str, view: ValueView<'_>) ->
         } else {
             StoreOp::Discard
         },
+        resolve: resolve_target(frame, function, what, table.raw_get(frame, "resolve")?)?,
     })
+}
+
+/// Where a target resolves: nothing, a texture's level 0 of layer 0, or `{ texture, level,
+/// layer }`.
+fn resolve_target(
+    frame: &Frame<'_>,
+    function: &str,
+    what: &str,
+    view: ValueView<'_>,
+) -> l3i::Result<Option<(Arc<Texture>, u32, u32)>> {
+    if view.is_nil() {
+        return Ok(None);
+    }
+    if let Some(texture) = receiver::<LuaGpuTexture>(view) {
+        return Ok(Some((texture.texture.clone(), 0, 0)));
+    }
+    let what = format!("{what}'s resolve");
+    let table = options(frame, function, &format!("{what}, a GpuTexture or"), view, &RESOLVE_KEYS)?;
+    let texture = table.raw_get(frame, "texture")?;
+    let Some(texture) = receiver::<LuaGpuTexture>(texture) else {
+        return Err(error(format!(
+            "{function}: {what}'s texture is a GpuTexture, not {}",
+            kind(texture)
+        )));
+    };
+    Ok(Some((
+        texture.texture.clone(),
+        whole(function, "the level", Some(table.raw_get(frame, "level")?), Some(0))?,
+        whole(function, "the layer", Some(table.raw_get(frame, "layer")?), Some(0))?,
+    )))
 }
 
 /// What a target of `format` is cleared to: a depth, or four channels of its kind.
