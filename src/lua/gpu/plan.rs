@@ -2,7 +2,6 @@
 //! each pass does, compiled for the device and a viewport, and run whole, every frame, from
 //! `plan:run`.
 
-use std::rc::Rc;
 use std::sync::Arc;
 
 use l3i::bind::{Call, StackResults};
@@ -11,6 +10,7 @@ use l3i::stack::{Frame, Scope, TableView, ValueView};
 use l3i::userdata::{Owned, Userdata, receiver};
 
 use super::device::LuaGpuDevice;
+use super::draw_set::collection;
 use super::pipeline::{
     LuaGpuBindGroup, Pipeline, clear_value, flag, gpu_error, number, options, pipeline_field, slot_name, table, workgroups,
 };
@@ -27,7 +27,7 @@ use crate::shader::Frequency;
 #[derive(Debug)]
 pub struct LuaGpuPlan {
     pub gpu: Arc<Gpu>,
-    pub sets: Rc<DrawSets>,
+    pub sets: Arc<DrawSets>,
     pub plan: Plan,
 }
 
@@ -723,9 +723,11 @@ pub fn given(call: &Call<'_>, function: &str, imports: Option<ValueView<'_>>) ->
     Ok(given)
 }
 
-/// `plan:run(imports)`: every surviving pass, with `imports` by name.
-fn run(this: &LuaGpuPlan, call: &Call<'_>, imports: Option<ValueView<'_>>) -> l3i::Result<()> {
+/// `plan:run(imports, sets)`: every pass recorded, with `imports` by name, drawing from `sets`,
+/// or the device's own.
+fn run(this: &LuaGpuPlan, call: &Call<'_>, imports: Option<ValueView<'_>>, sets: Option<ValueView<'_>>) -> l3i::Result<()> {
     const RUN: &str = "GpuPlan:run";
+    let sets = collection(RUN, "the draw sets", sets, &this.sets)?;
     let given = given(call, RUN, imports)?;
     let imports: Vec<Import<'_>> = given
         .iter()
@@ -735,8 +737,72 @@ fn run(this: &LuaGpuPlan, call: &Call<'_>, imports: Option<ValueView<'_>>) -> l3
         })
         .collect();
     this.gpu
-        .run(&this.plan, &this.sets, &imports)
+        .run(&this.plan, &sets, &imports)
         .map_err(|problem| gpu_error(RUN, &problem))
+}
+
+/// `plan:setEnabled(passes, enabled)`: a pass's name or a list of them, recorded from the next
+/// run on or left out, together.
+fn set_enabled(this: &LuaGpuPlan, call: &Call<'_>, passes: ValueView<'_>, enabled: ValueView<'_>) -> l3i::Result<()> {
+    const FUNCTION: &str = "GpuPlan:setEnabled";
+    if !enabled.is_boolean() {
+        return Err(error(format!("{FUNCTION}: enabled is a boolean, not {}", shown(enabled))));
+    }
+    let names = if passes.is_string() {
+        vec![passes.read::<&str>()?.to_owned()]
+    } else {
+        call.with_frame(|frame| names(frame, "the passes", passes)).map_err(|_| {
+            error(format!(
+                "{FUNCTION} takes a pass's name or a list of them, not {}",
+                shown(passes)
+            ))
+        })?
+    };
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    this.plan
+        .set_enabled(&names, enabled.read::<bool>()?)
+        .map_err(|problem| gpu_error(FUNCTION, &problem))
+}
+
+/// Where a region starts: `{ column, row }` in a target, or `{ offset }` in a buffer.
+fn region_start(frame: &Frame<'_>, function: &str, what: &str, view: ValueView<'_>) -> l3i::Result<Option<CopyAt>> {
+    if view.is_nil() {
+        return Ok(None);
+    }
+    let fields = options(frame, function, what, view, &["column", "offset", "row"])?;
+    let field = |key: &str| fields.raw_get(frame, key);
+    let offset = field("offset")?;
+    if !offset.is_nil() {
+        if !field("column")?.is_nil() || !field("row")?.is_nil() {
+            return Err(error(format!(
+                "{function}: {what} starts at an offset or at a column and row, not both"
+            )));
+        }
+        return Ok(Some(CopyAt::Byte(bytes(function, "an offset", offset)?)));
+    }
+    Ok(Some(CopyAt::Texel {
+        x: whole(function, "the column", Some(field("column")?), Some(0))?,
+        y: whole(function, "the row", Some(field("row")?), Some(0))?,
+    }))
+}
+
+/// `plan:setRegion(pass, { from, to, size })`: what a copy pass copies from the next run on.
+fn set_region(this: &LuaGpuPlan, call: &Call<'_>, pass: ValueView<'_>, region: ValueView<'_>) -> l3i::Result<()> {
+    const FUNCTION: &str = "GpuPlan:setRegion";
+    if !pass.is_string() {
+        return Err(error(format!("{FUNCTION} takes a copy pass's name, not {}", shown(pass))));
+    }
+    let region = call.with_frame(|frame| {
+        let fields = options(frame, FUNCTION, "the region", region, &["from", "size", "to"])?;
+        Ok(CopyRegion {
+            from: region_start(frame, FUNCTION, "its from", fields.raw_get(frame, "from")?)?,
+            to: region_start(frame, FUNCTION, "its to", fields.raw_get(frame, "to")?)?,
+            size: copy_size(frame, "the region", fields.raw_get(frame, "size")?)?,
+        })
+    })?;
+    this.plan
+        .set_region(pass.read::<&str>()?, region)
+        .map_err(|problem| gpu_error(FUNCTION, &problem))
 }
 
 /// `plan:resized(width, height)`: the same plan for another viewport.
@@ -793,6 +859,18 @@ pub fn describe(d: &mut ExtensionDescriptor) {
     })
     .untyped();
     plan.method("run", run).untyped();
+    plan.method("setEnabled", set_enabled).untyped();
+    plan.method("setRegion", set_region).untyped();
+    plan.method("enabled", |this: &LuaGpuPlan, pass: ValueView<'_>| -> l3i::Result<bool> {
+        const FUNCTION: &str = "GpuPlan:enabled";
+        if !pass.is_string() {
+            return Err(error(format!("{FUNCTION} takes a pass's name, not {}", shown(pass))));
+        }
+        this.plan
+            .enabled(pass.read::<&str>()?)
+            .map_err(|problem| gpu_error(FUNCTION, &problem))
+    })
+    .untyped();
     plan.method("timings", |this: &LuaGpuPlan, call: &Call<'_>| -> l3i::Result<StackResults> {
         let timings = this
             .gpu

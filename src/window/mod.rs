@@ -127,7 +127,7 @@ pub struct Showing {
     /// The plan, resized with the window.
     pub plan: Plan,
     /// The draw sets.
-    pub sets: Rc<DrawSets>,
+    pub sets: Arc<DrawSets>,
     /// The imported target the window's image is.
     pub target: String,
     /// Everything else it imports.

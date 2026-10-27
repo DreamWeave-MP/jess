@@ -623,8 +623,8 @@ const FRAME_PLAN: &str = r"
               })
             end
 
-            rectangle(solid, -1, 0, 0.25, { 0, 1, 0, 1 }, 'opaque')
-            rectangle(solid, -1, 1, 0.5, { 1, 0, 0, 1 }, 'opaque')
+            local green = rectangle(solid, -1, 0, 0.25, { 0, 1, 0, 1 }, 'opaque')
+            local red = rectangle(solid, -1, 1, 0.5, { 1, 0, 0, 1 }, 'opaque')
             local overlay = rectangle(glaze, -1, 1, 0.4, { 0, 0, 1, 1 }, 'overlay')
             local tint = solid:bind('pass', { [0] = uniform({ 0.6, 0.6, 0.6, 1 }) })
 
@@ -717,6 +717,31 @@ const FRAME_PLAN: &str = r"
 
             local small = plan:resized(8, 8)
             assert(small.viewport.width == 8 and plan.viewport.width == 16)
+
+            -- A collection of its own: the red rectangle alone, red swapped to blue.
+            local scene = device:drawSets()
+            scene:add(red)
+            assert(scene:has(red) and not scene:has(green) and scene.count == 1, tostring(scene))
+            assert(tostring(scene) == 'GpuDrawSets(1 set)' and device.sets:has(red))
+            overlay.visible = true
+            plan:run({ output = output, pixels = pixels }, scene)
+            assert(texel(2, 8) == 0xff990000, string.format('%08x', texel(2, 8)))
+
+            -- The copy left out, the pixels keep what they held; put back, one texel of them.
+            pixels:write(0, buffer.create(256 * 16))
+            plan:setEnabled('readBack', false)
+            plan:run({ output = output, pixels = pixels })
+            assert(texel(2, 8) == 0 and not plan:enabled('readBack'))
+            plan:setEnabled({ 'readBack' }, true)
+            plan:setRegion('readBack', { from = { column = 14, row = 8 }, size = { width = 1, height = 1 } })
+            plan:run({ output = output, pixels = pixels })
+            assert(texel(0, 0) == 0xff000099, string.format('%08x', texel(0, 0)))
+
+            -- A run with nothing new to draw makes nothing new.
+            local made = device.made.bindGroups
+            plan:run({ output = output, pixels = pixels })
+            plan:run({ output = output, pixels = pixels })
+            assert(device.made.bindGroups == made, `{device.made.bindGroups} bind groups, not {made}`)
 ";
 
 /// A plan described in Luau over levels, layers, and samples: a mip chain drawn level by level
@@ -917,7 +942,20 @@ fn a_script_plans_compute_for_later_passes() {
 /// What `device:plan` and `plan:run` refuse, each naming the mistake: (script, what the error
 /// says).
 #[cfg(feature = "gpu")]
-const PLAN_MISTAKES: [(&str, &str); 18] = [
+const PLAN_MISTAKES: [(&str, &str); 22] = [
+    ("plan:setEnabled('p', 1)", "GpuPlan:setEnabled: enabled is a boolean, not 1"),
+    (
+        "plan:setEnabled('nowhere', false)",
+        "GpuPlan:setEnabled: the plan has no pass called nowhere",
+    ),
+    (
+        "plan:setRegion('p', { from = { column = 1, offset = 4 } })",
+        "GpuPlan:setRegion: its from starts at an offset or at a column and row, not both",
+    ),
+    (
+        "plan:setRegion('p', {})",
+        "GpuPlan:setRegion: pass p isn't a copy, so it has no region",
+    ),
     (
         "device:plan({ viewport = viewport, targets = { { name = 't', format = 'rgba8Unorm', samples = 3 } } })",
         "GpuDevice:plan: target \"t\" needs 1 or 4 samples a pixel, not 3",

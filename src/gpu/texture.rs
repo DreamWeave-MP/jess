@@ -135,7 +135,7 @@ pub struct Texture {
     /// for and kept.
     levels: Box<[OnceLock<wgpu::TextureView>]>,
     desc: TextureDesc,
-    _live: Token,
+    token: Token,
 }
 
 impl Texture {
@@ -143,6 +143,11 @@ impl Texture {
     #[must_use]
     pub fn desc(&self) -> &TextureDesc {
         &self.desc
+    }
+
+    /// Its identity, which no other texture or buffer ever has.
+    pub(crate) fn id(&self) -> u64 {
+        self.token.id()
     }
 
     /// A 2D view of `level` of `layer`, which it has: what a pass draws into, and what a shader
@@ -184,7 +189,7 @@ impl Texture {
             view,
             levels: Texture::levels(&desc),
             desc,
-            _live: gpu.live.token(Kind::Texture),
+            token: gpu.live.token(Kind::Texture),
         }
     }
 }
@@ -247,7 +252,7 @@ impl Gpu {
             view,
             levels: Texture::levels(desc),
             desc: *desc,
-            _live: self.live.token(Kind::Texture),
+            token: self.live.token(Kind::Texture),
         })
     }
 

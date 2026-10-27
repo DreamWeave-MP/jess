@@ -91,13 +91,14 @@ pub fn pump() -> l3i::Result<()> {
     })
 }
 
-/// `window:show(plan, target, imports?)`.
+/// `window:show(plan, target, imports?, sets?)`.
 fn show(
     this: &LuaGpuWindow,
     call: &Call<'_>,
     plan: ValueView<'_>,
     target: ValueView<'_>,
     imports: Option<ValueView<'_>>,
+    sets: Option<ValueView<'_>>,
 ) -> l3i::Result<()> {
     const FUNCTION: &str = "GpuWindow:show";
     let Some(plan) = receiver::<LuaGpuPlan>(plan) else {
@@ -123,7 +124,7 @@ fn show(
     this.window
         .show(Showing {
             plan: plan_for_window,
-            sets: plan.sets.clone(),
+            sets: super::draw_set::collection(FUNCTION, "the draw sets", sets, &plan.sets)?,
             target: target.read::<&str>()?.to_owned(),
             imports,
         })

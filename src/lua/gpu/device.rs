@@ -20,7 +20,7 @@ use crate::lua::{error, push_table};
 #[derive(Clone, Debug)]
 pub struct LuaGpuDevice {
     pub(crate) gpu: Arc<Gpu>,
-    pub(crate) sets: Rc<DrawSets>,
+    pub(crate) sets: Arc<DrawSets>,
 }
 
 // SAFETY: an `Rc` to plain Rust state; the destructor never touches the Lua API.
@@ -74,7 +74,7 @@ impl Opened {
             .map_err(|problem| error(format!("jess.gpu.device: {problem}")))?;
         let device = LuaGpuDevice {
             gpu,
-            sets: Rc::new(DrawSets::new()),
+            sets: Arc::new(DrawSets::new()),
         };
         *opened = Some(device.clone());
         Ok(Owned(device))
@@ -117,24 +117,10 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .getter("timestamps", |this: &LuaGpuDevice| this.gpu.info().timestamps)
         .untyped();
     device
-        .getter("live", |this: &LuaGpuDevice, call: &Call<'_>| -> l3i::Result<StackResults> {
-            let live = this.gpu.live();
-            push_table(call, 0, 5, |frame, table| {
-                // Counts of live objects stay far below 2^53.
-                #[allow(clippy::cast_precision_loss)]
-                for (name, count) in [
-                    ("buffers", live.buffers),
-                    ("textures", live.textures),
-                    ("samplers", live.samplers),
-                    ("bindGroups", live.bind_groups),
-                    ("pipelines", live.pipelines),
-                ] {
-                    table.raw_set_value(frame, name, &(count as f64))?;
-                }
-                Ok(())
-            })?;
-            Ok(StackResults)
-        })
+        .getter("live", |this: &LuaGpuDevice, call: &Call<'_>| counts(call, this.gpu.live()))
+        .untyped();
+    device
+        .getter("made", |this: &LuaGpuDevice, call: &Call<'_>| counts(call, this.gpu.made()))
         .untyped();
     device
         .getter(
@@ -166,4 +152,23 @@ pub fn describe(d: &mut ExtensionDescriptor) {
     super::plan::describe(d);
     #[cfg(feature = "window")]
     super::window::describe(d);
+}
+
+/// `{ buffers, textures, samplers, bindGroups, pipelines }` of `counts`.
+fn counts(call: &Call<'_>, counts: crate::gpu::LiveCounts) -> l3i::Result<StackResults> {
+    push_table(call, 0, 5, |frame, table| {
+        // Counts of objects stay far below 2^53.
+        #[allow(clippy::cast_precision_loss)]
+        for (name, count) in [
+            ("buffers", counts.buffers),
+            ("textures", counts.textures),
+            ("samplers", counts.samplers),
+            ("bindGroups", counts.bind_groups),
+            ("pipelines", counts.pipelines),
+        ] {
+            table.raw_set_value(frame, name, &(count as f64))?;
+        }
+        Ok(())
+    })?;
+    Ok(StackResults)
 }

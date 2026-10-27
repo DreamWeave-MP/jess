@@ -245,6 +245,13 @@ impl Gpu {
         self.live.counts()
     }
 
+    /// How many buffers, textures, samplers, bind groups, and pipelines were ever made on it,
+    /// dropped or not. What grows every frame of a scene that doesn't change is churn.
+    #[must_use]
+    pub fn made(&self) -> LiveCounts {
+        self.live.made()
+    }
+
     /// The adapter this runs on, and what it allows.
     #[must_use]
     pub fn info(&self) -> &GpuInfo {

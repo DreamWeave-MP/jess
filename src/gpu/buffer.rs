@@ -79,10 +79,15 @@ pub struct Buffer {
     pub(crate) raw: wgpu::Buffer,
     size: u64,
     usage: BufferUsage,
-    _live: Token,
+    token: Token,
 }
 
 impl Buffer {
+    /// Its identity, which no other buffer or texture ever has.
+    pub(crate) fn id(&self) -> u64 {
+        self.token.id()
+    }
+
     /// How many bytes it holds.
     #[must_use]
     pub fn size(&self) -> u64 {
@@ -124,7 +129,7 @@ impl Gpu {
             raw,
             size,
             usage,
-            _live: self.live.token(Kind::Buffer),
+            token: self.live.token(Kind::Buffer),
         })
     }
 

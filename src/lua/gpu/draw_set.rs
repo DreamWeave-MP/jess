@@ -1,13 +1,12 @@
 //! Draw sets from Luau: draws kept on the device, which every plan's draw passes take by their
 //! tags, frame after frame, until they are removed.
 
-use std::rc::Rc;
 use std::sync::Arc;
 
 use l3i::bind::{Call, StackResults};
 use l3i::extension::{ExtensionDescriptor, TagPolicy, UserdataBuilder};
 use l3i::stack::{Scope, ValueView};
-use l3i::userdata::{Owned, Userdata};
+use l3i::userdata::{Owned, Userdata, receiver};
 
 use super::device::LuaGpuDevice;
 use super::pipeline::{
@@ -17,11 +16,12 @@ use super::resources::{choice, shown, whole};
 use crate::gpu::{DrawSet, DrawSetDesc, DrawSets, IndexFormat};
 use crate::lua::{error, kind};
 
-/// A draw kept on a device, and the device's draw sets it is drawn from.
+/// A draw kept on a device, and the collection it was made into, which `add` and `remove` put it
+/// in and take it out of.
 #[derive(Debug)]
 pub struct LuaGpuDrawSet {
     set: Arc<DrawSet>,
-    sets: Rc<DrawSets>,
+    sets: Arc<DrawSets>,
 }
 
 // SAFETY: plain Rust state; the destructor never touches the Lua API.
@@ -29,7 +29,33 @@ unsafe impl Userdata for LuaGpuDrawSet {
     const NAME: &'static str = "jess.gpu.DrawSet";
 }
 
-const DRAW_SET_KEYS: [&str; 12] = [
+/// A collection of draw sets a run draws from: a device's own, or one a script made.
+#[derive(Debug)]
+pub struct LuaGpuDrawSets {
+    pub sets: Arc<DrawSets>,
+}
+
+// SAFETY: plain Rust state; the destructor never touches the Lua API.
+unsafe impl Userdata for LuaGpuDrawSets {
+    const NAME: &'static str = "jess.gpu.DrawSets";
+}
+
+/// The collection `view` is, for `function`'s `what`: the device's own when it is nil.
+pub fn collection(
+    function: &str,
+    what: &str,
+    view: Option<ValueView<'_>>,
+    own: &Arc<DrawSets>,
+) -> l3i::Result<Arc<DrawSets>> {
+    let Some(view) = view.filter(|view| !view.is_nil()) else {
+        return Ok(own.clone());
+    };
+    receiver::<LuaGpuDrawSets>(view)
+        .map(|sets| sets.sets.clone())
+        .ok_or_else(|| error(format!("{function}: {what} is a GpuDrawSets, not {}", kind(view))))
+}
+
+const DRAW_SET_KEYS: [&str; 13] = [
     "count",
     "draw",
     "indexFormat",
@@ -40,6 +66,7 @@ const DRAW_SET_KEYS: [&str; 12] = [
     "instances",
     "material",
     "pipeline",
+    "sets",
     "tags",
     "vertices",
 ];
@@ -51,8 +78,9 @@ fn draw_set(this: &LuaGpuDevice, call: &Call<'_>, desc: ValueView<'_>) -> l3i::R
     if !desc.is_table() {
         return Err(error(format!("{FUNCTION} takes a table, not {}", kind(desc))));
     }
-    let desc = call.with_frame(|frame| {
+    let (desc, sets) = call.with_frame(|frame| {
         let fields = options(frame, FUNCTION, "the draw set", desc, &DRAW_SET_KEYS)?;
+        let sets = collection(FUNCTION, "its sets", Some(fields.raw_get(frame, "sets")?), &this.sets)?;
         let pipeline = pipeline_field(frame, FUNCTION, &fields)?;
         let Pipeline::Render(pipeline) = &*pipeline else {
             return Err(error(format!(
@@ -77,7 +105,7 @@ fn draw_set(this: &LuaGpuDevice, call: &Call<'_>, desc: ValueView<'_>) -> l3i::R
             })?;
         }
         let indirect = indirect_field(frame, FUNCTION, &fields)?;
-        Ok(DrawSetDesc {
+        let desc = DrawSetDesc {
             pipeline: pipeline.clone(),
             material,
             draw,
@@ -93,23 +121,69 @@ fn draw_set(this: &LuaGpuDevice, call: &Call<'_>, desc: ValueView<'_>) -> l3i::R
             )?,
             indirect,
             tags,
-        })
+        };
+        Ok((desc, sets))
     })?;
     let set = Arc::new(DrawSet::new(desc).map_err(|problem| gpu_error(FUNCTION, &problem))?);
-    this.sets.add(&set);
-    Ok(Owned(LuaGpuDrawSet {
-        set,
-        sets: this.sets.clone(),
-    }))
+    sets.add(&set);
+    Ok(Owned(LuaGpuDrawSet { set, sets }))
 }
 
-/// Declares the device's method that makes draw sets.
+/// Declares the device's methods that make draw sets and collections of them.
 pub fn device_methods(device: &mut UserdataBuilder<'_, LuaGpuDevice>) {
     device.method("drawSet", draw_set).untyped();
+    device
+        .method("drawSets", |_: &LuaGpuDevice| {
+            Owned(LuaGpuDrawSets {
+                sets: Arc::new(DrawSets::new()),
+            })
+        })
+        .untyped();
+    device
+        .getter("sets", |this: &LuaGpuDevice| {
+            Owned(LuaGpuDrawSets { sets: this.sets.clone() })
+        })
+        .untyped();
 }
 
-/// Declares the draw set type.
+/// The draw set `view` is, for `function`.
+fn draw_set_of(function: &str, view: ValueView<'_>) -> l3i::Result<Arc<DrawSet>> {
+    receiver::<LuaGpuDrawSet>(view)
+        .map(|set| set.set.clone())
+        .ok_or_else(|| error(format!("{function} takes a GpuDrawSet, not {}", kind(view))))
+}
+
+/// Declares the collection type.
+fn describe_collection(d: &mut ExtensionDescriptor) {
+    let mut sets = d.userdata::<LuaGpuDrawSets>(LuaGpuDrawSets::NAME);
+    sets.tag(TagPolicy::Never)
+        .doc("Draw sets a run draws from: a device's own, or a collection a script keeps for one scene.");
+    sets.method("add", |this: &LuaGpuDrawSets, set: ValueView<'_>| -> l3i::Result<()> {
+        this.sets.add(&draw_set_of("GpuDrawSets:add", set)?);
+        Ok(())
+    })
+    .untyped();
+    sets.method("remove", |this: &LuaGpuDrawSets, set: ValueView<'_>| -> l3i::Result<bool> {
+        Ok(this.sets.remove(&draw_set_of("GpuDrawSets:remove", set)?))
+    })
+    .untyped();
+    sets.method("has", |this: &LuaGpuDrawSets, set: ValueView<'_>| -> l3i::Result<bool> {
+        Ok(this.sets.contains(&draw_set_of("GpuDrawSets:has", set)?))
+    })
+    .untyped();
+    sets.getter("count", |this: &LuaGpuDrawSets| {
+        u32::try_from(this.sets.len()).unwrap_or(u32::MAX)
+    })
+    .untyped();
+    crate::lua::plan::metamethod(&mut sets, "__tostring", |this: &LuaGpuDrawSets| {
+        let count = this.sets.len();
+        format!("GpuDrawSets({count} {})", if count == 1 { "set" } else { "sets" })
+    });
+}
+
+/// Declares the draw set and collection types.
 pub fn describe(d: &mut ExtensionDescriptor) {
+    describe_collection(d);
     let mut set = d.userdata::<LuaGpuDrawSet>(LuaGpuDrawSet::NAME);
     set.tag(TagPolicy::Never)
         .doc("A draw kept on its device, which plans' draw passes take by its tags every frame.");

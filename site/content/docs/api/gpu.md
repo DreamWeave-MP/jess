@@ -33,6 +33,8 @@ The runtime's device. The first call opens it, on whatever adapter the machine h
 | `pipelines` | `{ compiled, reused }` | How many pipelines the device compiled, and how many times `GpuDevice:pipeline` gave back one it already had. |
 | `timestamps` | `boolean` | Whether the device times passes, which `GpuPlan:timings` reports. |
 | `live` | `{ buffers, textures, samplers, bindGroups, pipelines }` | How many of each the device has alive: made, and not yet let go of. A count that only grows is a leak. |
+| `made` | `{ buffers, textures, samplers, bindGroups, pipelines }` | How many of each the device ever made, let go of or not. A count that grows every frame of a scene that doesn't change is churn: a run of a plan makes nothing the run before it made. |
+| `sets` | `GpuDrawSets` | The device's own [draw sets](#draw-sets), which a draw set joins unless told otherwise and a run draws from unless given others. |
 
 `tostring(device)` is `GpuDevice(name, backend)`.
 
@@ -313,7 +315,7 @@ The last number is `string.unpack`'s: where it stopped reading.
 
 {{ api_signature(value="device:drawSet(desc: GpuDrawSetDesc): GpuDrawSet") }}
 
-Keeps a draw on the device: a render pipeline, its `material` and `draw` bind groups, its `vertices`, `instances`, and `indices` (with `indexFormat`), `count` and `instanceCount` (or the `indirect` buffer the GPU writes them into), and the `tags` passes choose it by. The fields are a draw's, as `GpuDevice:render` takes them, without `pass`: a draw set is drawn with the pass group of whichever pass takes it, so one camera block serves every set a pass draws. It is checked when it is made, the way a pass checks a draw, and drawn from the next frame on by every draw pass whose tags it carries, until it is removed.
+Keeps a draw in a collection of draw sets, the device's own (`device.sets`) unless `sets` names another: a render pipeline, its `material` and `draw` bind groups, its `vertices`, `instances`, and `indices` (with `indexFormat`), `count` and `instanceCount` (or the `indirect` buffer the GPU writes them into), and the `tags` passes choose it by. The fields are a draw's, as `GpuDevice:render` takes them, without `pass`: a draw set is drawn with the pass group of whichever pass takes it, so one camera block serves every set a pass draws. It is checked when it is made, the way a pass checks a draw, and drawn from the next frame on by every draw pass whose tags it carries, until it is removed.
 
 ## GpuDrawSet
 
@@ -323,10 +325,25 @@ Keeps a draw on the device: a render pipeline, its `material` and `draw` bind gr
 | `instanceCount` | `number` | How many instances; at least 1, and no more than its instance buffer holds. |
 | `visible` | `boolean` | Whether passes draw it. |
 | `tags` | `{ string }` | What the passes that take it look for. |
-| `added` | `boolean` | Whether it is on the device. |
-| `add()`, `remove()` | `() -> ()`, `() -> boolean` | Puts it on the device, or takes it off, saying whether it was there. Both are harmless twice. |
+| `added` | `boolean` | Whether it is in the collection it was made into. |
+| `add()`, `remove()` | `() -> ()`, `() -> boolean` | Puts it back in that collection, or takes it out, saying whether it was there. Both are harmless twice. |
 
 Changing a set changes nothing else: what it draws is read again at every frame, so nothing is rebuilt.
+
+### GpuDevice:drawSets
+
+{{ api_signature(value="device:drawSets(): GpuDrawSets") }}
+
+A collection of its own: the draw sets of one scene, say, which a run draws from when it is given them (`plan:run(imports, sets)`, `window:show(plan, target, imports, sets)`) instead of the device's. A set can be in any number of collections. A plan remembers which sets carry its draw passes' tags, for each collection, until something is added to or removed from it; showing and hiding a set, or changing its counts, needs no choosing again.
+
+| Member | Type | Does |
+| --- | --- | --- |
+| `count` | `number` | How many sets it holds. |
+| `add(set)` | `(GpuDrawSet) -> ()` | Adds a set, last; adding it again does nothing. |
+| `remove(set)` | `(GpuDrawSet) -> boolean` | Takes a set out, saying whether it was there. |
+| `has(set)` | `(GpuDrawSet) -> boolean` | Whether it holds a set. |
+
+`tostring(sets)` is `GpuDrawSets(3 sets)`.
 
 ```luau
 --!strict
@@ -401,8 +418,11 @@ Mistakes in the description name the pass: `GpuDevice:plan: pass present uses no
 | `order` | `{ string }` | The passes that run, in the order they run. |
 | `viewport` | `{ width, height }` | What its relative targets are sized for. |
 | `allocations` | `number` | How many textures and buffers it made for its own targets and buffers: one for each group sharing memory. |
-| `run(imports)` | `({ [string]: GpuTexture \| GpuBuffer }?) -> ()` | Runs every pass once, in one submission, with a texture or buffer for each imported target or buffer by name: a texture of its format and size at the viewport, a buffer of its size. |
-| `resized(width, height)` | `(number, number) -> GpuPlan` | The same plan for another viewport, its targets made again at the new size. |
+| `run(imports, sets)` | `({ [string]: GpuTexture \| GpuBuffer }?, GpuDrawSets?) -> ()` | Runs every pass it records once, in one submission, with a texture or buffer for each imported target or buffer by name (a texture of its format and size at the viewport, a buffer of its size), its draw passes drawing from `sets`, or the device's own. |
+| `setEnabled(passes, enabled)` | `(string \| { string }, boolean) -> ()` | Leaves passes out of the runs after it, or puts them back, together. A pass left out does nothing, so whatever it stores keeps what it held: a pass still recorded can't read or load it (`pass present uses what pass overlay stores: leave both out, or neither`), and a culled pass is refused, since it never runs. |
+| `enabled(pass)` | `(string) -> boolean` | Whether runs record a pass. |
+| `setRegion(pass, region)` | `(string, GpuCopyRegion) -> ()` | Changes what a copy pass copies from the next run on: `{ from, to, size }`, where `from` and `to` are `{ column, row }` in a target or `{ offset }` in a buffer, of the level and layer the pass names. It is checked now, and resolved again at each size the plan is resized to. |
+| `resized(width, height)` | `(number, number) -> GpuPlan` | The same plan for another viewport, its targets made again at the new size. It shares the passes left out and the regions with the plan it was resized from, both ways, as the plan a window shows does. |
 | `dump()` | `() -> string` | The compiled graph: the passes in order, where each was declared (the `device:plan` call: a pass is a table, with no place of its own), what each reads and writes, what was culled, every target's lifetime, and what shares memory. |
 | `timings()` | `() -> { { pass, ms } }?` | How long each pass of the last run took on the GPU, in milliseconds, in the order they ran; a copy pass has no `ms`. `nil` on a device without `timestamps`. Asking waits for that run to finish, so ask once in a while, not every frame. |
 
@@ -552,7 +572,7 @@ Handles what the window system reported since the last call, without waiting (si
 | `scale` | `number` | How many physical pixels a logical one is on its display. |
 | `format` | `GpuTextureFormat?` | What its images are; `nil` once it's closed. |
 | `open` | `boolean` | Whether it's open: neither closed by the person nor by `close`. |
-| `show(plan, target, imports?)` | `(GpuPlan, string, { [string]: GpuTexture \| GpuBuffer }?) -> ()` | Draws `plan` into it every frame from the next on, its image as the plan's imported target `target`, which must have the window's format, with `imports` for the plan's other imported targets and buffers. The plan is resized with the window. |
+| `show(plan, target, imports?, sets?)` | `(GpuPlan, string, { [string]: GpuTexture \| GpuBuffer }?, GpuDrawSets?) -> ()` | Draws `plan` into it every frame from the next on, its image as the plan's imported target `target`, which must have the window's format, with `imports` for the plan's other imported targets and buffers, drawing from `sets` or the device's own. The plan is resized with the window, and passes left out of `plan` and its regions are the shown plan's too. |
 | `hide()`, `close()` | `() -> ()` | Stops drawing, or closes it. |
 
 `tostring(window)` is `GpuWindow(title, 800×600)`. Drawing a shown plan runs no Luau: each frame takes the window's next image, runs the plan into it with the draw sets as they are, and presents it, so a scene that doesn't change costs a script nothing at all.

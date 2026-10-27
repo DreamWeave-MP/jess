@@ -176,11 +176,26 @@ impl DrawSet {
     }
 }
 
-/// The draw sets a plan's passes choose from, in the order they were added.
-#[derive(Debug, Default)]
+/// The draw sets a plan's passes choose from, in the order they were added. A run takes them from
+/// one collection; an application keeps as many as it has scenes.
+#[derive(Debug)]
 pub struct DrawSets {
     sets: Mutex<Vec<Arc<DrawSet>>>,
     version: AtomicU64,
+    id: u64,
+}
+
+/// The next collection's identity.
+static NEXT_SETS: AtomicU64 = AtomicU64::new(1);
+
+impl Default for DrawSets {
+    fn default() -> DrawSets {
+        DrawSets {
+            sets: Mutex::default(),
+            version: AtomicU64::new(0),
+            id: NEXT_SETS.fetch_add(1, Ordering::Relaxed),
+        }
+    }
 }
 
 impl DrawSets {
@@ -188,6 +203,13 @@ impl DrawSets {
     #[must_use]
     pub fn new() -> DrawSets {
         DrawSets::default()
+    }
+
+    /// Its identity, which no other collection ever has: with [`Self::version`], what a choice
+    /// cached from it keys on.
+    #[must_use]
+    pub fn id(&self) -> u64 {
+        self.id
     }
 
     /// Adds `set`, to be drawn from the next frame on; adding it again does nothing.
@@ -243,10 +265,16 @@ impl DrawSets {
     /// The visible sets carrying any of `tags`, in the order they were added.
     #[must_use]
     pub fn matching(&self, tags: &[String]) -> Vec<Arc<DrawSet>> {
+        let mut matched = self.tagged(tags);
+        matched.retain(|set| set.visible());
+        matched
+    }
+
+    /// The sets carrying any of `tags`, shown or hidden, in the order they were added: a choice
+    /// that holds until the next addition or removal, whoever shows or hides what.
+    #[must_use]
+    pub fn tagged(&self, tags: &[String]) -> Vec<Arc<DrawSet>> {
         let sets = self.sets.lock().unwrap_or_else(PoisonError::into_inner);
-        sets.iter()
-            .filter(|set| set.visible() && set.matches(tags))
-            .cloned()
-            .collect()
+        sets.iter().filter(|set| set.matches(tags)).cloned().collect()
     }
 }

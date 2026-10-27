@@ -9,7 +9,8 @@
 //! a copy pass copies its source into its destination. Imported targets and buffers, a window's
 //! backbuffer or a buffer read back afterwards, are given to each run.
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use super::bind::{BindGroup, Binding};
 use super::compute::{self, ComputePipeline};
@@ -19,7 +20,7 @@ use super::pipeline::Slot;
 use super::texture::{TextureDesc, TextureShape, TextureUsage};
 use super::{Buffer, BufferUsage, Draw, Gpu, GpuError, Group, RenderPipeline, Resolve, Sampler, Target, Texture};
 use crate::render::{
-    AliasGroup, Attachment, Extent, LoadOp, Pass, PassKind, ReadUsage, RenderGraph, ResolvedCopy, ResourceDesc,
+    AliasGroup, Attachment, CopyRegion, Extent, LoadOp, Pass, PassKind, ReadUsage, RenderGraph, ResolvedCopy, ResourceDesc,
     ResourceOrigin, StoreOp, Subresource, TargetDesc, TexelAt,
 };
 use crate::shader::{Access, Frequency, ResourceId, StorageId};
@@ -112,6 +113,16 @@ enum Live<'a> {
     Buffer(&'a Buffer),
 }
 
+impl Live<'_> {
+    /// The identity of the texture or buffer.
+    fn id(self) -> u64 {
+        match self {
+            Live::Texture(texture) => texture.id(),
+            Live::Buffer(buffer) => buffer.id(),
+        }
+    }
+}
+
 /// A transient resource's allocation.
 #[derive(Clone, Debug)]
 enum Allocation {
@@ -149,13 +160,19 @@ impl Owner {
 enum Planned {
     /// Made already, by the caller or the plan.
     Made(Arc<BindGroup>),
-    /// Made for each run, because it binds an imported resource.
+    /// Made for a run, because it binds an imported resource: made again only when a run gives
+    /// other resources than the last.
     EachRun {
         owner: Owner,
         frequency: Frequency,
         bindings: Vec<PlanBinding>,
+        /// The group last made, and the identities of the graph resources it bound, in order.
+        made: Mutex<Option<(Vec<u64>, Arc<BindGroup>)>>,
     },
 }
+
+/// The sets a draw pass last chose: from which collection, at which version, shown or hidden.
+type Matched = Option<(u64, u64, Arc<[Arc<DrawSet>]>)>;
 
 /// What a surviving pass does, as it was planned.
 #[derive(Debug)]
@@ -163,6 +180,7 @@ enum PlannedWork {
     Draw {
         tags: Vec<String>,
         pass: Option<Planned>,
+        matched: Mutex<Matched>,
     },
     Fullscreen {
         pipeline: Arc<RenderPipeline>,
@@ -173,7 +191,21 @@ enum PlannedWork {
         groups: [Option<Planned>; 3],
         workgroups: [u32; 3],
     },
-    Copy(ResolvedCopy),
+    /// What its region resolved to at the plan's viewport, and the version of the plan's
+    /// controls it was resolved for.
+    Copy(Mutex<(u64, ResolvedCopy)>),
+}
+
+/// What a script changes about a plan between runs, shared by the plan and every plan resized
+/// from it, so a window showing it at its own size follows along.
+#[derive(Debug)]
+struct Controls {
+    /// Whether runs record each surviving pass, in order.
+    enabled: Vec<AtomicBool>,
+    /// The region each copy pass copies, where it isn't the graph's, by where it runs.
+    regions: Mutex<Vec<Option<CopyRegion>>>,
+    /// Counts every change of a region.
+    version: AtomicU64,
 }
 
 /// A pass that survived, ready to record.
@@ -182,6 +214,8 @@ struct PlannedPass {
     /// Its index in the graph.
     index: usize,
     work: PlannedWork,
+    /// Where the passes whose contents it reads or loads run, in the plan's order.
+    sources: Vec<usize>,
 }
 
 /// A render graph compiled for a device and a viewport, ready to run.
@@ -196,6 +230,9 @@ pub struct Plan {
     passes: Vec<PlannedPass>,
     /// Where each surviving pass's timestamps go, on a device that times passes.
     timing: Option<Timing>,
+    /// Which passes the last run recorded, in order.
+    ran: Mutex<Vec<bool>>,
+    controls: Arc<Controls>,
 }
 
 /// A plan's timestamps: a pair of queries for each drawing or compute pass, and the buffer they
@@ -215,7 +252,7 @@ pub struct PassTiming {
     /// The pass.
     pub pass: String,
     /// How long it took, from its first command to its last; `None` for a copy pass, which isn't
-    /// timed.
+    /// timed, and for a pass the run didn't record.
     pub duration: Option<std::time::Duration>,
 }
 
@@ -266,7 +303,110 @@ impl Plan {
     /// What [`Gpu::plan`] refuses, which for a plan that compiled is only what the device
     /// refuses, and copies between targets and buffers that no longer fit.
     pub fn resized(&self, gpu: &Gpu, viewport: Extent) -> Result<Plan, GpuError> {
-        gpu.plan(&self.graph, self.work.clone(), viewport)
+        let plan = gpu.plan_with(&self.graph, self.work.clone(), viewport, Some(Arc::clone(&self.controls)))?;
+        for (position, planned) in plan.passes.iter().enumerate() {
+            if let PlannedWork::Copy(copy) = &planned.work {
+                plan.copy(position, copy)?;
+            }
+        }
+        Ok(plan)
+    }
+
+    /// What the copy pass at `position`, whose resolved copy is `copy`, copies now: its region,
+    /// resolved again if it changed.
+    fn copy(&self, position: usize, copy: &Mutex<(u64, ResolvedCopy)>) -> Result<ResolvedCopy, GpuError> {
+        let version = self.controls.version.load(Ordering::Acquire);
+        let (resolved_for, resolved) = *lock(copy);
+        if resolved_for == version {
+            return Ok(resolved);
+        }
+        let pass = &self.graph.passes()[self.passes[position].index];
+        let region = lock(&self.controls.regions)[position].unwrap_or(pass.region);
+        let resolved = self
+            .graph
+            .resolve_copy(pass, region, Some(self.viewport))
+            .map_err(|problem| in_pass(pass.name(), problem))?
+            .expect("a viewport resolves every copy");
+        *lock(copy) = (version, resolved);
+        Ok(resolved)
+    }
+
+    /// Where the surviving pass `name` runs.
+    fn position(&self, name: &str) -> Result<usize, GpuError> {
+        let Some(id) = self.graph.pass_id(name) else {
+            return Err(GpuError::Invalid(format!("the plan has no pass called {name}")));
+        };
+        self.passes
+            .iter()
+            .position(|planned| planned.index == id.index())
+            .ok_or_else(|| GpuError::Invalid(format!("pass {name} is culled: nothing sees what it does, so it never runs")))
+    }
+
+    /// Whether runs record the surviving pass `name`.
+    ///
+    /// # Errors
+    ///
+    /// A pass the plan doesn't have, or culled.
+    pub fn enabled(&self, name: &str) -> Result<bool, GpuError> {
+        Ok(self.controls.enabled[self.position(name)?].load(Ordering::Relaxed))
+    }
+
+    /// Records `names` in later runs, or leaves them out, together. Every pass is recorded until
+    /// this says otherwise. A pass left out does nothing: whatever it would have stored keeps
+    /// what it held, which a pass still recorded mustn't depend on.
+    ///
+    /// # Errors
+    ///
+    /// A pass the plan doesn't have, or culled; or a change after which a recorded pass would
+    /// read or load what a pass left out stores, which changes nothing.
+    pub fn set_enabled(&self, names: &[&str], enabled: bool) -> Result<(), GpuError> {
+        let mut state: Vec<bool> = self
+            .controls
+            .enabled
+            .iter()
+            .map(|enabled| enabled.load(Ordering::Relaxed))
+            .collect();
+        for name in names {
+            state[self.position(name)?] = enabled;
+        }
+        for (position, planned) in self.passes.iter().enumerate() {
+            let source = planned.sources.iter().find(|&&source| !state[source]);
+            if let (true, Some(&source)) = (state[position], source) {
+                let name = |at: usize| self.graph.passes()[self.passes[at].index].name();
+                return Err(GpuError::Invalid(format!(
+                    "pass {} uses what pass {} stores: leave both out, or neither",
+                    name(position),
+                    name(source)
+                )));
+            }
+        }
+        for (control, enabled) in self.controls.enabled.iter().zip(state) {
+            control.store(enabled, Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
+    /// Copies `region` in the copy pass `name` from the next run on, in this plan and every plan
+    /// resized from it or it from: a part of the same level of the same layer, checked now at the
+    /// plan's viewport, and resolved again at each plan's own.
+    ///
+    /// # Errors
+    ///
+    /// A pass the plan doesn't have, culled, or not a copy; a region that doesn't fit, as
+    /// [`RenderGraph::resolve_copy`] says, which changes nothing.
+    pub fn set_region(&self, name: &str, region: CopyRegion) -> Result<(), GpuError> {
+        let position = self.position(name)?;
+        let planned = &self.passes[position];
+        if !matches!(planned.work, PlannedWork::Copy(_)) {
+            return Err(GpuError::Invalid(format!("pass {name} isn't a copy, so it has no region")));
+        }
+        let pass = &self.graph.passes()[planned.index];
+        self.graph
+            .resolve_copy(pass, region, Some(self.viewport))
+            .map_err(|problem| in_pass(name, problem))?;
+        lock(&self.controls.regions)[position] = Some(region);
+        self.controls.version.fetch_add(1, Ordering::AcqRel);
+        Ok(())
     }
 
     /// Every resource the run sees: the plan's own and `imports`, each checked against the
@@ -363,6 +503,17 @@ impl Gpu {
     /// its pass doesn't use as its declaration does, or that doesn't fit its pipeline; a resource
     /// the device can't allocate.
     pub fn plan(&self, graph: &RenderGraph, work: Vec<Work>, viewport: Extent) -> Result<Plan, GpuError> {
+        self.plan_with(graph, work, viewport, None)
+    }
+
+    /// A plan of `graph` with `controls`, a plan's it was resized from, or new ones.
+    fn plan_with(
+        &self,
+        graph: &RenderGraph,
+        work: Vec<Work>,
+        viewport: Extent,
+        controls: Option<Arc<Controls>>,
+    ) -> Result<Plan, GpuError> {
         let compiled = graph
             .compile()
             .map_err(|error| GpuError::Invalid(format!("the render graph doesn't compile: {error}")))?;
@@ -381,14 +532,34 @@ impl Gpu {
             let planned = self
                 .planned_work(graph, &allocations, pass, &work[index], viewport)
                 .map_err(|problem| in_pass(pass.name(), problem))?;
-            passes.push(PlannedPass { index, work: planned });
+            let mut sources: Vec<usize> = compiled
+                .dependencies()
+                .iter()
+                .filter(|dependency| dependency.after == *id && dependency.kind.carries_contents())
+                .filter_map(|dependency| compiled.position(dependency.before))
+                .collect();
+            sources.dedup();
+            passes.push(PlannedPass {
+                index,
+                work: planned,
+                sources,
+            });
         }
         let timing = self.timing(&passes)?;
+        let controls = controls.unwrap_or_else(|| {
+            Arc::new(Controls {
+                enabled: passes.iter().map(|_| AtomicBool::new(true)).collect(),
+                regions: Mutex::new(vec![None; passes.len()]),
+                version: AtomicU64::new(0),
+            })
+        });
         Ok(Plan {
+            controls,
             graph: graph.clone(),
             work,
             viewport,
             allocations,
+            ran: Mutex::new(vec![false; passes.len()]),
             passes,
             timing,
         })
@@ -451,15 +622,17 @@ impl Gpu {
             u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap_or([0; 8]))
         };
         let period = f64::from(self.queue.get_timestamp_period());
+        let ran = lock(&plan.ran).clone();
         Ok(Some(
             plan.passes
                 .iter()
                 .zip(&timing.first)
-                .map(|(pass, first)| PassTiming {
+                .zip(ran)
+                .map(|((pass, first), ran)| PassTiming {
                     pass: plan.graph.passes()[pass.index].name().to_owned(),
                     // Ticks between two stamps of one pass are far below 2^53.
                     #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                    duration: first.map(|first| {
+                    duration: first.filter(|_| ran).map(|first| {
                         let ticks = stamp(first + 1).saturating_sub(stamp(first));
                         std::time::Duration::from_nanos((ticks as f64 * period) as u64)
                     }),
@@ -539,6 +712,7 @@ impl Gpu {
                 Ok(PlannedWork::Draw {
                     tags: tags.clone(),
                     pass,
+                    matched: Mutex::new(None),
                 })
             }
             (Work::Fullscreen { pipeline, groups }, PassKind::Fullscreen) => {
@@ -565,7 +739,8 @@ impl Gpu {
             }
             (Work::Copy, PassKind::Copy) => {
                 let copy = graph.resolve_copy(pass, pass.region, Some(viewport))?;
-                Ok(PlannedWork::Copy(copy.expect("a viewport resolves every copy")))
+                let copy = copy.expect("a viewport resolves every copy");
+                Ok(PlannedWork::Copy(Mutex::new((0, copy))))
             }
             (work, kind) => {
                 let does = match work {
@@ -624,6 +799,7 @@ impl Gpu {
                 owner: owner.clone(),
                 frequency,
                 bindings: bindings.clone(),
+                made: Mutex::new(None),
             });
         }
         let live = |name: &str| {
@@ -687,72 +863,34 @@ impl Gpu {
         let graph = &plan.graph;
         let live = plan.with_imports(imports)?;
 
-        // Everything each pass records with, held while the passes are recorded.
-        let mut held = Vec::with_capacity(plan.passes.len());
-        for planned in &plan.passes {
-            let pass = &graph.passes()[planned.index];
-            let name = pass.name();
-            for resource in pass.resources() {
-                if live[resource.index()].is_none() {
-                    let missing = &graph.resources()[resource.index()].name;
-                    return Err(in_pass(name, format!("the run gives nothing for {missing}")));
-                }
-            }
-            let made = |group: &Planned| -> Result<Arc<BindGroup>, GpuError> {
-                match group {
-                    Planned::Made(group) => Ok(group.clone()),
-                    Planned::EachRun {
-                        owner,
-                        frequency,
-                        bindings,
-                    } => {
-                        let find = |target: &str| graph.resource_id(target).and_then(|id| live[id.index()]);
-                        let level = |target: &str| read_level(graph, pass, target);
-                        self.make_group(owner.group(*frequency), bindings, &find, &level)
-                            .map(Arc::new)
-                            .map_err(|problem| in_pass(name, problem))
-                    }
-                }
-            };
-            let made_all = |groups: &[Option<Planned>; 3]| -> Result<[Option<Arc<BindGroup>>; 3], GpuError> {
-                Ok([
-                    groups[0].as_ref().map(made).transpose()?,
-                    groups[1].as_ref().map(made).transpose()?,
-                    groups[2].as_ref().map(made).transpose()?,
-                ])
-            };
-            held.push(match &planned.work {
-                PlannedWork::Draw { tags, pass: group } => Held::Draw {
-                    sets: sets.matching(tags),
-                    pass: group.as_ref().map(made).transpose()?,
-                },
-                PlannedWork::Fullscreen { pipeline, groups } => Held::Fullscreen {
-                    pipeline: pipeline.clone(),
-                    groups: made_all(groups)?,
-                },
-                PlannedWork::Compute {
-                    pipeline,
-                    groups,
-                    workgroups,
-                } => Held::Compute {
-                    pipeline: pipeline.clone(),
-                    groups: made_all(groups)?,
-                    workgroups: *workgroups,
-                },
-                PlannedWork::Copy(copy) => Held::Copy(*copy),
-            });
+        // The passes it records, by where they run, and everything each records with, held while
+        // the passes are recorded.
+        let running: Vec<usize> = (0..plan.passes.len())
+            .filter(|&position| plan.controls.enabled[position].load(Ordering::Relaxed))
+            .collect();
+        let mut held = Vec::with_capacity(running.len());
+        for &position in &running {
+            held.push(self.hold(plan, sets, &live, position)?);
         }
 
-        let mut recorded = Vec::with_capacity(plan.passes.len());
-        for (planned, held) in plan.passes.iter().zip(&held) {
-            let pass = &graph.passes()[planned.index];
+        let mut recorded = Vec::with_capacity(running.len());
+        for (&position, held) in running.iter().zip(&held) {
+            let pass = &graph.passes()[plan.passes[position].index];
             recorded.push(record(pass, held, &live).map_err(|problem| in_pass(pass.name(), problem))?);
+        }
+        {
+            let mut ran = lock(&plan.ran);
+            ran.fill(false);
+            for &position in &running {
+                ran[position] = true;
+            }
         }
         self.checked(|| {
             let mut encoder = self
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-            for (position, (planned, recording)) in plan.passes.iter().zip(&recorded).enumerate() {
+            for (&position, recording) in running.iter().zip(&recorded) {
+                let planned = &plan.passes[position];
                 let timed = plan
                     .timing
                     .as_ref()
@@ -764,6 +902,91 @@ impl Gpu {
             }
             self.queue.submit([encoder.finish()]);
         })
+    }
+
+    /// What the pass at `position` of `plan` records with in a run of `live` drawing from `sets`.
+    fn hold(&self, plan: &Plan, sets: &DrawSets, live: &[Option<Live<'_>>], position: usize) -> Result<Held, GpuError> {
+        let graph = &plan.graph;
+        let planned = &plan.passes[position];
+        let pass = &graph.passes()[planned.index];
+        let name = pass.name();
+        for resource in pass.resources() {
+            if live[resource.index()].is_none() {
+                let missing = &graph.resources()[resource.index()].name;
+                return Err(in_pass(name, format!("the run gives nothing for {missing}")));
+            }
+        }
+        let made = |group: &Planned| self.group_for(graph, pass, live, group);
+        let made_all = |groups: &[Option<Planned>; 3]| -> Result<[Option<Arc<BindGroup>>; 3], GpuError> {
+            Ok([
+                groups[0].as_ref().map(made).transpose()?,
+                groups[1].as_ref().map(made).transpose()?,
+                groups[2].as_ref().map(made).transpose()?,
+            ])
+        };
+        Ok(match &planned.work {
+            PlannedWork::Draw {
+                tags,
+                pass: group,
+                matched,
+            } => Held::Draw {
+                sets: chosen(matched, sets, tags),
+                pass: group.as_ref().map(made).transpose()?,
+            },
+            PlannedWork::Fullscreen { pipeline, groups } => Held::Fullscreen {
+                pipeline: pipeline.clone(),
+                groups: made_all(groups)?,
+            },
+            PlannedWork::Compute {
+                pipeline,
+                groups,
+                workgroups,
+            } => Held::Compute {
+                pipeline: pipeline.clone(),
+                groups: made_all(groups)?,
+                workgroups: *workgroups,
+            },
+            PlannedWork::Copy(copy) => Held::Copy(plan.copy(position, copy)?),
+        })
+    }
+
+    /// The bind group `group` is for `pass` in a run of `live`: the one made already, or, for one
+    /// binding an import, the one the last run made if it gave the same resources.
+    fn group_for(
+        &self,
+        graph: &RenderGraph,
+        pass: &Pass,
+        live: &[Option<Live<'_>>],
+        group: &Planned,
+    ) -> Result<Arc<BindGroup>, GpuError> {
+        let (owner, frequency, bindings, made) = match group {
+            Planned::Made(group) => return Ok(group.clone()),
+            Planned::EachRun {
+                owner,
+                frequency,
+                bindings,
+                made,
+            } => (owner, frequency, bindings, made),
+        };
+        let find = |target: &str| graph.resource_id(target).and_then(|id| live[id.index()]);
+        let bound = || {
+            bindings.iter().filter_map(|binding| match binding {
+                PlanBinding::Target(_, name) | PlanBinding::Buffer(_, name) => find(name).map(Live::id),
+                _ => None,
+            })
+        };
+        if let Some((identities, group)) = &*lock(made)
+            && identities.iter().copied().eq(bound())
+        {
+            return Ok(group.clone());
+        }
+        let level = |target: &str| read_level(graph, pass, target);
+        let group = self
+            .make_group(owner.group(*frequency), bindings, &find, &level)
+            .map(Arc::new)
+            .map_err(|problem| in_pass(pass.name(), problem))?;
+        *lock(made) = Some((bound().collect(), group.clone()));
+        Ok(group)
     }
 }
 
@@ -806,7 +1029,7 @@ fn check_use(pass: &Pass, index: usize, name: &str, frequency: Frequency, want: 
 /// What one pass records with in one run.
 enum Held {
     Draw {
-        sets: Vec<Arc<DrawSet>>,
+        sets: Arc<[Arc<DrawSet>]>,
         pass: Option<Arc<BindGroup>>,
     },
     Fullscreen {
@@ -844,7 +1067,13 @@ fn record<'a>(pass: &Pass, held: &'a Held, live: &[Option<Live<'a>>]) -> Result<
         _ => unreachable!("the graph's kinds and the run's checks leave a texture here"),
     };
     let (pipeline_groups, draws) = match held {
-        Held::Draw { sets, pass } => (None, sets.iter().map(|set| set.draw(pass.as_deref())).collect()),
+        Held::Draw { sets, pass } => (
+            None,
+            sets.iter()
+                .filter(|set| set.visible())
+                .map(|set| set.draw(pass.as_deref()))
+                .collect(),
+        ),
         Held::Fullscreen { pipeline, groups } => (
             None,
             vec![Draw {
@@ -948,6 +1177,28 @@ impl Recording<'_> {
             }
         }
     }
+}
+
+/// `mutex`'s value: a plan's state stays whole whatever panicked holding it.
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The sets carrying any of `tags` in `sets`, chosen again only when `sets` is another
+/// collection or has changed since the choice `matched` holds.
+fn chosen(matched: &Mutex<Matched>, sets: &DrawSets, tags: &[String]) -> Arc<[Arc<DrawSet>]> {
+    let mut matched = lock(matched);
+    if let Some((id, version, chosen)) = &*matched
+        && *id == sets.id()
+        && *version == sets.version()
+    {
+        return chosen.clone();
+    }
+    // The version first: a change racing the choice makes the next run choose again.
+    let version = sets.version();
+    let chosen: Arc<[Arc<DrawSet>]> = sets.tagged(tags).into();
+    *matched = Some((sets.id(), version, chosen.clone()));
+    chosen
 }
 
 /// Records `copy` of `from` into `to`.

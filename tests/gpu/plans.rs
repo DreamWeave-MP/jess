@@ -19,13 +19,13 @@ use jess::shader::{
     ResourceKind, Site, Stage, Step, StorageId, Swizzle, Type, Value,
 };
 
-const SIZE: u32 = 16;
-const VIEWPORT: Extent = Extent {
+pub(super) const SIZE: u32 = 16;
+pub(super) const VIEWPORT: Extent = Extent {
     width: SIZE,
     height: SIZE,
 };
 /// The bytes a row of a `SIZE`-wide 4-byte target takes in a buffer it is copied to.
-const ROW: u32 = 256;
+pub(super) const ROW: u32 = 256;
 const OWNER: &str = "@test/plans";
 const FAR: LoadOp = LoadOp::Clear(ClearValue::Depth(1.0));
 const BLACK: LoadOp = LoadOp::Clear(ClearValue::Color([0.0, 0.0, 0.0, 1.0]));
@@ -53,20 +53,20 @@ fn uniform(gpu: &Gpu, values: &[f32]) -> Buffer {
 }
 
 /// A target an imported `SIZE`×`SIZE` color target can be.
-fn output(gpu: &Gpu) -> jess::gpu::Texture {
+pub(super) fn output(gpu: &Gpu) -> jess::gpu::Texture {
     gpu.texture(&TextureDesc::d2(SIZE, SIZE, TextureFormat::Rgba8Unorm, TextureUsage::TARGET))
         .unwrap()
 }
 
 /// The texel at `x`, `y` of a target copied into a buffer, rows `ROW` bytes apart.
-fn copied(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
+pub(super) fn copied(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
     let start = (y * ROW + x * 4) as usize;
     pixels[start..start + 4].try_into().unwrap()
 }
 
 /// Draws 3D positions in the material's color times the pass's tint, depth tested, writing depth
 /// or not.
-fn lit(gpu: &Gpu, write: bool) -> Arc<RenderPipeline> {
+pub(super) fn lit(gpu: &Gpu, write: bool) -> Arc<RenderPipeline> {
     let mut builder = ProgramBuilder::new();
     let mut site = builder.site();
     let position = site.attribute(Rate::Vertex, "position", Type::Vec3f).unwrap();
@@ -96,7 +96,7 @@ fn lit(gpu: &Gpu, write: bool) -> Arc<RenderPipeline> {
 }
 
 /// A rectangle from `left` to `right` across the whole height, at `depth`, in `color`.
-fn rectangle(
+pub(super) fn rectangle(
     gpu: &Gpu,
     pipeline: &Arc<RenderPipeline>,
     [left, right]: [f32; 2],
@@ -155,7 +155,7 @@ pub(super) fn covering(site: &mut Site<'_>) -> Value {
 
 /// A fullscreen pipeline writing each pixel of a material texture with red and blue swapped; with
 /// that texture's declaration.
-fn swapped(gpu: &Gpu) -> (Arc<RenderPipeline>, ResourceId) {
+pub(super) fn swapped(gpu: &Gpu) -> (Arc<RenderPipeline>, ResourceId) {
     let mut builder = ProgramBuilder::new();
     let mut site = builder.site();
     let scene = site.resource(Frequency::Material, "scene", ResourceKind::Texture2D).unwrap();
@@ -181,15 +181,15 @@ fn swapped(gpu: &Gpu) -> (Arc<RenderPipeline>, ResourceId) {
 /// The scene: opaque sets drawn with depth, an overlay depth tested against it read-only, a
 /// fullscreen pass sampling the result into the imported output, a copy of the output into an
 /// imported buffer, and a debug pass nothing reads.
-struct Scene {
-    graph: RenderGraph,
-    work: Vec<Work>,
-    sets: DrawSets,
+pub(super) struct Scene {
+    pub(super) graph: RenderGraph,
+    pub(super) work: Vec<Work>,
+    pub(super) sets: DrawSets,
     /// What everything draws with, kept alive.
     _held: (Arc<RenderPipeline>, Arc<RenderPipeline>),
 }
 
-fn scene(gpu: &Gpu) -> Scene {
+pub(super) fn scene(gpu: &Gpu) -> Scene {
     let mut graph = RenderGraph::new("scene");
     let color = graph
         .add_render_target("color", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
@@ -266,7 +266,7 @@ fn scene(gpu: &Gpu) -> Scene {
 }
 
 /// Runs `plan` into a fresh output and pixel buffer, and reads the pixels back.
-fn run_scene(gpu: &Gpu, plan: &Plan, sets: &DrawSets) -> Vec<u8> {
+pub(super) fn run_scene(gpu: &Gpu, plan: &Plan, sets: &DrawSets) -> Vec<u8> {
     let target = output(gpu);
     let pixels = gpu.buffer(u64::from(ROW * SIZE), BufferUsage::default()).unwrap();
     gpu.run(

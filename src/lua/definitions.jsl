@@ -807,10 +807,10 @@ export type GpuDispatch = {
   draw: GpuBindGroup?,
 }
 
---- A draw kept on its device, which every plan's draw passes take by its `tags`, frame after frame,
---- with the pass's own pass group. `count`, `instanceCount`, and `visible` change it in place, from
---- the next frame on; `remove` takes it off the device, `add` puts it back, and `added` says which.
---- `tostring` gives `GpuDrawSet(6 vertices, opaque)`.
+--- A draw kept in a collection of draw sets, which a plan's draw passes take by its `tags`, frame
+--- after frame, with the pass's own pass group. `count`, `instanceCount`, and `visible` change it
+--- in place, from the next frame on; `remove` takes it out of the collection it was made into,
+--- `add` puts it back, and `added` says which. `tostring` gives `GpuDrawSet(6 vertices, opaque)`.
 declare extern type GpuDrawSet with
   count: number
   instanceCount: number
@@ -822,9 +822,21 @@ declare extern type GpuDrawSet with
   __tostring: (self: GpuDrawSet) -> string
 end
 
---- What `GpuDevice:drawSet` keeps: a draw without its pass group, which is the pass's, and the tags
---- passes choose it by.
+--- Draw sets a run draws from: the device's own (`device.sets`), which a draw set joins unless
+--- told otherwise, or a collection from `device:drawSets()`, kept for one scene. A set can be in
+--- any number of them. `tostring` gives `GpuDrawSets(3 sets)`.
+declare extern type GpuDrawSets with
+  count: number
+  function add(self, set: GpuDrawSet): ()
+  function remove(self, set: GpuDrawSet): boolean
+  function has(self, set: GpuDrawSet): boolean
+  __tostring: (self: GpuDrawSets) -> string
+end
+
+--- What `GpuDevice:drawSet` keeps: a draw without its pass group, which is the pass's, the tags
+--- passes choose it by, and the collection it joins, the device's own unless `sets` says.
 export type GpuDrawSetDesc = {
+  sets: GpuDrawSets?,
   pipeline: GpuPipeline,
   count: number?,
   instanceCount: number?,
@@ -924,6 +936,14 @@ export type GpuPlanPass = {
   load: boolean?,
 }
 
+--- What a copy pass copies: from where `from` starts (`{ column, row }` in a target, `{ offset }`
+--- in a buffer) to where `to` does, `size` of it (texels, or bytes between buffers), or the rest.
+export type GpuCopyRegion = {
+  from: ({ column: number?, row: number? } | { offset: number })?,
+  to: ({ column: number?, row: number? } | { offset: number })?,
+  size: (number | { width: number, height: number })?,
+}
+
 --- What `GpuDevice:plan` compiles: a render graph's targets, buffers, and passes, for a viewport.
 export type GpuPlanDesc = {
   name: string?,
@@ -934,17 +954,22 @@ export type GpuPlanDesc = {
 }
 
 --- A render graph compiled for its device and a viewport: the passes that run, in `order`, and the
---- textures and buffers it allocated (`allocations`) for its own targets and buffers. `run` runs every pass
---- once, in one submission, with a texture or buffer for each imported one by name; `resized` is
---- the same plan for another viewport, `dump` the compiled graph, and `timings` how long each
---- pass of the last run took on the GPU, on a device with `timestamps`. `tostring` gives
---- `GpuPlan(scene, 4 of 5 passes, 640×480)`.
+--- textures and buffers it allocated (`allocations`) for its own targets and buffers. `run` runs
+--- every pass once, in one submission, with a texture or buffer for each imported one by name,
+--- drawing from `sets` or the device's own; `resized` is the same plan for another viewport,
+--- `dump` the compiled graph, and `timings` how long each pass of the last run took on the GPU,
+--- on a device with `timestamps`. `setEnabled` leaves passes out of later runs or puts them back,
+--- and `setRegion` changes what a copy pass copies, in this plan and every plan resized from it.
+--- `tostring` gives `GpuPlan(scene, 4 of 5 passes, 640×480)`.
 declare extern type GpuPlan with
   name: string
   order: { string }
   viewport: { width: number, height: number }
   allocations: number
-  function run(self, imports: { [string]: GpuTexture | GpuBuffer }?): ()
+  function run(self, imports: { [string]: GpuTexture | GpuBuffer }?, sets: GpuDrawSets?): ()
+  function setEnabled(self, passes: string | { string }, enabled: boolean): ()
+  function enabled(self, pass: string): boolean
+  function setRegion(self, pass: string, region: GpuCopyRegion): ()
   function resized(self, width: number, height: number): GpuPlan
   function dump(self): string
   function timings(self): { { pass: string, ms: number? } }?
@@ -974,7 +999,13 @@ declare extern type GpuWindow with
   scale: number
   format: GpuTextureFormat?
   open: boolean
-  function show(self, plan: GpuPlan, target: string, imports: { [string]: GpuTexture | GpuBuffer }?): ()
+  function show(
+    self,
+    plan: GpuPlan,
+    target: string,
+    imports: { [string]: GpuTexture | GpuBuffer }?,
+    sets: GpuDrawSets?
+  ): ()
   function hide(self): ()
   function close(self): ()
   __tostring: (self: GpuWindow) -> string
@@ -982,10 +1013,11 @@ end
 
 --- The GPU a script draws and computes with: the adapter's `name`, the `backend` API wgpu reaches it
 --- through (`vulkan`, `metal`, `dx12`, `gl`), its `kind` (`discrete`, `integrated`, `virtual`,
---- `cpu`, `other`), its `limits`, how many `pipelines` it compiled and reused, and what it has
---- `live`. `buffer`, `texture`, and `sampler` make resources on it, `pipeline` makes a program
---- ready to draw or compute, `render` and `dispatch` submit work, `drawSet` keeps a draw on the
---- device, and `plan` compiles a render graph to run every frame. `tostring` gives
+--- `cpu`, `other`), its `limits`, how many `pipelines` it compiled and reused, what it has `live`,
+--- and how much it ever `made`. `buffer`, `texture`, and `sampler` make resources on it,
+--- `pipeline` makes a program ready to draw or compute, `render` and `dispatch` submit work,
+--- `drawSet` keeps a draw in the device's draw sets (`sets`) or a collection of them `drawSets`
+--- makes, and `plan` compiles a render graph to run every frame. `tostring` gives
 --- `GpuDevice(name, backend)`.
 declare extern type GpuDevice with
   name: string
@@ -995,13 +1027,16 @@ declare extern type GpuDevice with
   pipelines: { compiled: number, reused: number }
   timestamps: boolean
   live: { buffers: number, textures: number, samplers: number, bindGroups: number, pipelines: number }
+  made: { buffers: number, textures: number, samplers: number, bindGroups: number, pipelines: number }
   function buffer(self, size: number, usage: GpuBufferUsage | { GpuBufferUsage }): GpuBuffer
   function texture(self, desc: GpuTextureDesc): GpuTexture
   function sampler(self, desc: GpuSamplerDesc?): GpuSampler
   function pipeline(self, program: ShaderProgram, state: GpuPipelineState?): GpuPipeline
   function render(self, pass: GpuPass): ()
   function dispatch(self, work: GpuDispatch): ()
+  sets: GpuDrawSets
   function drawSet(self, desc: GpuDrawSetDesc): GpuDrawSet
+  function drawSets(self): GpuDrawSets
   function plan(self, desc: GpuPlanDesc): GpuPlan
   __tostring: (self: GpuDevice) -> string
 end
