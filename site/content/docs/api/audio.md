@@ -31,7 +31,7 @@ PCM from interleaved bytes: `channels` samples per frame (1 to 8), each stored a
 
 ## Streams
 
-A stream is audio written while it plays: a bounded ring of interleaved frames that one writer fills while one voice plays it. Luau generating a sound, a worker decoding a file, anything that has audio a little at a time writes it, learns how much fit, and keeps ahead of the engine. The engine never waits for it and never calls it: when the ring runs dry the voice plays silence, counts the frames as `missed`, and carries on with whatever comes next.
+A stream is audio written while it plays: a bounded ring of interleaved frames that one writer fills while one voice plays it. Luau generating a sound, a worker decoding a file, anything that has audio a little at a time writes it, learns how much fit, and keeps ahead of the engine. The engine never waits for it and never calls it: when the ring runs dry the voice plays silence, counts the frames as `missed`, and carries on with whatever comes next. A stream a [feed](#compressed-files) writes keeps time instead: what the feed was late with is let go when it comes, not played late, and `late` counts the silence a [seek](#voices) played before the feed got there.
 
 {{ api_signature(value="audio.stream(options: { channels: number?, rate: number?, seconds: number? }) -> AudioStream") }}
 {{ api_signature(value="audio.stream(handle: JessHandle) -> AudioStream") }}
@@ -42,7 +42,7 @@ A stream of `channels` (2) at `rate` (48000) frames per second holding `seconds`
 {{ api_signature(value="stream:room() -> number") }}
 {{ api_signature(value="stream:wait(frames: number, timeout: number?) -> boolean") }}
 {{ api_signature(value="stream:finish()") }}
-{{ api_signature(value="stream:stats() -> { written: number, read: number, room: number, missed: number, finished: boolean }") }}
+{{ api_signature(value="stream:stats() -> { written: number, read: number, room: number, missed: number, late: number, finished: boolean }") }}
 {{ api_signature(value="stream:handle() -> JessHandle") }}
 
 `write` takes interleaved 32-bit floats and writes as many whole frames as there is room for, returning how many; given `frames`, it takes only that many from the start of the buffer, so a block that came back part full needs no copy. `wait` waits until there is room for `frames`, or `timeout` seconds pass; it sleeps exactly as long as playing at the stream's rate takes to make the room, so it is for a worker feeding a device, and in an offline context (where room comes only from rendering) it waits out its timeout. `finish` says the writer is done: the voice plays what is left and ends. A stream has one writer at a time and one voice: playing it again is an error.
@@ -169,10 +169,11 @@ Where a voice plays can change while it plays, on a frame. `route` plays it into
 {{ api_signature(value="voice:play(at: number?) -> boolean") }}
 {{ api_signature(value="voice:seek(frame: number, at: number?) -> boolean") }}
 {{ api_signature(value="voice:position() -> number?") }}
+{{ api_signature(value="voice:seekLead() -> number?") }}
 
 `context:voice` makes a voice as `play` does, paused: it holds its slot and plays nothing until `voice:play`. `pause` holds a voice where it is on frame `at`, and `play` plays it on from there; a paused voice is neither mixed nor counted against the context's [budget](#budgets), and its `state` is `paused`. `seek` moves it to source frame `frame` on frame `at`. A voice of PCM goes there at once, on a whole frame, so the first sample after a seek is the source's own (the resampler keeps no history to reset). A seek past the end of a loop the voice is in lands where playing through the loop would have taken it. `position` is the source frame the voice is at, as of the last render, or where a voice not started yet will start; it is nil once the voice has ended.
 
-A stream seeks only when a [feed](#compressed-files) decodes into it: the feed moves its decoder at once, and the voice, on the seek's frame, lets go of everything the feed wrote before then and plays what it decodes from the new frame. If the feed hasn't got there yet, the voice plays silence (counted as `missed`) and its position waits; stamping the seek a little ahead gives the feed time to be there first. A stream a script writes has nothing to move, and `seek` says so with an error. A stream's position counts the frames it has played from where it started or last sought to.
+A stream seeks only when a [feed](#compressed-files) decodes into it. A seek stamped at least `voice:seekLead()` frames ahead (half the stream) is prepared: the feed is asked that long before the seek's frame, the voice plays on from what is already decoded until then, and on the frame it moves to the new one without a gap. A seek stamped closer, or for now, asks the feed at once. If the feed still hasn't decoded from the new frame when the seek's frame comes, the voice keeps time: it plays silence (counted as `missed` and as `late` in the stream's stats), its position moves on as if it were playing, and when the frames come it joins where it would have got to. A feed's stream keeps time through any underrun that way; a script's plays late frames after the gap. One seek waits on a feed at a time: a seek asked for while another is still waiting replaces it, and the one replaced plays silence until the next lands. A stream a script writes has nothing to move, and `seek` says so with an error. A stream's position counts the frames it has played from where it started or last sought to.
 
 ## Nodes
 

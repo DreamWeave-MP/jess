@@ -6,10 +6,11 @@
 //! and counts the frames it missed. Nothing blocks either side: the ring is atomics, and a writer
 //! that wants to wait for room sleeps for as long as the engine takes to make it.
 //!
-//! A stream a feed writes can seek: the feed repositions its decoder and marks where in the ring
-//! what it writes from then on starts (an epoch and a position), and the voice playing it lets go
-//! of everything before that mark when its seek's frame comes. A stream a script writes has no
-//! decoder to reposition, and refuses to seek.
+//! A stream a feed writes can seek: asked by the engine, ahead of the seek's frame when it can be,
+//! the feed repositions its decoder and marks where in the ring what it writes from then on starts
+//! (an epoch and a position), and the voice playing it lets go of everything before that mark when
+//! its seek's frame comes. If the mark isn't there yet, the voice keeps time in silence until it
+//! is. A stream a script writes has no decoder to reposition, and refuses to seek.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -37,6 +38,8 @@ pub struct Stream {
     read: AtomicU64,
     /// Silent frames played for want of data, all told.
     missed: AtomicU64,
+    /// Of those, the ones played since a seek's frame because the writer hadn't got there yet.
+    late: AtomicU64,
     /// The writer is done: once read to the end, the voice playing it ends.
     finished: AtomicBool,
     /// A voice is playing it: a stream plays once.
@@ -66,6 +69,9 @@ pub struct StreamStats {
     pub room: u64,
     /// Silent frames played for want of data.
     pub missed: u64,
+    /// Of `missed`, the frames played since a seek's frame before its feed had decoded from the
+    /// new frame: none for a seek prepared in time.
+    pub late: u64,
     /// Whether the writer has finished.
     pub finished: bool,
 }
@@ -103,6 +109,7 @@ impl Stream {
             written: AtomicU64::new(0),
             read: AtomicU64::new(0),
             missed: AtomicU64::new(0),
+            late: AtomicU64::new(0),
             finished: AtomicBool::new(false),
             claimed: AtomicBool::new(false),
             writing: AtomicBool::new(false),
@@ -223,6 +230,7 @@ impl Stream {
             read: self.read.load(Ordering::Relaxed),
             room: self.room(),
             missed: self.missed.load(Ordering::Relaxed),
+            late: self.late.load(Ordering::Relaxed),
             finished: self.finished.load(Ordering::Relaxed),
         }
     }
@@ -273,6 +281,24 @@ impl Stream {
         self.missed.fetch_add(frames, Ordering::Relaxed);
     }
 
+    /// For the engine: counts frames played as silence since a seek's frame, waiting for its
+    /// writer, as missed and as late.
+    pub(crate) fn miss_late(&self, frames: u64) {
+        self.miss(frames);
+        self.late.fetch_add(frames, Ordering::Relaxed);
+    }
+
+    /// Frames ever read.
+    pub(crate) fn read_frames(&self) -> u64 {
+        self.read.load(Ordering::Relaxed)
+    }
+
+    /// Frames it holds.
+    #[must_use]
+    pub const fn capacity(&self) -> u64 {
+        self.capacity
+    }
+
     /// True once the writer has said it is done.
     pub(crate) fn finished(&self) -> bool {
         self.finished.load(Ordering::Acquire)
@@ -294,16 +320,18 @@ impl Stream {
         self.seekable.store(seekable, Ordering::Release);
     }
 
-    /// The epoch the next seek asked for will have.
-    pub(crate) fn next_seek(&self) -> u64 {
-        self.wanted.load(Ordering::Relaxed) + 1
+    /// The latest seek asked for, from 1; 0 for none.
+    pub(crate) fn wanted(&self) -> u64 {
+        self.wanted.load(Ordering::Acquire)
     }
 
-    /// Asks the writer to go to source frame `frame`, as seek [`Stream::next_seek`]. One thread,
-    /// the control side's, asks.
-    pub(crate) fn request_seek(&self, frame: u64) {
+    /// For the engine: asks the writer to go to source frame `frame`, and returns the seek's
+    /// epoch. Only the engine asks, so the epochs count up in the order it asks.
+    pub(crate) fn request_seek(&self, frame: u64) -> u64 {
+        let epoch = self.wanted.load(Ordering::Relaxed) + 1;
         self.wanted_frame.store(frame, Ordering::Release);
-        self.wanted.store(self.next_seek(), Ordering::Release);
+        self.wanted.store(epoch, Ordering::Release);
+        epoch
     }
 
     /// For the writer: the latest seek asked for after epoch `handled`, and its frame.

@@ -149,6 +149,8 @@ pub struct Begin {
     pub culled: Culled,
     /// For a stream sought before it started: the seek it waits for, `offset` its frame.
     pub seeking: Option<u64>,
+    /// For a stream: the seek the engine has asked its writer to prepare, as its frame and epoch.
+    pub prepared: Option<(u64, u64)>,
 }
 
 impl PlaySpec {
@@ -165,6 +167,7 @@ impl PlaySpec {
             priority: self.priority,
             culled: self.culled,
             seeking: None,
+            prepared: None,
         }
     }
 }
@@ -603,6 +606,8 @@ struct Reading {
     /// The seek it plays, from 0 for none, and the one it waits for the writer to carry out.
     epoch: u64,
     seeking: Option<u64>,
+    /// The seek its writer was asked ahead of time to prepare, as its frame and epoch.
+    prepared: Option<(u64, u64)>,
     /// The ring frame its position counts from, and the source frame that is.
     origin: u64,
     from: u64,
@@ -617,13 +622,16 @@ struct Reader<'a> {
 
 impl Reader<'_> {
     /// True unless the voice waits for a seek the writer hasn't carried out. Once it has, the
-    /// window and the cursor go to where it marked, and everything before is let go.
+    /// window goes to where it marked, everything before is let go, and the cursor, which has
+    /// counted the frames since the seek's frame while it waited, goes that far past the mark. A
+    /// seek another has replaced before its writer got to it never settles: the voice waits, in
+    /// silence, for the next.
     fn settle(&mut self, cursor: &mut Cursor) -> bool {
         let Some(wanted) = self.reading.seeking else {
             return true;
         };
         let (marked, at) = self.stream.marked();
-        if marked < wanted {
+        if marked != wanted {
             return false;
         }
         self.stream.discard_to(at);
@@ -632,12 +640,19 @@ impl Reader<'_> {
             filled: 0,
             epoch: wanted,
             seeking: None,
+            prepared: self.reading.prepared,
             origin: at,
             from: self.reading.from,
         };
-        cursor.position = at << 32;
+        cursor.position += at << 32;
         cursor.wrapped = false;
         true
+    }
+
+    /// Lets go of what the writer wrote before the seek the voice waits for, which it will never
+    /// play, so the writer has the whole stream to write from the new frame.
+    fn let_go(&self) {
+        self.stream.skip(self.stream.unread(self.reading.epoch), self.reading.epoch);
     }
 
     /// Reads `frames` frames as [`render_pcm`] does, from the window, which it first slides up to
@@ -646,11 +661,14 @@ impl Reader<'_> {
     fn render(mut self, cursor: &mut Cursor, scratch: &mut [f32], steps: Option<&[u64]>, frames: usize) -> usize {
         let channels = self.stream.channels();
         if !self.settle(cursor) {
-            // Waiting for the writer to get to where it seeks: silence, as where it is behind.
+            // Waiting for the writer to get to where it seeks: silence, counted as late, and time
+            // kept, so the voice joins where it would have got to when the writer gets there.
             for channel in 0..channels {
                 scratch[channel * QUANTUM..channel * QUANTUM + frames].fill(0.0);
             }
-            self.stream.miss(frames as u64);
+            self.stream.miss_late(frames as u64);
+            self.let_go();
+            cursor.position += steps.map_or(cursor.step * frames as u64, |steps| steps.iter().sum());
             return frames;
         }
         // A voice at the stream's own rate reads the frames it is on; any other reads around them.
@@ -672,12 +690,26 @@ impl Reader<'_> {
             self.reading.base += passed as u64;
             self.reading.filled -= passed;
         }
+        // A stream a feed writes is a file on a timeline, and keeps time: what its writer was late
+        // with is let go once it comes, not played late. One a script writes plays every frame it
+        // is given, the late ones after the gap.
+        let keeps_time = self.stream.seekable();
+        if keeps_time {
+            // Past the window, which is empty, the window starts where the cursor needs it.
+            self.reading.base = self.reading.base.max(keep);
+            let end = self.reading.base + self.reading.filled as u64;
+            let behind = end.saturating_sub(self.stream.read_frames());
+            if behind > 0 {
+                self.stream.skip(behind, self.reading.epoch);
+            }
+        }
+        let caught_up = !keeps_time || self.stream.read_frames() == self.reading.base + self.reading.filled as u64;
         let travel = steps.map_or(cursor.step * frames as u64, |steps| steps.iter().sum());
         let last = ((cursor.position + travel) >> 32) + reach + 2;
         let wanted = usize::try_from(last.saturating_sub(self.reading.base))
             .unwrap_or(usize::MAX)
             .min(STREAM_WINDOW);
-        if wanted > self.reading.filled {
+        if wanted > self.reading.filled && caught_up {
             self.reading.filled += self.stream.take(
                 self.window,
                 STREAM_WINDOW,
@@ -730,6 +762,7 @@ impl Reader<'_> {
     /// cursor. False once a finished stream has nothing left to play.
     fn skip(mut self, cursor: &mut Cursor) -> bool {
         if !self.settle(cursor) {
+            self.let_go();
             return true;
         }
         let frame = cursor.position >> 32;
@@ -817,6 +850,7 @@ impl Voice {
             source,
             reading: Reading {
                 seeking: spec.seeking,
+                prepared: spec.prepared,
                 from: spec.offset,
                 ..Reading::default()
             },
@@ -954,14 +988,27 @@ impl Voice {
         self.cursor.wrapped = false;
     }
 
+    /// For a stream, asks its writer now to go to source frame `frame`, for a seek there to come:
+    /// it plays on from what is already written meanwhile.
+    pub(crate) fn prepare(&mut self, frame: u64) {
+        if let Source::Stream(stream, _) = &self.source {
+            self.reading.prepared = Some((frame, stream.request_seek(frame)));
+        }
+    }
+
     /// Goes to source frame `frame`: for PCM at once, on a whole frame, with nothing of where it
     /// was carried over (the resampler keeps no history to reset); for a stream once its writer
-    /// has carried out seek `epoch`, until when it plays silence and holds its position. A frame
-    /// past a loop's end, while it loops, is where playback through the loop would have got to.
-    pub(crate) fn seek(&mut self, frame: u64, epoch: u64) {
-        if let Source::Stream(..) = self.source {
+    /// has got there, prepared ahead or asked now ([`seek_epoch`]). Until then a stream plays
+    /// silence and keeps time. A frame past a loop's end, while it loops, is where playback
+    /// through the loop would have got to.
+    pub(crate) fn seek(&mut self, frame: u64) {
+        if let Source::Stream(stream, _) = &self.source {
+            let epoch = seek_epoch(stream, self.reading.prepared.take(), frame);
             self.reading.seeking = Some(epoch);
             self.reading.from = frame;
+            // Counts the frames from the seek's, until the writer's mark says where they are.
+            self.cursor.position = 0;
+            self.cursor.wrapped = false;
             return;
         }
         self.cursor.position = frame << 32;
@@ -975,12 +1022,12 @@ impl Voice {
     }
 
     /// The source frame it is at: for a stream, counted from where it started or last sought to,
-    /// and held while it waits for a seek.
+    /// moving on while it waits for a seek as it would have played.
     pub(crate) fn position(&self) -> u64 {
         let frame = self.cursor.position >> 32;
         match self.source {
             Source::Pcm(_) => frame,
-            Source::Stream(..) if self.reading.seeking.is_some() => self.reading.from,
+            Source::Stream(..) if self.reading.seeking.is_some() => self.reading.from + frame,
             Source::Stream(..) => self.reading.from + frame.saturating_sub(self.reading.origin),
         }
     }
@@ -1148,6 +1195,15 @@ impl Voice {
     /// Changes the level of the output into node slot `target`, if the voice has one.
     pub(crate) fn set_send(&mut self, target: u32, level: f32) {
         set_level(&mut self.outputs, target, level);
+    }
+}
+
+/// The epoch of a seek to `frame` in `stream`: the one `prepared` for it, while that is still the
+/// latest its writer was asked for, or one asked for now.
+pub fn seek_epoch(stream: &Stream, prepared: Option<(u64, u64)>, frame: u64) -> u64 {
+    match prepared {
+        Some((known, epoch)) if known == frame && stream.wanted() == epoch => epoch,
+        _ => stream.request_seek(frame),
     }
 }
 

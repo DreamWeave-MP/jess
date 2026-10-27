@@ -226,7 +226,10 @@ export type AudioContextOptions = {
 
 --- A stream: a bounded ring of interleaved frames that one writer fills, from any worker, while
 --- one voice plays it. The voice plays silence where the writer has fallen behind (`missed`
---- counts it), and ends once the writer has finished and everything written has played.
+--- counts it), and ends once the writer has finished and everything written has played. A
+--- script's stream plays every frame it is given, late ones after the gap; a feed's keeps time,
+--- letting go of what came too late. `late` counts the silence played after a seek's frame
+--- because the feed hadn't decoded from the new frame yet.
 export type AudioStream = {
   channels: (self: AudioStream) -> number,
   rate: (self: AudioStream) -> number,
@@ -240,7 +243,14 @@ export type AudioStream = {
   wait: (self: AudioStream, frames: number, timeout: number?) -> boolean,
   --- Says the writer is done: once played to its end, the voice ends.
   finish: (self: AudioStream) -> (),
-  stats: (self: AudioStream) -> { written: number, read: number, room: number, missed: number, finished: boolean },
+  stats: (self: AudioStream) -> {
+    written: number,
+    read: number,
+    room: number,
+    missed: number,
+    late: number,
+    finished: boolean,
+  },
   --- A handle to send a worker, which opens the same stream with `jess.audio.stream`.
   handle: (self: AudioStream) -> JessHandle,
 }
@@ -446,10 +456,15 @@ export type AudioVoice = {
   --- Plays it on from where it was paused, on frame `at`; a voice made with
   --- `AudioContext:voice` starts here.
   play: (self: AudioVoice, at: number?) -> boolean,
-  --- Moves it to source frame `frame` on frame `at`, at once for PCM, and for a stream a feed
-  --- decodes once the feed has decoded from there (silence until then). A stream a script writes
-  --- can't seek, and says so.
+  --- Moves it to source frame `frame` on frame `at`: at once for PCM, and for a stream a feed
+  --- decodes once the feed has decoded from there. Stamped at least `seekLead()` ahead, the seek
+  --- is prepared and lands on `at` without a gap; if the feed is still late on `at`, the voice
+  --- keeps time in silence and joins where it would have got to. A stream a script writes can't
+  --- seek, and says so.
   seek: (self: AudioVoice, frame: number, at: number?) -> boolean,
+  --- How far ahead, in frames, a seek has to be stamped to be prepared: half its stream. Nil for a
+  --- voice that isn't a stream a feed decodes, which needs no lead.
+  seekLead: (self: AudioVoice) -> number?,
   --- The source frame it is at, as of the last render (for a stream, counted from where it
   --- started or last sought to); nil once it has ended.
   position: (self: AudioVoice) -> number?,

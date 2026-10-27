@@ -489,6 +489,132 @@ mod tests {
         );
     }
 
+    /// Waits, as a device's clock would, until the feed is as far ahead as it would be playing
+    /// in real time: it has carried out the latest seek asked of it, and filled the stream.
+    fn keep_up(stream: &Stream, block: u64) {
+        let started = Instant::now();
+        while stream.marked().0 != stream.wanted() || (stream.room() >= block && !stream.stats().finished) {
+            assert!(started.elapsed() < Duration::from_secs(20), "the feed stopped");
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss)] // Whole numbers below 2^24.
+    fn prepared_seeks_however_far_and_often_land_on_their_frames_without_a_gap() {
+        let mut context = mono();
+        let stream = Stream::new(1, 48_000, 0.25).unwrap();
+        let voice = context.control().play_stream(&stream, &PlaySpec::default()).unwrap();
+        let _feed = Feed::start(
+            Box::new(Ramp {
+                frames: 16_000_000,
+                position: 0,
+            }),
+            Arc::clone(&stream),
+            FeedSpec {
+                block: 1024,
+                looping: None,
+            },
+        )
+        .unwrap();
+        keep_up(&stream, 1024);
+        let lead = context.control().seek_lead(voice).unwrap();
+        assert_eq!(lead, 6000, "half the stream");
+
+        // Each seek is stamped further ahead than the stream holds, and the next is sent once it has
+        // landed: the feed plays on until a lead before each, and is asked then.
+        let destinations = [9_000_000, 120, 15_500_000, 4_000_000, 4_000_100, 11_111_111, 0, 7_777_777];
+        let (mut out, mut expected) = (Vec::new(), Vec::new());
+        let (mut from, mut since) = (0u64, 0u64);
+        for destination in destinations.into_iter().map(Some).chain([None]) {
+            let now = out.len() as u64;
+            let due = now + 3 * lead + 700;
+            if let Some(destination) = destination {
+                assert!(context.control().seek(voice, destination, Some(due)).unwrap());
+            }
+            while (out.len() as u64) < due + 1500 {
+                keep_up(&stream, 1024);
+                out.extend(context.render(1000));
+            }
+            let end = out.len() as u64;
+            let (switch, next) = destination.map_or((end, from + end - since), |destination| (due, destination));
+            expected.extend((since..switch).map(|frame| (from + frame - since) as f32));
+            expected.extend((switch..end).map(|frame| (next + frame - switch) as f32));
+            (from, since) = (next + end - switch, end);
+        }
+        assert!(out == expected, "every frame where the timeline says");
+        assert_eq!(stream.stats().missed, 0, "nothing played as silence");
+        assert_eq!(stream.stats().late, 0);
+        assert_eq!(context.control().position(voice), Some(from));
+    }
+
+    /// A ramp whose seeks wait until `open`.
+    struct Held {
+        ramp: Ramp,
+        open: Arc<AtomicBool>,
+    }
+
+    impl Decode for Held {
+        fn read(&mut self, out: &mut [f32]) -> Result<usize, String> {
+            self.ramp.read(out)
+        }
+
+        fn seek(&mut self, frame: u64) -> Result<(), String> {
+            while !self.open.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            self.ramp.seek(frame)
+        }
+    }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss)] // Whole numbers below 2^24.
+    fn a_seek_its_feed_is_late_for_keeps_time_and_joins_where_the_timeline_has_got_to() {
+        let mut context = mono();
+        let stream = Stream::new(1, 48_000, 0.25).unwrap();
+        let voice = context.control().play_stream(&stream, &PlaySpec::default()).unwrap();
+        let open = Arc::new(AtomicBool::new(false));
+        let _feed = Feed::start(
+            Box::new(Held {
+                ramp: Ramp {
+                    frames: 1_000_000,
+                    position: 0,
+                },
+                open: Arc::clone(&open),
+            }),
+            Arc::clone(&stream),
+            FeedSpec {
+                block: 1024,
+                looping: None,
+            },
+        )
+        .unwrap();
+        keep_up(&stream, 1024);
+        let mut out = context.render(1000);
+
+        // Stamped far closer than the lead: the feed is asked at once, and is held up.
+        assert!(context.control().seek(voice, 50_000, Some(1100)).unwrap());
+        out.extend(context.render(600));
+        assert_eq!(out[..1100], (0..1100).map(|frame| frame as f32).collect::<Vec<_>>());
+        assert_eq!(out[1100..], [0.0; 500], "silence while the feed is late");
+        assert_eq!(stream.stats().late, 500);
+        assert_eq!(context.control().position(voice), Some(50_500), "time kept");
+
+        open.store(true, Ordering::Release);
+        let started = Instant::now();
+        loop {
+            let (epoch, at) = stream.marked();
+            if epoch == stream.wanted() && stream.stats().written >= at + 4000 {
+                break;
+            }
+            assert!(started.elapsed() < Duration::from_secs(20), "the feed never sought");
+            std::thread::yield_now();
+        }
+        let joined = context.render(500);
+        assert_eq!(joined, (50_500..51_000).map(|frame| frame as f32).collect::<Vec<_>>());
+        assert_eq!(stream.stats().late, 500, "nothing late once the frames came");
+    }
+
     /// Fails on its first read, by erring or by panicking.
     struct Broken {
         panics: bool,

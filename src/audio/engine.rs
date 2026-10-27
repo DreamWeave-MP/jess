@@ -26,7 +26,7 @@ use crate::audio::param::{Glide, Param};
 use crate::audio::plan::{Modulation, Place, Plan, Push, Revision, Runs, Step, Target};
 use crate::audio::processor::{Io, MAX_PARAMS, ParamInfo, Processor, Rate};
 use crate::audio::spatial::{Emitter, Listener, Space};
-use crate::audio::voice::{Begin, Culled, Outputs, Source, Voice, VoiceKey, set_level};
+use crate::audio::voice::{Begin, Culled, Outputs, Source, Voice, VoiceKey, seek_epoch, set_level};
 use crate::audio::{LoopRegion, MAX_CHANNELS, QUANTUM, VoiceParam};
 
 /// What the control side asks of the engine.
@@ -47,9 +47,10 @@ pub enum Command {
     },
     /// Pauses a voice where it is, or plays it on from there.
     Pause { voice: VoiceKey, paused: bool },
-    /// Moves a voice to source frame `frame`; for a stream, once its writer has carried out seek
-    /// `epoch`.
-    Seek { voice: VoiceKey, frame: u64, epoch: u64 },
+    /// Asks a stream voice's writer to go to source frame `frame` ahead of a seek there.
+    Prepare { voice: VoiceKey, frame: u64 },
+    /// Moves a voice to source frame `frame`; a stream once its writer has got there.
+    Seek { voice: VoiceKey, frame: u64 },
     /// Loops a voice over a new region, or lets it play on past its loop.
     SetLoop { voice: VoiceKey, looping: Option<LoopRegion> },
     /// Moves a voice to new outputs; the old ones go back to be dropped.
@@ -731,7 +732,8 @@ impl Engine {
                 self.pending.insert(index, stamped);
             }
             Some(at) => {
-                if at < self.now {
+                // A preparation is as early as it can be, never late.
+                if at < self.now && !matches!(stamped.command, Command::Prepare { .. }) {
                     self.late += 1;
                 }
                 self.carry_out(stamped.command);
@@ -816,7 +818,8 @@ impl Engine {
                     spec.paused = paused;
                 }
             }
-            Command::Seek { voice, frame, epoch } => self.seek(voice, frame, epoch),
+            Command::Prepare { voice, frame } => self.prepare(voice, frame),
+            Command::Seek { voice, frame } => self.seek(voice, frame),
             Command::SendVoice { voice, target, level } => self.send_voice(voice, target, level),
             Command::Route { voice, mut outputs } => {
                 self.route(voice, &mut outputs);
@@ -874,20 +877,37 @@ impl Engine {
         }
     }
 
-    /// Moves a voice, or a voice waiting to start, to source frame `frame`.
-    fn seek(&mut self, voice: VoiceKey, frame: u64, epoch: u64) {
+    /// Asks the writer of a stream voice, or one waiting to start, to go to source frame `frame`
+    /// for a seek there to come.
+    fn prepare(&mut self, voice: VoiceKey, frame: u64) {
         if let Some(playing) = self.voices[voice.slot as usize].as_mut()
             && playing.generation == voice.generation
         {
-            playing.seek(frame, epoch);
+            playing.prepare(frame);
+            return;
+        }
+        if let Some(index) = self.pending_start(voice)
+            && let Command::Start { spec, source, .. } = &mut self.pending[index].command
+            && let Source::Stream(stream, _) = source
+        {
+            spec.prepared = Some((frame, stream.request_seek(frame)));
+        }
+    }
+
+    /// Moves a voice, or a voice waiting to start, to source frame `frame`.
+    fn seek(&mut self, voice: VoiceKey, frame: u64) {
+        if let Some(playing) = self.voices[voice.slot as usize].as_mut()
+            && playing.generation == voice.generation
+        {
+            playing.seek(frame);
             return;
         }
         if let Some(index) = self.pending_start(voice)
             && let Command::Start { spec, source, .. } = &mut self.pending[index].command
         {
             spec.offset = frame;
-            if let Source::Stream(..) = source {
-                spec.seeking = Some(epoch);
+            if let Source::Stream(stream, _) = source {
+                spec.seeking = Some(seek_epoch(stream, spec.prepared.take(), frame));
             }
         }
     }

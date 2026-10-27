@@ -166,7 +166,7 @@ These are deliberate, and each is checked:
 - **A processor has at most one sidechain**, and a sidechain hears one connection. A processor has at most eight ports and 64 parameters, and its latency is fixed for its life.
 - **An inserted processor** takes no audio connections of its own and feeds nothing directly: its input and output are its host's chain.
 - **A voice** plays into at most sixteen node inputs. It is culled at its source, so the nodes after it keep running, on silence.
-- **A stream** seeks only while a feed writes it. Its position waits during a seek until the feed has decoded from the new frame.
+- **A stream** seeks only while a feed writes it, and one seek at a time: a seek prepared a lead ahead (half the stream) is gapless, and one the feed is late for keeps time in silence until the frames come.
 - **Commands a cancel drops** keep counting against the schedule's room until their frames pass.
 - **There is no binary plugin interface.** A processor from outside jess is Rust registered by the host that links it.
 

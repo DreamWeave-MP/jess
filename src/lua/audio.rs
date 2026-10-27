@@ -251,11 +251,12 @@ fn describe_stream(d: &mut ExtensionDescriptor) {
             "stats",
             |this: &LuaAudioStream, call: &Call<'_>| -> l3i::Result<StackResults> {
                 let stats = this.0.stats();
-                push_table(call, 0, 5, |frame, table| {
+                push_table(call, 0, 6, |frame, table| {
                     table.raw_set_value(frame, "written", &number(stats.written))?;
                     table.raw_set_value(frame, "read", &number(stats.read))?;
                     table.raw_set_value(frame, "room", &number(stats.room))?;
                     table.raw_set_value(frame, "missed", &number(stats.missed))?;
+                    table.raw_set_value(frame, "late", &number(stats.late))?;
                     table.raw_set_value(frame, "finished", &stats.finished)
                 })?;
                 Ok(StackResults)
@@ -1486,6 +1487,11 @@ fn describe_voice(d: &mut ExtensionDescriptor) {
                 Ok(this.context.borrow_mut().control().seek(this.key, frame, at)?)
             },
         )
+        .untyped();
+    voice
+        .method("seekLead", |this: &LuaAudioVoice| -> Option<f64> {
+            this.context.borrow_mut().control().seek_lead(this.key).map(number)
+        })
         .untyped();
     voice
         .method("position", |this: &LuaAudioVoice| -> Option<f64> {

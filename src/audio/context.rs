@@ -698,9 +698,15 @@ impl Control {
         Ok(true)
     }
 
-    /// Moves a voice to source frame `frame` on frame `at`, or the next frame rendered. PCM goes
-    /// at once; a stream once its feed has decoded from there, playing silence until then. True
-    /// if the voice hadn't ended.
+    /// Moves a voice to source frame `frame` on frame `at`, or the next frame rendered. True if
+    /// the voice hadn't ended.
+    ///
+    /// PCM goes at once. A stream goes once its feed has decoded from there. A seek stamped at
+    /// least [`Control::seek_lead`] ahead is prepared: the feed is asked that long before `at`,
+    /// while the voice plays on from what is already decoded, so it has the new frames ready and
+    /// the voice moves on `at` without a gap. One stamped closer asks the feed at once. If the feed
+    /// still hasn't got there on `at`, the voice keeps time: silence, counted as late, until the
+    /// frames come, and then it plays from where the seek would have got to by then.
     ///
     /// # Errors
     ///
@@ -714,7 +720,7 @@ impl Control {
         }
         let entry = &self.slots[voice.slot as usize];
         let stream = entry.stream.as_ref().map(std::sync::Weak::upgrade);
-        let epoch = match &stream {
+        let lead = match &stream {
             None if frame > entry.frames => {
                 #[allow(clippy::cast_precision_loss)] // A frame in a message.
                 return Err(AudioError::Parameter {
@@ -723,21 +729,71 @@ impl Control {
                     expected: "a frame inside the source",
                 });
             }
-            None => 0,
-            Some(Some(stream)) if stream.seekable() => stream.next_seek(),
+            None => None,
+            Some(Some(stream)) if stream.seekable() => Some(self.lead(stream)),
             Some(_) => {
                 return Err(AudioError::Unsupported(
                     "a stream a script writes can't seek; one a feed decodes into can",
                 ));
             }
         };
-        self.send(at, Command::Seek { voice, frame, epoch })?;
-        // Asked of the writer only once the voice will hear of it, so a seek never sent can't
-        // hold a voice back at a mark it will never pass.
-        if let Some(Some(stream)) = stream {
-            stream.request_seek(frame);
-        }
+        let seek = Command::Seek { voice, frame };
+        // A seek for now, or of PCM, needs no asking ahead: the engine asks a stream's feed when it
+        // carries the seek out.
+        let (Some(lead), Some(due)) = (lead, at) else {
+            self.send(at, seek)?;
+            return Ok(true);
+        };
+        let early = due.checked_sub(lead).filter(|early| *early > self.now());
+        self.send_together([(early, Command::Prepare { voice, frame }), (at, seek)])?;
         Ok(true)
+    }
+
+    /// How far ahead of its frame a seek of `voice` has to be stamped to be prepared, in output
+    /// frames: half its stream's length, so what is already decoded plays the voice up to the
+    /// seek while the feed decodes from the new frame. `None` for a voice that isn't a stream a
+    /// feed writes, which needs no lead.
+    pub fn seek_lead(&mut self, voice: VoiceKey) -> Option<u64> {
+        self.collect();
+        if !self.is_live(voice) {
+            return None;
+        }
+        let stream = self.slots[voice.slot as usize].stream.as_ref()?.upgrade()?;
+        stream.seekable().then(|| self.lead(&stream))
+    }
+
+    /// Half of `stream`'s length, in output frames.
+    fn lead(&self, stream: &Stream) -> u64 {
+        stream.capacity() / 2 * u64::from(self.rate) / u64::from(stream.rate())
+    }
+
+    /// Sends `commands` so that the engine takes all of them or none: in the group open, or in a
+    /// group of their own.
+    fn send_together<const N: usize>(&mut self, commands: [(Option<u64>, Command); N]) -> Result<(), AudioError> {
+        let own = self.group.is_none();
+        if own {
+            self.begin_group()?;
+        }
+        let before = self.group.as_ref().map_or(0, |(members, _)| members.len());
+        let mut sent = Ok(());
+        for (at, command) in commands {
+            sent = self.send(at, command);
+            if sent.is_err() {
+                break;
+            }
+        }
+        if let Err(error) = sent {
+            if own {
+                self.group = None;
+            } else if let Some((members, _)) = self.group.as_mut() {
+                members.truncate(before);
+            }
+            return Err(error);
+        }
+        if own {
+            self.end_group()?;
+        }
+        Ok(())
     }
 
     /// Refuses a revision stamped `at` while one stamped later is still waiting: revisions take

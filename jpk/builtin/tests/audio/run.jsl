@@ -553,6 +553,7 @@ suite.describe('transport', function()
     expect(voice:seek(30, 7)).toBe(true)
     expect(samples(context:render(9))).toEqual { 0, 0, 0, 1, 0, 0, 2, 30, 31 }
     expect(voice:position()).toBe(32)
+    expect(voice:seekLead()).toBe(nil)
     expect(function() voice:seek(100) end).toThrow 'a frame inside the source'
   end)
 
@@ -560,7 +561,9 @@ suite.describe('transport', function()
     local context = audio.offline { channels = 1 }
     local stream = audio.stream { channels = 1, rate = 48000, seconds = 0.1 }
     local voice = context:play(stream)
+    expect(voice:seekLead()).toBe(nil)
     expect(function() voice:seek(10) end).toThrow "can't seek"
+    expect(stream:stats().late).toBe(0)
   end)
 end)
 
