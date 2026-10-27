@@ -597,7 +597,7 @@ Opens a native window with a surface on `device`. The window is what a person se
 
 {{ api_signature(value="jess.gpu.pump() -> ()") }}
 
-Handles what the window system reported since the last call, without waiting (sizes, closes, keys, the pointer), and draws every window showing a plan. An application's host does this every frame, around the frame, and its scripts never call it; a script that opens a window itself calls it once a frame.
+Handles what the window system reported since the last call (sizes, closes, keys, the pointer), [commits](#commits) what the script changed, and waits for every window to draw it, a quarter of a second at most, so a script's own loop goes at the display's pace. An application's host does the same every frame, around the frame, without the waiting, and its scripts never call it; a script that opens a window itself calls it once a frame.
 
 ## GpuWindow
 
@@ -605,17 +605,18 @@ Handles what the window system reported since the last call, without waiting (si
 | --- | --- | --- |
 | `title` | `string` | Its title. |
 | `key` | `string?` | The key it is kept by, if it was opened with one. |
+| `frames` | `number` | How many frames it has presented: one for each commit, plan shown, and resize there was something new to draw for. |
 | `width`, `height` | `number` | Its inner size in physical pixels, which its surface and the plan it shows are sized to. |
 | `scale` | `number` | How many physical pixels a logical one is on its display. |
 | `format` | `GpuTextureFormat?` | What its images are; `nil` once it's closed. |
 | `open` | `boolean` | Whether it's open: neither closed by the person nor by `close`. |
-| `show(plan, target, imports?, sets?)` | `(GpuPlan, string, { [string]: GpuTexture \| GpuBuffer }?, GpuDrawSets?) -> ()` | Draws `plan` into it every frame from the next on, its image as the plan's imported target `target`, which must have the window's format, with `imports` for the plan's other imported targets and buffers, drawing from `sets` or the device's own. The plan is resized with the window, and passes left out of `plan` and its regions are the shown plan's too. |
-| `hide()`, `close()` | `() -> ()` | Stops drawing, or closes it. |
+| `show(plan, target, imports?, sets?)` | `(GpuPlan, string, { [string]: GpuTexture \| GpuBuffer }?, GpuDrawSets?) -> ()` | Draws `plan` into it from the next [commit](#commits) on, its image as the plan's imported target `target`, which must have the window's format, with `imports` for the plan's other imported targets and buffers, drawing from `sets` or the device's own. The plan is resized with the window, and passes left out of `plan` and its regions are the shown plan's too. |
+| `hide()`, `close()` | `() -> ()` | Stops drawing from the next commit on, or closes it now. |
 | `events()` | `() -> { GpuWindowEvent }` | What happened to it since the last call, oldest first, the last 256 at most: `{ kind = 'resized', width, height }`, `{ kind = 'scaled', scale }`, `{ kind = 'focused', focused }`, `{ kind = 'closeRequested' }`, and `{ kind = 'closed' }`. A shown plan is resized already when its `resized` is read; this is for what the application does about it (a camera's aspect, say). |
 
 A window kept by a key outlives the code that opened it. When an application restarts with new code (its `restart`, a reload), its kept windows stay open through the load, each showing the last frame the old code drew, and the new code's `jess.gpu.window(device, { key = 'main' })` gets its window back, size, place, and all, with the title it asks for. Once the new code has loaded, the kept windows it didn't open again close; if it failed to load, none do, so the next load can take them back. A window the new code reclaims on another device has its surface made again on that one, and shows nothing until the new code gives it a plan.
 
-`tostring(window)` is `GpuWindow(title, 800×600)`. Drawing a shown plan runs no Luau: each frame takes the window's next image, runs the plan into it with the draw sets as they are, and presents it, so a scene that doesn't change costs a script nothing at all.
+`tostring(window)` is `GpuWindow(title, 800×600)`. Windows draw on a thread of their own, the presenter, never in Luau: when a commit changed something on a window's device, or it was shown a plan or resized, the presenter takes its next image, runs the plan into it with the draw sets as the commit left them, and presents it. A scene that doesn't change draws nothing and costs nothing, a frame never shows half of what a script changed, and the display's pace never holds up the frames that change it.
 
 Under the host of an application target that declares `gpu.window`, a window's keyboard and pointer are the application's: keys, pointer buttons, position, motion, and the wheel reach [`@jess/input`](@/docs/api/input.md) as one keyboard and one pointer, whichever window they happened in, named as every jess backend names them (`key:KeyW`, `pointerButton:Primary`, `pointerAxis:DeltaX`). A script you run takes the same from `jess.input.runtime { windows = true }`, its own headless runtime, which polls its windows at every `tick`.
 

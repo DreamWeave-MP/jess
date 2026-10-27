@@ -38,6 +38,8 @@
 
 #![warn(missing_docs)]
 
+mod presenter;
+
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::{Rc, Weak};
@@ -55,12 +57,13 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::platform::pump_events::EventLoopExtPumpEvents;
 use winit::window::{Window as RawWindow, WindowAttributes, WindowId};
 
-use crate::gpu::{Buffer, DrawSets, Gpu, GpuError, Import, Plan, PresentMode, Surface, Texture};
+use crate::gpu::{Buffer, DrawSets, Gpu, GpuError, Plan, PresentMode, Surface, Texture};
 use crate::input::{
     Backend, BackendError, Control, DeviceDescriptor, DeviceId, DeviceIdentity, EventSender, Key, PointerAxis,
     PointerButton, Timestamp,
 };
 use crate::render::{Extent, ResourceOrigin, TargetDesc, TextureFormat};
+use presenter::{Incoming, Screen, Shared};
 
 /// Why a window couldn't open or draw.
 #[derive(Debug)]
@@ -172,17 +175,14 @@ pub struct Showing {
     pub imports: Vec<Imported>,
 }
 
-/// One window's state, shared by its handle and the event loop.
+/// One window's state, shared by its handle and the event loop; what it draws with is the
+/// presenter's too.
 struct State {
     raw: Option<Arc<RawWindow>>,
-    surface: Option<Surface>,
-    gpu: Arc<Gpu>,
+    shared: Arc<Shared>,
     title: String,
     size: Extent,
     scale: f64,
-    showing: Option<Showing>,
-    /// What went wrong resizing it, reported at the next present.
-    problem: Option<WindowError>,
     /// What happened to it since the last read, oldest first.
     events: Vec<WindowEvent>,
     closes: bool,
@@ -360,23 +360,32 @@ fn resized(state: &mut State, size: PhysicalSize<u32>) {
     }
     state.size = size;
     state.happened(WindowEvent::Resized(size));
-    let gpu = Arc::clone(&state.gpu);
-    if let Some(surface) = &mut state.surface
-        && let Err(problem) = surface.resize(&gpu, state.size.width, state.size.height)
+    let mut screen = state.shared.screen();
+    let gpu = Arc::clone(&screen.gpu);
+    if let Some(surface) = &mut screen.surface
+        && let Err(problem) = surface.resize(&gpu, size.width, size.height)
     {
-        state.problem = Some(problem.into());
+        screen.problem = Some(problem.into());
     }
-    if let Some(showing) = &mut state.showing {
-        match showing.plan.resized(&gpu, state.size) {
+    if let Some(showing) = &mut screen.showing {
+        match showing.plan.resized(&gpu, size) {
             Ok(plan) => showing.plan = plan,
-            Err(problem) => state.problem = Some(problem.into()),
+            Err(problem) => screen.problem = Some(problem.into()),
         }
     }
+    screen.stale = true;
+    drop(screen);
+    presenter::wake();
 }
 
 fn close(state: &mut State) {
-    state.showing = None;
-    state.surface = None;
+    state.shared.arrive(Incoming::Hide);
+    {
+        // The surface goes before the window it was made from.
+        let mut screen = state.shared.screen();
+        screen.showing = None;
+        screen.surface = None;
+    }
     state.raw = None;
 }
 
@@ -425,18 +434,28 @@ pub fn open(gpu: &Arc<Gpu>, desc: &WindowDesc) -> Result<Window, WindowError> {
         let size = raw.inner_size();
         let surface = gpu.surface(Arc::clone(&raw), size.width, size.height, desc.format, desc.present)?;
         let id = raw.id();
+        let shared = Arc::new(Shared {
+            screen: Mutex::new(Screen {
+                surface: Some(surface),
+                gpu: Arc::clone(gpu),
+                showing: None,
+                problem: None,
+                drawn: 0,
+                stale: false,
+                frames: 0,
+            }),
+            incoming: Mutex::default(),
+        });
+        presenter::serve(&shared);
         let state = Rc::new(RefCell::new(State {
             scale: raw.scale_factor(),
             raw: Some(raw),
-            surface: Some(surface),
-            gpu: Arc::clone(gpu),
+            shared,
             title: desc.title.clone(),
             size: Extent {
                 width: size.width.max(1),
                 height: size.height.max(1),
             },
-            showing: None,
-            problem: None,
             events: Vec::new(),
             closes: desc.closes,
             key: desc.key.clone(),
@@ -552,15 +571,18 @@ impl System {
             self.kept.remove(position);
             return Ok(None);
         };
-        if !Arc::ptr_eq(&state.gpu, gpu) {
-            let format = state.surface.as_ref().map(Surface::format);
+        let mut screen = state.shared.screen();
+        if !Arc::ptr_eq(&screen.gpu, gpu) {
+            let format = screen.surface.as_ref().map(Surface::format);
+            state.shared.arrive(Incoming::Hide);
             // A window has one surface at a time: the old one goes before the new one is made.
-            state.surface = None;
-            state.showing = None;
+            screen.surface = None;
+            screen.showing = None;
             let surface = gpu.surface(raw.clone(), state.size.width, state.size.height, format, state.present)?;
-            state.surface = Some(surface);
-            state.gpu = Arc::clone(gpu);
+            screen.surface = Some(surface);
+            screen.gpu = Arc::clone(gpu);
         }
+        drop(screen);
         if state.title != title {
             raw.set_title(title);
             title.clone_into(&mut state.title);
@@ -588,51 +610,55 @@ pub fn pump() {
     });
 }
 
-/// Draws every open window showing a plan, and presents it. A window whose image isn't ready
-/// (hidden, covered, or just resized) skips the frame.
+/// Ends a frame for the windows, without waiting for them to draw it.
+///
+/// It commits what changed on each window's device and has the presenter draw whatever is
+/// new, each window on the presenter's thread, at the display's pace.
 ///
 /// # Errors
 ///
-/// Each window that failed, by title, and why; the others drew.
+/// Each window whose drawing or resizing failed since the last call, or whose device refused a
+/// change, by title, and why; the others drew.
 pub fn present() -> Result<(), Vec<(String, WindowError)>> {
-    let states: Vec<Rc<RefCell<State>>> = SYSTEM.with_borrow(|system| {
+    let mut failures = Vec::new();
+    let mut devices: Vec<(String, Arc<Gpu>)> = Vec::new();
+    for state in open_states() {
+        let state = state.borrow();
+        let mut screen = state.shared.screen();
+        if let Some(problem) = screen.problem.take() {
+            failures.push((state.title.clone(), problem));
+        }
+        if !devices.iter().any(|(_, gpu)| Arc::ptr_eq(gpu, &screen.gpu)) {
+            devices.push((state.title.clone(), Arc::clone(&screen.gpu)));
+        }
+    }
+    // What the frame changed, all of it, before the presenter draws it.
+    for (title, gpu) in devices {
+        if let Err(problem) = gpu.commit() {
+            failures.push((title, problem.into()));
+        }
+    }
+    presenter::wake();
+    if failures.is_empty() { Ok(()) } else { Err(failures) }
+}
+
+/// Waits, up to `timeout`, until the presenter has drawn everything there is to draw in every
+/// window: what a script that drives its own frames waits on to go at the display's pace.
+pub fn wait_presented(timeout: Duration) {
+    let shared: Vec<Arc<Shared>> = open_states().iter().map(|state| Arc::clone(&state.borrow().shared)).collect();
+    presenter::wait(&shared, timeout);
+}
+
+/// The windows this thread has open.
+fn open_states() -> Vec<Rc<RefCell<State>>> {
+    SYSTEM.with_borrow(|system| {
         system
             .iter()
             .flat_map(|system| &system.windows)
             .filter_map(|(_, state)| state.upgrade())
+            .filter(|state| state.borrow().raw.is_some())
             .collect()
-    });
-    let mut failures = Vec::new();
-    for state in states {
-        let mut state = state.borrow_mut();
-        if let Err(problem) = draw(&mut state) {
-            failures.push((state.title.clone(), problem));
-        }
-    }
-    if failures.is_empty() { Ok(()) } else { Err(failures) }
-}
-
-fn draw(state: &mut State) -> Result<(), WindowError> {
-    if let Some(problem) = state.problem.take() {
-        return Err(problem);
-    }
-    let gpu = Arc::clone(&state.gpu);
-    // What the script changed since the last frame, all of it, before the frame draws it.
-    gpu.commit()?;
-    let (Some(surface), Some(showing)) = (&mut state.surface, &state.showing) else {
-        return Ok(());
-    };
-    let Some(frame) = surface.frame(&gpu)? else {
-        return Ok(());
-    };
-    let mut imports = vec![Import::Texture(&showing.target, frame.texture())];
-    imports.extend(showing.imports.iter().map(|imported| match imported {
-        Imported::Texture(name, texture) => Import::Texture(name, texture),
-        Imported::Buffer(name, buffer) => Import::Buffer(name, buffer),
-    }));
-    gpu.run(&showing.plan, &showing.sets, &imports)?;
-    gpu.present(frame);
-    Ok(())
+    })
 }
 
 impl Window {
@@ -658,7 +684,14 @@ impl Window {
     /// `None` once it is closed.
     #[must_use]
     pub fn format(&self) -> Option<TextureFormat> {
-        self.state.borrow().surface.as_ref().map(Surface::format)
+        self.state.borrow().shared.screen().surface.as_ref().map(Surface::format)
+    }
+
+    /// How many frames it presented: one for each commit, show, and resize there was something
+    /// new to draw for, so a scene nothing changes adds none.
+    #[must_use]
+    pub fn frames(&self) -> u64 {
+        self.state.borrow().shared.screen().frames
     }
 
     /// The key it is kept by, if it was opened with one.
@@ -679,19 +712,67 @@ impl Window {
         self.state.borrow().raw.is_some()
     }
 
-    /// Draws `showing` in it from the next [`present`] on, its plan resized to the window, in
-    /// place of whatever it showed.
+    /// Draws `showing` in it from now on, its plan resized to the window, in place of whatever
+    /// it showed.
     ///
     /// # Errors
     ///
     /// A closed window, or a plan whose graph has no imported target called `showing.target` of
     /// the window's format.
-    pub fn show(&self, mut showing: Showing) -> Result<(), WindowError> {
-        let mut state = self.state.borrow_mut();
-        let Some(surface) = &state.surface else {
+    pub fn show(&self, showing: Showing) -> Result<(), WindowError> {
+        let showing = self.prepared(showing)?;
+        let state = self.state.borrow();
+        let mut screen = state.shared.screen();
+        screen.showing = Some(showing);
+        screen.stale = true;
+        drop(screen);
+        presenter::wake();
+        Ok(())
+    }
+
+    /// Draws `showing` in it from its device's next commit on, as [`Window::show`] does, with the
+    /// rest of what that commit changes: checked now.
+    ///
+    /// # Errors
+    ///
+    /// As [`Window::show`], or no room before the next commit.
+    pub fn show_later(&self, showing: Showing) -> Result<(), WindowError> {
+        let showing = self.prepared(showing)?;
+        let state = self.state.borrow();
+        let shared = Arc::clone(&state.shared);
+        let gpu = Arc::clone(&shared.screen().gpu);
+        gpu.defer(0, move |_| {
+            shared.arrive(Incoming::Show(Box::new(showing)));
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    /// Stops drawing what it shows from its device's next commit on.
+    ///
+    /// # Errors
+    ///
+    /// No room before the next commit.
+    pub fn hide_later(&self) -> Result<(), WindowError> {
+        let shared = Arc::clone(&self.state.borrow().shared);
+        let gpu = Arc::clone(&shared.screen().gpu);
+        gpu.defer(0, move |_| {
+            shared.arrive(Incoming::Hide);
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    /// `showing`, checked against the window and resized to it.
+    fn prepared(&self, mut showing: Showing) -> Result<Showing, WindowError> {
+        let state = self.state.borrow();
+        let screen = state.shared.screen();
+        let Some(surface) = &screen.surface else {
             return Err(WindowError::Invalid(format!("the window {} is closed", state.title)));
         };
         let format = surface.format();
+        let gpu = Arc::clone(&screen.gpu);
+        drop(screen);
         let graph = showing.plan.graph();
         let declared = graph
             .resource_id(&showing.target)
@@ -710,15 +791,16 @@ impl Window {
             )));
         }
         if showing.plan.viewport() != state.size {
-            showing.plan = showing.plan.resized(&state.gpu, state.size)?;
+            showing.plan = showing.plan.resized(&gpu, state.size)?;
         }
-        state.showing = Some(showing);
-        Ok(())
+        Ok(showing)
     }
 
     /// Stops drawing what it shows; it keeps its last image.
     pub fn hide(&self) {
-        self.state.borrow_mut().showing = None;
+        let state = self.state.borrow();
+        state.shared.arrive(Incoming::Hide);
+        state.shared.screen().showing = None;
     }
 
     /// Closes it.

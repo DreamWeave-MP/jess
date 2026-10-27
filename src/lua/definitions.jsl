@@ -1040,6 +1040,7 @@ export type GpuWindowEvent =
 declare extern type GpuWindow with
   title: string
   key: string?
+  frames: number
   width: number
   height: number
   scale: number

@@ -1199,6 +1199,17 @@ fn a_script_shows_a_plan_in_a_window() {
             local texel = buffer.readu32(pixels:read(middle, 4), 0)
             assert(texel == 0xff00ff00, string.format('%08x', texel))
 
+            -- A scene nothing changes draws nothing more; a commit that changes something draws it.
+            local frames = window.frames
+            assert(frames >= 1, tostring(frames))
+            for _ = 1, 5 do
+              jess.gpu.pump()
+            end
+            assert(window.frames == frames, `{window.frames} frames, not {frames}`)
+            device:buffer(4, {}):write(0, 'abcd')
+            jess.gpu.pump()
+            assert(window.frames == frames + 1, `{window.frames} frames, not {frames + 1}`)
+
             -- What happened is the script's to read, once.
             assert(typeof(window:events()) == 'table' and #window:events() == 0)
             local input = jess.input.runtime({ windows = true })

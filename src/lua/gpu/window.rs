@@ -86,10 +86,17 @@ pub fn open(call: &Call<'_>, device: ValueView<'_>, desc: Option<ValueView<'_>>)
     Ok(Owned(LuaGpuWindow { window }))
 }
 
-/// `jess.gpu.pump()`: the window system's news handled, and every window showing a plan drawn.
+/// The longest `jess.gpu.pump` waits for the presenter: a window that never comes ready (covered,
+/// minimized) doesn't hold a script up longer than this.
+const PRESENTED: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// `jess.gpu.pump()`: the window system's news handled, what the script changed committed, and
+/// every window drawn with it, at the display's pace.
 pub fn pump() -> l3i::Result<()> {
     crate::window::pump();
-    crate::window::present().map_err(|failures| {
+    let presented = crate::window::present();
+    crate::window::wait_presented(PRESENTED);
+    presented.map_err(|failures| {
         let lines: Vec<String> = failures
             .iter()
             .map(|(title, problem)| format!("window {title}: {problem}"))
@@ -129,7 +136,7 @@ fn show(
         .resized(&plan.gpu, this.window.size())
         .map_err(|problem| error(format!("{FUNCTION}: {problem}")))?;
     this.window
-        .show(Showing {
+        .show_later(Showing {
             plan: plan_for_window,
             sets: super::draw_set::collection(FUNCTION, "the draw sets", sets, &plan.sets)?,
             target: target.read::<&str>()?.to_owned(),
@@ -146,6 +153,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .doc("A native window, its surface on a GPU device, and the plan it draws every frame.");
     window.getter("title", |this: &LuaGpuWindow| this.window.title()).untyped();
     window.getter("key", |this: &LuaGpuWindow| this.window.key()).untyped();
+    window.getter("frames", |this: &LuaGpuWindow| this.window.frames()).untyped();
     window
         .getter("width", |this: &LuaGpuWindow| this.window.size().width)
         .untyped();
@@ -158,7 +166,13 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .untyped();
     window.getter("open", |this: &LuaGpuWindow| this.window.is_open()).untyped();
     window.method("show", show).untyped();
-    window.method("hide", |this: &LuaGpuWindow| this.window.hide()).untyped();
+    window
+        .method("hide", |this: &LuaGpuWindow| -> l3i::Result<()> {
+            this.window
+                .hide_later()
+                .map_err(|problem| error(format!("GpuWindow:hide: {problem}")))
+        })
+        .untyped();
     window.method("close", |this: &LuaGpuWindow| this.window.close()).untyped();
     window
         .method(
