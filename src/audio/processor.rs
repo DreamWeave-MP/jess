@@ -34,8 +34,9 @@ pub const MAX_PARAMS: usize = 64;
 /// How often a parameter's value can change inside a block.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Rate {
-    /// Once a control block, of at most [`CONTROL_QUANTUM`](crate::audio::CONTROL_QUANTUM)
-    /// frames while it moves: the processor hears it through [`Processor::set`].
+    /// On every frame of the clock that is a multiple of
+    /// [`CONTROL_QUANTUM`](crate::audio::CONTROL_QUANTUM) while it moves, and on its own frame when
+    /// it steps: the processor hears it through [`Processor::set`].
     Control,
     /// Every sample: while it moves, the processor reads its values from [`Io::param`], and
     /// otherwise holds the value [`Processor::set`] gave it.
@@ -425,7 +426,10 @@ pub trait Processor: Send {
         Tail::None
     }
 
-    /// Processes one block. It never allocates, frees, locks, or blocks.
+    /// Processes one block, of any length from 1 to a quantum. What it puts out depends only on
+    /// the frames it hears and its parameters, never on how those frames are cut into calls: the
+    /// engine cuts them wherever a device, a render, or a command falls. It never allocates,
+    /// frees, locks, or blocks.
     fn process(&mut self, io: &mut Io<'_>);
 }
 

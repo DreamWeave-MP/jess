@@ -100,12 +100,12 @@ Compensation lines are part of the plan, so they change with the revision that n
 
 Every parameter has a range, a default, a unit, and a rate:
 
-- **Control rate**: the processor hears a new value at the start of each control block of at most 32 frames while the parameter moves (`CONTROL_QUANTUM`). A filter's cutoff is control rate: recomputing its coefficients every sample would buy nothing audible.
+- **Control rate**: while the parameter moves, the processor hears where it has got to on every frame of the clock that is a multiple of 32 (`CONTROL_QUANTUM`), however the render is cut; between them, the ramp moves on unheard. A step lands on its own frame. A filter's cutoff is control rate: recomputing its coefficients every sample would buy nothing audible.
 - **Audio rate**: the processor gets one value per sample while the parameter moves, and the steady value otherwise. A mixer's gain, a gain processor's, and an oscillator's frequency are audio rate.
 
 Automation is a parameter's own schedule: set now, set on a frame, ramp linearly or exponentially to a frame, or cancel (drop what is scheduled and hold where it is). It lives in the node table with the processor, not in the plan.
 
-Modulation is a connection from a node's output into a parameter, at a depth. The source is mixed to mono, and the parameter's value is its automation plus depth times the source, clamped to the parameter's range. A value that isn't finite falls back to the automation alone. A control-rate parameter hears its modulation once a control block, and an audio-rate one every sample. Modulation orders the plan as any connection does (the source runs first), so an oscillator can drive a filter's cutoff or another oscillator's frequency without Luau setting anything every block.
+Modulation is a connection from a node's output into a parameter, at a depth. The source is mixed to mono, and the parameter's value is its automation plus depth times the source, clamped to the parameter's range. A value that isn't finite falls back to the automation alone. A control-rate parameter hears its modulation on the same 32-frame grid, and an audio-rate one every sample. Modulation orders the plan as any connection does (the source runs first), so an oscillator can drive a filter's cutoff or another oscillator's frequency without Luau setting anything every block.
 
 ## The processor contract
 
@@ -115,7 +115,7 @@ A processor is a Rust value implementing `jess::audio::Processor`. It declares i
 fn process(&mut self, io: &mut Io<'_>);
 ```
 
-`Io` lends the block's buffers: the main buffer (the summed first input, which the processor turns into its first output in place), other inputs, other outputs, the sidechain if one is connected, and per-sample values for audio-rate parameters that move. A processor that can't work in place says so, and gets its first input to read and a separate first output to write. A processor never allocates, locks, or blocks in `process`. It is made on the control side with everything it will need, and goes back there to be dropped.
+`Io` lends the block's buffers: the main buffer (the summed first input, which the processor turns into its first output in place), other inputs, other outputs, the sidechain if one is connected, and per-sample values for audio-rate parameters that move. A processor that can't work in place says so, and gets its first input to read and a separate first output to write. A processor's output depends only on its input frames and its parameters, never on how the frames are cut into calls: the engine calls it with blocks of any length up to a quantum, wherever a device's buffers, a script's offline renders, or the next command happen to fall. Every built-in processor is tested for it. A processor never allocates, locks, or blocks in `process`. It is made on the control side with everything it will need, and goes back there to be dropped.
 
 Scripts make processors by kind, through a registry. The built-in kinds are registered in it. A host embedding jess adds its own kinds with `Registry::register` before it makes a runtime (`jess::lua::Options`). A kind registered that way is made, connected, automated, and modulated from Luau exactly as a built-in one is, and adding one changes nothing in the engine. Registration is static: the processor is Rust code linked into the host, so it works the same on platforms that can't load libraries. There is no binary plugin interface, and none is promised. Luau never runs in a processor: nothing a script writes runs on the render thread.
 
@@ -161,7 +161,7 @@ These are deliberate, and each is checked:
 - **Revisions** take effect in the order they're made. A revision stamped earlier than one still waiting is refused (`GraphOrder`), not reordered.
 - **Channel counts** go from 1 up to the context's, and connect only one way: the same count, mono into any, or any into mono as their average.
 - **Every node keeps an input buffer**, because a voice may play into any node at any time. Only outputs other than a node's buffer share scratch.
-- **Control-rate parameters** hear their automation and modulation at the start of each control block. Where those blocks start depends on where commands split the render, so a control-rate ramp is exact to the block, not to the sample. Audio-rate parameters, feedback, and everything else are the same however a render is cut.
+- **Control-rate parameters** hear a ramp or a modulation every 32 frames, on a grid fixed to the clock: exact to the grid, not to the sample. A step is exact to the sample.
 - **Modulation** is mixed to mono and isn't latency-compensated.
 - **A processor has at most one sidechain**, and a sidechain hears one connection. A processor has at most eight ports and 64 parameters, and its latency is fixed for its life.
 - **An inserted processor** takes no audio connections of its own and feeds nothing directly: its input and output are its host's chain.

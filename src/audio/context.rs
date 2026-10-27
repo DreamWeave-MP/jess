@@ -1093,9 +1093,9 @@ impl Control {
     }
 
     /// Sets node `node`'s parameter `name` at frame `at`, or at the next frame rendered, at once
-    /// or over `glide`. A control-rate parameter moves every
-    /// [`CONTROL_QUANTUM`](crate::audio::CONTROL_QUANTUM) frames while it ramps, an audio-rate
-    /// one every frame. True if the node is live.
+    /// or over `glide`. A control-rate parameter ramps on every frame of the clock that is a multiple
+    /// of [`CONTROL_QUANTUM`](crate::audio::CONTROL_QUANTUM), an audio-rate one every frame. True
+    /// if the node is live.
     ///
     /// # Errors
     ///

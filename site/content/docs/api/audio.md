@@ -192,7 +192,7 @@ A bus has two parameters: `gain`, linear, and `mute`, on for anything but 0. `ro
 
 {{ api_signature(value="node:ramp(param: string, value: number, frames: number, at: number?, curve: ('linear' | 'exponential')?) -> boolean") }}
 
-Ramps a parameter as `voice:ramp` does a voice's. An audio-rate parameter (a bus's gain) moves every sample; a control-rate one moves every 32 frames: while one ramps, the engine mixes in blocks of 32 and tells the processor where the ramp has got to at the start of each. A mute is a step; to fade a bus out and back, ramp its gain.
+Ramps a parameter as `voice:ramp` does a voice's. An audio-rate parameter (a bus's gain) moves every sample; a control-rate one moves every 32 frames: while one ramps, the processor hears where it has got to on every frame that is a multiple of 32, however the render is cut. A mute is a step; to fade a bus out and back, ramp its gain.
 
 {{ api_signature(value="node:cancel(param: string, at: number?) -> boolean") }}
 
@@ -319,7 +319,7 @@ end)
 
 ### Modulation
 
-Connecting a node's output to a parameter modulates it: the parameter is its automation plus `level` times the source, mixed to mono, kept inside its range. A value that isn't a number leaves the automation alone. An audio-rate parameter hears its modulation every sample; a control-rate one once a control block of 32 frames. Nothing runs in the script while it happens: an oscillator can sweep a filter, an envelope can open an amplifier, and one oscillator can drive another's frequency.
+Connecting a node's output to a parameter modulates it: the parameter is its automation plus `level` times the source, mixed to mono, kept inside its range. A value that isn't a number leaves the automation alone. An audio-rate parameter hears its modulation every sample; a control-rate one on every frame that is a multiple of 32. Nothing runs in the script while it happens: an oscillator can sweep a filter, an envelope can open an amplifier, and one oscillator can drive another's frequency.
 
 ```luau
 --!strict
@@ -348,13 +348,13 @@ end
 
 ## Budgets
 
-A context can hold far more voices than it mixes. With `physical` set below `voices`, each block the engine ranks the live voices by `priority`, then by how loud they would be (their gain, times what distance and cones give them in space), and mixes the top `physical`; the rest are culled for that block. A voice that was mixed holds its place against one only a little louder, so voices near the line don't flicker in and out. Ties go to the voice that started in the lower slot, so the same score culls the same voices every time.
+A context can hold far more voices than it mixes. With `physical` set below `voices`, on every multiple of 128 frames, and on any frame a voice is started, stopped, or paused, the engine ranks the live voices by `priority`, then by how loud they would be (their gain, times what distance and cones give them in space), and mixes the top `physical`; the rest are culled until the next ranking. A voice that runs out frees its place at the next multiple of 128. A voice that was mixed holds its place against one only a little louder, so voices near the line don't flicker in and out. Ties go to the voice that started in the lower slot, so the same score culls the same voices every time.
 
 What a culled voice does is its own: `advance` (the default) keeps its place in its source moving, silently, so a looping hum out of earshot is where it would have been when it comes back. A stream does the same: it lets go of what it would have played, so its writer keeps going and a stem stays in step with the others; `pause` holds it where it was; `stop` ends it, which is voice stealing. Music and dialogue that must never drop out get a high `priority`. Rules like "no more than four footsteps at once" are the application's: count them in Luau and stop the oldest.
 
 ## Space
 
-A voice played with a `place` is in space: where it is relative to the listener sets its level, its pan, and its pitch, worked out once a block and glided across it, so a moving voice slides rather than steps. Positions, velocities, and directions are in the world's own units and axes; the only thing the context needs to know about the axes is which way they turn (`handedness`), and the only thing about the units is `speedOfSound` in them. A voice not given a `place` is not in space, and costs nothing for it.
+A voice played with a `place` is in space: where it is relative to the listener sets its level, its pan, and its pitch, worked out on every multiple of 128 frames and glided across the 128 that follow, so a moving voice slides rather than steps, the same however the render is cut. Positions, velocities, and directions are in the world's own units and axes; the only thing the context needs to know about the axes is which way they turn (`handedness`), and the only thing about the units is `speedOfSound` in them. A voice not given a `place` is not in space, and costs nothing for it.
 
 What lies between a voice and the listener isn't the engine's to know. Occlusion, obstruction, a door half open: the application works those out however it likes (a ray against its own geometry, a room graph) and hands the result over as the place's `gain` and `lowpass`.
 

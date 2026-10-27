@@ -508,11 +508,12 @@ fn coefficients(gain: f32, pan: f32, source: usize, output: usize) -> (f32, f32)
     }
 }
 
-/// What space does to a voice, as of the block being mixed.
+/// What space does to a voice, as of the span of the clock being mixed.
 struct Spatial {
     emitter: Emitter,
-    /// The two coefficients distance, cone, and pan give it at this block's start and end; the
-    /// block moves from one to the other, so a moving voice glides rather than steps.
+    /// The two coefficients distance, cone, and pan give it at the start and end of the span of
+    /// [`QUANTUM`] frames it is in, a span fixed to the clock; the span moves from one to the
+    /// other, so a moving voice glides rather than steps, the same however a render is cut.
     from: (f32, f32),
     to: (f32, f32),
     /// True until the first block has been heard: it starts where it is, not from silence.
@@ -875,15 +876,22 @@ impl Voice {
         }
     }
 
-    /// Moves a voice in space; a voice that wasn't in space stays out of it.
+    /// True for a voice in space not heard yet: it is heard on its first frame, wherever that
+    /// falls in its span.
+    pub(crate) fn unheard(&self) -> bool {
+        self.spatial.as_ref().is_some_and(|spatial| spatial.fresh)
+    }
+
+    /// Moves a voice in space; a voice that wasn't in space stays out of it. It is heard there
+    /// from the next span of the clock.
     pub(crate) fn place(&mut self, emitter: Emitter) {
         if let Some(spatial) = self.spatial.as_mut() {
             spatial.emitter = emitter;
         }
     }
 
-    /// Works out what `space` does to the voice over the next block: where its level and pan go
-    /// to, its Doppler shift, and its low-pass. Nothing for a voice not in space.
+    /// Works out what `space` does to the voice over the span of the clock starting now: where its
+    /// level and pan go to, its Doppler shift, and its low-pass. Nothing for a voice not in space.
     #[allow(clippy::cast_possible_truncation)] // Engine coefficients are f32.
     pub(crate) fn hear(&mut self, space: &Space, output: usize) {
         let source = self.source.channels();
@@ -1040,9 +1048,9 @@ impl Voice {
 
     /// The voice's coefficients for the next `frames` frames into an output of `output`
     /// channels, moving its gain and pan along: steady numbers, or, while either ramps, one per
-    /// frame written into `envelope`.
+    /// frame written into `envelope`. The block starts `offset` frames into its span of the clock.
     #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)] // Engine levels are f32.
-    pub(crate) fn levels(&mut self, frames: usize, envelope: &mut [f32], output: usize) -> Levels {
+    pub(crate) fn levels(&mut self, frames: usize, offset: usize, envelope: &mut [f32], output: usize) -> Levels {
         let source = self.source.channels();
         if let Some(spatial) = &self.spatial {
             // Space sets the pan; the voice's gain scales what space gives, frame by frame.
@@ -1054,7 +1062,7 @@ impl Voice {
             let (gains, seconds) = envelope.split_at_mut(QUANTUM);
             self.gain.fill(&mut gains[..frames]);
             for (index, (gain, other)) in gains[..frames].iter_mut().zip(&mut seconds[..frames]).enumerate() {
-                let through = (index + 1) as f32 / frames as f32;
+                let through = (offset + index + 1) as f32 / QUANTUM as f32;
                 *other = *gain * (second + (last_second - second) * through);
                 *gain *= first + (last_first - first) * through;
             }

@@ -1311,7 +1311,7 @@ fn a_culled_voice_keeps_time_or_holds_its_place_or_is_gone() {
     let ramp = pcm(&ramp, 48_000);
     let loud = pcm(&[100.0; 200], 48_000);
     for (culled, expected) in [
-        (Culled::Advance, Some(301.0)),
+        (Culled::Advance, Some(384.0)),
         (Culled::Pause, Some(100.0)),
         (Culled::Stop, None),
     ] {
@@ -1319,14 +1319,14 @@ fn a_culled_voice_keeps_time_or_holds_its_place_or_is_gone() {
         let spec = PlaySpec { culled, ..at(0) };
         let voice = context.control().play(&ramp, &spec).unwrap();
         context.render(100);
-        // Something that matters more takes the only place for two hundred frames, and is let go on
-        // the frame after, when the culled voice comes back.
+        // Something that matters more takes the only place for two hundred frames; the culled voice
+        // comes back when the voices are next chosen, at the start of the next span of the clock.
         let urgent = PlaySpec {
             priority: 1.0,
             ..PlaySpec::default()
         };
         context.control().play(&loud, &urgent).unwrap();
-        context.render(201);
+        context.render(284);
         let out = context.render(1);
         if let Some(frame) = expected {
             assert!((out[0] - frame).abs() < 1e-3, "{culled:?}: {}", out[0]);
@@ -1342,7 +1342,7 @@ fn a_culled_voice_keeps_time_or_holds_its_place_or_is_gone() {
 fn a_culled_stream_keeps_time_or_holds_its_place_as_a_voice_does() {
     let ramp: Vec<f32> = (0..1000u16).map(f32::from).collect();
     let loud = pcm(&[100.0; 200], 48_000);
-    for (culled, expected) in [(Culled::Advance, 301.0), (Culled::Pause, 100.0)] {
+    for (culled, expected) in [(Culled::Advance, 384.0), (Culled::Pause, 100.0)] {
         let mut context = budget(1);
         let stream = Stream::new(1, 48_000, 1.0).unwrap();
         assert_eq!(stream.write(&ramp).unwrap(), 1000);
@@ -1354,7 +1354,7 @@ fn a_culled_stream_keeps_time_or_holds_its_place_as_a_voice_does() {
             ..PlaySpec::default()
         };
         context.control().play(&loud, &urgent).unwrap();
-        context.render(201);
+        context.render(284);
         let out = context.render(1);
         assert!((out[0] - expected).abs() < 1e-3, "{culled:?}: {}", out[0]);
         assert_eq!(stream.stats().missed, 0, "{culled:?}");
@@ -1625,6 +1625,7 @@ fn revisions_take_effect_in_the_order_they_are_made() {
     assert!(context.control().add_bus(&BusSpec::default()).is_ok(), "nothing waits now");
 }
 
+mod cuts;
 mod graph;
 mod modulation;
 mod transport;

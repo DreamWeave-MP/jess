@@ -212,8 +212,10 @@ impl Capacity {
     }
 }
 
-/// The longest block the engine mixes while a control-rate parameter moves: how often a
-/// processor hears where its automation has got to.
+/// How often, in frames of the clock, a processor hears a moving control-rate parameter.
+///
+/// It hears it on every multiple of this, however the render is cut; while one moves, the
+/// engine's blocks break on those frames.
 pub const CONTROL_QUANTUM: usize = 32;
 
 /// A node as the engine holds it: its processor, and its parameters' automation. It lives as long
@@ -294,10 +296,10 @@ impl Node {
     }
 
     /// Moves its automation `frames` along: tells the processor where each control-rate parameter
-    /// is at the block's start, and writes each moving audio-rate one's values into `values`, a
-    /// [`QUANTUM`] a parameter. Returns the audio-rate parameters written, a bit each, and whether
-    /// a control-rate one still moves.
-    fn advance(&mut self, frames: usize, values: &mut [f32]) -> (u64, bool) {
+    /// is if the block starts `on_grid` (on a multiple of [`CONTROL_QUANTUM`]), and writes each
+    /// moving audio-rate one's values into `values`, a [`QUANTUM`] a parameter. Returns the
+    /// audio-rate parameters written, a bit each, and whether a control-rate one still moves.
+    fn advance(&mut self, frames: usize, values: &mut [f32], on_grid: bool) -> (u64, bool) {
         let (mut varying, mut control) = (0, false);
         let mut moving = self.moving;
         while moving != 0 {
@@ -315,11 +317,14 @@ impl Node {
                     }
                 }
                 Rate::Control => {
-                    // A block hears the value its first frame has; a ramp done by then is let go.
-                    self.processor.set(index, param.value());
-                    if param.steady() {
-                        self.moving &= !bit;
-                        continue;
+                    // The grid hears the value its frame has, and a ramp done by then is let go;
+                    // between, the ramp moves on unheard.
+                    if on_grid {
+                        self.processor.set(index, param.value());
+                        if param.steady() {
+                            self.moving &= !bit;
+                            continue;
+                        }
                     }
                     param.advance(frames as u64);
                     control = true;
@@ -334,15 +339,21 @@ impl Node {
     /// Moves its automation `frames` along, as [`Node::advance`], and adds what modulates the
     /// parameters set in `modulated` (in `signals`, a [`QUANTUM`] a parameter) on top, clamped
     /// to each parameter's range: every sample for an audio-rate parameter, whose values go in
-    /// `values`; at the block's start for a control-rate one. A value that isn't finite leaves
-    /// the automation as it is. A parameter nothing modulates any more hears its automation
-    /// again.
-    fn automate_and_modulate(&mut self, frames: usize, values: &mut [f32], signals: &[f32], modulated: u64) -> (u64, bool) {
+    /// `values`; for a control-rate one, at the block's start if it starts `on_grid`. A value
+    /// that isn't finite leaves the automation as it is. A parameter nothing modulates any more
+    /// hears its automation again.
+    fn automate_and_modulate(
+        &mut self,
+        frames: usize,
+        values: &mut [f32],
+        (signals, modulated): (&[f32], u64),
+        on_grid: bool,
+    ) -> (u64, bool) {
         if modulated == 0 && self.modulated == 0 {
             if self.moving == 0 {
                 return (0, false);
             }
-            return self.advance(frames, values);
+            return self.advance(frames, values, on_grid);
         }
         // A control-rate parameter's block starts where its automation is before it moves on.
         let mut bases = [0.0f64; MAX_PARAMS];
@@ -352,15 +363,16 @@ impl Node {
         let (mut varying, ramping) = if self.moving == 0 {
             (0, false)
         } else {
-            self.advance(frames, values)
+            self.advance(frames, values, on_grid)
         };
         for index in bits(modulated) {
             let info = self.info[index];
             let bit = 1u64 << index;
             let signal = &signals[index * QUANTUM..index * QUANTUM + frames];
             if info.rate == Rate::Control {
-                let base = bases[index];
-                self.processor.set(index, bounded(base, f64::from(signal[0]), &info));
+                if on_grid {
+                    self.processor.set(index, bounded(bases[index], f64::from(signal[0]), &info));
+                }
                 continue;
             }
             let steady = (varying & bit == 0).then(|| self.params[index].value());
@@ -513,6 +525,9 @@ pub struct Engine {
     envelope: Box<[f32]>,
     /// True while a control-rate parameter moves, which keeps blocks to [`CONTROL_QUANTUM`].
     ramping: bool,
+    /// A command changed the voices since they were last chosen: started, stopped, or paused one.
+    /// A voice that runs out in the mix waits for the next span, which the cut can't move.
+    changed: bool,
     /// The listener, and how the world's space works.
     space: Space,
     /// A command, or a group, held back until what it stamps for later fits the pending list.
@@ -582,6 +597,7 @@ impl Engine {
             steps: vec![0; QUANTUM].into_boxed_slice(),
             envelope: vec![0.0; 2 * QUANTUM].into_boxed_slice(),
             ramping: false,
+            changed: false,
             space,
             deferred: None,
             received: 0,
@@ -629,12 +645,15 @@ impl Engine {
         while done < frames {
             self.receive();
             self.carry_out_due();
-            let longest = if self.ramping || self.plan.control {
+            // Blocks break on a grid fixed to the clock, not to the calls: whatever lengths a
+            // device asks for, the same frames hear control-rate parameters and space.
+            let grid = if self.ramping || self.plan.control {
                 CONTROL_QUANTUM
             } else {
                 QUANTUM
             };
-            let mut block = longest.min(frames - done);
+            let into = usize::try_from(self.now % grid as u64).unwrap_or(0);
+            let mut block = (grid - into).min(frames - done);
             if let Some(next) = self.pending.last().and_then(|next| next.at) {
                 // Anything due was just carried out, so the next command is ahead of now.
                 block = block.min(usize::try_from(next - self.now).unwrap_or(usize::MAX));
@@ -774,6 +793,7 @@ impl Engine {
                 if let Err(index) = self.live.binary_search(&voice.slot) {
                     self.live.insert(index, voice.slot);
                 }
+                self.changed = true;
                 self.voices[slot] = Some(Voice::new(voice.generation, source, &spec, outputs, self.rate));
             }
             Command::Stop { voice, fade } => self.stop(voice, fade),
@@ -789,6 +809,7 @@ impl Engine {
                     && playing.generation == voice.generation
                 {
                     playing.paused = paused;
+                    self.changed = true;
                 } else if let Some(index) = self.pending_start(voice)
                     && let Command::Start { spec, .. } = &mut self.pending[index].command
                 {
@@ -951,6 +972,7 @@ impl Engine {
                 return;
             }
             self.end_voice(slot);
+            self.changed = true;
             return;
         }
         // Stopped before its start: the start never happens.
@@ -1091,6 +1113,7 @@ impl Engine {
     /// Adds every voice the budget lets mix into its outputs, and keeps time for the rest.
     fn mix_voices(&mut self, frames: usize) {
         let stride = self.channels * QUANTUM;
+        let offset = usize::try_from(self.now % QUANTUM as u64).unwrap_or(0);
         let mut index = 0;
         while let Some(&slot) = self.live.get(index) {
             // A voice that ends leaves the list, and the next takes its place in it.
@@ -1119,7 +1142,7 @@ impl Engine {
                 continue;
             }
             let rendered = voice.render(&mut self.scratch, &mut self.steps, frames);
-            let levels = voice.levels(rendered, &mut self.envelope, self.channels);
+            let levels = voice.levels(rendered, offset, &mut self.envelope, self.channels);
             let mut converted = false;
             for output in voice.outputs.iter() {
                 let head = self.heads[output.slot as usize];
@@ -1207,7 +1230,8 @@ impl Engine {
                 &mut self.signals,
                 frames,
             );
-            node.automate_and_modulate(frames, &mut self.values, &self.signals, modulated)
+            let on_grid = self.now.is_multiple_of(CONTROL_QUANTUM as u64);
+            node.automate_and_modulate(frames, &mut self.values, (&self.signals, modulated), on_grid)
         };
         let key = step.key.map(|pull| {
             let source = read(&self.buffers, &self.plan.scratch, pull.from, stride);
@@ -1342,7 +1366,22 @@ impl Engine {
     /// them while they fit the budget, else the ones that matter most, by priority and then by
     /// loudness. A voice already mixed holds its place against one only a little louder, so voices
     /// near the line don't flap in and out. A paused voice is neither mixed nor counted.
+    ///
+    /// Space is heard, and the voices chosen, at the start of each [`QUANTUM`] of the clock, and
+    /// chosen again on any frame the voices change, so neither depends on how a render is cut.
     fn choose(&mut self) {
+        let span = self.now.is_multiple_of(QUANTUM as u64);
+        if !span && !self.changed {
+            for &slot in &self.live {
+                if let Some(voice) = self.voices[slot as usize].as_mut()
+                    && voice.unheard()
+                {
+                    voice.hear(&self.space, self.channels);
+                }
+            }
+            return;
+        }
+        self.changed = false;
         let mut count = 0;
         for &slot in &self.live {
             let Some(voice) = self.voices[slot as usize].as_mut() else {
@@ -1351,7 +1390,9 @@ impl Engine {
             if voice.paused {
                 continue;
             }
-            voice.hear(&self.space, self.channels);
+            if span || voice.unheard() {
+                voice.hear(&self.space, self.channels);
+            }
             let held = if voice.audible { 1.25 } else { 1.0 };
             self.ranks[count] = (voice.priority, voice.loudness() * held, slot);
             count += 1;

@@ -310,8 +310,8 @@ export type AudioMeter = { peak: number, rms: number }
 export type AudioSendOptions = { level: number?, tap: ('post' | 'pre')?, at: number? }
 
 --- One of a node's parameters: its range, default, and unit (`Hz`, `dB`, `s`, or empty), and how
---- often it can change inside a block: once a control block of 32 frames while it moves
---- (`control`), or every sample (`audio`).
+--- often it can change: on every frame that is a multiple of 32 while it moves (`control`), or
+--- every sample (`audio`).
 export type AudioParam = {
   name: string,
   min: number,
