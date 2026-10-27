@@ -335,6 +335,9 @@ export type AudioNode = {
   --- Ramps a parameter to `value` over `frames` frames from `at`: every frame for an audio-rate
   --- parameter, every 32 for a control-rate one.
   ramp: (self: AudioNode, param: string, value: number, frames: number, at: number?, curve: AudioCurve?) -> boolean,
+  --- From `at`, drops every change of a parameter sent before this one and still waiting for its
+  --- frame, and stops a ramp of it where it has got to. Changes sent after it stand.
+  cancel: (self: AudioNode, param: string, at: number?) -> boolean,
   --- Routes the node into another, replacing its route; a route that would loop back is an error.
   route: (self: AudioNode, parent: AudioNode, at: number?) -> (),
   --- Adds a send to `target`, or changes the one there.

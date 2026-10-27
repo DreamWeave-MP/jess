@@ -363,3 +363,31 @@ fn a_processor_out_of_place_with_two_outputs_feeds_each_where_it_goes() {
     // -0.5 straight, 1 through the quarter gain, and 1 more from the other's loud output.
     close(&context.render(2), &[0.75, 0.75]);
 }
+
+#[test]
+fn a_cancel_drops_what_was_scheduled_before_it_and_holds_the_ramp_where_it_got_to() {
+    let tone = pcm(&[1.0; 64], 48_000);
+    let mut context = mono(AudioConfig::default());
+    let amplifier = amplifier(&mut context, 1.0);
+    context
+        .control()
+        .play(
+            &tone,
+            &PlaySpec {
+                bus: amplifier,
+                ..PlaySpec::default()
+            },
+        )
+        .unwrap();
+    let ramp = Some(Glide {
+        frames: 8,
+        curve: Curve::Linear,
+    });
+    context.control().set_param(amplifier, "gain", 0.0, Some(0), ramp).unwrap();
+    context.control().set_param(amplifier, "gain", 4.0, Some(6), None).unwrap();
+    // Cancelled on frame 4: the ramp stops halfway, and the jump stamped for 6 never happens; a
+    // change sent after the cancel still does.
+    context.control().cancel(amplifier, "gain", Some(4)).unwrap();
+    context.control().set_param(amplifier, "gain", 2.0, Some(7), None).unwrap();
+    close(&context.render(8), &[1.0, 0.875, 0.75, 0.625, 0.5, 0.5, 0.5, 2.0]);
+}

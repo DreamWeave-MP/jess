@@ -1124,6 +1124,26 @@ impl Control {
         Ok(true)
     }
 
+    /// Cancels node `node`'s automation of parameter `name` on frame `at`, or the next frame
+    /// rendered: every change of it sent before this one and still waiting for its frame is
+    /// dropped, and a ramp under way stops where it has got to. True if the node is live.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::UnknownParameter`], [`AudioError::QueueFull`], or
+    /// [`AudioError::Disconnected`].
+    pub fn cancel(&mut self, node: NodeKey, name: &str, at: Option<u64>) -> Result<bool, AudioError> {
+        self.collect();
+        let Some(shape) = self.graph.shape(node) else {
+            return Ok(false);
+        };
+        let index = u16::try_from(param_index(shape.kind, shape.params, name)?).unwrap_or(u16::MAX);
+        // The cancel's own sequence: everything sent before it has a lower one.
+        let before = self.sequence + 1;
+        self.send(at, Command::Cancel { node, index, before })?;
+        Ok(true)
+    }
+
     /// True while `node` is live: made, and not removed.
     pub fn node_live(&mut self, node: NodeKey) -> bool {
         self.collect();

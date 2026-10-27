@@ -66,6 +66,9 @@ pub enum Command {
         value: f64,
         glide: Option<Glide>,
     },
+    /// Drops a node parameter's changes sent before this (sequence `before`) that still wait for
+    /// their frames, and holds the parameter where it is.
+    Cancel { node: NodeKey, index: u16, before: u64 },
     /// Commands that arrive together, each with its own stamp.
     Group(Vec<Stamped>),
     /// Moves the listener.
@@ -277,6 +280,17 @@ impl Node {
         self.moving &= !bit;
         self.processor.set(index, value);
         false
+    }
+
+    /// Stops parameter `index` where it is, ramping or not.
+    fn hold(&mut self, index: usize) {
+        let Some(param) = self.params.get_mut(index) else {
+            return;
+        };
+        let value = param.value();
+        param.set(value);
+        self.moving &= !(1u64 << index);
+        self.processor.set(index, value);
     }
 
     /// Moves its automation `frames` along: tells the processor where each control-rate parameter
@@ -737,20 +751,7 @@ impl Engine {
                     spec.paused = paused;
                 }
             }
-            Command::Seek { voice, frame, epoch } => {
-                if let Some(playing) = self.voices[voice.slot as usize].as_mut()
-                    && playing.generation == voice.generation
-                {
-                    playing.seek(frame, epoch);
-                } else if let Some(index) = self.pending_start(voice)
-                    && let Command::Start { spec, source, .. } = &mut self.pending[index].command
-                {
-                    spec.offset = frame;
-                    if let Source::Stream(..) = source {
-                        spec.seeking = Some(epoch);
-                    }
-                }
-            }
+            Command::Seek { voice, frame, epoch } => self.seek(voice, frame, epoch),
             Command::SendVoice { voice, target, level } => self.send_voice(voice, target, level),
             Command::Route { voice, mut outputs } => {
                 self.route(voice, &mut outputs);
@@ -768,6 +769,7 @@ impl Engine {
                     self.ramping |= entry.automate(usize::from(index), value, glide);
                 }
             }
+            Command::Cancel { node, index, before } => self.cancel(node, index, before),
             // The control side never opens a group inside another; one would be taken whole.
             Command::Group(members) => self.accept_group(members),
             Command::Listener(listener) => self.space.listener = listener,
@@ -782,6 +784,45 @@ impl Engine {
                 {
                     spec.spatial = Some(emitter);
                 }
+            }
+        }
+    }
+
+    /// Drops the changes of node `node`'s parameter `index` sent before sequence `before` that
+    /// still wait for their frames, and holds the parameter where it is.
+    fn cancel(&mut self, node: NodeKey, index: u16, before: u64) {
+        let mut position = 0;
+        while position < self.pending.len() {
+            let waiting = &self.pending[position];
+            let doomed = waiting.sequence < before
+                && matches!(waiting.command, Command::SetParam { node: known, index: param, .. }
+                    if known == node && param == index);
+            if doomed {
+                // Nothing in a parameter's change holds memory: it can go here.
+                self.pending.remove(position);
+                continue;
+            }
+            position += 1;
+        }
+        if let Some(entry) = self.node(node) {
+            entry.hold(usize::from(index));
+        }
+    }
+
+    /// Moves a voice, or a voice waiting to start, to source frame `frame`.
+    fn seek(&mut self, voice: VoiceKey, frame: u64, epoch: u64) {
+        if let Some(playing) = self.voices[voice.slot as usize].as_mut()
+            && playing.generation == voice.generation
+        {
+            playing.seek(frame, epoch);
+            return;
+        }
+        if let Some(index) = self.pending_start(voice)
+            && let Command::Start { spec, source, .. } = &mut self.pending[index].command
+        {
+            spec.offset = frame;
+            if let Source::Stream(..) = source {
+                spec.seeking = Some(epoch);
             }
         }
     }

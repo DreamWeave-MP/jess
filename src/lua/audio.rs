@@ -1558,6 +1558,14 @@ fn describe_node(d: &mut ExtensionDescriptor) {
     )
     .untyped();
     node.method(
+        "cancel",
+        |this: &LuaAudioNode, name: Text, at: Option<f64>| -> l3i::Result<bool> {
+            let at = frame_option(at)?;
+            Ok(this.context.borrow_mut().control().cancel(this.key, &name.0, at)?)
+        },
+    )
+    .untyped();
+    node.method(
         "route",
         |this: &LuaAudioNode, parent: ValueView<'_>, at: Option<f64>| -> l3i::Result<()> {
             let parent = node_of(parent, &this.context, "AudioNode:route's parent")?;
