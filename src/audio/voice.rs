@@ -581,11 +581,12 @@ fn render_pcm(pcm: &Pcm, cursor: &mut Cursor, scratch: &mut [f32], steps: Option
             if cursor.looping.is_none() && cursor.position >> 32 >= length {
                 break;
             }
-            *sample = cursor.read(data, table);
-            produced += 1;
+            // Each frame is read, and moved past, at its own step: the same wherever a block starts.
             if let Some(steps) = steps {
                 cursor.step = steps[index];
             }
+            *sample = cursor.read(data, table);
+            produced += 1;
             cursor.advance();
         }
     }
@@ -709,11 +710,11 @@ impl Reader<'_> {
                 if finished && relative.position >> 32 >= data.len() as u64 {
                     break;
                 }
-                *sample = relative.read(data, table);
-                produced += 1;
                 if let Some(steps) = steps {
                     relative.step = steps[index];
                 }
+                *sample = relative.read(data, table);
+                produced += 1;
                 relative.advance();
             }
         }
@@ -849,11 +850,18 @@ impl Voice {
         }
         self.gain.advance(frames);
         self.pan.advance(frames);
-        if !self.rate.steady() {
-            self.rate.advance(frames);
+        if self.rate.steady() {
+            self.cursor.skip(frames);
+        } else {
+            // Frame by frame, as rendering would move it, so it gets to the same place however
+            // the frames are cut.
+            for _ in 0..frames {
+                self.cursor.step = self.step(self.rate.value());
+                self.rate.advance(1);
+                self.cursor.skip(1);
+            }
             self.cursor.step = self.step(self.rate.value());
         }
-        self.cursor.skip(frames);
         match &mut self.source {
             Source::Pcm(pcm) => self.cursor.looping.is_some() || self.cursor.position >> 32 < pcm.frames() as u64,
             Source::Stream(stream, window) => {
