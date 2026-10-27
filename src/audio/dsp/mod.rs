@@ -1,4 +1,4 @@
-//! The built-in processors: what [`create`](crate::audio::processor::create) makes by kind.
+//! The built-in processors: what [`Registry::builtin`](crate::audio::Registry::builtin) makes by kind.
 //!
 //! Each is a [`Processor`](crate::audio::Processor) that allocates everything when it's made, so
 //! processing a block touches only memory it already holds.
