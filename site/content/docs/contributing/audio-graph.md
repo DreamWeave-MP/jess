@@ -137,7 +137,42 @@ A bus is a mixer node plus conveniences, and every one of them is a revision of 
 | `bus:route(parent)` | Replaces the route connection. |
 | `bus:send(target, { level, tap })` | Connects the bus to `target` at `level`, from after its gain or, with `tap = 'pre'`, from before it. |
 | `bus:insert(kind)` | Makes a processor node and puts it in the bus's insert chain. |
-| `processor:listen(bus)` | Connects `bus` to the processor's sidechain input. |
+| `node:listen(key)` | Replaces whatever reaches the processor's sidechain with a connection from `key`. |
 | `bus:remove()` | Removes the node. |
 
-None of the conveniences is a second mixer. They are the patch a script would write by hand.
+None of the conveniences is a second mixer. They are the patch a script would write by hand. Voices are the exception to "everything is a revision". `voice:route`, `voice:send`, and `voice:unsend` move a voice with a command of its own, and that compiles nothing.
+
+## What it costs
+
+A game's graph is mostly buses, and most of its work is voices played into them. Both paths are kept as short as they were:
+
+- **The voices a block walks** are the live ones, kept in a list in slot order, not a table of every slot a context could fill: a context sized for thousands of voices that plays hundreds pays for hundreds.
+- **A voice's outputs** are a fixed first output and a slice of sends, allocated only when it has sends. Each output is checked against a flat table of the nodes' generations and channels, not against the nodes themselves, so a voice into a bus touches only the bus's buffer.
+- **A bus's step** runs the mixer's own gain and mute kernel straight on its buffer, from the automation the engine holds. That is the same function the `mixer` processor calls, so a bus costs no virtual call and no `Io`. The processor still defines what a bus does.
+- **A node whose parameters hold still** skips automation and modulation entirely, and **a block with nothing ringing out** doesn't look for anything to retire.
+
+`tools/bench` measures it. `audio` is a crowded scene; `audio-churn` and `audio-render` start and stop hundreds of one-shots a second, each on its own frame, which cuts blocks down to a few frames and makes per-block cost dominate. Against the bus mixer the graph replaced, built from the tree a commit before it and run interleaved on one machine, the crowded scene is a little faster and the churning ones much faster, mostly for walking only the live voices.
+
+## Limits
+
+These are deliberate, and each is checked:
+
+- **Feedback** needs a delay of at least a quantum (128 frames). There is no sample-by-sample feedback.
+- **Revisions** take effect in the order they're made. A revision stamped earlier than one still waiting is refused (`GraphOrder`), not reordered.
+- **Channel counts** go from 1 up to the context's, and connect only one way: the same count, mono into any, or any into mono as their average.
+- **Every node keeps an input buffer**, because a voice may play into any node at any time. Only outputs other than a node's buffer share scratch.
+- **Control-rate parameters** hear their automation and modulation at the start of each control block. Where those blocks start depends on where commands split the render, so a control-rate ramp is exact to the block, not to the sample. Audio-rate parameters, feedback, and everything else are the same however a render is cut.
+- **Modulation** is mixed to mono and isn't latency-compensated.
+- **A processor has at most one sidechain**, and a sidechain hears one connection. A processor has at most eight ports and 64 parameters, and its latency is fixed for its life.
+- **An inserted processor** takes no audio connections of its own and feeds nothing directly: its input and output are its host's chain.
+- **A voice** plays into at most sixteen node inputs. It is culled at its source, so the nodes after it keep running, on silence.
+- **A stream** seeks only while a feed writes it. Its position waits during a seek until the feed has decoded from the new frame.
+- **Commands a cancel drops** keep counting against the schedule's room until their frames pass.
+- **There is no binary plugin interface.** A processor from outside jess is Rust registered by the host that links it.
+
+## What comes next, without replacing this
+
+- **Capture** is a source node whose processor reads a device's input ring, filled by miniaudio's duplex devices. A recording is a stream a node writes and a script reads. Neither needs a change to plans or steps.
+- **Multichannel output** is a context of up to eight channels. Wider buses and the conversion rules carry it, and a surround panner is a processor with an output per speaker.
+- **Synthesis** is more processors (wavetables, noise, filters with audio-rate cutoff) and more modulation sources. MIDI is a Luau schedule of `set` and `gate` commands.
+- **Third-party DSP** is the registry. A restricted, deterministic DSP language could later register processors the same way, compiled before they reach the render thread.

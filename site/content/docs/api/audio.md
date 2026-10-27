@@ -158,9 +158,21 @@ Moves a parameter from wherever it is on frame `at` to `value`, reaching it on t
 
 `loop` sets the loop region from frame `at`: playback that reaches source frame `stop` carries on at `start`. `release` lets go of the loop, so playback runs on past it into whatever follows. One source can hold an intro, a loop, and an outro: start it looping, and release it on the frame the outro should follow.
 
+{{ api_signature(value="voice:route(node: AudioNode, at: number?) -> boolean") }}
 {{ api_signature(value="voice:send(node: AudioNode, level: number, at: number?) -> boolean") }}
+{{ api_signature(value="voice:unsend(node: AudioNode, at: number?) -> boolean") }}
 
-Changes the level of a send the voice has.
+Where a voice plays can change while it plays, on a frame. `route` plays it into `node` instead of where it plays first, keeping its sends. `send` plays it into `node` as well, at `level`, or changes the level it plays there at; `unsend` stops it playing there. A voice plays into up to sixteen nodes at once. None of this is a graph change: moving a voice compiles nothing and waits behind no change to the graph. To move a voice on exactly the frame the graph changes around it, connect and disconnect it in that change's [patch](#patches).
+
+{{ api_signature(value="context:voice(source: AudioPcm | AudioStream, options: AudioPlayOptions?) -> AudioVoice") }}
+{{ api_signature(value="voice:pause(at: number?) -> boolean") }}
+{{ api_signature(value="voice:play(at: number?) -> boolean") }}
+{{ api_signature(value="voice:seek(frame: number, at: number?) -> boolean") }}
+{{ api_signature(value="voice:position() -> number?") }}
+
+`context:voice` makes a voice as `play` does, paused: it holds its slot and plays nothing until `voice:play`. `pause` holds a voice where it is on frame `at`, and `play` plays it on from there; a paused voice is neither mixed nor counted against the context's [budget](#budgets), and its `state` is `paused`. `seek` moves it to source frame `frame` on frame `at`. A voice of PCM goes there at once, on a whole frame, so the first sample after a seek is the source's own (the resampler keeps no history to reset). A seek past the end of a loop the voice is in lands where playing through the loop would have taken it. `position` is the source frame the voice is at, as of the last render, or where a voice not started yet will start; it is nil once the voice has ended.
+
+A stream seeks only when a [feed](#compressed-files) decodes into it: the feed moves its decoder at once, and the voice, on the seek's frame, lets go of everything the feed wrote before then and plays what it decodes from the new frame. If the feed hasn't got there yet, the voice plays silence (counted as `missed`) and its position waits; stamping the seek a little ahead gives the feed time to be there first. A stream a script writes has nothing to move, and `seek` says so with an error. A stream's position counts the frames it has played from where it started or last sought to.
 
 ## Nodes
 
@@ -181,6 +193,10 @@ A bus has two parameters: `gain`, linear, and `mute`, on for anything but 0. `ro
 {{ api_signature(value="node:ramp(param: string, value: number, frames: number, at: number?, curve: ('linear' | 'exponential')?) -> boolean") }}
 
 Ramps a parameter as `voice:ramp` does a voice's. An audio-rate parameter (a bus's gain) moves every sample; a control-rate one moves every 32 frames: while one ramps, the engine mixes in blocks of 32 and tells the processor where the ramp has got to at the start of each. A mute is a step; to fade a bus out and back, ramp its gain.
+
+{{ api_signature(value="node:cancel(param: string, at: number?) -> boolean") }}
+
+From frame `at`, drops every change of the parameter sent before the cancel that is still waiting for its frame, and stops a ramp of it where it has got to. Changes sent after the cancel stand, so cancel-then-ramp replaces a schedule.
 
 {{ api_signature(value="node:params() -> { { name: string, min: number, max: number, default: number, unit: string, rate: 'control' | 'audio' } }") }}
 
@@ -221,8 +237,11 @@ Puts a processor of `kind` in the node's insert chain, last or at `index` (from 
 | `limiter` | `lookahead`: seconds, up to 0.05 (0.005) | `ceiling` (dB, -24 to 0, -0.3), `release` (seconds, 0.05) | Keeps every sample at or under the ceiling, turning down before a peak arrives; its lookahead is its latency |
 | `reverb` | | `room` (0 to 1, 0.5), `damping` (0 to 1, 0.5), `wet` (0 to 1, 0.3), `dry` (0 to 1, 0), `width` (0 to 1, 1) | A room, after Jezar's public-domain Freeverb: eight damped combs and four allpasses a side. With `dry` at 0 it suits a bus voices send to |
 | `drive` | | `drive` (dB, 0 to 48, 12), `level` (dB, -48 to 12, -6), `mix` (0 to 1, 1) | Saturation: a hyperbolic tangent that rounds off where the signal would clip |
+| `crossfade` | | `mix` (0 to 1, 0.5, audio rate) | Two inputs, `a` and `b`: all of `a` at 0, all of `b` at 1. A dry path into one and a wet one into the other is a wet and dry control |
+| `oscillator` | `wave`: `sine` (the default), `triangle`, `saw`, `square` | `frequency` (Hz, 0 to 96000, 440, audio rate), `gain` (-64 to 64, 1, audio rate) | A source: a periodic wave, its saw and square band-limited. Modulating its own frequency or gain is frequency or amplitude modulation |
+| `envelope` | | `attack`, `decay`, `release` (seconds, 0.01, 0.1, 0.3), `sustain` (0 to 1, 0.7), `gate` (0 or 1) | A source: from 0 to 1 and back in straight lines as its `gate` opens and closes, for modulating an amplifier or a cutoff |
 
-Parameters are control rate unless the table says otherwise. A processor's tail is how long it keeps sounding once its input stops: a delay until its echoes have died to -60 dB, a reverb until its longest comb has, a limiter its lookahead. A removed node runs that long before it goes.
+Parameters are control rate unless the table says otherwise. A source has no inputs: it writes the same signal on every channel of its node, so one made with `channels = 1` costs least. A processor's tail is how long it keeps sounding once its input stops: a delay until its echoes have died to -60 dB, a reverb until its longest comb has, a limiter its lookahead. A removed node runs that long before it goes.
 
 {{ api_signature(value="context:node(kind: string, settings: { [string]: number | string }?) -> AudioNode") }}
 
@@ -245,6 +264,87 @@ ducker:listen(dialogue)
 The key runs before the node listening to it, so listening to a node that the listener feeds (its bus's route, say) would be a loop, and is refused. `listen(nil)` goes back to the processor's own input.
 
 A name the processor doesn't have, or a value outside its range, is an error naming what it does take.
+
+## Patches
+
+{{ api_signature(value="context:patch(body: (graph: AudioPatch) -> (), at: number?)") }}
+{{ api_signature(value="graph:connect(from: AudioNode | AudioVoice, to: AudioNode, options: { from: string?, to: string?, level: number?, tap: ('post' | 'pre')?, feedback: number? }?)") }}
+{{ api_signature(value="graph:disconnect(from: AudioNode | AudioVoice, to: AudioNode, options: { from: string?, to: string? }?)") }}
+{{ api_signature(value="graph:route(node: AudioNode, parent: AudioNode)") }}
+{{ api_signature(value="graph:insert(host: AudioNode, node: AudioNode, index: number?)") }}
+{{ api_signature(value="graph:remove(node: AudioNode)") }}
+
+A patch is any number of changes to the graph made as one. `body` makes them through `graph`; once it returns, they all take effect together on frame `at`, or, if any of them is wrong (a port that isn't there, a loop, no room), none of them does and the error says why. If `body` raises, nothing changes. Everything the bus and node methods do is a patch of one change.
+
+`connect` joins output `from` of one node (its first, `out`, unless named) to input `to` of another (its first audio input unless named), at `level` (1), tapped after the source's processing or, with `pre`, before it. Any output can feed any number of inputs, and an audio input sums everything connected to it. The input can also be a sidechain (`key`) or a parameter, by name: that's modulation, below. A voice connects to a node at a level, as `voice:send` does, but on the patch's frame. Two nodes with different channel counts connect only one way: mono into anything, anything into mono as the average of its channels, or the same count. Any other pair is refused when the patch is made.
+
+```luau
+--!strict
+local audio = require '@jess/audio'
+
+local context = audio.offline()
+local effects = context:bus()
+local shot = audio.pcm(buffer.create(4 * 4800), { format = 'f32', channels = 1, rate = 48000 })
+
+-- One sound, three voices, each through processing of its own into one bus: no bus per voice.
+for index, cutoff in { 500, 2000, 8000 } do
+  local filter = context:node('filter', { frequency = cutoff })
+  local drive = context:node('drive', { drive = index * 6 })
+  local voice = context:voice(shot)
+  context:patch(function(graph)
+    graph:connect(voice, filter)
+    graph:connect(filter, drive)
+    graph:connect(drive, effects)
+  end)
+  voice:play()
+end
+```
+
+### Feedback
+
+A loop is allowed only through a connection with `feedback`: a delay in frames, at least 128, on the connection that closes it. Without one, a loop is refused. The delay is counted in output frames, whatever size the blocks are rendered in, so a loop sounds the same through a device and offline. It is part of the sound, so latency compensation doesn't line anything up against it: the time round a loop is its feedback delay plus the latency of the processors on the way.
+
+```luau
+--!strict
+local audio = require '@jess/audio'
+
+local context = audio.offline()
+local echo = context:bus()
+local quieter = context:node('gain', { gain = 0.5 })
+context:patch(function(graph)
+  graph:connect(echo, quieter)
+  graph:connect(quieter, echo, { feedback = 12000 })
+end)
+```
+
+### Modulation
+
+Connecting a node's output to a parameter modulates it: the parameter is its automation plus `level` times the source, mixed to mono, kept inside its range. A value that isn't a number leaves the automation alone. An audio-rate parameter hears its modulation every sample; a control-rate one once a control block of 32 frames. Nothing runs in the script while it happens: an oscillator can sweep a filter, an envelope can open an amplifier, and one oscillator can drive another's frequency.
+
+```luau
+--!strict
+local audio = require '@jess/audio'
+
+local context = audio.offline()
+local voice = context:node('oscillator', { wave = 'saw', frequency = 110, channels = 1 })
+local cutoff = context:node('filter', { frequency = 400 })
+local amplifier = context:node('gain', { gain = 0 })
+local sweep = context:node('envelope', { attack = 0.01, decay = 0.2, sustain = 0.2, channels = 1 })
+local swell = context:node('envelope', { attack = 0.005, sustain = 0.8, channels = 1 })
+context:patch(function(graph)
+  graph:connect(voice, cutoff)
+  graph:connect(cutoff, amplifier)
+  graph:connect(amplifier, context:master())
+  graph:connect(sweep, cutoff, { to = 'frequency', level = 4000 })
+  graph:connect(swell, amplifier, { to = 'gain', level = 0.5 })
+end)
+
+-- A note: both envelopes open on frame 4800 and close half a second later.
+for _, envelope in { sweep, swell } do
+  envelope:set('gate', 1, 4800)
+  envelope:set('gate', 0, 4800 + 24000)
+end
+```
 
 ## Budgets
 
