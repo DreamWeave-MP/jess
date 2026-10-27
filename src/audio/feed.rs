@@ -290,7 +290,7 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
-    use crate::audio::{AudioConfig, OfflineContext, PlaySpec};
+    use crate::audio::{AudioConfig, AudioError, OfflineContext, PlaySpec, VoiceParam};
 
     /// A ramp of `frames` mono frames, 0, 1, 2, ...
     struct Ramp {
@@ -546,6 +546,53 @@ mod tests {
         assert_eq!(stream.stats().missed, 0, "nothing played as silence");
         assert_eq!(stream.stats().late, 0);
         assert_eq!(context.control().position(voice), Some(from));
+    }
+
+    #[test]
+    fn a_prepared_seek_refused_for_want_of_schedule_room_holds_none_of_it() {
+        let mut context = OfflineContext::new(&AudioConfig {
+            channels: 1,
+            commands: 8,
+            ..AudioConfig::default()
+        })
+        .unwrap();
+        let stream = Stream::new(1, 48_000, 0.25).unwrap();
+        let voice = context.control().play_stream(&stream, &PlaySpec::default()).unwrap();
+        let _feed = Feed::start(
+            Box::new(Ramp {
+                frames: 1_000_000,
+                position: 0,
+            }),
+            Arc::clone(&stream),
+            FeedSpec {
+                block: 1024,
+                looping: None,
+            },
+        )
+        .unwrap();
+        keep_up(&stream, 1024);
+        let minute = Some(48_000 * 60);
+        for _ in 0..7 {
+            context.control().set(voice, VoiceParam::Gain, 1.0, minute, None).unwrap();
+        }
+        context.render(1);
+
+        // The prepare fits in the last place and the seek doesn't, so neither goes, alone or in a
+        // group, and the last place is still free.
+        assert_eq!(
+            context.control().seek(voice, 500_000, minute),
+            Err(AudioError::ScheduleFull(8))
+        );
+        context.control().begin_group().unwrap();
+        assert_eq!(
+            context.control().seek(voice, 500_000, minute),
+            Err(AudioError::ScheduleFull(8))
+        );
+        context.control().set(voice, VoiceParam::Gain, 1.0, minute, None).unwrap();
+        context.control().end_group().unwrap();
+        context.render(1);
+        assert_eq!(context.control().stats().pending, 8);
+        assert_eq!(stream.wanted(), 0, "no seek was asked of the feed");
     }
 
     /// A ramp whose seeks wait until `open`.

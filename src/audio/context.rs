@@ -259,8 +259,8 @@ pub struct Control {
     /// The latest frame a revision sent for later takes effect on: no revision may be stamped
     /// before it while it waits.
     revised: Option<u64>,
-    /// The open group's commands, and the room the queue had when it opened.
-    group: Option<(Vec<Stamped>, usize)>,
+    /// The group open, if one is.
+    group: Option<Group>,
     /// Commands sent, counting a group as its members and one more: what the engine's count of
     /// commands received catches up to.
     sent: u64,
@@ -271,6 +271,17 @@ pub struct Control {
     scheduled: BinaryHeap<Reverse<u64>>,
     counters: Arc<Counters>,
     listener: Listener,
+}
+
+/// Commands gathered to reach the engine together.
+#[derive(Debug)]
+struct Group {
+    members: Vec<Stamped>,
+    /// The room the queue had when the group opened.
+    room: usize,
+    /// The frames of its members stamped for later: they hold places in the engine's list only
+    /// once the group is sent, so a group dropped unsent holds none.
+    later: Vec<u64>,
 }
 
 /// An engine and its control side, connected; the engine goes to whatever renders it.
@@ -774,7 +785,10 @@ impl Control {
         if own {
             self.begin_group()?;
         }
-        let before = self.group.as_ref().map_or(0, |(members, _)| members.len());
+        let before = self
+            .group
+            .as_ref()
+            .map_or((0, 0), |group| (group.members.len(), group.later.len()));
         let mut sent = Ok(());
         for (at, command) in commands {
             sent = self.send(at, command);
@@ -785,8 +799,9 @@ impl Control {
         if let Err(error) = sent {
             if own {
                 self.group = None;
-            } else if let Some((members, _)) = self.group.as_mut() {
-                members.truncate(before);
+            } else if let Some(group) = self.group.as_mut() {
+                group.members.truncate(before.0);
+                group.later.truncate(before.1);
             }
             return Err(error);
         }
@@ -1401,17 +1416,26 @@ impl Control {
         if room == 0 {
             return Err(AudioError::QueueFull(self.capacity));
         }
-        self.group = Some((Vec::with_capacity(16), room));
+        self.group = Some(Group {
+            members: Vec::with_capacity(16),
+            room,
+            later: Vec::new(),
+        });
         Ok(())
     }
 
     /// Sends the group [`Control::begin_group`] opened.
     ///
+    /// The queue can't refuse it: each member was checked against the room the queue had when
+    /// the group opened, and nothing else is sent while it is open. Only an engine that is gone
+    /// can, and then every command after it fails the same way, grouped or not; what the control
+    /// side recorded for the group describes no render, because nothing renders any more.
+    ///
     /// # Errors
     ///
     /// [`AudioError::Disconnected`]; with no group open, nothing happens.
     pub fn end_group(&mut self) -> Result<(), AudioError> {
-        let Some((members, _)) = self.group.take() else {
+        let Some(Group { members, later, .. }) = self.group.take() else {
             return Ok(());
         };
         if members.is_empty() {
@@ -1426,6 +1450,7 @@ impl Control {
         match self.commands.try_send(stamped) {
             Ok(()) => {
                 self.sent += count;
+                self.scheduled.extend(later.into_iter().map(Reverse));
                 Ok(())
             }
             // Room was there when the group opened, and nothing else has been sent since.
@@ -1448,9 +1473,24 @@ impl Control {
             while self.scheduled.peek().is_some_and(|Reverse(at)| *at < now) {
                 self.scheduled.pop();
             }
-            if self.scheduled.len() >= self.capacity {
+            let waiting = self.group.as_ref().map_or(0, |group| group.later.len());
+            if self.scheduled.len() + waiting >= self.capacity {
                 return Err(AudioError::ScheduleFull(self.capacity));
             }
+        }
+        if let Some(group) = self.group.as_mut() {
+            // The group and its members all count against the room it opened with.
+            if group.members.len() + 2 > group.room {
+                return Err(AudioError::QueueFull(self.capacity));
+            }
+            self.sequence += 1;
+            group.members.push(Stamped {
+                at,
+                sequence: self.sequence,
+                command,
+            });
+            group.later.extend(later);
+            return Ok(());
         }
         self.sequence += 1;
         let stamped = Stamped {
@@ -1458,15 +1498,6 @@ impl Control {
             sequence: self.sequence,
             command,
         };
-        if let Some((members, room)) = self.group.as_mut() {
-            // The group and its members all count against the room it opened with.
-            if members.len() + 2 > *room {
-                return Err(AudioError::QueueFull(self.capacity));
-            }
-            members.push(stamped);
-            self.scheduled.extend(later.map(Reverse));
-            return Ok(());
-        }
         match self.commands.try_send(stamped) {
             Ok(()) => {
                 self.sent += 1;
