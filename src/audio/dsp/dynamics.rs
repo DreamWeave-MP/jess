@@ -1,7 +1,7 @@
 //! Dynamics: a compressor that can listen to another bus, and a lookahead limiter.
 
 use crate::audio::QUANTUM;
-use crate::audio::processor::{Block, ParamInfo, Processor};
+use crate::audio::processor::{Io, ParamInfo, Ports, Processor};
 
 /// The coefficient that makes a one-pole follower settle about two-thirds of the way in `seconds`.
 fn smoothing(seconds: f64, rate: u32) -> f32 {
@@ -41,42 +41,12 @@ pub struct Compressor {
 
 impl Compressor {
     const PARAMS: &'static [ParamInfo] = &[
-        ParamInfo {
-            name: "threshold",
-            min: -80.0,
-            max: 0.0,
-            default: -20.0,
-        },
-        ParamInfo {
-            name: "ratio",
-            min: 1.0,
-            max: 50.0,
-            default: 4.0,
-        },
-        ParamInfo {
-            name: "attack",
-            min: 0.0001,
-            max: 1.0,
-            default: 0.005,
-        },
-        ParamInfo {
-            name: "release",
-            min: 0.001,
-            max: 5.0,
-            default: 0.1,
-        },
-        ParamInfo {
-            name: "knee",
-            min: 0.0,
-            max: 24.0,
-            default: 6.0,
-        },
-        ParamInfo {
-            name: "makeup",
-            min: -24.0,
-            max: 24.0,
-            default: 0.0,
-        },
+        ParamInfo::control("threshold", -80.0, 0.0, -20.0, "dB"),
+        ParamInfo::control("ratio", 1.0, 50.0, 4.0, ""),
+        ParamInfo::control("attack", 0.0001, 1.0, 0.005, "s"),
+        ParamInfo::control("release", 0.001, 5.0, 0.1, "s"),
+        ParamInfo::control("knee", 0.0, 24.0, 6.0, "dB"),
+        ParamInfo::control("makeup", -24.0, 24.0, 0.0, "dB"),
     ];
 
     /// A compressor at the default settings for `rate` frames per second.
@@ -123,6 +93,10 @@ impl Processor for Compressor {
         "compressor"
     }
 
+    fn ports(&self) -> &'static Ports {
+        &Ports::KEYED
+    }
+
     fn params(&self) -> &'static [ParamInfo] {
         Compressor::PARAMS
     }
@@ -151,7 +125,9 @@ impl Processor for Compressor {
         }
     }
 
-    fn process(&mut self, block: &mut Block<'_>, key: Option<&[f32]>) {
+    fn process(&mut self, io: &mut Io<'_>) {
+        let (mut block, key) = io.effect();
+        let block = &mut block;
         let makeup = linear(self.makeup);
         // Below the knee there is nothing to work out per sample.
         let quiet = linear(self.threshold - self.knee / 2.0);
@@ -198,18 +174,8 @@ pub struct Limiter {
 
 impl Limiter {
     const PARAMS: &'static [ParamInfo] = &[
-        ParamInfo {
-            name: "ceiling",
-            min: -24.0,
-            max: 0.0,
-            default: -0.3,
-        },
-        ParamInfo {
-            name: "release",
-            min: 0.001,
-            max: 2.0,
-            default: 0.05,
-        },
+        ParamInfo::control("ceiling", -24.0, 0.0, -0.3, "dB"),
+        ParamInfo::control("release", 0.001, 2.0, 0.05, "s"),
     ];
 
     /// The longest lookahead one can be made with, in seconds.
@@ -288,7 +254,9 @@ impl Processor for Limiter {
         crate::audio::processor::Tail::Frames(self.ahead as u64)
     }
 
-    fn process(&mut self, block: &mut Block<'_>, _key: Option<&[f32]>) {
+    fn process(&mut self, io: &mut Io<'_>) {
+        let (mut block, _) = io.effect();
+        let block = &mut block;
         let length = self.ahead + 1;
         for index in 0..block.frames {
             let peak = (0..block.channels).fold(0.0f32, |peak, channel| {
@@ -320,12 +288,8 @@ mod tests {
         let keys = key.map(|key| vec![key; QUANTUM]);
         for _ in 0..200 {
             samples.fill(level);
-            let mut block = Block {
-                samples: &mut samples,
-                channels: 1,
-                frames: QUANTUM,
-            };
-            compressor.process(&mut block, keys.as_deref());
+            let mut block = Io::new(&mut samples, 1, QUANTUM).with_key(keys.as_deref());
+            compressor.process(&mut block);
         }
         samples[QUANTUM - 1]
     }
@@ -357,12 +321,8 @@ mod tests {
                 samples[frame] = level;
                 samples[QUANTUM + frame] = -level;
             }
-            let mut view = Block {
-                samples: &mut samples,
-                channels: 2,
-                frames: QUANTUM,
-            };
-            limiter.process(&mut view, None);
+            let mut view = Io::new(&mut samples, 2, QUANTUM);
+            limiter.process(&mut view);
             out.extend_from_slice(&samples[..QUANTUM]);
         }
         let ceiling = linear(-0.3);

@@ -4,10 +4,10 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::Arc;
 
-use crate::audio::processor::{Block, Gain, ParamInfo, Processor, Tail};
+use crate::audio::processor::{Gain, Io, ParamInfo, Processor, Tail};
 use crate::audio::{
-    AudioConfig, AudioError, BusKey, BusParam, BusSpec, Culled, Curve, Distance, Emitter, Glide, Listener, LoopRegion,
-    Meter, OfflineContext, Pcm, PlaySpec, QUANTUM, Stream, Tap, VoiceParam, VoiceSend, VoiceState,
+    AudioConfig, AudioError, BusSpec, Culled, Curve, Distance, Emitter, Glide, Listener, LoopRegion, Meter, NodeKey,
+    OfflineContext, Pcm, PlaySpec, QUANTUM, Stream, Tap, VoiceParam, VoiceSend, VoiceState,
 };
 
 /// Counts allocations and frees on a thread while it is armed, so a test can prove the render
@@ -415,7 +415,7 @@ fn rendering_never_allocates_or_frees() {
     assert_eq!(control.stats().allocated, 0, "every voice ended and came back");
 }
 
-fn bus(context: &mut OfflineContext, parent: BusKey, gain: f32) -> BusKey {
+fn bus(context: &mut OfflineContext, parent: NodeKey, gain: f32) -> NodeKey {
     let spec = BusSpec {
         parent,
         gain,
@@ -424,7 +424,7 @@ fn bus(context: &mut OfflineContext, parent: BusKey, gain: f32) -> BusKey {
     context.control().add_bus(&spec).unwrap()
 }
 
-fn into(bus: BusKey, frame: u64) -> PlaySpec {
+fn into(bus: NodeKey, frame: u64) -> PlaySpec {
     PlaySpec { bus, ..at(frame) }
 }
 
@@ -432,9 +432,9 @@ fn into(bus: BusKey, frame: u64) -> PlaySpec {
 fn voices_sum_through_nested_buses_at_each_bus_s_gain() {
     let click = pcm(&[1.0], 48_000);
     let mut context = mono(AudioConfig::default());
-    let music = bus(&mut context, BusKey::MASTER, 0.5);
+    let music = bus(&mut context, NodeKey::MASTER, 0.5);
     let strings = bus(&mut context, music, 0.5);
-    let effects = bus(&mut context, BusKey::MASTER, 2.0);
+    let effects = bus(&mut context, NodeKey::MASTER, 2.0);
     context.control().play(&click, &into(strings, 0)).unwrap();
     context.control().play(&click, &into(music, 1)).unwrap();
     context.control().play(&click, &into(effects, 1)).unwrap();
@@ -446,14 +446,14 @@ fn voices_sum_through_nested_buses_at_each_bus_s_gain() {
 fn bus_gain_and_mute_change_on_their_frame() {
     let tone = pcm(&[1.0; 8], 48_000);
     let mut context = mono(AudioConfig::default());
-    let group = bus(&mut context, BusKey::MASTER, 1.0);
+    let group = bus(&mut context, NodeKey::MASTER, 1.0);
     context.control().play(&tone, &into(group, 0)).unwrap();
-    context.control().set_bus(group, BusParam::Gain, 0.5, Some(2), None).unwrap();
-    context.control().set_bus(group, BusParam::Mute, 1.0, Some(4), None).unwrap();
-    context.control().set_bus(group, BusParam::Mute, 0.0, Some(6), None).unwrap();
+    context.control().set_param(group, "gain", 0.5, Some(2), None).unwrap();
+    context.control().set_param(group, "mute", 1.0, Some(4), None).unwrap();
+    context.control().set_param(group, "mute", 0.0, Some(6), None).unwrap();
     context
         .control()
-        .set_bus(BusKey::MASTER, BusParam::Gain, 4.0, Some(7), None)
+        .set_param(NodeKey::MASTER, "gain", 4.0, Some(7), None)
         .unwrap();
     assert_eq!(context.render(8), [1.0, 1.0, 0.5, 0.5, 0.0, 0.0, 0.5, 2.0]);
 }
@@ -462,64 +462,61 @@ fn bus_gain_and_mute_change_on_their_frame() {
 fn rerouting_moves_a_bus_on_its_frame_and_a_loop_is_refused() {
     let tone = pcm(&[1.0; 4], 48_000);
     let mut context = mono(AudioConfig::default());
-    let quiet = bus(&mut context, BusKey::MASTER, 0.25);
-    let group = bus(&mut context, BusKey::MASTER, 1.0);
+    let quiet = bus(&mut context, NodeKey::MASTER, 0.25);
+    let group = bus(&mut context, NodeKey::MASTER, 1.0);
     context.control().play(&tone, &into(group, 0)).unwrap();
-    context.control().route_bus(group, quiet, Some(2)).unwrap();
+    context.control().route(group, quiet, Some(2)).unwrap();
     assert_eq!(context.render(4), [1.0, 1.0, 0.25, 0.25]);
 
-    assert_eq!(context.control().route_bus(quiet, group, None), Err(AudioError::Cycle));
-    assert_eq!(context.control().route_bus(group, group, None), Err(AudioError::Cycle));
-    assert_eq!(
-        context.control().route_bus(BusKey::MASTER, group, None),
-        Err(AudioError::Master)
-    );
+    assert_eq!(context.control().route(quiet, group, None), Err(AudioError::Cycle));
+    assert_eq!(context.control().route(group, group, None), Err(AudioError::Cycle));
+    assert_eq!(context.control().route(NodeKey::MASTER, group, None), Err(AudioError::Master));
 }
 
 #[test]
 fn a_bus_is_removed_only_once_nothing_routes_into_it() {
     let tone = pcm(&[1.0; 4], 48_000);
     let mut context = mono(AudioConfig {
-        buses: 3,
+        nodes: 3,
         ..AudioConfig::default()
     });
-    let outer = bus(&mut context, BusKey::MASTER, 1.0);
+    let outer = bus(&mut context, NodeKey::MASTER, 1.0);
     let inner = bus(&mut context, outer, 1.0);
     assert_eq!(
         context.control().add_bus(&BusSpec::default()),
-        Err(AudioError::BusesExhausted(3))
+        Err(AudioError::NodesExhausted(3))
     );
     let voice = context.control().play(&tone, &into(inner, 0)).unwrap();
     assert_eq!(
-        context.control().remove_bus(inner, None),
-        Err(AudioError::BusInUse { voices: 1, buses: 0 })
+        context.control().remove(inner, None),
+        Err(AudioError::NodeInUse { voices: 1, nodes: 0 })
     );
     assert_eq!(
-        context.control().remove_bus(outer, None),
-        Err(AudioError::BusInUse { voices: 0, buses: 1 })
+        context.control().remove(outer, None),
+        Err(AudioError::NodeInUse { voices: 0, nodes: 1 })
     );
     context.control().stop(voice, None, 0).unwrap();
     context.render(1);
-    assert!(context.control().remove_bus(inner, None).unwrap());
-    assert!(!context.control().bus_live(inner));
-    assert_eq!(context.control().play(&tone, &into(inner, 0)), Err(AudioError::StaleBus));
+    assert!(context.control().remove(inner, None).unwrap());
+    assert!(!context.control().node_live(inner));
+    assert_eq!(context.control().play(&tone, &into(inner, 0)), Err(AudioError::StaleNode));
     context.render(1);
-    assert!(context.control().remove_bus(outer, None).unwrap());
+    assert!(context.control().remove(outer, None).unwrap());
     context.render(1);
-    let reused = bus(&mut context, BusKey::MASTER, 1.0);
+    let reused = bus(&mut context, NodeKey::MASTER, 1.0);
     assert_ne!(reused, outer, "a reused slot is a new bus");
-    assert!(!context.control().set_bus(outer, BusParam::Gain, 0.0, None, None).unwrap());
-    assert_eq!(context.control().remove_bus(BusKey::MASTER, None), Err(AudioError::Master));
+    assert!(!context.control().set_param(outer, "gain", 0.0, None, None).unwrap());
+    assert_eq!(context.control().remove(NodeKey::MASTER, None), Err(AudioError::Master));
 }
 
 #[test]
 fn voices_on_different_buses_share_one_send_bus_mixed_once() {
     let click = pcm(&[1.0], 48_000);
     let mut context = mono(AudioConfig::default());
-    let music = bus(&mut context, BusKey::MASTER, 1.0);
-    let effects = bus(&mut context, BusKey::MASTER, 1.0);
-    let aux = bus(&mut context, BusKey::MASTER, 0.5);
-    let sends = |level| [Some(VoiceSend { bus: aux, level }), None];
+    let music = bus(&mut context, NodeKey::MASTER, 1.0);
+    let effects = bus(&mut context, NodeKey::MASTER, 1.0);
+    let aux = bus(&mut context, NodeKey::MASTER, 0.5);
+    let sends = |level| vec![VoiceSend { bus: aux, level }];
     let spec = |bus, level| PlaySpec {
         sends: sends(level),
         ..into(bus, 0)
@@ -538,10 +535,10 @@ fn voices_on_different_buses_share_one_send_bus_mixed_once() {
 fn a_voice_send_level_changes_on_its_frame() {
     let tone = pcm(&[1.0; 4], 48_000);
     let mut context = mono(AudioConfig::default());
-    let aux = bus(&mut context, BusKey::MASTER, 1.0);
+    let aux = bus(&mut context, NodeKey::MASTER, 1.0);
     let spec = PlaySpec {
         gain: 0.5,
-        sends: [Some(VoiceSend { bus: aux, level: 1.0 }), None],
+        sends: vec![VoiceSend { bus: aux, level: 1.0 }],
         ..at(0)
     };
     let voice = context.control().play(&tone, &spec).unwrap();
@@ -555,12 +552,12 @@ fn a_bus_send_taps_after_the_fader_unless_asked_to_tap_before_it() {
     let tone = pcm(&[1.0; 4], 48_000);
     let render = |tap| {
         let mut context = mono(AudioConfig::default());
-        let group = bus(&mut context, BusKey::MASTER, 0.5);
-        let aux = bus(&mut context, BusKey::MASTER, 1.0);
-        context.control().send_bus(group, aux, 1.0, tap, None).unwrap();
+        let group = bus(&mut context, NodeKey::MASTER, 0.5);
+        let aux = bus(&mut context, NodeKey::MASTER, 1.0);
+        context.control().send_to(group, aux, 1.0, tap, None).unwrap();
         context.control().play(&tone, &into(group, 0)).unwrap();
-        context.control().set_bus(group, BusParam::Mute, 1.0, Some(2), None).unwrap();
-        context.control().unsend_bus(group, aux, Some(3)).unwrap();
+        context.control().set_param(group, "mute", 1.0, Some(2), None).unwrap();
+        context.control().unsend(group, aux, Some(3)).unwrap();
         context.render(4)
     };
     assert_eq!(render(Tap::PostFader), [1.0, 1.0, 0.0, 0.0]);
@@ -573,27 +570,24 @@ fn a_routing_change_the_queue_has_no_room_for_leaves_the_routing_as_it_was() {
         commands: 4,
         ..AudioConfig::default()
     });
-    let first = bus(&mut context, BusKey::MASTER, 1.0);
-    let second = bus(&mut context, BusKey::MASTER, 1.0);
-    let aux = bus(&mut context, BusKey::MASTER, 1.0);
-    context.control().send_bus(first, aux, 1.0, Tap::PostFader, None).unwrap();
+    let first = bus(&mut context, NodeKey::MASTER, 1.0);
+    let second = bus(&mut context, NodeKey::MASTER, 1.0);
+    let aux = bus(&mut context, NodeKey::MASTER, 1.0);
+    context.control().send_to(first, aux, 1.0, Tap::PostFader, None).unwrap();
     context.render(1);
-    while context.control().set_bus(first, BusParam::Gain, 1.0, None, None).is_ok() {}
+    while context.control().set_param(first, "gain", 1.0, None, None).is_ok() {}
 
-    assert_eq!(
-        context.control().route_bus(first, second, None),
-        Err(AudioError::QueueFull(4))
-    );
-    assert_eq!(context.control().unsend_bus(first, aux, None), Err(AudioError::QueueFull(4)));
+    assert_eq!(context.control().route(first, second, None), Err(AudioError::QueueFull(4)));
+    assert_eq!(context.control().unsend(first, aux, None), Err(AudioError::QueueFull(4)));
     context.render(1);
     assert_eq!(
-        context.control().route_bus(second, first, None),
+        context.control().route(second, first, None),
         Ok(()),
         "the first bus never went under the second, so this is no loop"
     );
     assert_eq!(
-        context.control().remove_bus(aux, None),
-        Err(AudioError::BusInUse { voices: 0, buses: 1 }),
+        context.control().remove(aux, None),
+        Err(AudioError::NodeInUse { voices: 0, nodes: 1 }),
         "the send the engine still mixes is still there"
     );
 }
@@ -601,20 +595,20 @@ fn a_routing_change_the_queue_has_no_room_for_leaves_the_routing_as_it_was() {
 #[test]
 fn a_stale_bus_handle_names_no_send_to_the_bus_in_its_slot_now() {
     let mut context = mono(AudioConfig::default());
-    let source = bus(&mut context, BusKey::MASTER, 1.0);
-    let old = bus(&mut context, BusKey::MASTER, 1.0);
-    context.control().send_bus(source, old, 1.0, Tap::PostFader, None).unwrap();
-    assert!(context.control().unsend_bus(source, old, None).unwrap());
-    assert!(context.control().remove_bus(old, None).unwrap());
+    let source = bus(&mut context, NodeKey::MASTER, 1.0);
+    let old = bus(&mut context, NodeKey::MASTER, 1.0);
+    context.control().send_to(source, old, 1.0, Tap::PostFader, None).unwrap();
+    assert!(context.control().unsend(source, old, None).unwrap());
+    assert!(context.control().remove(old, None).unwrap());
     context.render(1);
-    let new = bus(&mut context, BusKey::MASTER, 1.0);
+    let new = bus(&mut context, NodeKey::MASTER, 1.0);
     assert_eq!(new.slot, old.slot);
-    context.control().send_bus(source, new, 1.0, Tap::PostFader, None).unwrap();
+    context.control().send_to(source, new, 1.0, Tap::PostFader, None).unwrap();
 
-    assert!(!context.control().unsend_bus(source, old, None).unwrap());
+    assert!(!context.control().unsend(source, old, None).unwrap());
     assert_eq!(
-        context.control().remove_bus(new, None),
-        Err(AudioError::BusInUse { voices: 0, buses: 1 }),
+        context.control().remove(new, None),
+        Err(AudioError::NodeInUse { voices: 0, nodes: 1 }),
         "the send to the new bus is still there"
     );
 }
@@ -623,30 +617,30 @@ fn a_stale_bus_handle_names_no_send_to_the_bus_in_its_slot_now() {
 fn sends_that_would_loop_or_feed_a_removed_bus_are_refused() {
     let click = pcm(&[1.0], 48_000);
     let mut context = mono(AudioConfig::default());
-    let group = bus(&mut context, BusKey::MASTER, 1.0);
-    let aux = bus(&mut context, BusKey::MASTER, 1.0);
-    context.control().send_bus(group, aux, 1.0, Tap::PostFader, None).unwrap();
+    let group = bus(&mut context, NodeKey::MASTER, 1.0);
+    let aux = bus(&mut context, NodeKey::MASTER, 1.0);
+    context.control().send_to(group, aux, 1.0, Tap::PostFader, None).unwrap();
     assert_eq!(
-        context.control().send_bus(aux, group, 1.0, Tap::PostFader, None),
+        context.control().send_to(aux, group, 1.0, Tap::PostFader, None),
         Err(AudioError::Cycle)
     );
-    assert_eq!(context.control().route_bus(aux, group, None), Err(AudioError::Cycle));
+    assert_eq!(context.control().route(aux, group, None), Err(AudioError::Cycle));
     assert_eq!(
-        context.control().send_bus(group, group, 1.0, Tap::PostFader, None),
+        context.control().send_to(group, group, 1.0, Tap::PostFader, None),
         Err(AudioError::Cycle)
     );
     assert_eq!(
-        context.control().remove_bus(aux, None),
-        Err(AudioError::BusInUse { voices: 0, buses: 1 })
+        context.control().remove(aux, None),
+        Err(AudioError::NodeInUse { voices: 0, nodes: 1 })
     );
     let spec = PlaySpec {
-        sends: [Some(VoiceSend { bus: group, level: 1.0 }), None],
+        sends: vec![VoiceSend { bus: group, level: 1.0 }],
         ..at(5)
     };
     context.control().play(&click, &spec).unwrap();
     assert_eq!(
-        context.control().remove_bus(group, None),
-        Err(AudioError::BusInUse { voices: 1, buses: 0 })
+        context.control().remove(group, None),
+        Err(AudioError::NodeInUse { voices: 1, nodes: 0 })
     );
 }
 
@@ -668,7 +662,9 @@ impl Processor for Offset {
         0.0
     }
 
-    fn process(&mut self, block: &mut Block<'_>, _key: Option<&[f32]>) {
+    fn process(&mut self, io: &mut Io<'_>) {
+        let mut block = io.main();
+        let block = &mut block;
         for sample in block.channel(0) {
             *sample += self.0;
         }
@@ -716,7 +712,9 @@ impl Processor for Ring {
         Tail::Frames(self.tail)
     }
 
-    fn process(&mut self, block: &mut Block<'_>, _key: Option<&[f32]>) {
+    fn process(&mut self, io: &mut Io<'_>) {
+        let mut block = io.main();
+        let block = &mut block;
         for sample in block.channel(0) {
             if *sample != 0.0 {
                 (self.held, self.left) = (*sample, self.tail);
@@ -732,46 +730,49 @@ impl Processor for Ring {
 fn a_bus_runs_its_chain_in_order_before_its_gain() {
     let tone = pcm(&[1.0; 8], 48_000);
     let mut context = mono(AudioConfig::default());
-    let group = bus(&mut context, BusKey::MASTER, 0.5);
-    let gain = context.control().mount(Box::new(Gain::new()), group, None).unwrap();
-    context.control().mount(Box::new(Offset(1.0)), group, None).unwrap();
-    context.control().set_processor(gain, "gain", 2.0, None, None).unwrap();
+    let group = bus(&mut context, NodeKey::MASTER, 0.5);
+    let gain = context.control().insert(group, Box::new(Gain::new()), None).unwrap();
+    context.control().insert(group, Box::new(Offset(1.0)), None).unwrap();
+    context.control().set_param(gain, "gain", 2.0, None, None).unwrap();
     context.control().play(&tone, &into(group, 0)).unwrap();
     // (1 * 2 + 1) * 0.5.
     assert_eq!(context.render(1), [1.5]);
 
-    context.control().mount(Box::new(Offset(1.0)), group, Some(0)).unwrap();
+    context.control().insert(group, Box::new(Offset(1.0)), Some(0)).unwrap();
     // ((1 + 1) * 2 + 1) * 0.5.
     assert_eq!(context.render(1), [2.5]);
-    context.control().set_processor(gain, "gain", 0.0, Some(3), None).unwrap();
-    assert!(context.control().unmount(gain, Some(4)).unwrap());
+    context.control().set_param(gain, "gain", 0.0, Some(3), None).unwrap();
+    assert!(context.control().remove(gain, Some(4)).unwrap());
     // Then ((1 + 1) * 0 + 1) * 0.5, and without the gain (1 + 1 + 1) * 0.5.
     assert_eq!(context.render(3), [2.5, 0.5, 1.5]);
-    assert!(!context.control().processor_live(gain));
-    assert!(!context.control().set_processor(gain, "gain", 1.0, None, None).unwrap());
+    assert!(!context.control().node_live(gain));
+    assert!(!context.control().set_param(gain, "gain", 1.0, None, None).unwrap());
 }
 
 #[test]
 fn processor_parameters_are_checked_by_name_and_range() {
     let mut context = mono(AudioConfig::default());
-    let gain = context.control().mount(Box::new(Gain::new()), BusKey::MASTER, None).unwrap();
+    let gain = context
+        .control()
+        .insert(NodeKey::MASTER, Box::new(Gain::new()), None)
+        .unwrap();
     assert!(matches!(
-        context.control().set_processor(gain, "volume", 1.0, None, None),
+        context.control().set_param(gain, "volume", 1.0, None, None),
         Err(AudioError::UnknownParameter { kind: "gain", .. })
     ));
     assert!(matches!(
-        context.control().set_processor(gain, "gain", 100.0, None, None),
+        context.control().set_param(gain, "gain", 100.0, None, None),
         Err(AudioError::Parameter { name: "gain", .. })
     ));
-    let full = mono(AudioConfig {
-        processors: 1,
+    // The master is a node too.
+    let mut full = mono(AudioConfig {
+        nodes: 2,
         ..AudioConfig::default()
     });
-    let mut full = full;
-    full.control().mount(Box::new(Gain::new()), BusKey::MASTER, None).unwrap();
+    full.control().insert(NodeKey::MASTER, Box::new(Gain::new()), None).unwrap();
     assert!(matches!(
-        full.control().mount(Box::new(Gain::new()), BusKey::MASTER, None),
-        Err(AudioError::ProcessorsExhausted(1))
+        full.control().insert(NodeKey::MASTER, Box::new(Gain::new()), None),
+        Err(AudioError::NodesExhausted(2))
     ));
 }
 
@@ -779,36 +780,36 @@ fn processor_parameters_are_checked_by_name_and_range() {
 fn a_removed_bus_rings_out_its_tail_before_it_goes() {
     let click = pcm(&[1.0], 48_000);
     let mut context = mono(AudioConfig::default());
-    let room = bus(&mut context, BusKey::MASTER, 1.0);
-    let ringing = context.control().mount(ring(4, 0), room, None).unwrap();
+    let room = bus(&mut context, NodeKey::MASTER, 1.0);
+    let ringing = context.control().insert(room, ring(4, 0), None).unwrap();
     context.control().play(&click, &into(room, 0)).unwrap();
     let mut out = context.render(2);
-    assert!(context.control().remove_bus(room, None).unwrap());
-    assert!(!context.control().processor_live(ringing), "the processor goes with its bus");
+    assert!(context.control().remove(room, None).unwrap());
+    assert!(!context.control().node_live(ringing), "the processor goes with its bus");
     out.extend(context.render(6));
     assert_eq!(out, [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0]);
     let stats = context.control().stats();
     assert_eq!(stats.allocated, 0);
-    let reused = bus(&mut context, BusKey::MASTER, 1.0);
+    let reused = bus(&mut context, NodeKey::MASTER, 1.0);
     assert_ne!(reused, room);
-    context.control().mount(Box::new(Gain::new()), reused, None).unwrap();
+    context.control().insert(reused, Box::new(Gain::new()), None).unwrap();
 }
 
 #[test]
 fn latency_adds_up_along_the_longest_path_to_each_bus() {
     let mut context = mono(AudioConfig::default());
-    let group = bus(&mut context, BusKey::MASTER, 1.0);
+    let group = bus(&mut context, NodeKey::MASTER, 1.0);
     let inner = bus(&mut context, group, 1.0);
-    let aux = bus(&mut context, BusKey::MASTER, 1.0);
-    context.control().mount(ring(0, 10), group, None).unwrap();
-    let late = context.control().mount(ring(0, 5), inner, None).unwrap();
-    context.control().send_bus(inner, aux, 1.0, Tap::PostFader, None).unwrap();
+    let aux = bus(&mut context, NodeKey::MASTER, 1.0);
+    context.control().insert(group, ring(0, 10), None).unwrap();
+    let late = context.control().insert(inner, ring(0, 5), None).unwrap();
+    context.control().send_to(inner, aux, 1.0, Tap::PostFader, None).unwrap();
     assert_eq!(context.control().latency(inner), Ok(5));
     assert_eq!(context.control().latency(group), Ok(15));
     assert_eq!(context.control().latency(aux), Ok(5));
-    assert_eq!(context.control().latency(BusKey::MASTER), Ok(15));
-    context.control().unmount(late, None).unwrap();
-    assert_eq!(context.control().latency(BusKey::MASTER), Ok(10));
+    assert_eq!(context.control().latency(NodeKey::MASTER), Ok(15));
+    context.control().remove(late, None).unwrap();
+    assert_eq!(context.control().latency(NodeKey::MASTER), Ok(10));
 }
 
 /// Delays what it hears by its length, and says so.
@@ -843,7 +844,9 @@ impl Processor for Late {
         self.ring.len() as u64
     }
 
-    fn process(&mut self, block: &mut Block<'_>, _key: Option<&[f32]>) {
+    fn process(&mut self, io: &mut Io<'_>) {
+        let mut block = io.main();
+        let block = &mut block;
         for sample in block.channel(0) {
             std::mem::swap(sample, &mut self.ring[self.next]);
             self.next = (self.next + 1) % self.ring.len();
@@ -856,20 +859,20 @@ fn paths_of_different_latency_line_up_where_they_meet() {
     let click = pcm(&[0.5], 48_000);
     let render = |sizes: &[usize]| {
         let mut context = mono(AudioConfig::default());
-        let slow = bus(&mut context, BusKey::MASTER, 1.0);
-        let plain = bus(&mut context, BusKey::MASTER, 1.0);
-        let room = bus(&mut context, BusKey::MASTER, 1.0);
-        let lookahead = context.control().mount(late(3), slow, None).unwrap();
+        let slow = bus(&mut context, NodeKey::MASTER, 1.0);
+        let plain = bus(&mut context, NodeKey::MASTER, 1.0);
+        let room = bus(&mut context, NodeKey::MASTER, 1.0);
+        let lookahead = context.control().insert(slow, late(3), None).unwrap();
         // The room hears the slow bus and the plain one, so it lines them up too, and the master
         // waits for the room.
-        context.control().send_bus(slow, room, 1.0, Tap::PostFader, None).unwrap();
-        context.control().send_bus(plain, room, 1.0, Tap::PostFader, None).unwrap();
-        for target in [slow, plain, BusKey::MASTER] {
+        context.control().send_to(slow, room, 1.0, Tap::PostFader, None).unwrap();
+        context.control().send_to(plain, room, 1.0, Tap::PostFader, None).unwrap();
+        for target in [slow, plain, NodeKey::MASTER] {
             context.control().play(&click, &into(target, 1)).unwrap();
         }
         // Without the slow bus's processor nothing waits, from the frame it goes.
-        context.control().unmount(lookahead, Some(20)).unwrap();
-        for target in [slow, plain, BusKey::MASTER] {
+        context.control().remove(lookahead, Some(20)).unwrap();
+        for target in [slow, plain, NodeKey::MASTER] {
             context.control().play(&click, &into(target, 30)).unwrap();
         }
         let mut out = Vec::new();
@@ -883,7 +886,7 @@ fn paths_of_different_latency_line_up_where_they_meet() {
             out.extend(block);
         }
         out.truncate(40);
-        assert_eq!(context.control().latency(BusKey::MASTER), Ok(0));
+        assert_eq!(context.control().latency(NodeKey::MASTER), Ok(0));
         out
     };
     let out = render(&[40]);
@@ -900,14 +903,14 @@ fn paths_of_different_latency_line_up_where_they_meet() {
 fn a_meter_reads_what_its_bus_put_out_since_it_was_last_read() {
     let ramp = pcm(&[0.5, -1.0, 0.5, -1.0], 48_000);
     let mut context = mono(AudioConfig::default());
-    let group = bus(&mut context, BusKey::MASTER, 0.5);
+    let group = bus(&mut context, NodeKey::MASTER, 0.5);
     context.control().play(&ramp, &into(group, 0)).unwrap();
     context.render(4);
     let meter = context.control().meter(group).unwrap();
     assert_eq!(meter.peak, 0.5);
     // Samples of 0.25 and 0.5 after the gain: the root of their mean square.
     assert!((meter.rms - (0.15625f32).sqrt()).abs() < 1e-6, "{}", meter.rms);
-    assert_eq!(context.control().meter(BusKey::MASTER).unwrap().peak, 0.5);
+    assert_eq!(context.control().meter(NodeKey::MASTER).unwrap().peak, 0.5);
     context.render(4);
     assert_eq!(context.control().meter(group).unwrap(), Meter { peak: 0.0, rms: 0.0 });
 }
@@ -930,10 +933,10 @@ fn a_voice_gain_ramps_sample_by_sample_from_its_frame() {
 fn a_bus_gain_ramps_exponentially_in_even_ratios() {
     let tone = pcm(&[1.0; 6], 48_000);
     let mut context = mono(AudioConfig::default());
-    let group = bus(&mut context, BusKey::MASTER, 1.0);
+    let group = bus(&mut context, NodeKey::MASTER, 1.0);
     context.control().play(&tone, &into(group, 0)).unwrap();
     let ramp = Some(glide(3, Curve::Exponential));
-    context.control().set_bus(group, BusParam::Gain, 8.0, Some(1), ramp).unwrap();
+    context.control().set_param(group, "gain", 8.0, Some(1), ramp).unwrap();
     let out = context.render(5);
     for (sample, expected) in out.iter().zip([1.0, 1.0, 2.0, 4.0, 8.0]) {
         assert!((sample - expected).abs() < 1e-5, "{out:?}");
@@ -941,7 +944,7 @@ fn a_bus_gain_ramps_exponentially_in_even_ratios() {
     assert!(matches!(
         context
             .control()
-            .set_bus(group, BusParam::Gain, 0.0, None, Some(glide(3, Curve::Exponential))),
+            .set_param(group, "gain", 0.0, None, Some(glide(3, Curve::Exponential))),
         Err(AudioError::Parameter { .. })
     ));
 }
@@ -1015,14 +1018,43 @@ fn a_group_arrives_whole_or_not_at_all() {
     assert_eq!(context.control().room(), 3);
 }
 
+/// Multiplies by a control-rate level: it hears where a ramp has got to once a control block.
+struct Level(f32);
+
+impl Processor for Level {
+    fn kind(&self) -> &'static str {
+        "level"
+    }
+
+    fn params(&self) -> &'static [ParamInfo] {
+        const PARAMS: &[ParamInfo] = &[ParamInfo::control("level", 0.0, 1.0, 1.0, "")];
+        PARAMS
+    }
+
+    #[allow(clippy::cast_possible_truncation)] // Ranged on the control side.
+    fn set(&mut self, _index: usize, value: f64) {
+        self.0 = value as f32;
+    }
+
+    fn value(&self, _index: usize) -> f64 {
+        f64::from(self.0)
+    }
+
+    fn process(&mut self, io: &mut Io<'_>) {
+        for sample in io.main().channel(0) {
+            *sample *= self.0;
+        }
+    }
+}
+
 #[test]
-fn a_processor_parameter_ramps_every_control_block() {
+fn a_control_rate_parameter_ramps_every_control_block() {
     let tone = pcm(&[1.0; 128], 48_000);
     let mut context = mono(AudioConfig::default());
-    let gain = context.control().mount(Box::new(Gain::new()), BusKey::MASTER, None).unwrap();
+    let level = context.control().insert(NodeKey::MASTER, Box::new(Level(1.0)), None).unwrap();
     context.control().play(&tone, &at(0)).unwrap();
     let ramp = Some(glide(64, Curve::Linear));
-    context.control().set_processor(gain, "gain", 0.0, None, ramp).unwrap();
+    context.control().set_param(level, "level", 0.0, None, ramp).unwrap();
     let out = context.render(100);
     assert_eq!(out[..32], [1.0; 32]);
     assert_eq!(out[32..64], [0.5; 32]);
@@ -1030,18 +1062,44 @@ fn a_processor_parameter_ramps_every_control_block() {
 }
 
 #[test]
+fn an_audio_rate_parameter_ramps_every_frame() {
+    let tone = pcm(&[1.0; 128], 48_000);
+    let mut context = mono(AudioConfig::default());
+    let gain = context
+        .control()
+        .insert(NodeKey::MASTER, Box::new(Gain::new()), None)
+        .unwrap();
+    context.control().play(&tone, &at(0)).unwrap();
+    let ramp = Some(glide(64, Curve::Linear));
+    context.control().set_param(gain, "gain", 0.0, None, ramp).unwrap();
+    let out = context.render(100);
+    for (frame, sample) in out[..64].iter().enumerate() {
+        #[allow(clippy::cast_precision_loss)] // A frame in a ramp.
+        let expected = 1.0 - frame as f32 / 64.0;
+        assert!((sample - expected).abs() < 1e-6, "frame {frame}: {sample}");
+    }
+    assert_eq!(out[64..], [0.0; 36]);
+}
+
+#[test]
 fn a_compressor_listening_to_dialogue_ducks_the_music_while_it_speaks() {
     let mut context = mono(AudioConfig::default());
-    let music = bus(&mut context, BusKey::MASTER, 1.0);
-    let dialogue = bus(&mut context, BusKey::MASTER, 1.0);
+    let music = bus(&mut context, NodeKey::MASTER, 1.0);
+    let dialogue = bus(&mut context, NodeKey::MASTER, 1.0);
     let settings = {
         let mut settings = crate::audio::processor::Settings::new();
         settings.insert("ratio", crate::audio::processor::Setting::Number(20.0));
         settings.insert("knee", crate::audio::processor::Setting::Number(0.0));
         settings
     };
-    let ducker = crate::audio::processor::create("compressor", 48_000, 1, settings).unwrap();
-    let ducker = context.control().mount(ducker, music, None).unwrap();
+    let setup = crate::audio::processor::Setup {
+        rate: 48_000,
+        channels: 1,
+    };
+    let ducker = crate::audio::Registry::builtin()
+        .create("compressor", &setup, settings)
+        .unwrap();
+    let ducker = context.control().insert(music, ducker, None).unwrap();
     assert!(context.control().listen(ducker, Some(dialogue), None).unwrap());
     context
         .control()
@@ -1060,22 +1118,22 @@ fn a_compressor_listening_to_dialogue_ducks_the_music_while_it_speaks() {
     let level = context.control().meter(music).unwrap().rms;
     assert!(level < 0.03, "{level}");
 
-    // The key can't go while it's heard, and a key the music feeds would be a loop; a bus that
-    // feeds the music is mixed before it anyway.
-    assert!(matches!(
-        context.control().remove_bus(dialogue, None),
-        Err(AudioError::BusInUse { buses: 1, .. })
-    ));
+    // A key the music feeds would be a loop; a bus that feeds the music is run before it anyway.
     let inner = bus(&mut context, music, 1.0);
     assert_eq!(
-        context.control().listen(ducker, Some(BusKey::MASTER), None),
+        context.control().listen(ducker, Some(NodeKey::MASTER), None),
         Err(AudioError::Cycle)
     );
     assert!(context.control().listen(ducker, Some(inner), None).unwrap());
     assert_eq!(context.control().listen(ducker, Some(music), None), Err(AudioError::Cycle));
-    context.control().unmount(ducker, None).unwrap();
+    // A key goes with its connection to the sidechain when it's removed.
     context.render(30_000);
-    assert!(context.control().remove_bus(dialogue, None).unwrap());
+    assert!(context.control().listen(ducker, Some(dialogue), None).unwrap());
+    assert!(context.control().remove(dialogue, None).unwrap());
+    context.render(1);
+    context.control().remove(ducker, None).unwrap();
+    context.render(1);
+    assert_eq!(context.control().stats().allocated, 0);
 }
 
 fn placed(position: [f64; 3]) -> PlaySpec {
@@ -1456,4 +1514,113 @@ fn a_stream_written_from_another_thread_arrives_whole_and_in_order() {
     let expected: Vec<f32> = (0..FRAMES).map(f32::from).collect();
     assert_eq!(played, expected);
     assert_eq!(stream.stats().missed, 0);
+}
+
+#[test]
+fn voices_come_and_go_without_revising_the_graph() {
+    let shot = pcm(&[0.5; 40], 48_000);
+    let mut context = mono(AudioConfig {
+        voices: 64,
+        physical: Some(16),
+        ..AudioConfig::default()
+    });
+    let effects = bus(&mut context, NodeKey::MASTER, 1.0);
+    let room = bus(&mut context, NodeKey::MASTER, 1.0);
+    context
+        .control()
+        .insert(room, Box::new(crate::audio::dsp::reverb::Reverb::new(48_000)), None)
+        .unwrap();
+    context.render(1);
+    let revised = context.control().stats().revisions;
+    assert_eq!(revised, 3, "two buses and an insert");
+    for round in 0..200u64 {
+        let spec = PlaySpec {
+            sends: vec![VoiceSend { bus: room, level: 0.5 }],
+            ..into(effects, round * 16 + 1)
+        };
+        let voice = context.control().play(&shot, &spec).unwrap();
+        context.control().play(&shot, &into(effects, round * 16 + 3)).unwrap();
+        if round % 3 == 0 {
+            context.control().stop(voice, Some(round * 16 + 9), 4).unwrap();
+        }
+        let (_, engine) = context.parts();
+        let mut block = vec![0.0; 16];
+        assert_eq!(allocations(|| engine.render(&mut block)), 0);
+        context.control().collect();
+    }
+    assert_eq!(context.control().stats().revisions, revised);
+}
+
+#[test]
+fn a_revision_leaves_every_node_it_does_not_touch_as_it_was() {
+    let click = pcm(&[1.0], 48_000);
+    let render = |revise: bool| {
+        let mut context = mono(AudioConfig::default());
+        let room = bus(&mut context, NodeKey::MASTER, 1.0);
+        context
+            .control()
+            .insert(room, Box::new(crate::audio::dsp::reverb::Reverb::new(48_000)), None)
+            .unwrap();
+        context.control().play(&click, &into(room, 0)).unwrap();
+        // The bus's fader is halfway down a ramp when the graph changes around it.
+        context
+            .control()
+            .set_param(room, "gain", 0.25, Some(0), Some(glide(4000, Curve::Linear)))
+            .unwrap();
+        let mut out = context.render(1000);
+        if revise {
+            let other = bus(&mut context, NodeKey::MASTER, 1.0);
+            let aux = bus(&mut context, other, 1.0);
+            context
+                .control()
+                .send_to(aux, NodeKey::MASTER, 0.5, Tap::PostFader, None)
+                .unwrap();
+            context.control().remove(other, None).unwrap_err();
+            context.control().unsend(aux, NodeKey::MASTER, None).unwrap();
+            context.control().remove(aux, None).unwrap();
+            context.control().remove(other, None).unwrap();
+        }
+        for _ in 0..30 {
+            let (_, engine) = context.parts();
+            let mut block = vec![0.0; 100];
+            assert_eq!(allocations(|| engine.render(&mut block)), 0);
+            out.extend(block);
+            context.control().collect();
+        }
+        (out, context.control().stats().revisions)
+    };
+    let (still, before) = render(false);
+    let (revised, after) = render(true);
+    assert!(after > before, "the graph changed {after} times, {before} without");
+    assert!(still[1500..].iter().any(|sample| *sample != 0.0), "the room rings on");
+    assert_eq!(
+        revised, still,
+        "the reverb's tank and the fader's ramp carried on through every plan"
+    );
+}
+
+#[test]
+fn revisions_take_effect_in_the_order_they_are_made() {
+    let tone = pcm(&[1.0; 64], 48_000);
+    let mut context = mono(AudioConfig::default());
+    let first = bus(&mut context, NodeKey::MASTER, 0.5);
+    let second = bus(&mut context, NodeKey::MASTER, 0.25);
+    context.control().play(&tone, &into(first, 0)).unwrap();
+    context.control().route(first, second, Some(10)).unwrap();
+    assert_eq!(
+        context.control().route(first, NodeKey::MASTER, Some(5)),
+        Err(AudioError::GraphOrder { pending: 10 })
+    );
+    assert_eq!(
+        context.control().add_bus(&BusSpec::default()),
+        Err(AudioError::GraphOrder { pending: 10 }),
+        "a change for now waits for none"
+    );
+    // On or after the frame of the one waiting is fine, and the refused changes changed nothing.
+    context.control().route(first, NodeKey::MASTER, Some(12)).unwrap();
+    let out = context.render(16);
+    assert_eq!(out[..10], [0.5; 10]);
+    assert_eq!(out[10..12], [0.125; 2]);
+    assert_eq!(out[12..], [0.5; 4]);
+    assert!(context.control().add_bus(&BusSpec::default()).is_ok(), "nothing waits now");
 }

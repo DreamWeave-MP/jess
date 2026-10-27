@@ -3,7 +3,7 @@
 use std::f64::consts::PI;
 use std::str::FromStr;
 
-use crate::audio::processor::{Block, ParamInfo, Processor};
+use crate::audio::processor::{Io, ParamInfo, Processor};
 use crate::audio::{AudioError, MAX_CHANNELS};
 
 /// What a filter does to the spectrum.
@@ -178,24 +178,9 @@ pub struct Filter {
 
 impl Filter {
     const PARAMS: &'static [ParamInfo] = &[
-        ParamInfo {
-            name: "frequency",
-            min: 1.0,
-            max: 192_000.0,
-            default: 1000.0,
-        },
-        ParamInfo {
-            name: "q",
-            min: 0.025,
-            max: 40.0,
-            default: std::f64::consts::FRAC_1_SQRT_2,
-        },
-        ParamInfo {
-            name: "gain",
-            min: -48.0,
-            max: 48.0,
-            default: 0.0,
-        },
+        ParamInfo::control("frequency", 1.0, 192_000.0, 1000.0, "Hz"),
+        ParamInfo::control("q", 0.025, 40.0, std::f64::consts::FRAC_1_SQRT_2, ""),
+        ParamInfo::control("gain", -48.0, 48.0, 0.0, "dB"),
     ];
 
     /// A filter of `shape` at the default frequency, Q, and gain, for `rate` frames per second.
@@ -246,7 +231,9 @@ impl Processor for Filter {
     }
 
     #[allow(clippy::cast_possible_truncation)] // Back to the engine's f32.
-    fn process(&mut self, block: &mut Block<'_>, _key: Option<&[f32]>) {
+    fn process(&mut self, io: &mut Io<'_>) {
+        let (mut block, _) = io.effect();
+        let block = &mut block;
         let coefficients = self.coefficients;
         for channel in 0..block.channels {
             let section = &mut self.sections[channel];
@@ -274,12 +261,8 @@ mod tests {
                 let value = (2.0 * PI * frequency * frame / rate).sin() as f32;
                 *sample = value;
             }
-            let mut view = Block {
-                samples: &mut samples,
-                channels: 1,
-                frames: QUANTUM,
-            };
-            filter.process(&mut view, None);
+            let mut view = Io::new(&mut samples, 1, QUANTUM);
+            filter.process(&mut view);
             if block > 300 {
                 peak = samples.iter().fold(peak, |peak, sample| peak.max(f64::from(sample.abs())));
             }

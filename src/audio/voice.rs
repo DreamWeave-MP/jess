@@ -7,11 +7,12 @@
 use std::f32::consts::FRAC_PI_4;
 use std::sync::Arc;
 
+use crate::audio::mixer::NodeKey;
 use crate::audio::param::{Curve, Glide, Param};
 use crate::audio::resample;
 use crate::audio::spatial::{Emitter, Space};
 use crate::audio::stream::Stream;
-use crate::audio::{AudioError, BusKey, MAX_CHANNELS, MAX_PLAYBACK_RATE, MAX_VOICE_SENDS, Pcm, QUANTUM};
+use crate::audio::{AudioError, MAX_CHANNELS, MAX_PLAYBACK_RATE, MAX_VOICE_OUTPUTS, Pcm, QUANTUM};
 
 /// One fractional frame in the 32.32 fixed point a voice's position is kept in. Positions are
 /// integers so that a render is the same on every machine, however long it runs.
@@ -36,10 +37,12 @@ pub struct LoopRegion {
 }
 
 /// How to start a voice.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct PlaySpec {
     /// The output frame to start on; `None` starts at the next frame the engine renders.
     pub at: Option<u64>,
+    /// Made paused: it holds its place until it is played.
+    pub paused: bool,
     /// Linear gain.
     pub gain: f32,
     /// `-1.0` (left) to `1.0` (right). A mono source pans with equal power; a stereo one
@@ -51,11 +54,11 @@ pub struct PlaySpec {
     pub offset: u64,
     /// Where to loop, if anywhere.
     pub looping: Option<LoopRegion>,
-    /// The bus it plays into.
-    pub bus: BusKey,
-    /// Buses it also sends to, each at a level relative to what it plays into `bus`: a shared
-    /// reverb, say. Fixed when the voice starts; the levels can change.
-    pub sends: [Option<VoiceSend>; MAX_VOICE_SENDS],
+    /// The node it plays into: a bus, usually, or a processor only it goes through.
+    pub bus: NodeKey,
+    /// Nodes it also sends to, each at a level relative to what it plays into `bus`: a shared
+    /// reverb, say.
+    pub sends: Vec<VoiceSend>,
     /// Frames to fade in over, from silence to `gain`.
     pub fade: u64,
     /// Where it is, if it's in space: then distance, direction, and motion set its level, pan,
@@ -101,11 +104,11 @@ impl Culled {
     }
 }
 
-/// A voice's send: the bus, and the level relative to the voice's own gain.
+/// A voice's send: the node, and the level relative to the voice's own gain.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct VoiceSend {
-    /// The bus sent to.
-    pub bus: BusKey,
+    /// The node sent to.
+    pub bus: NodeKey,
     /// Linear level.
     pub level: f32,
 }
@@ -114,18 +117,80 @@ impl Default for PlaySpec {
     fn default() -> Self {
         PlaySpec {
             at: None,
+            paused: false,
             gain: 1.0,
             pan: 0.0,
             rate: 1.0,
             offset: 0,
             looping: None,
-            bus: BusKey::MASTER,
-            sends: [None; MAX_VOICE_SENDS],
+            bus: NodeKey::MASTER,
+            sends: Vec::new(),
             fade: 0,
             spatial: None,
             priority: 0.0,
             culled: Culled::Advance,
         }
+    }
+}
+
+/// What the engine starts a voice with: a [`PlaySpec`] without its routing, which travels as the
+/// voice's [`Outputs`].
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Begin {
+    pub paused: bool,
+    pub gain: f32,
+    pub pan: f32,
+    pub rate: f64,
+    pub offset: u64,
+    pub looping: Option<LoopRegion>,
+    pub fade: u64,
+    pub spatial: Option<Emitter>,
+    pub priority: f32,
+    pub culled: Culled,
+}
+
+impl PlaySpec {
+    pub(crate) const fn begin(&self) -> Begin {
+        Begin {
+            paused: self.paused,
+            gain: self.gain,
+            pan: self.pan,
+            rate: self.rate,
+            offset: self.offset,
+            looping: self.looping,
+            fade: self.fade,
+            spatial: self.spatial,
+            priority: self.priority,
+            culled: self.culled,
+        }
+    }
+}
+
+/// One of a voice's outputs: a node input it adds into, at a level.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Output {
+    pub slot: u32,
+    pub generation: u32,
+    /// Which audio input of the node.
+    pub input: u8,
+    pub level: f32,
+}
+
+/// Where a voice plays: its first output, and the rest, which only a voice that sends anywhere
+/// allocates.
+#[derive(Debug)]
+pub struct Outputs {
+    pub first: Output,
+    pub rest: Box<[Output]>,
+}
+
+impl Outputs {
+    pub fn iter(&self) -> impl Iterator<Item = &Output> {
+        std::iter::once(&self.first).chain(self.rest.iter())
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Output> {
+        std::iter::once(&mut self.first).chain(self.rest.iter_mut())
     }
 }
 
@@ -227,7 +292,10 @@ impl PlaySpec {
         VoiceParam::Gain.check(f64::from(self.gain))?;
         VoiceParam::Pan.check(f64::from(self.pan))?;
         VoiceParam::Rate.check(self.rate)?;
-        for send in self.sends.iter().flatten() {
+        if self.sends.len() >= MAX_VOICE_OUTPUTS {
+            return Err(AudioError::SendsExhausted(MAX_VOICE_OUTPUTS - 1));
+        }
+        for send in &self.sends {
             check_level(f64::from(send.level))?;
         }
         if let Some(emitter) = &self.spatial {
@@ -606,10 +674,10 @@ pub struct Voice {
     /// For a stream, the absolute frame its window starts at, and the frames in it.
     base: u64,
     filled: usize,
-    /// The slot of the bus it plays into.
-    pub(crate) bus: u32,
-    /// Bus slots it sends to, and at what level.
-    pub(crate) sends: [Option<(u32, f32)>; MAX_VOICE_SENDS],
+    /// The node inputs it adds into.
+    pub(crate) outputs: Outputs,
+    /// Holding its place, unmixed, until it is played.
+    pub(crate) paused: bool,
     cursor: Cursor,
     gain: Param,
     pan: Param,
@@ -626,7 +694,7 @@ pub struct Voice {
 }
 
 impl Voice {
-    pub(crate) fn new(generation: u32, source: Source, spec: &PlaySpec, output_rate: u32) -> Voice {
+    pub(crate) fn new(generation: u32, source: Source, spec: &Begin, outputs: Outputs, output_rate: u32) -> Voice {
         let mut gain = Param::new(f64::from(spec.gain));
         if spec.fade > 0 {
             gain.set(0.0);
@@ -640,8 +708,8 @@ impl Voice {
         }
         let mut voice = Voice {
             generation,
-            bus: spec.bus.slot,
-            sends: spec.sends.map(|send| send.map(|send| (send.bus.slot, send.level))),
+            outputs,
+            paused: spec.paused,
             cursor: Cursor {
                 position: spec.offset << 32,
                 step: 0,
@@ -938,12 +1006,17 @@ impl Voice {
         }
     }
 
-    /// Changes the level of the send to bus slot `target`, if the voice has one.
+    /// Changes the level of the output into node slot `target`, if the voice has one.
     pub(crate) fn set_send(&mut self, target: u32, level: f32) {
-        for (bus, known) in self.sends.iter_mut().flatten() {
-            if *bus == target {
-                *known = level;
-            }
+        set_level(&mut self.outputs, target, level);
+    }
+}
+
+/// Changes the level of `outputs`' output into node slot `target`, if there is one.
+pub fn set_level(outputs: &mut Outputs, target: u32, level: f32) {
+    for output in outputs.iter_mut() {
+        if output.slot == target {
+            output.level = level;
         }
     }
 }

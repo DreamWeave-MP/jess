@@ -166,10 +166,11 @@ export type AudioPlayOptions = {
   loop: boolean?,
   loopStart: number?,
   loopEnd: number?,
-  --- The bus it plays into: the master unless told otherwise.
-  bus: AudioBus?,
-  --- Up to two buses it also sends to, each at a level relative to its own gain (1).
-  sends: { { bus: AudioBus, level: number? } }?,
+  --- The node it plays into: a bus, usually, and the master unless told otherwise; or a processor
+  --- only it goes through.
+  bus: AudioNode?,
+  --- Up to fifteen nodes it also sends to, each at a level relative to its own gain (1).
+  sends: { { bus: AudioNode, level: number? } }?,
   --- Frames to fade in over, from silence to `gain` (0).
   fade: number?,
   --- Where it is, if it's in space: then distance, direction, and motion set its level, pan, and
@@ -204,16 +205,17 @@ export type AudioPlace = {
   lowpass: number?,
 }
 
---- How to make a context: 48000 frames per second, 2 channels, 256 voices, 64 buses (the master
---- included), 256 processors, and room for 4096 waiting commands, unless told otherwise. Space is
---- right-handed (forward crossed with up points right) unless `handedness` is `left`, and sound
---- travels at `speedOfSound` (343) of the world's units a second.
+--- How to make a context: 48000 frames per second, 2 channels, 256 voices, 256 nodes (buses and
+--- processors, the master included), 1024 connections between them, and room for 4096 waiting
+--- commands, unless told otherwise. Space is right-handed (forward crossed with up points right)
+--- unless `handedness` is `left`, and sound travels at `speedOfSound` (343) of the world's units a
+--- second.
 export type AudioContextOptions = {
   rate: number?,
   channels: number?,
   voices: number?,
-  buses: number?,
-  processors: number?,
+  nodes: number?,
+  connections: number?,
   commands: number?,
   speedOfSound: number?,
   handedness: ('right' | 'left')?,
@@ -303,53 +305,63 @@ export type AudioCurve = 'linear' | 'exponential'
 --- RMS, linear, across its channels.
 export type AudioMeter = { peak: number, rms: number }
 
---- How a bus sends to another: at `level` (1), tapped after its gain and mute (`post`, the usual)
---- or before them (`pre`), from frame `at`.
+--- How a node sends to another: at `level` (1), tapped after its processing (`post`, the usual: a
+--- bus's gain and mute) or before it (`pre`), from frame `at`.
 export type AudioSendOptions = { level: number?, tap: ('post' | 'pre')?, at: number? }
 
---- A bus: where voices and buses sum. It runs its processors over the sum, applies its gain, and
---- adds the result into its parent and its sends. Every command takes an optional `at`, an output
---- frame; without one, the next frame rendered.
-export type AudioBus = {
-  --- Sets `gain` (linear) or `mute` (0 off, anything else on).
-  set: (self: AudioBus, param: 'gain' | 'mute', value: number, at: number?) -> boolean,
-  --- Ramps the gain to `value` over `frames` frames from `at`, sample by sample.
-  ramp: (self: AudioBus, param: 'gain', value: number, frames: number, at: number?, curve: AudioCurve?) -> boolean,
-  --- Routes the bus into another; a route that would loop back into it is an error.
-  route: (self: AudioBus, parent: AudioBus, at: number?) -> (),
-  --- Adds a send to `target`, or changes the one there; up to four besides the parent.
-  send: (self: AudioBus, target: AudioBus, options: AudioSendOptions?) -> (),
-  unsend: (self: AudioBus, target: AudioBus, at: number?) -> boolean,
-  --- Removes the bus once nothing routes into it; its processors ring out their tails first.
-  remove: (self: AudioBus, at: number?) -> boolean,
-  live: (self: AudioBus) -> boolean,
-  --- Frames its output lags the voices that reach it, by the longest path's processors.
-  latency: (self: AudioBus) -> number,
-  meter: (self: AudioBus) -> AudioMeter,
-  --- Puts a processor of `kind` in the chain, last or at `index` (from 1), made with `settings`:
-  --- its parameters by name, and whatever the kind is made with.
-  insert: (self: AudioBus, kind: string, settings: { [string]: number | string }?) -> AudioProcessor,
+--- One of a node's parameters: its range, default, and unit (`Hz`, `dB`, `s`, or empty), and how
+--- often it can change inside a block: once a control block of 32 frames while it moves
+--- (`control`), or every sample (`audio`).
+export type AudioParam = {
+  name: string,
+  min: number,
+  max: number,
+  default: number,
+  unit: string,
+  rate: 'control' | 'audio',
 }
 
---- A processor in a bus's chain. Once removed, the handle names nothing.
-export type AudioProcessor = {
-  kind: (self: AudioProcessor) -> string,
-  --- Sets a parameter by name; a name it doesn't have, or a value out of range, is an error.
-  set: (self: AudioProcessor, param: string, value: number, at: number?) -> boolean,
-  --- Ramps a parameter to `value` over `frames` frames from `at`; it moves every 32 frames.
-  ramp: (self: AudioProcessor, param: string, value: number, frames: number, at: number?, curve: AudioCurve?) -> boolean,
-  --- Listens to `bus` (its sidechain key) from `at` instead of its own bus, or to its own again
-  --- with nil. The key is mixed first; a key its own bus feeds is a loop, and an error.
-  listen: (self: AudioProcessor, bus: AudioBus?, at: number?) -> boolean,
-  remove: (self: AudioProcessor, at: number?) -> boolean,
-  live: (self: AudioProcessor) -> boolean,
+--- A node of a context's graph: a bus (a mixer, `kind` `mixer`), or a processor. A bus sums what
+--- reaches it, runs its insert chain, applies its gain and mute, and feeds its route and sends.
+--- Every command takes an optional `at`, an output frame; without one, the next frame rendered.
+--- Once the node is removed the handle names nothing.
+export type AudioNode = {
+  kind: (self: AudioNode) -> string,
+  --- Its parameters, in order.
+  params: (self: AudioNode) -> { AudioParam },
+  --- Sets a parameter by name (a bus has `gain`, linear, and `mute`, 0 or 1); a name it doesn't
+  --- have, or a value out of range, is an error.
+  set: (self: AudioNode, param: string, value: number, at: number?) -> boolean,
+  --- Ramps a parameter to `value` over `frames` frames from `at`: every frame for an audio-rate
+  --- parameter, every 32 for a control-rate one.
+  ramp: (self: AudioNode, param: string, value: number, frames: number, at: number?, curve: AudioCurve?) -> boolean,
+  --- Routes the node into another, replacing its route; a route that would loop back is an error.
+  route: (self: AudioNode, parent: AudioNode, at: number?) -> (),
+  --- Adds a send to `target`, or changes the one there.
+  send: (self: AudioNode, target: AudioNode, options: AudioSendOptions?) -> (),
+  unsend: (self: AudioNode, target: AudioNode, at: number?) -> boolean,
+  --- Listens to `key` on its sidechain from `at`, or to nothing with nil (a compressor then follows
+  --- its own input). The key runs first; a key the node feeds is a loop, and an error.
+  listen: (self: AudioNode, key: AudioNode?, at: number?) -> boolean,
+  --- Removes the node once nothing feeds it, with its insert chain; what has a tail rings out
+  --- first. Its connections out go with it.
+  remove: (self: AudioNode, at: number?) -> boolean,
+  live: (self: AudioNode) -> boolean,
+  --- Frames its output lags the voices that reach it, by the longest path's processors.
+  latency: (self: AudioNode) -> number,
+  --- A bus's output since it was last read; an error for another node.
+  meter: (self: AudioNode) -> AudioMeter,
+  --- Puts a processor of `kind` in the node's insert chain, last or at `index` (from 1), made with
+  --- `settings`: its parameters by name, and whatever the kind is made with.
+  insert: (self: AudioNode, kind: string, settings: { [string]: number | string }?) -> AudioNode,
 }
 
 --- What a context's engine has done, as of its last render: `frames` rendered (the clock), voices
 --- `active` in it and `allocated` (playing or waiting to start), commands carried out `late`
 --- (stamped for a frame already rendered), output samples that weren't finite and were written as
 --- silence (`nonfinite`), commands `pending` for a later frame, voices `culled` in the last block
---- for want of room, and voices `stolen`, ended for it, all told.
+--- for want of room, and voices `stolen`, ended for it, all told, and graph `revisions` carried out
+--- (playing and stopping voices revises nothing).
 export type AudioStats = {
   frames: number,
   active: number,
@@ -359,6 +371,7 @@ export type AudioStats = {
   pending: number,
   culled: number,
   stolen: number,
+  revisions: number,
 }
 
 export type AudioVoiceState = 'scheduled' | 'playing' | 'ended'
@@ -386,8 +399,8 @@ export type AudioVoice = {
   release: (self: AudioVoice, at: number?) -> boolean,
   --- Moves a voice in space from `at`, changing the fields given; false for a voice not in space.
   place: (self: AudioVoice, place: AudioPlace, at: number?) -> boolean,
-  --- Changes the level of a send it started with.
-  send: (self: AudioVoice, bus: AudioBus, level: number, at: number?) -> boolean,
+  --- Changes the level of a send it has.
+  send: (self: AudioVoice, node: AudioNode, level: number, at: number?) -> boolean,
   state: (self: AudioVoice) -> AudioVoiceState,
 }
 
@@ -400,10 +413,18 @@ export type AudioContext = {
   now: (self: AudioContext) -> number,
   --- Starts a voice playing decoded audio or a stream (which plays once, with no offset or loop).
   play: (self: AudioContext, source: AudioPcm | AudioStream, options: AudioPlayOptions?) -> AudioVoice,
-  --- The master bus: the output. It has no parent and is never removed.
-  master: (self: AudioContext) -> AudioBus,
-  --- A bus under `parent` (the master), at `gain` (1), muted or not; voices can play into it at once.
-  bus: (self: AudioContext, options: { parent: AudioBus?, gain: number?, muted: boolean? }?) -> AudioBus,
+  --- The master bus: the output. It has no route and is never removed.
+  master: (self: AudioContext) -> AudioNode,
+  --- A bus routed into `parent` (the master), at `gain` (1), muted or not, with `channels` (the
+  --- context's); voices can play into it at once.
+  bus: (
+    self: AudioContext,
+    options: { parent: AudioNode?, gain: number?, muted: boolean?, channels: number? }?
+  ) -> AudioNode,
+  --- A node running a processor of `kind` (`audio.processors()` lists them), made with `settings`:
+  --- its parameters by name, `channels` (the context's), and whatever the kind is made with.
+  --- It is connected to nothing.
+  node: (self: AudioContext, kind: string, settings: { [string]: number | string }?) -> AudioNode,
   --- Renders `frames` frames and returns them as interleaved 32-bit floats.
   render: (self: AudioContext, frames: number) -> buffer,
   stats: (self: AudioContext) -> AudioStats,
@@ -629,7 +650,7 @@ declare jess: {
     --- An MP3, Ogg Vorbis, or Ogg Opus file decoded into a stream of its own layout on a thread
     --- of its own, which keeps the stream full whatever the script is doing.
     feed: (data: buffer | string, options: AudioFeedOptions?) -> AudioFeed,
-    --- The processor kinds `AudioBus:insert` makes.
+    --- The processor kinds `AudioContext:node` and `AudioNode:insert` make, a host's own included.
     processors: () -> { string },
   },
 }

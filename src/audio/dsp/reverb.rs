@@ -1,7 +1,7 @@
 //! A room: Jezar's Freeverb structure (public domain), eight damped combs into four allpasses a
 //! side, the right side's delays a little longer than the left's for width.
 
-use crate::audio::processor::{Block, ParamInfo, Processor, Tail};
+use crate::audio::processor::{Io, ParamInfo, Processor, Tail};
 
 /// The comb delays at 44.1 kHz, in frames; scaled to the context's rate.
 const COMBS: [usize; 8] = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617];
@@ -123,36 +123,11 @@ pub struct Reverb {
 
 impl Reverb {
     const PARAMS: &'static [ParamInfo] = &[
-        ParamInfo {
-            name: "room",
-            min: 0.0,
-            max: 1.0,
-            default: 0.5,
-        },
-        ParamInfo {
-            name: "damping",
-            min: 0.0,
-            max: 1.0,
-            default: 0.5,
-        },
-        ParamInfo {
-            name: "wet",
-            min: 0.0,
-            max: 1.0,
-            default: 0.3,
-        },
-        ParamInfo {
-            name: "dry",
-            min: 0.0,
-            max: 1.0,
-            default: 0.0,
-        },
-        ParamInfo {
-            name: "width",
-            min: 0.0,
-            max: 1.0,
-            default: 1.0,
-        },
+        ParamInfo::control("room", 0.0, 1.0, 0.5, ""),
+        ParamInfo::control("damping", 0.0, 1.0, 0.5, ""),
+        ParamInfo::control("wet", 0.0, 1.0, 0.3, ""),
+        ParamInfo::control("dry", 0.0, 1.0, 0.0, ""),
+        ParamInfo::control("width", 0.0, 1.0, 1.0, ""),
     ];
 
     /// A room at the default settings for `rate` frames per second.
@@ -214,7 +189,9 @@ impl Processor for Reverb {
         Tail::Frames((longest * repeats + smear * 8.0).ceil() as u64)
     }
 
-    fn process(&mut self, block: &mut Block<'_>, _key: Option<&[f32]>) {
+    fn process(&mut self, io: &mut Io<'_>) {
+        let (mut block, _) = io.effect();
+        let block = &mut block;
         let (feedback, damp) = (self.feedback(), self.damping * DAMP);
         let wet = self.wet * WET;
         let (near, far) = (wet * (self.width / 2.0 + 0.5), wet * ((1.0 - self.width) / 2.0));
@@ -255,12 +232,8 @@ mod tests {
                 samples[0] = 1.0;
                 samples[QUANTUM] = 1.0;
             }
-            let mut view = Block {
-                samples: &mut samples,
-                channels: 2,
-                frames: QUANTUM,
-            };
-            reverb.process(&mut view, None);
+            let mut view = Io::new(&mut samples, 2, QUANTUM);
+            reverb.process(&mut view);
             energy.push(samples.iter().map(|sample| sample * sample).sum::<f32>());
         }
         let early: f32 = energy[10..100].iter().sum();

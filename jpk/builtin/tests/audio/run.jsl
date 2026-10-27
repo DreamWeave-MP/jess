@@ -251,9 +251,9 @@ suite.describe('buses', function()
     local context = audio.offline { channels = 1 }
     local outer = context:bus()
     local inner = context:bus { parent = outer }
-    expect(function() outer:route(inner) end).toThrow 'feed a bus back into itself'
+    expect(function() outer:route(inner) end).toThrow 'feed a node back into itself'
     expect(function() context:master():remove() end).toThrow 'master bus'
-    expect(function() outer:remove() end).toThrow 'still has 0 voices and 1 buses'
+    expect(function() outer:remove() end).toThrow 'still has 0 voices and 1 connections'
     expect(function() inner:insert 'flanger' end).toThrow 'no "flanger" processor'
     expect(function() inner:insert('gain', { volume = 1 }) end).toThrow 'no parameter "volume"'
     expect(function() inner:insert('gain', { gain = 100 }) end).toThrow 'inside its range'
@@ -289,7 +289,7 @@ suite.describe('automation', function()
       expect(math.abs(out[index] - expected) < 1e-5).toBe(true)
     end
 
-    expect(function() group:ramp(('mute' :: unknown) :: 'gain', 1, 4) end).toThrow 'ramps gain'
+    expect(function() group:ramp('volume', 1, 4) end).toThrow 'no parameter "volume"'
     expect(function() group:ramp('gain', 0, 4, nil, 'exponential') end).toThrow 'above 0 for an exponential ramp'
     expect(function() voice:ramp('gain', 1, 4, nil, ('cubic' :: unknown) :: audio.Curve) end).toThrow 'linear or exponential'
   end)
@@ -344,7 +344,7 @@ end
 
 suite.describe('effects', function()
   suite.it('has every processor kind by name', function()
-    expect(audio.processors()).toEqual { 'gain', 'pan', 'filter', 'delay', 'compressor', 'limiter', 'reverb', 'drive' }
+    expect(audio.processors()).toEqual { 'mixer', 'gain', 'pan', 'filter', 'delay', 'compressor', 'limiter', 'reverb', 'drive' }
   end)
 
   suite.it('runs many voices through one shared room', function()

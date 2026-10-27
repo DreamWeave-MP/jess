@@ -1,6 +1,6 @@
 //! Panning a bus: the balance of a stereo bus.
 
-use crate::audio::processor::{Block, ParamInfo, Processor};
+use crate::audio::processor::{Io, ParamInfo, Processor};
 
 /// Balances a stereo bus: at `-1` the right side is silent, at `1` the left, and at `0` both pass
 /// as they are. On a bus of any other width it does nothing.
@@ -10,12 +10,7 @@ pub struct Pan {
 }
 
 impl Pan {
-    const PARAMS: &'static [ParamInfo] = &[ParamInfo {
-        name: "pan",
-        min: -1.0,
-        max: 1.0,
-        default: 0.0,
-    }];
+    const PARAMS: &'static [ParamInfo] = &[ParamInfo::control("pan", -1.0, 1.0, 0.0, "")];
 }
 
 impl Processor for Pan {
@@ -36,7 +31,9 @@ impl Processor for Pan {
         f64::from(self.pan)
     }
 
-    fn process(&mut self, block: &mut Block<'_>, _key: Option<&[f32]>) {
+    fn process(&mut self, io: &mut Io<'_>) {
+        let (mut block, _) = io.effect();
+        let block = &mut block;
         if block.channels != 2 {
             return;
         }

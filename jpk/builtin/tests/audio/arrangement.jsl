@@ -25,7 +25,7 @@ type Placement = { track: string, clip: audio.Pcm, beat: number, offset: number?
 --- An automation point on a track's gain: `value` reached over `beats` beats from `beat`.
 type Point = { track: string, beat: number, beats: number, value: number }
 
-type Song = { tracks: { [string]: audio.Bus }, room: audio.Bus, context: audio.Context, tempo: audio.Tempo }
+type Song = { tracks: { [string]: audio.Node }, room: audio.Node, context: audio.Context, tempo: audio.Tempo }
 
 local function song(): Song
   local context = audio.offline { rate = Rate, channels = 1 }

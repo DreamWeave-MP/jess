@@ -45,8 +45,7 @@ local function run(scale: number): number
     rate = Rate,
     voices = 2048,
     physical = 96,
-    processors = 32,
-    buses = 16,
+    nodes = 48,
   }
   local music, effects, dialogue = context:bus(), context:bus { gain = 0.7 }, context:bus()
   local room = context:bus { gain = 0.6 }

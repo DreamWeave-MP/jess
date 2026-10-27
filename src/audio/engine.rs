@@ -5,38 +5,40 @@
 //! code, so an offline render is the test of what a device plays.
 //!
 //! Rendering never allocates, frees, locks, or blocks. Everything it needs is allocated when the
-//! engine is made; commands arrive on a bounded queue it only polls, and anything holding memory
-//! that it is done with (the [`Pcm`] of an ended voice, an order it replaced) goes back to the
-//! control side on a second queue to be dropped there.
+//! engine is made or on the control side; commands arrive on a bounded queue it only polls, and
+//! anything holding memory that it is done with (the [`Pcm`] of an ended voice, a plan it
+//! replaced, a node that has rung out) goes back to the control side on a second queue to be
+//! dropped there.
 //!
-//! Each block, voices add into the buses they play into, then the buses are walked in the order
-//! the control side last sent: each applies its gain and adds into its parent, and the master,
-//! last, is the output.
+//! The engine holds two things apart: the node table, every node's processor and automation by
+//! slot, which lives as long as each node does; and the [`Plan`] it runs, which the control side
+//! compiled and which it only ever swaps whole. Each block it clears the nodes' input buffers,
+//! adds every voice into its outputs, runs the plan's steps in order, and writes the master out.
+//!
+//! [`Pcm`]: crate::audio::Pcm
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 
-use crate::audio::bus::{Bus, BusSend};
-use crate::audio::delays::Delays;
+use crate::audio::mixer::NodeKey;
 use crate::audio::param::{Glide, Param};
-use crate::audio::processor::{Block, Processor, ProcessorKey, Tail};
+use crate::audio::plan::{Place, Plan, Push, Revision, Step, Target};
+use crate::audio::processor::{Io, ParamInfo, Processor, Rate};
 use crate::audio::spatial::{Emitter, Listener, Space};
-use crate::audio::voice::{Culled, Source, Voice, VoiceKey};
-use crate::audio::{BusKey, BusParam, BusSpec, LoopRegion, MAX_CHANNELS, PlaySpec, QUANTUM, Tap, VoiceParam};
+use crate::audio::voice::{Begin, Culled, Outputs, Source, Voice, VoiceKey, set_level};
+use crate::audio::{LoopRegion, MAX_CHANNELS, QUANTUM, VoiceParam};
 
 /// What the control side asks of the engine.
 pub enum Command {
     Start {
         voice: VoiceKey,
         source: Source,
-        spec: PlaySpec,
+        spec: Begin,
+        outputs: Outputs,
     },
     /// Stops a voice, fading out over `fade` frames first.
-    Stop {
-        voice: VoiceKey,
-        fade: u64,
-    },
+    Stop { voice: VoiceKey, fade: u64 },
     SetVoice {
         voice: VoiceKey,
         param: VoiceParam,
@@ -44,62 +46,16 @@ pub enum Command {
         glide: Option<Glide>,
     },
     /// Loops a voice over a new region, or lets it play on past its loop.
-    SetLoop {
-        voice: VoiceKey,
-        looping: Option<LoopRegion>,
-    },
-    /// A new bus, and the order with it in.
-    AddBus {
-        bus: BusKey,
-        spec: BusSpec,
-        order: Box<[u32]>,
-    },
-    /// Removes a bus nothing routes to any more.
-    RemoveBus {
-        bus: BusKey,
-    },
-    /// Moves a bus to a new parent, and the order that goes with the move.
-    RouteBus {
-        bus: BusKey,
-        parent: u32,
-        order: Box<[u32]>,
-    },
-    SetBus {
-        bus: BusKey,
-        param: BusParam,
-        value: f64,
-        glide: Option<Glide>,
-    },
-    /// Adds or changes a bus's send, with the new order when the send is new.
-    SendBus {
-        bus: BusKey,
-        send: BusSend,
-        order: Option<Box<[u32]>>,
-    },
-    UnsendBus {
-        bus: BusKey,
-        target: u32,
-        order: Option<Box<[u32]>>,
-    },
-    /// Changes the level of a voice's send.
-    SendVoice {
-        voice: VoiceKey,
-        target: u32,
-        level: f32,
-    },
-    /// Puts a processor in a bus's chain at `index`.
-    Mount {
-        processor: ProcessorKey,
-        instance: Box<dyn Processor>,
-        bus: BusKey,
-        index: usize,
-    },
-    Unmount {
-        processor: ProcessorKey,
-    },
-    SetProcessor {
-        processor: ProcessorKey,
-        index: usize,
+    SetLoop { voice: VoiceKey, looping: Option<LoopRegion> },
+    /// Changes the level of a voice's output into a node.
+    SendVoice { voice: VoiceKey, target: u32, level: f32 },
+    /// A revision of the graph: its nodes go into the table when the engine takes the command,
+    /// and its plan runs from the command's frame.
+    Revise(Box<Revision>),
+    /// Sets or ramps a node's parameter.
+    SetParam {
+        node: NodeKey,
+        index: u16,
         value: f64,
         glide: Option<Glide>,
     },
@@ -108,19 +64,7 @@ pub enum Command {
     /// Moves the listener.
     Listener(Listener),
     /// Moves a voice in space.
-    Place {
-        voice: VoiceKey,
-        emitter: Emitter,
-    },
-    /// Has a processor listen to a bus, with the order that mixes the bus first; or to its own
-    /// bus again, which leaves the order as it is.
-    Listen {
-        processor: ProcessorKey,
-        key: Option<u32>,
-        order: Option<Box<[u32]>>,
-    },
-    /// The delays that line up paths of different latency, replacing the ones there.
-    Compensate(Box<Delays>),
+    Place { voice: VoiceKey, emitter: Emitter },
 }
 
 impl std::fmt::Debug for Stamped {
@@ -150,19 +94,17 @@ impl Stamped {
 /// What the engine tells the control side.
 pub enum Feedback {
     /// A voice ended: it ran out, was stopped, or was stopped before it started. Its slot is free
-    /// once the control side has read this, and the PCM drops there.
-    VoiceEnded { voice: VoiceKey, source: Source },
-    /// A bus was removed and has rung out; its slot is free once the control side has read this.
-    BusEnded { bus: BusKey },
-    /// A processor left its bus, to be dropped.
-    ProcessorEnded {
-        processor: ProcessorKey,
-        instance: Box<dyn Processor>,
+    /// once the control side has read this, and its source and outputs drop there.
+    VoiceEnded {
+        voice: VoiceKey,
+        source: Source,
+        outputs: Outputs,
     },
-    /// An order the engine replaced, to drop.
-    Order(Box<[u32]>),
-    /// Delays the engine replaced, to drop.
-    Delays(Box<Delays>),
+    /// A node ended: removed, and rung out if it had a tail. Its slot is free once the control
+    /// side has read this, and its processor drops there.
+    NodeEnded { node: NodeKey, state: Box<Node> },
+    /// A revision the engine carried out, holding the plan it replaced, to drop.
+    Revised(Box<Revision>),
     /// A group's list, emptied, to drop.
     Spent(Vec<Stamped>),
 }
@@ -187,20 +129,22 @@ pub struct Counters {
     pub(crate) culled: AtomicU64,
     /// Voices ended for not being mixed, all told.
     pub(crate) stolen: AtomicU64,
-    /// Each bus's meter, by slot.
+    /// Graph revisions carried out, all told.
+    pub(crate) revisions: AtomicU64,
+    /// Each mixer's meter, by slot.
     pub(crate) meters: Box<[BusMeter]>,
 }
 
 impl Counters {
-    pub fn new(buses: usize) -> Counters {
+    pub fn new(nodes: usize) -> Counters {
         Counters {
-            meters: std::iter::repeat_with(BusMeter::default).take(buses).collect(),
+            meters: std::iter::repeat_with(BusMeter::default).take(nodes).collect(),
             ..Counters::default()
         }
     }
 }
 
-/// What one bus put out since the control side last read it, after its gain: the largest
+/// What one mixer put out since the control side last read it, after its gain: the largest
 /// sample's magnitude, and the sum of squares over the samples counted. The engine only adds;
 /// a reader takes the values and leaves zeros.
 #[derive(Debug, Default)]
@@ -234,92 +178,121 @@ impl BusMeter {
 /// How big each of the engine's tables is, fixed when it's made.
 pub struct Capacity {
     pub voices: usize,
-    pub buses: usize,
-    pub processors: usize,
+    pub nodes: usize,
     pub commands: usize,
     /// Voices mixed at once; the rest wait their turn.
     pub physical: usize,
 }
 
 impl Capacity {
-    /// The feedback the engine can owe at once: each voice, bus, and processor ends once and its
-    /// slot is reused only after the control side reads that, and each command replaces at most
-    /// one order or one set of delays.
+    /// The feedback the engine can owe at once: each voice and node ends once and its slot is
+    /// reused only after the control side reads that, and each command gives back at most two
+    /// things (a group's list, and a revision or what a start replaced).
     pub const fn feedback(&self) -> usize {
-        // A group sends its spent list back as well as whatever its members do.
-        self.voices + self.buses + self.processors + 2 * self.commands
+        self.voices + self.nodes + 2 * self.commands
     }
 }
 
-/// A processor in a bus's chain.
-struct Mounted {
-    generation: u32,
-    bus: u32,
-    instance: Box<dyn Processor>,
-    /// Parameters ramping, by index: set at the start of each block of at most
-    /// [`CONTROL_QUANTUM`] frames while they move.
-    ramps: [Option<(usize, Param)>; MAX_RAMPS],
-    /// The slot of the bus it listens to, which the order mixes before its own.
-    key: Option<u32>,
-}
-
-/// The most of one processor's parameters that ramp at once; a further ramp replaces the oldest.
-const MAX_RAMPS: usize = 4;
-
-/// The longest block the engine mixes while a processor parameter ramps: how often a processor
-/// hears where its ramp has got to.
+/// The longest block the engine mixes while a control-rate parameter moves: how often a
+/// processor hears where its automation has got to.
 pub const CONTROL_QUANTUM: usize = 32;
 
-impl Mounted {
-    fn ramp(&mut self, index: usize, value: f64, glide: Option<Glide>) {
-        let Some(glide) = glide.filter(|glide| glide.frames > 0) else {
-            for ramp in &mut self.ramps {
-                if ramp.is_some_and(|(known, _)| known == index) {
-                    *ramp = None;
+/// A node as the engine holds it: its processor, and its parameters' automation. It lives as long
+/// as the node, whatever plans come and go.
+pub struct Node {
+    pub(crate) generation: u32,
+    pub(crate) processor: Box<dyn Processor>,
+    info: &'static [ParamInfo],
+    params: Box<[Param]>,
+    /// The parameters that move, a bit each.
+    moving: u64,
+    /// Its audio inputs after the first, which is its buffer in the engine: a stride each.
+    inputs: Box<[f32]>,
+    channels: usize,
+    /// Removed, and ringing out: frames left before it goes.
+    drain: Option<u64>,
+}
+
+impl std::fmt::Debug for Node {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Node")
+            .field("kind", &self.processor.kind())
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Node {
+    /// A node for `processor` with `channels`, in a context whose buffers are `stride` samples,
+    /// made on the control side with everything it will need.
+    pub(crate) fn new(generation: u32, processor: Box<dyn Processor>, channels: usize, stride: usize) -> Node {
+        let info = processor.params();
+        let params = (0..info.len()).map(|index| Param::new(processor.value(index))).collect();
+        let extra = processor.ports().audio().count().saturating_sub(1);
+        Node {
+            generation,
+            info,
+            params,
+            moving: 0,
+            inputs: vec![0.0; extra * stride].into_boxed_slice(),
+            channels,
+            drain: None,
+            processor,
+        }
+    }
+
+    /// Sets parameter `index` at once, or ramps it over `glide`. True for a control-rate ramp,
+    /// which keeps blocks to [`CONTROL_QUANTUM`] while it moves.
+    fn automate(&mut self, index: usize, value: f64, glide: Option<Glide>) -> bool {
+        let Some(param) = self.params.get_mut(index) else {
+            return false;
+        };
+        let bit = 1u64 << index;
+        if let Some(glide) = glide.filter(|glide| glide.frames > 0) {
+            param.ramp(value, glide);
+            self.moving |= bit;
+            return self.info[index].rate == Rate::Control;
+        }
+        param.set(value);
+        self.moving &= !bit;
+        self.processor.set(index, value);
+        false
+    }
+
+    /// Moves its automation `frames` along: tells the processor where each control-rate parameter
+    /// is at the block's start, and writes each moving audio-rate one's values into `values`, a
+    /// [`QUANTUM`] a parameter. Returns the audio-rate parameters written, a bit each, and whether
+    /// a control-rate one still moves.
+    fn advance(&mut self, frames: usize, values: &mut [f32]) -> (u64, bool) {
+        let (mut varying, mut control) = (0, false);
+        let mut moving = self.moving;
+        while moving != 0 {
+            let index = moving.trailing_zeros() as usize;
+            let bit = 1u64 << index;
+            moving &= !bit;
+            let param = &mut self.params[index];
+            match self.info[index].rate {
+                Rate::Audio => {
+                    param.fill(&mut values[index * QUANTUM..index * QUANTUM + frames]);
+                    varying |= bit;
+                    if param.steady() {
+                        self.processor.set(index, param.value());
+                        self.moving &= !bit;
+                    }
+                }
+                Rate::Control => {
+                    // A block hears the value its first frame has; a ramp done by then is let go.
+                    self.processor.set(index, param.value());
+                    if param.steady() {
+                        self.moving &= !bit;
+                        continue;
+                    }
+                    param.advance(frames as u64);
+                    control = true;
                 }
             }
-            self.instance.set(index, value);
-            return;
-        };
-        let slot = self
-            .ramps
-            .iter()
-            .position(|ramp| ramp.is_some_and(|(known, _)| known == index))
-            .or_else(|| self.ramps.iter().position(Option::is_none))
-            .unwrap_or(0);
-        // The ramp starts from where the parameter is: its last ramp's value, or its own.
-        let start = self.ramps[slot]
-            .filter(|(known, _)| *known == index)
-            .map_or_else(|| self.current(index), |(_, param)| param.value());
-        let mut param = Param::new(start);
-        param.ramp(value, glide);
-        self.ramps[slot] = Some((index, param));
-    }
-
-    /// What parameter `index` was last set to; a processor that keeps its own state reports its
-    /// default until set.
-    fn current(&self, index: usize) -> f64 {
-        self.instance.value(index)
-    }
-
-    /// Tells the processor where its ramps are, and moves them `frames` along. True while any
-    /// still moves.
-    fn step_ramps(&mut self, frames: usize) -> bool {
-        let mut moving = false;
-        for ramp in &mut self.ramps {
-            let Some((index, param)) = ramp.as_mut() else {
-                continue;
-            };
-            // A block hears the value its first frame has; a ramp done by then is let go.
-            self.instance.set(*index, param.value());
-            if param.steady() {
-                *ramp = None;
-                continue;
-            }
-            param.advance(frames as u64);
-            moving = true;
         }
-        moving
+        (varying, control)
     }
 }
 
@@ -330,25 +303,30 @@ pub struct Engine {
     commands: Receiver<Stamped>,
     feedback: SyncSender<Feedback>,
     /// Feedback the queue had no room for, sent again before the next render. It holds at most
-    /// one entry per voice, bus, and command, which is what it's allocated for.
+    /// what [`Capacity::feedback`] counts, which is what it's allocated for.
     unsent: Vec<Feedback>,
     voices: Box<[Option<Voice>]>,
-    buses: Box<[Option<Bus>]>,
-    processors: Box<[Option<Mounted>]>,
-    /// Bus slots, each before every bus it feeds; slots of removed buses are skipped.
-    order: Box<[u32]>,
-    /// The delays that line up paths of different latency.
-    delays: Box<Delays>,
-    /// One block of every bus: `channels × QUANTUM` samples per slot, channel after channel.
-    mixes: Box<[f32]>,
+    nodes: Box<[Option<Box<Node>>]>,
+    /// One block of every node's first input, by slot: `channels × QUANTUM` samples each,
+    /// channel after channel.
+    buffers: Box<[f32]>,
+    plan: Box<Plan>,
     /// Commands stamped for a later frame, latest first, so the next is at the end.
     pending: Vec<Stamped>,
     scratch: Box<[f32]>,
+    /// One block of signal on its way between buffers: delayed, converted, or both.
+    passing: Box<[f32]>,
+    /// The sidechain of the node running.
+    key: Box<[f32]>,
+    /// A voice mixed in the context's layout, for an output of another.
+    mixed: Box<[f32]>,
+    /// The values of the running node's moving audio-rate parameters, a quantum each.
+    values: Box<[f32]>,
     /// A voice's fixed-point steps, frame by frame, while its rate ramps.
     steps: Box<[u64]>,
-    /// A voice's or bus's levels, frame by frame, while they ramp: two blocks.
+    /// A voice's levels, frame by frame, while they ramp: two blocks.
     envelope: Box<[f32]>,
-    /// True while a processor parameter ramps, which keeps blocks to [`CONTROL_QUANTUM`].
+    /// True while a control-rate parameter moves, which keeps blocks to [`CONTROL_QUANTUM`].
     ramping: bool,
     /// The listener, and how the world's space works.
     space: Space,
@@ -360,6 +338,7 @@ pub struct Engine {
     ranks: Box<[(f32, f32, u32)]>,
     culled: u64,
     stolen: u64,
+    revisions: u64,
     now: u64,
     late: u64,
     nonfinite: u64,
@@ -378,6 +357,7 @@ impl std::fmt::Debug for Engine {
 }
 
 impl Engine {
+    #[allow(clippy::too_many_arguments)] // The two ends of a context, and what it starts with.
     pub(crate) fn new(
         rate: u32,
         channels: usize,
@@ -386,9 +366,12 @@ impl Engine {
         commands: Receiver<Stamped>,
         feedback: SyncSender<Feedback>,
         counters: Arc<Counters>,
+        master: Box<Node>,
+        plan: Box<Plan>,
     ) -> Engine {
-        let mut buses: Box<[Option<Bus>]> = std::iter::repeat_with(|| None).take(capacity.buses).collect();
-        buses[0] = Some(Bus::new(0, None, &BusSpec::default()));
+        let mut nodes: Box<[Option<Box<Node>>]> = std::iter::repeat_with(|| None).take(capacity.nodes).collect();
+        nodes[0] = Some(master);
+        let block = MAX_CHANNELS * QUANTUM;
         Engine {
             channels,
             rate,
@@ -396,13 +379,15 @@ impl Engine {
             feedback,
             unsent: Vec::with_capacity(capacity.feedback()),
             voices: std::iter::repeat_with(|| None).take(capacity.voices).collect(),
-            buses,
-            processors: std::iter::repeat_with(|| None).take(capacity.processors).collect(),
-            order: Box::new([0]),
-            delays: Box::default(),
-            mixes: vec![0.0; capacity.buses * channels * QUANTUM].into_boxed_slice(),
+            nodes,
+            buffers: vec![0.0; capacity.nodes * channels * QUANTUM].into_boxed_slice(),
+            plan,
             pending: Vec::with_capacity(capacity.commands),
-            scratch: vec![0.0; MAX_CHANNELS * QUANTUM].into_boxed_slice(),
+            scratch: vec![0.0; block].into_boxed_slice(),
+            passing: vec![0.0; block].into_boxed_slice(),
+            key: vec![0.0; block].into_boxed_slice(),
+            mixed: vec![0.0; block].into_boxed_slice(),
+            values: vec![0.0; crate::audio::processor::MAX_PARAMS * QUANTUM].into_boxed_slice(),
             steps: vec![0; QUANTUM].into_boxed_slice(),
             envelope: vec![0.0; 2 * QUANTUM].into_boxed_slice(),
             ramping: false,
@@ -413,6 +398,7 @@ impl Engine {
             ranks: vec![(0.0, 0.0, 0); capacity.voices].into_boxed_slice(),
             culled: 0,
             stolen: 0,
+            revisions: 0,
             now: 0,
             late: 0,
             nonfinite: 0,
@@ -518,8 +504,12 @@ impl Engine {
         }
     }
 
-    /// Carries out a command now, or keeps it for its frame.
-    fn accept(&mut self, stamped: Stamped) {
+    /// Carries out a command now, or keeps it for its frame. A revision's nodes go into the table
+    /// either way, so a node exists from the moment the engine hears of it.
+    fn accept(&mut self, mut stamped: Stamped) {
+        if let Command::Revise(revision) = &mut stamped.command {
+            self.install(revision);
+        }
         match stamped.at {
             Some(at) if at > self.now => {
                 let key = stamped.key();
@@ -536,6 +526,23 @@ impl Engine {
         }
     }
 
+    /// Puts a revision's new nodes in the table.
+    fn install(&mut self, revision: &mut Revision) {
+        // Drained rather than consumed: the emptied list goes back with the revision.
+        #[allow(clippy::iter_with_drain)]
+        for (key, node) in revision.added.drain(..) {
+            // The control side gives a slot out only once the engine has given it back, so there
+            // is never one here; were there, it would still go back to be dropped.
+            if let Some(old) = self.nodes[key.slot as usize].replace(node) {
+                let node = NodeKey {
+                    slot: key.slot,
+                    generation: old.generation,
+                };
+                self.send(Feedback::NodeEnded { node, state: old });
+            }
+        }
+    }
+
     fn carry_out_due(&mut self) {
         while self.pending.last().is_some_and(|next| next.key().0 <= self.now) {
             let Some(stamped) = self.pending.pop() else {
@@ -545,10 +552,14 @@ impl Engine {
         }
     }
 
-    #[allow(clippy::too_many_lines)] // one arm per command
     fn carry_out(&mut self, command: Command) {
         match command {
-            Command::Start { voice, source, spec } => {
+            Command::Start {
+                voice,
+                source,
+                spec,
+                outputs,
+            } => {
                 let slot = voice.slot as usize;
                 if let Some(old) = self.voices[slot].take() {
                     let old_key = VoiceKey {
@@ -558,9 +569,10 @@ impl Engine {
                     self.send(Feedback::VoiceEnded {
                         voice: old_key,
                         source: old.source,
+                        outputs: old.outputs,
                     });
                 }
-                self.voices[slot] = Some(Voice::new(voice.generation, source, &spec, self.rate));
+                self.voices[slot] = Some(Voice::new(voice.generation, source, &spec, outputs, self.rate));
             }
             Command::Stop { voice, fade } => self.stop(voice, fade),
             Command::SetVoice {
@@ -570,66 +582,21 @@ impl Engine {
                 glide,
             } => self.set_voice(voice, param, value, glide),
             Command::SetLoop { voice, looping } => self.set_loop(voice, looping),
-            Command::AddBus { bus, spec, order } => {
-                self.buses[bus.slot as usize] = Some(Bus::new(bus.generation, Some(spec.parent.slot), &spec));
-                self.reorder(order);
-            }
-            Command::RemoveBus { bus } => {
-                let Some(removed) = self.buses[bus.slot as usize].as_ref() else {
-                    return;
-                };
-                if removed.generation != bus.generation || removed.draining.is_some() {
-                    return;
-                }
-                let tail = removed
-                    .chain()
-                    .iter()
-                    .filter_map(|slot| self.processors[*slot as usize].as_ref())
-                    .map(|mounted| match mounted.instance.tail() {
-                        Tail::None => 0,
-                        Tail::Frames(frames) => frames,
-                    })
-                    .max()
-                    .unwrap_or(0);
-                if tail == 0 {
-                    self.retire_bus(bus.slot as usize);
-                } else if let Some(removed) = self.buses[bus.slot as usize].as_mut() {
-                    removed.draining = Some(tail);
-                }
-            }
-            Command::RouteBus { bus, parent, order } => {
-                if let Some(routed) = self.bus(bus) {
-                    routed.parent = Some(parent);
-                }
-                self.reorder(order);
-            }
-            Command::SetBus {
-                bus,
-                param,
+            Command::SendVoice { voice, target, level } => self.send_voice(voice, target, level),
+            Command::Revise(revision) => self.revise(revision),
+            Command::SetParam {
+                node,
+                index,
                 value,
                 glide,
             } => {
-                if let Some(changed) = self.bus(bus) {
-                    changed.set(param, value, glide);
+                if let Some(entry) = self.node(node) {
+                    // A ramp starts moving this block; the mix keeps the flag while one moves.
+                    self.ramping |= entry.automate(usize::from(index), value, glide);
                 }
             }
-            Command::SendBus { bus, send, order } => {
-                if let Some(sending) = self.bus(bus) {
-                    sending.send(send);
-                }
-                if let Some(order) = order {
-                    self.reorder(order);
-                }
-            }
-            Command::UnsendBus { bus, target, order } => {
-                if let Some(sending) = self.bus(bus) {
-                    sending.unsend(target);
-                }
-                if let Some(order) = order {
-                    self.reorder(order);
-                }
-            }
-            Command::SendVoice { voice, target, level } => self.send_voice(voice, target, level),
+            // The control side never opens a group inside another; one would be taken whole.
+            Command::Group(members) => self.accept_group(members),
             Command::Listener(listener) => self.space.listener = listener,
             Command::Place { voice, emitter } => {
                 if let Some(playing) = self.voices[voice.slot as usize].as_mut()
@@ -643,101 +610,41 @@ impl Engine {
                     spec.spatial = Some(emitter);
                 }
             }
-            Command::Mount {
-                processor,
-                instance,
-                bus,
-                index,
-            } => {
-                let Some(chain) = self.bus(bus) else {
-                    self.send(Feedback::ProcessorEnded { processor, instance });
-                    return;
-                };
-                chain.mount(processor.slot, index);
-                self.processors[processor.slot as usize] = Some(Mounted {
-                    generation: processor.generation,
-                    bus: bus.slot,
-                    instance,
-                    ramps: [None; MAX_RAMPS],
-                    key: None,
-                });
-            }
-            Command::Unmount { processor } => {
-                let slot = processor.slot as usize;
-                if self.processors[slot]
-                    .as_ref()
-                    .is_none_or(|mounted| mounted.generation != processor.generation)
-                {
-                    return;
-                }
-                if let Some(mounted) = self.processors[slot].take() {
-                    if let Some(bus) = self.buses[mounted.bus as usize].as_mut() {
-                        bus.unmount(processor.slot);
-                    }
-                    self.send(Feedback::ProcessorEnded {
-                        processor,
-                        instance: mounted.instance,
-                    });
-                }
-            }
-            Command::SetProcessor {
-                processor,
-                index,
-                value,
-                glide,
-            } => {
-                if let Some(mounted) = self.processors[processor.slot as usize].as_mut()
-                    && mounted.generation == processor.generation
-                {
-                    mounted.ramp(index, value, glide);
-                    // A ramp starts moving this block; the mix keeps the flag while one moves.
-                    self.ramping |= mounted.ramps.iter().any(Option::is_some);
-                }
-            }
-            // The control side never opens a group inside another; one would be taken whole.
-            Command::Group(members) => {
-                self.accept_group(members);
-            }
-            Command::Listen { processor, key, order } => {
-                if let Some(mounted) = self.processors[processor.slot as usize].as_mut()
-                    && mounted.generation == processor.generation
-                {
-                    mounted.key = key;
-                }
-                if let Some(order) = order {
-                    self.reorder(order);
-                }
-            }
-            Command::Compensate(mut delays) => {
-                delays.inherit(&self.delays);
-                let old = std::mem::replace(&mut self.delays, delays);
-                self.send(Feedback::Delays(old));
-            }
         }
     }
 
-    /// Lets go of the bus in `slot` and every processor it runs.
-    fn retire_bus(&mut self, slot: usize) {
-        let Some(bus) = self.buses[slot].take() else {
-            return;
-        };
-        for &processor in bus.chain() {
-            if let Some(mounted) = self.processors[processor as usize].take() {
-                let processor = ProcessorKey {
-                    slot: processor,
-                    generation: mounted.generation,
-                };
-                self.send(Feedback::ProcessorEnded {
-                    processor,
-                    instance: mounted.instance,
-                });
+    /// Runs a revision's plan from now on, its history taken from the plan it replaces, and ends
+    /// the nodes it removed that have nothing to ring out.
+    fn revise(&mut self, mut revision: Box<Revision>) {
+        revision.plan.delays.inherit(&self.plan.delays);
+        revision.plan.rings.inherit(&self.plan.rings);
+        std::mem::swap(&mut self.plan, &mut revision.plan);
+        self.revisions += 1;
+        for index in 0..revision.retire.len() {
+            let key = revision.retire[index];
+            if self.node(key).is_some() {
+                self.retire(key.slot as usize);
             }
         }
-        let bus = BusKey {
-            slot: u32::try_from(slot).unwrap_or(u32::MAX),
-            generation: bus.generation,
+        self.send(Feedback::Revised(revision));
+    }
+
+    /// Lets go of the node in `slot`.
+    fn retire(&mut self, slot: usize) {
+        let Some(state) = self.nodes[slot].take() else {
+            return;
         };
-        self.send(Feedback::BusEnded { bus });
+        let node = NodeKey {
+            slot: u32::try_from(slot).unwrap_or(u32::MAX),
+            generation: state.generation,
+        };
+        self.send(Feedback::NodeEnded { node, state });
+    }
+
+    fn node(&mut self, key: NodeKey) -> Option<&mut Node> {
+        self.nodes[key.slot as usize]
+            .as_deref_mut()
+            .filter(|node| node.generation == key.generation)
     }
 
     fn send_voice(&mut self, voice: VoiceKey, target: u32, level: f32) {
@@ -748,25 +655,10 @@ impl Engine {
             return;
         }
         if let Some(index) = self.pending_start(voice)
-            && let Command::Start { spec, .. } = &mut self.pending[index].command
+            && let Command::Start { outputs, .. } = &mut self.pending[index].command
         {
-            for send in spec.sends.iter_mut().flatten() {
-                if send.bus.slot == target {
-                    send.level = level;
-                }
-            }
+            set_level(outputs, target, level);
         }
-    }
-
-    fn bus(&mut self, bus: BusKey) -> Option<&mut Bus> {
-        self.buses[bus.slot as usize]
-            .as_mut()
-            .filter(|known| known.generation == bus.generation)
-    }
-
-    fn reorder(&mut self, order: Box<[u32]>) {
-        let old = std::mem::replace(&mut self.order, order);
-        self.send(Feedback::Order(old));
     }
 
     fn stop(&mut self, voice: VoiceKey, fade: u64) {
@@ -778,19 +670,28 @@ impl Engine {
             if playing.stop(fade) {
                 return;
             }
-            if let Some(stopped) = self.voices[slot].take() {
-                self.send(Feedback::VoiceEnded {
-                    voice,
-                    source: stopped.source,
-                });
-            }
+            self.end_voice(slot);
             return;
         }
         // Stopped before its start: the start never happens.
         if let Some(index) = self.pending_start(voice)
-            && let Command::Start { source, .. } = self.pending.remove(index).command
+            && let Command::Start { source, outputs, .. } = self.pending.remove(index).command
         {
-            self.send(Feedback::VoiceEnded { voice, source });
+            self.send(Feedback::VoiceEnded { voice, source, outputs });
+        }
+    }
+
+    fn end_voice(&mut self, slot: usize) {
+        if let Some(ended) = self.voices[slot].take() {
+            let voice = VoiceKey {
+                slot: u32::try_from(slot).unwrap_or(u32::MAX),
+                generation: ended.generation,
+            };
+            self.send(Feedback::VoiceEnded {
+                voice,
+                source: ended.source,
+                outputs: ended.outputs,
+            });
         }
     }
 
@@ -851,20 +752,64 @@ impl Engine {
         }
     }
 
-    /// Mixes `frames` frames: every voice into its bus, then every bus into its parent.
+    /// Mixes `frames` frames: every voice into its nodes, then the plan's steps in order.
     fn mix(&mut self, frames: usize) {
         let stride = self.channels * QUANTUM;
-        for &slot in &self.order {
-            let mix = &mut self.mixes[slot as usize * stride..(slot as usize + 1) * stride];
-            for channel in 0..self.channels {
-                mix[channel * QUANTUM..channel * QUANTUM + frames].fill(0.0);
+        for clear in &self.plan.clear {
+            let Some(node) = self.nodes[clear.slot as usize]
+                .as_deref_mut()
+                .filter(|node| node.generation == clear.generation)
+            else {
+                continue;
+            };
+            let buffer = &mut self.buffers[clear.slot as usize * stride..(clear.slot as usize + 1) * stride];
+            for channel in 0..usize::from(clear.channels) {
+                buffer[channel * QUANTUM..channel * QUANTUM + frames].fill(0.0);
             }
+            node.inputs.fill(0.0);
         }
         self.choose();
+        self.mix_voices(frames);
+        // What voices added straight into a node waits for what reaches it the latest way round.
+        for index in 0..self.plan.entries.len() {
+            let (line, target, _) = self.plan.entries[index];
+            if let Some(buffer) = input(&mut self.buffers, &mut self.nodes, target, stride) {
+                self.plan.delays.line(line).process(buffer, frames);
+            }
+        }
+        for index in 0..self.plan.feedback.len() {
+            let entry = self.plan.feedback[index];
+            if let Some(buffer) = input(&mut self.buffers, &mut self.nodes, entry.to, stride) {
+                self.plan.rings.ring(entry.ring).read(self.now, buffer, frames);
+            }
+        }
+        let mut ramping = false;
+        for index in 0..self.plan.steps.len() {
+            let step = self.plan.steps[index];
+            ramping |= self.run(&step, frames);
+        }
+        self.ramping = ramping;
+        for index in 0..self.plan.steps.len() {
+            let step = self.plan.steps[index];
+            if self.nodes[step.slot as usize]
+                .as_ref()
+                .is_some_and(|node| node.generation == step.generation && node.drain == Some(0))
+            {
+                self.retire(step.slot as usize);
+            }
+        }
+    }
+
+    /// Adds every voice the budget lets mix into its outputs, and keeps time for the rest.
+    fn mix_voices(&mut self, frames: usize) {
+        let stride = self.channels * QUANTUM;
         for slot in 0..self.voices.len() {
             let Some(voice) = self.voices[slot].as_mut() else {
                 continue;
             };
+            if voice.paused {
+                continue;
+            }
             if !voice.audible {
                 let keeps = match voice.culled {
                     Culled::Advance => voice.skip(frames),
@@ -877,141 +822,202 @@ impl Engine {
                 if voice.culled == Culled::Stop {
                     self.stolen += 1;
                 }
-                if let Some(ended) = self.voices[slot].take() {
-                    let voice = VoiceKey {
-                        slot: u32::try_from(slot).unwrap_or(u32::MAX),
-                        generation: ended.generation,
-                    };
-                    self.send(Feedback::VoiceEnded {
-                        voice,
-                        source: ended.source,
-                    });
-                }
+                self.end_voice(slot);
                 continue;
             }
             let rendered = voice.render(&mut self.scratch, &mut self.steps, frames);
             let levels = voice.levels(rendered, &mut self.envelope, self.channels);
-            let bus = voice.bus as usize;
-            voice.mix(
-                &self.scratch,
-                rendered,
-                &mut self.mixes[bus * stride..(bus + 1) * stride],
-                self.channels,
-                (levels, &self.envelope),
-                1.0,
-            );
-            for (target, level) in voice.sends.into_iter().flatten() {
-                let target = target as usize;
-                voice.mix(
-                    &self.scratch,
-                    rendered,
-                    &mut self.mixes[target * stride..(target + 1) * stride],
-                    self.channels,
-                    (levels, &self.envelope),
-                    level,
-                );
-            }
-            if rendered == frames {
-                continue;
-            }
-            if let Some(ended) = self.voices[slot].take() {
-                let voice = VoiceKey {
-                    slot: u32::try_from(slot).unwrap_or(u32::MAX),
-                    generation: ended.generation,
-                };
-                self.send(Feedback::VoiceEnded {
-                    voice,
-                    source: ended.source,
-                });
-            }
-        }
-        // What voices added straight into a bus waits for what reaches it the latest way round.
-        for line in self.delays.inputs() {
-            let to = line.to as usize;
-            line.process(&mut self.mixes[to * stride..(to + 1) * stride], frames);
-        }
-        self.mix_buses(frames);
-    }
-
-    /// Mixes `frames` frames of every bus, in order: its processors, its pre-fader sends, its
-    /// gain, its meter, its post-fader sends, and its parent. A bus that has rung out goes.
-    fn mix_buses(&mut self, frames: usize) {
-        let stride = self.channels * QUANTUM;
-        let mut ramping = false;
-        for index in 0..self.order.len() {
-            let slot = self.order[index] as usize;
-            let Some((chain, length)) = self.buses[slot].as_ref().map(|bus| (bus.chain, bus.length)) else {
-                continue;
-            };
-            for &processor in &chain[..length] {
-                let Some(mounted) = self.processors[processor as usize].as_mut() else {
+            let mut converted = false;
+            for output in voice.outputs.iter() {
+                let Some(channels) = self.nodes[output.slot as usize]
+                    .as_ref()
+                    .filter(|node| node.generation == output.generation)
+                    .map(|node| node.channels)
+                else {
                     continue;
                 };
-                ramping |= mounted.step_ramps(frames);
-                // A key the order put first, and that is still there, is heard as it left its bus.
-                let key = mounted
-                    .key
-                    .map(|key| key as usize)
-                    .filter(|key| *key != slot && self.buses[*key].is_some());
-                let (heard, samples) = match key {
-                    Some(key) => {
-                        let (heard, samples) = two(&mut self.mixes, stride, key, slot);
-                        (Some(heard), samples)
+                let target = Target {
+                    slot: output.slot,
+                    generation: output.generation,
+                    input: output.input,
+                };
+                if channels == self.channels {
+                    let Some(buffer) = input(&mut self.buffers, &mut self.nodes, target, stride) else {
+                        continue;
+                    };
+                    voice.mix(
+                        &self.scratch,
+                        rendered,
+                        buffer,
+                        self.channels,
+                        (levels, &self.envelope),
+                        output.level,
+                    );
+                    continue;
+                }
+                // Mixed once in the context's layout, then converted for each node of another.
+                if !converted {
+                    for channel in 0..self.channels {
+                        self.mixed[channel * QUANTUM..channel * QUANTUM + rendered].fill(0.0);
                     }
-                    None => (None, &mut self.mixes[slot * stride..(slot + 1) * stride]),
+                    voice.mix(
+                        &self.scratch,
+                        rendered,
+                        &mut self.mixed,
+                        self.channels,
+                        (levels, &self.envelope),
+                        1.0,
+                    );
+                    converted = true;
+                }
+                let Some(buffer) = input(&mut self.buffers, &mut self.nodes, target, stride) else {
+                    continue;
                 };
-                let mut block = Block {
-                    samples,
-                    channels: self.channels,
-                    frames,
-                };
-                mounted.instance.process(&mut block, heard);
+                add_converted(buffer, channels, &self.mixed, self.channels, rendered, output.level);
             }
-            let Some(bus) = self.buses[slot].as_mut() else {
-                continue;
-            };
-            if let Some(left) = bus.draining.as_mut() {
-                *left = left.saturating_sub(frames as u64);
-            }
-            let (parent, sends) = (bus.parent, bus.sends);
-            for send in sends.into_iter().flatten().filter(|send| send.tap == Tap::PreFader) {
-                self.add(slot, send.target as usize, send.level, frames);
-            }
-            if let Some(bus) = self.buses[slot].as_mut() {
-                bus.apply(
-                    &mut self.mixes[slot * stride..(slot + 1) * stride],
-                    self.channels,
-                    frames,
-                    &mut self.envelope,
-                );
-            }
-            self.meter(slot, frames);
-            for send in sends.into_iter().flatten().filter(|send| send.tap == Tap::PostFader) {
-                self.add(slot, send.target as usize, send.level, frames);
-            }
-            if let Some(parent) = parent {
-                self.add(slot, parent as usize, 1.0, frames);
+            if rendered < frames {
+                self.end_voice(slot);
             }
         }
-        self.ramping = ramping;
-        for index in 0..self.order.len() {
-            let slot = self.order[index] as usize;
-            if self.buses[slot].as_ref().is_some_and(|bus| bus.draining == Some(0)) {
-                self.retire_bus(slot);
+    }
+
+    /// Runs one step of the plan. True while a control-rate parameter of its node moves.
+    #[allow(clippy::too_many_lines)] // The step's phases, in the order they happen.
+    fn run(&mut self, step: &Step, frames: usize) -> bool {
+        let stride = self.channels * QUANTUM;
+        let channels = usize::from(step.channels);
+        let Some(node) = self.nodes[step.slot as usize]
+            .as_deref_mut()
+            .filter(|node| node.generation == step.generation)
+        else {
+            return false;
+        };
+        if let Some(tail) = step.drain
+            && node.drain.is_none()
+        {
+            node.drain = Some(tail);
+        }
+        let (varying, ramping) = if node.moving == 0 {
+            (0, false)
+        } else {
+            node.advance(frames, &mut self.values)
+        };
+        let key = step.key.map(|pull| {
+            let source = read(&self.buffers, &self.plan.scratch, pull.from, stride);
+            for channel in 0..channels {
+                self.key[channel * QUANTUM..channel * QUANTUM + frames].fill(0.0);
             }
+            add_converted(&mut self.key, channels, source, usize::from(pull.from_channels), frames, 1.0);
+            if let Some(line) = pull.line {
+                self.plan.delays.line(line).process(&mut self.key, frames);
+            }
+        });
+        for index in step.pre.range() {
+            let push = self.plan.pushes[index];
+            self.push(&push, frames);
+        }
+        let Some(node) = self.nodes[step.slot as usize].as_deref_mut() else {
+            return false;
+        };
+        let Node { processor, inputs, .. } = node;
+        let buffer = step.buffer as usize * stride;
+        let scratch = &mut self.plan.scratch;
+        let outputs = &mut scratch[step.outputs.start as usize * stride..step.outputs.end as usize * stride];
+        for output in outputs.chunks_exact_mut(stride) {
+            for channel in 0..channels {
+                output[channel * QUANTUM..channel * QUANTUM + frames].fill(0.0);
+            }
+        }
+        let key = key.map(|()| &self.key[..]);
+        if step.separate {
+            let (main, rest) = outputs.split_at_mut(stride);
+            let mut io = Io::new(main, channels, frames)
+                .with_key(key)
+                .with_ports(Some(&self.buffers[buffer..buffer + stride]), inputs, rest)
+                .with_params(&self.values, varying);
+            processor.process(&mut io);
+        } else {
+            let main = &mut self.buffers[buffer..buffer + stride];
+            let mut io = Io::new(main, channels, frames)
+                .with_key(key)
+                .with_ports(None, inputs, outputs)
+                .with_params(&self.values, varying);
+            processor.process(&mut io);
+        }
+        if step.metered {
+            self.meter(step.slot as usize, channels, frames);
+        }
+        for index in step.post.range() {
+            let push = self.plan.pushes[index];
+            self.push(&push, frames);
+        }
+        for index in step.feedback.range() {
+            let entry = self.plan.feedback[index];
+            let ring = self.plan.rings.ring(entry.ring);
+            let source = read(&self.buffers, &self.plan.scratch, entry.from, stride);
+            let (from, to) = (usize::from(entry.from_channels), ring.channels());
+            if from == to {
+                ring.write(self.now, source, frames);
+                continue;
+            }
+            for channel in 0..to {
+                self.passing[channel * QUANTUM..channel * QUANTUM + frames].fill(0.0);
+            }
+            add_converted(&mut self.passing, to, source, from, frames, 1.0);
+            ring.write(self.now, &self.passing, frames);
+        }
+        if let Some(node) = self.nodes[step.slot as usize].as_deref_mut()
+            && let Some(left) = node.drain.as_mut()
+        {
+            *left = left.saturating_sub(frames as u64);
+        }
+        ramping
+    }
+
+    /// Adds `frames` of a push's source into its target, at its level, converted, and through its
+    /// compensation line if it has one.
+    fn push(&mut self, push: &Push, frames: usize) {
+        let stride = self.channels * QUANTUM;
+        let (from, to) = (usize::from(push.from_channels), usize::from(push.to_channels));
+        if push.line.is_none()
+            && let Place::Buffer(source) = push.from
+            && push.to.input == 0
+            && source != push.to.slot
+        {
+            if !live(&self.nodes, push.to) {
+                return;
+            }
+            // The common case, a bus into its parent: straight from one buffer into the other.
+            let (source, target) = two(&mut self.buffers, stride, source as usize, push.to.slot as usize);
+            add_converted(target, to, source, from, frames, push.level);
+            return;
+        }
+        let source = read(&self.buffers, &self.plan.scratch, push.from, stride);
+        for channel in 0..to {
+            self.passing[channel * QUANTUM..channel * QUANTUM + frames].fill(0.0);
+        }
+        add_converted(&mut self.passing, to, source, from, frames, 1.0);
+        if let Some(line) = push.line {
+            self.plan.delays.line(line).process(&mut self.passing, frames);
+        }
+        if let Some(target) = input(&mut self.buffers, &mut self.nodes, push.to, stride) {
+            add_converted(target, to, &self.passing, to, frames, push.level);
         }
     }
 
     /// Works out where every voice in space is, and marks the voices this block mixes: all of
     /// them while they fit the budget, else the ones that matter most, by priority and then by
     /// loudness. A voice already mixed holds its place against one only a little louder, so voices
-    /// near the line don't flap in and out.
+    /// near the line don't flap in and out. A paused voice is neither mixed nor counted.
     fn choose(&mut self) {
         let mut count = 0;
         for (slot, voice) in self.voices.iter_mut().enumerate() {
             let Some(voice) = voice.as_mut() else {
                 continue;
             };
+            if voice.paused {
+                continue;
+            }
             voice.hear(&self.space, self.channels);
             let held = if voice.audible { 1.25 } else { 1.0 };
             self.ranks[count] = (
@@ -1047,12 +1053,12 @@ impl Engine {
         self.culled = (count - self.physical) as u64;
     }
 
-    /// Meters `frames` of bus slot `slot` as it leaves the bus, after its gain.
-    fn meter(&self, slot: usize, frames: usize) {
+    /// Meters `frames` of node slot `slot`'s buffer as it leaves the node, after its gain.
+    fn meter(&self, slot: usize, channels: usize, frames: usize) {
         let stride = self.channels * QUANTUM;
-        let block = &self.mixes[slot * stride..(slot + 1) * stride];
+        let block = &self.buffers[slot * stride..(slot + 1) * stride];
         let (mut peak, mut energy) = (0.0f32, 0.0f64);
-        for channel in 0..self.channels {
+        for channel in 0..channels {
             for sample in &block[channel * QUANTUM..channel * QUANTUM + frames] {
                 let sample = f64::from(*sample);
                 let square = sample * sample;
@@ -1063,40 +1069,15 @@ impl Engine {
             }
         }
         // Not-a-number compares false with everything; the meter shows it as nothing.
-        self.counters.meters[slot].add(peak, energy, (frames * self.channels) as u64);
+        self.counters.meters[slot].add(peak, energy, (frames * channels) as u64);
     }
 
-    /// Adds `frames` of bus slot `from` into bus slot `to`, at `gain`, through the delay that
-    /// lines the edge up with the latest path into `to`, if it has one.
-    fn add(&mut self, from: usize, to: usize, gain: f32, frames: usize) {
-        let stride = self.channels * QUANTUM;
-        let line = self
-            .delays
-            .line(u32::try_from(from).unwrap_or(u32::MAX), u32::try_from(to).unwrap_or(u32::MAX));
-        let (mut from, to) = two(&mut self.mixes, stride, from, to);
-        if let Some(line) = line {
-            let delayed = &mut self.scratch[..stride];
-            for channel in 0..self.channels {
-                let range = channel * QUANTUM..channel * QUANTUM + frames;
-                delayed[range.clone()].copy_from_slice(&from[range]);
-            }
-            line.process(delayed, frames);
-            from = &*delayed;
-        }
-        for channel in 0..self.channels {
-            let range = channel * QUANTUM..channel * QUANTUM + frames;
-            for (out, sample) in to[range.clone()].iter_mut().zip(&from[range]) {
-                *out += sample * gain;
-            }
-        }
-    }
-
-    /// Interleaves `frames` of the master bus into `out`, writing any sample that isn't finite as
+    /// Interleaves `frames` of the master into `out`, writing any sample that isn't finite as
     /// silence: one bad voice must not poison a device.
     fn write(&mut self, out: &mut [f32], frames: usize) {
         for frame in 0..frames {
             for channel in 0..self.channels {
-                let sample = self.mixes[channel * QUANTUM + frame];
+                let sample = self.buffers[channel * QUANTUM + frame];
                 out[frame * self.channels + channel] = if sample.is_finite() {
                     sample
                 } else {
@@ -1117,17 +1098,81 @@ impl Engine {
         self.counters.received.store(self.received, Ordering::Release);
         self.counters.culled.store(self.culled, Ordering::Relaxed);
         self.counters.stolen.store(self.stolen, Ordering::Relaxed);
+        self.counters.revisions.store(self.revisions, Ordering::Relaxed);
     }
 }
 
-/// The blocks of slots `from` and `to` (which differ) of `mixes`, the first to read and the
+/// True while the node `target` names is in the table.
+fn live(nodes: &[Option<Box<Node>>], target: Target) -> bool {
+    nodes[target.slot as usize]
+        .as_ref()
+        .is_some_and(|node| node.generation == target.generation)
+}
+
+/// The block of a node input: its buffer for the first, the node's own storage for the rest.
+fn input<'a>(
+    buffers: &'a mut [f32],
+    nodes: &'a mut [Option<Box<Node>>],
+    target: Target,
+    stride: usize,
+) -> Option<&'a mut [f32]> {
+    let node = nodes[target.slot as usize]
+        .as_deref_mut()
+        .filter(|node| node.generation == target.generation)?;
+    let slot = target.slot as usize;
+    match target.input {
+        0 => Some(&mut buffers[slot * stride..(slot + 1) * stride]),
+        input => {
+            let index = usize::from(input) - 1;
+            node.inputs.get_mut(index * stride..(index + 1) * stride)
+        }
+    }
+}
+
+/// The block an output is in.
+fn read<'a>(buffers: &'a [f32], scratch: &'a [f32], place: Place, stride: usize) -> &'a [f32] {
+    match place {
+        Place::Buffer(slot) => &buffers[slot as usize * stride..(slot as usize + 1) * stride],
+        Place::Scratch(index) => &scratch[index as usize * stride..(index as usize + 1) * stride],
+    }
+}
+
+/// Adds `frames` of `from`, `sources` channels, into `to`, `targets` channels, at `level`: the
+/// same count as it is, mono into every channel, and many channels into mono as their average.
+fn add_converted(to: &mut [f32], targets: usize, from: &[f32], sources: usize, frames: usize, level: f32) {
+    let add = |to: &mut [f32], from: &[f32], level: f32| {
+        for (out, sample) in to.iter_mut().zip(from) {
+            *out += sample * level;
+        }
+    };
+    if sources == targets {
+        for channel in 0..targets {
+            let range = channel * QUANTUM..channel * QUANTUM + frames;
+            add(&mut to[range.clone()], &from[range], level);
+        }
+        return;
+    }
+    if sources == 1 {
+        for channel in 0..targets {
+            add(&mut to[channel * QUANTUM..channel * QUANTUM + frames], &from[..frames], level);
+        }
+        return;
+    }
+    #[allow(clippy::cast_precision_loss)] // A channel count.
+    let share = level / sources as f32;
+    for channel in 0..sources {
+        add(&mut to[..frames], &from[channel * QUANTUM..channel * QUANTUM + frames], share);
+    }
+}
+
+/// The blocks of slots `from` and `to` (which differ) of `buffers`, the first to read and the
 /// second to add into.
-fn two(mixes: &mut [f32], stride: usize, from: usize, to: usize) -> (&[f32], &mut [f32]) {
+fn two(buffers: &mut [f32], stride: usize, from: usize, to: usize) -> (&[f32], &mut [f32]) {
     if from < to {
-        let (low, high) = mixes.split_at_mut(to * stride);
+        let (low, high) = buffers.split_at_mut(to * stride);
         (&low[from * stride..(from + 1) * stride], &mut high[..stride])
     } else {
-        let (low, high) = mixes.split_at_mut(from * stride);
+        let (low, high) = buffers.split_at_mut(from * stride);
         (&high[..stride], &mut low[to * stride..(to + 1) * stride])
     }
 }

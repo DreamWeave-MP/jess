@@ -46,7 +46,6 @@
 #![warn(missing_docs)]
 
 pub mod backend;
-mod bus;
 mod context;
 mod delays;
 pub mod dsp;
@@ -54,8 +53,10 @@ mod engine;
 mod error;
 pub mod feed;
 mod graph;
+mod mixer;
 mod param;
 mod pcm;
+mod plan;
 pub mod processor;
 mod resample;
 pub mod spatial;
@@ -65,14 +66,15 @@ mod tests;
 mod voice;
 
 pub use backend::{DeviceInfo, DeviceRequest, DeviceStats, LiveContext};
-pub use bus::{BusKey, BusParam, BusSpec, Tap};
-pub use context::{AudioConfig, AudioStats, Control, Meter, OfflineContext, VoiceState, context};
+pub use context::{AudioConfig, AudioStats, Control, Edit, Meter, OfflineContext, VoiceState, context};
 pub use engine::{CONTROL_QUANTUM, Engine};
 pub use error::AudioError;
 pub use feed::{Decode, Feed, FeedSpec, FeedStatus, FeedWatch};
+pub use graph::Connection;
+pub use mixer::{BusSpec, NodeKey, Tap};
 pub use param::{Curve, Glide};
 pub use pcm::{Pcm, SampleFormat};
-pub use processor::{Processor, ProcessorKey};
+pub use processor::{Io, Processor, Registry};
 pub use spatial::{Distance, Emitter, Handedness, Listener};
 pub use stream::{Stream, StreamStats};
 pub use voice::{Culled, LoopRegion, PlaySpec, VoiceKey, VoiceParam, VoiceSend};
@@ -89,20 +91,14 @@ pub const MAX_RATE: u32 = 384_000;
 /// The most voices one context holds.
 pub const MAX_VOICES: usize = 65_536;
 
-/// The most buses one context holds, the master included.
-pub const MAX_BUSES: usize = 4096;
+/// The most nodes one context holds, buses and processors alike, the master included.
+pub const MAX_NODES: usize = 4096;
 
-/// The most sends one bus has, besides its parent.
-pub const MAX_SENDS: usize = 4;
+/// The most connections between nodes one context holds.
+pub const MAX_CONNECTIONS: usize = 65_536;
 
-/// The most sends one voice has, besides its bus.
-pub const MAX_VOICE_SENDS: usize = 2;
-
-/// The most processors one bus runs.
-pub const MAX_CHAIN: usize = 16;
-
-/// The most processors one context holds.
-pub const MAX_PROCESSORS: usize = 4096;
+/// The most outputs one voice has: the node it plays into, and its sends.
+pub const MAX_VOICE_OUTPUTS: usize = 16;
 
 /// The fastest a voice plays its source.
 pub const MAX_PLAYBACK_RATE: f64 = 64.0;

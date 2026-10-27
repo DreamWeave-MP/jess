@@ -259,6 +259,7 @@ impl Jess {
             granted,
             outputs: crate::lua::audio::Outputs::default(),
             feeds: crate::lua::audio::Feeds::default(),
+            processors: RefCell::new(crate::audio::Registry::builtin()),
         })
     }
 }

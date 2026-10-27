@@ -1,6 +1,6 @@
 //! A delay line with feedback: echoes.
 
-use crate::audio::processor::{Block, ParamInfo, Processor, Tail};
+use crate::audio::processor::{Io, ParamInfo, Processor, Tail};
 
 /// Echoes a bus.
 ///
@@ -21,24 +21,9 @@ pub struct Delay {
 
 impl Delay {
     const PARAMS: &'static [ParamInfo] = &[
-        ParamInfo {
-            name: "time",
-            min: 0.0,
-            max: 10.0,
-            default: 0.25,
-        },
-        ParamInfo {
-            name: "feedback",
-            min: -0.99,
-            max: 0.99,
-            default: 0.3,
-        },
-        ParamInfo {
-            name: "mix",
-            min: 0.0,
-            max: 1.0,
-            default: 0.5,
-        },
+        ParamInfo::control("time", 0.0, 10.0, 0.25, "s"),
+        ParamInfo::control("feedback", -0.99, 0.99, 0.3, ""),
+        ParamInfo::control("mix", 0.0, 1.0, 0.5, ""),
     ];
 
     /// The longest delay one can be made with, in seconds.
@@ -105,7 +90,9 @@ impl Processor for Delay {
         Tail::Frames((delay * repeats).ceil() as u64)
     }
 
-    fn process(&mut self, block: &mut Block<'_>, _key: Option<&[f32]>) {
+    fn process(&mut self, io: &mut Io<'_>) {
+        let (mut block, _) = io.effect();
+        let block = &mut block;
         let (delay, length, start) = (self.frames(), self.length, self.write);
         let (feedback, mix) = (self.feedback, self.mix);
         for channel in 0..block.channels {
@@ -136,12 +123,8 @@ mod tests {
         delay.set(2, 1.0);
         let mut samples = vec![0.0f32; QUANTUM];
         samples[0] = 1.0;
-        let mut block = Block {
-            samples: &mut samples,
-            channels: 1,
-            frames: 40,
-        };
-        delay.process(&mut block, None);
+        let mut block = Io::new(&mut samples, 1, 40);
+        delay.process(&mut block);
         assert_eq!(samples[10], 1.0);
         assert_eq!(samples[20], 0.5);
         assert_eq!(samples[30], 0.25);

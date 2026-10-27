@@ -67,7 +67,11 @@ pub fn definitions() -> String {
 
 /// Host options for a generic runtime; no application configuration is loaded implicitly.
 #[derive(Clone, Debug, Default)]
-pub struct Options {}
+pub struct Options {
+    /// The processor kinds scripts can make by name: the built-in ones, and any the host adds
+    /// with [`Registry::register`](crate::audio::Registry::register).
+    pub processors: crate::audio::Registry,
+}
 
 /// The generic runtime plan, cached per thread on first use.
 ///
@@ -165,7 +169,7 @@ pub fn runtime_with_capabilities(options: Options, capabilities: &[String]) -> l
 /// # Errors
 ///
 /// Returns an error if the runtime plan doesn't finalize or the VM can't be set up.
-pub fn runtime_with_profile(_options: Options, capabilities: &[String], profiling: bool) -> l3i::Result<Runtime> {
+pub fn runtime_with_profile(options: Options, capabilities: &[String], profiling: bool) -> l3i::Result<Runtime> {
     check_capabilities(capabilities)?;
     let runtime_plan = if profiling {
         plan::plan_with_profiling(capabilities)?
@@ -175,6 +179,7 @@ pub fn runtime_with_profile(_options: Options, capabilities: &[String], profilin
     let runtime = Runtime::from_plan(&runtime_plan)?;
     let jess = state(&runtime)?;
     *jess.compile_options.borrow_mut() = Some(runtime.compile_options());
+    *jess.processors.borrow_mut() = options.processors;
     runtime.set_global("jess", &jess.module)?;
     require::seed_require(&runtime, &jess)?;
     let require = runtime.bind_function("jess.require", move |call: &Call<'_>, name: Text| {
@@ -229,6 +234,8 @@ pub(crate) struct Jess {
     pub(crate) outputs: audio::Outputs,
     /// The feeds the runtime started, which it stops and waits for when it ends.
     pub(crate) feeds: audio::Feeds,
+    /// The processor kinds `jess.audio` makes by name: the built-in ones and the host's.
+    pub(crate) processors: RefCell<crate::audio::Registry>,
 }
 
 impl Jess {

@@ -39,19 +39,55 @@ pub enum AudioError {
     Disconnected,
     /// A voice handle from a voice that already ended, or another context.
     StaleVoice,
-    /// A bus handle from a bus that was removed, or another context.
-    StaleBus,
-    /// Every bus slot is taken.
-    BusesExhausted(usize),
-    /// A bus still being routed to can't be removed.
-    BusInUse {
+    /// A node handle from a node that was removed, or another context, or a node that can't
+    /// take what was asked of it (a voice into a node without an audio input).
+    StaleNode,
+    /// Every node slot is taken.
+    NodesExhausted(usize),
+    /// Every connection the context has room for is made.
+    ConnectionsExhausted(usize),
+    /// A node still fed can't be removed.
+    NodeInUse {
         /// Voices playing into it, or waiting to start there.
         voices: usize,
-        /// Buses summing into it.
-        buses: usize,
+        /// Connections reaching its audio inputs.
+        nodes: usize,
     },
-    /// The routing would feed a bus back into itself.
+    /// The routing would feed a node back into itself without a feedback delay on the way.
     Cycle,
+    /// A port or parameter name a node doesn't have.
+    UnknownPort {
+        /// The node's kind.
+        kind: &'static str,
+        /// The name asked for.
+        name: String,
+        /// The names it has.
+        known: String,
+    },
+    /// An inserted processor's output is its host's, and its main input is the chain's.
+    Inserted,
+    /// The node can't go in an insert chain: it is wired, of another shape or width than a chain
+    /// holds, or in a chain already.
+    NotInsertable,
+    /// The sidechain already hears another connection.
+    SidechainTaken,
+    /// A revision stamped before one still waiting for its frame: revisions take effect in the
+    /// order they are made.
+    GraphOrder {
+        /// The frame the waiting revision takes effect on.
+        pending: u64,
+    },
+    /// Something the engine doesn't do, and why.
+    Unsupported(&'static str),
+    /// A processor that can't be a node.
+    Shape {
+        /// Its kind.
+        kind: &'static str,
+        /// What is wrong with it.
+        problem: &'static str,
+    },
+    /// A processor kind registered twice.
+    KindTaken(String),
     /// A bus or voice already has as many sends as it can.
     SendsExhausted(usize),
     /// The audio device couldn't be opened or started, or this jess has none.
@@ -62,12 +98,6 @@ pub enum AudioError {
     StreamClaimed,
     /// A group was opened inside another.
     GroupOpen,
-    /// Every processor slot is taken.
-    ProcessorsExhausted(usize),
-    /// A bus already runs as many processors as it can.
-    ChainFull(usize),
-    /// A processor handle from one that was removed, or another context.
-    StaleProcessor,
     /// A processor kind there isn't.
     UnknownProcessor {
         /// The kind asked for.
@@ -93,7 +123,7 @@ pub enum AudioError {
         /// The names it has.
         known: String,
     },
-    /// The master bus is the output: it has no parent and stays.
+    /// The master bus is the output: it has no route and stays.
     Master,
     /// A source whose channels the context can't mix into its output.
     Layout {
@@ -154,21 +184,40 @@ impl fmt::Display for AudioError {
             ),
             AudioError::Disconnected => f.write_str("the audio engine is gone: its output was closed"),
             AudioError::StaleVoice => f.write_str("the voice has ended or belongs to another context"),
-            AudioError::StaleBus => f.write_str("the bus was removed or belongs to another context"),
-            AudioError::BusesExhausted(buses) => write!(f, "all {buses} buses are in use"),
-            AudioError::BusInUse { voices, buses } => write!(
+            AudioError::StaleNode => {
+                f.write_str("the node was removed, belongs to another context, or has no audio input to play into")
+            }
+            AudioError::NodesExhausted(nodes) => write!(f, "all {nodes} nodes are in use"),
+            AudioError::ConnectionsExhausted(count) => write!(f, "all {count} connections are made"),
+            AudioError::NodeInUse { voices, nodes } => write!(
                 f,
-                "the bus still has {voices} voices and {buses} buses routed into it or listening to it; stop or reroute them first"
+                "the node still has {voices} voices and {nodes} connections feeding it; stop or reroute them first"
             ),
-            AudioError::Cycle => f.write_str("that routing would feed a bus back into itself"),
+            AudioError::Cycle => f.write_str(
+                "that routing would feed a node back into itself; a loop needs a feedback delay on one of its connections",
+            ),
+            AudioError::UnknownPort { kind, name, known } => {
+                write!(f, "a {kind} node has no port or parameter {name:?}; it has {known}")
+            }
+            AudioError::Inserted => f.write_str(
+                "an inserted processor's output is its host's and its input is the chain's; connect the host instead",
+            ),
+            AudioError::NotInsertable => f.write_str(
+                "only an unconnected processor with one input and one output, as wide as the host, goes in an insert chain",
+            ),
+            AudioError::SidechainTaken => f.write_str("the sidechain already hears another node; disconnect it first"),
+            AudioError::GraphOrder { pending } => write!(
+                f,
+                "a graph change waits for frame {pending}; changes take effect in the order they're made, so stamp this one for that frame or later"
+            ),
+            AudioError::Unsupported(what) => write!(f, "unsupported: {what}"),
+            AudioError::Shape { kind, problem } => write!(f, "a {kind} processor can't be a node: it has {problem}"),
+            AudioError::KindTaken(kind) => write!(f, "a processor kind {kind:?} is already registered"),
             AudioError::SendsExhausted(sends) => write!(f, "it already has all {sends} of its sends"),
             AudioError::Device(problem) => f.write_str(problem),
             AudioError::StreamBusy => f.write_str("another thread is writing the stream; a stream has one writer at a time"),
             AudioError::StreamClaimed => f.write_str("the stream already has a voice playing it; a stream plays once"),
             AudioError::GroupOpen => f.write_str("a group of commands is already open; groups don't nest"),
-            AudioError::ProcessorsExhausted(count) => write!(f, "all {count} processors are in use"),
-            AudioError::ChainFull(count) => write!(f, "the bus already runs {count} processors"),
-            AudioError::StaleProcessor => f.write_str("the processor was removed or belongs to another context"),
             AudioError::UnknownProcessor { kind, known } => {
                 write!(f, "there is no {kind:?} processor; there are {known}")
             }
@@ -178,7 +227,7 @@ impl fmt::Display for AudioError {
             AudioError::UnknownParameter { kind, name, known } => {
                 write!(f, "a {kind} processor has no parameter {name:?}; it has {known}")
             }
-            AudioError::Master => f.write_str("the master bus is the output: it has no parent and can't be removed"),
+            AudioError::Master => f.write_str("the master bus is the output: it has no route and can't be removed"),
             AudioError::Layout { source, output } => write!(
                 f,
                 "a {source}-channel source doesn't mix into a {output}-channel output; mono goes anywhere, stereo goes to mono, and otherwise the counts must match"

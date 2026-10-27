@@ -1,6 +1,6 @@
 //! Saturation: a bus driven into a soft clip.
 
-use crate::audio::processor::{Block, ParamInfo, Processor};
+use crate::audio::processor::{Io, ParamInfo, Processor};
 
 /// Drives a bus into a hyperbolic tangent: `drive` decibels in, a curve that rounds off instead
 /// of clipping, `level` decibels out, blended with the clean signal at `mix`.
@@ -15,24 +15,9 @@ pub struct Drive {
 
 impl Drive {
     const PARAMS: &'static [ParamInfo] = &[
-        ParamInfo {
-            name: "drive",
-            min: 0.0,
-            max: 48.0,
-            default: 12.0,
-        },
-        ParamInfo {
-            name: "level",
-            min: -48.0,
-            max: 12.0,
-            default: -6.0,
-        },
-        ParamInfo {
-            name: "mix",
-            min: 0.0,
-            max: 1.0,
-            default: 1.0,
-        },
+        ParamInfo::control("drive", 0.0, 48.0, 12.0, "dB"),
+        ParamInfo::control("level", -48.0, 12.0, -6.0, "dB"),
+        ParamInfo::control("mix", 0.0, 1.0, 1.0, ""),
     ];
 
     /// A drive at the default settings.
@@ -89,7 +74,9 @@ impl Processor for Drive {
         })
     }
 
-    fn process(&mut self, block: &mut Block<'_>, _key: Option<&[f32]>) {
+    fn process(&mut self, io: &mut Io<'_>) {
+        let (mut block, _) = io.effect();
+        let block = &mut block;
         let (into, out, mix) = (self.gain_in, self.gain_out, self.mix);
         for channel in 0..block.channels {
             for sample in block.channel(channel) {
@@ -112,12 +99,8 @@ mod tests {
         let mut samples = vec![0.0f32; QUANTUM];
         samples[0] = 10.0;
         samples[1] = 0.001;
-        let mut block = Block {
-            samples: &mut samples,
-            channels: 1,
-            frames: 2,
-        };
-        drive.process(&mut block, None);
+        let mut block = Io::new(&mut samples, 1, 2);
+        drive.process(&mut block);
         assert!(samples[0] <= 1.0 && samples[0] > 0.99, "{}", samples[0]);
         assert!(
             (samples[1] - 0.001 * 10f32.powf(12.0 / 20.0)).abs() < 1e-5,

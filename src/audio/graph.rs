@@ -1,301 +1,951 @@
-//! The routing graph as the control side keeps it, and the order the engine mixes buses in.
+//! The graph as the control side keeps it, and the compiler that turns it into a plan.
 //!
-//! The engine never decides an order: it walks the one it was last sent. Every change to the
-//! routing is checked here first, a new order is worked out, and the change and its order go to
-//! the engine in one command, so it never mixes a graph that is half changed. A change that
-//! would route a bus into itself, however far round, is refused before anything is sent.
+//! A [`Definition`] is what the application asked for: nodes, their ports, the connections
+//! between them, and insert chains. Only the control side has one. Every change is made to a
+//! clone, checked, and compiled ([`Definition::compile`]) into a [`Plan`] before anything is sent,
+//! so a change that would loop, name a port that isn't there, or overrun a budget is refused
+//! with the graph as it was. The engine never sees a definition, and never decides an order.
 
 use std::collections::BTreeSet;
 
-use crate::audio::delays::INPUT;
-use crate::audio::{AudioError, BusKey, MAX_SENDS};
+use crate::audio::delays::{Delays, Edge, INPUT, Rings};
+use crate::audio::mixer::{NodeKey, Tap};
+use crate::audio::plan::{Clear, Feedback, Place, Plan, Pull, Push, Span, Step, Target};
+use crate::audio::processor::{ParamInfo, PortKind, Ports, Processor};
+use crate::audio::{AudioError, QUANTUM};
+
+/// The longest a feedback connection delays, in frames: about 21 seconds at 48 kHz.
+pub const MAX_FEEDBACK: u64 = 1 << 20;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum State {
     Free,
     Live,
-    /// Sent to the engine to be removed; its slot is the engine's until it says the bus ended.
+    /// Removed; its slot is the engine's until it says the node ended.
     Removing,
+}
+
+/// What the graph knows of a node's processor: enough to check and compile connections without
+/// the processor, which the engine has.
+#[derive(Clone, Copy, Debug)]
+pub struct Shape {
+    pub kind: &'static str,
+    pub ports: &'static Ports,
+    pub params: &'static [ParamInfo],
+    pub latency: u64,
+    pub tail: u64,
+    pub mixer: bool,
+}
+
+impl Shape {
+    pub fn of(processor: &dyn Processor) -> Shape {
+        Shape {
+            kind: processor.kind(),
+            ports: processor.ports(),
+            params: processor.params(),
+            latency: processor.latency(),
+            tail: processor.tail().frames(),
+            mixer: processor.mixer(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 struct Node {
     generation: u32,
     state: State,
-    parent: Option<u32>,
-    /// The buses it sends to, besides its parent.
-    sends: Vec<u32>,
-    /// The buses whose processors listen to it, once for each processor: it is mixed before them.
-    listeners: Vec<u32>,
+    shape: Shape,
+    channels: usize,
+    /// The node whose insert chain it is in.
+    host: Option<u32>,
+    /// Its insert chain, in order.
+    inserts: Vec<u32>,
+    /// The node its route connection reaches: a bus's parent.
+    route: Option<u32>,
+    /// Removed with a tail: it runs, unfed, until the engine says it has rung out.
+    ringing: bool,
 }
 
-impl Node {
-    /// The buses this one feeds: its signal goes there.
-    fn signal(&self) -> impl Iterator<Item = u32> {
-        self.parent.into_iter().chain(self.sends.iter().copied())
-    }
+/// Which input of a node a connection reaches.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Input {
+    /// An input port, by index among the processor's inputs.
+    Port(u8),
+    /// A parameter, by index: modulation.
+    Param(u16),
+}
 
-    /// The buses this one feeds, or that hear it: everything mixed after it.
-    fn outputs(&self) -> impl Iterator<Item = u32> {
-        self.signal().chain(self.listeners.iter().copied())
-    }
+/// A connection.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Link {
+    from: u32,
+    output: u8,
+    to: u32,
+    input: Input,
+    level: f32,
+    tap: Tap,
+    /// Frames of delay on a connection that may close a cycle, or 0.
+    feedback: u64,
+}
 
-    fn clear(&mut self) {
-        self.parent = None;
-        self.sends.clear();
-        self.listeners.clear();
+/// How a connection is made: its level, its tap, and a feedback delay.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Connection {
+    /// Linear level.
+    pub level: f32,
+    /// Where it taps its source.
+    pub tap: Tap,
+    /// Frames of delay, at least a quantum, for a connection that may close a cycle; `None` for
+    /// one that may not.
+    pub feedback: Option<u64>,
+}
+
+impl Default for Connection {
+    fn default() -> Self {
+        Connection {
+            level: 1.0,
+            tap: Tap::PostFader,
+            feedback: None,
+        }
     }
 }
 
-/// The buses and how they connect. Slot 0 is the master bus.
+/// See the module docs. Slot 0 is the master bus.
 #[derive(Clone, Debug)]
-pub struct Graph {
+pub struct Definition {
     nodes: Vec<Node>,
+    links: Vec<Link>,
     /// Free slots, the next one at the end.
     free: Vec<u32>,
+    /// The connections it has room for.
+    room: usize,
+    channels: usize,
 }
 
-impl Graph {
-    /// A graph of `capacity` bus slots with the master bus live in slot 0.
-    pub fn new(capacity: usize) -> Graph {
-        let mut nodes = vec![
-            Node {
-                generation: 0,
-                state: State::Free,
-                parent: None,
-                sends: Vec::new(),
-                listeners: Vec::new(),
-            };
-            capacity
-        ];
+/// When a node's signal is where, in frames behind what voices add straight into the graph: the
+/// latest of what reaches it, after its insert chain, and after its own processing.
+#[derive(Clone, Copy, Default)]
+struct Timing {
+    arrival: u64,
+    pre: u64,
+    post: u64,
+}
+
+const FREE: Node = Node {
+    generation: 0,
+    state: State::Free,
+    shape: Shape {
+        kind: "",
+        ports: &Ports::EFFECT,
+        params: &[],
+        latency: 0,
+        tail: 0,
+        mixer: false,
+    },
+    channels: 0,
+    host: None,
+    inserts: Vec::new(),
+    route: None,
+    ringing: false,
+};
+
+impl Definition {
+    /// A graph of `capacity` node slots and room for `connections`, in a context of `channels`,
+    /// with the master bus, `master`, live in slot 0.
+    pub fn new(capacity: usize, connections: usize, channels: usize, master: Shape) -> Definition {
+        let mut nodes = vec![FREE; capacity];
         nodes[0].state = State::Live;
+        nodes[0].shape = master;
+        nodes[0].channels = channels;
         let free = (1..u32::try_from(capacity).unwrap_or(u32::MAX)).rev().collect();
-        Graph { nodes, free }
+        Definition {
+            nodes,
+            links: Vec::new(),
+            free,
+            room: connections,
+            channels,
+        }
     }
 
-    pub fn capacity(&self) -> usize {
-        self.nodes.len()
-    }
-
-    /// True for a bus that is live: made, and not being removed.
-    pub fn is_live(&self, bus: BusKey) -> bool {
+    fn node(&self, key: NodeKey) -> Option<&Node> {
         self.nodes
-            .get(bus.slot as usize)
-            .is_some_and(|node| node.state == State::Live && node.generation == bus.generation)
+            .get(key.slot as usize)
+            .filter(|node| node.state == State::Live && node.generation == key.generation)
     }
 
-    pub fn check_live(&self, bus: BusKey) -> Result<(), AudioError> {
-        if self.is_live(bus) {
+    /// True for a node that is live: made, and not removed.
+    pub fn is_live(&self, key: NodeKey) -> bool {
+        self.node(key).is_some()
+    }
+
+    /// # Errors
+    ///
+    /// [`AudioError::StaleNode`] for a node that isn't live.
+    pub fn check_live(&self, key: NodeKey) -> Result<(), AudioError> {
+        if self.is_live(key) {
             return Ok(());
         }
-        Err(AudioError::StaleBus)
+        Err(AudioError::StaleNode)
     }
 
-    /// Takes a free slot for a bus under `parent`, or `None` when every slot is taken.
-    pub fn add(&mut self, parent: BusKey) -> Option<BusKey> {
-        let slot = self.free.pop()?;
+    /// The key of the node in `slot` now.
+    pub fn key(&self, slot: u32) -> NodeKey {
+        NodeKey {
+            slot,
+            generation: self.nodes[slot as usize].generation,
+        }
+    }
+
+    /// What `key` is, if it is live.
+    pub fn shape(&self, key: NodeKey) -> Option<&Shape> {
+        self.node(key).map(|node| &node.shape)
+    }
+
+    /// The channels of node `slot`, live or not.
+    pub fn channels(&self, slot: u32) -> usize {
+        self.nodes[slot as usize].channels
+    }
+
+    /// True for a node voices can play into: live, with an audio input, not in an insert chain.
+    pub fn takes_voices(&self, key: NodeKey) -> bool {
+        self.node(key)
+            .is_some_and(|node| node.host.is_none() && node.shape.ports.audio().next().is_some())
+    }
+
+    /// Takes a free slot for a node of `shape` with `channels`.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::NodesExhausted`] when every slot is taken, and [`AudioError::Channels`] for
+    /// more channels than the context has.
+    pub fn add(&mut self, shape: Shape, channels: Option<usize>) -> Result<NodeKey, AudioError> {
+        let channels = channels.unwrap_or(self.channels);
+        if channels == 0 || channels > self.channels {
+            return Err(AudioError::Channels(channels));
+        }
+        let Some(slot) = self.free.pop() else {
+            return Err(AudioError::NodesExhausted(self.nodes.len()));
+        };
         let node = &mut self.nodes[slot as usize];
         node.state = State::Live;
-        node.parent = Some(parent.slot);
-        Some(BusKey {
+        node.shape = shape;
+        node.channels = channels;
+        Ok(NodeKey {
             slot,
             generation: node.generation,
         })
     }
 
-    /// Gives back a slot `add` took that never reached the engine.
-    pub fn unadd(&mut self, bus: BusKey) {
-        let node = &mut self.nodes[bus.slot as usize];
-        node.state = State::Free;
-        node.clear();
-        self.free.push(bus.slot);
-    }
-
-    /// The buses whose parent is `bus` or that send to it, counting ones being removed (they
-    /// still feed it until the engine is done with them), and the processors listening to it.
-    pub fn children(&self, bus: BusKey) -> usize {
-        let feeding = self
-            .nodes
+    /// Output `name` of `key`.
+    fn output(&self, key: NodeKey, name: &str) -> Result<u8, AudioError> {
+        let node = self.node(key).ok_or(AudioError::StaleNode)?;
+        let outputs = node.shape.ports.outputs;
+        let index = outputs
             .iter()
-            .filter(|node| node.state != State::Free && node.signal().any(|target| target == bus.slot))
-            .count();
-        feeding + self.nodes[bus.slot as usize].listeners.len()
+            .position(|known| *known == name)
+            .ok_or_else(|| AudioError::UnknownPort {
+                kind: node.shape.kind,
+                name: name.to_owned(),
+                known: outputs.join(", "),
+            })?;
+        Ok(u8::try_from(index).unwrap_or(u8::MAX))
     }
 
-    /// Adds a send from `bus` to `target` and returns the new order, or `None` when there already
-    /// is one and only its level changes.
-    pub fn send(&mut self, bus: BusKey, target: BusKey) -> Result<Option<Box<[u32]>>, AudioError> {
-        let node = &mut self.nodes[bus.slot as usize];
-        if node.sends.contains(&target.slot) {
-            return Ok(None);
+    /// Input `name` of `key`: an input port, or a parameter to modulate.
+    fn input(&self, key: NodeKey, name: &str) -> Result<Input, AudioError> {
+        let node = self.node(key).ok_or(AudioError::StaleNode)?;
+        let shape = &node.shape;
+        if let Some(index) = shape.ports.inputs.iter().position(|port| port.name == name) {
+            return Ok(Input::Port(u8::try_from(index).unwrap_or(u8::MAX)));
         }
-        if node.sends.len() == MAX_SENDS {
-            return Err(AudioError::SendsExhausted(MAX_SENDS));
+        if let Some(index) = shape.params.iter().position(|param| param.name == name) {
+            return Ok(Input::Param(u16::try_from(index).unwrap_or(u16::MAX)));
         }
-        node.sends.push(target.slot);
-        match self.order() {
-            Ok(order) => Ok(Some(order)),
-            Err(error) => {
-                self.nodes[bus.slot as usize].sends.pop();
-                Err(error)
+        let known: Vec<&str> = shape
+            .ports
+            .inputs
+            .iter()
+            .map(|port| port.name)
+            .chain(shape.params.iter().map(|param| param.name))
+            .collect();
+        Err(AudioError::UnknownPort {
+            kind: shape.kind,
+            name: name.to_owned(),
+            known: known.join(", "),
+        })
+    }
+
+    fn find(&self, from: u32, output: u8, to: u32, input: Input) -> Option<usize> {
+        self.links
+            .iter()
+            .position(|link| link.from == from && link.output == output && link.to == to && link.input == input)
+    }
+
+    /// Connects output `output` of `from` to input `input` of `to`, or changes the connection
+    /// already there.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::StaleNode`], [`AudioError::UnknownPort`], [`AudioError::Layout`] for channel
+    /// counts that don't convert, [`AudioError::Inserted`] for an inserted processor's output or
+    /// main input, [`AudioError::SidechainTaken`], [`AudioError::Parameter`] for a level that
+    /// isn't finite or a feedback delay out of range, [`AudioError::Unsupported`] for a tap before
+    /// the processing on an output other than the first, or feedback into anything but an audio
+    /// input, and [`AudioError::ConnectionsExhausted`]. A loop is refused when the graph compiles.
+    pub fn connect(
+        &mut self,
+        from: NodeKey,
+        output: &str,
+        to: NodeKey,
+        input: &str,
+        connection: Connection,
+    ) -> Result<(), AudioError> {
+        let output = self.output(from, output)?;
+        let target = self.input(to, input)?;
+        if !connection.level.is_finite() {
+            return Err(AudioError::Parameter {
+                name: "connection level",
+                value: f64::from(connection.level),
+                expected: "a finite number",
+            });
+        }
+        let source = &self.nodes[from.slot as usize];
+        let sink = &self.nodes[to.slot as usize];
+        if source.host.is_some() {
+            return Err(AudioError::Inserted);
+        }
+        if connection.tap == Tap::PreFader && output != 0 {
+            return Err(AudioError::Unsupported(
+                "a tap before a node's processing is of its first output",
+            ));
+        }
+        let feedback = connection.feedback.unwrap_or(0);
+        if connection.feedback.is_some() && !(QUANTUM as u64..=MAX_FEEDBACK).contains(&feedback) {
+            #[allow(clippy::cast_precision_loss)] // Frames in a message.
+            return Err(AudioError::Parameter {
+                name: "feedback",
+                value: feedback as f64,
+                expected: "a delay of 128 frames to 2^20",
+            });
+        }
+        if let Input::Port(port) = target {
+            let kind = sink.shape.ports.inputs[port as usize].kind;
+            if kind == PortKind::Audio && sink.host.is_some() {
+                return Err(AudioError::Inserted);
             }
-        }
-    }
-
-    /// Has a processor on `listener` hear `key`, so `key` is mixed first; the new order, or why
-    /// not.
-    pub fn listen(&mut self, key: BusKey, listener: u32) -> Result<Box<[u32]>, AudioError> {
-        if key.slot == listener {
-            return Err(AudioError::Cycle);
-        }
-        self.nodes[key.slot as usize].listeners.push(listener);
-        match self.order() {
-            Ok(order) => Ok(order),
-            Err(error) => {
-                self.nodes[key.slot as usize].listeners.pop();
-                Err(error)
+            if kind == PortKind::Sidechain
+                && self.links.iter().any(|link| {
+                    link.to == to.slot && link.input == target && (link.from, link.output) != (from.slot, output)
+                })
+            {
+                return Err(AudioError::SidechainTaken);
             }
+            if feedback > 0 && kind != PortKind::Audio {
+                return Err(AudioError::Unsupported("feedback reaches an audio input"));
+            }
+            let (source, output) = (source.channels, sink.channels);
+            if source != output && source != 1 && output != 1 {
+                return Err(AudioError::Layout { source, output });
+            }
+        } else if feedback > 0 {
+            return Err(AudioError::Unsupported("feedback reaches an audio input"));
         }
+        let link = Link {
+            from: from.slot,
+            output,
+            to: to.slot,
+            input: target,
+            level: connection.level,
+            tap: connection.tap,
+            feedback,
+        };
+        if let Some(index) = self.find(from.slot, output, to.slot, target) {
+            self.links[index] = link;
+            return Ok(());
+        }
+        if self.links.len() == self.room {
+            return Err(AudioError::ConnectionsExhausted(self.room));
+        }
+        self.links.push(link);
+        Ok(())
     }
 
-    /// Takes away one processor on `listener` hearing bus slot `key`, and returns the new order.
-    pub fn unlisten(&mut self, key: u32, listener: u32) -> Option<Box<[u32]>> {
-        let listeners = &mut self.nodes[key as usize].listeners;
-        let index = listeners.iter().position(|known| *known == listener)?;
-        listeners.remove(index);
-        self.order().ok()
+    /// Takes away the connection from output `output` of `from` to input `input` of `to`; true if
+    /// there was one.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::StaleNode`] or [`AudioError::UnknownPort`].
+    pub fn disconnect(&mut self, from: NodeKey, output: &str, to: NodeKey, input: &str) -> Result<bool, AudioError> {
+        let output = self.output(from, output)?;
+        let input = self.input(to, input)?;
+        let Some(index) = self.find(from.slot, output, to.slot, input) else {
+            return Ok(false);
+        };
+        self.links.swap_remove(index);
+        if self.nodes[from.slot as usize].route == Some(to.slot) && output == 0 && input == Input::Port(0) {
+            self.nodes[from.slot as usize].route = None;
+        }
+        Ok(true)
     }
 
-    /// Removes the send from `bus` to `target`, returning the new order, or `None` if there was
-    /// none.
-    pub fn unsend(&mut self, bus: BusKey, target: BusKey) -> Option<Box<[u32]>> {
-        let sends = &mut self.nodes[bus.slot as usize].sends;
-        let index = sends.iter().position(|known| *known == target.slot)?;
-        sends.remove(index);
-        // Taking an edge away can't make a loop.
-        self.order().ok()
+    /// Takes away whatever reaches `to`'s sidechain.
+    pub fn unlisten(&mut self, to: NodeKey) {
+        self.links.retain(|link| {
+            link.to != to.slot
+                || !matches!(link.input, Input::Port(port) if self.nodes[to.slot as usize].shape.ports.inputs[port as usize].kind == PortKind::Sidechain)
+        });
     }
 
-    pub fn mark_removing(&mut self, bus: BusKey) {
-        self.nodes[bus.slot as usize].state = State::Removing;
+    /// Routes `node` into `parent`: replaces its route connection, at unity after its processing,
+    /// keeping every other connection it has.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::Master`] for the master, and as [`Definition::connect`].
+    pub fn route(&mut self, node: NodeKey, parent: NodeKey) -> Result<(), AudioError> {
+        if node == NodeKey::MASTER {
+            return Err(AudioError::Master);
+        }
+        self.check_live(node)?;
+        self.check_live(parent)?;
+        if let Some(old) = self.nodes[node.slot as usize].route.take() {
+            let old = self.key(old);
+            self.disconnect(node, "out", old, "in")?;
+        }
+        let output = self.nodes[node.slot as usize].shape.ports.outputs[0];
+        let input = self.nodes[parent.slot as usize]
+            .shape
+            .ports
+            .audio()
+            .next()
+            .map_or("in", |port| port.name);
+        self.connect(node, output, parent, input, Connection::default())?;
+        self.nodes[node.slot as usize].route = Some(parent.slot);
+        Ok(())
     }
 
-    /// The engine is done with `bus`: its slot is free, and the next bus in it is a new one.
-    pub fn ended(&mut self, bus: BusKey) {
-        let node = &mut self.nodes[bus.slot as usize];
-        if node.generation != bus.generation || node.state == State::Free {
+    /// The connections reaching `node`'s audio inputs.
+    pub fn feeds(&self, node: NodeKey) -> usize {
+        let shape = &self.nodes[node.slot as usize].shape;
+        self.links
+            .iter()
+            .filter(|link| {
+                link.to == node.slot
+                    && matches!(link.input, Input::Port(port) if shape.ports.inputs[port as usize].kind == PortKind::Audio)
+            })
+            .count()
+    }
+
+    /// Puts `node` in `host`'s insert chain at `index`, or last.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::StaleNode`], and [`AudioError::NotInsertable`] for a node with connections
+    /// to its audio input or from its output, of another shape or channel count than a chain
+    /// holds, already in a chain, or a host that is itself in one.
+    pub fn insert(&mut self, host: NodeKey, node: NodeKey, index: Option<usize>) -> Result<(), AudioError> {
+        self.check_live(host)?;
+        self.check_live(node)?;
+        let candidate = &self.nodes[node.slot as usize];
+        let wired = self
+            .links
+            .iter()
+            .any(|link| link.from == node.slot || (link.to == node.slot && link.input == Input::Port(0)));
+        if host == node
+            || candidate.host.is_some()
+            || !candidate.inserts.is_empty()
+            || candidate.shape.mixer
+            || !candidate.shape.ports.insertable()
+            || candidate.channels != self.nodes[host.slot as usize].channels
+            || self.nodes[host.slot as usize].host.is_some()
+            || wired
+        {
+            return Err(AudioError::NotInsertable);
+        }
+        let chain = &mut self.nodes[host.slot as usize].inserts;
+        let index = index.unwrap_or(chain.len()).min(chain.len());
+        chain.insert(index, node.slot);
+        self.nodes[node.slot as usize].host = Some(host.slot);
+        Ok(())
+    }
+
+    /// Removes `node`. Its sidechain and modulation go at once; it keeps its outgoing connections
+    /// while it rings out, if it has a tail. Returns the slots to retire now, the node and its
+    /// chain, when nothing of it has a tail; the engine is told to end them when the revision
+    /// takes effect. A processor taken out of an insert chain ends at once.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::Master`], [`AudioError::StaleNode`], or [`AudioError::NodeInUse`] while
+    /// connections reach its audio inputs.
+    pub fn remove(&mut self, node: NodeKey) -> Result<Vec<NodeKey>, AudioError> {
+        if node == NodeKey::MASTER {
+            return Err(AudioError::Master);
+        }
+        self.check_live(node)?;
+        if let Some(host) = self.nodes[node.slot as usize].host.take() {
+            self.nodes[host as usize].inserts.retain(|slot| *slot != node.slot);
+            self.links.retain(|link| link.to != node.slot);
+            self.nodes[node.slot as usize].state = State::Removing;
+            return Ok(vec![node]);
+        }
+        let feeding = self.feeds(node);
+        if feeding > 0 {
+            return Err(AudioError::NodeInUse {
+                voices: 0,
+                nodes: feeding,
+            });
+        }
+        let mut gone = vec![node.slot];
+        gone.extend(self.nodes[node.slot as usize].inserts.iter().copied());
+        let ringing = self.tail(node.slot) > 0;
+        for slot in &gone {
+            self.links.retain(|link| link.to != *slot);
+            let entry = &mut self.nodes[*slot as usize];
+            entry.state = State::Removing;
+            entry.ringing = ringing;
+        }
+        if ringing {
+            return Ok(Vec::new());
+        }
+        for slot in &gone {
+            self.links.retain(|link| link.from != *slot);
+        }
+        Ok(gone.iter().map(|slot| self.key(*slot)).collect())
+    }
+
+    /// The engine is done with `node`: its connections go, its slot is free, and the next node in
+    /// it is a new one.
+    pub fn ended(&mut self, node: NodeKey) {
+        let entry = &mut self.nodes[node.slot as usize];
+        if entry.generation != node.generation || entry.state == State::Free {
             return;
         }
-        node.generation = node.generation.wrapping_add(1);
-        node.state = State::Free;
-        node.clear();
-        self.free.push(bus.slot);
+        entry.generation = entry.generation.wrapping_add(1);
+        entry.state = State::Free;
+        entry.host = None;
+        entry.inserts.clear();
+        entry.route = None;
+        entry.ringing = false;
+        self.links.retain(|link| link.from != node.slot && link.to != node.slot);
+        self.free.push(node.slot);
     }
 
-    /// Reroutes `bus` into `parent`, or leaves the graph as it was and says why not.
-    pub fn route(&mut self, bus: BusKey, parent: BusKey) -> Result<Box<[u32]>, AudioError> {
-        let node = &mut self.nodes[bus.slot as usize];
-        let old = node.parent.replace(parent.slot);
-        match self.order() {
-            Ok(order) => Ok(order),
-            Err(error) => {
-                self.nodes[bus.slot as usize].parent = old;
-                Err(error)
-            }
+    /// The node that runs `slot`'s steps: its host, or itself.
+    fn unit(&self, slot: u32) -> u32 {
+        self.nodes[slot as usize].host.unwrap_or(slot)
+    }
+
+    /// Whether a removed node still runs: ringing out, its chain with it.
+    fn runs(&self, slot: u32) -> bool {
+        let node = &self.nodes[slot as usize];
+        match node.state {
+            State::Free => false,
+            State::Live => true,
+            State::Removing => node.ringing,
         }
     }
 
-    /// Puts back the parent `route` replaced, `old`, for a reroute that never reached the engine.
-    pub fn unroute(&mut self, bus: BusKey, old: u32) {
-        self.nodes[bus.slot as usize].parent = Some(old);
+    /// The longest tail of node `slot` and its chain.
+    fn tail(&self, slot: u32) -> u64 {
+        let node = &self.nodes[slot as usize];
+        node.inserts
+            .iter()
+            .map(|insert| self.nodes[*insert as usize].shape.tail)
+            .fold(node.shape.tail, u64::max)
     }
 
-    /// The slot of the bus `bus` is routed into; the master has none.
-    pub fn parent(&self, bus: BusKey) -> Option<u32> {
-        self.nodes[bus.slot as usize].parent
-    }
-
-    /// How many frames each bus's output lags the voices that reach it by the longest way round,
-    /// by slot, given what each bus's own processors add (`own`, by slot). Compensation makes
-    /// every path into a bus as late as its latest, so this is also how late each bus is.
-    pub fn latencies(&self, own: &[u64]) -> Vec<u64> {
-        self.timing(own).1
-    }
-
-    /// The delays that line up every path into each bus with its latest, as `(from, to,
-    /// frames)`: on a bus's own input ([`INPUT`]) for what voices add there directly, and on each
-    /// edge from a bus to its parent or a send.
-    pub fn compensation(&self, own: &[u64]) -> Vec<(u32, u32, u64)> {
-        let (arrival, output) = self.timing(own);
-        let mut wanted = Vec::new();
-        for (slot, node) in self.nodes.iter().enumerate() {
-            if node.state == State::Free {
-                continue;
-            }
-            let from = u32::try_from(slot).unwrap_or(u32::MAX);
-            if arrival[slot] > 0 {
-                wanted.push((INPUT, from, arrival[slot]));
-            }
-            for target in node.signal() {
-                let behind = arrival[target as usize] - output[slot];
-                if behind > 0 {
-                    wanted.push((from, target, behind));
-                }
-            }
-        }
-        wanted.sort_unstable();
-        wanted
-    }
-
-    /// When the latest path reaches each bus, and when its output leaves, by slot.
-    fn timing(&self, own: &[u64]) -> (Vec<u64>, Vec<u64>) {
-        let mut arrival = vec![0u64; self.nodes.len()];
-        let mut output = vec![0u64; self.nodes.len()];
-        let Ok(order) = self.order() else {
-            return (arrival, output);
-        };
-        for slot in order {
-            let done = arrival[slot as usize] + own[slot as usize];
-            output[slot as usize] = done;
-            for target in self.nodes[slot as usize].signal() {
-                arrival[target as usize] = arrival[target as usize].max(done);
-            }
-        }
-        (arrival, output)
-    }
-
-    /// Every bus not yet free in an order where each comes before everything it feeds, the
-    /// master last. Among buses that could go next, the lowest slot goes first, so the same graph
-    /// always mixes in the same order.
-    pub fn order(&self) -> Result<Box<[u32]>, AudioError> {
-        let present = |slot: usize| self.nodes[slot].state != State::Free;
+    /// Every node that runs and isn't in a chain, each before everything it feeds and the master
+    /// last. Among nodes that could go next, the lowest slot goes first, so the same graph always
+    /// runs in the same order.
+    fn order(&self) -> Result<Vec<u32>, AudioError> {
+        let running = |slot: u32| self.nodes[slot as usize].host.is_none() && self.runs(slot);
         let mut waiting = vec![0usize; self.nodes.len()];
-        for (slot, node) in self.nodes.iter().enumerate() {
-            if !present(slot) {
+        for link in self.links.iter().filter(|link| link.feedback == 0) {
+            let (from, to) = (self.unit(link.from), self.unit(link.to));
+            if !running(from) || !running(to) {
                 continue;
             }
-            for target in node.outputs() {
-                waiting[target as usize] += 1;
+            if from == to {
+                return Err(AudioError::Cycle);
             }
+            waiting[to as usize] += 1;
         }
-        let mut ready: BTreeSet<u32> = (0..self.nodes.len())
-            .filter(|slot| present(*slot) && waiting[*slot] == 0)
+        let units: Vec<u32> = (0..self.nodes.len())
             .filter_map(|slot| u32::try_from(slot).ok())
+            .filter(|slot| running(*slot))
             .collect();
-        let mut order = Vec::with_capacity(self.nodes.len());
+        let mut ready: BTreeSet<u32> = units.iter().copied().filter(|slot| waiting[*slot as usize] == 0).collect();
+        let mut order = Vec::with_capacity(units.len());
         while let Some(slot) = ready.pop_first() {
             order.push(slot);
-            for target in self.nodes[slot as usize].outputs() {
-                waiting[target as usize] -= 1;
-                if waiting[target as usize] == 0 {
-                    ready.insert(target);
+            for link in self.links.iter().filter(|link| link.feedback == 0) {
+                if self.unit(link.from) != slot || !running(self.unit(link.to)) {
+                    continue;
+                }
+                let to = self.unit(link.to);
+                waiting[to as usize] -= 1;
+                if waiting[to as usize] == 0 {
+                    ready.insert(to);
                 }
             }
         }
-        let count = (0..self.nodes.len()).filter(|slot| present(*slot)).count();
-        if order.len() < count {
+        if order.len() < units.len() {
             return Err(AudioError::Cycle);
         }
-        Ok(order.into_boxed_slice())
+        Ok(order)
     }
+
+    /// The latency of the node in `slot`'s chain before it, and of the chain whole.
+    fn chain_latency(&self, slot: u32) -> (u64, u64) {
+        let unit = self.unit(slot);
+        let mut before = 0;
+        let mut whole = 0;
+        for insert in &self.nodes[unit as usize].inserts {
+            if *insert == slot {
+                before = whole;
+            }
+            whole += self.nodes[*insert as usize].shape.latency;
+        }
+        (before, whole)
+    }
+
+    /// When each node's signal is where, by slot, along `order`.
+    fn timing(&self, order: &[u32]) -> Vec<Timing> {
+        let mut timing = vec![Timing::default(); self.nodes.len()];
+        for &unit in order {
+            let arrival = self
+                .links
+                .iter()
+                .filter(|link| link.feedback == 0 && matches!(link.input, Input::Port(_)) && self.unit(link.to) == unit)
+                .map(|link| source_time(&timing, link))
+                .max()
+                .unwrap_or(0);
+            let (_, chain) = self.chain_latency(unit);
+            let pre = arrival + chain;
+            timing[unit as usize] = Timing {
+                arrival,
+                pre,
+                post: pre + self.nodes[unit as usize].shape.latency,
+            };
+        }
+        timing
+    }
+
+    /// How many frames `node`'s output lags the voices that reach it, by the longest way round.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::StaleNode`].
+    pub fn latency(&self, node: NodeKey) -> Result<u64, AudioError> {
+        self.check_live(node)?;
+        let order = self.order()?;
+        let timing = self.timing(&order);
+        Ok(timing[self.unit(node.slot) as usize].post)
+    }
+
+    /// Compiles the graph into a plan. See [`Plan`].
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::Cycle`] for a loop without a feedback delay on it.
+    #[allow(clippy::too_many_lines)] // One pass per thing a plan holds, in the order they build.
+    pub fn compile(&self) -> Result<Plan, AudioError> {
+        let order = self.order()?;
+        let timing = self.timing(&order);
+        // Each unit's chain runs before it, in its buffer.
+        let mut steps: Vec<u32> = Vec::with_capacity(order.len());
+        for &unit in &order {
+            steps.extend(self.nodes[unit as usize].inserts.iter().copied());
+            steps.push(unit);
+        }
+        let mut position = vec![usize::MAX; self.nodes.len()];
+        for (index, slot) in steps.iter().enumerate() {
+            position[*slot as usize] = index;
+        }
+        let runs = |slot: u32| position[slot as usize] != usize::MAX;
+        let wired: Vec<&Link> = self.links.iter().filter(|link| runs(link.from) && runs(link.to)).collect();
+
+        // Scratch: each output other than a buffer, from its step to the last step that reads it.
+        let mut last_read = vec![[0usize; crate::audio::processor::MAX_PORTS]; self.nodes.len()];
+        for link in &wired {
+            if matches!(link.input, Input::Param(_)) || self.is_sidechain(link) {
+                let read = &mut last_read[link.from as usize][link.output as usize];
+                *read = (*read).max(position[link.to as usize]);
+            }
+        }
+        let mut free_after: Vec<usize> = Vec::new();
+        let mut outputs = vec![Span::default(); self.nodes.len()];
+        for (index, &slot) in steps.iter().enumerate() {
+            let node = &self.nodes[slot as usize];
+            if node.host.is_some() {
+                continue;
+            }
+            let first = usize::from(node.shape.ports.in_place);
+            let count = node.shape.ports.outputs.len() - first;
+            let start = (0..=free_after.len())
+                .find(|start| (*start..start + count).all(|stride| free_after.get(stride).is_none_or(|free| *free < index)))
+                .unwrap_or(free_after.len());
+            if free_after.len() < start + count {
+                free_after.resize(start + count, 0);
+            }
+            for output in 0..count {
+                free_after[start + output] = last_read[slot as usize][first + output].max(index);
+            }
+            outputs[slot as usize] = Span {
+                start: to_u32(start),
+                end: to_u32(start + count),
+            };
+        }
+        let place = |slot: u32, output: u8| -> Place {
+            let node = &self.nodes[slot as usize];
+            if output == 0 && node.shape.ports.in_place {
+                return Place::Buffer(slot);
+            }
+            let first = u32::from(node.shape.ports.in_place);
+            Place::Scratch(outputs[slot as usize].start + u32::from(output) - first)
+        };
+
+        let mut lines: Vec<(Edge, u64, usize)> = Vec::new();
+        let mut rings: Vec<(Edge, u64, usize)> = Vec::new();
+        let mut pushes: Vec<(Push, Option<Edge>)> = Vec::new();
+        let mut feedback: Vec<(Feedback, Edge)> = Vec::new();
+        let mut planned: Vec<(Step, Option<Keyed>)> = Vec::with_capacity(steps.len());
+        for &slot in &steps {
+            let node = &self.nodes[slot as usize];
+            let unit = self.unit(slot);
+            let drain = (node.state == State::Removing).then(|| self.tail(unit));
+            let mut step = Step {
+                slot,
+                generation: node.generation,
+                buffer: unit,
+                channels: to_u8(node.channels),
+                separate: !node.shape.ports.in_place,
+                outputs: outputs[slot as usize],
+                pre: Span::default(),
+                post: Span::default(),
+                feedback: Span::default(),
+                key: None,
+                drain,
+                metered: node.shape.mixer,
+            };
+            // What the node hears on its sidechain, as late as its own input arrives there.
+            let key = wired
+                .iter()
+                .find(|link| link.to == slot && self.is_sidechain(link))
+                .map(|link| {
+                    let (before, _) = self.chain_latency(slot);
+                    let wanted = timing[unit as usize].arrival + if node.host.is_some() { before } else { 0 };
+                    let behind = wanted - source_time(&timing, link);
+                    let edge = edge(link);
+                    if behind > 0 {
+                        lines.push((edge, behind, node.channels));
+                    }
+                    let pull = Pull {
+                        from: place(link.from, link.output),
+                        from_channels: to_u8(self.nodes[link.from as usize].channels),
+                        line: None,
+                    };
+                    (pull, (behind > 0).then_some(edge))
+                });
+            if node.host.is_none() {
+                for tap in [Tap::PreFader, Tap::PostFader] {
+                    let start = to_u32(pushes.len());
+                    for link in wired
+                        .iter()
+                        .filter(|link| link.from == slot && link.tap == tap && link.feedback == 0)
+                    {
+                        let Input::Port(port) = link.input else {
+                            continue;
+                        };
+                        if self.is_sidechain(link) {
+                            continue;
+                        }
+                        let sink = &self.nodes[link.to as usize];
+                        let behind = timing[link.to as usize].arrival - source_time(&timing, link);
+                        let edge = edge(link);
+                        if behind > 0 {
+                            lines.push((edge, behind, sink.channels));
+                        }
+                        let push = Push {
+                            from: if tap == Tap::PreFader {
+                                Place::Buffer(slot)
+                            } else {
+                                place(slot, link.output)
+                            },
+                            from_channels: to_u8(node.channels),
+                            to: Target {
+                                slot: link.to,
+                                generation: sink.generation,
+                                input: self.audio_index(link.to, port),
+                            },
+                            to_channels: to_u8(sink.channels),
+                            level: link.level,
+                            line: None,
+                        };
+                        pushes.push((push, (behind > 0).then_some(edge)));
+                    }
+                    let span = Span {
+                        start,
+                        end: to_u32(pushes.len()),
+                    };
+                    if tap == Tap::PreFader {
+                        step.pre = span;
+                    } else {
+                        step.post = span;
+                    }
+                }
+                let start = to_u32(feedback.len());
+                for link in wired.iter().filter(|link| link.from == slot && link.feedback > 0) {
+                    let Input::Port(port) = link.input else {
+                        continue;
+                    };
+                    let sink = &self.nodes[link.to as usize];
+                    let edge = edge(link);
+                    rings.push((edge, link.feedback, sink.channels));
+                    let entry = Feedback {
+                        ring: 0,
+                        from: place(slot, link.output),
+                        from_channels: to_u8(node.channels),
+                        to: Target {
+                            slot: link.to,
+                            generation: sink.generation,
+                            input: self.audio_index(link.to, port),
+                        },
+                    };
+                    feedback.push((entry, edge));
+                }
+                step.feedback = Span {
+                    start,
+                    end: to_u32(feedback.len()),
+                };
+            }
+            planned.push((step, key));
+        }
+
+        // What voices add into a node waits as long as the latest path into it.
+        let mut entries = Vec::new();
+        for &unit in &order {
+            let node = &self.nodes[unit as usize];
+            let arrival = timing[unit as usize].arrival;
+            if arrival == 0 || node.state != State::Live {
+                continue;
+            }
+            for (index, port) in node.shape.ports.inputs.iter().enumerate() {
+                if port.kind != PortKind::Audio {
+                    continue;
+                }
+                let edge = Edge {
+                    from: INPUT,
+                    output: 0,
+                    to: unit,
+                    input: to_u8(index),
+                };
+                lines.push((edge, arrival, node.channels));
+                let target = Target {
+                    slot: unit,
+                    generation: node.generation,
+                    input: self.audio_index(unit, to_u8(index)),
+                };
+                entries.push((edge, target, to_u8(node.channels)));
+            }
+        }
+
+        let delays = Delays::new(lines);
+        let rings = Rings::new(rings);
+        let line = |edge: Option<Edge>| edge.and_then(|edge| delays.find(edge));
+        let steps = planned
+            .into_iter()
+            .map(|(mut step, key)| {
+                step.key = key.map(|(pull, edge)| Pull {
+                    line: line(edge),
+                    ..pull
+                });
+                step
+            })
+            .collect();
+        let pushes = pushes
+            .into_iter()
+            .map(|(push, edge)| Push {
+                line: line(edge),
+                ..push
+            })
+            .collect();
+        let feedback = feedback
+            .into_iter()
+            .map(|(entry, edge)| Feedback {
+                ring: rings.find(edge).unwrap_or(0),
+                ..entry
+            })
+            .collect();
+        let entries = entries
+            .into_iter()
+            .filter_map(|(edge, target, channels)| Some((delays.find(edge)?, target, channels)))
+            .collect();
+        let clear = order
+            .iter()
+            .map(|&unit| Clear {
+                slot: unit,
+                generation: self.nodes[unit as usize].generation,
+                channels: to_u8(self.nodes[unit as usize].channels),
+            })
+            .collect();
+        Ok(Plan {
+            steps,
+            pushes,
+            feedback,
+            clear,
+            entries,
+            delays,
+            rings,
+            scratch: vec![0.0; free_after.len() * self.channels * QUANTUM].into_boxed_slice(),
+        })
+    }
+
+    fn is_sidechain(&self, link: &Link) -> bool {
+        matches!(link.input, Input::Port(port)
+            if self.nodes[link.to as usize].shape.ports.inputs[port as usize].kind == PortKind::Sidechain)
+    }
+
+    /// Input port `port` of node `slot` counted among its audio inputs only.
+    fn audio_index(&self, slot: u32, port: u8) -> u8 {
+        let inputs = self.nodes[slot as usize].shape.ports.inputs;
+        to_u8(
+            inputs[..port as usize]
+                .iter()
+                .filter(|known| known.kind == PortKind::Audio)
+                .count(),
+        )
+    }
+}
+
+/// A sidechain pull, and the compensation line it takes if it needs one.
+type Keyed = (Pull, Option<Edge>);
+
+/// When the signal a link carries leaves its source.
+fn source_time(timing: &[Timing], link: &Link) -> u64 {
+    let source = timing[link.from as usize];
+    if link.tap == Tap::PreFader { source.pre } else { source.post }
+}
+
+fn edge(link: &Link) -> Edge {
+    let input = match link.input {
+        Input::Port(port) => port,
+        Input::Param(_) => u8::MAX,
+    };
+    Edge {
+        from: link.from,
+        output: link.output,
+        to: link.to,
+        input,
+    }
+}
+
+fn to_u32(value: usize) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
+}
+
+fn to_u8(value: usize) -> u8 {
+    u8::try_from(value).unwrap_or(u8::MAX)
 }

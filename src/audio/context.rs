@@ -6,20 +6,17 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 
-use crate::audio::bus::BusSend;
-use crate::audio::delays::Delays;
-use crate::audio::engine::{Capacity, Command, Counters, Engine, Feedback, Stamped};
-use crate::audio::graph::Graph;
+use crate::audio::engine::{Capacity, Command, Counters, Engine, Feedback, Node, Stamped};
+use crate::audio::graph::{Connection, Definition, Shape};
+use crate::audio::mixer::{BusSpec, Mixer, NodeKey, Tap};
 use crate::audio::param::Glide;
 use crate::audio::pcm::check_layout;
-use crate::audio::processor::{ParamInfo, Processor, ProcessorKey, check_param, param_index};
+use crate::audio::plan::Revision;
+use crate::audio::processor::{ParamInfo, Processor, check_param, check_shape, param_index};
 use crate::audio::spatial::{Emitter, Handedness, Listener, Space};
 use crate::audio::stream::Stream;
-use crate::audio::voice::{STREAM_WINDOW, Source, VoiceKey, check_level};
-use crate::audio::{
-    AudioError, BusKey, BusParam, BusSpec, LoopRegion, MAX_BUSES, MAX_CHAIN, MAX_PROCESSORS, MAX_VOICE_SENDS, MAX_VOICES,
-    Pcm, PlaySpec, Tap, VoiceParam,
-};
+use crate::audio::voice::{Output, Outputs, STREAM_WINDOW, Source, VoiceKey, check_level};
+use crate::audio::{AudioError, LoopRegion, MAX_NODES, MAX_VOICES, Pcm, PlaySpec, QUANTUM, VoiceParam};
 
 /// How to make a context.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -33,10 +30,10 @@ pub struct AudioConfig {
     /// Voices mixed at once, if fewer than `voices`: the rest are culled, by priority and then by
     /// loudness, until there is room for them.
     pub physical: Option<usize>,
-    /// Buses, the master included.
-    pub buses: usize,
-    /// Processors on all buses together.
-    pub processors: usize,
+    /// Nodes, buses and processors alike, the master included.
+    pub nodes: usize,
+    /// Connections between nodes.
+    pub connections: usize,
     /// Commands that can wait for the engine at once, in the queue and again in the engine's
     /// list of commands stamped for later. A command for later past that list's room is refused
     /// with [`AudioError::ScheduleFull`]; a command for now never waits for room in it.
@@ -56,8 +53,8 @@ impl Default for AudioConfig {
             channels: 2,
             voices: 256,
             physical: None,
-            buses: 64,
-            processors: 256,
+            nodes: 256,
+            connections: 1024,
             commands: 4096,
         }
     }
@@ -76,11 +73,11 @@ impl AudioConfig {
         if self.voices == 0 || self.voices > MAX_VOICES {
             return Err(AudioError::Capacity("a context's voice count", self.voices));
         }
-        if self.buses == 0 || self.buses > MAX_BUSES {
-            return Err(AudioError::Capacity("a context's bus count", self.buses));
+        if self.nodes == 0 || self.nodes > MAX_NODES {
+            return Err(AudioError::Capacity("a context's node count", self.nodes));
         }
-        if self.processors > MAX_PROCESSORS {
-            return Err(AudioError::Capacity("a context's processor count", self.processors));
+        if self.connections > crate::audio::MAX_CONNECTIONS {
+            return Err(AudioError::Capacity("a context's connection count", self.connections));
         }
         if self.commands == 0 {
             return Err(AudioError::Capacity("a context's command capacity", 0));
@@ -138,6 +135,9 @@ pub struct AudioStats {
     pub culled: u64,
     /// Voices that ended for not being mixed, all told.
     pub stolen: u64,
+    /// Graph revisions the engine carried out, all told. Playing, stopping, and changing voices
+    /// revises nothing.
+    pub revisions: u64,
 }
 
 /// A bus's level over a stretch of output: the peak sample's magnitude and the RMS, linear.
@@ -149,15 +149,64 @@ pub struct Meter {
     pub rms: f32,
 }
 
-#[derive(Clone, Copy, Debug)]
+/// One change to the graph, for [`Control::patch`]. Ports and parameters are named as the
+/// processor names them.
+#[derive(Clone, PartialEq, Debug)]
+pub enum Edit {
+    /// Connects output `output` of `from` to input `input` of `to`: an input port, or a parameter
+    /// to modulate. A connection already there takes the new level, tap, and feedback.
+    Connect {
+        /// The node the signal leaves.
+        from: NodeKey,
+        /// Which of its outputs.
+        output: String,
+        /// The node it reaches.
+        to: NodeKey,
+        /// Which of its inputs or parameters.
+        input: String,
+        /// Its level, tap, and feedback delay.
+        connection: Connection,
+    },
+    /// Takes a connection away; nothing happens if there was none.
+    Disconnect {
+        /// The node the signal leaves.
+        from: NodeKey,
+        /// Which of its outputs.
+        output: String,
+        /// The node it reaches.
+        to: NodeKey,
+        /// Which of its inputs or parameters.
+        input: String,
+    },
+    /// Routes a node into `parent`, replacing its route connection.
+    Route {
+        /// The node routed.
+        node: NodeKey,
+        /// Where it goes.
+        parent: NodeKey,
+    },
+    /// Puts `node` in `host`'s insert chain at `index` (from 0), or last.
+    Insert {
+        /// The node whose chain it goes in.
+        host: NodeKey,
+        /// The processor inserted.
+        node: NodeKey,
+        /// Its place in the chain.
+        index: Option<usize>,
+    },
+    /// Removes a node once nothing feeds it.
+    Remove(NodeKey),
+}
+
+#[derive(Clone, Debug)]
 struct Slot {
     generation: u32,
     busy: bool,
     start: Option<u64>,
-    /// The slot of the bus the voice plays into.
-    bus: u32,
-    /// The slots of the buses it sends to.
-    sends: [Option<u32>; MAX_VOICE_SENDS],
+    /// The slot of the node it plays into.
+    first: u32,
+    /// The slots of the nodes it sends to.
+    sends: Vec<u32>,
     /// Its source's length, for checking a new loop region.
     frames: u64,
     /// Where it is in space, as last sent, if it's there.
@@ -165,30 +214,14 @@ struct Slot {
 }
 
 impl Slot {
-    fn feeds(&self, bus: u32) -> bool {
-        self.busy && (self.bus == bus || self.sends.contains(&Some(bus)))
+    fn feeds(&self, node: u32) -> bool {
+        self.busy && (self.first == node || self.sends.contains(&node))
     }
 }
 
-/// A processor as the control side knows it: enough to check commands for it without asking the
-/// engine, which has the processor itself.
-#[derive(Clone, Copy, Debug)]
-struct ProcessorSlot {
-    generation: u32,
-    /// Taken: mounted, or sent away and not yet back.
-    busy: bool,
-    /// In a bus's chain, as far as this side has sent.
-    mounted: bool,
-    bus: u32,
-    /// The slot of the bus it listens to, if any.
-    key: Option<u32>,
-    latency: u64,
-    kind: &'static str,
-    params: &'static [ParamInfo],
-}
-
-/// The application side of a context: it starts, stops, and changes voices and buses by sending
-/// the engine commands, and hears back what ended. It never touches the engine's state.
+/// The application side of a context: it starts, stops, and changes voices, and revises the
+/// graph, by sending the engine commands, and hears back what ended. It never touches the
+/// engine's state.
 ///
 /// Every command stamped for a frame the engine hasn't reached can also be refused with
 /// [`AudioError::ScheduleFull`].
@@ -203,9 +236,10 @@ pub struct Control {
     /// Free slots, the next one at the end, the most recently freed first: a script that plays the
     /// same voices gets the same slots, and so the same mix order.
     free: Vec<u32>,
-    graph: Graph,
-    processors: Vec<ProcessorSlot>,
-    free_processors: Vec<u32>,
+    graph: Definition,
+    /// The latest frame a revision sent for later takes effect on: no revision may be stamped
+    /// before it while it waits.
+    revised: Option<u64>,
     /// The open group's commands, and the room the queue had when it opened.
     group: Option<(Vec<Stamped>, usize)>,
     /// Commands sent, counting a group as its members and one more: what the engine's count of
@@ -218,10 +252,6 @@ pub struct Control {
     scheduled: BinaryHeap<Reverse<u64>>,
     counters: Arc<Counters>,
     listener: Listener,
-    /// The delays last sent to the engine, as `(from, to, frames)`.
-    delays: Vec<(u32, u32, u64)>,
-    /// The graph changed in a way the engine's delays may not match yet.
-    uncompensated: bool,
 }
 
 /// An engine and its control side, connected; the engine goes to whatever renders it.
@@ -229,27 +259,30 @@ pub struct Control {
 /// # Errors
 ///
 /// [`AudioError::Rate`] or [`AudioError::Channels`] out of range, and
-/// [`AudioError::Capacity`] for no voices or more than [`MAX_VOICES`], no buses or more than
-/// [`MAX_BUSES`], more than [`MAX_PROCESSORS`], or no command room.
+/// [`AudioError::Capacity`] for no voices or more than [`MAX_VOICES`], no nodes or more than
+/// [`MAX_NODES`], too many connections, or no command room.
 pub fn context(config: &AudioConfig) -> Result<(Control, Engine), AudioError> {
     config.check()?;
     // Built here, the first time, so no engine builds it while rendering.
     crate::audio::resample::table();
     let capacity = Capacity {
         voices: config.voices,
-        buses: config.buses,
-        processors: config.processors,
+        nodes: config.nodes,
         commands: config.commands,
         physical: config.physical.unwrap_or(config.voices),
     };
     let (commands, receive) = sync_channel(config.commands);
     let (send, feedback) = sync_channel(capacity.feedback());
-    let counters = Arc::new(Counters::new(config.buses));
+    let counters = Arc::new(Counters::new(config.nodes));
     let space = Space {
         speed: config.speed_of_sound,
         handedness: config.handedness,
         ..Space::default()
     };
+    let master: Box<dyn Processor> = Box::new(Mixer::new(1.0, false));
+    let graph = Definition::new(config.nodes, config.connections, config.channels, Shape::of(master.as_ref()));
+    let plan = Box::new(graph.compile()?);
+    let master = Box::new(Node::new(0, master, config.channels, config.channels * QUANTUM));
     let engine = Engine::new(
         config.rate,
         config.channels,
@@ -258,27 +291,16 @@ pub fn context(config: &AudioConfig) -> Result<(Control, Engine), AudioError> {
         receive,
         send,
         Arc::clone(&counters),
+        master,
+        plan,
     );
-    let processors = vec![
-        ProcessorSlot {
-            generation: 0,
-            busy: false,
-            mounted: false,
-            bus: 0,
-            key: None,
-            latency: 0,
-            kind: "",
-            params: &[],
-        };
-        config.processors
-    ];
     let slots = vec![
         Slot {
             generation: 0,
             busy: false,
             start: None,
-            bus: 0,
-            sends: [None; MAX_VOICE_SENDS],
+            first: 0,
+            sends: Vec::new(),
             frames: 0,
             emitter: None,
         };
@@ -293,17 +315,14 @@ pub fn context(config: &AudioConfig) -> Result<(Control, Engine), AudioError> {
         feedback,
         slots,
         free,
-        graph: Graph::new(config.buses),
-        processors,
-        free_processors: (0..u32::try_from(config.processors).unwrap_or(u32::MAX)).rev().collect(),
+        graph,
+        revised: None,
         group: None,
         sent: 0,
         sequence: 0,
         scheduled: BinaryHeap::with_capacity(config.commands),
         counters,
         listener: Listener::default(),
-        delays: Vec::new(),
-        uncompensated: false,
     };
     Ok((control, engine))
 }
@@ -333,7 +352,8 @@ impl Control {
     /// # Errors
     ///
     /// A spec the source can't play ([`AudioError::Parameter`], [`AudioError::LoopRegion`],
-    /// [`AudioError::Layout`]), [`AudioError::StaleBus`], [`AudioError::VoicesExhausted`],
+    /// [`AudioError::Layout`]), [`AudioError::StaleNode`] for a node that isn't live or takes no
+    /// voices, [`AudioError::SendsExhausted`], [`AudioError::VoicesExhausted`],
     /// [`AudioError::QueueFull`], or [`AudioError::Disconnected`].
     pub fn play(&mut self, pcm: &Arc<Pcm>, spec: &PlaySpec) -> Result<VoiceKey, AudioError> {
         spec.check(pcm, self.channels)?;
@@ -360,12 +380,27 @@ impl Control {
         started
     }
 
+    /// The output into `node` at `level`, if voices can play there.
+    fn output(&self, node: NodeKey, level: f32) -> Result<Output, AudioError> {
+        if !self.graph.takes_voices(node) {
+            return Err(AudioError::StaleNode);
+        }
+        Ok(Output {
+            slot: node.slot,
+            generation: node.generation,
+            input: 0,
+            level,
+        })
+    }
+
     fn start(&mut self, source: Source, spec: &PlaySpec, frames: u64) -> Result<VoiceKey, AudioError> {
         self.collect();
-        self.graph.check_live(spec.bus)?;
-        for send in spec.sends.iter().flatten() {
-            self.graph.check_live(send.bus)?;
-        }
+        let first = self.output(spec.bus, 1.0)?;
+        let rest = spec
+            .sends
+            .iter()
+            .map(|send| self.output(send.bus, send.level))
+            .collect::<Result<Box<[Output]>, AudioError>>()?;
         let Some(slot) = self.free.pop() else {
             return Err(AudioError::VoicesExhausted(self.slots.len()));
         };
@@ -376,7 +411,8 @@ impl Control {
         let command = Command::Start {
             voice,
             source,
-            spec: *spec,
+            spec: spec.begin(),
+            outputs: Outputs { first, rest },
         };
         if let Err(error) = self.send(spec.at, command) {
             self.free.push(slot);
@@ -385,24 +421,25 @@ impl Control {
         let entry = &mut self.slots[slot as usize];
         entry.busy = true;
         entry.start = spec.at;
-        entry.bus = spec.bus.slot;
-        entry.sends = spec.sends.map(|send| send.map(|send| send.bus.slot));
+        entry.first = spec.bus.slot;
+        entry.sends.clear();
+        entry.sends.extend(spec.sends.iter().map(|send| send.bus.slot));
         entry.frames = frames;
         entry.emitter = spec.spatial;
         Ok(voice)
     }
 
-    /// Changes the level of a voice's send to `bus` at frame `at`, or at the next frame rendered.
-    /// True if the voice hadn't ended and sends there; its sends are fixed when it starts.
+    /// Changes the level of a voice's send to `node` at frame `at`, or at the next frame rendered.
+    /// True if the voice hadn't ended and sends there.
     ///
     /// # Errors
     ///
     /// [`AudioError::Parameter`] for a level that isn't finite, [`AudioError::QueueFull`], or
     /// [`AudioError::Disconnected`].
-    pub fn set_send(&mut self, voice: VoiceKey, bus: BusKey, level: f64, at: Option<u64>) -> Result<bool, AudioError> {
+    pub fn set_send(&mut self, voice: VoiceKey, node: NodeKey, level: f64, at: Option<u64>) -> Result<bool, AudioError> {
         let level = check_level(level)?;
         self.collect();
-        if !self.is_live(voice) || !self.slots[voice.slot as usize].sends.contains(&Some(bus.slot)) {
+        if !self.is_live(voice) || !self.slots[voice.slot as usize].sends.contains(&node.slot) {
             return Ok(false);
         }
         #[allow(clippy::cast_possible_truncation)] // Levels are f32 in the engine.
@@ -411,7 +448,7 @@ impl Control {
             at,
             Command::SendVoice {
                 voice,
-                target: bus.slot,
+                target: node.slot,
                 level,
             },
         )?;
@@ -508,362 +545,322 @@ impl Control {
         }
     }
 
-    /// Makes a bus under `spec.parent`. It exists from the next frame rendered: voices can play
-    /// into it at once.
-    ///
-    /// # Errors
-    ///
-    /// [`AudioError::Parameter`] for a gain that isn't finite, [`AudioError::StaleBus`] for a
-    /// parent that isn't live, [`AudioError::BusesExhausted`], [`AudioError::QueueFull`], or
-    /// [`AudioError::Disconnected`].
-    pub fn add_bus(&mut self, spec: &BusSpec) -> Result<BusKey, AudioError> {
-        BusParam::Gain.check(f64::from(spec.gain))?;
-        self.collect();
-        self.graph.check_live(spec.parent)?;
-        let Some(bus) = self.graph.add(spec.parent) else {
-            return Err(AudioError::BusesExhausted(self.graph.capacity()));
+    /// Refuses a revision stamped `at` while one stamped later is still waiting: revisions take
+    /// effect in the order they were made, each plan compiled on top of the last.
+    fn check_order(&self, at: Option<u64>) -> Result<(), AudioError> {
+        let now = self.now();
+        let Some(pending) = self.revised.filter(|pending| *pending > now) else {
+            return Ok(());
         };
-        let sent = self.graph.order().and_then(|order| {
-            // A bus is never stamped for later: a voice may be sent to it straight away.
-            self.send(None, Command::AddBus { bus, spec: *spec, order })
-        });
-        if let Err(error) = sent {
-            self.graph.unadd(bus);
-            return Err(error);
+        if at.unwrap_or(now) < pending {
+            return Err(AudioError::GraphOrder { pending });
         }
-        self.compensate(None);
-        Ok(bus)
-    }
-
-    /// Removes a bus at frame `at`, or at the next frame rendered. True if it was live; removing
-    /// a removed bus does nothing.
-    ///
-    /// # Errors
-    ///
-    /// [`AudioError::Master`] for the master bus, [`AudioError::BusInUse`] while a voice or a
-    /// bus is routed into it, [`AudioError::QueueFull`], or [`AudioError::Disconnected`].
-    pub fn remove_bus(&mut self, bus: BusKey, at: Option<u64>) -> Result<bool, AudioError> {
-        if bus == BusKey::MASTER {
-            return Err(AudioError::Master);
-        }
-        self.collect();
-        if !self.graph.is_live(bus) {
-            return Ok(false);
-        }
-        let voices = self.slots.iter().filter(|slot| slot.feeds(bus.slot)).count();
-        let buses = self.graph.children(bus);
-        if voices > 0 || buses > 0 {
-            return Err(AudioError::BusInUse { voices, buses });
-        }
-        self.send(at, Command::RemoveBus { bus })?;
-        self.graph.mark_removing(bus);
-        // Its processors go with it, once it has rung out.
-        for slot in 0..self.processors.len() {
-            let entry = self.processors[slot];
-            if entry.mounted && entry.bus == bus.slot {
-                self.release_processor(u32::try_from(slot).unwrap_or(u32::MAX));
-            }
-        }
-        Ok(true)
-    }
-
-    /// Routes a bus into `parent` from frame `at`, or from the next frame rendered.
-    ///
-    /// # Errors
-    ///
-    /// [`AudioError::Master`] for the master bus, [`AudioError::StaleBus`] for either bus not
-    /// live, [`AudioError::Cycle`] when `parent` is fed by `bus`, [`AudioError::QueueFull`], or
-    /// [`AudioError::Disconnected`].
-    pub fn route_bus(&mut self, bus: BusKey, parent: BusKey, at: Option<u64>) -> Result<(), AudioError> {
-        if bus == BusKey::MASTER {
-            return Err(AudioError::Master);
-        }
-        self.collect();
-        self.graph.check_live(bus)?;
-        self.graph.check_live(parent)?;
-        let old = self.graph.parent(bus);
-        let order = self.graph.route(bus, parent)?;
-        let command = Command::RouteBus {
-            bus,
-            parent: parent.slot,
-            order,
-        };
-        if let Err(error) = self.send(at, command) {
-            if let Some(old) = old {
-                self.graph.unroute(bus, old);
-            }
-            return Err(error);
-        }
-        self.compensate(at);
         Ok(())
     }
 
-    /// Sets a bus's parameter at frame `at`, or at the next frame rendered, at once or, for its
-    /// gain, over `glide`. True if the bus was live.
+    /// Sends the revision that makes the graph `next` from frame `at`, with the nodes it made and
+    /// the ones it removed that end at once, and makes `next` the graph, or leaves the graph as
+    /// it was and says why not.
+    fn commit(
+        &mut self,
+        at: Option<u64>,
+        next: Definition,
+        added: Vec<(NodeKey, Box<Node>)>,
+        retire: Vec<NodeKey>,
+    ) -> Result<(), AudioError> {
+        self.check_order(at)?;
+        let plan = Box::new(next.compile()?);
+        let revision = Box::new(Revision {
+            plan,
+            added,
+            retire: retire.into_boxed_slice(),
+        });
+        self.send(at, Command::Revise(revision))?;
+        self.graph = next;
+        if let Some(at) = at.filter(|at| *at > self.now()) {
+            self.revised = Some(self.revised.map_or(at, |pending| pending.max(at)));
+        }
+        Ok(())
+    }
+
+    /// The engine's node for `processor`, made for a node `key` of `channels`.
+    fn engine_node(&self, key: NodeKey, processor: Box<dyn Processor>, channels: usize) -> Node {
+        Node::new(key.generation, processor, channels, self.channels * QUANTUM)
+    }
+
+    /// Makes a bus routed into `spec.parent`. It exists from the next frame rendered: voices can
+    /// play into it at once.
     ///
     /// # Errors
     ///
-    /// [`AudioError::Parameter`], [`AudioError::QueueFull`], or [`AudioError::Disconnected`].
-    pub fn set_bus(
+    /// [`AudioError::Parameter`] for a gain out of range, [`AudioError::StaleNode`] for a parent
+    /// that isn't live, [`AudioError::NodesExhausted`], [`AudioError::GraphOrder`],
+    /// [`AudioError::QueueFull`], or [`AudioError::Disconnected`].
+    pub fn add_bus(&mut self, spec: &BusSpec) -> Result<NodeKey, AudioError> {
+        let mixer = Mixer::new(spec.gain, spec.muted);
+        check_param(&mixer.params()[0], f64::from(spec.gain))?;
+        self.collect();
+        let mut next = self.graph.clone();
+        let key = next.add(Shape::of(&mixer), spec.channels)?;
+        next.route(key, spec.parent)?;
+        let node = Box::new(self.engine_node(key, Box::new(mixer), next.channels(key.slot)));
+        self.commit(None, next, vec![(key, node)], Vec::new())?;
+        Ok(key)
+    }
+
+    /// Makes a node running `processor`, with `channels` if fewer than the context's, connected
+    /// to nothing. It exists from the next frame rendered.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::Shape`], [`AudioError::Channels`], [`AudioError::NodesExhausted`],
+    /// [`AudioError::GraphOrder`], [`AudioError::QueueFull`], or [`AudioError::Disconnected`].
+    pub fn add_node(&mut self, processor: Box<dyn Processor>, channels: Option<usize>) -> Result<NodeKey, AudioError> {
+        check_shape(processor.as_ref())?;
+        self.collect();
+        let mut next = self.graph.clone();
+        let key = next.add(Shape::of(processor.as_ref()), channels)?;
+        let node = Box::new(self.engine_node(key, processor, next.channels(key.slot)));
+        self.commit(None, next, vec![(key, node)], Vec::new())?;
+        Ok(key)
+    }
+
+    /// Makes a node running `processor` in `host`'s insert chain at `index` (from 0), or last,
+    /// from the next frame rendered.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::Shape`], [`AudioError::StaleNode`], [`AudioError::NotInsertable`],
+    /// [`AudioError::NodesExhausted`], [`AudioError::GraphOrder`], [`AudioError::QueueFull`], or
+    /// [`AudioError::Disconnected`].
+    pub fn insert(
         &mut self,
-        bus: BusKey,
-        param: BusParam,
-        value: f64,
-        at: Option<u64>,
-        glide: Option<Glide>,
-    ) -> Result<bool, AudioError> {
-        let value = param.check(value)?;
-        if let Some(glide) = glide {
-            glide.check(param.name(), value)?;
+        host: NodeKey,
+        processor: Box<dyn Processor>,
+        index: Option<usize>,
+    ) -> Result<NodeKey, AudioError> {
+        check_shape(processor.as_ref())?;
+        self.collect();
+        self.graph.check_live(host)?;
+        let mut next = self.graph.clone();
+        let key = next.add(Shape::of(processor.as_ref()), Some(next.channels(host.slot)))?;
+        next.insert(host, key, index)?;
+        let node = Box::new(self.engine_node(key, processor, next.channels(key.slot)));
+        self.commit(None, next, vec![(key, node)], Vec::new())?;
+        Ok(key)
+    }
+
+    /// Applies every edit together from frame `at`, or from the next frame rendered: the graph
+    /// takes them all on that frame, or, when any is wrong, none of them.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the first wrong edit is wrong with ([`AudioError::StaleNode`],
+    /// [`AudioError::UnknownPort`], [`AudioError::Layout`], [`AudioError::NodeInUse`], ...),
+    /// [`AudioError::Cycle`] when they make a loop without a feedback delay,
+    /// [`AudioError::GraphOrder`], [`AudioError::QueueFull`], or [`AudioError::Disconnected`].
+    pub fn patch(&mut self, edits: &[Edit], at: Option<u64>) -> Result<(), AudioError> {
+        self.collect();
+        let mut next = self.graph.clone();
+        let mut retire = Vec::new();
+        for edit in edits {
+            match edit {
+                Edit::Connect {
+                    from,
+                    output,
+                    to,
+                    input,
+                    connection,
+                } => next.connect(*from, output, *to, input, *connection)?,
+                Edit::Disconnect { from, output, to, input } => {
+                    next.disconnect(*from, output, *to, input)?;
+                }
+                Edit::Route { node, parent } => next.route(*node, *parent)?,
+                Edit::Insert { host, node, index } => next.insert(*host, *node, *index)?,
+                Edit::Remove(node) => {
+                    self.check_unfed(*node)?;
+                    retire.extend(next.remove(*node)?);
+                }
+            }
+        }
+        self.commit(at, next, Vec::new(), retire)
+    }
+
+    /// Refuses removing a node voices still play into.
+    fn check_unfed(&self, node: NodeKey) -> Result<(), AudioError> {
+        let voices = self.slots.iter().filter(|slot| slot.feeds(node.slot)).count();
+        if voices > 0 {
+            return Err(AudioError::NodeInUse {
+                voices,
+                nodes: self.graph.feeds(node),
+            });
+        }
+        Ok(())
+    }
+
+    /// Removes a node at frame `at`, or at the next frame rendered, with its insert chain; one
+    /// with a tail rings out first. True if it was live; removing a removed node does nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::Master`] for the master, [`AudioError::NodeInUse`] while a voice or a
+    /// connection feeds it, [`AudioError::GraphOrder`], [`AudioError::QueueFull`], or
+    /// [`AudioError::Disconnected`].
+    pub fn remove(&mut self, node: NodeKey, at: Option<u64>) -> Result<bool, AudioError> {
+        if node == NodeKey::MASTER {
+            return Err(AudioError::Master);
         }
         self.collect();
-        if !self.graph.is_live(bus) {
+        if !self.graph.is_live(node) {
             return Ok(false);
         }
-        self.send(
-            at,
-            Command::SetBus {
-                bus,
-                param,
-                value,
-                glide,
-            },
-        )?;
+        self.patch(&[Edit::Remove(node)], at)?;
         Ok(true)
     }
 
-    /// Sends `bus` to `target` at `level` from frame `at`, or from the next frame rendered,
-    /// tapped after the bus's gain or before it. A send already there changes level and tap.
+    /// Routes a node into `parent` from frame `at`, or from the next frame rendered.
     ///
     /// # Errors
     ///
-    /// [`AudioError::Parameter`], [`AudioError::StaleBus`] for either bus not live,
-    /// [`AudioError::Cycle`] when `target` feeds `bus`, [`AudioError::SendsExhausted`],
+    /// [`AudioError::Master`] for the master, [`AudioError::StaleNode`] for either node not live,
+    /// [`AudioError::Cycle`] when `parent` is fed by `node`, [`AudioError::GraphOrder`],
     /// [`AudioError::QueueFull`], or [`AudioError::Disconnected`].
-    pub fn send_bus(
+    pub fn route(&mut self, node: NodeKey, parent: NodeKey, at: Option<u64>) -> Result<(), AudioError> {
+        self.patch(&[Edit::Route { node, parent }], at)
+    }
+
+    /// The first output and audio input of `from` and `to`: what a send connects.
+    fn mains(&self, from: NodeKey, to: NodeKey) -> Result<(String, String), AudioError> {
+        let output = self.graph.shape(from).ok_or(AudioError::StaleNode)?.ports.outputs[0];
+        let input = self
+            .graph
+            .shape(to)
+            .ok_or(AudioError::StaleNode)?
+            .ports
+            .audio()
+            .next()
+            .ok_or(AudioError::StaleNode)?
+            .name;
+        Ok((output.to_owned(), input.to_owned()))
+    }
+
+    /// Sends `node` to `target` at `level` from frame `at`, or from the next frame rendered,
+    /// tapped after the node's processing or before it. A send already there changes level and
+    /// tap.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::Parameter`], [`AudioError::StaleNode`] for either node not live,
+    /// [`AudioError::Cycle`] when `target` feeds `node`, and as [`Control::patch`].
+    pub fn send_to(
         &mut self,
-        bus: BusKey,
-        target: BusKey,
+        node: NodeKey,
+        target: NodeKey,
         level: f64,
         tap: Tap,
         at: Option<u64>,
     ) -> Result<(), AudioError> {
         let level = check_level(level)?;
         self.collect();
-        self.graph.check_live(bus)?;
-        self.graph.check_live(target)?;
-        if bus == target {
+        if node == target {
             return Err(AudioError::Cycle);
         }
-        let order = self.graph.send(bus, target)?;
-        let added = order.is_some();
+        let (output, input) = self.mains(node, target)?;
         #[allow(clippy::cast_possible_truncation)] // Levels are f32 in the engine.
-        let send = BusSend {
-            target: target.slot,
+        let connection = Connection {
             level: level as f32,
             tap,
+            feedback: None,
         };
-        let result = self.send(at, Command::SendBus { bus, send, order });
-        if result.is_err() && added {
-            self.graph.unsend(bus, target);
-        }
-        result?;
-        if added {
-            self.compensate(at);
-        }
-        Ok(())
+        self.patch(
+            &[Edit::Connect {
+                from: node,
+                output,
+                to: target,
+                input,
+                connection,
+            }],
+            at,
+        )
     }
 
-    /// Removes the send from `bus` to `target` at frame `at`, or at the next frame rendered.
-    /// True if there was one; a bus that was removed has none, whatever bus has its slot now.
+    /// Removes the send from `node` to `target` at frame `at`, or at the next frame rendered.
+    /// True if there was one; a node that was removed has none, whatever node has its slot now.
     ///
     /// # Errors
     ///
-    /// [`AudioError::QueueFull`] or [`AudioError::Disconnected`].
-    pub fn unsend_bus(&mut self, bus: BusKey, target: BusKey, at: Option<u64>) -> Result<bool, AudioError> {
+    /// As [`Control::patch`].
+    pub fn unsend(&mut self, node: NodeKey, target: NodeKey, at: Option<u64>) -> Result<bool, AudioError> {
         self.collect();
-        // A bus being removed has no sends into it: it can't be removed while it has.
-        if !self.graph.is_live(bus) || !self.graph.is_live(target) {
+        if !self.graph.is_live(node) || !self.graph.is_live(target) {
             return Ok(false);
         }
-        let Some(order) = self.graph.unsend(bus, target) else {
+        let (output, input) = self.mains(node, target)?;
+        let mut next = self.graph.clone();
+        if !next.disconnect(node, &output, target, &input)? {
             return Ok(false);
-        };
-        let command = Command::UnsendBus {
-            bus,
-            target: target.slot,
-            order: Some(order),
-        };
-        if let Err(error) = self.send(at, command) {
-            // It was there a moment ago, so putting it back can neither loop nor overflow.
-            self.graph.send(bus, target).ok();
-            return Err(error);
         }
-        self.compensate(at);
+        self.commit(at, next, Vec::new(), Vec::new())?;
         Ok(true)
     }
 
-    /// Puts `processor` in `bus`'s chain at `index` (from 0), or last, from the next frame
-    /// rendered. The processor moves to the engine; the key names it from here on.
+    /// Has `node` listen to `key` on its sidechain from frame `at`, or to nothing with `None`.
+    /// The key is run before the node, so a key the node feeds is a loop, and refused. True if
+    /// the node is live.
     ///
     /// # Errors
     ///
-    /// [`AudioError::StaleBus`], [`AudioError::ChainFull`], [`AudioError::ProcessorsExhausted`],
+    /// [`AudioError::StaleNode`], [`AudioError::Unsupported`] for a node without a sidechain,
+    /// [`AudioError::Cycle`], and as [`Control::patch`].
+    pub fn listen(&mut self, node: NodeKey, key: Option<NodeKey>, at: Option<u64>) -> Result<bool, AudioError> {
+        self.collect();
+        let Some(shape) = self.graph.shape(node) else {
+            return Ok(false);
+        };
+        let Some(port) = shape.ports.sidechain() else {
+            return Err(AudioError::Unsupported("listening needs a processor with a sidechain"));
+        };
+        let mut next = self.graph.clone();
+        next.unlisten(node);
+        if let Some(key) = key {
+            let output = next.shape(key).ok_or(AudioError::StaleNode)?.ports.outputs[0];
+            next.connect(key, output, node, port.name, Connection::default())?;
+        }
+        self.commit(at, next, Vec::new(), Vec::new())?;
+        Ok(true)
+    }
+
+    /// Sets node `node`'s parameter `name` at frame `at`, or at the next frame rendered, at once
+    /// or over `glide`. A control-rate parameter moves every
+    /// [`CONTROL_QUANTUM`](crate::audio::CONTROL_QUANTUM) frames while it ramps, an audio-rate
+    /// one every frame. True if the node is live.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::UnknownParameter`], [`AudioError::Parameter`] outside its range,
     /// [`AudioError::QueueFull`], or [`AudioError::Disconnected`].
-    pub fn mount(
+    pub fn set_param(
         &mut self,
-        processor: Box<dyn Processor>,
-        bus: BusKey,
-        index: Option<usize>,
-    ) -> Result<ProcessorKey, AudioError> {
-        self.collect();
-        self.graph.check_live(bus)?;
-        let chained = self
-            .processors
-            .iter()
-            .filter(|slot| slot.mounted && slot.bus == bus.slot)
-            .count();
-        if chained == MAX_CHAIN {
-            return Err(AudioError::ChainFull(MAX_CHAIN));
-        }
-        let Some(slot) = self.free_processors.pop() else {
-            return Err(AudioError::ProcessorsExhausted(self.processors.len()));
-        };
-        let key = ProcessorKey {
-            slot,
-            generation: self.processors[slot as usize].generation,
-        };
-        let entry = ProcessorSlot {
-            generation: key.generation,
-            busy: true,
-            mounted: true,
-            bus: bus.slot,
-            key: None,
-            latency: processor.latency(),
-            kind: processor.kind(),
-            params: processor.params(),
-        };
-        let command = Command::Mount {
-            processor: key,
-            instance: processor,
-            bus,
-            index: index.unwrap_or(MAX_CHAIN),
-        };
-        if let Err(error) = self.send(None, command) {
-            self.free_processors.push(slot);
-            return Err(error);
-        }
-        self.processors[slot as usize] = entry;
-        if entry.latency > 0 {
-            self.compensate(None);
-        }
-        Ok(key)
-    }
-
-    /// Takes a processor out of its chain at frame `at`, or at the next frame rendered. True if
-    /// it was mounted.
-    ///
-    /// # Errors
-    ///
-    /// [`AudioError::QueueFull`] or [`AudioError::Disconnected`].
-    pub fn unmount(&mut self, processor: ProcessorKey, at: Option<u64>) -> Result<bool, AudioError> {
-        self.collect();
-        if !self.processor_live(processor) {
-            return Ok(false);
-        }
-        self.send(at, Command::Unmount { processor })?;
-        let latency = self.processors[processor.slot as usize].latency;
-        self.release_processor(processor.slot);
-        if latency > 0 {
-            self.compensate(at);
-        }
-        Ok(true)
-    }
-
-    /// Has a processor listen to `key` (its sidechain) from frame `at`, or to its own bus again
-    /// with `None`. The key bus is mixed before the processor's, so a key that is fed by the
-    /// processor's bus is a loop, and refused. True if the processor is mounted.
-    ///
-    /// # Errors
-    ///
-    /// [`AudioError::StaleBus`], [`AudioError::Cycle`], [`AudioError::QueueFull`], or
-    /// [`AudioError::Disconnected`].
-    pub fn listen(&mut self, processor: ProcessorKey, key: Option<BusKey>, at: Option<u64>) -> Result<bool, AudioError> {
-        self.collect();
-        if !self.processor_live(processor) {
-            return Ok(false);
-        }
-        let ProcessorSlot { bus, key: old, .. } = self.processors[processor.slot as usize];
-        let order = match key {
-            Some(key) => {
-                self.graph.check_live(key)?;
-                Some(self.graph.listen(key, bus)?)
-            }
-            None => None,
-        };
-        let command = Command::Listen {
-            processor,
-            key: key.map(|key| key.slot),
-            order,
-        };
-        if let Err(error) = self.send(at, command) {
-            if let Some(key) = key {
-                self.graph.unlisten(key.slot, bus);
-            }
-            return Err(error);
-        }
-        // Taking an edge away leaves the order the engine has a good one.
-        if let Some(old) = old {
-            self.graph.unlisten(old, bus);
-        }
-        self.processors[processor.slot as usize].key = key.map(|key| key.slot);
-        Ok(true)
-    }
-
-    /// Takes a processor out of the graph on this side: no longer mounted, and no longer heard
-    /// by the bus it listened to.
-    fn release_processor(&mut self, slot: u32) {
-        let entry = &mut self.processors[slot as usize];
-        entry.mounted = false;
-        if let Some(key) = entry.key.take() {
-            let bus = entry.bus;
-            self.graph.unlisten(key, bus);
-        }
-    }
-
-    /// Sets a processor's parameter `name` at frame `at`, or at the next frame rendered, at once
-    /// or over `glide`. A ramping processor parameter moves every
-    /// [`CONTROL_QUANTUM`](crate::audio::CONTROL_QUANTUM) frames
-    /// rather than every frame. True if the processor is mounted.
-    ///
-    /// # Errors
-    ///
-    /// [`AudioError::StaleProcessor`], [`AudioError::UnknownParameter`],
-    /// [`AudioError::Parameter`] outside its range, [`AudioError::QueueFull`], or
-    /// [`AudioError::Disconnected`].
-    pub fn set_processor(
-        &mut self,
-        processor: ProcessorKey,
+        node: NodeKey,
         name: &str,
         value: f64,
         at: Option<u64>,
         glide: Option<Glide>,
     ) -> Result<bool, AudioError> {
         self.collect();
-        if !self.processor_live(processor) {
+        let Some(shape) = self.graph.shape(node) else {
             return Ok(false);
-        }
-        let slot = self.processors[processor.slot as usize];
-        let index = param_index(slot.kind, slot.params, name)?;
-        let value = check_param(&slot.params[index], value)?;
+        };
+        let index = param_index(shape.kind, shape.params, name)?;
+        let value = check_param(&shape.params[index], value)?;
         if let Some(glide) = glide {
-            glide.check(slot.params[index].name, value)?;
+            glide.check(shape.params[index].name, value)?;
         }
         self.send(
             at,
-            Command::SetProcessor {
-                processor,
-                index,
+            Command::SetParam {
+                node,
+                index: u16::try_from(index).unwrap_or(u16::MAX),
                 value,
                 glide,
             },
@@ -871,66 +868,43 @@ impl Control {
         Ok(true)
     }
 
-    /// True while `processor` is in a chain.
-    #[must_use]
-    pub fn processor_live(&self, processor: ProcessorKey) -> bool {
-        self.processors
-            .get(processor.slot as usize)
-            .is_some_and(|slot| slot.mounted && slot.generation == processor.generation)
+    /// True while `node` is live: made, and not removed.
+    pub fn node_live(&mut self, node: NodeKey) -> bool {
+        self.collect();
+        self.graph.is_live(node)
     }
 
-    /// How many frames `bus`'s output lags the voices that reach it, by the longest way round:
+    /// The kind and parameters of `node`, while it is live.
+    #[must_use]
+    pub fn describe(&self, node: NodeKey) -> Option<(&'static str, &'static [ParamInfo])> {
+        self.graph.shape(node).map(|shape| (shape.kind, shape.params))
+    }
+
+    /// How many frames `node`'s output lags the voices that reach it, by the longest way round:
     /// the processor latency along the path a voice takes to it.
     ///
     /// # Errors
     ///
-    /// [`AudioError::StaleBus`].
-    pub fn latency(&mut self, bus: BusKey) -> Result<u64, AudioError> {
+    /// [`AudioError::StaleNode`].
+    pub fn latency(&mut self, node: NodeKey) -> Result<u64, AudioError> {
         self.collect();
-        self.graph.check_live(bus)?;
-        Ok(self.graph.latencies(&self.own_latencies())[bus.slot as usize])
+        self.graph.latency(node)
     }
 
-    /// The latency each bus's own processors add, by slot.
-    fn own_latencies(&self) -> Vec<u64> {
-        let mut own = vec![0; self.graph.capacity()];
-        for slot in self.processors.iter().filter(|slot| slot.mounted) {
-            own[slot.bus as usize] += slot.latency;
-        }
-        own
-    }
-
-    /// Sends the engine the delays that line up every path into each bus with its latest, from
-    /// frame `at`, if they changed. When the queue has no room for them, the next command that
-    /// collects sends them.
-    fn compensate(&mut self, at: Option<u64>) {
-        let own = self.own_latencies();
-        let wanted = if own.iter().all(|latency| *latency == 0) {
-            Vec::new()
-        } else {
-            self.graph.compensation(&own)
-        };
-        if wanted == self.delays {
-            self.uncompensated = false;
-            return;
-        }
-        let delays = Box::new(Delays::new(&wanted, self.channels));
-        self.uncompensated = self.send(at, Command::Compensate(delays)).is_err();
-        if !self.uncompensated {
-            self.delays = wanted;
-        }
-    }
-
-    /// What `bus` has put out, after its gain, since the last time it was read: the peak sample's
-    /// magnitude and the RMS level, across its channels. Reading starts the next measurement.
+    /// What the bus `node` has put out, after its gain, since the last time it was read: the peak
+    /// sample's magnitude and the RMS level, across its channels. Reading starts the next
+    /// measurement.
     ///
     /// # Errors
     ///
-    /// [`AudioError::StaleBus`].
-    pub fn meter(&mut self, bus: BusKey) -> Result<Meter, AudioError> {
+    /// [`AudioError::StaleNode`], or [`AudioError::Unsupported`] for a node that isn't a bus.
+    pub fn meter(&mut self, node: NodeKey) -> Result<Meter, AudioError> {
         self.collect();
-        self.graph.check_live(bus)?;
-        let meter = &self.counters.meters[bus.slot as usize];
+        let shape = self.graph.shape(node).ok_or(AudioError::StaleNode)?;
+        if !shape.mixer {
+            return Err(AudioError::Unsupported("a bus is metered; another node isn't"));
+        }
+        let meter = &self.counters.meters[node.slot as usize];
         let peak = f32::from_bits(meter.peak.swap(0, Ordering::Relaxed));
         let energy = f64::from_bits(meter.energy.swap(0, Ordering::Relaxed));
         let samples = meter.samples.swap(0, Ordering::Relaxed);
@@ -1002,12 +976,6 @@ impl Control {
         Ok(true)
     }
 
-    /// True while `bus` is live: made, and not removed.
-    pub fn bus_live(&mut self, bus: BusKey) -> bool {
-        self.collect();
-        self.graph.is_live(bus)
-    }
-
     /// The engine's counters as of its last render.
     pub fn stats(&mut self) -> AudioStats {
         self.collect();
@@ -1020,16 +988,17 @@ impl Control {
             pending: self.counters.pending.load(Ordering::Relaxed),
             culled: self.counters.culled.load(Ordering::Relaxed),
             stolen: self.counters.stolen.load(Ordering::Relaxed),
+            revisions: self.counters.revisions.load(Ordering::Relaxed),
         }
     }
 
-    /// Reads what the engine sent back: ended voices and buses free their slots, and the memory
+    /// Reads what the engine sent back: ended voices and nodes free their slots, and the memory
     /// the engine let go of is dropped here rather than on the render thread.
     pub fn collect(&mut self) {
         while let Ok(feedback) = self.feedback.try_recv() {
             match feedback {
-                Feedback::VoiceEnded { voice, source } => {
-                    drop(source);
+                Feedback::VoiceEnded { voice, source, outputs } => {
+                    drop((source, outputs));
                     let slot = &mut self.slots[voice.slot as usize];
                     if slot.generation != voice.generation || !slot.busy {
                         continue;
@@ -1039,33 +1008,18 @@ impl Control {
                     slot.start = None;
                     self.free.push(voice.slot);
                 }
-                Feedback::BusEnded { bus } => {
-                    self.graph.ended(bus);
-                    self.uncompensated = true;
-                    // The next bus in the slot starts its own measurement.
-                    let meter = &self.counters.meters[bus.slot as usize];
+                Feedback::NodeEnded { node, state } => {
+                    drop(state);
+                    self.graph.ended(node);
+                    // The next node in the slot starts its own measurement.
+                    let meter = &self.counters.meters[node.slot as usize];
                     meter.peak.store(0, Ordering::Relaxed);
                     meter.energy.store(0, Ordering::Relaxed);
                     meter.samples.store(0, Ordering::Relaxed);
                 }
-                Feedback::ProcessorEnded { processor, instance } => {
-                    drop(instance);
-                    let slot = &mut self.processors[processor.slot as usize];
-                    if slot.generation != processor.generation || !slot.busy {
-                        continue;
-                    }
-                    slot.generation = slot.generation.wrapping_add(1);
-                    slot.busy = false;
-                    slot.mounted = false;
-                    self.free_processors.push(processor.slot);
-                }
-                Feedback::Order(order) => drop(order),
-                Feedback::Delays(delays) => drop(delays),
+                Feedback::Revised(revision) => drop(revision),
                 Feedback::Spent(group) => drop(group),
             }
-        }
-        if self.uncompensated {
-            self.compensate(None);
         }
     }
 
