@@ -106,6 +106,12 @@ pub fn gpu_error(function: &str, problem: &GpuError) -> l3i::Error {
     error(format!("{function}: {problem}"))
 }
 
+/// Commits what the script changed, before `function` uses the GPU and waits on it: a script
+/// sees its own changes.
+pub fn committed(gpu: &Gpu, function: &str) -> l3i::Result<()> {
+    gpu.commit().map(drop).map_err(|problem| gpu_error(function, &problem))
+}
+
 /// `view` as a table, or the error naming `what` it should have been.
 pub fn table<'v>(function: &str, what: &str, view: ValueView<'v>) -> l3i::Result<TableView<'v>> {
     if !view.is_table() {
@@ -701,6 +707,7 @@ fn render(this: &LuaGpuDevice, call: &Call<'_>, pass: ValueView<'_>) -> l3i::Res
             indirect: held.indirect.as_ref().map(|(buffer, offset)| (&**buffer, *offset)),
         });
     }
+    committed(&this.gpu, FUNCTION)?;
     this.gpu
         .render(&color_targets, depth_target.as_ref(), &prepared)
         .map_err(|problem| gpu_error(FUNCTION, &problem))
@@ -726,6 +733,7 @@ fn dispatch(this: &LuaGpuDevice, call: &Call<'_>, work: ValueView<'_>) -> l3i::R
             "{FUNCTION}: the pipeline draws: draw it with GpuDevice:render"
         )));
     };
+    committed(&this.gpu, FUNCTION)?;
     this.gpu
         .dispatch(compute, [0, 1, 2].map(|frequency| groups[frequency].as_deref()), workgroups)
         .map_err(|problem| gpu_error(FUNCTION, &problem))

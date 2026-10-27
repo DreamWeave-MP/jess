@@ -1,7 +1,7 @@
 //! Textures: images on the GPU, uploaded from bytes, drawn into, and read back.
 
 use std::ops::BitOr;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use super::live::{Kind, Token};
 use super::{Gpu, GpuError, PendingRead};
@@ -266,17 +266,8 @@ impl Gpu {
     /// depth format, which only a pass writes.
     pub fn write_texture(&self, texture: &Texture, level: u32, layer: u32, bytes: &[u8]) -> Result<(), GpuError> {
         let desc = &texture.desc;
-        single_sample(desc)?;
         let texel = writable(desc)?;
-        let (width, height, depth) = check_level(desc, level, layer)?;
-        let expected = u64::from(width) * u64::from(height) * u64::from(depth) * u64::from(texel);
-        if bytes.len() as u64 != expected {
-            return Err(GpuError::Invalid(format!(
-                "{} bytes don't fill level {level} of a {width}×{height} {}: expected {expected}",
-                bytes.len(),
-                desc.format
-            )));
-        }
+        let (width, height, depth) = check_write(desc, level, layer, bytes.len())?;
         self.checked(|| {
             self.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
@@ -400,6 +391,42 @@ impl Gpu {
             .flags
             .sample_count_supported(4)
     }
+}
+
+impl Gpu {
+    /// Writes all of mip `level` of `layer` from `bytes`, as [`Gpu::write_texture`] does, at the
+    /// next [`Gpu::commit`]: checked now, and applied with the rest of the frame's changes.
+    ///
+    /// # Errors
+    ///
+    /// As [`Gpu::write_texture`], or no room before the next commit.
+    pub fn write_texture_later(
+        &self,
+        texture: &Arc<Texture>,
+        level: u32,
+        layer: u32,
+        bytes: Vec<u8>,
+    ) -> Result<(), GpuError> {
+        writable(&texture.desc)?;
+        check_write(&texture.desc, level, layer, bytes.len())?;
+        let texture = Arc::clone(texture);
+        self.defer(bytes.len(), move |gpu| gpu.write_texture(&texture, level, layer, &bytes))
+    }
+}
+
+/// The size of `level` of `desc`, if `length` bytes fill it and the CPU may write it.
+fn check_write(desc: &TextureDesc, level: u32, layer: u32, length: usize) -> Result<(u32, u32, u32), GpuError> {
+    single_sample(desc)?;
+    let texel = writable(desc)?;
+    let (width, height, depth) = check_level(desc, level, layer)?;
+    let expected = u64::from(width) * u64::from(height) * u64::from(depth) * u64::from(texel);
+    if length as u64 != expected {
+        return Err(GpuError::Invalid(format!(
+            "{length} bytes don't fill level {level} of a {width}×{height} {}: expected {expected}",
+            desc.format
+        )));
+    }
+    Ok((width, height, depth))
 }
 
 /// Whether the CPU can write or read `desc`'s texels: not a multisampled texture's.

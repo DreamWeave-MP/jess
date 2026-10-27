@@ -13,7 +13,7 @@ use super::pipeline::{
     Pipeline, buffer_field, count_field, gpu_error, groups, indirect_field, options, pipeline_field, table,
 };
 use super::resources::{choice, shown, whole};
-use crate::gpu::{DrawSet, DrawSetDesc, DrawSets, IndexFormat};
+use crate::gpu::{DrawSet, DrawSetDesc, DrawSets, Gpu, GpuError, IndexFormat};
 use crate::lua::{error, kind};
 
 /// A draw kept on a device, and the collection it was made into, which `add` and `remove` put it
@@ -22,6 +22,8 @@ use crate::lua::{error, kind};
 pub struct LuaGpuDrawSet {
     set: Arc<DrawSet>,
     sets: Arc<DrawSets>,
+    /// The device whose next commit applies what the script changes about it.
+    gpu: Arc<Gpu>,
 }
 
 // SAFETY: plain Rust state; the destructor never touches the Lua API.
@@ -33,6 +35,14 @@ unsafe impl Userdata for LuaGpuDrawSet {
 #[derive(Debug)]
 pub struct LuaGpuDrawSets {
     pub sets: Arc<DrawSets>,
+    /// The device whose next commit applies what the script changes about it.
+    gpu: Arc<Gpu>,
+}
+
+/// Defers `change`, carrying no data, to `gpu`'s next commit, for `function`.
+fn later(gpu: &Gpu, function: &str, change: impl FnOnce() -> Result<(), GpuError> + Send + 'static) -> l3i::Result<()> {
+    gpu.defer(0, move |_| change())
+        .map_err(|problem| gpu_error(function, &problem))
 }
 
 // SAFETY: plain Rust state; the destructor never touches the Lua API.
@@ -125,23 +135,35 @@ fn draw_set(this: &LuaGpuDevice, call: &Call<'_>, desc: ValueView<'_>) -> l3i::R
         Ok((desc, sets))
     })?;
     let set = Arc::new(DrawSet::new(desc).map_err(|problem| gpu_error(FUNCTION, &problem))?);
-    sets.add(&set);
-    Ok(Owned(LuaGpuDrawSet { set, sets }))
+    let (adding, into) = (Arc::clone(&set), Arc::clone(&sets));
+    later(&this.gpu, FUNCTION, move || {
+        into.add(&adding);
+        Ok(())
+    })?;
+    Ok(Owned(LuaGpuDrawSet {
+        set,
+        sets,
+        gpu: this.gpu.clone(),
+    }))
 }
 
 /// Declares the device's methods that make draw sets and collections of them.
 pub fn device_methods(device: &mut UserdataBuilder<'_, LuaGpuDevice>) {
     device.method("drawSet", draw_set).untyped();
     device
-        .method("drawSets", |_: &LuaGpuDevice| {
+        .method("drawSets", |this: &LuaGpuDevice| {
             Owned(LuaGpuDrawSets {
                 sets: Arc::new(DrawSets::new()),
+                gpu: this.gpu.clone(),
             })
         })
         .untyped();
     device
         .getter("sets", |this: &LuaGpuDevice| {
-            Owned(LuaGpuDrawSets { sets: this.sets.clone() })
+            Owned(LuaGpuDrawSets {
+                sets: this.sets.clone(),
+                gpu: this.gpu.clone(),
+            })
         })
         .untyped();
 }
@@ -159,12 +181,23 @@ fn describe_collection(d: &mut ExtensionDescriptor) {
     sets.tag(TagPolicy::Never)
         .doc("Draw sets a run draws from: a device's own, or a collection a script keeps for one scene.");
     sets.method("add", |this: &LuaGpuDrawSets, set: ValueView<'_>| -> l3i::Result<()> {
-        this.sets.add(&draw_set_of("GpuDrawSets:add", set)?);
-        Ok(())
+        const FUNCTION: &str = "GpuDrawSets:add";
+        let (set, into) = (draw_set_of(FUNCTION, set)?, Arc::clone(&this.sets));
+        later(&this.gpu, FUNCTION, move || {
+            into.add(&set);
+            Ok(())
+        })
     })
     .untyped();
     sets.method("remove", |this: &LuaGpuDrawSets, set: ValueView<'_>| -> l3i::Result<bool> {
-        Ok(this.sets.remove(&draw_set_of("GpuDrawSets:remove", set)?))
+        const FUNCTION: &str = "GpuDrawSets:remove";
+        let (set, from) = (draw_set_of(FUNCTION, set)?, Arc::clone(&this.sets));
+        let held = from.contains(&set);
+        later(&this.gpu, FUNCTION, move || {
+            from.remove(&set);
+            Ok(())
+        })?;
+        Ok(held)
     })
     .untyped();
     sets.method("has", |this: &LuaGpuDrawSets, set: ValueView<'_>| -> l3i::Result<bool> {
@@ -193,7 +226,11 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         |this: &LuaGpuDrawSet, count: ValueView<'_>| -> l3i::Result<()> {
             const FUNCTION: &str = "GpuDrawSet.count";
             let count = whole(FUNCTION, "the count", Some(count), None)?;
-            this.set.set_count(count).map_err(|problem| gpu_error(FUNCTION, &problem))
+            this.set
+                .check(count, this.set.instance_count())
+                .map_err(|problem| gpu_error(FUNCTION, &problem))?;
+            let set = Arc::clone(&this.set);
+            later(&this.gpu, FUNCTION, move || set.set_count(count))
         },
     )
     .untyped();
@@ -204,8 +241,10 @@ pub fn describe(d: &mut ExtensionDescriptor) {
             const FUNCTION: &str = "GpuDrawSet.instanceCount";
             let count = whole(FUNCTION, "the instance count", Some(count), None)?;
             this.set
-                .set_instance_count(count)
-                .map_err(|problem| gpu_error(FUNCTION, &problem))
+                .check(this.set.count(), count)
+                .map_err(|problem| gpu_error(FUNCTION, &problem))?;
+            let set = Arc::clone(&this.set);
+            later(&this.gpu, FUNCTION, move || set.set_instance_count(count))
         },
     )
     .untyped();
@@ -219,8 +258,11 @@ pub fn describe(d: &mut ExtensionDescriptor) {
                     shown(visible)
                 )));
             }
-            this.set.set_visible(visible.read::<bool>()?);
-            Ok(())
+            let (set, visible) = (Arc::clone(&this.set), visible.read::<bool>()?);
+            later(&this.gpu, "GpuDrawSet.visible", move || {
+                set.set_visible(visible);
+                Ok(())
+            })
         },
     )
     .untyped();
@@ -231,9 +273,24 @@ pub fn describe(d: &mut ExtensionDescriptor) {
     .untyped();
     set.getter("added", |this: &LuaGpuDrawSet| this.sets.contains(&this.set))
         .untyped();
-    set.method("add", |this: &LuaGpuDrawSet| this.sets.add(&this.set)).untyped();
-    set.method("remove", |this: &LuaGpuDrawSet| this.sets.remove(&this.set))
-        .untyped();
+    set.method("add", |this: &LuaGpuDrawSet| -> l3i::Result<()> {
+        let (set, into) = (Arc::clone(&this.set), Arc::clone(&this.sets));
+        later(&this.gpu, "GpuDrawSet:add", move || {
+            into.add(&set);
+            Ok(())
+        })
+    })
+    .untyped();
+    set.method("remove", |this: &LuaGpuDrawSet| -> l3i::Result<bool> {
+        let (set, from) = (Arc::clone(&this.set), Arc::clone(&this.sets));
+        let held = from.contains(&set);
+        later(&this.gpu, "GpuDrawSet:remove", move || {
+            from.remove(&set);
+            Ok(())
+        })?;
+        Ok(held)
+    })
+    .untyped();
     crate::lua::plan::metamethod(&mut set, "__tostring", |this: &LuaGpuDrawSet| {
         let set = &this.set;
         let noun = if set.count() == 1 { "vertex" } else { "vertices" };

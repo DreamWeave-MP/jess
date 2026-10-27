@@ -409,6 +409,24 @@ impl Plan {
     /// A pass the plan doesn't have, or culled; or a change after which a recorded pass would
     /// read or load what a pass left out stores, which changes nothing.
     pub fn set_enabled(&self, names: &[&str], enabled: bool) -> Result<(), GpuError> {
+        let state = self.enabling(names, enabled)?;
+        for (control, enabled) in self.controls.enabled.iter().zip(state) {
+            control.store(enabled, Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
+    /// Whether [`Plan::set_enabled`] would take `names` and `enabled`, as things stand.
+    ///
+    /// # Errors
+    ///
+    /// As [`Plan::set_enabled`].
+    pub fn check_enabled(&self, names: &[&str], enabled: bool) -> Result<(), GpuError> {
+        self.enabling(names, enabled).map(drop)
+    }
+
+    /// What every pass's control would be with `names` recorded or left out.
+    fn enabling(&self, names: &[&str], enabled: bool) -> Result<Vec<bool>, GpuError> {
         let mut state: Vec<bool> = self
             .controls
             .enabled
@@ -429,10 +447,7 @@ impl Plan {
                 )));
             }
         }
-        for (control, enabled) in self.controls.enabled.iter().zip(state) {
-            control.store(enabled, Ordering::Relaxed);
-        }
-        Ok(())
+        Ok(state)
     }
 
     /// Copies `region` in the copy pass `name` from the next run on, in this plan and every plan
@@ -444,6 +459,23 @@ impl Plan {
     /// A pass the plan doesn't have, culled, or not a copy; a region that doesn't fit, as
     /// [`RenderGraph::resolve_copy`] says, which changes nothing.
     pub fn set_region(&self, name: &str, region: CopyRegion) -> Result<(), GpuError> {
+        let position = self.region_position(name, region)?;
+        lock(&self.controls.regions)[position] = Some(region);
+        self.controls.version.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    /// Whether [`Plan::set_region`] would take `name` and `region`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Plan::set_region`].
+    pub fn check_region(&self, name: &str, region: CopyRegion) -> Result<(), GpuError> {
+        self.region_position(name, region).map(drop)
+    }
+
+    /// Where the copy pass `name` runs, if `region` fits it at the plan's viewport.
+    fn region_position(&self, name: &str, region: CopyRegion) -> Result<usize, GpuError> {
         let position = self.position(name)?;
         let planned = &self.passes[position];
         if !matches!(planned.work, PlannedWork::Copy(_)) {
@@ -453,9 +485,7 @@ impl Plan {
         self.graph
             .resolve_copy(pass, region, Some(self.viewport))
             .map_err(|problem| in_pass(name, problem))?;
-        lock(&self.controls.regions)[position] = Some(region);
-        self.controls.version.fetch_add(1, Ordering::AcqRel);
-        Ok(())
+        Ok(position)
     }
 
     /// Every resource the run sees: the plan's own and `imports`, each checked against the

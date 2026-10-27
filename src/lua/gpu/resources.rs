@@ -11,6 +11,7 @@ use l3i::stack::{Frame, Scope, ValueView};
 use l3i::userdata::{Owned, Userdata};
 
 use super::device::LuaGpuDevice;
+use super::pipeline::{committed, gpu_error};
 use crate::gpu::{
     AddressMode, Buffer, BufferUsage, Compare, Filter, Gpu, PendingRead, Sampler, SamplerDesc, Texture, TextureDesc,
     TextureShape, TextureUsage,
@@ -226,10 +227,6 @@ pub fn choice<'a>(
     })
 }
 
-fn gpu_error(function: &str, problem: &crate::gpu::GpuError) -> l3i::Error {
-    error(format!("{function}: {problem}"))
-}
-
 /// `device:buffer(size, usage)`.
 fn buffer(
     this: &LuaGpuDevice,
@@ -433,7 +430,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
                 let offset = whole(FUNCTION, "the offset", Some(offset), None)?;
                 with_bytes(FUNCTION, bytes, from, length, |bytes| {
                     this.gpu
-                        .write_buffer(&this.buffer, u64::from(offset), bytes)
+                        .write_buffer_later(&this.buffer, u64::from(offset), bytes.to_vec())
                         .map_err(|problem| gpu_error(FUNCTION, &problem))
                 })
             },
@@ -447,6 +444,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
                 let offset = u64::from(whole(FUNCTION, "the offset", offset, Some(0))?);
                 let rest = this.buffer.size().saturating_sub(offset);
                 let length = whole(FUNCTION, "the length", length, Some(u32::try_from(rest).unwrap_or(u32::MAX)))?;
+                committed(&this.gpu, FUNCTION)?;
                 this.gpu
                     .read_buffer(&this.buffer, offset, u64::from(length))
                     .map(NewBuffer)
@@ -465,6 +463,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
                 let offset = u64::from(whole(FUNCTION, "the offset", offset, Some(0))?);
                 let rest = this.buffer.size().saturating_sub(offset);
                 let length = whole(FUNCTION, "the length", length, Some(u32::try_from(rest).unwrap_or(u32::MAX)))?;
+                committed(&this.gpu, FUNCTION)?;
                 let read = this
                     .gpu
                     .read_buffer_later(&this.buffer, offset, u64::from(length))
@@ -514,7 +513,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
                 let layer = whole(FUNCTION, "the layer", layer, Some(0))?;
                 with_bytes(FUNCTION, bytes, None, None, |bytes| {
                     this.gpu
-                        .write_texture(&this.texture, level, layer, bytes)
+                        .write_texture_later(&this.texture, level, layer, bytes.to_vec())
                         .map_err(|problem| gpu_error(FUNCTION, &problem))
                 })
             },
@@ -527,6 +526,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
                 const FUNCTION: &str = "GpuTexture:read";
                 let level = whole(FUNCTION, "the level", level, Some(0))?;
                 let layer = whole(FUNCTION, "the layer", layer, Some(0))?;
+                committed(&this.gpu, FUNCTION)?;
                 this.gpu
                     .read_texture(&this.texture, level, layer)
                     .map(NewBuffer)
@@ -544,6 +544,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
                 const FUNCTION: &str = "GpuTexture:readLater";
                 let level = whole(FUNCTION, "the level", level, Some(0))?;
                 let layer = whole(FUNCTION, "the layer", layer, Some(0))?;
+                committed(&this.gpu, FUNCTION)?;
                 let read = this
                     .gpu
                     .read_texture_later(&this.texture, level, layer)

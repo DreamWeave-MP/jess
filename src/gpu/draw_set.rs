@@ -80,8 +80,13 @@ impl DrawSet {
         Ok(set)
     }
 
-    /// Whether `count` vertices of `instance_count` instances of it can be drawn.
-    fn check(&self, count: u32, instance_count: u32) -> Result<(), GpuError> {
+    /// Whether `count` vertices, or indices, of `instance_count` instances of it can be drawn:
+    /// what [`DrawSet::set_count`] and [`DrawSet::set_instance_count`] check.
+    ///
+    /// # Errors
+    ///
+    /// As those.
+    pub fn check(&self, count: u32, instance_count: u32) -> Result<(), GpuError> {
         let draw = Draw {
             count,
             instance_count,

@@ -483,6 +483,9 @@ pub struct Application {
     diagnostics: Arc<Diagnostics>,
     /// Context names by id, kept past teardown for the diagnostics it reports.
     names: BTreeMap<ContextId, String>,
+    /// The GPU device the application's generations share, committed at the end of each frame.
+    #[cfg(feature = "gpu")]
+    device: Arc<crate::lua::SharedDevice>,
 }
 
 impl std::fmt::Debug for Application {
@@ -549,7 +552,9 @@ pub(crate) fn launch(
         });
     // One GPU device for every generation, so a restart reloads code without reopening it.
     #[cfg(feature = "gpu")]
-    let spec = spec.service(Arc::new(crate::lua::SharedDevice::default()));
+    let device = Arc::new(crate::lua::SharedDevice::default());
+    #[cfg(feature = "gpu")]
+    let spec = spec.service(Arc::clone(&device));
     // A target that may open windows hears their keyboard and pointer, whatever else its host
     // polls; one that may not stays as headless as it was asked to be.
     #[cfg(feature = "window")]
@@ -604,6 +609,8 @@ pub(crate) fn launch(
         setup,
         diagnostics,
         names: BTreeMap::new(),
+        #[cfg(feature = "gpu")]
+        device,
     };
     application.remember_contexts();
     Ok(application)
@@ -775,6 +782,13 @@ impl Application {
             crate::window::pump();
             let outcome = self.frame(now - last);
             last = now;
+            // What the frame changed about what the GPU draws, all of it at once.
+            #[cfg(feature = "gpu")]
+            if let Some(gpu) = self.device.opened()
+                && let Err(problem) = gpu.commit()
+            {
+                report(&format!("the GPU refused a change: {problem}"));
+            }
             #[cfg(feature = "window")]
             if let Err(failures) = crate::window::present() {
                 for (title, problem) in failures {

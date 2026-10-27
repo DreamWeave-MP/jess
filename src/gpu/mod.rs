@@ -15,6 +15,7 @@
 mod bind;
 mod buffer;
 mod cache;
+mod commit;
 mod compute;
 mod draw_set;
 mod live;
@@ -30,11 +31,13 @@ mod texture;
 use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 pub use bind::{BindGroup, Binding};
 pub use buffer::{Buffer, BufferUsage};
 pub use cache::PipelineStats;
+pub use commit::{BYTES, CHANGES, Room};
 pub use compute::ComputePipeline;
 pub use draw_set::{DrawSet, DrawSetDesc, DrawSets};
 pub use live::LiveCounts;
@@ -159,6 +162,12 @@ pub struct Gpu {
     cache: Mutex<cache::Cache>,
     /// How many of each object it has alive.
     live: Arc<live::Live>,
+    /// The changes waiting for the next commit.
+    pending: Mutex<commit::Pending>,
+    /// Held by a commit, and by whoever records a frame on another thread.
+    frame: Mutex<()>,
+    /// How many commits applied anything.
+    commits: AtomicU64,
 }
 
 impl fmt::Debug for Gpu {
@@ -237,6 +246,9 @@ impl Gpu {
             layouts: Mutex::default(),
             cache: Mutex::default(),
             live: Arc::default(),
+            pending: Mutex::default(),
+            frame: Mutex::default(),
+            commits: AtomicU64::new(0),
         })
     }
 

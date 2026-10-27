@@ -617,6 +617,8 @@ fn draw(state: &mut State) -> Result<(), WindowError> {
         return Err(problem);
     }
     let gpu = Arc::clone(&state.gpu);
+    // What the script changed since the last frame, all of it, before the frame draws it.
+    gpu.commit()?;
     let (Some(surface), Some(showing)) = (&mut state.surface, &state.showing) else {
         return Ok(());
     };

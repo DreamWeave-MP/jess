@@ -2,6 +2,7 @@
 //! machine has, a software one included, and skips, saying so, on a machine with none.
 
 mod cache;
+mod commit;
 mod compute;
 mod controls;
 mod draw;

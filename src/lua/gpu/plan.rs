@@ -13,7 +13,8 @@ use l3i::userdata::{Owned, Userdata, receiver};
 use super::device::LuaGpuDevice;
 use super::draw_set::collection;
 use super::pipeline::{
-    LuaGpuBindGroup, Pipeline, clear_value, flag, gpu_error, number, options, pipeline_field, slot_name, table, workgroups,
+    LuaGpuBindGroup, Pipeline, clear_value, committed, flag, gpu_error, number, options, pipeline_field, slot_name, table,
+    workgroups,
 };
 use super::resources::{LuaGpuBuffer, LuaGpuRead, LuaGpuSampler, LuaGpuTexture, format_of, shown, whole};
 use crate::gpu::{DrawSets, Gpu, Group, Import, Plan, PlanBinding, PlanGroup, Slot, Work};
@@ -29,7 +30,7 @@ use crate::shader::Frequency;
 pub struct LuaGpuPlan {
     pub gpu: Arc<Gpu>,
     pub sets: Arc<DrawSets>,
-    pub plan: Plan,
+    pub plan: Arc<Plan>,
 }
 
 // SAFETY: plain Rust state; the destructor never touches the Lua API.
@@ -702,7 +703,7 @@ fn plan(this: &LuaGpuDevice, call: &Call<'_>, desc: ValueView<'_>) -> l3i::Resul
     Ok(Owned(LuaGpuPlan {
         gpu: this.gpu.clone(),
         sets: this.sets.clone(),
-        plan,
+        plan: Arc::new(plan),
     }))
 }
 
@@ -772,6 +773,7 @@ fn run(this: &LuaGpuPlan, call: &Call<'_>, imports: Option<ValueView<'_>>, sets:
             Given::Buffer(name, buffer) => Import::Buffer(name, buffer),
         })
         .collect();
+    committed(&this.gpu, RUN)?;
     this.gpu
         .run(&this.plan, &sets, &imports)
         .map_err(|problem| gpu_error(RUN, &problem))
@@ -794,9 +796,17 @@ fn set_enabled(this: &LuaGpuPlan, call: &Call<'_>, passes: ValueView<'_>, enable
             ))
         })?
     };
-    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let enabled = enabled.read::<bool>()?;
+    let borrowed: Vec<&str> = names.iter().map(String::as_str).collect();
     this.plan
-        .set_enabled(&names, enabled.read::<bool>()?)
+        .check_enabled(&borrowed, enabled)
+        .map_err(|problem| gpu_error(FUNCTION, &problem))?;
+    let plan = Arc::clone(&this.plan);
+    this.gpu
+        .defer(0, move |_| {
+            let names: Vec<&str> = names.iter().map(String::as_str).collect();
+            plan.set_enabled(&names, enabled)
+        })
         .map_err(|problem| gpu_error(FUNCTION, &problem))
 }
 
@@ -836,8 +846,13 @@ fn set_region(this: &LuaGpuPlan, call: &Call<'_>, pass: ValueView<'_>, region: V
             size: copy_size(frame, "the region", fields.raw_get(frame, "size")?)?,
         })
     })?;
+    let pass = pass.read::<&str>()?.to_owned();
     this.plan
-        .set_region(pass.read::<&str>()?, region)
+        .check_region(&pass, region)
+        .map_err(|problem| gpu_error(FUNCTION, &problem))?;
+    let plan = Arc::clone(&this.plan);
+    this.gpu
+        .defer(0, move |_| plan.set_region(&pass, region))
         .map_err(|problem| gpu_error(FUNCTION, &problem))
 }
 
@@ -872,7 +887,7 @@ fn resized(this: &LuaGpuPlan, width: ValueView<'_>, height: ValueView<'_>) -> l3
     Ok(Owned(LuaGpuPlan {
         gpu: this.gpu.clone(),
         sets: this.sets.clone(),
-        plan,
+        plan: Arc::new(plan),
     }))
 }
 
@@ -978,6 +993,7 @@ fn describe_reads(plan: &mut UserdataBuilder<'_, LuaGpuPlan>) {
          -> l3i::Result<NewBuffer> {
             const READ: &str = "GpuPlan:read";
             let (name, level, layer) = kept_args(READ, name, level, layer)?;
+            committed(&this.gpu, READ)?;
             this.gpu
                 .read_kept(&this.plan, &name, level, layer)
                 .map(NewBuffer)
@@ -994,6 +1010,7 @@ fn describe_reads(plan: &mut UserdataBuilder<'_, LuaGpuPlan>) {
          -> l3i::Result<Owned<LuaGpuRead>> {
             const READ: &str = "GpuPlan:readLater";
             let (name, level, layer) = kept_args(READ, name, level, layer)?;
+            committed(&this.gpu, READ)?;
             let read = this
                 .gpu
                 .read_kept_later(&this.plan, &name, level, layer)

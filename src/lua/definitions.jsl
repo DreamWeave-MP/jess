@@ -663,7 +663,7 @@ export type GpuCompare =
   | 'always'
 
 --- Bytes on the GPU. `write` copies a Luau `buffer` or string, or `length` bytes of it from
---- `from`, into the buffer at `offset`, before the next work the GPU is given; `read` waits for
+--- `from`, into the buffer at `offset` at the device's next commit; `read` commits and waits for
 --- everything submitted so far and returns `length` bytes from `offset` (the rest of the buffer
 --- by default) as a new `buffer`, and `readLater` the same without waiting. Offsets and lengths
 --- are multiples of 4. `tostring` gives `GpuBuffer(16 bytes, vertex, storage)`.
@@ -1064,8 +1064,9 @@ end
 --- and how much it ever `made`. `buffer`, `texture`, and `sampler` make resources on it,
 --- `pipeline` makes a program ready to draw or compute, `render` and `dispatch` submit work,
 --- `drawSet` keeps a draw in the device's draw sets (`sets`) or a collection of them `drawSets`
---- makes, and `plan` compiles a render graph to run every frame. `tostring` gives
---- `GpuDevice(name, backend)`.
+--- makes, and `plan` compiles a render graph to run every frame. What a script changes about
+--- what the GPU draws waits for the next `commit`, which applies it all at once; `room` is how
+--- much more fits before it. `tostring` gives `GpuDevice(name, backend)`.
 declare extern type GpuDevice with
   name: string
   backend: string
@@ -1082,6 +1083,8 @@ declare extern type GpuDevice with
   function render(self, pass: GpuPass): ()
   function dispatch(self, work: GpuDispatch): ()
   sets: GpuDrawSets
+  room: { changes: number, bytes: number }
+  function commit(self): boolean
   function drawSet(self, desc: GpuDrawSetDesc): GpuDrawSet
   function drawSets(self): GpuDrawSets
   function plan(self, desc: GpuPlanDesc): GpuPlan

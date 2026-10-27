@@ -123,6 +123,27 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .getter("made", |this: &LuaGpuDevice, call: &Call<'_>| counts(call, this.gpu.made()))
         .untyped();
     device
+        .method("commit", |this: &LuaGpuDevice| -> l3i::Result<bool> {
+            this.gpu
+                .commit()
+                .map_err(|problem| super::pipeline::gpu_error("GpuDevice:commit", &problem))
+        })
+        .untyped();
+    device
+        .getter("room", |this: &LuaGpuDevice, call: &Call<'_>| -> l3i::Result<StackResults> {
+            let room = this.gpu.room();
+            push_table(call, 0, 2, |frame, table| {
+                // The room left is at most a few hundred million: well below 2^53.
+                #[allow(clippy::cast_precision_loss)]
+                {
+                    table.raw_set_value(frame, "changes", &(room.changes as f64))?;
+                    table.raw_set_value(frame, "bytes", &(room.bytes as f64))
+                }
+            })?;
+            Ok(StackResults)
+        })
+        .untyped();
+    device
         .getter(
             "pipelines",
             |this: &LuaGpuDevice, call: &Call<'_>| -> l3i::Result<StackResults> {

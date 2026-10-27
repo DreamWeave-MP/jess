@@ -49,6 +49,17 @@ print(device.limits.textureSize, device.limits.workgroups)
 
 That's this machine's: a laptop's integrated GPU, reached through Vulkan. Yours will say what yours is.
 
+## Commits
+
+What a script changes about what the GPU draws (a buffer or texture it writes, a draw set's counts, whether it is visible, which collection holds it, which passes a plan leaves out, what a copy pass copies) waits for the device's next commit, and the commit applies all of it at once. Whatever draws a frame on its own, a window, draws a commit's changes whole or none of them, never half a frame.
+
+A commit happens at the end of every frame under an application's host, at `jess.gpu.pump()`, at `device:commit()`, and before anything that uses the GPU and waits for it (`plan:run`, `device:render`, `device:dispatch`, a read), so a script always sees its own changes when it asks the GPU for something. What reads a draw set or a plan back (`set.count`, `set.added`, `sets:has`, `plan:enabled`) says what the last commit left. Mistakes are refused when the change is asked for, not at the commit.
+
+| Member | Type | Does |
+| --- | --- | --- |
+| `commit()` | `() -> boolean` | Applies everything changed since the last commit, saying whether there was anything. |
+| `room` | `{ changes, bytes }` | How much more fits before the next commit: 65 536 changes carrying 256 MiB of data a frame. A change that doesn't fit is refused, naming what waits; commit, or change less. |
+
 ## Resources
 
 A device makes three kinds of resource. Each lives as long as a script holds it, and belongs to its runtime's device; nothing about one means anything to the GPU until a pipeline reads it.
@@ -93,7 +104,7 @@ A name the table doesn't take is an error listing the ones it does, so `layer = 
 | --- | --- | --- |
 | `size` | `number` | Its size in bytes. |
 | `usage` | `{ GpuBufferUsage }` | What it is for, in the order `vertex`, `index`, `uniform`, `storage`, `indirect`. |
-| `write` | `(self, offset: number, bytes: buffer \| string, from: number?, length: number?) -> ()` | Copies `bytes` (or `length` of them from `from`) into the buffer at `offset`, before the next work the GPU is given. Luau's bytes are read in place, not copied first. |
+| `write` | `(self, offset: number, bytes: buffer \| string, from: number?, length: number?) -> ()` | Copies `bytes` (or `length` of them from `from`) into the buffer at `offset`, at the next [commit](#commits). |
 | `read` | `(self, offset: number?, length: number?) -> buffer` | Waits for everything submitted so far, and returns `length` bytes from `offset` (by default, all of it) as a new `buffer`. |
 | `readLater` | `(self, offset: number?, length: number?) -> GpuRead` | The same bytes, without waiting: a [read](#gpuread) the GPU fills once it has done everything submitted before it. |
 
@@ -123,7 +134,7 @@ print(positions, buffer.readf32(back, 0), buffer.readstring(back, 4, 4), buffer.
 | `shape` | `GpuTextureShape` | `2d`, `2dArray`, `cube`, or `3d`. |
 | `layers` | `number` | How many 2D layers it has: an array's layers, a cube's 6, 1 otherwise. |
 | `mips` | `number` | How many mip levels. |
-| `write` | `(self, bytes: buffer \| string, level: number?, layer: number?) -> ()` | Replaces every texel of mip `level` of `layer` (every slice, for a `3d` texture), rows packed tightly, top row first. Both default to 0. |
+| `write` | `(self, bytes: buffer \| string, level: number?, layer: number?) -> ()` | Replaces every texel of mip `level` of `layer` (every slice, for a `3d` texture), rows packed tightly, top row first, at the next [commit](#commits). Both default to 0. |
 | `read` | `(self, level: number?, layer: number?) -> buffer` | Waits for everything submitted so far, and returns that level of that layer the way `write` takes it. |
 | `readLater` | `(self, level: number?, layer: number?) -> GpuRead` | The same, without waiting: a [read](#gpuread). |
 
@@ -381,10 +392,14 @@ local quad = device:drawSet {
   tags = { 'opaque' },
 }
 
+device:commit()
 quad.count = 3
 quad.visible = false
-print(quad, quad:remove(), quad.added)
--- GpuDrawSet(3 vertices, opaque, hidden)  true  false
+print(quad.count, quad:remove())
+device:commit()
+print(quad, quad.added)
+-- 6  true
+-- GpuDrawSet(3 vertices, opaque, hidden)  false
 ```
 
 ## Plans

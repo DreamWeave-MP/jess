@@ -472,17 +472,9 @@ fn pipeline_errors_name_the_mistake() {
     }
 }
 
-/// A draw set made from Luau is kept on its device until it is removed; its count, instance
-/// count, and visibility change in place, checked as a pass checks a draw.
+/// What `a_script_keeps_draw_sets` runs first.
 #[cfg(feature = "gpu")]
-#[test]
-fn a_script_keeps_draw_sets() {
-    let Some(runtime) = gpu_runtime("a_script_keeps_draw_sets") else {
-        return;
-    };
-    runtime
-        .exec(
-            r"
+const DRAW_SETS: &str = r"
             local shader = require('@jess/shader')
             local program = shader.program({
               attributes = { position = shader.vec2 },
@@ -506,18 +498,26 @@ fn a_script_keeps_draw_sets() {
               count = 6,
               tags = { 'opaque', 'shadow' },
             })
-            assert(set.count == 6 and set.instanceCount == 1 and set.visible and set.added)
+            -- What a script changes is what the next commit applies, all of it at once.
+            assert(not set.added and device:commit() and set.added and not device:commit())
+            assert(set.count == 6 and set.instanceCount == 1 and set.visible)
             assert(table.concat(set.tags, ' ') == 'opaque shadow')
             assert(tostring(set) == 'GpuDrawSet(6 vertices, opaque shadow)', tostring(set))
 
             set.count = 3
             set.visible = false
+            assert(set.count == 6 and set.visible, 'not yet committed')
+            assert(device.room.changes == 65536 - 2, tostring(device.room.changes))
+            device:commit()
             assert(set.count == 3 and not set.visible)
             assert(tostring(set) == 'GpuDrawSet(3 vertices, opaque shadow, hidden)', tostring(set))
 
-            assert(set:remove() and not set.added and not set:remove())
+            assert(set:remove() and set.added)
+            device:commit()
+            assert(not set.added and not set:remove())
             set:add()
             set:add()
+            device:commit()
             assert(set.added)
 
             -- A material change writes a buffer; it compiles nothing, and the same program and
@@ -527,9 +527,17 @@ fn a_script_keeps_draw_sets() {
             assert(device:pipeline(program, { colors = { 'rgba8Unorm' } }) ~= nil)
             local after = device.pipelines
             assert(after.compiled == before.compiled and after.reused == before.reused + 1)
-        ",
-        )
-        .unwrap_or_else(|error| panic!("{error}"));
+";
+
+/// A draw set made from Luau is kept on its device until it is removed; its count, instance
+/// count, and visibility change in place, checked as a pass checks a draw.
+#[cfg(feature = "gpu")]
+#[test]
+fn a_script_keeps_draw_sets() {
+    let Some(runtime) = gpu_runtime("a_script_keeps_draw_sets") else {
+        return;
+    };
+    runtime.exec(DRAW_SETS).unwrap_or_else(|error| panic!("{error}"));
 
     let prelude = r"
             local shader = require('@jess/shader')
@@ -737,6 +745,7 @@ const FRAME_PLAN: &str = r"
             -- A collection of its own: the red rectangle alone, red swapped to blue.
             local scene = device:drawSets()
             scene:add(red)
+            device:commit()
             assert(scene:has(red) and not scene:has(green) and scene.count == 1, tostring(scene))
             assert(tostring(scene) == 'GpuDrawSets(1 set)' and device.sets:has(red))
             overlay.visible = true

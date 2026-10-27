@@ -2,6 +2,7 @@
 
 use std::fmt;
 use std::ops::BitOr;
+use std::sync::Arc;
 
 use super::live::{Kind, Token};
 use super::{Gpu, GpuError};
@@ -142,6 +143,18 @@ impl Gpu {
         let length = bytes.len() as u64;
         check_range(buffer, offset, length)?;
         self.checked(|| self.queue.write_buffer(&buffer.raw, offset, bytes))
+    }
+
+    /// Writes `bytes` into `buffer` at `offset`, as [`Gpu::write_buffer`] does, at the next
+    /// [`Gpu::commit`]: checked now, and applied with the rest of the frame's changes.
+    ///
+    /// # Errors
+    ///
+    /// As [`Gpu::write_buffer`], or no room before the next commit.
+    pub fn write_buffer_later(&self, buffer: &Arc<Buffer>, offset: u64, bytes: Vec<u8>) -> Result<(), GpuError> {
+        check_range(buffer, offset, bytes.len() as u64)?;
+        let buffer = Arc::clone(buffer);
+        self.defer(bytes.len(), move |gpu| gpu.write_buffer(&buffer, offset, &bytes))
     }
 
     /// Reads `length` bytes of `buffer` from `offset`, once everything submitted so far is done.
