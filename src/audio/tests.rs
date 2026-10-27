@@ -1018,6 +1018,26 @@ fn a_group_arrives_whole_or_not_at_all() {
     assert_eq!(context.control().room(), 3);
 }
 
+#[test]
+fn a_group_the_engine_is_gone_for_fails_and_so_does_everything_after_it() {
+    let click = pcm(&[1.0], 48_000);
+    let (mut control, engine) = crate::audio::context(&AudioConfig {
+        channels: 1,
+        ..AudioConfig::default()
+    })
+    .unwrap();
+    control.begin_group().unwrap();
+    control.play(&click, &PlaySpec::default()).unwrap();
+    control.add_bus(&BusSpec::default()).unwrap();
+    drop(engine);
+    assert_eq!(control.end_group(), Err(AudioError::Disconnected));
+    assert_eq!(control.play(&click, &PlaySpec::default()), Err(AudioError::Disconnected));
+    assert_eq!(control.add_bus(&BusSpec::default()), Err(AudioError::Disconnected));
+    control.begin_group().unwrap();
+    control.play(&click, &at(48_000)).unwrap();
+    assert_eq!(control.end_group(), Err(AudioError::Disconnected));
+}
+
 /// Multiplies by a control-rate level: it hears where a ramp has got to once a control block.
 struct Level(f32);
 
