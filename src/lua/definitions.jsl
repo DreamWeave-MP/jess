@@ -405,7 +405,7 @@ export type AudioStats = {
   revisions: number,
 }
 
-export type AudioVoiceState = 'scheduled' | 'playing' | 'ended'
+export type AudioVoiceState = 'scheduled' | 'playing' | 'paused' | 'ended'
 
 --- One playback of a Pcm. Every command takes an optional `at`, an output frame to carry it out
 --- on; without one, the next frame rendered. Once the voice ends the handle names nothing, and
@@ -438,6 +438,18 @@ export type AudioVoice = {
   --- Plays it into `node` instead of where it plays first, keeping its sends. Moving a voice
   --- changes nothing in the graph.
   route: (self: AudioVoice, node: AudioNode, at: number?) -> boolean,
+  --- Pauses it on frame `at`, holding its place: unmixed, and counted against no budget.
+  pause: (self: AudioVoice, at: number?) -> boolean,
+  --- Plays it on from where it was paused, on frame `at`; a voice made with
+  --- `AudioContext:voice` starts here.
+  play: (self: AudioVoice, at: number?) -> boolean,
+  --- Moves it to source frame `frame` on frame `at`, at once for PCM, and for a stream a feed
+  --- decodes once the feed has decoded from there (silence until then). A stream a script writes
+  --- can't seek, and says so.
+  seek: (self: AudioVoice, frame: number, at: number?) -> boolean,
+  --- The source frame it is at, as of the last render (for a stream, counted from where it
+  --- started or last sought to); nil once it has ended.
+  position: (self: AudioVoice) -> number?,
   state: (self: AudioVoice) -> AudioVoiceState,
 }
 
@@ -450,6 +462,8 @@ export type AudioContext = {
   now: (self: AudioContext) -> number,
   --- Starts a voice playing decoded audio or a stream (which plays once, with no offset or loop).
   play: (self: AudioContext, source: AudioPcm | AudioStream, options: AudioPlayOptions?) -> AudioVoice,
+  --- A voice as `play` makes it, paused: it holds a slot and waits for `AudioVoice:play`.
+  voice: (self: AudioContext, source: AudioPcm | AudioStream, options: AudioPlayOptions?) -> AudioVoice,
   --- The master bus: the output. It has no route and is never removed.
   master: (self: AudioContext) -> AudioNode,
   --- A bus routed into `parent` (the master), at `gain` (1), muted or not, with `channels` (the

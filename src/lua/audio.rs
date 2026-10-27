@@ -927,6 +927,44 @@ fn play_spec(call: &Call<'_>, context: &Shared, frames: u64, options: Option<Val
     Ok(spec)
 }
 
+/// `context:play(source, options)`, or `context:voice` with `paused`: a voice of PCM or a stream.
+fn start(
+    this: &LuaAudioContext,
+    call: &Call<'_>,
+    source: ValueView<'_>,
+    options: Option<ValueView<'_>>,
+    paused: bool,
+) -> l3i::Result<Owned<LuaAudioVoice>> {
+    let voice = |key| {
+        Owned(LuaAudioVoice {
+            context: Rc::clone(&this.0),
+            key,
+        })
+    };
+    if let Some(stream) = l3i::userdata::receiver::<LuaAudioStream>(source) {
+        let stream = Arc::clone(&stream.0);
+        let spec = PlaySpec {
+            paused,
+            ..play_spec(call, &this.0, 0, options)?
+        };
+        let key = this.0.borrow_mut().control().play_stream(&stream, &spec)?;
+        return Ok(voice(key));
+    }
+    let Some(source) = l3i::userdata::receiver::<LuaAudioPcm>(source) else {
+        return Err(error(format!(
+            "AudioContext:play takes a Pcm from jess.audio.pcm or a Stream from jess.audio.stream, not {}",
+            kind(source)
+        )));
+    };
+    let source = Arc::clone(&source.0);
+    let spec = PlaySpec {
+        paused,
+        ..play_spec(call, &this.0, source.frames() as u64, options)?
+    };
+    let key = this.0.borrow_mut().control().play(&source, &spec)?;
+    Ok(voice(key))
+}
+
 /// `sends = { { bus, level }, ... }` of a play's options.
 #[allow(clippy::cast_possible_truncation)] // Levels are f32 in the engine.
 fn voice_sends(frame: &Frame<'_>, list: ValueView<'_>, context: &Shared) -> l3i::Result<Vec<VoiceSend>> {
@@ -1159,34 +1197,21 @@ fn describe_context(d: &mut ExtensionDescriptor) {
              call: &Call<'_>,
              source: ValueView<'_>,
              options: Option<ValueView<'_>>|
-             -> l3i::Result<Owned<LuaAudioVoice>> {
-                if let Some(stream) = l3i::userdata::receiver::<LuaAudioStream>(source) {
-                    let stream = Arc::clone(&stream.0);
-                    let spec = play_spec(call, &this.0, 0, options)?;
-                    let key = this.0.borrow_mut().control().play_stream(&stream, &spec)?;
-                    return Ok(Owned(LuaAudioVoice {
-                        context: Rc::clone(&this.0),
-                        key,
-                    }));
-                }
-                let Some(source) = l3i::userdata::receiver::<LuaAudioPcm>(source) else {
-                    return Err(error(format!(
-                        "AudioContext:play takes a Pcm from jess.audio.pcm or a Stream from jess.audio.stream, not {}",
-                        kind(source)
-                    )));
-                };
-                let source = Arc::clone(&source.0);
-                let spec = play_spec(call, &this.0, source.frames() as u64, options)?;
-                let key = this.0.borrow_mut().control().play(&source, &spec)?;
-                Ok(Owned(LuaAudioVoice {
-                    context: Rc::clone(&this.0),
-                    key,
-                }))
-            },
+             -> l3i::Result<Owned<LuaAudioVoice>> { start(this, call, source, options, false) },
         )
         .untyped();
     context
         .method("master", |this: &LuaAudioContext| node_handle(&this.0, NodeKey::MASTER))
+        .untyped();
+    context
+        .method(
+            "voice",
+            |this: &LuaAudioContext,
+             call: &Call<'_>,
+             source: ValueView<'_>,
+             options: Option<ValueView<'_>>|
+             -> l3i::Result<Owned<LuaAudioVoice>> { start(this, call, source, options, true) },
+        )
         .untyped();
     context
         .method(
@@ -1439,6 +1464,33 @@ fn describe_voice(d: &mut ExtensionDescriptor) {
                 Ok(this.context.borrow_mut().control().route_voice(this.key, node, at)?)
             },
         )
+        .untyped();
+    voice
+        .method("pause", |this: &LuaAudioVoice, at: Option<f64>| -> l3i::Result<bool> {
+            let at = frame_option(at)?;
+            Ok(this.context.borrow_mut().control().pause(this.key, at)?)
+        })
+        .untyped();
+    voice
+        .method("play", |this: &LuaAudioVoice, at: Option<f64>| -> l3i::Result<bool> {
+            let at = frame_option(at)?;
+            Ok(this.context.borrow_mut().control().resume(this.key, at)?)
+        })
+        .untyped();
+    voice
+        .method(
+            "seek",
+            |this: &LuaAudioVoice, frame: f64, at: Option<f64>| -> l3i::Result<bool> {
+                let frame = whole(frame, "AudioVoice:seek's frame")?;
+                let at = frame_option(at)?;
+                Ok(this.context.borrow_mut().control().seek(this.key, frame, at)?)
+            },
+        )
+        .untyped();
+    voice
+        .method("position", |this: &LuaAudioVoice| -> Option<f64> {
+            this.context.borrow_mut().control().position(this.key).map(number)
+        })
         .untyped();
     voice
         .method("state", |this: &LuaAudioVoice| {

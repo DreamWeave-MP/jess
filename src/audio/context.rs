@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 
-use crate::audio::engine::{Capacity, Command, Counters, Engine, Feedback, Node, Stamped};
+use crate::audio::engine::{Capacity, Command, Counters, Engine, Feedback, Node, PAUSED, Stamped};
 use crate::audio::graph::{Connection, Definition, Shape};
 use crate::audio::mixer::{BusSpec, Mixer, NodeKey, Tap};
 use crate::audio::param::Glide;
@@ -100,6 +100,8 @@ pub enum VoiceState {
     Scheduled,
     /// Started, and not known to have ended.
     Playing,
+    /// Paused, as of the engine's last render.
+    Paused,
     /// Ran out or was stopped; its handle names nothing now.
     Ended,
 }
@@ -111,6 +113,7 @@ impl VoiceState {
         match self {
             VoiceState::Scheduled => "scheduled",
             VoiceState::Playing => "playing",
+            VoiceState::Paused => "paused",
             VoiceState::Ended => "ended",
         }
     }
@@ -227,6 +230,10 @@ struct Slot {
     outputs: Vec<Output>,
     /// Its source's length, for checking a new loop region.
     frames: u64,
+    /// The source frame it starts from.
+    offset: u64,
+    /// The stream it plays, if it plays one.
+    stream: Option<std::sync::Weak<Stream>>,
     /// Where it is in space, as last sent, if it's there.
     emitter: Option<Emitter>,
 }
@@ -285,7 +292,7 @@ pub fn context(config: &AudioConfig) -> Result<(Control, Engine), AudioError> {
     };
     let (commands, receive) = sync_channel(config.commands);
     let (send, feedback) = sync_channel(capacity.feedback());
-    let counters = Arc::new(Counters::new(config.nodes));
+    let counters = Arc::new(Counters::new(config.nodes, config.voices));
     let space = Space {
         speed: config.speed_of_sound,
         handedness: config.handedness,
@@ -313,6 +320,8 @@ pub fn context(config: &AudioConfig) -> Result<(Control, Engine), AudioError> {
             start: None,
             outputs: Vec::new(),
             frames: 0,
+            offset: 0,
+            stream: None,
             emitter: None,
         };
         config.voices
@@ -385,8 +394,9 @@ impl Control {
         }
         let window = vec![0.0; stream.channels() * STREAM_WINDOW].into_boxed_slice();
         let started = self.start(Source::Stream(Arc::clone(stream), window), spec, 0);
-        if started.is_err() {
-            stream.release();
+        match started {
+            Ok(voice) => self.slots[voice.slot as usize].stream = Some(Arc::downgrade(stream)),
+            Err(_) => stream.release(),
         }
         started
     }
@@ -426,7 +436,13 @@ impl Control {
         entry.outputs.clear();
         entry.outputs.extend_from_slice(&outputs);
         entry.frames = frames;
+        entry.offset = spec.offset;
+        entry.stream = None;
         entry.emitter = spec.spatial;
+        // Until the engine has rendered it, the voice is where it starts, not where the last voice
+        // in its slot was.
+        let paused = if spec.paused { PAUSED } else { 0 };
+        self.counters.positions[slot as usize].store(spec.offset | paused, Ordering::Relaxed);
         Ok(voice)
     }
 
@@ -627,8 +643,95 @@ impl Control {
         }
         match self.slots[voice.slot as usize].start {
             Some(start) if start > self.now() => VoiceState::Scheduled,
+            _ if self.counters.positions[voice.slot as usize].load(Ordering::Relaxed) & PAUSED != 0 => VoiceState::Paused,
             _ => VoiceState::Playing,
         }
+    }
+
+    /// The source frame `voice` is at, as of the engine's last render: where a voice not yet
+    /// started will start, and `None` for one that ended.
+    pub fn position(&mut self, voice: VoiceKey) -> Option<u64> {
+        self.collect();
+        if !self.is_live(voice) {
+            return None;
+        }
+        let entry = &self.slots[voice.slot as usize];
+        if entry.start.is_some_and(|start| start > self.now()) {
+            return Some(entry.offset);
+        }
+        Some(self.counters.positions[voice.slot as usize].load(Ordering::Relaxed) & !PAUSED)
+    }
+
+    /// Pauses a voice on frame `at`, or the next frame rendered, holding its place until it is
+    /// played again: unmixed, uncounted against the budget, and keeping time with nothing. True if
+    /// the voice hadn't ended.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::QueueFull`] or [`AudioError::Disconnected`].
+    pub fn pause(&mut self, voice: VoiceKey, at: Option<u64>) -> Result<bool, AudioError> {
+        self.transport(voice, at, true)
+    }
+
+    /// Plays a paused voice on from where it was, on frame `at`, or the next frame rendered. True
+    /// if the voice hadn't ended.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::QueueFull`] or [`AudioError::Disconnected`].
+    pub fn resume(&mut self, voice: VoiceKey, at: Option<u64>) -> Result<bool, AudioError> {
+        self.transport(voice, at, false)
+    }
+
+    fn transport(&mut self, voice: VoiceKey, at: Option<u64>, paused: bool) -> Result<bool, AudioError> {
+        self.collect();
+        if !self.is_live(voice) {
+            return Ok(false);
+        }
+        self.send(at, Command::Pause { voice, paused })?;
+        Ok(true)
+    }
+
+    /// Moves a voice to source frame `frame` on frame `at`, or the next frame rendered. PCM goes
+    /// at once; a stream once its feed has decoded from there, playing silence until then. True
+    /// if the voice hadn't ended.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::Parameter`] for a frame past the source's end,
+    /// [`AudioError::Unsupported`] for a stream a script writes, which can't seek,
+    /// [`AudioError::QueueFull`], or [`AudioError::Disconnected`].
+    pub fn seek(&mut self, voice: VoiceKey, frame: u64, at: Option<u64>) -> Result<bool, AudioError> {
+        self.collect();
+        if !self.is_live(voice) {
+            return Ok(false);
+        }
+        let entry = &self.slots[voice.slot as usize];
+        let stream = entry.stream.as_ref().map(std::sync::Weak::upgrade);
+        let epoch = match &stream {
+            None if frame > entry.frames => {
+                #[allow(clippy::cast_precision_loss)] // A frame in a message.
+                return Err(AudioError::Parameter {
+                    name: "seek",
+                    value: frame as f64,
+                    expected: "a frame inside the source",
+                });
+            }
+            None => 0,
+            Some(Some(stream)) if stream.seekable() => stream.next_seek(),
+            Some(_) => {
+                return Err(AudioError::Unsupported(
+                    "a stream a script writes can't seek; one a feed decodes into can",
+                ));
+            }
+        };
+        self.send(at, Command::Seek { voice, frame, epoch })?;
+        // Asked of the writer only once the voice will hear of it, so a seek never sent can't
+        // hold a voice back at a mark it will never pass.
+        if let Some(Some(stream)) = stream {
+            stream.request_seek(frame);
+        }
+        Ok(true)
     }
 
     /// Refuses a revision stamped `at` while one stamped later is still waiting: revisions take
@@ -1165,6 +1268,7 @@ impl Control {
                     slot.generation = slot.generation.wrapping_add(1);
                     slot.busy = false;
                     slot.start = None;
+                    slot.stream = None;
                     self.free.push(voice.slot);
                 }
                 Feedback::NodeEnded { node, state } => {

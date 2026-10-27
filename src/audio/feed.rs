@@ -177,24 +177,81 @@ impl Drop for Feed {
     }
 }
 
-fn run(mut decoder: Box<dyn Decode>, stream: &Arc<Stream>, spec: FeedSpec, shared: &Shared) -> Result<(), String> {
+/// How often a feed waiting for room or for a seek looks for one asked for.
+const SEEKING: Duration = Duration::from_millis(2);
+
+fn run(decoder: Box<dyn Decode>, stream: &Arc<Stream>, spec: FeedSpec, shared: &Shared) -> Result<(), String> {
+    stream.set_seekable(true);
+    let mut handled = 0;
+    let ran = feed(decoder, stream, spec, shared, &mut handled);
+    // A seek asked for that this feed won't carry out still lets its voice go on: it hears what
+    // the stream has, and its end.
+    stream.set_seekable(false);
+    if let Some((epoch, _)) = stream.seek_wanted(handled) {
+        stream.mark(epoch);
+        stream.finish();
+    }
+    ran
+}
+
+/// True once the feed should end: stopped, or nothing but it holds the stream.
+fn over(stream: &Arc<Stream>, shared: &Shared) -> bool {
+    shared.stop.load(Ordering::Acquire) || Arc::strong_count(stream) == 1
+}
+
+/// Waits up to [`POLL`] for room for `frames`, or for a seek after `handled`; true for the room.
+fn room(stream: &Stream, frames: u64, handled: u64) -> bool {
+    let deadline = std::time::Instant::now() + POLL;
+    loop {
+        if stream.seek_wanted(handled).is_some() {
+            return false;
+        }
+        if stream.wait(frames, SEEKING) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+    }
+}
+
+fn feed(
+    mut decoder: Box<dyn Decode>,
+    stream: &Arc<Stream>,
+    spec: FeedSpec,
+    shared: &Shared,
+    handled: &mut u64,
+) -> Result<(), String> {
     let channels = stream.channels();
     let mut block = vec![0.0; spec.block * channels];
     // True right after a seek back to the loop's start: a loop that reads nothing from there
     // would go round for ever.
     let mut looped = false;
-    loop {
+    'decoding: loop {
         let frames = loop {
-            if shared.stop.load(Ordering::Acquire) || Arc::strong_count(stream) == 1 {
+            if over(stream, shared) {
                 return Ok(());
             }
-            if stream.wait(spec.block as u64, POLL) {
+            if let Some((epoch, frame)) = stream.seek_wanted(*handled) {
+                decoder.seek(frame)?;
+                stream.mark(epoch);
+                *handled = epoch;
+                looped = false;
+            }
+            if room(stream, spec.block as u64, *handled) {
                 break decoder.read(&mut block)?;
             }
         };
         if frames == 0 {
             let Some(start) = spec.looping.filter(|_| !looped) else {
                 stream.finish();
+                // A finished stream still seeks, until its voice has played it to the end.
+                while !over(stream, shared) && !stream.drained() {
+                    if stream.seek_wanted(*handled).is_some() {
+                        continue 'decoding;
+                    }
+                    std::thread::sleep(SEEKING);
+                }
                 return Ok(());
             };
             decoder.seek(start)?;
@@ -205,6 +262,10 @@ fn run(mut decoder: Box<dyn Decode>, stream: &Arc<Stream>, spec: FeedSpec, share
         looped = false;
         let mut written = 0;
         while written < frames {
+            if stream.seek_wanted(*handled).is_some() {
+                // What is left of the block is from before the seek: no one will hear it.
+                continue 'decoding;
+            }
             let accepted = stream
                 .write(&block[written * channels..frames * channels])
                 .map_err(|error| error.to_string())?;
@@ -216,10 +277,10 @@ fn run(mut decoder: Box<dyn Decode>, stream: &Arc<Stream>, spec: FeedSpec, share
                 // Something else finished the stream: there is nowhere left to write.
                 return Ok(());
             }
-            if shared.stop.load(Ordering::Acquire) || Arc::strong_count(stream) == 1 {
+            if over(stream, shared) {
                 return Ok(());
             }
-            stream.wait((frames - written) as u64, POLL);
+            room(stream, (frames - written) as u64, *handled);
         }
     }
 }
@@ -317,6 +378,47 @@ mod tests {
                 error: None
             }
         );
+    }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss)] // Whole numbers below 2^24.
+    fn a_feed_seeks_and_its_voice_follows_on_the_seek_s_frame() {
+        let mut context = mono();
+        let stream = Stream::new(1, 48_000, 0.05).unwrap();
+        let voice = context.control().play_stream(&stream, &PlaySpec::default()).unwrap();
+        let _feed = Feed::start(
+            Box::new(Ramp {
+                frames: 100_000,
+                position: 0,
+            }),
+            Arc::clone(&stream),
+            FeedSpec {
+                block: 300,
+                looping: None,
+            },
+        )
+        .unwrap();
+        let mut out = play(&mut context, &stream, 1000);
+        context.control().seek(voice, 50_000, Some(1500)).unwrap();
+        // The feed seeks at once, and marks where its new frames start; the voice plays what it
+        // had up to the seek's frame, and never past the mark before then.
+        out.extend(context.render(500));
+        let started = Instant::now();
+        loop {
+            let (epoch, at) = stream.marked();
+            if epoch == 1 && stream.stats().written >= at + 600 {
+                break;
+            }
+            assert!(started.elapsed() < Duration::from_secs(20), "the feed never sought");
+            std::thread::yield_now();
+        }
+        out.extend(context.render(500));
+        let before: Vec<f32> = (0..1500).map(|frame| frame as f32).collect();
+        let after: Vec<f32> = (50_000..50_500).map(|frame| frame as f32).collect();
+        assert_eq!(out[..1500], before);
+        assert_eq!(out[1500..], after);
+        assert_eq!(context.control().position(voice), Some(50_500));
+        assert_eq!(stream.stats().missed, 0, "nothing played as silence");
     }
 
     #[test]

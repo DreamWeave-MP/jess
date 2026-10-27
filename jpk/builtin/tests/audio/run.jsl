@@ -536,6 +536,34 @@ suite.describe('the graph', function()
   end)
 end)
 
+suite.describe('transport', function()
+  suite.it('pauses, plays on, and seeks a voice on its frames, and says where it is', function()
+    local context = audio.offline { channels = 1 }
+    local values = {}
+    for frame = 0, 63 do
+      table.insert(values, frame)
+    end
+
+    local voice = context:voice(source(values), { at = 0 })
+    expect(voice:state()).toBe('paused')
+    expect(voice:position()).toBe(0)
+    expect(voice:play(2)).toBe(true)
+    expect(voice:pause(4)).toBe(true)
+    expect(voice:play(6)).toBe(true)
+    expect(voice:seek(30, 7)).toBe(true)
+    expect(samples(context:render(9))).toEqual { 0, 0, 0, 1, 0, 0, 2, 30, 31 }
+    expect(voice:position()).toBe(32)
+    expect(function() voice:seek(100) end).toThrow 'a frame inside the source'
+  end)
+
+  suite.it('refuses to seek a stream a script writes', function()
+    local context = audio.offline { channels = 1 }
+    local stream = audio.stream { channels = 1, rate = 48000, seconds = 0.1 }
+    local voice = context:play(stream)
+    expect(function() voice:seek(10) end).toThrow "can't seek"
+  end)
+end)
+
 suite.describe('a voice budget', function()
   suite.it('mixes the voices that matter most and keeps the rest in time', function()
     local context = audio.offline { channels = 1, physical = 2 }

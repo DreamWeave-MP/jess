@@ -147,6 +147,8 @@ pub struct Begin {
     pub spatial: Option<Emitter>,
     pub priority: f32,
     pub culled: Culled,
+    /// For a stream sought before it started: the seek it waits for, `offset` its frame.
+    pub seeking: Option<u64>,
 }
 
 impl PlaySpec {
@@ -162,6 +164,7 @@ impl PlaySpec {
             spatial: self.spatial,
             priority: self.priority,
             culled: self.culled,
+            seeking: None,
         }
     }
 }
@@ -589,20 +592,65 @@ fn render_pcm(pcm: &Pcm, cursor: &mut Cursor, scratch: &mut [f32], steps: Option
     produced
 }
 
+/// Where a stream voice is in its stream.
+#[derive(Clone, Copy, Debug, Default)]
+struct Reading {
+    /// The absolute ring frame its window starts at, and the frames in it.
+    base: u64,
+    filled: usize,
+    /// The seek it plays, from 0 for none, and the one it waits for the writer to carry out.
+    epoch: u64,
+    seeking: Option<u64>,
+    /// The ring frame its position counts from, and the source frame that is.
+    origin: u64,
+    from: u64,
+}
+
 /// A stream voice's reading: the stream, and the window of it around the cursor.
 struct Reader<'a> {
     stream: &'a Stream,
     window: &'a mut [f32],
-    base: &'a mut u64,
-    filled: &'a mut usize,
+    reading: &'a mut Reading,
 }
 
 impl Reader<'_> {
+    /// True unless the voice waits for a seek the writer hasn't carried out. Once it has, the
+    /// window and the cursor go to where it marked, and everything before is let go.
+    fn settle(&mut self, cursor: &mut Cursor) -> bool {
+        let Some(wanted) = self.reading.seeking else {
+            return true;
+        };
+        let (marked, at) = self.stream.marked();
+        if marked < wanted {
+            return false;
+        }
+        self.stream.discard_to(at);
+        *self.reading = Reading {
+            base: at,
+            filled: 0,
+            epoch: wanted,
+            seeking: None,
+            origin: at,
+            from: self.reading.from,
+        };
+        cursor.position = at << 32;
+        cursor.wrapped = false;
+        true
+    }
+
     /// Reads `frames` frames as [`render_pcm`] does, from the window, which it first slides up to
     /// the cursor and fills from the stream. Where the stream has nothing yet the window holds
     /// silence, counted as missed; a finished stream ends where its data does.
-    fn render(self, cursor: &mut Cursor, scratch: &mut [f32], steps: Option<&[u64]>, frames: usize) -> usize {
+    fn render(mut self, cursor: &mut Cursor, scratch: &mut [f32], steps: Option<&[u64]>, frames: usize) -> usize {
         let channels = self.stream.channels();
+        if !self.settle(cursor) {
+            // Waiting for the writer to get to where it seeks: silence, as where it is behind.
+            for channel in 0..channels {
+                scratch[channel * QUANTUM..channel * QUANTUM + frames].fill(0.0);
+            }
+            self.stream.miss(frames as u64);
+            return frames;
+        }
         // A voice at the stream's own rate reads the frames it is on; any other reads around them.
         let reach = if steps.is_none() && cursor.exact() {
             1
@@ -611,35 +659,41 @@ impl Reader<'_> {
         };
         // Let go of what the cursor has passed, but the frames resampling still reads.
         let keep = (cursor.position >> 32).saturating_sub(reach);
-        if keep > *self.base {
-            let passed = usize::try_from(keep - *self.base).unwrap_or(usize::MAX).min(*self.filled);
+        if keep > self.reading.base {
+            let passed = usize::try_from(keep - self.reading.base)
+                .unwrap_or(usize::MAX)
+                .min(self.reading.filled);
             for channel in 0..channels {
                 let line = &mut self.window[channel * STREAM_WINDOW..(channel + 1) * STREAM_WINDOW];
-                line.copy_within(passed..*self.filled, 0);
+                line.copy_within(passed..self.reading.filled, 0);
             }
-            *self.base += passed as u64;
-            *self.filled -= passed;
+            self.reading.base += passed as u64;
+            self.reading.filled -= passed;
         }
         let travel = steps.map_or(cursor.step * frames as u64, |steps| steps.iter().sum());
         let last = ((cursor.position + travel) >> 32) + reach + 2;
-        let wanted = usize::try_from(last.saturating_sub(*self.base))
+        let wanted = usize::try_from(last.saturating_sub(self.reading.base))
             .unwrap_or(usize::MAX)
             .min(STREAM_WINDOW);
-        if wanted > *self.filled {
-            *self.filled += self
-                .stream
-                .take(self.window, STREAM_WINDOW, *self.filled, wanted - *self.filled);
+        if wanted > self.reading.filled {
+            self.reading.filled += self.stream.take(
+                self.window,
+                STREAM_WINDOW,
+                self.reading.filled,
+                wanted - self.reading.filled,
+                self.reading.epoch,
+            );
         }
-        if *self.filled < wanted && !self.stream.finished() {
+        if self.reading.filled < wanted && !self.stream.finished() {
             for channel in 0..channels {
-                self.window[channel * STREAM_WINDOW + *self.filled..channel * STREAM_WINDOW + wanted].fill(0.0);
+                self.window[channel * STREAM_WINDOW + self.reading.filled..channel * STREAM_WINDOW + wanted].fill(0.0);
             }
-            self.stream.miss((wanted - *self.filled) as u64);
-            *self.filled = wanted;
+            self.stream.miss((wanted - self.reading.filled) as u64);
+            self.reading.filled = wanted;
         }
         let finished = self.stream.finished();
         let table = resample::table();
-        let origin = *self.base << 32;
+        let origin = self.reading.base << 32;
         let start = Cursor {
             position: cursor.position - origin,
             ..*cursor
@@ -648,7 +702,7 @@ impl Reader<'_> {
         let mut produced = 0;
         for channel in 0..channels {
             relative = start;
-            let data = &self.window[channel * STREAM_WINDOW..channel * STREAM_WINDOW + *self.filled];
+            let data = &self.window[channel * STREAM_WINDOW..channel * STREAM_WINDOW + self.reading.filled];
             produced = 0;
             for (index, sample) in scratch[channel * QUANTUM..channel * QUANTUM + frames].iter_mut().enumerate() {
                 // An unfinished stream has silence where it has nothing; a finished one ends.
@@ -672,26 +726,32 @@ impl Reader<'_> {
     /// would have played it: the window's frames, then the stream's, then silence counted as
     /// missed where the stream had nothing yet. It keeps the frames resampling reads around the
     /// cursor. False once a finished stream has nothing left to play.
-    fn skip(self, cursor: &Cursor) -> bool {
+    fn skip(mut self, cursor: &mut Cursor) -> bool {
+        if !self.settle(cursor) {
+            return true;
+        }
         let frame = cursor.position >> 32;
         let keep = frame.saturating_sub(resample::REACH as u64);
-        if keep > *self.base {
-            let passed = usize::try_from(keep - *self.base).unwrap_or(usize::MAX).min(*self.filled);
+        if keep > self.reading.base {
+            let passed = usize::try_from(keep - self.reading.base)
+                .unwrap_or(usize::MAX)
+                .min(self.reading.filled);
             for channel in 0..self.stream.channels() {
                 let line = &mut self.window[channel * STREAM_WINDOW..(channel + 1) * STREAM_WINDOW];
-                line.copy_within(passed..*self.filled, 0);
+                line.copy_within(passed..self.reading.filled, 0);
             }
-            *self.base += passed as u64;
-            *self.filled -= passed;
+            self.reading.base += passed as u64;
+            self.reading.filled -= passed;
             // Only past the end of the window, which is now empty.
-            let beyond = keep - *self.base;
-            let skipped = self.stream.skip(beyond);
+            let beyond = keep - self.reading.base;
+            let skipped = self.stream.skip(beyond, self.reading.epoch);
             if !self.stream.finished() {
                 self.stream.miss(beyond - skipped);
             }
-            *self.base = keep;
+            self.reading.base = keep;
         }
-        !(self.stream.finished() && self.stream.unread() == 0 && frame >= *self.base + *self.filled as u64)
+        let unread = self.stream.unread(self.reading.epoch);
+        !(self.stream.finished() && unread == 0 && frame >= self.reading.base + self.reading.filled as u64)
     }
 }
 
@@ -699,9 +759,8 @@ impl Reader<'_> {
 pub struct Voice {
     pub(crate) generation: u32,
     pub(crate) source: Source,
-    /// For a stream, the absolute frame its window starts at, and the frames in it.
-    base: u64,
-    filled: usize,
+    /// For a stream, where it is in it.
+    reading: Reading,
     /// The node inputs it adds into.
     pub(crate) outputs: Outputs,
     /// Holding its place, unmixed, until it is played.
@@ -754,9 +813,16 @@ impl Voice {
             audible: true,
             output_rate,
             source,
-            base: 0,
-            filled: 0,
+            reading: Reading {
+                seeking: spec.seeking,
+                from: spec.offset,
+                ..Reading::default()
+            },
         };
+        if spec.seeking.is_some() {
+            // A stream seeks from its writer's mark, not from its own frames.
+            voice.cursor.position = 0;
+        }
         voice.cursor.step = voice.step(spec.rate);
         voice
     }
@@ -794,10 +860,9 @@ impl Voice {
                 let reader = Reader {
                     stream,
                     window,
-                    base: &mut self.base,
-                    filled: &mut self.filled,
+                    reading: &mut self.reading,
                 };
-                reader.skip(&self.cursor)
+                reader.skip(&mut self.cursor)
             }
         }
     }
@@ -873,6 +938,37 @@ impl Voice {
         self.cursor.wrapped = false;
     }
 
+    /// Goes to source frame `frame`: for PCM at once, on a whole frame, with nothing of where it
+    /// was carried over (the resampler keeps no history to reset); for a stream once its writer
+    /// has carried out seek `epoch`, until when it plays silence and holds its position. A frame
+    /// past a loop's end, while it loops, is where playback through the loop would have got to.
+    pub(crate) fn seek(&mut self, frame: u64, epoch: u64) {
+        if let Source::Stream(..) = self.source {
+            self.reading.seeking = Some(epoch);
+            self.reading.from = frame;
+            return;
+        }
+        self.cursor.position = frame << 32;
+        self.cursor.wrapped = false;
+        if let Some((start, end)) = self.cursor.looping
+            && frame >= end
+        {
+            self.cursor.position = (start + (frame - start) % (end - start)) << 32;
+            self.cursor.wrapped = true;
+        }
+    }
+
+    /// The source frame it is at: for a stream, counted from where it started or last sought to,
+    /// and held while it waits for a seek.
+    pub(crate) fn position(&self) -> u64 {
+        let frame = self.cursor.position >> 32;
+        match self.source {
+            Source::Pcm(_) => frame,
+            Source::Stream(..) if self.reading.seeking.is_some() => self.reading.from,
+            Source::Stream(..) => self.reading.from + frame.saturating_sub(self.reading.origin),
+        }
+    }
+
     /// The fixed-point step for a playback rate, shifted by Doppler for a voice in space.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // A positive step below 2^64.
     fn step(&self, rate: f64) -> u64 {
@@ -907,8 +1003,7 @@ impl Voice {
                 let reader = Reader {
                     stream,
                     window,
-                    base: &mut self.base,
-                    filled: &mut self.filled,
+                    reading: &mut self.reading,
                 };
                 reader.render(&mut self.cursor, scratch, steps, frames)
             }

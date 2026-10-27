@@ -5,6 +5,11 @@
 //! the voice playing the stream reads what is there, and when the ring runs dry it plays silence
 //! and counts the frames it missed. Nothing blocks either side: the ring is atomics, and a writer
 //! that wants to wait for room sleeps for as long as the engine takes to make it.
+//!
+//! A stream a feed writes can seek: the feed repositions its decoder and marks where in the ring
+//! what it writes from then on starts (an epoch and a position), and the voice playing it lets go
+//! of everything before that mark when its seek's frame comes. A stream a script writes has no
+//! decoder to reposition, and refuses to seek.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -38,6 +43,16 @@ pub struct Stream {
     claimed: AtomicBool,
     /// A writer is writing: a stream has one at a time.
     writing: AtomicBool,
+    /// A feed writes it, which can seek.
+    seekable: AtomicBool,
+    /// The latest seek asked for: its epoch, counting from 1, and the source frame it goes to.
+    wanted: AtomicU64,
+    wanted_frame: AtomicU64,
+    /// The latest seek the writer carried out: its epoch, and the ring frame what it wrote from
+    /// there starts at. Each pair is written number first and read epoch, number, epoch, so a
+    /// reader never pairs an epoch with another's number.
+    marked: AtomicU64,
+    marked_at: AtomicU64,
 }
 
 /// What a stream has done.
@@ -91,6 +106,11 @@ impl Stream {
             finished: AtomicBool::new(false),
             claimed: AtomicBool::new(false),
             writing: AtomicBool::new(false),
+            seekable: AtomicBool::new(false),
+            wanted: AtomicU64::new(0),
+            wanted_frame: AtomicU64::new(0),
+            marked: AtomicU64::new(0),
+            marked_at: AtomicU64::new(0),
         });
         let mut registry = STREAMS.lock().unwrap_or_else(PoisonError::into_inner);
         let streams = registry.get_or_insert_with(HashMap::new);
@@ -220,10 +240,9 @@ impl Stream {
     /// For the engine: copies up to `frames` frames into `into`, one block of `stride` samples
     /// per channel starting at `offset` in each, and returns how many it had. Only the voice
     /// playing the stream reads it.
-    pub(crate) fn take(&self, into: &mut [f32], stride: usize, offset: usize, frames: usize) -> usize {
+    pub(crate) fn take(&self, into: &mut [f32], stride: usize, offset: usize, frames: usize, epoch: u64) -> usize {
+        let frames = frames.min(usize::try_from(self.readable(epoch)).unwrap_or(usize::MAX));
         let read = self.read.load(Ordering::Relaxed);
-        let written = self.written.load(Ordering::Acquire);
-        let frames = frames.min(usize::try_from(written - read).unwrap_or(usize::MAX));
         for index in 0..frames {
             let at = self.slot(read + index as u64);
             for channel in 0..self.channels {
@@ -236,17 +255,17 @@ impl Stream {
 
     /// For the engine: lets up to `frames` frames go unread, as a voice that keeps time without
     /// being mixed does, and returns how many it had.
-    pub(crate) fn skip(&self, frames: u64) -> u64 {
+    pub(crate) fn skip(&self, frames: u64, epoch: u64) -> u64 {
+        let frames = frames.min(self.readable(epoch));
         let read = self.read.load(Ordering::Relaxed);
-        let written = self.written.load(Ordering::Acquire);
-        let frames = frames.min(written - read);
         self.read.store(read + frames, Ordering::Release);
         frames
     }
 
-    /// For the engine: frames written and not yet read.
-    pub(crate) fn unread(&self) -> u64 {
-        self.written.load(Ordering::Acquire) - self.read.load(Ordering::Relaxed)
+    /// For the engine: frames written and not yet read that a reader playing seek `epoch` may
+    /// take.
+    pub(crate) fn unread(&self, epoch: u64) -> u64 {
+        self.readable(epoch)
     }
 
     /// For the engine: counts frames played as silence for want of data.
@@ -262,6 +281,84 @@ impl Stream {
     /// Gives the stream back for another voice, when the voice meant to play it never started.
     pub(crate) fn release(&self) {
         self.claimed.store(false, Ordering::Release);
+    }
+
+    /// True while a feed writes it, so it can seek.
+    #[must_use]
+    pub fn seekable(&self) -> bool {
+        self.seekable.load(Ordering::Acquire)
+    }
+
+    /// For a feed: says whether it writes the stream, and so whether it can seek.
+    pub(crate) fn set_seekable(&self, seekable: bool) {
+        self.seekable.store(seekable, Ordering::Release);
+    }
+
+    /// The epoch the next seek asked for will have.
+    pub(crate) fn next_seek(&self) -> u64 {
+        self.wanted.load(Ordering::Relaxed) + 1
+    }
+
+    /// Asks the writer to go to source frame `frame`, as seek [`Stream::next_seek`]. One thread,
+    /// the control side's, asks.
+    pub(crate) fn request_seek(&self, frame: u64) {
+        self.wanted_frame.store(frame, Ordering::Release);
+        self.wanted.store(self.next_seek(), Ordering::Release);
+    }
+
+    /// For the writer: the latest seek asked for after epoch `handled`, and its frame.
+    pub(crate) fn seek_wanted(&self, handled: u64) -> Option<(u64, u64)> {
+        loop {
+            let epoch = self.wanted.load(Ordering::Acquire);
+            if epoch <= handled {
+                return None;
+            }
+            let frame = self.wanted_frame.load(Ordering::Acquire);
+            if self.wanted.load(Ordering::Acquire) == epoch {
+                return Some((epoch, frame));
+            }
+        }
+    }
+
+    /// For the writer: what it writes from now on is from seek `epoch`. A finished stream it
+    /// seeks in is unfinished again first.
+    pub(crate) fn mark(&self, epoch: u64) {
+        self.finished.store(false, Ordering::Release);
+        self.marked_at.store(self.written.load(Ordering::Relaxed), Ordering::Release);
+        self.marked.store(epoch, Ordering::Release);
+    }
+
+    /// The latest seek the writer carried out: its epoch and the ring frame it starts at.
+    pub(crate) fn marked(&self) -> (u64, u64) {
+        loop {
+            let epoch = self.marked.load(Ordering::Acquire);
+            let at = self.marked_at.load(Ordering::Acquire);
+            if self.marked.load(Ordering::Acquire) == epoch {
+                return (epoch, at);
+            }
+        }
+    }
+
+    /// The frames written and not yet read that a reader playing seek `epoch` may take: up to a
+    /// later seek's mark, which it doesn't hear until that seek's frame.
+    fn readable(&self, epoch: u64) -> u64 {
+        let written = self.written.load(Ordering::Acquire);
+        let read = self.read.load(Ordering::Relaxed);
+        let (marked, at) = self.marked();
+        let end = if marked > epoch { at.min(written) } else { written };
+        end.saturating_sub(read)
+    }
+
+    /// True once it is finished and everything written has been read: its voice has played it to
+    /// the end, and nothing is left to seek in.
+    pub(crate) fn drained(&self) -> bool {
+        self.finished() && self.read.load(Ordering::Acquire) == self.written.load(Ordering::Acquire)
+    }
+
+    /// For the engine: lets go of everything before ring frame `at`, where a seek's frames start.
+    pub(crate) fn discard_to(&self, at: u64) {
+        let read = self.read.load(Ordering::Relaxed);
+        self.read.store(read.max(at), Ordering::Release);
     }
 }
 
@@ -280,9 +377,9 @@ mod tests {
         );
         assert_eq!(stream.room(), 0);
         let mut into = [0.0f32; 8];
-        assert_eq!(stream.take(&mut into, 4, 0, 4), 4);
+        assert_eq!(stream.take(&mut into, 4, 0, 4, 0), 4);
         assert_eq!(into, [1.0, 2.0, 3.0, 4.0, -1.0, -2.0, -3.0, -4.0]);
-        assert_eq!(stream.take(&mut into, 4, 0, 4), 0, "dry");
+        assert_eq!(stream.take(&mut into, 4, 0, 4, 0), 0, "dry");
         assert!(matches!(stream.write(&[1.0]), Err(AudioError::PartialFrame { .. })));
     }
 

@@ -45,6 +45,11 @@ pub enum Command {
         value: f64,
         glide: Option<Glide>,
     },
+    /// Pauses a voice where it is, or plays it on from there.
+    Pause { voice: VoiceKey, paused: bool },
+    /// Moves a voice to source frame `frame`; for a stream, once its writer has carried out seek
+    /// `epoch`.
+    Seek { voice: VoiceKey, frame: u64, epoch: u64 },
     /// Loops a voice over a new region, or lets it play on past its loop.
     SetLoop { voice: VoiceKey, looping: Option<LoopRegion> },
     /// Moves a voice to new outputs; the old ones go back to be dropped.
@@ -138,12 +143,18 @@ pub struct Counters {
     pub(crate) revisions: AtomicU64,
     /// Each mixer's meter, by slot.
     pub(crate) meters: Box<[BusMeter]>,
+    /// Each voice's source frame, by slot, with [`PAUSED`] set while it is paused.
+    pub(crate) positions: Box<[AtomicU64]>,
 }
 
+/// The bit of a voice's published position that says it is paused.
+pub const PAUSED: u64 = 1 << 63;
+
 impl Counters {
-    pub fn new(nodes: usize) -> Counters {
+    pub fn new(nodes: usize, voices: usize) -> Counters {
         Counters {
             meters: std::iter::repeat_with(BusMeter::default).take(nodes).collect(),
+            positions: std::iter::repeat_with(AtomicU64::default).take(voices).collect(),
             ..Counters::default()
         }
     }
@@ -715,6 +726,31 @@ impl Engine {
                 glide,
             } => self.set_voice(voice, param, value, glide),
             Command::SetLoop { voice, looping } => self.set_loop(voice, looping),
+            Command::Pause { voice, paused } => {
+                if let Some(playing) = self.voices[voice.slot as usize].as_mut()
+                    && playing.generation == voice.generation
+                {
+                    playing.paused = paused;
+                } else if let Some(index) = self.pending_start(voice)
+                    && let Command::Start { spec, .. } = &mut self.pending[index].command
+                {
+                    spec.paused = paused;
+                }
+            }
+            Command::Seek { voice, frame, epoch } => {
+                if let Some(playing) = self.voices[voice.slot as usize].as_mut()
+                    && playing.generation == voice.generation
+                {
+                    playing.seek(frame, epoch);
+                } else if let Some(index) = self.pending_start(voice)
+                    && let Command::Start { spec, source, .. } = &mut self.pending[index].command
+                {
+                    spec.offset = frame;
+                    if let Source::Stream(..) = source {
+                        spec.seeking = Some(epoch);
+                    }
+                }
+            }
             Command::SendVoice { voice, target, level } => self.send_voice(voice, target, level),
             Command::Route { voice, mut outputs } => {
                 self.route(voice, &mut outputs);
@@ -1246,9 +1282,17 @@ impl Engine {
     }
 
     fn publish(&self) {
-        let active = self.voices.iter().filter(|voice| voice.is_some()).count();
+        let mut active = 0u64;
+        for (slot, voice) in self.voices.iter().enumerate() {
+            let Some(voice) = voice else {
+                continue;
+            };
+            active += 1;
+            let paused = if voice.paused { PAUSED } else { 0 };
+            self.counters.positions[slot].store(voice.position().min(PAUSED - 1) | paused, Ordering::Relaxed);
+        }
         self.counters.frames.store(self.now, Ordering::Release);
-        self.counters.active.store(active as u64, Ordering::Relaxed);
+        self.counters.active.store(active, Ordering::Relaxed);
         self.counters.late.store(self.late, Ordering::Relaxed);
         self.counters.nonfinite.store(self.nonfinite, Ordering::Relaxed);
         self.counters.pending.store(self.pending.len() as u64, Ordering::Relaxed);
