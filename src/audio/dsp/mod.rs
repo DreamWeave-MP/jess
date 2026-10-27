@@ -8,9 +8,11 @@
 // buys nothing audible.
 #![allow(clippy::suboptimal_flops)]
 
+pub mod crossfade;
 pub mod delay;
 pub mod drive;
 pub mod dynamics;
 pub mod filter;
+pub mod generators;
 pub mod pan;
 pub mod reverb;

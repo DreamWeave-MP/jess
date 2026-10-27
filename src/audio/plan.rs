@@ -66,6 +66,16 @@ pub struct Feedback {
     pub to: Target,
 }
 
+/// A modulation: before its step, the output at `from`, mixed to mono, times `depth`, is added to
+/// parameter `param`'s automation.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Modulation {
+    pub from: Place,
+    pub from_channels: u8,
+    pub param: u16,
+    pub depth: f32,
+}
+
 /// A range of a plan's lists, as `start..end`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Span {
@@ -97,6 +107,8 @@ pub struct Step {
     pub post: Span,
     /// Feedback connections leaving it.
     pub feedback: Span,
+    /// What modulates its parameters.
+    pub modulations: Span,
     pub key: Option<Pull>,
     /// Removed, ringing out for at most this many frames before it goes.
     pub drain: Option<u64>,
@@ -118,6 +130,10 @@ pub struct Plan {
     pub steps: Box<[Step]>,
     pub pushes: Box<[Push]>,
     pub feedback: Box<[Feedback]>,
+    pub modulations: Box<[Modulation]>,
+    /// True when something modulates a control-rate parameter, which keeps blocks to a control
+    /// quantum so it hears where its modulation is that often.
+    pub control: bool,
     pub clear: Box<[Clear]>,
     /// Compensation lines on node inputs' own entries, delaying what voices added there: each the
     /// line and the input it delays.

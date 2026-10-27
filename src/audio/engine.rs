@@ -23,8 +23,8 @@ use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 
 use crate::audio::mixer::NodeKey;
 use crate::audio::param::{Glide, Param};
-use crate::audio::plan::{Place, Plan, Push, Revision, Step, Target};
-use crate::audio::processor::{Io, ParamInfo, Processor, Rate};
+use crate::audio::plan::{Modulation, Place, Plan, Push, Revision, Step, Target};
+use crate::audio::processor::{Io, MAX_PARAMS, ParamInfo, Processor, Rate};
 use crate::audio::spatial::{Emitter, Listener, Space};
 use crate::audio::voice::{Begin, Culled, Outputs, Source, Voice, VoiceKey, set_level};
 use crate::audio::{LoopRegion, MAX_CHANNELS, QUANTUM, VoiceParam};
@@ -216,6 +216,9 @@ pub struct Node {
     channels: usize,
     /// Removed, and ringing out: frames left before it goes.
     drain: Option<u64>,
+    /// The parameters something modulated in the last block, a bit each: once nothing does, the
+    /// processor hears its automation again.
+    modulated: u64,
 }
 
 impl std::fmt::Debug for Node {
@@ -242,6 +245,7 @@ impl Node {
             inputs: vec![0.0; extra * stride].into_boxed_slice(),
             channels,
             drain: None,
+            modulated: 0,
             processor,
         }
     }
@@ -301,6 +305,123 @@ impl Node {
     }
 }
 
+impl Node {
+    /// Moves its automation `frames` along, as [`Node::advance`], and adds what modulates the
+    /// parameters set in `modulated` (in `signals`, a [`QUANTUM`] a parameter) on top, clamped
+    /// to each parameter's range: every sample for an audio-rate parameter, whose values go in
+    /// `values`; at the block's start for a control-rate one. A value that isn't finite leaves
+    /// the automation as it is. A parameter nothing modulates any more hears its automation
+    /// again.
+    fn automate_and_modulate(&mut self, frames: usize, values: &mut [f32], signals: &[f32], modulated: u64) -> (u64, bool) {
+        if modulated == 0 && self.modulated == 0 {
+            if self.moving == 0 {
+                return (0, false);
+            }
+            return self.advance(frames, values);
+        }
+        // A control-rate parameter's block starts where its automation is before it moves on.
+        let mut bases = [0.0f64; MAX_PARAMS];
+        for index in bits(modulated) {
+            bases[index] = self.params[index].value();
+        }
+        let (mut varying, ramping) = if self.moving == 0 {
+            (0, false)
+        } else {
+            self.advance(frames, values)
+        };
+        for index in bits(modulated) {
+            let info = self.info[index];
+            let bit = 1u64 << index;
+            let signal = &signals[index * QUANTUM..index * QUANTUM + frames];
+            if info.rate == Rate::Control {
+                let base = bases[index];
+                self.processor.set(index, bounded(base, f64::from(signal[0]), &info));
+                continue;
+            }
+            let steady = (varying & bit == 0).then(|| self.params[index].value());
+            for (value, offset) in values[index * QUANTUM..index * QUANTUM + frames].iter_mut().zip(signal) {
+                let base = steady.unwrap_or_else(|| f64::from(*value));
+                #[allow(clippy::cast_possible_truncation)] // Engine values are f32.
+                let sum = bounded(base, f64::from(*offset), &info) as f32;
+                *value = sum;
+            }
+            varying |= bit;
+        }
+        for index in bits(self.modulated & !modulated) {
+            self.processor.set(index, self.params[index].value());
+        }
+        self.modulated = modulated;
+        (varying, ramping)
+    }
+}
+
+/// The set bits of `mask`, as indices.
+fn bits(mut mask: u64) -> impl Iterator<Item = usize> {
+    std::iter::from_fn(move || {
+        if mask == 0 {
+            return None;
+        }
+        let index = mask.trailing_zeros() as usize;
+        mask &= mask - 1;
+        Some(index)
+    })
+}
+
+/// `base` moved by `offset`, inside `param`'s range; `base` where the sum isn't finite.
+fn bounded(base: f64, offset: f64, param: &ParamInfo) -> f64 {
+    let sum = base + offset;
+    if sum.is_finite() {
+        return sum.clamp(param.min, param.max);
+    }
+    base
+}
+
+/// The buffers outputs are in, to read.
+#[derive(Clone, Copy)]
+struct Places<'a> {
+    buffers: &'a [f32],
+    scratch: &'a [f32],
+    stride: usize,
+}
+
+impl Places<'_> {
+    fn read(&self, place: Place) -> &[f32] {
+        read(self.buffers, self.scratch, place, self.stride)
+    }
+}
+
+fn read_all<'a>(buffers: &'a [f32], scratch: &'a [f32], stride: usize) -> Places<'a> {
+    Places {
+        buffers,
+        scratch,
+        stride,
+    }
+}
+
+/// Sums `frames` of what each of `modulations` hears, mixed to mono and at its depth, into its
+/// parameter's quantum of `signals`. Returns the parameters modulated, a bit each.
+fn modulate(modulations: &[Modulation], places: Places<'_>, signals: &mut [f32], frames: usize) -> u64 {
+    let mut modulated = 0u64;
+    for modulation in modulations {
+        let index = usize::from(modulation.param);
+        let signal = &mut signals[index * QUANTUM..index * QUANTUM + frames];
+        if modulated & (1 << index) == 0 {
+            signal.fill(0.0);
+            modulated |= 1 << index;
+        }
+        let source = places.read(modulation.from);
+        let channels = usize::from(modulation.from_channels);
+        #[allow(clippy::cast_precision_loss)] // A channel count.
+        let share = modulation.depth / channels as f32;
+        for channel in 0..channels {
+            for (out, sample) in signal.iter_mut().zip(&source[channel * QUANTUM..channel * QUANTUM + frames]) {
+                *out += sample * share;
+            }
+        }
+    }
+    modulated
+}
+
 /// The render side of a context. See the module docs.
 pub struct Engine {
     channels: usize,
@@ -327,6 +448,8 @@ pub struct Engine {
     mixed: Box<[f32]>,
     /// The values of the running node's moving audio-rate parameters, a quantum each.
     values: Box<[f32]>,
+    /// What modulates the running node's parameters, a quantum each.
+    signals: Box<[f32]>,
     /// A voice's fixed-point steps, frame by frame, while its rate ramps.
     steps: Box<[u64]>,
     /// A voice's levels, frame by frame, while they ramp: two blocks.
@@ -392,7 +515,8 @@ impl Engine {
             passing: vec![0.0; block].into_boxed_slice(),
             key: vec![0.0; block].into_boxed_slice(),
             mixed: vec![0.0; block].into_boxed_slice(),
-            values: vec![0.0; crate::audio::processor::MAX_PARAMS * QUANTUM].into_boxed_slice(),
+            values: vec![0.0; MAX_PARAMS * QUANTUM].into_boxed_slice(),
+            signals: vec![0.0; MAX_PARAMS * QUANTUM].into_boxed_slice(),
             steps: vec![0; QUANTUM].into_boxed_slice(),
             envelope: vec![0.0; 2 * QUANTUM].into_boxed_slice(),
             ramping: false,
@@ -443,7 +567,11 @@ impl Engine {
         while done < frames {
             self.receive();
             self.carry_out_due();
-            let longest = if self.ramping { CONTROL_QUANTUM } else { QUANTUM };
+            let longest = if self.ramping || self.plan.control {
+                CONTROL_QUANTUM
+            } else {
+                QUANTUM
+            };
             let mut block = longest.min(frames - done);
             if let Some(next) = self.pending.last().and_then(|next| next.at) {
                 // Anything due was just carried out, so the next command is ahead of now.
@@ -924,11 +1052,13 @@ impl Engine {
         {
             node.drain = Some(tail);
         }
-        let (varying, ramping) = if node.moving == 0 {
-            (0, false)
-        } else {
-            node.advance(frames, &mut self.values)
-        };
+        let modulated = modulate(
+            &self.plan.modulations[step.modulations.range()],
+            read_all(&self.buffers, &self.plan.scratch, stride),
+            &mut self.signals,
+            frames,
+        );
+        let (varying, ramping) = node.automate_and_modulate(frames, &mut self.values, &self.signals, modulated);
         let key = step.key.map(|pull| {
             let source = read(&self.buffers, &self.plan.scratch, pull.from, stride);
             for channel in 0..channels {

@@ -344,7 +344,9 @@ end
 
 suite.describe('effects', function()
   suite.it('has every processor kind by name', function()
-    expect(audio.processors()).toEqual { 'mixer', 'gain', 'pan', 'filter', 'delay', 'compressor', 'limiter', 'reverb', 'drive' }
+    expect(audio.processors()).toEqual {
+      'mixer', 'gain', 'pan', 'filter', 'delay', 'compressor', 'limiter', 'reverb', 'drive', 'crossfade', 'oscillator', 'envelope',
+    }
   end)
 
   suite.it('runs many voices through one shared room', function()
@@ -496,6 +498,28 @@ suite.describe('the graph', function()
     context:play(constant(1, 1), { bus = echo, at = 0 })
     local out = samples(context:render(400))
     expect({ out[1], out[129], out[257], out[385] }).toEqual { 1, 0.5, 0.25, 0.125 }
+  end)
+
+  suite.it('modulates a parameter from another node, sample by sample, with no script in the loop', function()
+    local context = audio.offline { channels = 1 }
+    local amplifier = context:node('gain', { gain = 1 })
+    local lfo = context:node('oscillator', { frequency = 12000, channels = 1 })
+    context:patch(function(graph)
+      graph:connect(amplifier, context:master())
+      graph:connect(lfo, amplifier, { to = 'gain', level = 0.5 })
+    end)
+    context:play(constant(1, 8), { bus = amplifier, at = 0 })
+    local out = samples(context:render(4))
+    for index, expected in { 1, 1.5, 1, 0.5 } do
+      expect(math.abs(out[index] - expected) < 1e-5).toBe(true)
+    end
+
+    local gate = context:node('envelope', { attack = 0, decay = 0, sustain = 0.5, release = 0 })
+    context:patch(function(graph) graph:connect(gate, amplifier, { to = 'gain', level = 2 }) end)
+    expect(gate:set('gate', 1, 6)).toBe(true)
+    out = samples(context:render(4))
+    -- Frame 6 opens the gate: the envelope jumps to 1, and to its sustain the frame after.
+    expect(math.abs(out[1] - 1) < 1e-5 and math.abs(out[3] - 3) < 1e-5 and math.abs(out[4] - 1.5) < 1e-5).toBe(true)
   end)
 
   suite.it('describes a node: its kind and its parameters', function()

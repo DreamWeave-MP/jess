@@ -14,10 +14,12 @@
 use std::fmt;
 use std::sync::Arc;
 
+use crate::audio::dsp::crossfade::Crossfade;
 use crate::audio::dsp::delay::Delay;
 use crate::audio::dsp::drive::Drive;
 use crate::audio::dsp::dynamics::{Compressor, Limiter};
 use crate::audio::dsp::filter::{Filter, Shape};
+use crate::audio::dsp::generators::{Envelope, Oscillator, Wave};
 use crate::audio::dsp::pan::Pan;
 use crate::audio::dsp::reverb::Reverb;
 use crate::audio::mixer::Mixer;
@@ -329,6 +331,22 @@ impl<'a> Io<'a> {
         self.inputs.get((index - 1) * stride..index * stride)
     }
 
+    /// The main buffer and audio input `index` together: what a processor that works in place
+    /// and has more than one input reads and writes.
+    pub fn main_and_input(&mut self, index: usize) -> (Block<'_>, Option<&[f32]>) {
+        let stride = self.channels * QUANTUM;
+        let input = match index {
+            0 => self.input,
+            _ => self.inputs.get((index - 1) * stride..index * stride),
+        };
+        let block = Block {
+            samples: self.main,
+            channels: self.channels,
+            frames: self.frames,
+        };
+        (block, input)
+    }
+
     /// Output `index` after the first (which is [`Io::main`]), silent, to write.
     pub fn output(&mut self, index: usize) -> Option<Block<'_>> {
         let stride = self.channels * QUANTUM;
@@ -555,7 +573,7 @@ impl Registry {
     #[must_use]
     pub fn builtin() -> Registry {
         let mut registry = Registry { kinds: Vec::new() };
-        let builtin: [(&str, Box<Factory>); 9] = [
+        let builtin: [(&str, Box<Factory>); 12] = [
             ("mixer", Box::new(|_, _| Ok(Box::new(Mixer::new(1.0, false))))),
             ("gain", Box::new(|_, _| Ok(Box::new(Gain::new())))),
             ("pan", Box::new(|_, _| Ok(Box::new(Pan::default())))),
@@ -599,6 +617,17 @@ impl Registry {
             ),
             ("reverb", Box::new(|setup, _| Ok(Box::new(Reverb::new(setup.rate))))),
             ("drive", Box::new(|_, _| Ok(Box::new(Drive::new())))),
+            ("crossfade", Box::new(|_, _| Ok(Box::new(Crossfade::new())))),
+            (
+                "oscillator",
+                Box::new(|setup, settings| {
+                    let wave = settings
+                        .text("oscillator", "wave")?
+                        .map_or(Ok(Wave::Sine), |name| name.parse())?;
+                    Ok(Box::new(Oscillator::new(wave, setup.rate)))
+                }),
+            ),
+            ("envelope", Box::new(|setup, _| Ok(Box::new(Envelope::new(setup.rate))))),
         ];
         for (kind, factory) in builtin {
             registry.kinds.push((kind.to_owned(), Arc::from(factory)));

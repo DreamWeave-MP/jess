@@ -10,8 +10,8 @@ use std::collections::BTreeSet;
 
 use crate::audio::delays::{Delays, Edge, INPUT, Rings};
 use crate::audio::mixer::{NodeKey, Tap};
-use crate::audio::plan::{Clear, Feedback, Place, Plan, Pull, Push, Span, Step, Target};
-use crate::audio::processor::{ParamInfo, PortKind, Ports, Processor};
+use crate::audio::plan::{Clear, Feedback, Modulation, Place, Plan, Pull, Push, Span, Step, Target};
+use crate::audio::processor::{ParamInfo, PortKind, Ports, Processor, Rate};
 use crate::audio::{AudioError, QUANTUM};
 
 /// The longest a feedback connection delays, in frames: about 21 seconds at 48 kHz.
@@ -735,6 +735,8 @@ impl Definition {
         let mut rings: Vec<(Edge, u64, usize)> = Vec::new();
         let mut pushes: Vec<(Push, Option<Edge>)> = Vec::new();
         let mut feedback: Vec<(Feedback, Edge)> = Vec::new();
+        let mut modulations: Vec<Modulation> = Vec::new();
+        let mut control = false;
         let mut planned: Vec<(Step, Option<Keyed>)> = Vec::with_capacity(steps.len());
         for &slot in &steps {
             let node = &self.nodes[slot as usize];
@@ -750,6 +752,7 @@ impl Definition {
                 pre: Span::default(),
                 post: Span::default(),
                 feedback: Span::default(),
+                modulations: Span::default(),
                 key: None,
                 drain,
                 metered: node.shape.mixer,
@@ -845,6 +848,23 @@ impl Definition {
                     end: to_u32(feedback.len()),
                 };
             }
+            let start = to_u32(modulations.len());
+            for link in wired.iter().filter(|link| link.to == slot) {
+                let Input::Param(param) = link.input else {
+                    continue;
+                };
+                control |= node.shape.params[usize::from(param)].rate == Rate::Control;
+                modulations.push(Modulation {
+                    from: place(link.from, link.output),
+                    from_channels: to_u8(self.nodes[link.from as usize].channels),
+                    param,
+                    depth: link.level,
+                });
+            }
+            step.modulations = Span {
+                start,
+                end: to_u32(modulations.len()),
+            };
             planned.push((step, key));
         }
 
@@ -919,6 +939,8 @@ impl Definition {
             steps,
             pushes,
             feedback,
+            modulations: modulations.into_boxed_slice(),
+            control,
             clear,
             entries,
             delays,
