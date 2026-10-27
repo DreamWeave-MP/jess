@@ -526,8 +526,8 @@ fn voices_on_different_buses_share_one_send_bus_mixed_once() {
     // The aux bus applies its gain once to what both sent: 0.5 * (0.5 + 1).
     assert_eq!(context.render(1), [2.75]);
     assert!(
-        !context.control().set_send(first, music, 0.0, None).unwrap(),
-        "no send to its own bus"
+        context.control().set_send(first, music, 0.0, None).unwrap(),
+        "where a voice plays is an output with a level like its sends"
     );
 }
 
@@ -1624,3 +1624,5 @@ fn revisions_take_effect_in_the_order_they_are_made() {
     assert_eq!(out[12..], [0.5; 4]);
     assert!(context.control().add_bus(&BusSpec::default()).is_ok(), "nothing waits now");
 }
+
+mod graph;

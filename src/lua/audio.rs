@@ -19,9 +19,9 @@ use std::time::Duration;
 use crate::audio::Stream;
 use crate::audio::processor::{Setting, Settings, Setup};
 use crate::audio::{
-    AudioConfig, AudioError, BusSpec, Control, Culled, Curve, Decode, DeviceRequest, Distance, Emitter, Feed, FeedSpec,
-    FeedWatch, Glide, Handedness, Listener, LiveContext, LoopRegion, NodeKey, OfflineContext, Pcm, PlaySpec, SampleFormat,
-    Tap, VoiceKey, VoiceParam, VoiceSend,
+    AudioConfig, AudioError, BusSpec, Connection, Control, Culled, Curve, Decode, DeviceRequest, Distance, Edit, Emitter,
+    Feed, FeedSpec, FeedWatch, Glide, Handedness, Listener, LiveContext, LoopRegion, NodeKey, OfflineContext, Pcm, PlaySpec,
+    SampleFormat, Tap, VoiceKey, VoiceParam, VoiceSend,
 };
 use crate::lua::plan::Functions;
 use crate::lua::{Bytes, Jess, Text, error, guard, kind, option_value, push_table, read_options};
@@ -410,6 +410,210 @@ pub struct LuaAudioVoice {
 // SAFETY: shared Rust state; the destructor never touches the Lua API.
 unsafe impl Userdata for LuaAudioVoice {
     const NAME: &'static str = "jess.audio.Voice";
+}
+
+/// The changes a patch body makes, until the patch is sent; `None` after.
+type Edits = Rc<RefCell<Option<Vec<Edit>>>>;
+
+/// The graph as a patch body sees it: every change it makes is collected, and the context makes
+/// them all at once, or none, once the body returns.
+#[derive(Clone)]
+pub struct LuaAudioPatch {
+    context: Shared,
+    edits: Edits,
+}
+
+// SAFETY: shared Rust state; the destructor never touches the Lua API.
+unsafe impl Userdata for LuaAudioPatch {
+    const NAME: &'static str = "jess.audio.Patch";
+}
+
+const CONNECT_KEYS: &[&str] = &["feedback", "from", "level", "tap", "to"];
+const DISCONNECT_KEYS: &[&str] = &["from", "to"];
+
+impl LuaAudioPatch {
+    /// Adds a change, while the patch is open.
+    fn push(&self, edit: Edit) -> l3i::Result<()> {
+        let mut edits = self.edits.borrow_mut();
+        let Some(edits) = edits.as_mut() else {
+            return Err(error("AudioPatch: the patch was already made; changes go in its body"));
+        };
+        edits.push(edit);
+        Ok(())
+    }
+
+    /// The node `value` is, in this patch's context.
+    fn node(&self, value: ValueView<'_>, what: &str) -> l3i::Result<NodeKey> {
+        node_of(value, &self.context, what)
+    }
+
+    /// The voice `value` is, if it is one of this patch's context.
+    fn voice(&self, value: ValueView<'_>) -> l3i::Result<Option<VoiceKey>> {
+        let Some(voice) = l3i::userdata::receiver::<LuaAudioVoice>(value) else {
+            return Ok(None);
+        };
+        if !Rc::ptr_eq(&voice.context, &self.context) {
+            return Err(AudioError::StaleVoice.into());
+        }
+        Ok(Some(voice.key))
+    }
+
+    /// The name of `node`'s first output, and of its first audio input.
+    fn mains(&self, node: NodeKey) -> (Option<&'static str>, Option<&'static str>) {
+        let mut context = self.context.borrow_mut();
+        let Some(ports) = context.control().ports(node) else {
+            return (None, None);
+        };
+        (ports.outputs.first().copied(), ports.audio().next().map(|port| port.name))
+    }
+}
+
+/// What a patch's `connect` and `disconnect` were told: the ports, and a connection's level, tap,
+/// and feedback.
+struct Wiring {
+    from: Option<String>,
+    to: Option<String>,
+    connection: Connection,
+}
+
+#[allow(clippy::cast_possible_truncation)] // Levels are f32 in the engine.
+fn wiring(call: &Call<'_>, options: Option<ValueView<'_>>, function: &str, keys: &[&str]) -> l3i::Result<Wiring> {
+    let mut wiring = Wiring {
+        from: None,
+        to: None,
+        connection: Connection::default(),
+    };
+    call.with_frame(|frame| {
+        read_optional(frame, options, function, keys, |_, name, value| {
+            match name {
+                b"from" => wiring.from = Some(option_value::<&str>(value, "from", function)?.to_owned()),
+                b"to" => wiring.to = Some(option_value::<&str>(value, "to", function)?.to_owned()),
+                b"level" => {
+                    let level: f64 = option_value(value, "level", function)?;
+                    wiring.connection.level = level as f32;
+                }
+                b"tap" => wiring.connection.tap = tap_of(option_value(value, "tap", function)?, function)?,
+                b"feedback" => {
+                    wiring.connection.feedback = Some(whole(option_value(value, "feedback", function)?, "feedback")?);
+                }
+                _ => return Ok(false),
+            }
+            Ok(true)
+        })
+    })?;
+    Ok(wiring)
+}
+
+#[allow(clippy::too_many_lines)] // one method per change
+fn describe_patch(d: &mut ExtensionDescriptor) {
+    let mut patch = d.userdata::<LuaAudioPatch>(LuaAudioPatch::NAME);
+    patch
+        .tag(TagPolicy::Never)
+        .doc("The graph as an AudioContext:patch body sees it: the changes made here take effect together, or not at all.");
+    patch
+        .method(
+            "connect",
+            |this: &LuaAudioPatch,
+             call: &Call<'_>,
+             from: ValueView<'_>,
+             to: ValueView<'_>,
+             options: Option<ValueView<'_>>|
+             -> l3i::Result<()> {
+                const FUNCTION: &str = "AudioPatch:connect";
+                let target = this.node(to, "AudioPatch:connect's target")?;
+                let wiring = wiring(call, options, FUNCTION, CONNECT_KEYS)?;
+                if let Some(voice) = this.voice(from)? {
+                    if wiring.from.is_some()
+                        || wiring.connection.feedback.is_some()
+                        || wiring.connection.tap != Tap::PostFader
+                    {
+                        return Err(error(format!("{FUNCTION}: a voice connects at a level, to an input")));
+                    }
+                    return this.push(Edit::Send {
+                        voice,
+                        to: target,
+                        input: wiring.to,
+                        level: wiring.connection.level,
+                    });
+                }
+                let source = this.node(from, "AudioPatch:connect's source")?;
+                let (output, _) = this.mains(source);
+                let (_, input) = this.mains(target);
+                let output = wiring.from.or_else(|| output.map(str::to_owned)).unwrap_or_default();
+                let input = wiring.to.or_else(|| input.map(str::to_owned)).unwrap_or_default();
+                this.push(Edit::Connect {
+                    from: source,
+                    output,
+                    to: target,
+                    input,
+                    connection: wiring.connection,
+                })
+            },
+        )
+        .untyped();
+    patch
+        .method(
+            "disconnect",
+            |this: &LuaAudioPatch,
+             call: &Call<'_>,
+             from: ValueView<'_>,
+             to: ValueView<'_>,
+             options: Option<ValueView<'_>>|
+             -> l3i::Result<()> {
+                const FUNCTION: &str = "AudioPatch:disconnect";
+                let target = this.node(to, "AudioPatch:disconnect's target")?;
+                let wiring = wiring(call, options, FUNCTION, DISCONNECT_KEYS)?;
+                if let Some(voice) = this.voice(from)? {
+                    return this.push(Edit::Unsend { voice, to: target });
+                }
+                let source = this.node(from, "AudioPatch:disconnect's source")?;
+                let (output, _) = this.mains(source);
+                let (_, input) = this.mains(target);
+                let output = wiring.from.or_else(|| output.map(str::to_owned)).unwrap_or_default();
+                let input = wiring.to.or_else(|| input.map(str::to_owned)).unwrap_or_default();
+                this.push(Edit::Disconnect {
+                    from: source,
+                    output,
+                    to: target,
+                    input,
+                })
+            },
+        )
+        .untyped();
+    patch
+        .method(
+            "route",
+            |this: &LuaAudioPatch, node: ValueView<'_>, parent: ValueView<'_>| -> l3i::Result<()> {
+                let node = this.node(node, "AudioPatch:route's node")?;
+                let parent = this.node(parent, "AudioPatch:route's parent")?;
+                this.push(Edit::Route { node, parent })
+            },
+        )
+        .untyped();
+    patch
+        .method(
+            "insert",
+            |this: &LuaAudioPatch, host: ValueView<'_>, node: ValueView<'_>, index: Option<f64>| -> l3i::Result<()> {
+                let host = this.node(host, "AudioPatch:insert's host")?;
+                let node = this.node(node, "AudioPatch:insert's node")?;
+                let index = index
+                    .map(|index| {
+                        if index < 1.0 {
+                            return Err(error("AudioPatch:insert's index is a position in the chain from 1"));
+                        }
+                        count(index - 1.0, "index")
+                    })
+                    .transpose()?;
+                this.push(Edit::Insert { host, node, index })
+            },
+        )
+        .untyped();
+    patch
+        .method("remove", |this: &LuaAudioPatch, node: ValueView<'_>| -> l3i::Result<()> {
+            let node = this.node(node, "AudioPatch:remove's node")?;
+            this.push(Edit::Remove(node))
+        })
+        .untyped();
 }
 
 /// One node of a context: a bus, or a processor.
@@ -913,6 +1117,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
     describe_context(d);
     describe_voice(d);
     describe_node(d);
+    describe_patch(d);
     describe_stream(d);
     describe_feed(d);
 }
@@ -1063,6 +1268,24 @@ fn describe_context(d: &mut ExtensionDescriptor) {
         .untyped();
     context
         .method(
+            "patch",
+            |this: &LuaAudioContext, call: &Call<'_>, body: Function, at: Option<f64>| -> l3i::Result<()> {
+                let at = frame_option(at)?;
+                let patch = LuaAudioPatch {
+                    context: Rc::clone(&this.0),
+                    edits: Rc::new(RefCell::new(Some(Vec::new()))),
+                };
+                let edits = Rc::clone(&patch.edits);
+                // The body runs with no borrow held: it reads nodes' ports through this context.
+                let ran = body.invoke::<(), _>(call, (Owned(patch),));
+                let edits = edits.borrow_mut().take().unwrap_or_default();
+                ran?;
+                Ok(this.0.borrow_mut().control().patch(&edits, at)?)
+            },
+        )
+        .untyped();
+    context
+        .method(
             "node",
             |this: &LuaAudioContext,
              call: &Call<'_>,
@@ -1109,6 +1332,7 @@ fn describe_context(d: &mut ExtensionDescriptor) {
         .untyped();
 }
 
+#[allow(clippy::too_many_lines)] // one method per operation
 fn describe_voice(d: &mut ExtensionDescriptor) {
     let mut voice = d.userdata::<LuaAudioVoice>(LuaAudioVoice::NAME);
     voice
@@ -1193,6 +1417,26 @@ fn describe_voice(d: &mut ExtensionDescriptor) {
                 let bus = node_of(bus, &this.context, "AudioVoice:send's node")?;
                 let at = frame_option(at)?;
                 Ok(this.context.borrow_mut().control().set_send(this.key, bus, level, at)?)
+            },
+        )
+        .untyped();
+    voice
+        .method(
+            "unsend",
+            |this: &LuaAudioVoice, node: ValueView<'_>, at: Option<f64>| -> l3i::Result<bool> {
+                let node = node_of(node, &this.context, "AudioVoice:unsend's node")?;
+                let at = frame_option(at)?;
+                Ok(this.context.borrow_mut().control().unsend_voice(this.key, node, at)?)
+            },
+        )
+        .untyped();
+    voice
+        .method(
+            "route",
+            |this: &LuaAudioVoice, node: ValueView<'_>, at: Option<f64>| -> l3i::Result<bool> {
+                let node = node_of(node, &this.context, "AudioVoice:route's node")?;
+                let at = frame_option(at)?;
+                Ok(this.context.borrow_mut().control().route_voice(this.key, node, at)?)
             },
         )
         .untyped();

@@ -206,10 +206,34 @@ impl Definition {
         self.nodes[slot as usize].channels
     }
 
-    /// True for a node voices can play into: live, with an audio input, not in an insert chain.
-    pub fn takes_voices(&self, key: NodeKey) -> bool {
-        self.node(key)
-            .is_some_and(|node| node.host.is_none() && node.shape.ports.audio().next().is_some())
+    /// Audio input `name` of `key` (its first without one), counted among its audio inputs, if
+    /// voices can play there: the node is live and not in an insert chain.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::StaleNode`] for a node voices can't play into, [`AudioError::Inserted`],
+    /// and [`AudioError::UnknownPort`] for an input that isn't an audio input.
+    pub fn voice_input(&self, key: NodeKey, name: Option<&str>) -> Result<u8, AudioError> {
+        let node = self.node(key).ok_or(AudioError::StaleNode)?;
+        if node.host.is_some() {
+            return Err(AudioError::Inserted);
+        }
+        let mut audio = node.shape.ports.audio();
+        let found = match name {
+            None => audio.next().map(|_| 0),
+            Some(name) => audio.position(|port| port.name == name),
+        };
+        let Some(index) = found else {
+            if name.is_none() {
+                return Err(AudioError::StaleNode);
+            }
+            return Err(AudioError::UnknownPort {
+                kind: node.shape.kind,
+                name: name.unwrap_or_default().to_owned(),
+                known: node.shape.ports.audio().map(|port| port.name).collect::<Vec<_>>().join(", "),
+            });
+        };
+        Ok(to_u8(index))
     }
 
     /// Takes a free slot for a node of `shape` with `channels`.

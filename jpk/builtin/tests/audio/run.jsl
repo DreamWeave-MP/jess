@@ -413,6 +413,85 @@ suite.describe('effects', function()
   end)
 end)
 
+suite.describe('the graph', function()
+  suite.it('sends voices through processors of their own into one bus', function()
+    local tone = constant(1, 8)
+    local context = audio.offline { channels = 1 }
+    local effects = context:bus { gain = 0.5 }
+    for index, level in { 1, 2, 4 } do
+      local trim = context:node('gain', { gain = level })
+      context:patch(function(graph) graph:connect(trim, effects) end)
+      context:play(tone, { bus = trim, at = index - 1 })
+    end
+
+    expect(samples(context:render(3))).toEqual { 0.5, 1.5, 3.5 }
+    expect(context:stats().revisions).toBe(7)
+  end)
+
+  suite.it('makes a patch whole on its frame, or not at all', function()
+    local tone = constant(1, 16)
+    local context = audio.offline { channels = 1 }
+    local half = context:node('gain', { gain = 0.5 })
+    local group = context:bus()
+    context:patch(function(graph) graph:connect(half, context:master()) end)
+    context:play(tone, { bus = group, at = 0 })
+    expect(function()
+      context:patch(function(graph)
+        graph:disconnect(group, context:master())
+        graph:connect(group, half, { to = 'volume' })
+      end)
+    end).toThrow 'no port or parameter "volume"'
+
+    expect(function()
+      context:patch(function(graph)
+        graph:disconnect(group, context:master())
+        error('changed my mind', 0)
+      end)
+    end).toThrow 'changed my mind'
+
+    context:patch(function(graph)
+      graph:disconnect(group, context:master())
+      graph:connect(group, half)
+    end, 2)
+    expect(samples(context:render(4))).toEqual { 1, 1, 0.5, 0.5 }
+
+    expect(function()
+      context:patch(function(graph) graph:connect(half, group) end)
+    end).toThrow 'feed a node back into itself'
+  end)
+
+  suite.it('moves a voice between nodes and inside a patch, without revising the graph for it', function()
+    local tone = constant(1, 16)
+    local context = audio.offline { channels = 1 }
+    local quiet = context:bus { gain = 0.25 }
+    local loud = context:bus { gain = 2 }
+    local voice = context:play(tone, { at = 0 })
+    expect(voice:route(quiet, 2)).toBe(true)
+    expect(voice:send(loud, 0.5, 4)).toBe(true)
+    expect(voice:unsend(quiet, 6)).toBe(true)
+    expect(samples(context:render(8))).toEqual { 1, 1, 0.25, 0.25, 1.25, 1.25, 1, 1 }
+    expect(context:stats().revisions).toBe(2)
+    context:patch(function(graph)
+      graph:disconnect(voice, loud)
+      graph:connect(voice, quiet, { level = 4 })
+    end, 10)
+    expect(samples(context:render(4))).toEqual { 1, 1, 1, 1 }
+  end)
+
+  suite.it('describes a node: its kind and its parameters', function()
+    local context = audio.offline()
+    local cutoff = context:node('filter', { frequency = 500 })
+    expect(cutoff:kind()).toBe('filter')
+    local frequency = cutoff:params()[1]
+    expect(frequency.name).toBe('frequency')
+    expect(frequency.unit).toBe('Hz')
+    expect(frequency.rate).toBe('control')
+    expect(context:master():params()[1].rate).toBe('audio')
+    expect(context:master():meter().peak).toBe(0)
+    expect(function() cutoff:meter() end).toThrow 'a bus is metered'
+  end)
+end)
+
 suite.describe('a voice budget', function()
   suite.it('mixes the voices that matter most and keeps the rest in time', function()
     local context = audio.offline { channels = 1, physical = 2 }

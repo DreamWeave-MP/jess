@@ -356,6 +356,37 @@ export type AudioNode = {
   insert: (self: AudioNode, kind: string, settings: { [string]: number | string }?) -> AudioNode,
 }
 
+--- How a patch connects two nodes: from output `from` (the first) to input `to` (the first audio
+--- input, or any input port, or a parameter to modulate), at `level` (1), tapped after the source's
+--- processing (`post`) or before it (`pre`), and, for a connection that closes a loop, delayed by
+--- `feedback` frames (at least 128). A voice connects at a level, to an audio input.
+export type AudioConnectOptions = {
+  from: string?,
+  to: string?,
+  level: number?,
+  tap: ('post' | 'pre')?,
+  feedback: number?,
+}
+
+--- The graph as an `AudioContext:patch` body sees it. Every change is collected; once the body
+--- returns, they take effect together on the patch's frame, or, if any is wrong or the body
+--- raises, none of them does.
+export type AudioPatch = {
+  connect: (self: AudioPatch, from: AudioNode | AudioVoice, to: AudioNode, options: AudioConnectOptions?) -> (),
+  disconnect: (
+    self: AudioPatch,
+    from: AudioNode | AudioVoice,
+    to: AudioNode,
+    options: { from: string?, to: string? }?
+  ) -> (),
+  --- Routes `node` into `parent`, replacing its route.
+  route: (self: AudioPatch, node: AudioNode, parent: AudioNode) -> (),
+  --- Puts an unconnected processor in `host`'s insert chain, last or at `index` (from 1).
+  insert: (self: AudioPatch, host: AudioNode, node: AudioNode, index: number?) -> (),
+  --- Removes a node once nothing feeds it.
+  remove: (self: AudioPatch, node: AudioNode) -> (),
+}
+
 --- What a context's engine has done, as of its last render: `frames` rendered (the clock), voices
 --- `active` in it and `allocated` (playing or waiting to start), commands carried out `late`
 --- (stamped for a frame already rendered), output samples that weren't finite and were written as
@@ -399,8 +430,14 @@ export type AudioVoice = {
   release: (self: AudioVoice, at: number?) -> boolean,
   --- Moves a voice in space from `at`, changing the fields given; false for a voice not in space.
   place: (self: AudioVoice, place: AudioPlace, at: number?) -> boolean,
-  --- Changes the level of a send it has.
+  --- Sends it to `node` at `level` as well as wherever it plays, or changes the level it plays
+  --- there at (where it plays first included).
   send: (self: AudioVoice, node: AudioNode, level: number, at: number?) -> boolean,
+  --- Stops it playing into `node`; false if it didn't.
+  unsend: (self: AudioVoice, node: AudioNode, at: number?) -> boolean,
+  --- Plays it into `node` instead of where it plays first, keeping its sends. Moving a voice
+  --- changes nothing in the graph.
+  route: (self: AudioVoice, node: AudioNode, at: number?) -> boolean,
   state: (self: AudioVoice) -> AudioVoiceState,
 }
 
@@ -425,6 +462,10 @@ export type AudioContext = {
   --- its parameters by name, `channels` (the context's), and whatever the kind is made with.
   --- It is connected to nothing.
   node: (self: AudioContext, kind: string, settings: { [string]: number | string }?) -> AudioNode,
+  --- Runs `body` with the graph, and makes every change it asks for together from frame `at`, or
+  --- none of them. Changes to the graph take effect in the order they're made: one stamped
+  --- earlier than one still waiting is an error.
+  patch: (self: AudioContext, body: (graph: AudioPatch) -> (), at: number?) -> (),
   --- Renders `frames` frames and returns them as interleaved 32-bit floats.
   render: (self: AudioContext, frames: number) -> buffer,
   stats: (self: AudioContext) -> AudioStats,

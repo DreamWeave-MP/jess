@@ -47,6 +47,8 @@ pub enum Command {
     },
     /// Loops a voice over a new region, or lets it play on past its loop.
     SetLoop { voice: VoiceKey, looping: Option<LoopRegion> },
+    /// Moves a voice to new outputs; the old ones go back to be dropped.
+    Route { voice: VoiceKey, outputs: Outputs },
     /// Changes the level of a voice's output into a node.
     SendVoice { voice: VoiceKey, target: u32, level: f32 },
     /// A revision of the graph: its nodes go into the table when the engine takes the command,
@@ -103,8 +105,11 @@ pub enum Feedback {
     /// A node ended: removed, and rung out if it had a tail. Its slot is free once the control
     /// side has read this, and its processor drops there.
     NodeEnded { node: NodeKey, state: Box<Node> },
-    /// A revision the engine carried out, holding the plan it replaced, to drop.
+    /// A revision the engine carried out, holding the plan it replaced and the outputs of the
+    /// voices it moved, to drop.
     Revised(Box<Revision>),
+    /// A voice's outputs, replaced, to drop.
+    Outputs(Outputs),
     /// A group's list, emptied, to drop.
     Spent(Vec<Stamped>),
 }
@@ -583,6 +588,10 @@ impl Engine {
             } => self.set_voice(voice, param, value, glide),
             Command::SetLoop { voice, looping } => self.set_loop(voice, looping),
             Command::SendVoice { voice, target, level } => self.send_voice(voice, target, level),
+            Command::Route { voice, mut outputs } => {
+                self.route(voice, &mut outputs);
+                self.send(Feedback::Outputs(outputs));
+            }
             Command::Revise(revision) => self.revise(revision),
             Command::SetParam {
                 node,
@@ -626,7 +635,25 @@ impl Engine {
                 self.retire(key.slot as usize);
             }
         }
+        for (voice, outputs) in &mut revision.voices {
+            self.route(*voice, outputs);
+        }
         self.send(Feedback::Revised(revision));
+    }
+
+    /// Swaps a voice's outputs, or a waiting voice's, for `outputs`, which then holds the old.
+    fn route(&mut self, voice: VoiceKey, outputs: &mut Outputs) {
+        if let Some(playing) = self.voices[voice.slot as usize].as_mut()
+            && playing.generation == voice.generation
+        {
+            std::mem::swap(&mut playing.outputs, outputs);
+            return;
+        }
+        if let Some(index) = self.pending_start(voice)
+            && let Command::Start { outputs: waiting, .. } = &mut self.pending[index].command
+        {
+            std::mem::swap(waiting, outputs);
+        }
     }
 
     /// Lets go of the node in `slot`.

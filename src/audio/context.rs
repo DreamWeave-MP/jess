@@ -12,11 +12,11 @@ use crate::audio::mixer::{BusSpec, Mixer, NodeKey, Tap};
 use crate::audio::param::Glide;
 use crate::audio::pcm::check_layout;
 use crate::audio::plan::Revision;
-use crate::audio::processor::{ParamInfo, Processor, check_param, check_shape, param_index};
+use crate::audio::processor::{ParamInfo, Ports, Processor, check_param, check_shape, param_index};
 use crate::audio::spatial::{Emitter, Handedness, Listener, Space};
 use crate::audio::stream::Stream;
 use crate::audio::voice::{Output, Outputs, STREAM_WINDOW, Source, VoiceKey, check_level};
-use crate::audio::{AudioError, LoopRegion, MAX_NODES, MAX_VOICES, Pcm, PlaySpec, QUANTUM, VoiceParam};
+use crate::audio::{AudioError, LoopRegion, MAX_NODES, MAX_VOICE_OUTPUTS, MAX_VOICES, Pcm, PlaySpec, QUANTUM, VoiceParam};
 
 /// How to make a context.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -196,6 +196,25 @@ pub enum Edit {
     },
     /// Removes a node once nothing feeds it.
     Remove(NodeKey),
+    /// Plays a voice into `to`'s audio input `input` (its first without one) at `level` as well
+    /// as wherever it plays, or changes the level it plays there at.
+    Send {
+        /// The voice.
+        voice: VoiceKey,
+        /// The node it plays into.
+        to: NodeKey,
+        /// Which of the node's audio inputs.
+        input: Option<String>,
+        /// Its level there.
+        level: f32,
+    },
+    /// Stops a voice playing into `to`; nothing happens if it didn't.
+    Unsend {
+        /// The voice.
+        voice: VoiceKey,
+        /// The node it stops playing into.
+        to: NodeKey,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -203,20 +222,13 @@ struct Slot {
     generation: u32,
     busy: bool,
     start: Option<u64>,
-    /// The slot of the node it plays into.
-    first: u32,
-    /// The slots of the nodes it sends to.
-    sends: Vec<u32>,
+    /// The node inputs it plays into, as last sent: the first where it was played, the rest its
+    /// sends.
+    outputs: Vec<Output>,
     /// Its source's length, for checking a new loop region.
     frames: u64,
     /// Where it is in space, as last sent, if it's there.
     emitter: Option<Emitter>,
-}
-
-impl Slot {
-    fn feeds(&self, node: u32) -> bool {
-        self.busy && (self.first == node || self.sends.contains(&node))
-    }
 }
 
 /// The application side of a context: it starts, stops, and changes voices, and revises the
@@ -299,8 +311,7 @@ pub fn context(config: &AudioConfig) -> Result<(Control, Engine), AudioError> {
             generation: 0,
             busy: false,
             start: None,
-            first: 0,
-            sends: Vec::new(),
+            outputs: Vec::new(),
             frames: 0,
             emitter: None,
         };
@@ -380,27 +391,18 @@ impl Control {
         started
     }
 
-    /// The output into `node` at `level`, if voices can play there.
+    /// The output into `node`'s first audio input at `level`, if voices can play there.
     fn output(&self, node: NodeKey, level: f32) -> Result<Output, AudioError> {
-        if !self.graph.takes_voices(node) {
-            return Err(AudioError::StaleNode);
-        }
-        Ok(Output {
-            slot: node.slot,
-            generation: node.generation,
-            input: 0,
-            level,
-        })
+        voice_output(&self.graph, node, None, level)
     }
 
     fn start(&mut self, source: Source, spec: &PlaySpec, frames: u64) -> Result<VoiceKey, AudioError> {
         self.collect();
-        let first = self.output(spec.bus, 1.0)?;
-        let rest = spec
-            .sends
-            .iter()
-            .map(|send| self.output(send.bus, send.level))
-            .collect::<Result<Box<[Output]>, AudioError>>()?;
+        let mut outputs = Vec::with_capacity(1 + spec.sends.len());
+        outputs.push(self.output(spec.bus, 1.0)?);
+        for send in &spec.sends {
+            outputs.push(self.output(send.bus, send.level)?);
+        }
         let Some(slot) = self.free.pop() else {
             return Err(AudioError::VoicesExhausted(self.slots.len()));
         };
@@ -412,7 +414,7 @@ impl Control {
             voice,
             source,
             spec: spec.begin(),
-            outputs: Outputs { first, rest },
+            outputs: Outputs::new(&outputs),
         };
         if let Err(error) = self.send(spec.at, command) {
             self.free.push(slot);
@@ -421,38 +423,122 @@ impl Control {
         let entry = &mut self.slots[slot as usize];
         entry.busy = true;
         entry.start = spec.at;
-        entry.first = spec.bus.slot;
-        entry.sends.clear();
-        entry.sends.extend(spec.sends.iter().map(|send| send.bus.slot));
+        entry.outputs.clear();
+        entry.outputs.extend_from_slice(&outputs);
         entry.frames = frames;
         entry.emitter = spec.spatial;
         Ok(voice)
     }
 
-    /// Changes the level of a voice's send to `node` at frame `at`, or at the next frame rendered.
-    /// True if the voice hadn't ended and sends there.
+    /// Sends a voice to `node` at `level` from frame `at`, or from the next frame rendered, or
+    /// changes the level of the send there. True if the voice hadn't ended.
     ///
     /// # Errors
     ///
-    /// [`AudioError::Parameter`] for a level that isn't finite, [`AudioError::QueueFull`], or
+    /// [`AudioError::Parameter`] for a level that isn't finite, [`AudioError::StaleNode`] for a
+    /// node voices can't play into, [`AudioError::SendsExhausted`], [`AudioError::QueueFull`], or
     /// [`AudioError::Disconnected`].
     pub fn set_send(&mut self, voice: VoiceKey, node: NodeKey, level: f64, at: Option<u64>) -> Result<bool, AudioError> {
         let level = check_level(level)?;
         self.collect();
-        if !self.is_live(voice) || !self.slots[voice.slot as usize].sends.contains(&node.slot) {
+        if !self.is_live(voice) {
             return Ok(false);
         }
         #[allow(clippy::cast_possible_truncation)] // Levels are f32 in the engine.
         let level = level as f32;
+        let output = self.output(node, level)?;
+        let outputs = &self.slots[voice.slot as usize].outputs;
+        if let Some(index) = outputs.iter().position(|known| same_input(known, &output)) {
+            self.send(
+                at,
+                Command::SendVoice {
+                    voice,
+                    target: node.slot,
+                    level,
+                },
+            )?;
+            self.slots[voice.slot as usize].outputs[index].level = level;
+            return Ok(true);
+        }
+        let mut outputs = outputs.clone();
+        outputs.push(output);
+        self.reroute(voice, outputs, at)
+    }
+
+    /// Stops a voice sending to `node` from frame `at`, or from the next frame rendered. True if it
+    /// sent there.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::QueueFull`] or [`AudioError::Disconnected`].
+    pub fn unsend_voice(&mut self, voice: VoiceKey, node: NodeKey, at: Option<u64>) -> Result<bool, AudioError> {
+        self.collect();
+        if !self.is_live(voice) {
+            return Ok(false);
+        }
+        let mut outputs = self.slots[voice.slot as usize].outputs.clone();
+        let before = outputs.len();
+        outputs.retain(|output| (output.slot, output.generation) != (node.slot, node.generation));
+        if outputs.len() == before {
+            return Ok(false);
+        }
+        self.reroute(voice, outputs, at)
+    }
+
+    /// Plays a voice into `node` from frame `at`, or from the next frame rendered, instead of
+    /// where it plays now, keeping its sends. True if the voice hadn't ended.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::StaleNode`] for a node voices can't play into, [`AudioError::QueueFull`], or
+    /// [`AudioError::Disconnected`].
+    pub fn route_voice(&mut self, voice: VoiceKey, node: NodeKey, at: Option<u64>) -> Result<bool, AudioError> {
+        self.collect();
+        if !self.is_live(voice) {
+            return Ok(false);
+        }
+        let output = self.output(node, 1.0)?;
+        // The new place replaces the first; a send there already is taken in by it.
+        let sends = self.slots[voice.slot as usize].outputs.iter().skip(1);
+        let outputs = std::iter::once(output)
+            .chain(sends.filter(|known| !same_input(known, &output)).copied())
+            .collect();
+        self.reroute(voice, outputs, at)
+    }
+
+    /// Sends a voice its new outputs from frame `at`.
+    fn reroute(&mut self, voice: VoiceKey, outputs: Vec<Output>, at: Option<u64>) -> Result<bool, AudioError> {
+        if outputs.len() > MAX_VOICE_OUTPUTS {
+            return Err(AudioError::SendsExhausted(MAX_VOICE_OUTPUTS - 1));
+        }
         self.send(
             at,
-            Command::SendVoice {
+            Command::Route {
                 voice,
-                target: node.slot,
-                level,
+                outputs: Outputs::new(&outputs),
             },
         )?;
+        self.slots[voice.slot as usize].outputs = outputs;
         Ok(true)
+    }
+
+    /// Where `voice` plays as last sent: each node, and the level it plays there.
+    #[must_use]
+    pub fn voice_outputs(&self, voice: VoiceKey) -> Vec<(NodeKey, f32)> {
+        if !self.is_live(voice) {
+            return Vec::new();
+        }
+        self.slots[voice.slot as usize]
+            .outputs
+            .iter()
+            .map(|output| {
+                let node = NodeKey {
+                    slot: output.slot,
+                    generation: output.generation,
+                };
+                (node, output.level)
+            })
+            .collect()
     }
 
     /// Stops a voice at frame `at`, or at the next frame rendered, fading it out over `fade`
@@ -568,12 +654,25 @@ impl Control {
         added: Vec<(NodeKey, Box<Node>)>,
         retire: Vec<NodeKey>,
     ) -> Result<(), AudioError> {
+        self.commit_moving(at, next, added, retire, Box::default())
+    }
+
+    /// [`Control::commit`], moving `voices` to their new outputs with it.
+    fn commit_moving(
+        &mut self,
+        at: Option<u64>,
+        next: Definition,
+        added: Vec<(NodeKey, Box<Node>)>,
+        retire: Vec<NodeKey>,
+        voices: Box<[(VoiceKey, Outputs)]>,
+    ) -> Result<(), AudioError> {
         self.check_order(at)?;
         let plan = Box::new(next.compile()?);
         let revision = Box::new(Revision {
             plan,
             added,
             retire: retire.into_boxed_slice(),
+            voices,
         });
         self.send(at, Command::Revise(revision))?;
         self.graph = next;
@@ -663,6 +762,8 @@ impl Control {
         self.collect();
         let mut next = self.graph.clone();
         let mut retire = Vec::new();
+        // Each voice the patch moves, and where it plays once it has.
+        let mut voices: Vec<(VoiceKey, Vec<Output>)> = Vec::new();
         for edit in edits {
             match edit {
                 Edit::Connect {
@@ -678,17 +779,69 @@ impl Control {
                 Edit::Route { node, parent } => next.route(*node, *parent)?,
                 Edit::Insert { host, node, index } => next.insert(*host, *node, *index)?,
                 Edit::Remove(node) => {
-                    self.check_unfed(*node)?;
+                    self.check_unfed(*node, &voices)?;
                     retire.extend(next.remove(*node)?);
+                }
+                Edit::Send { voice, to, input, level } => {
+                    check_level(f64::from(*level))?;
+                    let output = voice_output(&next, *to, input.as_deref(), *level)?;
+                    let outputs = self.moving(&mut voices, *voice)?;
+                    if let Some(known) = outputs.iter_mut().find(|known| same_input(known, &output)) {
+                        known.level = output.level;
+                    } else if outputs.len() < MAX_VOICE_OUTPUTS {
+                        outputs.push(output);
+                    } else {
+                        return Err(AudioError::SendsExhausted(MAX_VOICE_OUTPUTS - 1));
+                    }
+                }
+                Edit::Unsend { voice, to } => {
+                    let outputs = self.moving(&mut voices, *voice)?;
+                    outputs.retain(|output| (output.slot, output.generation) != (to.slot, to.generation));
                 }
             }
         }
-        self.commit(at, next, Vec::new(), retire)
+        let moved = voices
+            .iter()
+            .map(|(voice, outputs)| (*voice, Outputs::new(outputs)))
+            .collect();
+        self.commit_moving(at, next, Vec::new(), retire, moved)?;
+        for (voice, outputs) in voices {
+            self.slots[voice.slot as usize].outputs = outputs;
+        }
+        Ok(())
     }
 
-    /// Refuses removing a node voices still play into.
-    fn check_unfed(&self, node: NodeKey) -> Result<(), AudioError> {
-        let voices = self.slots.iter().filter(|slot| slot.feeds(node.slot)).count();
+    /// Where `voice` plays as a patch has it so far, from where it plays now.
+    fn moving<'a>(
+        &self,
+        voices: &'a mut Vec<(VoiceKey, Vec<Output>)>,
+        voice: VoiceKey,
+    ) -> Result<&'a mut Vec<Output>, AudioError> {
+        if !self.is_live(voice) {
+            return Err(AudioError::StaleVoice);
+        }
+        let found = voices.iter().position(|(known, _)| *known == voice);
+        let index = found.unwrap_or_else(|| {
+            voices.push((voice, self.slots[voice.slot as usize].outputs.clone()));
+            voices.len() - 1
+        });
+        Ok(&mut voices[index].1)
+    }
+
+    /// Refuses removing a node voices still play into, as a patch has moved them so far.
+    fn check_unfed(&self, node: NodeKey, moved: &[(VoiceKey, Vec<Output>)]) -> Result<(), AudioError> {
+        let voices = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(slot, entry)| {
+                let outputs = moved
+                    .iter()
+                    .find(|(voice, _)| voice.slot as usize == *slot)
+                    .map_or(&entry.outputs[..], |(_, outputs)| &outputs[..]);
+                entry.busy && outputs.iter().any(|output| output.slot == node.slot)
+            })
+            .count();
         if voices > 0 {
             return Err(AudioError::NodeInUse {
                 voices,
@@ -880,6 +1033,12 @@ impl Control {
         self.graph.shape(node).map(|shape| (shape.kind, shape.params))
     }
 
+    /// The ports of `node`, while it is live.
+    #[must_use]
+    pub fn ports(&self, node: NodeKey) -> Option<&'static Ports> {
+        self.graph.shape(node).map(|shape| shape.ports)
+    }
+
     /// How many frames `node`'s output lags the voices that reach it, by the longest way round:
     /// the processor latency along the path a voice takes to it.
     ///
@@ -1018,6 +1177,7 @@ impl Control {
                     meter.samples.store(0, Ordering::Relaxed);
                 }
                 Feedback::Revised(revision) => drop(revision),
+                Feedback::Outputs(outputs) => drop(outputs),
                 Feedback::Spent(group) => drop(group),
             }
         }
@@ -1125,6 +1285,23 @@ impl Control {
             Err(TrySendError::Disconnected(_)) => Err(AudioError::Disconnected),
         }
     }
+}
+
+/// A voice's output into `node`'s audio input `input` (its first without one) at `level`, if
+/// voices can play there in `graph`.
+fn voice_output(graph: &Definition, node: NodeKey, input: Option<&str>, level: f32) -> Result<Output, AudioError> {
+    let input = graph.voice_input(node, input)?;
+    Ok(Output {
+        slot: node.slot,
+        generation: node.generation,
+        input,
+        level,
+    })
+}
+
+/// True for two outputs into the same node input.
+fn same_input(first: &Output, second: &Output) -> bool {
+    (first.slot, first.generation, first.input) == (second.slot, second.generation, second.input)
 }
 
 /// A context rendered on demand rather than by a device: for tests, exports, and anything that

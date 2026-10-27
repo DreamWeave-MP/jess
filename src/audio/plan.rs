@@ -14,6 +14,7 @@
 
 use crate::audio::delays::{Delays, Rings};
 use crate::audio::mixer::NodeKey;
+use crate::audio::voice::{Outputs, VoiceKey};
 
 /// Where an output's block lives while a block renders.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -129,11 +130,12 @@ pub struct Plan {
 }
 
 /// A revision of the graph as the engine takes it: the plan, the processors of the nodes it made,
-/// and the nodes it removed that have nothing to ring out.
+/// the nodes it removed that have nothing to ring out, and the voices it moves with it.
 pub struct Revision {
     pub plan: Box<Plan>,
     pub added: Vec<(NodeKey, Box<crate::audio::engine::Node>)>,
     pub retire: Box<[NodeKey]>,
+    pub voices: Box<[(VoiceKey, Outputs)]>,
 }
 
 impl std::fmt::Debug for Revision {
@@ -142,6 +144,7 @@ impl std::fmt::Debug for Revision {
             .field("steps", &self.plan.steps.len())
             .field("added", &self.added.len())
             .field("retire", &self.retire)
+            .field("voices", &self.voices.len())
             .finish()
     }
 }

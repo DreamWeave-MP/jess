@@ -176,8 +176,18 @@ pub struct Output {
     pub level: f32,
 }
 
-/// Where a voice plays: its first output, and the rest, which only a voice that sends anywhere
-/// allocates.
+impl Output {
+    /// No output: the first of a voice that plays nowhere.
+    pub const NONE: Output = Output {
+        slot: u32::MAX,
+        generation: 0,
+        input: 0,
+        level: 0.0,
+    };
+}
+
+/// Where a voice plays: its first output, and the rest, which only a voice that plays in more
+/// than one place allocates.
 #[derive(Debug)]
 pub struct Outputs {
     pub first: Output,
@@ -185,12 +195,30 @@ pub struct Outputs {
 }
 
 impl Outputs {
+    /// `outputs` as a voice holds them; nowhere for none.
+    pub fn new(outputs: &[Output]) -> Outputs {
+        match outputs.split_first() {
+            Some((first, rest)) => Outputs {
+                first: *first,
+                rest: rest.into(),
+            },
+            None => Outputs {
+                first: Output::NONE,
+                rest: Box::default(),
+            },
+        }
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = &Output> {
-        std::iter::once(&self.first).chain(self.rest.iter())
+        std::iter::once(&self.first)
+            .filter(|first| first.slot != Output::NONE.slot)
+            .chain(self.rest.iter())
     }
 
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Output> {
-        std::iter::once(&mut self.first).chain(self.rest.iter_mut())
+        std::iter::once(&mut self.first)
+            .filter(|first| first.slot != Output::NONE.slot)
+            .chain(self.rest.iter_mut())
     }
 }
 
