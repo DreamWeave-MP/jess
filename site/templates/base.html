@@ -86,6 +86,13 @@
 {% endblock footer %}
 {% block extra_body %}
 <script src="{{ get_url(path='js/dreamweave.js', trailing_slash=false) | safe }}"{% if config.build_search_index %} data-search-index="{{ get_url(path='search_index.' ~ config.default_language ~ '.json', trailing_slash=false) | safe }}"{% endif %} defer></script>
+{% if config.extra.goatcounter is defined and config.extra.goatcounter %}
+<script
+  data-goatcounter="https://{{ config.extra.goatcounter }}.goatcounter.com/count"
+  async
+  src="https://gc.zgo.at/count.js">
+</script>
+{% endif %}
 {% endblock extra_body %}
 </body>
 </html>
