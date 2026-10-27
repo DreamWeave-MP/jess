@@ -39,7 +39,9 @@ use std::time::Duration;
 
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
-use winit::event::{DeviceEvent, DeviceId as RawDeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{
+    DeviceEvent, DeviceId as RawDeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent as RawEvent,
+};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::platform::pump_events::EventLoopExtPumpEvents;
@@ -96,7 +98,28 @@ pub struct WindowDesc {
     pub present: PresentMode,
     /// The format its surface draws in, or `None` for the first plain 8-bit one it offers.
     pub format: Option<TextureFormat>,
+    /// Whether the person asking it to close closes it, or only says so in its events, for the
+    /// application to decide.
+    pub closes: bool,
 }
+
+/// What happened to a window, in the order it happened, for whoever drives it to read.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum WindowEvent {
+    /// Its inner size changed, to this many physical pixels; the plan it shows resized with it.
+    Resized(Extent),
+    /// The display it is on has this many physical pixels to a logical one now.
+    ScaleChanged(f64),
+    /// It gained or lost the keyboard.
+    Focused(bool),
+    /// The person asked it to close: with [`WindowDesc::closes`], it did.
+    CloseRequested,
+    /// The window system closed it, or a close request did.
+    Closed,
+}
+
+/// The most events a window keeps for whoever hasn't read them: the oldest go first.
+const EVENTS: usize = 256;
 
 impl Default for WindowDesc {
     fn default() -> Self {
@@ -107,6 +130,7 @@ impl Default for WindowDesc {
             resizable: true,
             present: PresentMode::Vsync,
             format: None,
+            closes: true,
         }
     }
 }
@@ -145,6 +169,18 @@ struct State {
     showing: Option<Showing>,
     /// What went wrong resizing it, reported at the next present.
     problem: Option<WindowError>,
+    /// What happened to it since the last read, oldest first.
+    events: Vec<WindowEvent>,
+    closes: bool,
+}
+
+impl State {
+    fn happened(&mut self, event: WindowEvent) {
+        if self.events.len() == EVENTS {
+            self.events.remove(0);
+        }
+        self.events.push(event);
+    }
 }
 
 /// A window on the screen. Dropping every handle to it closes it.
@@ -216,16 +252,37 @@ impl ApplicationHandler for Handler<'_> {
         self.open_pending(event_loop);
     }
 
-    fn window_event(&mut self, _event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, _event_loop: &ActiveEventLoop, id: WindowId, event: RawEvent) {
         let Some(state) = self.state(id) else {
             return;
         };
         match event {
-            WindowEvent::Resized(size) => resized(&mut state.borrow_mut(), size),
-            WindowEvent::ScaleFactorChanged { scale_factor, .. } => state.borrow_mut().scale = scale_factor,
-            WindowEvent::CloseRequested | WindowEvent::Destroyed => close(&mut state.borrow_mut()),
-            WindowEvent::Focused(focused) => queue(Raw::Focus(focused)),
-            WindowEvent::KeyboardInput { event, .. } => {
+            RawEvent::Resized(size) => resized(&mut state.borrow_mut(), size),
+            RawEvent::ScaleFactorChanged { scale_factor, .. } => {
+                let mut state = state.borrow_mut();
+                state.scale = scale_factor;
+                state.happened(WindowEvent::ScaleChanged(scale_factor));
+            }
+            RawEvent::CloseRequested => {
+                let mut state = state.borrow_mut();
+                state.happened(WindowEvent::CloseRequested);
+                if state.closes {
+                    close(&mut state);
+                    state.happened(WindowEvent::Closed);
+                }
+            }
+            RawEvent::Destroyed => {
+                let mut state = state.borrow_mut();
+                if state.raw.is_some() {
+                    close(&mut state);
+                    state.happened(WindowEvent::Closed);
+                }
+            }
+            RawEvent::Focused(focused) => {
+                state.borrow_mut().happened(WindowEvent::Focused(focused));
+                queue(Raw::Focus(focused));
+            }
+            RawEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key
                     && let Some(key) = key(code)
                     && !event.repeat
@@ -233,19 +290,19 @@ impl ApplicationHandler for Handler<'_> {
                     queue(Raw::Key(key, event.state == ElementState::Pressed));
                 }
             }
-            WindowEvent::MouseInput {
+            RawEvent::MouseInput {
                 state: pressed, button, ..
             } => {
                 if let Some(button) = pointer_button(button) {
                     queue(Raw::Button(button, pressed == ElementState::Pressed));
                 }
             }
-            WindowEvent::CursorMoved { position, .. } => {
+            RawEvent::CursorMoved { position, .. } => {
                 // Positions are pixels: a window wider than f32 counts exactly is no window.
                 #[allow(clippy::cast_possible_truncation)]
                 queue(Raw::Position(position.x as f32, position.y as f32));
             }
-            WindowEvent::MouseWheel { delta, .. } => {
+            RawEvent::MouseWheel { delta, .. } => {
                 let (x, y) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => (x, y),
                     // A line is about 20 pixels on every desktop jess draws on.
@@ -269,10 +326,15 @@ impl ApplicationHandler for Handler<'_> {
 
 /// `state` at its new `size`: its surface, and the plan it shows, sized again.
 fn resized(state: &mut State, size: PhysicalSize<u32>) {
-    state.size = Extent {
+    let size = Extent {
         width: size.width.max(1),
         height: size.height.max(1),
     };
+    if size == state.size {
+        return;
+    }
+    state.size = size;
+    state.happened(WindowEvent::Resized(size));
     let gpu = Arc::clone(&state.gpu);
     if let Some(surface) = &mut state.surface
         && let Err(problem) = surface.resize(&gpu, state.size.width, state.size.height)
@@ -345,6 +407,8 @@ pub fn open(gpu: &Arc<Gpu>, desc: &WindowDesc) -> Result<Window, WindowError> {
             },
             showing: None,
             problem: None,
+            events: Vec::new(),
+            closes: desc.closes,
         }));
         system.windows.push((id, Rc::downgrade(&state)));
         Ok(Window { id, state })
@@ -461,6 +525,12 @@ impl Window {
     #[must_use]
     pub fn format(&self) -> Option<TextureFormat> {
         self.state.borrow().surface.as_ref().map(Surface::format)
+    }
+
+    /// What happened to it since the last call, oldest first: at most the last 256 of it.
+    #[must_use]
+    pub fn events(&self) -> Vec<WindowEvent> {
+        std::mem::take(&mut self.state.borrow_mut().events)
     }
 
     /// Whether it is open: neither closed by the person nor by [`Window::close`].

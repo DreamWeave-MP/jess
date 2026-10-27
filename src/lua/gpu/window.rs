@@ -2,7 +2,7 @@
 //! every frame, and `jess.gpu.pump` handles the window system and draws, for a script no
 //! application host drives.
 
-use l3i::bind::Call;
+use l3i::bind::{Call, StackResults};
 use l3i::extension::{ExtensionDescriptor, TagPolicy};
 use l3i::stack::{Scope, ValueView};
 use l3i::userdata::{Owned, Userdata, receiver};
@@ -12,8 +12,8 @@ use super::pipeline::{flag, options};
 use super::plan::{Given, LuaGpuPlan, given};
 use super::resources::{format_name, format_of, whole};
 use crate::gpu::PresentMode;
-use crate::lua::{error, kind};
-use crate::window::{Imported, Showing, Window, WindowDesc};
+use crate::lua::{error, kind, push_table};
+use crate::window::{Imported, Showing, Window, WindowDesc, WindowEvent};
 
 /// A window and the device its surface is on.
 #[derive(Debug)]
@@ -26,7 +26,7 @@ unsafe impl Userdata for LuaGpuWindow {
     const NAME: &'static str = "jess.gpu.Window";
 }
 
-const WINDOW_KEYS: [&str; 6] = ["format", "height", "resizable", "title", "vsync", "width"];
+const WINDOW_KEYS: [&str; 7] = ["closes", "format", "height", "resizable", "title", "vsync", "width"];
 
 /// `jess.gpu.window(device, { title, width, height, resizable, vsync, format })`.
 pub fn open(call: &Call<'_>, device: ValueView<'_>, desc: Option<ValueView<'_>>) -> l3i::Result<Owned<LuaGpuWindow>> {
@@ -58,6 +58,7 @@ pub fn open(call: &Call<'_>, device: ValueView<'_>, desc: Option<ValueView<'_>>)
                 Some(wanted.height),
             )?;
             wanted.resizable = flag(frame, FUNCTION, &fields, "resizable", true)?;
+            wanted.closes = flag(frame, FUNCTION, &fields, "closes", true)?;
             wanted.present = if flag(frame, FUNCTION, &fields, "vsync", true)? {
                 PresentMode::Vsync
             } else {
@@ -152,6 +153,34 @@ pub fn describe(d: &mut ExtensionDescriptor) {
     window.method("show", show).untyped();
     window.method("hide", |this: &LuaGpuWindow| this.window.hide()).untyped();
     window.method("close", |this: &LuaGpuWindow| this.window.close()).untyped();
+    window
+        .method(
+            "events",
+            |this: &LuaGpuWindow, call: &Call<'_>| -> l3i::Result<StackResults> {
+                let events = this.window.events();
+                l3i::stack::push_list(call, events.iter(), |frame, event| {
+                    push_table(frame, 0, 3, |frame, table| match *event {
+                        WindowEvent::Resized(size) => {
+                            table.raw_set_value(frame, "kind", "resized")?;
+                            table.raw_set_value(frame, "width", &f64::from(size.width))?;
+                            table.raw_set_value(frame, "height", &f64::from(size.height))
+                        }
+                        WindowEvent::ScaleChanged(scale) => {
+                            table.raw_set_value(frame, "kind", "scaled")?;
+                            table.raw_set_value(frame, "scale", &scale)
+                        }
+                        WindowEvent::Focused(focused) => {
+                            table.raw_set_value(frame, "kind", "focused")?;
+                            table.raw_set_value(frame, "focused", &focused)
+                        }
+                        WindowEvent::CloseRequested => table.raw_set_value(frame, "kind", "closeRequested"),
+                        WindowEvent::Closed => table.raw_set_value(frame, "kind", "closed"),
+                    })
+                })?;
+                Ok(StackResults)
+            },
+        )
+        .untyped();
     crate::lua::plan::metamethod(&mut window, "__tostring", |this: &LuaGpuWindow| {
         let size = this.window.size();
         let closed = if this.window.is_open() { "" } else { ", closed" };

@@ -574,6 +574,7 @@ Opens a native window with a surface on `device`. The window is what a person se
 | `resizable` | `boolean?` | Whether the person can resize it; `true` by default. |
 | `vsync` | `boolean?` | Whether presenting waits for the display's refresh, one image a refresh; `true` by default. |
 | `format` | `GpuTextureFormat?` | The format its surface draws in; by default the first of `bgra8Unorm`, `rgba8Unorm`, `bgra8UnormSrgb`, and `rgba8UnormSrgb` it offers. |
+| `closes` | `boolean?` | Whether the person asking it to close (its close button, say) closes it; `true` by default. With `false`, the request is only an event, and the application decides: asks to save, say, then calls `close`. |
 
 - **Capability:** `gpu.window`. A script you run holds it, as it holds the GPU; a package target declares it.
 - **Errors:** `jess.gpu.window: no window system: …` on a machine without a display; `windows belong to the thread that opened the first one`, since a process has one window system loop; and a jess built without the `window` feature says so: `jess.gpu.window: this jess has no windows: it was built without the window feature`.
@@ -593,10 +594,11 @@ Handles what the window system reported since the last call, without waiting (si
 | `open` | `boolean` | Whether it's open: neither closed by the person nor by `close`. |
 | `show(plan, target, imports?, sets?)` | `(GpuPlan, string, { [string]: GpuTexture \| GpuBuffer }?, GpuDrawSets?) -> ()` | Draws `plan` into it every frame from the next on, its image as the plan's imported target `target`, which must have the window's format, with `imports` for the plan's other imported targets and buffers, drawing from `sets` or the device's own. The plan is resized with the window, and passes left out of `plan` and its regions are the shown plan's too. |
 | `hide()`, `close()` | `() -> ()` | Stops drawing, or closes it. |
+| `events()` | `() -> { GpuWindowEvent }` | What happened to it since the last call, oldest first, the last 256 at most: `{ kind = 'resized', width, height }`, `{ kind = 'scaled', scale }`, `{ kind = 'focused', focused }`, `{ kind = 'closeRequested' }`, and `{ kind = 'closed' }`. A shown plan is resized already when its `resized` is read; this is for what the application does about it (a camera's aspect, say). |
 
 `tostring(window)` is `GpuWindow(title, 800×600)`. Drawing a shown plan runs no Luau: each frame takes the window's next image, runs the plan into it with the draw sets as they are, and presents it, so a scene that doesn't change costs a script nothing at all.
 
-Under the host of an application target that declares `gpu.window`, a window's keyboard and pointer are the application's: keys, pointer buttons, position, motion, and the wheel reach [`@jess/input`](@/docs/api/input.md) as one keyboard and one pointer, whichever window they happened in, named as every jess backend names them (`key:KeyW`, `pointerButton:Primary`, `pointerAxis:DeltaX`).
+Under the host of an application target that declares `gpu.window`, a window's keyboard and pointer are the application's: keys, pointer buttons, position, motion, and the wheel reach [`@jess/input`](@/docs/api/input.md) as one keyboard and one pointer, whichever window they happened in, named as every jess backend names them (`key:KeyW`, `pointerButton:Primary`, `pointerAxis:DeltaX`). A script you run takes the same from `jess.input.runtime { windows = true }`, its own headless runtime, which polls its windows at every `tick`.
 
 ```luau
 --!strict

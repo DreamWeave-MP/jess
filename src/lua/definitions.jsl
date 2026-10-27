@@ -1008,7 +1008,8 @@ end
 
 --- What `jess.gpu.window` opens: an inner size in physical pixels (800 by 600 by default),
 --- whether the person may resize it, whether presenting waits for the display (`vsync`, the
---- default), and the format its surface draws in, the first plain 8-bit one it offers by default.
+--- default), and the format its surface draws in, the first plain 8-bit one it offers by default;
+--- and whether asking it to close closes it (`closes`, the default) or only says so in its events.
 export type GpuWindowDesc = {
   title: string?,
   width: number?,
@@ -1016,12 +1017,23 @@ export type GpuWindowDesc = {
   resizable: boolean?,
   vsync: boolean?,
   format: GpuTextureFormat?,
+  closes: boolean?,
 }
+
+--- What happened to a window, from `GpuWindow:events`: it was `resized` (to `width` by `height`),
+--- `scaled` (to `scale`), `focused` (or not), asked to close (`closeRequested`), or `closed`.
+export type GpuWindowEvent =
+  { kind: 'resized', width: number, height: number }
+  | { kind: 'scaled', scale: number }
+  | { kind: 'focused', focused: boolean }
+  | { kind: 'closeRequested' }
+  | { kind: 'closed' }
 
 --- A native window: its inner `width` and `height` in physical pixels, the `scale` of a logical
 --- pixel, its surface's `format`, and whether it is `open`. `show` draws a plan into it every
 --- frame, the window's image as the plan's imported target `target`, the plan resized with the
---- window; `hide` stops, and `close` closes it. `tostring` gives `GpuWindow(title, 800×600)`.
+--- window; `hide` stops, and `close` closes it. `events` is what happened to it since the last
+--- call, oldest first. `tostring` gives `GpuWindow(title, 800×600)`.
 declare extern type GpuWindow with
   title: string
   width: number
@@ -1038,6 +1050,7 @@ declare extern type GpuWindow with
   ): ()
   function hide(self): ()
   function close(self): ()
+  function events(self): { GpuWindowEvent }
   __tostring: (self: GpuWindow) -> string
 end
 
@@ -1442,8 +1455,9 @@ declare jess: {
     formatVersion: number,
     --- A control's canonical `class:Name` form, or an error naming what is wrong with it.
     control: (control: string) -> string,
-    --- The domain's live input runtime under a host; a headless one of the script's own otherwise.
-    runtime: () -> InputRuntime,
+    --- The domain's live input runtime under a host; a headless one of the script's own
+    --- otherwise, which with `windows` takes its windows' keyboard and pointer at every `tick`.
+    runtime: (options: { windows: boolean? }?) -> InputRuntime,
   },
 
   --- The native half of `@jess/audio`, which wraps it: PCM from interleaved bytes, and contexts

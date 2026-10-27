@@ -216,11 +216,11 @@ end
 
 ## The runtime
 
-{{ api_signature(value="input.runtime() -> InputRuntime") }}
+{{ api_signature(value="input.runtime(options: { windows: boolean? }?) -> InputRuntime") }}
 
 Under a host, the domain's live runtime: every call returns a handle over the same one, the host ticks it once per frame, and the input context's handler receives that tick's events as its payload (`{ time, generation, events }`, rows shaped as below; a router makes intents of them). `tick` and `advance` are refused there (`InputRuntime:tick is the host's on a live input runtime: ...`); synthetic events (`connect`, `press`, ...) still work, under `input.configure`, and land in the next host tick.
 
-Anywhere else, a headless runtime of the script's own: synthetic devices, a clock that moves only when the script says so, and one graph at a time.
+Anywhere else, a headless runtime of the script's own: synthetic devices, a clock that moves only when the script says so, and one graph at a time. With `windows = true` it also takes the keyboard and pointer of the [windows](@/docs/api/gpu.md#windows) the script opens, polled at every `tick` and stamped with the runtime's clock, as a host's are; a live runtime has them from its host already, and refuses the option.
 
 ```luau
 --!strict

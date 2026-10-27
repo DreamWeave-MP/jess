@@ -1143,7 +1143,7 @@ fn a_script_shows_a_plan_in_a_window() {
     if crate::gpu::gpu("a_script_shows_a_plan_in_a_window").is_none() {
         return;
     }
-    let capabilities = ["gpu.device".to_owned(), "gpu.window".to_owned()];
+    let capabilities = ["gpu.device".to_owned(), "gpu.window".to_owned(), "input.actions".to_owned()];
     jess::lua::runtime_with_capabilities(jess::lua::Options::default(), &capabilities)
         .unwrap()
         .exec(
@@ -1189,6 +1189,11 @@ fn a_script_shows_a_plan_in_a_window() {
             local middle = row * (window.height // 2) + 4 * (window.width // 2)
             local texel = buffer.readu32(pixels:read(middle, 4), 0)
             assert(texel == 0xff00ff00, string.format('%08x', texel))
+
+            -- What happened is the script's to read, once.
+            assert(typeof(window:events()) == 'table' and #window:events() == 0)
+            local input = jess.input.runtime({ windows = true })
+            assert(typeof(input:tick()) == 'table')
 
             window:close()
             jess.gpu.pump()
@@ -1377,4 +1382,29 @@ fn a_script_culls_on_the_gpu() {
         return;
     };
     runtime.exec(GPU_CULLING).unwrap_or_else(|error| panic!("{error}"));
+}
+
+/// A headless input runtime asked for its windows' input polls them at every tick, which takes
+/// nothing before a window has seen any; a live one has its host's already.
+#[cfg(feature = "window")]
+#[test]
+fn a_headless_input_runtime_takes_its_windows_input_when_asked() {
+    let capabilities = ["input.actions".to_owned()];
+    let runtime = jess::lua::runtime_with_capabilities(jess::lua::Options::default(), &capabilities).unwrap();
+    runtime
+        .exec(
+            r"
+            local input = jess.input.runtime({ windows = true })
+            assert(#input:tick() == 0)
+            assert(#jess.input.runtime({ windows = false }):tick() == 0)
+        ",
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+    let error = runtime.exec("jess.input.runtime({ windows = 1 })").unwrap_err().to_string();
+    assert!(
+        error.contains("jess.input.runtime: windows is a boolean, not number"),
+        "{error}"
+    );
+    let error = runtime.exec("jess.input.runtime({ window = true })").unwrap_err().to_string();
+    assert!(error.contains("'window'"), "{error}");
 }
