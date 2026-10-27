@@ -1,0 +1,10 @@
+--!strict
+-- Voice churn, the whole stack: the Luau that starts and stops the shots each tick, the binding,
+-- and the engine mixing them. See churn.jsl.
+local Churn = require './churn'
+
+return table.freeze {
+  name = 'audio-churn',
+  path = 'tools/bench/canaries/audio-churn.jsl',
+  run = function(scale: number): number return Churn.scene(scale, 'all') end,
+}

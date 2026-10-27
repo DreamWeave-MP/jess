@@ -1,0 +1,10 @@
+--!strict
+-- Voice churn, the engine alone: the same scene as audio-churn, timing only the renders, so what
+-- the mixer costs is apart from what the script and the binding do. See churn.jsl.
+local Churn = require './churn'
+
+return table.freeze {
+  name = 'audio-render',
+  path = 'tools/bench/canaries/audio-render.jsl',
+  run = function(scale: number): number return Churn.scene(scale, 'render') end,
+}
