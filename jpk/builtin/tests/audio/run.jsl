@@ -478,6 +478,26 @@ suite.describe('the graph', function()
     expect(samples(context:render(4))).toEqual { 1, 1, 1, 1 }
   end)
 
+  suite.it('closes a loop only through a feedback delay', function()
+    local context = audio.offline { channels = 1 }
+    local echo = context:bus()
+    local half = context:node('gain', { gain = 0.5 })
+    expect(function()
+      context:patch(function(graph)
+        graph:connect(echo, half)
+        graph:connect(half, echo)
+      end)
+    end).toThrow 'needs a feedback delay'
+
+    context:patch(function(graph)
+      graph:connect(echo, half)
+      graph:connect(half, echo, { feedback = 128 })
+    end)
+    context:play(constant(1, 1), { bus = echo, at = 0 })
+    local out = samples(context:render(400))
+    expect({ out[1], out[129], out[257], out[385] }).toEqual { 1, 0.5, 0.25, 0.125 }
+  end)
+
   suite.it('describes a node: its kind and its parameters', function()
     local context = audio.offline()
     local cutoff = context:node('filter', { frequency = 500 })

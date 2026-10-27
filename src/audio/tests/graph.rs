@@ -387,3 +387,121 @@ fn late_lines_up_whatever_is_late() {
     context.control().play(&click, &into(slow, 0)).unwrap();
     assert_eq!(context.render(5), [0.0, 0.0, 0.0, 1.0, 0.0]);
 }
+
+/// Renders `frames` of `context` in blocks of `sizes`, round and round, checking no block
+/// allocates.
+fn render_in(context: &mut OfflineContext, frames: usize, sizes: &[usize]) -> Vec<f32> {
+    let mut out = Vec::new();
+    for size in sizes.iter().cycle() {
+        if out.len() >= frames {
+            break;
+        }
+        let (_, engine) = context.parts();
+        let mut block = vec![0.0; (*size).min(frames - out.len())];
+        assert_eq!(allocations(|| engine.render(&mut block)), 0);
+        out.extend(block);
+        context.control().collect();
+    }
+    out
+}
+
+fn feedback(from: NodeKey, to: NodeKey, frames: u64) -> Edit {
+    Edit::Connect {
+        from,
+        output: "out".to_owned(),
+        to,
+        input: "in".to_owned(),
+        connection: Connection {
+            feedback: Some(frames),
+            ..Connection::default()
+        },
+    }
+}
+
+#[test]
+fn a_loop_needs_a_feedback_delay_of_a_quantum_or_more() {
+    let mut context = mono(AudioConfig::default());
+    let echo = bus(&mut context, NodeKey::MASTER, 1.0);
+    let half = context.control().add_node(gain(0.5), None).unwrap();
+    assert_eq!(
+        context
+            .control()
+            .patch(&[connect(echo, half, 1.0), connect(half, echo, 1.0)], None),
+        Err(AudioError::Cycle)
+    );
+    assert!(matches!(
+        context
+            .control()
+            .patch(&[connect(echo, half, 1.0), feedback(half, echo, 64)], None),
+        Err(AudioError::Parameter { name: "feedback", .. })
+    ));
+    context
+        .control()
+        .patch(&[connect(echo, half, 1.0), feedback(half, echo, 128)], None)
+        .unwrap();
+}
+
+#[test]
+fn a_feedback_loop_echoes_the_same_however_the_render_is_cut() {
+    let click = pcm(&[1.0], 48_000);
+    let render = |sizes: &[usize]| {
+        let mut context = mono(AudioConfig::default());
+        let echo = bus(&mut context, NodeKey::MASTER, 1.0);
+        let half = context.control().add_node(gain(0.5), None).unwrap();
+        context
+            .control()
+            .patch(&[connect(echo, half, 1.0), feedback(half, echo, 200)], None)
+            .unwrap();
+        context.control().play(&click, &into(echo, 3)).unwrap();
+        // A command mid-loop splits the blocks too.
+        context.control().set_param(echo, "gain", 1.0, Some(301), None).unwrap();
+        render_in(&mut context, 1000, sizes)
+    };
+    let out = render(&[1000]);
+    let mut expected = vec![0.0; 1000];
+    for (index, level) in [1.0, 0.5, 0.25, 0.125, 0.0625].into_iter().enumerate() {
+        expected[3 + 200 * index] = level;
+    }
+    assert_eq!(out, expected);
+    for sizes in [&[1][..], &[13], &[128], &[7, 300, 64, 1]] {
+        assert_eq!(render(sizes), out, "blocks of {sizes:?}");
+    }
+}
+
+#[test]
+fn latency_in_a_loop_lengthens_its_period_and_leaves_compensation_alone() {
+    let click = pcm(&[1.0], 48_000);
+    let mut context = mono(AudioConfig::default());
+    let sum = bus(&mut context, NodeKey::MASTER, 1.0);
+    let entry = bus(&mut context, sum, 1.0);
+    // The entry feeds the sum two ways, through ten frames of lookahead and straight, and the sum
+    // feeds the entry back, half as loud, two hundred frames later.
+    let slow = context.control().add_node(late(10), None).unwrap();
+    let half = context.control().add_node(gain(0.5), None).unwrap();
+    context
+        .control()
+        .patch(
+            &[
+                connect(entry, slow, 1.0),
+                connect(slow, sum, 1.0),
+                connect(sum, half, 1.0),
+                feedback(half, entry, 200),
+            ],
+            None,
+        )
+        .unwrap();
+    // The feedback is deliberate: it isn't latency, and nothing waits for it.
+    assert_eq!(context.control().latency(sum), Ok(10));
+    assert_eq!(context.control().latency(NodeKey::MASTER), Ok(10));
+    context.control().play(&click, &into(entry, 0)).unwrap();
+    let out = render_in(&mut context, 700, &[128]);
+    let heard: Vec<(usize, f32)> = out
+        .iter()
+        .enumerate()
+        .filter(|(_, sample)| **sample != 0.0)
+        .map(|(frame, sample)| (frame, *sample))
+        .collect();
+    // Both paths meet on frame 10, and each trip round the loop takes its 200 frames and the
+    // lookahead's 10 again: the straight path waits for the slow one inside the loop as well.
+    assert_eq!(heard, [(10, 2.0), (220, 2.0), (430, 2.0), (640, 2.0)]);
+}
