@@ -6,14 +6,14 @@ extra:
   kind: guide
 ---
 
-A footstep, a score that follows a fight, a room full of machines, a synthesizer, a multitrack bounce: they all need the same thing underneath, a mixer that does exactly what it was told on exactly the frame it was told, and never stops to ask. `jess::audio` (`src/audio`) is that mixer. It knows frames, channels, voices, buses, processors, and when. It doesn't know what music or a footstep is: that's Luau, in [`@jess/audio`](@/docs/api/audio.md) and the packages above it.
+A footstep, a score that follows a fight, a room full of machines, a synthesizer, a multitrack bounce: they all need the same thing underneath, a mixer that does exactly what it was told on exactly the frame it was told, and never stops to ask. `jess::audio` (`src/audio`) is that mixer. It knows frames, channels, voices, nodes, connections, and when. It doesn't know what music or a footstep is: that's Luau, in [`@jess/audio`](@/docs/api/audio.md) and the packages above it.
 
 ## Two sides
 
 A context is two halves joined by two bounded queues:
 
 ```text
-application side    Control          play, stop, set, ramp, route, mount...
+application side    Control          play, stop, set, ramp, revise the graph...
                                        each a command stamped with an output frame
      v  commands                       (bounded; a full queue is an error, never a drop)
 render side         Engine::render   carries each command out on its frame, mixes
@@ -23,11 +23,11 @@ application side    Control::collect ended voices and buses, memory to free
 
 `Engine::render(out)` is the whole render side. A device's thread calls it when the hardware wants frames; an offline context calls it when a script asks. It's the same function either way, which is why an offline render is the test of a live one.
 
-The control side owns every decision that can fail: whether a voice slot is free, whether a route loops, whether a parameter is in range. The engine only carries out commands that were already checked, so it has nothing to report but counters.
+The control side owns every decision that can fail: whether a voice slot is free, whether a route loops, whether a parameter is in range. It compiles the graph, too: the engine runs plans it is handed and never works out an order. The engine only carries out commands that were already checked, so it has nothing to report but counters.
 
 ## The render path's rules
 
-Rendering never allocates, frees, locks, blocks, logs, touches a file, or calls into Luau. Everything the engine needs is allocated when it's made: the voice table, the bus table and its mix buffers, the processor table, the list of commands waiting for their frame, scratch buffers. Anything the engine is done with that holds memory (a voice's PCM, a removed processor, a routing order it replaced, a spent group) goes back down the feedback queue to be dropped on the control side. The feedback queue is sized so it can't fill: each voice, bus, and processor ends once and its slot is reused only after the control side has heard, and each command produces at most a fixed amount of feedback.
+Rendering never allocates, frees, locks, blocks, logs, touches a file, or calls into Luau. Everything the engine needs is allocated when it's made or arrives allocated: the voice table, the node table and the nodes' input buffers, the list of commands waiting for their frame, scratch buffers, and each plan with its delay lines and scratch. Anything the engine is done with that holds memory (a voice's PCM, a node that has rung out, a plan it replaced, a spent group) goes back down the feedback queue to be dropped on the control side. The feedback queue is sized so it can't fill: each voice and node ends once and its slot is reused only after the control side has heard, and each command produces at most a fixed amount of feedback.
 
 A test installs a counting allocator around `Engine::render` and asserts zero allocations and frees across renders that start, stop, ramp, loop, cull, spatialize, and stream voices.
 
@@ -45,19 +45,19 @@ A group sends several commands as one queue entry, so the ones that say "now" ar
 
 ## The graph
 
-Buses form a tree under the master bus, with sends adding more paths and sidechain keys adding dependencies. The control side keeps the graph and works out, on every change, an order in which each bus comes after everything that feeds it (Kahn's algorithm, lowest slot first, so the same graph always mixes the same way). A change and its new order reach the engine in one command. A change that would make a loop is refused on the control side; the engine never sees a cycle.
+[Audio Graph](@/docs/contributing/audio-graph.md) is the graph's own page. In short: buses and processors are nodes in one table, which holds each node's processor and automation for as long as the node lives. The control side keeps the graph's definition, and makes every change on a clone, checks it, and compiles it into a plan before anything is sent. The plan is an order (Kahn's algorithm, lowest slot first, so the same graph always runs the same way), the connections each step pushes and pulls, the compensation and feedback delay lines, and scratch for outputs that aren't a node's own buffer. The engine swaps a plan in whole on its revision's frame and sends the old one back, so no processor's state, and no ramp, notices a change elsewhere in the graph. A change that would make a loop without a feedback delay on it is refused on the control side; the engine never sees a cycle.
 
-Each block, voices add into their buses, then the buses are walked in order: processors, pre-fader sends, gain and mute, meter, post-fader sends, parent. A removed bus keeps running its processors for as long as their tails say (a reverb's decay, a delay's echoes), then goes with them.
+Each block, the engine clears every node's input buffers, adds each voice into its outputs, delays what voices added into a node by as long as the latest path into that node takes, and runs the plan's steps in order. A step runs a node's insert chain in its buffer, pushes the connections tapped before its processing, processes, meters a bus, and pushes the rest. A removed node with a tail (a reverb's decay, a delay's echoes) keeps running, unfed, for as long as its tail, then goes.
 
-Each bus reports latency: the processor latency along the longest path into it. Where paths of different latency meet, they are lined up. The same longest-path walk gives each bus the time its latest path arrives, and every other way in waits for that: each edge from a bus to its parent or a send by the difference, and what voices add into the bus directly (which arrives with no latency at all) by the whole of it. The control side works the delays out whenever the routing or a processor's latency changes, allocates their lines, and sends them stamped with the change's own frame. The engine moves each line's history into its replacement, so a line that keeps its length plays on without a seam, and sends the old set back to be dropped. A delay that changes length can't be seamless: one that grows plays silence where it has no history, and one that shrinks skips. A processor hearing a sidechain key hears it as it left its bus, uncompensated.
+Each node reports latency: the processor latency along the longest path into it. Where paths of different latency meet, they are lined up. Every connection into a node waits for the latest path into it, and what voices add into the node directly (which arrives with no latency at all) waits for the whole of it. The lines are part of the plan, and change with the revision that needs them, on its frame. The engine moves each line's history into its replacement, so a line that keeps its length plays on without a seam. A delay that changes length can't be seamless: one that grows plays silence where it has no history, and one that shrinks skips.
 
 ## Voices
 
-Voices are not graph nodes. A voice is an entry in a fixed table that renders into a bus. Starting one is a command, not a graph change, which is what lets a context hold thousands of them.
+Voices are not graph nodes. A voice is an entry in a fixed table that renders into one or more node inputs: a bus, usually, or a processor only it goes through. Starting one is a command, not a graph change, and compiles nothing, which is what lets a context hold thousands of them and start hundreds a frame.
 
 A voice reads its source at a 32.32 fixed-point position, so a render is the same on every machine however long it runs. At its source's own rate it copies samples exactly. Otherwise each output sample is a windowed sinc over the source frames around it (`src/audio/resample.rs`): eight zero crossings a side under a Kaiser window, read from a table and interpolated, with its zero crossings on source frames so a slower source still passes through its own samples. Read faster than the output plays it (a higher source rate, a rate above one, Doppler towards the listener), the kernel widens by the step, which moves its cutoff down to the output's Nyquist: what the output can't hold is filtered out rather than folded back as an alias. It is flat to three quarters of the output's Nyquist, 6 dB down at it, and about 80 dB down by one and a half times it. The widening stops at four times, past which a faster voice aliases again rather than reading ever more frames. Loops wrap without a gap, and can be released on a frame for an outro.
 
-Gain and pan ramp per sample. Processor parameters ramp at a control rate of 32 frames: the engine caps its blocks at 32 while one moves and tells the processor where the ramp has got to at each block's start.
+A voice's gain and pan ramp per sample. A node parameter ramps at its own rate. An audio-rate one (a bus's gain) moves every sample, and the processor reads its values for the block. A control-rate one moves every 32 frames: the engine caps its blocks at 32 while one moves and tells the processor where the ramp has got to at each block's start.
 
 When a context mixes fewer voices than it holds, it ranks them each block by priority and then by loudness, and mixes the top ones. The rest keep time silently, hold their place, or are stolen, as each voice asked. A small bonus for voices already mixed keeps the line from flickering.
 
@@ -93,4 +93,3 @@ These are designed for, but not built:
 - **HRTF and binaural rendering.** It would be another voice stage after pan, chosen per voice.
 - **Geometric acoustics.** It is the application's to compute, and hands the engine the gains, low-passes, and send levels it already takes.
 - **MIDI, instruments, multitrack arrangement, automation lanes, and freezing tracks.** These are Luau over the same commands: a transport is a tempo map and a queue of stamped commands, a freeze is an offline render into a `Pcm`.
-- **A public processor interface.** The built-in processors implement a Rust trait, and there is no plugin ABI.

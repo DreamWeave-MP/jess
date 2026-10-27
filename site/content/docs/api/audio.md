@@ -76,9 +76,9 @@ end
 
 ## Contexts
 
-{{ api_signature(value="audio.offline(options: { rate: number?, channels: number?, voices: number?, buses: number?, processors: number?, commands: number?, speedOfSound: number?, handedness: ('right' | 'left')?, physical: number? }?) -> AudioContext") }}
+{{ api_signature(value="audio.offline(options: { rate: number?, channels: number?, voices: number?, nodes: number?, connections: number?, commands: number?, speedOfSound: number?, handedness: ('right' | 'left')?, physical: number? }?) -> AudioContext") }}
 
-A context the script renders. Defaults: 48000 frames per second, 2 channels, 256 voices, 64 buses (the master included), 256 processors, and room for 4096 commands waiting for their frame. `speedOfSound` (343) and `handedness` (`right`) describe the world's space; see [Space](#space).
+A context the script renders. Defaults: 48000 frames per second, 2 channels, 256 voices, 256 nodes (buses and processors, the master included), 1024 connections between them, and room for 4096 commands waiting for their frame. `speedOfSound` (343) and `handedness` (`right`) describe the world's space; see [Space](#space).
 
 `voices` counts voices playing or stamped for later; `commands` bounds the queue to the engine, and again the commands stamped for later that the engine holds until their frames. A command for now never waits behind those, so a schedule full of later work can't keep a `stop` from landing. Every count is fixed when the context is made, so the engine never allocates while it mixes. Running out of one is an error at the call that ran out (`all 256 voices are playing or scheduled`, `the audio command queue is full`, `all 4096 commands the engine can hold for later are waiting for their frames`), never a sound quietly not played.
 
@@ -113,8 +113,8 @@ Starts a voice. Options:
 | `offset` | `0` | The source frame to start from |
 | `loop` | `false` | Loop from `loopEnd` back to `loopStart`, without a gap |
 | `loopStart`, `loopEnd` | `0`, the source's end | The loop region, in source frames, the end exclusive |
-| `bus` | the master | The bus it plays into |
-| `sends` | none | Up to two `{ bus, level }`: buses it also plays into, at `level` (1) times its own gain |
+| `bus` | the master | The node it plays into: a bus, or a processor only it goes through |
+| `sends` | none | Up to fifteen `{ bus, level }`: nodes it also plays into, at `level` (1) times its own gain |
 | `fade` | `0` | Frames to fade in over, from silence to `gain` |
 | `place` | none | Where it is in space, which then sets its level, pan, and pitch; see [Space](#space) |
 | `priority` | `0` | How much it matters when there are more voices than the context mixes; see [Budgets](#budgets) |
@@ -158,72 +158,79 @@ Moves a parameter from wherever it is on frame `at` to `value`, reaching it on t
 
 `loop` sets the loop region from frame `at`: playback that reaches source frame `stop` carries on at `start`. `release` lets go of the loop, so playback runs on past it into whatever follows. One source can hold an intro, a loop, and an outro: start it looping, and release it on the frame the outro should follow.
 
-{{ api_signature(value="voice:send(bus: AudioBus, level: number, at: number?) -> boolean") }}
+{{ api_signature(value="voice:send(node: AudioNode, level: number, at: number?) -> boolean") }}
 
-Changes the level of a send the voice started with. A voice's sends are fixed when it starts; their levels aren't.
+Changes the level of a send the voice has.
 
-## Buses
+## Nodes
 
-A bus is where voices and other buses sum. Each block, a bus runs its processors over what it summed, applies its gain and mute, and adds the result into its parent and into each bus it sends to. Every bus has a parent, so they make a tree under the master bus, which is the output; sends add more paths, and any route that would feed a bus back into itself is refused when it's asked for, not discovered while mixing.
+Everything a voice plays through is a node of the context's graph: a bus, or a processor. A bus is a mixer node: it sums what reaches it, runs its insert chain over the sum, applies its gain and mute, and adds the result into its route (the node it's routed into) and each node it sends to. The master bus is the output. Any route or send that would feed a node back into itself is refused when it's asked for, not discovered while mixing. Every change to the graph is checked and compiled on the script's side and reaches the engine whole, on its frame; one that's wrong changes nothing. [Audio Graph](@/docs/contributing/audio-graph.md) has the model.
 
-{{ api_signature(value="context:master() -> AudioBus") }}
-{{ api_signature(value="context:bus(options: { parent: AudioBus?, gain: number?, muted: boolean? }?) -> AudioBus") }}
+Changes to the graph (making, routing, sending, inserting, removing) take effect in the order they're made. A change can be stamped for a later frame, but not for one earlier than a change still waiting: that's an error naming the frame it would overtake (`a graph change waits for frame 96000`). Playing, stopping, and setting voices and parameters are not graph changes, and keep their own stamps.
 
-A new bus under `parent` (the master), at `gain` (1). Voices can play into it at once. A handle from another context is an error.
+{{ api_signature(value="context:master() -> AudioNode") }}
+{{ api_signature(value="context:bus(options: { parent: AudioNode?, gain: number?, muted: boolean?, channels: number? }?) -> AudioNode") }}
 
-{{ api_signature(value="bus:set(param: 'gain' | 'mute', value: number, at: number?) -> boolean") }}
-{{ api_signature(value="bus:route(parent: AudioBus, at: number?)") }}
+A new bus routed into `parent` (the master), at `gain` (1), with `channels` if fewer than the context's. Voices can play into it at once. A handle from another context is an error.
 
-`gain` is linear; `mute` is on for anything but 0. `route` moves the bus under another parent on frame `at`.
+{{ api_signature(value="node:set(param: string, value: number, at: number?) -> boolean") }}
+{{ api_signature(value="node:route(parent: AudioNode, at: number?)") }}
 
-{{ api_signature(value="bus:ramp(param: 'gain', value: number, frames: number, at: number?, curve: ('linear' | 'exponential')?) -> boolean") }}
+A bus has two parameters: `gain`, linear, and `mute`, on for anything but 0. `route` moves the node's route to another node on frame `at`, keeping its sends.
 
-Ramps the bus's gain sample by sample, as `voice:ramp` does a voice's. A mute is a step; to fade a bus out and back, ramp its gain.
+{{ api_signature(value="node:ramp(param: string, value: number, frames: number, at: number?, curve: ('linear' | 'exponential')?) -> boolean") }}
 
-{{ api_signature(value="bus:send(target: AudioBus, options: { level: number?, tap: ('post' | 'pre')?, at: number? }?)") }}
-{{ api_signature(value="bus:unsend(target: AudioBus, at: number?) -> boolean") }}
+Ramps a parameter as `voice:ramp` does a voice's. An audio-rate parameter (a bus's gain) moves every sample; a control-rate one moves every 32 frames: while one ramps, the engine mixes in blocks of 32 and tells the processor where the ramp has got to at the start of each. A mute is a step; to fade a bus out and back, ramp its gain.
 
-A send adds the bus into `target` as well as its parent, at `level` (1). It taps after the bus's gain and mute (`post`), or before them (`pre`), so a muted bus still feeds the room it sends to. A bus has up to four sends; sending to a target again changes the one there.
+{{ api_signature(value="node:params() -> { { name: string, min: number, max: number, default: number, unit: string, rate: 'control' | 'audio' } }") }}
 
-Many voices and buses sending to one bus are one input to it: a reverb on a shared bus runs once over everything sent there, not once per route.
+A node's parameters, in order: range, default, unit (`Hz`, `dB`, `s`, or empty for a plain number), and rate.
 
-{{ api_signature(value="bus:remove(at: number?) -> boolean") }}
+{{ api_signature(value="node:send(target: AudioNode, options: { level: number?, tap: ('post' | 'pre')?, at: number? }?)") }}
+{{ api_signature(value="node:unsend(target: AudioNode, at: number?) -> boolean") }}
 
-Removes the bus. It has to be quiet first: a voice playing or sending into it, or a bus routed into it, makes `remove` an error that counts them (`the bus still has 2 voices and 0 buses routed into it`). A removed bus keeps running its processors until their tails have rung out, so a reverb's decay isn't cut off, then goes with them. The master is never removed.
+A send adds the node into `target` as well as its route, at `level` (1). It taps after the node's processing, a bus's gain and mute (`post`), or before it (`pre`), so a muted bus still feeds the room it sends to. Sending to a target again changes the send there. A context has room for `connections` of them, routes included.
 
-{{ api_signature(value="bus:live() -> boolean") }}
-{{ api_signature(value="bus:meter() -> { peak: number, rms: number }") }}
-{{ api_signature(value="bus:latency() -> number") }}
+Many voices and nodes sending to one bus are one input to it: a reverb on a shared bus runs once over everything sent there, not once per route.
 
-`meter` is what the bus put out after its gain since the last read: the largest sample's magnitude and the RMS, linear, across its channels. Reading starts the next measurement. `latency` is how many frames the bus's output lags the voices that reach it, along the path whose processors delay them most. Where paths of different latency meet, the engine lines them up: every path into a bus, and what voices play into it directly, waits for the latest, so a voice heard through a limited group and through a dry one stays one voice. A sidechain key is heard as it left its bus, without waiting.
+{{ api_signature(value="node:remove(at: number?) -> boolean") }}
+
+Removes the node. Nothing may feed it first: a voice playing or sending into it, or a node routed or sending into it, makes `remove` an error that counts them (`the node still has 2 voices and 0 connections feeding it`). Its own route and sends go with it, and so does a sidechain it is the key of. A removed node whose processors have a tail keeps running until the tail has rung out, so a reverb's decay isn't cut off, then goes with its insert chain. The master is never removed.
+
+{{ api_signature(value="node:live() -> boolean") }}
+{{ api_signature(value="node:meter() -> { peak: number, rms: number }") }}
+{{ api_signature(value="node:latency() -> number") }}
+{{ api_signature(value="node:kind() -> string") }}
+
+`meter` is what a bus put out after its gain since the last read: the largest sample's magnitude and the RMS, linear, across its channels. Reading starts the next measurement; another node has no meter. `latency` is how many frames the node's output lags the voices that reach it, along the path whose processors delay them most. Where paths of different latency meet, the engine lines them up: every path into a node, a sidechain key, and what voices play into it directly wait for the latest, so a voice heard through a limited group and through a dry one stays one voice.
 
 ## Processors
 
-{{ api_signature(value="bus:insert(kind: string, settings: { [string]: number | string }?) -> AudioProcessor") }}
+{{ api_signature(value="node:insert(kind: string, settings: { [string]: number | string }?) -> AudioNode") }}
 
-Puts a processor of `kind` in the bus's chain, last or at `index` (from 1), made with `settings`: its parameters by name, and whatever the kind is made with. A bus runs up to 16. `audio.processors()` lists the kinds:
+Puts a processor of `kind` in the node's insert chain, last or at `index` (from 1), made with `settings`: its parameters by name, and whatever the kind is made with. The chain runs in place over what the bus summed, before its gain. An inserted processor is a node like any other: it is set, ramped, listened to, and removed through its handle. `audio.processors()` lists the kinds, including any the program running the script added:
 
 | Kind | Made with | Parameters (range, default) | Does |
 | --- | --- | --- | --- |
-| `gain` | | `gain` (-64 to 64, 1) | Multiplies the bus: a trim before the rest of the chain |
-| `pan` | | `pan` (-1 to 1, 0) | Balances a stereo bus; on any other it does nothing |
+| `mixer` | | `gain` (-64 to 64, 1, audio rate), `mute` (0 or 1) | A bus's own processing |
+| `gain` | | `gain` (-64 to 64, 1, audio rate) | Multiplies what passes: a trim, or an amplifier something modulates |
+| `pan` | | `pan` (-1 to 1, 0) | Balances a stereo signal; on any other it does nothing |
 | `filter` | `shape`: `lowpass` (the default), `highpass`, `bandpass`, `notch`, `peak`, `lowshelf`, `highshelf`, `allpass` | `frequency` (Hz, 1000), `q` (0.025 to 40, 0.707), `gain` (dB, -48 to 48, 0; the peak and shelves) | One biquad from the audio EQ cookbook. A parametric EQ is a chain of `peak` filters |
 | `delay` | `longest`: seconds, up to 10 (2) | `time` (seconds, 0.25), `feedback` (-0.99 to 0.99, 0.3), `mix` (0 dry to 1 wet, 0.5) | Echoes. A time past `longest` plays at `longest` |
-| `compressor` | | `threshold` (dB, -80 to 0, -20), `ratio` (1 to 50, 4), `attack` (seconds, 0.005), `release` (seconds, 0.1), `knee` (dB, 0 to 24, 6), `makeup` (dB, -24 to 24, 0) | Turns down what goes over the threshold, following its own bus or the one it `listen`s to |
+| `compressor` | | `threshold` (dB, -80 to 0, -20), `ratio` (1 to 50, 4), `attack` (seconds, 0.005), `release` (seconds, 0.1), `knee` (dB, 0 to 24, 6), `makeup` (dB, -24 to 24, 0) | Turns down what goes over the threshold, following its own input or the key it `listen`s to |
 | `limiter` | `lookahead`: seconds, up to 0.05 (0.005) | `ceiling` (dB, -24 to 0, -0.3), `release` (seconds, 0.05) | Keeps every sample at or under the ceiling, turning down before a peak arrives; its lookahead is its latency |
 | `reverb` | | `room` (0 to 1, 0.5), `damping` (0 to 1, 0.5), `wet` (0 to 1, 0.3), `dry` (0 to 1, 0), `width` (0 to 1, 1) | A room, after Jezar's public-domain Freeverb: eight damped combs and four allpasses a side. With `dry` at 0 it suits a bus voices send to |
 | `drive` | | `drive` (dB, 0 to 48, 12), `level` (dB, -48 to 12, -6), `mix` (0 to 1, 1) | Saturation: a hyperbolic tangent that rounds off where the signal would clip |
 
-A processor's tail is how long it keeps sounding once its input stops: a delay until its echoes have died to -60 dB, a reverb until its longest comb has, a limiter its lookahead. A removed bus runs that long before it goes.
+Parameters are control rate unless the table says otherwise. A processor's tail is how long it keeps sounding once its input stops: a delay until its echoes have died to -60 dB, a reverb until its longest comb has, a limiter its lookahead. A removed node runs that long before it goes.
 
-{{ api_signature(value="processor:set(param: string, value: number, at: number?) -> boolean") }}
-{{ api_signature(value="processor:ramp(param: string, value: number, frames: number, at: number?, curve: ('linear' | 'exponential')?) -> boolean") }}
-{{ api_signature(value="processor:listen(bus: AudioBus?, at: number?) -> boolean") }}
-{{ api_signature(value="processor:remove(at: number?) -> boolean") }}
-{{ api_signature(value="processor:kind() -> string") }}
-{{ api_signature(value="processor:live() -> boolean") }}
+{{ api_signature(value="context:node(kind: string, settings: { [string]: number | string }?) -> AudioNode") }}
 
-`listen` gives a processor a sidechain: it hears `bus` as it leaves that bus, after its gain, instead of its own input, and still processes its own. A compressor on the music listening to the dialogue bus ducks the music whenever anyone speaks:
+A processor as a node of its own, connected to nothing, with `channels` among its settings if fewer than the context's. A voice can play straight into it.
+
+{{ api_signature(value="node:listen(key: AudioNode?, at: number?) -> boolean") }}
+
+`listen` gives a processor with a sidechain (the compressor) a key: it hears `key` as it leaves that node, after its gain, instead of its own input, and still processes its own. A compressor on the music listening to the dialogue bus ducks the music whenever anyone speaks:
 
 ```luau
 --!strict
@@ -235,9 +242,9 @@ local ducker = music:insert('compressor', { threshold = -30, ratio = 8, release 
 ducker:listen(dialogue)
 ```
 
-The bus a processor listens to is mixed before the processor's own, so listening to a bus that the processor's bus feeds (its parent, say) would be a loop, and is refused. A bus being listened to can't be removed until nothing listens. `listen(nil)` goes back to the processor's own input.
+The key runs before the node listening to it, so listening to a node that the listener feeds (its bus's route, say) would be a loop, and is refused. `listen(nil)` goes back to the processor's own input.
 
-A name the processor doesn't have, or a value outside its range, is an error naming what it does take. A processor's parameters ramp in steps of 32 frames rather than every frame: while one ramps, the engine mixes in blocks of 32 and tells the processor where the ramp has got to at the start of each.
+A name the processor doesn't have, or a value outside its range, is an error naming what it does take.
 
 ## Budgets
 
