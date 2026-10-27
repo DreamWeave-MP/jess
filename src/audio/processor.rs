@@ -365,6 +365,20 @@ impl<'a> Io<'a> {
         self.key
     }
 
+    /// The main buffer and audio-rate parameter `index`'s values together, as [`Io::param`] has
+    /// them.
+    pub fn main_and_param(&mut self, index: usize) -> (Block<'_>, Option<&[f32]>) {
+        let values = (index < MAX_PARAMS && self.varying & (1 << index) != 0)
+            .then(|| self.params.get(index * QUANTUM..index * QUANTUM + self.frames))
+            .flatten();
+        let block = Block {
+            samples: self.main,
+            channels: self.channels,
+            frames: self.frames,
+        };
+        (block, values)
+    }
+
     /// Audio-rate parameter `index`'s value at each frame of this block while it moves (ramped or
     /// modulated); `None` while it holds the value [`Processor::set`] gave it.
     #[must_use]

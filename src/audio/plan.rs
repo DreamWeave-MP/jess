@@ -122,6 +122,8 @@ pub struct Clear {
     pub slot: u32,
     pub generation: u32,
     pub channels: u8,
+    /// It has audio inputs past the first, which the node holds.
+    pub more: bool,
 }
 
 /// See the module docs.

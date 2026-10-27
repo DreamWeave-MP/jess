@@ -933,6 +933,7 @@ impl Definition {
                 slot: unit,
                 generation: self.nodes[unit as usize].generation,
                 channels: to_u8(self.nodes[unit as usize].channels),
+                more: self.nodes[unit as usize].shape.ports.audio().count() > 1,
             })
             .collect();
         Ok(Plan {

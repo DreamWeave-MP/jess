@@ -408,11 +408,13 @@ impl Control {
 
     fn start(&mut self, source: Source, spec: &PlaySpec, frames: u64) -> Result<VoiceKey, AudioError> {
         self.collect();
-        let mut outputs = Vec::with_capacity(1 + spec.sends.len());
-        outputs.push(self.output(spec.bus, 1.0)?);
-        for send in &spec.sends {
-            outputs.push(self.output(send.bus, send.level)?);
-        }
+        // A voice without sends allocates nothing here: the rest of its outputs are empty.
+        let first = self.output(spec.bus, 1.0)?;
+        let rest = spec
+            .sends
+            .iter()
+            .map(|send| self.output(send.bus, send.level))
+            .collect::<Result<Box<[Output]>, AudioError>>()?;
         let Some(slot) = self.free.pop() else {
             return Err(AudioError::VoicesExhausted(self.slots.len()));
         };
@@ -424,7 +426,10 @@ impl Control {
             voice,
             source,
             spec: spec.begin(),
-            outputs: Outputs::new(&outputs),
+            outputs: Outputs {
+                first,
+                rest: rest.clone(),
+            },
         };
         if let Err(error) = self.send(spec.at, command) {
             self.free.push(slot);
@@ -434,7 +439,8 @@ impl Control {
         entry.busy = true;
         entry.start = spec.at;
         entry.outputs.clear();
-        entry.outputs.extend_from_slice(&outputs);
+        entry.outputs.push(first);
+        entry.outputs.extend_from_slice(&rest);
         entry.frames = frames;
         entry.offset = spec.offset;
         entry.stream = None;
