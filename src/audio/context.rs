@@ -1156,6 +1156,12 @@ impl Control {
         self.graph.is_live(node)
     }
 
+    /// The plan the graph compiles to now.
+    #[cfg(test)]
+    pub(crate) fn plan(&self) -> crate::audio::plan::Plan {
+        self.graph.compile().unwrap()
+    }
+
     /// The kind and parameters of `node`, while it is live.
     #[must_use]
     pub fn describe(&self, node: NodeKey) -> Option<(&'static str, &'static [ParamInfo])> {

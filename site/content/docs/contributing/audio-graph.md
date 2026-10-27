@@ -68,7 +68,7 @@ Revisions take effect in the order they were made. A revision can be stamped for
 A plan is a list of steps, one for each node that runs. Each step names its node, the buffer it runs in, the signal it pulls before it runs, and the pushes it makes afterwards. Compiling one:
 
 1. **Orders the steps.** It sorts the dependencies (audio and sidechain connections, modulation, insert chains) with Kahn's algorithm, lowest slot first, so the same definition always runs in the same order. A cycle with no delay on it is refused.
-2. **Places buffers.** Every node has one input buffer, which voices can add into at any time. That is why it is permanent: which voices play where is not the plan's business. A node that runs in place processes there, and its first output is that buffer. Any other output (an extra port, or the output of a node that doesn't run in place) gets scratch from a pool. Each piece of scratch lives from the step that writes it to the last step that reads it, so outputs no longer needed share space, and the pool is as large as the most outputs live at once.
+2. **Places buffers.** Where every output lives is the plan's decision, made when it compiles; nothing outside the plan names a buffer, so placement can change without changing an API. A node with an audio input has an input buffer of its own, which voices can add into at any time: which voices play where is not the plan's business, so that buffer is permanent. A node that runs in place processes there, and its first output is that buffer. A node with no audio input (an oscillator, an envelope, any generator) has nothing to receive, so it runs in scratch alone and never touches a buffer. Every output not in a buffer (a generator's, an extra port, or the output of a node that doesn't run in place) gets scratch from a pool. Each piece of scratch lives from the step that writes it to the last step that reads it, so outputs no longer needed share space, and the pool is as large as the most outputs live at once.
 3. **Plans the signal.** Audio connections are pushed: right after a node runs, its output is added into each input it feeds, at the connection's level, converted, through a compensation delay if it needs one. Sidechains and modulation are pulled, read when the node listening to them runs.
 4. **Works out latency**, and allocates compensation and feedback delay lines (below).
 
@@ -160,7 +160,7 @@ These are deliberate, and each is checked:
 - **Feedback** needs a delay of at least a quantum (128 frames). There is no sample-by-sample feedback.
 - **Revisions** take effect in the order they're made. A revision stamped earlier than one still waiting is refused (`GraphOrder`), not reordered.
 - **Channel counts** go from 1 up to the context's, and connect only one way: the same count, mono into any, or any into mono as their average.
-- **Every node keeps an input buffer**, because a voice may play into any node at any time. Only outputs other than a node's buffer share scratch.
+- **A node with an audio input keeps an input buffer of its own**, because a voice may play into it at any time. Generators share scratch by lifetime, so a synthesizer of hundreds of oscillators runs in a few blocks; a graph of hundreds of filters still holds a buffer each.
 - **Control-rate parameters** hear a ramp or a modulation every 32 frames, on a grid fixed to the clock: exact to the grid, not to the sample. A step is exact to the sample.
 - **Modulation** is mixed to mono and isn't latency-compensated.
 - **A processor has at most one sidechain**, and a sidechain hears one connection. A processor has at most eight ports and 64 parameters, and its latency is fixed for its life.
@@ -174,5 +174,6 @@ These are deliberate, and each is checked:
 
 - **Capture** is a source node whose processor reads a device's input ring, filled by miniaudio's duplex devices. A recording is a stream a node writes and a script reads. Neither needs a change to plans or steps.
 - **Multichannel output** is a context of up to eight channels. Wider buses and the conversion rules carry it, and a surround panner is a processor with an output per speaker.
+- **Shared input buffers** for nodes that have inputs need voices mixed into a node just before its step, rather than all at the start of a block, so a buffer lives only from its first writer to its last reader. Placement is already the plan's, so that is a change to the compiler and the engine's voice walk, not to any API.
 - **Synthesis** is more processors (wavetables, noise, filters with audio-rate cutoff) and more modulation sources. MIDI is a Luau schedule of `set` and `gate` commands.
 - **Third-party DSP** is the registry. A restricted, deterministic DSP language could later register processors the same way, compiled before they reach the render thread.

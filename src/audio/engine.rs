@@ -23,7 +23,7 @@ use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 
 use crate::audio::mixer::{self, NodeKey};
 use crate::audio::param::{Glide, Param};
-use crate::audio::plan::{Modulation, Place, Plan, Push, Revision, Step, Target};
+use crate::audio::plan::{Modulation, Place, Plan, Push, Revision, Runs, Step, Target};
 use crate::audio::processor::{Io, MAX_PARAMS, ParamInfo, Processor, Rate};
 use crate::audio::spatial::{Emitter, Listener, Space};
 use crate::audio::voice::{Begin, Culled, Outputs, Source, Voice, VoiceKey, set_level};
@@ -1270,40 +1270,52 @@ impl Engine {
             }
         }
         let key = key.map(|()| &self.key[..]);
-        if step.metered && !step.separate {
-            // A bus: the mixer's own kernel, run straight on the buffer from the automation the
-            // engine holds, without going through the processor. A mute something modulates is
-            // the processor's to know.
-            let gains = (varying & (1 << mixer::GAIN) != 0).then(|| &self.values[..frames]);
-            #[allow(clippy::cast_possible_truncation)] // Engine gains are f32.
-            let gain = node_params(params, mixer::GAIN) as f32;
-            let muted = if modulated & (1 << mixer::MUTE) == 0 {
-                node_params(params, mixer::MUTE) != 0.0
-            } else {
-                processor.value(mixer::MUTE) != 0.0
-            };
-            mixer::apply(
-                &mut self.buffers[buffer..buffer + stride],
-                channels,
-                frames,
-                gains,
-                gain,
-                muted,
-            );
-        } else if step.separate {
-            let (main, rest) = outputs.split_at_mut(stride);
-            let mut io = Io::new(main, channels, frames)
-                .with_key(key)
-                .with_ports(Some(&self.buffers[buffer..buffer + stride]), inputs, rest)
-                .with_params(&self.values, varying);
-            processor.process(&mut io);
-        } else {
-            let main = &mut self.buffers[buffer..buffer + stride];
-            let mut io = Io::new(main, channels, frames)
-                .with_key(key)
-                .with_ports(None, inputs, outputs)
-                .with_params(&self.values, varying);
-            processor.process(&mut io);
+        match step.runs {
+            Runs::InPlace if step.metered => {
+                // A bus: the mixer's own kernel, run straight on the buffer from the automation the
+                // engine holds, without going through the processor. A mute something modulates is
+                // the processor's to know.
+                let gains = (varying & (1 << mixer::GAIN) != 0).then(|| &self.values[..frames]);
+                #[allow(clippy::cast_possible_truncation)] // Engine gains are f32.
+                let gain = node_params(params, mixer::GAIN) as f32;
+                let muted = if modulated & (1 << mixer::MUTE) == 0 {
+                    node_params(params, mixer::MUTE) != 0.0
+                } else {
+                    processor.value(mixer::MUTE) != 0.0
+                };
+                mixer::apply(
+                    &mut self.buffers[buffer..buffer + stride],
+                    channels,
+                    frames,
+                    gains,
+                    gain,
+                    muted,
+                );
+            }
+            Runs::InPlace => {
+                let main = &mut self.buffers[buffer..buffer + stride];
+                let mut io = Io::new(main, channels, frames)
+                    .with_key(key)
+                    .with_ports(None, inputs, outputs)
+                    .with_params(&self.values, varying);
+                processor.process(&mut io);
+            }
+            Runs::Separate => {
+                let (main, rest) = outputs.split_at_mut(stride);
+                let mut io = Io::new(main, channels, frames)
+                    .with_key(key)
+                    .with_ports(Some(&self.buffers[buffer..buffer + stride]), inputs, rest)
+                    .with_params(&self.values, varying);
+                processor.process(&mut io);
+            }
+            Runs::Scratch => {
+                let (main, rest) = outputs.split_at_mut(stride);
+                let mut io = Io::new(main, channels, frames)
+                    .with_key(key)
+                    .with_ports(None, inputs, rest)
+                    .with_params(&self.values, varying);
+                processor.process(&mut io);
+            }
         }
         if step.metered {
             self.meter(step.slot as usize, channels, frames);

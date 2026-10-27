@@ -89,17 +89,31 @@ impl Span {
     }
 }
 
+/// Where a step runs: which blocks hold its first input and its first output.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Runs {
+    /// In its buffer, which holds its first input and then its first output.
+    InPlace,
+    /// Reading its buffer and writing its first output into scratch: a node that doesn't work in
+    /// place.
+    Separate,
+    /// In scratch alone. Nothing can reach the buffer of a node with no audio input (no voice,
+    /// connection, or feedback plays into one), so it never touches it: its outputs share scratch
+    /// with any never needed at the same time, and a graph of many oscillators runs in a few
+    /// blocks of memory.
+    Scratch,
+}
+
 /// One node's run.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Step {
     pub slot: u32,
     pub generation: u32,
-    /// The node buffer it runs in: its own, or its host's for an inserted processor.
+    /// The node buffer it runs in: its own, or its host's for an inserted processor. A step that
+    /// runs in scratch has none.
     pub buffer: u32,
     pub channels: u8,
-    /// True for a node that doesn't work in place: it reads its buffer and writes its first output
-    /// into scratch.
-    pub separate: bool,
+    pub runs: Runs,
     /// The scratch strides its outputs other than the buffer occupy, one after another.
     pub outputs: Span,
     /// Pushes tapped before the node's own processing, and after it.

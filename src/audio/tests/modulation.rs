@@ -3,6 +3,7 @@
 use super::{Level, mono, pcm};
 use crate::audio::dsp::crossfade::Crossfade;
 use crate::audio::dsp::generators::{Envelope, Oscillator, Wave};
+use crate::audio::plan::Runs;
 use crate::audio::processor::{Gain, Io, ParamInfo, Port, PortKind, Ports, Processor};
 use crate::audio::{AudioConfig, Connection, Curve, Edit, Glide, NodeKey, OfflineContext, PlaySpec, QUANTUM};
 
@@ -390,4 +391,34 @@ fn a_cancel_drops_what_was_scheduled_before_it_and_holds_the_ramp_where_it_got_t
     context.control().cancel(amplifier, "gain", Some(4)).unwrap();
     context.control().set_param(amplifier, "gain", 2.0, Some(7), None).unwrap();
     close(&context.render(8), &[1.0, 0.875, 0.75, 0.625, 0.5, 0.5, 0.5, 2.0]);
+}
+
+#[test]
+fn generators_run_in_scratch_they_share_and_leave_every_buffer_alone() {
+    let mut context = mono(AudioConfig::default());
+    let sum = amplifier(&mut context, 1.0);
+    // Made first, so it runs first, and read only when the sum runs, after all the rest: it needs
+    // its block all that time.
+    let swell = context.control().add_node(Box::new(Constant(0.5)), None).unwrap();
+    let mut edits = vec![modulate(swell, sum, "gain", 1.0)];
+    for _ in 0..64 {
+        let source = context.control().add_node(Box::new(Constant(1.0 / 64.0)), None).unwrap();
+        edits.push(connect(source, "out", sum, "in"));
+    }
+    context.control().patch(&edits, None).unwrap();
+
+    let plan = context.control().plan();
+    let stride = QUANTUM;
+    assert_eq!(
+        plan.steps.iter().filter(|step| step.runs == Runs::Scratch).count(),
+        65,
+        "every generator runs in scratch"
+    );
+    assert_eq!(
+        plan.scratch.len(),
+        2 * stride,
+        "the 64 share a block; the one read later has its own"
+    );
+    assert_eq!(plan.clear.len(), 2, "only the master's and the sum's buffers are cleared");
+    close(&context.render(3), &[1.5, 1.5, 1.5]);
 }

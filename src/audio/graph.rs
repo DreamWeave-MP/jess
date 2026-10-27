@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 
 use crate::audio::delays::{Delays, Edge, INPUT, Rings};
 use crate::audio::mixer::{NodeKey, Tap};
-use crate::audio::plan::{Clear, Feedback, Modulation, Place, Plan, Pull, Push, Span, Step, Target};
+use crate::audio::plan::{Clear, Feedback, Modulation, Place, Plan, Pull, Push, Runs, Span, Step, Target};
 use crate::audio::processor::{ParamInfo, PortKind, Ports, Processor, Rate};
 use crate::audio::{AudioError, QUANTUM};
 
@@ -690,6 +690,13 @@ impl Definition {
         }
         let runs = |slot: u32| position[slot as usize] != usize::MAX;
         let wired: Vec<&Link> = self.links.iter().filter(|link| runs(link.from) && runs(link.to)).collect();
+        let scratch_only: Vec<bool> = (0..self.nodes.len())
+            .map(|slot| runs(to_u32(slot)) && self.scratch_only(to_u32(slot), &wired))
+            .collect();
+        // The outputs a node leaves in its buffer: its first, if it works there.
+        let in_buffer = |slot: u32| -> usize {
+            usize::from(self.nodes[slot as usize].shape.ports.in_place && !scratch_only[slot as usize])
+        };
 
         // Scratch: each output other than a buffer, from its step to the last step that reads it.
         let mut last_read = vec![[0usize; crate::audio::processor::MAX_PORTS]; self.nodes.len()];
@@ -706,7 +713,7 @@ impl Definition {
             if node.host.is_some() {
                 continue;
             }
-            let first = usize::from(node.shape.ports.in_place);
+            let first = in_buffer(slot);
             let count = node.shape.ports.outputs.len() - first;
             let start = (0..=free_after.len())
                 .find(|start| (*start..start + count).all(|stride| free_after.get(stride).is_none_or(|free| *free < index)))
@@ -723,12 +730,11 @@ impl Definition {
             };
         }
         let place = |slot: u32, output: u8| -> Place {
-            let node = &self.nodes[slot as usize];
-            if output == 0 && node.shape.ports.in_place {
+            let first = in_buffer(slot);
+            if usize::from(output) < first {
                 return Place::Buffer(slot);
             }
-            let first = u32::from(node.shape.ports.in_place);
-            Place::Scratch(outputs[slot as usize].start + u32::from(output) - first)
+            Place::Scratch(outputs[slot as usize].start + u32::from(output) - to_u32(first))
         };
 
         let mut lines: Vec<(Edge, u64, usize)> = Vec::new();
@@ -747,7 +753,13 @@ impl Definition {
                 generation: node.generation,
                 buffer: unit,
                 channels: to_u8(node.channels),
-                separate: !node.shape.ports.in_place,
+                runs: if scratch_only[slot as usize] {
+                    Runs::Scratch
+                } else if node.shape.ports.in_place {
+                    Runs::InPlace
+                } else {
+                    Runs::Separate
+                },
                 outputs: outputs[slot as usize],
                 pre: Span::default(),
                 post: Span::default(),
@@ -929,6 +941,7 @@ impl Definition {
             .collect();
         let clear = order
             .iter()
+            .filter(|&&unit| !scratch_only[unit as usize])
             .map(|&unit| Clear {
                 slot: unit,
                 generation: self.nodes[unit as usize].generation,
@@ -948,6 +961,18 @@ impl Definition {
             rings,
             scratch: vec![0.0; free_after.len() * self.channels * QUANTUM].into_boxed_slice(),
         })
+    }
+
+    /// True for a node that runs in scratch alone ([`Runs::Scratch`]): one with no audio input,
+    /// so that nothing can reach its buffer, and nothing (an insert chain, a pre-fader send, a
+    /// mixer's own kernel) that works there.
+    fn scratch_only(&self, slot: u32, wired: &[&Link]) -> bool {
+        let node = &self.nodes[slot as usize];
+        node.shape.ports.audio().next().is_none()
+            && !node.shape.mixer
+            && node.host.is_none()
+            && node.inserts.is_empty()
+            && !wired.iter().any(|link| link.from == slot && link.tap == Tap::PreFader)
     }
 
     fn is_sidechain(&self, link: &Link) -> bool {

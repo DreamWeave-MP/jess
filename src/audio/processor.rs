@@ -174,7 +174,7 @@ impl Ports {
         in_place: true,
     };
 
-    /// A source: no inputs, one output, `out`, which it writes over the silence its buffer holds.
+    /// A source: no inputs, one output, `out`, which it writes over the silence its block holds.
     pub const SOURCE: Ports = Ports {
         inputs: &[],
         outputs: &["out"],
