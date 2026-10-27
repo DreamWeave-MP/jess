@@ -3,6 +3,7 @@
 
 mod audio_codecs;
 mod audio_device;
+mod audio_extension;
 mod common;
 mod contracts;
 mod kernel;
