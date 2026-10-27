@@ -23,6 +23,7 @@ paths = "safe"
 [extra]
 github_username = "DreamWeave-MP"
 github_project = "jess"
+goatcounter = "dreamweave-mp"
 logo_text = "jess"
 footer_text = "only baby scars"
 menu_items = [
