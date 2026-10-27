@@ -1,0 +1,225 @@
+--!strict
+-- A miniature multitrack session over the audio graph: clips on tracks, a playhead that starts
+-- anywhere, seeks while it plays, and pauses; per-track effects, a shared room, a parallel chain
+-- of different latency, an effects route replaced on a frame, and a bounce to WAV. The session
+-- and its transport are this test's; the engine underneath is the one everything else uses.
+local audio = require '@jess/audio'
+local test = require '@jess/test'
+local expect = test.expect
+local suite = test.new()
+
+local Rate = 8000
+
+local function samples(data: buffer): { number }
+  local out = {}
+  for index = 0, buffer.len(data) // 4 - 1 do
+    table.insert(out, buffer.readf32(data, index * 4))
+  end
+
+  return out
+end
+
+local function sound(count: number, shape: (number) -> number): audio.Pcm
+  local data = buffer.create(count * 4)
+  for frame = 0, count - 1 do
+    buffer.writef32(data, frame * 4, shape(frame))
+  end
+
+  return audio.pcm(data, { format = 'f32', channels = 1, rate = Rate })
+end
+
+local Kick = sound(1200, function(frame: number): number
+  return 0.6 * math.sin(2 * math.pi * 55 * frame / Rate) * (1 - frame / 1200)
+end)
+
+local Bass = sound(3000, function(frame: number): number
+  return if (frame * 82 / Rate) % 1 < 0.5 then 0.2 else -0.2
+end)
+
+local Lead = sound(2000, function(frame: number): number
+  return 0.25 * math.sin(2 * math.pi * 440 * frame / Rate)
+end)
+
+--- A clip on a track, from frame `at` of the timeline.
+type Clip = { track: string, pcm: audio.Pcm, at: number }
+
+type Session = {
+  context: audio.Context,
+  tracks: { [string]: audio.Node },
+  clips: { Clip },
+  playing: { audio.Voice },
+}
+
+local Clips: { Clip } = {
+  { track = 'drums', pcm = Kick, at = 0 },
+  { track = 'bass', pcm = Bass, at = 500 },
+  { track = 'drums', pcm = Kick, at = 4000 },
+  { track = 'lead', pcm = Lead, at = 2500 },
+  { track = 'bass', pcm = Bass, at = 5000 },
+  { track = 'lead', pcm = Lead, at = 6000 },
+  { track = 'drums', pcm = Kick, at = 8000 },
+}
+
+--- A session of `Clips`. Plain, every track is a bare bus; otherwise the bass is driven, the
+--- drums are crushed in parallel through a limiter's lookahead, and the lead sends to a shared
+--- room.
+local function session(plain: boolean): Session
+  local context = audio.offline { rate = Rate, channels = 1 }
+  local tracks = { drums = context:bus(), bass = context:bus(), lead = context:bus() }
+  if not plain then
+    tracks.bass:insert('drive', { drive = 18, level = -12 })
+    tracks.bass:insert('filter', { frequency = 900 })
+    local squash = context:node('limiter', { lookahead = 32 / Rate, ceiling = -18 })
+    local room = context:bus { gain = 0.5 }
+    room:insert('reverb', { room = 0.6, wet = 1 })
+    context:patch(function(graph)
+      graph:connect(tracks.drums, squash)
+      graph:connect(squash, context:master(), { level = 0.5 })
+      graph:connect(tracks.lead, room, { level = 0.4 })
+    end)
+  end
+
+  return { context = context, tracks = tracks, clips = Clips, playing = {} }
+end
+
+--- Plays the session from timeline frame `from`, starting on output frame `at`: a clip already
+--- under way starts partway in, the rest on their own frames after.
+local function start(playing: Session, from: number, at: number)
+  for _, clip in playing.clips do
+    if clip.at + clip.pcm:frames() <= from then continue end
+
+    local voice = playing.context:play(clip.pcm, {
+      bus = playing.tracks[clip.track],
+      at = at + math.max(0, clip.at - from),
+      offset = math.max(0, from - clip.at),
+    })
+    table.insert(playing.playing, voice)
+  end
+end
+
+--- Stops what the session plays on output frame `at`: clips under way stop there, and ones that
+--- haven't started never do.
+local function halt(playing: Session, at: number)
+  for _, voice in playing.playing do
+    voice:stop(at)
+  end
+
+  table.clear(playing.playing)
+end
+
+--- Moves the playhead to timeline frame `to` on output frame `at`.
+local function seek(playing: Session, to: number, at: number)
+  halt(playing, at)
+  start(playing, to, at)
+end
+
+local function render(playing: Session, frames: number, block: number?): { number }
+  local out = {}
+  while #out < frames do
+    for _, sample in samples(playing.context:render(math.min(block or frames, frames - #out))) do
+      table.insert(out, sample)
+    end
+  end
+
+  return out
+end
+
+local function same(first: { number }, second: { number }, from: number, to: number, shift: number)
+  for index = from, to do
+    expect(math.abs(first[index] - second[index + shift]) < 1e-6).toBe(true)
+  end
+end
+
+local Length = 9000
+
+--- The plain session played from the start: what every transport move is checked against.
+local function played(): { number }
+  local plain = session(true)
+  start(plain, 0, 0)
+  return render(plain, Length)
+end
+
+suite.describe('a session', function()
+  local reference = played()
+
+  suite.it('starts anywhere in the timeline, clips under way partway in', function()
+    local plain = session(true)
+    start(plain, 2700, 0)
+    same(render(plain, 6000), reference, 1, 6000, 2700)
+  end)
+
+  suite.it('seeks while it plays, on the frame it was told', function()
+    local plain = session(true)
+    start(plain, 0, 0)
+    seek(plain, 5200, 1000)
+    local out = render(plain, 3000)
+    same(out, reference, 1, 1000, 0)
+    same(out, reference, 1001, 3000, 4200)
+  end)
+
+  suite.it('pauses and plays on from where it stopped', function()
+    local plain = session(true)
+    start(plain, 0, 0)
+    halt(plain, 1500)
+    start(plain, 1500, 2300)
+    local out = render(plain, 5000)
+    same(out, reference, 1, 1500, 0)
+    for index = 1501, 2300 do
+      expect(out[index]).toBe(0)
+    end
+
+    same(out, reference, 2301, 5000, -800)
+  end)
+
+  suite.it('runs per-track, shared, and parallel effects in line, however it renders', function()
+    local full = session(false)
+    expect(full.context:master():latency()).toBe(32)
+    start(full, 0, 0)
+    local whole = render(full, Length)
+    local pieces = session(false)
+    start(pieces, 0, 0)
+    expect(render(pieces, Length, 37)).toEqual(whole)
+    -- The lead's room rings on after the lead stops; the bass is driven: none of it is plain.
+    local differs = false
+    for index = 1, Length do
+      differs = differs or math.abs(whole[index] - reference[index]) > 1e-3
+    end
+
+    expect(differs).toBe(true)
+    expect(full.context:stats().nonfinite).toBe(0)
+  end)
+
+  suite.it('replaces an effects route on its frame and leaves everything before it alone', function()
+    local kept = session(false)
+    start(kept, 0, 0)
+    local before = render(kept, Length)
+    local moved = session(false)
+    start(moved, 0, 0)
+    local echo = moved.context:node('delay', { time = 0.1, feedback = 0.4, mix = 0.5 })
+    moved.context:patch(function(graph)
+      graph:disconnect(moved.tracks.lead, moved.context:master())
+      graph:connect(moved.tracks.lead, echo)
+      graph:connect(echo, moved.context:master())
+    end, 5500)
+    local after = render(moved, Length)
+    same(after, before, 1, 5500, 0)
+    local changed = false
+    for index = 6001, Length do
+      changed = changed or math.abs(after[index] - before[index]) > 1e-3
+    end
+
+    expect(changed).toBe(true)
+  end)
+
+  suite.it('bounces to a WAV file that reads back as what was rendered', function()
+    local full = session(false)
+    start(full, 0, 0)
+    local mix = full.context:render(Length)
+    local wav = audio.readWav(audio.writeWav(mix, { channels = 1, rate = Rate }))
+    expect(wav.frames).toBe(Length)
+    expect(wav.rate).toBe(Rate)
+    expect(samples(wav.data)).toEqual(samples(mix))
+  end)
+end)
+
+return suite

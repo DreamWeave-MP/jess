@@ -1,0 +1,223 @@
+--!strict
+-- The graph as applications use it: voices of one sound each through processing of its own,
+-- parallel paths of different latency that meet in line, and an instrument made of oscillators,
+-- envelopes, and modulation, played from a script and rendered offline.
+local audio = require '@jess/audio'
+local test = require '@jess/test'
+local expect = test.expect
+local suite = test.new()
+
+local Rate = 48000
+
+local function samples(data: buffer): { number }
+  local out = {}
+  for index = 0, buffer.len(data) // 4 - 1 do
+    table.insert(out, buffer.readf32(data, index * 4))
+  end
+
+  return out
+end
+
+--- `count` frames of `shape(frame)`, mono.
+local function sound(count: number, shape: (number) -> number): audio.Pcm
+  local data = buffer.create(count * 4)
+  for frame = 0, count - 1 do
+    buffer.writef32(data, frame * 4, shape(frame))
+  end
+
+  return audio.pcm(data, { format = 'f32', channels = 1, rate = Rate })
+end
+
+--- A sawtooth at 110 Hz with a little of everything above it: something a filter changes.
+local Saw = sound(4800, function(frame: number): number return 0.4 * ((frame * 110 / Rate) % 1 * 2 - 1) end)
+
+type Chain = { cutoff: number, drive: number, at: number }
+
+local Chains: { Chain } = {
+  { cutoff = 400, drive = 0, at = 0 },
+  { cutoff = 1500, drive = 6, at = 600 },
+  { cutoff = 6000, drive = 18, at = 1200 },
+}
+
+--- A context with an effects bus and `chains`' voices of the saw, each through a filter and a
+--- drive of its own: no bus per voice.
+local function voices(chains: { Chain }): audio.Context
+  local context = audio.offline { rate = Rate, channels = 1 }
+  local effects = context:bus { gain = 0.8 }
+  for _, chain in chains do
+    local filter = context:node('filter', { frequency = chain.cutoff })
+    local drive = context:node('drive', { drive = chain.drive, level = 0 })
+    context:patch(function(graph)
+      graph:connect(filter, drive)
+      graph:connect(drive, effects)
+    end)
+    context:play(Saw, { bus = filter, at = chain.at })
+  end
+
+  return context
+end
+
+suite.describe('voices through processing of their own', function()
+  suite.it('runs each voice of one sound through its own chain into one bus', function()
+    local together = samples(voices(Chains):render(4800))
+    -- Each alone, summed: the chains are independent, and the bus is where they meet.
+    local sum = table.create(4800, 0)
+    for _, chain in Chains do
+      for index, sample in samples(voices({ chain }):render(4800)) do
+        sum[index] += sample
+      end
+    end
+
+    local loudest = 0
+    for index, sample in together do
+      expect(math.abs(sample - sum[index]) < 1e-5).toBe(true)
+      loudest = math.max(loudest, math.abs(sample))
+    end
+
+    expect(loudest > 0.1).toBe(true)
+  end)
+
+  suite.it('makes voices without making a bus or revising the graph for them', function()
+    local context = voices(Chains)
+    context:render(1)
+    local revised = context:stats().revisions
+    for index = 1, 50 do
+      context:play(Saw, { bus = context:master(), at = context:now() + index, gain = 0.01 })
+    end
+
+    context:render(4800)
+    expect(context:stats().revisions).toBe(revised)
+  end)
+end)
+
+suite.describe('parallel paths', function()
+  --- A click through a dry path and a lookahead limiter side by side, into one bus.
+  local function parallel(block: number): ({ number }, number)
+    local context = audio.offline { rate = Rate, channels = 1 }
+    local sum = context:bus()
+    local dry = context:node('gain', { gain = 0.5 })
+    -- A limiter well above the click only delays it, by its lookahead.
+    local limited = context:node('limiter', { lookahead = 64 / Rate, ceiling = 0 })
+    context:patch(function(graph)
+      graph:connect(dry, sum)
+      graph:connect(limited, sum)
+    end)
+    local click = sound(1, function(): number return 0.25 end)
+    context:play(click, { bus = dry, at = 10, sends = { { bus = limited, level = 1 } } })
+    local out = {}
+    while #out < 200 do
+      for _, sample in samples(context:render(math.min(block, 200 - #out))) do
+        table.insert(out, sample)
+      end
+    end
+
+    return out, sum:latency()
+  end
+
+  suite.it('lines up paths of different latency where they meet, however it renders', function()
+    local out, latency = parallel(200)
+    expect(latency).toBe(64)
+    for index, sample in out do
+      -- The dry half and the limited whole arrive together, the lookahead after the click.
+      local expected = if index - 1 == 10 + 64 then 0.375 else 0
+      expect(math.abs(sample - expected) < 1e-6).toBe(true)
+    end
+
+    for _, block in { 1, 7, 33 } do
+      expect((parallel(block))).toEqual(out)
+    end
+  end)
+end)
+
+--- A note: its frequency, the frame it starts on, and how many frames its gate stays open.
+type Note = { frequency: number, at: number, length: number }
+
+--- A monophonic synthesizer: a saw through a low-pass whose cutoff follows an envelope, into an
+--- amplifier another envelope opens, with a slow vibrato on the pitch. Every connection is the
+--- graph's; the script only says which note and when.
+local function instrument(context: audio.Context): (audio.Node, audio.Node, audio.Node)
+  local oscillator = context:node('oscillator', { wave = 'saw', channels = 1 })
+  local vibrato = context:node('oscillator', { frequency = 5, channels = 1 })
+  local cutoff = context:node('filter', { frequency = 300 })
+  local amplifier = context:node('gain', { gain = 0 })
+  local filterEnvelope = context:node('envelope', { attack = 0.005, decay = 0.08, sustain = 0.3, release = 0.1, channels = 1 })
+  local ampEnvelope = context:node('envelope', { attack = 0.002, decay = 0.05, sustain = 0.6, release = 0.05, channels = 1 })
+  context:patch(function(graph)
+    graph:connect(oscillator, cutoff)
+    graph:connect(cutoff, amplifier)
+    graph:connect(amplifier, context:master())
+    graph:connect(vibrato, oscillator, { to = 'frequency', level = 3 })
+    graph:connect(filterEnvelope, cutoff, { to = 'frequency', level = 3000 })
+    graph:connect(ampEnvelope, amplifier, { to = 'gain', level = 0.5 })
+  end)
+  return oscillator, filterEnvelope, ampEnvelope
+end
+
+--- Schedules `notes` on the instrument: the pitch on each note's frame, the gates open and shut.
+local function perform(context: audio.Context, notes: { Note })
+  local oscillator, filterEnvelope, ampEnvelope = instrument(context)
+  context:group(function()
+    for _, note in notes do
+      oscillator:set('frequency', note.frequency, note.at)
+      filterEnvelope:set('gate', 1, note.at)
+      ampEnvelope:set('gate', 1, note.at)
+      filterEnvelope:set('gate', 0, note.at + note.length)
+      ampEnvelope:set('gate', 0, note.at + note.length)
+    end
+  end)
+end
+
+--- How many cycles `out` goes through between `from` and `to` (frames, from 0): rises past a
+--- small level after having fallen below its negative, so ripples near zero count for nothing.
+local function cycles(out: { number }, from: number, to: number): number
+  local count, low = 0, false
+  for index = from + 1, to do
+    local sample = out[index]
+    if sample < -0.01 then
+      low = true
+    elseif sample > 0.01 and low then
+      count += 1
+      low = false
+    end
+  end
+
+  return count
+end
+
+suite.describe('a programmable instrument', function()
+  suite.it('plays scheduled notes through its envelopes and filter, with nothing driving it per sample', function()
+    local context = audio.offline { rate = Rate, channels = 1 }
+    local notes: { Note } = {
+      { frequency = 220, at = 2400, length = 9600 },
+      { frequency = 330, at = 14400, length = 9600 },
+      { frequency = 440, at = 26400, length = 4800 },
+    }
+    perform(context, notes)
+    local out = samples(context:render(Rate))
+    for index = 1, 2400 do
+      expect(out[index]).toBe(0)
+    end
+
+    -- Each note at its pitch: while its gate is open, it goes through its frequency in cycles a
+    -- second, give or take the vibrato's three hertz.
+    for _, note in notes do
+      local window = note.length - 480
+      local counted = cycles(out, note.at + 480, note.at + note.length)
+      expect(math.abs(counted - note.frequency * window / Rate) <= 2).toBe(true)
+    end
+
+    -- Released, it rings down to silence before the next note.
+    local after = notes[1].at + notes[1].length + Rate // 10
+    local tail = 0
+    for index = after, notes[2].at do
+      tail = math.max(tail, math.abs(out[index]))
+    end
+
+    expect(tail < 1e-3).toBe(true)
+    local wav = audio.readWav(audio.writeWav(context:render(Rate), { channels = 1, rate = Rate }))
+    expect(wav.frames).toBe(Rate)
+    expect(context:stats().nonfinite).toBe(0)
+  end)
+end)
+
+return suite
