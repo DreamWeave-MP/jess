@@ -791,6 +791,8 @@ impl Application {
     /// # Errors
     ///
     /// As [`Application::frame`].
+    // Without a GPU there are no windows or commits to report on.
+    #[cfg_attr(not(feature = "gpu"), allow(unused_variables))]
     pub fn step(&mut self, delta: Duration, report: &mut impl FnMut(&str)) -> Result<FrameReport, crate::host::Error> {
         // The window system's news reaches the frame's input; what the frame left the windows
         // showing is drawn after it.
