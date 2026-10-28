@@ -15,7 +15,7 @@ include = ["/src", "/jpk/builtin", "/vendor/miniaudio", "/build.rs", "/README.md
 autotests = false
 
 [workspace.package]
-version = "0.2.2"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.92"
 authors = ["Dave Corley <corleycomputerrepair@protonmail.ch>"]
