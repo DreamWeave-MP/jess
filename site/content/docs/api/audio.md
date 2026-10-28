@@ -76,6 +76,52 @@ end
 
 `stream:stats().missed` is `0` afterwards: the generator never fell behind.
 
+A writer that shouldn't share the script's time goes in a worker. Workers belong to a script domain, so this is an [application](@/docs/scripting/applications.md)'s entry, its target declaring `audio.output` and `worker.spawn`. The worker opens the stream from its handle and keeps ahead of a device by waiting for room:
+
+```luau
+--!strict
+local application = require '@jess/application'
+local audio = require '@jess/audio'
+local worker = require '@jess/worker'
+
+local context = audio.output { device = 'null', channels = 1 }
+local stream = audio.stream { channels = 1, rate = 48000, seconds = 0.25 }
+context:play(stream)
+
+-- The worker opens the stream from its handle and writes a second of tone, keeping ahead.
+local writer = worker.spawn {
+  capabilities = {},
+  source = [[
+    local audio = require '@jess/audio'
+
+    return function(handle)
+      local stream = audio.stream(handle)
+      local block = buffer.create(480 * 4)
+      for start = 0, 47999, 480 do
+        for index = 0, 479 do
+          local phase = 2 * math.pi * 440 * (start + index) / 48000
+          buffer.writef32(block, index * 4, 0.2 * math.sin(phase))
+        end
+
+        stream:wait(480, 1)
+        stream:write(block)
+      end
+
+      stream:finish()
+
+      return stream:stats().written
+    end
+  ]],
+}
+
+writer:send(stream:handle())
+print(writer:receive(5))
+writer:join()
+application.exit(0)
+```
+
+It prints `48000` once the last block is in: the first quarter second fit at once, and the rest went in as the device played.
+
 ## Contexts
 
 {{ api_signature(value="audio.offline(options: { rate: number?, channels: number?, voices: number?, nodes: number?, connections: number?, commands: number?, speedOfSound: number?, handedness: ('right' | 'left')?, physical: number? }?) -> AudioContext") }}
@@ -101,6 +147,29 @@ Stops an output's device and drops every voice it played. Commands after it are 
 The device rendering an output, or nil for an offline context: its `backend` (the platform API, such as `PulseAudio`, `WASAPI`, `Core Audio`, or `Null`), `rate`, `channels`, the frames it asks for at a time (`period`) and how many it buffers (`periods`), `latency` (about how many frames what you hear lags `now`), and what has happened to it: `stopped`, `rerouted` to a new default device, `interrupted` by the system, whether the engine `failed` on its thread, and whether the output was `closed`.
 
 See [Audio Engine](@/docs/contributing/audio-engine.md) for how the device and the engine meet.
+
+```luau
+--!strict
+local audio = require '@jess/audio'
+
+-- The null device: a real device thread, playing to nowhere.
+local context = audio.output { device = 'null' }
+local device = assert(context:device())
+print(device.backend, device.rate, device.channels)
+
+local click = audio.pcm(buffer.create(4 * 480), { format = 'f32', channels = 1, rate = 48000 })
+
+-- Both clicks start on the same frame, whatever the device's thread does between the calls.
+context:group(function()
+  context:play(click, { pan = -1 })
+  context:play(click, { pan = 1 })
+end)
+
+context:close()
+print(assert(context:device()).closed)
+```
+
+It prints `Null 48000 2`, then `true`. Without the `group` (below), the device's thread could render between the two `play`s and start the clicks on different frames; stamping both for the same frame does the same job without one.
 
 {{ api_signature(value="context:play(source: AudioPcm | AudioStream, options: AudioPlayOptions?) -> AudioVoice") }}
 
@@ -177,6 +246,42 @@ Where a voice plays can change while it plays, on a frame. `route` plays it into
 
 A stream seeks only when a [feed](#compressed-files) decodes into it. A seek stamped at least `voice:seekLead()` frames ahead (half the stream) is prepared: the feed is asked that long before the seek's frame, the voice plays on from what is already decoded until then, and on the frame it moves to the new one without a gap. It takes up to two of the [places for commands stamped for later](#contexts), one for the asking and one for the move, and without room for both it is refused whole. A seek stamped closer, or for now, asks the feed at once. If the feed still hasn't decoded from the new frame when the seek's frame comes, the voice keeps time: it plays silence (counted as `missed` and as `late` in the stream's stats), its position moves on as if it were playing, and when the frames come it joins where it would have got to. A feed's stream keeps time through any underrun that way; a script's plays late frames after the gap. One seek waits on a feed at a time: a seek asked for while another is still waiting replaces it, and the one replaced plays silence until the next lands. A stream a script writes has nothing to move, and `seek` says so with an error. A stream's position counts the frames it has played from where it started or last sought to.
 
+An intro, a loop, and an outro in one source, moved between buses and held on the way:
+
+```luau
+--!strict
+local audio = require '@jess/audio'
+
+local context = audio.offline()
+local music, room = context:bus(), context:bus()
+room:insert('reverb', { dry = 0 })
+
+-- Three seconds of source: an intro, a one-second loop from 48000 to 96000, and an outro.
+local track = audio.pcm(buffer.create(4 * 144000), { format = 'f32', channels = 1, rate = 48000 })
+local voice = context:play(track, { at = 0, loop = true, loopStart = 48000, loopEnd = 96000 })
+context:render(120000)
+print(voice:position())
+
+-- Into the music bus, a little into the room, held for a moment, then let out of the loop.
+voice:route(music)
+voice:send(room, 0.25)
+voice:pause()
+context:render(4800)
+print(voice:state(), voice:position())
+
+voice:play()
+voice:release()
+context:render(48000)
+print(voice:state(), voice:position())
+
+-- Back to the start of the loop, a tenth of a second from now.
+voice:seek(48000, context:now() + 4800)
+context:render(9600)
+print(voice:position())
+```
+
+It prints `72000` (the intro, then once and a half round the loop), `paused 72000`, `playing 120000` (past the loop's end, into the outro), and `52800`.
+
 ## Nodes
 
 Everything a voice plays through is a node of the context's graph: a bus, or a processor. A bus is a mixer node: it sums what reaches it, runs its insert chain over the sum, applies its gain and mute, and adds the result into its route (the node it's routed into) and each node it sends to. The master bus is the output. Any route or send that would feed a node back into itself is refused when it's asked for, not discovered while mixing. Every change to the graph is checked and compiled on the script's side and reaches the engine whole, on its frame; one that's wrong changes nothing. [Audio Graph](@/docs/contributing/audio-graph.md) has the model.
@@ -222,6 +327,36 @@ Removes the node. Nothing may feed it first: a voice playing or sending into it,
 {{ api_signature(value="node:kind() -> string") }}
 
 `meter` is what a bus put out after its gain since the last read: the largest sample's magnitude and the RMS, linear, across its channels. Reading starts the next measurement; another node has no meter. `latency` is how many frames the node's output lags the voices that reach it, along the path whose processors delay them most. Where paths of different latency meet, the engine lines them up: every path into a node, a sidechain key, and what voices play into it directly wait for the latest, so a voice heard through a limited group and through a dry one stays one voice.
+
+```luau
+--!strict
+local audio = require '@jess/audio'
+
+local context = audio.offline()
+local effects = context:bus { gain = 0.5 }
+local echo = context:bus()
+echo:insert('delay', { time = 0.2, mix = 1 })
+effects:send(echo, { level = 0.3 })
+
+-- A second of a steady quarter-scale signal, into the effects bus.
+local samples = buffer.create(4 * 48000)
+for frame = 0, 47999 do
+  buffer.writef32(samples, frame * 4, 0.25)
+end
+
+local hum = audio.pcm(samples, { format = 'f32', channels = 1, rate = 48000 })
+local voice = context:play(hum, { bus = effects })
+context:render(4800)
+local meter = effects:meter()
+print(meter.peak, meter.rms)
+
+-- A bus is removed once nothing feeds it: the voice first, then the bus.
+voice:stop()
+context:render(128)
+print(effects:remove(), effects:live(), echo:live())
+```
+
+The meter reads `0.0883883461356163` twice: a quarter, halved by the bus, and down 3 dB on each side for a mono voice panned to the middle. A voice still counts as feeding a node until a render has carried out its stop, so without the `render(128)` the `remove` is an error (`the node still has 1 voices and 0 connections feeding it; stop or reroute them first`). It prints `true false true`: the effects bus is gone, its send with it, and the echo bus stays.
 
 ## Processors
 
@@ -357,6 +492,26 @@ A context can hold far more voices than it mixes. With `physical` set below `voi
 
 What a culled voice does is its own: `advance` (the default) keeps its place in its source moving, silently, so a looping hum out of earshot is where it would have been when it comes back. A stream does the same: it lets go of what it would have played, so its writer keeps going and a stem stays in step with the others; `pause` holds it where it was; `stop` ends it, which is voice stealing. Music and dialogue that must never drop out get a high `priority`. Rules like "no more than four footsteps at once" are the application's: count them in Luau and stop the oldest.
 
+```luau
+--!strict
+local audio = require '@jess/audio'
+
+-- Room for 64 voices, of which the loudest 8 are mixed.
+local context = audio.offline { voices = 64, physical = 8 }
+local step = audio.pcm(buffer.create(4 * 48000), { format = 'f32', channels = 1, rate = 48000 })
+
+local music = context:play(step, { loop = true, priority = 10, culled = 'pause' })
+for index = 1, 20 do
+  context:play(step, { gain = index / 20, culled = 'stop' })
+end
+
+context:render(256)
+local stats = context:stats()
+print(stats.active, stats.culled, stats.stolen, music:state())
+```
+
+It prints `8 0 13 playing`: the music outranks every footstep, the seven loudest footsteps take the other places, and the thirteen quietest, which asked to be stopped rather than wait, were stolen.
+
 ## Space
 
 A voice played with a `place` is in space: where it is relative to the listener sets its level, its pan, and its pitch, worked out on every multiple of 128 frames and glided across the 128 that follow, so a moving voice slides rather than steps, the same however the render is cut. Positions, velocities, and directions are in the world's own units and axes; the only thing the context needs to know about the axes is which way they turn (`handedness`), and the only thing about the units is `speedOfSound` in them. A voice not given a `place` is not in space, and costs nothing for it.
@@ -476,6 +631,22 @@ Reads a WAV file's chunks: `{ format, channels, rate, frames, data, loopStart, l
 
 Interleaved 32-bit floats as a WAV file, `f32` unless `format` asks for integers. Integers round to nearest and clip at full scale, and the scale is the one `pcm` reads with, so a 16-bit file read, played at its own rate, rendered, and written back as `s16` is the same bytes.
 
+```luau
+--!strict
+local audio = require '@jess/audio'
+
+-- A tenth of a second of stereo silence, as a 16-bit file, read back.
+local samples = buffer.create(4800 * 2 * 4)
+local file = audio.writeWav(samples, { channels = 2, rate = 48000, format = 's16' })
+local wav = audio.readWav(file)
+print(wav.format, wav.channels, wav.rate, wav.frames, buffer.len(file))
+
+local pcm = audio.loadWav(file)
+print(pcm:frames(), pcm:channels(), pcm:rate())
+```
+
+It prints `s16 2 48000 4800 19244`, the samples and a 44-byte header, then `4800 2 48000`.
+
 ## Compressed files
 
 {{ api_signature(value="audio.load(data: buffer | string) -> AudioPcm") }}
@@ -485,6 +656,36 @@ A WAV, MP3, Ogg Vorbis, or Ogg Opus file, whole, as PCM at the file's own rate: 
 {{ api_signature(value="audio.decoder(data: buffer | string, options: { format: ('mp3' | 'vorbis' | 'opus')? }?) -> Decoder") }}
 
 A decoder over a copy of the bytes, the format detected unless named: `decoder:format()`, `rate()`, `channels()`, `frames()` (nil if the file doesn't say), `position()`, `read(target, offset?, frames?)` into a buffer as interleaved 32-bit floats, and `seek(frame)`. It is [`@dream/audio`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-audio)'s, which says how each format's length and seeks are worked out: MP3 and Vorbis seek exactly, Opus to within a millionth of full scale.
+
+```luau
+--!strict
+local audio = require '@jess/audio'
+local fs = require '@dream/fs'
+
+local bytes, problem = fs.readFile 'door.ogg'
+assert(bytes, problem)
+
+-- Whole, for a sound played often and briefly.
+local door = audio.load(bytes)
+print(door:rate(), door:channels(), door:frames())
+
+-- A block at a time, for looking at what's in it.
+local decoder = audio.decoder(bytes)
+local block = buffer.create(1024 * decoder:channels() * 4)
+local loudest = 0
+while true do
+  local count = decoder:read(block)
+  if count == 0 then break end
+
+  for index = 0, count * decoder:channels() - 1 do
+    loudest = math.max(loudest, math.abs(buffer.readf32(block, index * 4)))
+  end
+end
+
+print(decoder:format(), decoder:position(), loudest)
+```
+
+Reading the file needs `filesystem.read` (`jess run --capability filesystem.read`). For a Vorbis file the second line starts `vorbis`, and the decoder ends on the same frame count `load` gave: both trim the encoder's padding.
 
 {{ api_signature(value="audio.feed(data: buffer | string, options: AudioFeedOptions?) -> AudioFeed") }}
 
