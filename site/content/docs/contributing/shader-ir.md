@@ -21,14 +21,14 @@ shader expressions -> Program -> validate -> fold_constants -> wgsl::lower -> Wg
 - `Program` is an arena of `Expression`s plus a vertex stage (the clip position and any varyings) and a fragment stage (color outputs).
 - `Program::validate` finds every mistake it can before any backend sees the program.
 - `Program::fold_constants` folds the trivial stuff, and nothing more.
-- `wgsl::lower` writes one WGSL module and reports every binding, uniform layout, and attribute location the renderer has to match.
+- `wgsl::lower` writes one WGSL module and reports every binding, uniform layout, and attribute location a pipeline built from it has to match.
 
-The Luau end is [`jess.shader`](@/docs/api/shader.md): an ordinary Luau module runs once, calls the builders, and returns a validated program in this IR. The renderer that consumes the lowered module is not in the kernel; the [render graph](@/docs/contributing/render-graph.md) is where a pass says what it touches.
+The Luau end is [`jess.shader`](@/docs/api/shader.md): an ordinary Luau module runs once, calls the builders, and returns a validated program in this IR. What consumes the lowered module is [`jess::gpu`](@/docs/contributing/gpu.md), which builds a pipeline and its layouts from the program and the WGSL; the [render graph](@/docs/contributing/render-graph.md) is where a pass says what it touches.
 
 ## What It Is Not
 
 - **Not a WGSL API.** Nothing here takes WGSL. WGSL is backend output: dump it when debugging, never write it by hand. A raw escape hatch may exist someday if something proves it has to.
-- **Not a wgpu wrapper.** No public type names a wgpu or naga type. naga and wgpu are dev-dependencies, used only to prove the output is valid and draws.
+- **Not a wgpu wrapper.** No public type names a wgpu or naga type, and `jess::shader` depends on neither. wgpu is the GPU behind `jess::gpu`, an optional dependency of the `gpu` feature; naga is a dev-dependency, used only to prove the output is valid WGSL.
 - **Not a render graph or a material system.** Which passes run and what feeds them is the render graph's problem. What a surface's properties mean is the package that owns the format's.
 - **Not an optimizing compiler.** naga and the driver already are one.
 
@@ -131,7 +131,7 @@ One module writes all WGSL, with one naming scheme:
 
 Every non-leaf expression a stage reads becomes one `let`, where its stage's body emits it. The entry points are `vertex_main` and `fragment_main`, or a compute program's one, `compute_main`, with its `@workgroup_size`. The same program always lowers to the same bytes.
 
-Bindings and layouts belong to jess, never the author, and the lowering writes out what [Layout](#layout) decided: each frequency's block at binding 0 of its group, its textures and samplers after it, its storage buffers after them, struct and block members in memory order, with `@align` and `@size` wherever jess's 16-byte rule differs from what WGSL would pick by itself. `WgslModule` carries the `ProgramLayout`, so the renderer never has to rediscover a layout from the source.
+Bindings and layouts belong to jess, never the author, and the lowering writes out what [Layout](#layout) decided: each frequency's block at binding 0 of its group, its textures and samplers after it, its storage buffers after them, struct and block members in memory order, with `@align` and `@size` wherever jess's 16-byte rule differs from what WGSL would pick by itself. `WgslModule` carries the `ProgramLayout`, so `jess::gpu` never has to rediscover a layout from the source.
 
 The fragment half of the textured, lit golden:
 
