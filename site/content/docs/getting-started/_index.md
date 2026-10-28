@@ -17,4 +17,4 @@ Four steps, each one short. Nothing here writes outside the folder you point it 
 3. Build [your first package](@/docs/getting-started/first-package.md): a manifest, a module, a test, a command target, packed and run.
 4. [Set up your editor](@/docs/getting-started/editor-setup.md) with the types, in VS Code, Neovim, Zed, or Helix.
 
-Then [Scripting](@/docs/scripting/_index.md) explains how the pieces fit, and the [API](@/docs/api/_index.md) and [CLI](@/docs/cli/_index.md) references are for looking things up.
+Before diving further, read [The Jess Mental Model](@/docs/getting-started/mental-model.md) for the distinctions between packages, layers, targets, capabilities, and domains. Then [Scripting](@/docs/scripting/_index.md) explains how the pieces fit, and the [API](@/docs/api/_index.md) and [CLI](@/docs/cli/_index.md) references are for looking things up.
