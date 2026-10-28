@@ -19,6 +19,16 @@ fn an_output_needs_the_audio_output_capability() {
 
 #[cfg(feature = "audio-device")]
 #[test]
+fn a_script_a_person_runs_opens_an_output_without_asking() {
+    let capabilities = jess::lua::host_script_grant(&[]);
+    jess::lua::runtime_with_capabilities(Options::default(), &capabilities)
+        .unwrap()
+        .exec(OPEN)
+        .unwrap_or_else(|error| panic!("{error}"));
+}
+
+#[cfg(feature = "audio-device")]
+#[test]
 fn a_script_plays_into_the_null_device_and_the_device_renders_it() {
     let script = r"
         local context = jess.audio.output { device = 'null', channels = 2 }
