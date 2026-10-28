@@ -485,6 +485,7 @@ pub fn open(gpu: &Arc<Gpu>, desc: &WindowDesc) -> Result<Window, WindowError> {
                 drawn: 0,
                 stale: false,
                 frames: 0,
+                failing: false,
             }),
             incoming: Mutex::default(),
         });

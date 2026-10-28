@@ -2,9 +2,11 @@
 //! whoever drives the frames, and they never wait on the display.
 //!
 //! A window draws when there is something new to draw: a commit applied changes on its device
-//! since it last drew, it was shown a plan or resized, or its image wasn't ready last time. A
-//! scene nothing changes costs nothing. It records under its device's frame lock, so a commit's
-//! changes are drawn whole or not at all, then presents outside it.
+//! since it last drew, it was shown a plan or resized, or its last try didn't present. A scene
+//! nothing changes costs nothing. It records under its device's frame lock, so a commit's changes
+//! are drawn whole or not at all, then presents outside it. A try that fails presents nothing and
+//! counts no frame: the image goes back unshown, the failure is reported once, and the window is
+//! tried again until it draws.
 //!
 //! Locks are taken in one order: a window's screen, then what is coming to it, then its device's
 //! frame lock. A commit takes the frame lock, then what is coming, and never a screen.
@@ -13,7 +15,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use super::{Imported, Showing, WindowError};
-use crate::gpu::{Gpu, Import, Surface};
+use crate::gpu::{Gpu, GpuError, Import, Surface};
 
 /// What the presenter draws a window with, shared by the window's handle and the presenter.
 pub(super) struct Screen {
@@ -28,6 +30,8 @@ pub(super) struct Screen {
     pub(super) stale: bool,
     /// How many frames it presented.
     pub(super) frames: u64,
+    /// Whether its last try failed, so a failure that lasts is reported once, not every retry.
+    pub(super) failing: bool,
 }
 
 /// What a commit shows on a window next.
@@ -86,6 +90,10 @@ static PRESENTER: OnceLock<Arc<Presenter>> = OnceLock::new();
 
 /// How long the presenter waits before trying a window whose image wasn't ready again.
 const RETRY: Duration = Duration::from_millis(8);
+
+/// How long it waits before trying a window that failed to draw again: long enough not to spin on
+/// a failure that lasts, short enough that a passing one costs a few frames.
+const RECOVER: Duration = Duration::from_millis(100);
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -151,6 +159,8 @@ enum Drawing {
     Drew,
     /// Its image wasn't ready: try again soon.
     NotReady,
+    /// Drawing it failed and presented nothing: try again, less soon.
+    Failed,
 }
 
 impl Presenter {
@@ -162,19 +172,24 @@ impl Presenter {
                 screens.retain(|screen| screen.strong_count() > 0);
                 screens.iter().filter_map(Weak::upgrade).collect()
             };
-            let mut retry = false;
+            let mut retry = None;
             for shared in &screens {
-                retry |= matches!(draw(shared), Drawing::NotReady);
+                let after = match draw(shared) {
+                    Drawing::NotReady => RETRY,
+                    Drawing::Failed => RECOVER,
+                    Drawing::Nothing | Drawing::Drew => continue,
+                };
+                retry = Some(retry.map_or(after, |sooner: Duration| sooner.min(after)));
             }
             drop(screens);
             *lock(&self.rounds) += 1;
             self.finished.notify_all();
             let mut asked = lock(&self.asked);
             while *asked == seen {
-                if retry {
+                if let Some(retry) = retry {
                     asked = self
                         .asking
-                        .wait_timeout(asked, RETRY)
+                        .wait_timeout(asked, retry)
                         .unwrap_or_else(PoisonError::into_inner)
                         .0;
                     break;
@@ -212,6 +227,7 @@ fn draw(shared: &Shared) -> Drawing {
         stale,
         drawn,
         frames,
+        failing,
         ..
     } = &mut *screen;
     let (Some(surface), Some(showing)) = (surface, showing.as_ref()) else {
@@ -223,11 +239,7 @@ fn draw(shared: &Shared) -> Drawing {
             *stale = true;
             return Drawing::NotReady;
         }
-        Err(failure) => {
-            *problem = Some(failure.into());
-            *stale = false;
-            return Drawing::Nothing;
-        }
+        Err(failure) => return fail(problem, failing, stale, failure),
     };
     let mut imports = vec![Import::Texture(&showing.target, frame.texture())];
     imports.extend(showing.imports.iter().map(|imported| match imported {
@@ -240,11 +252,53 @@ fn draw(shared: &Shared) -> Drawing {
     };
     drop(imports);
     if let Err(failure) = ran {
-        *problem = Some(failure.into());
+        // The image goes back to the surface unpresented: a frame that failed isn't one.
+        drop(frame);
+        return fail(problem, failing, stale, failure);
     }
     gpu.present(frame);
     *drawn = commits;
     *stale = false;
+    *failing = false;
     *frames += 1;
     Drawing::Drew
+}
+
+/// Records that drawing a window failed: it stays stale, so it is tried again, and the failure is
+/// reported unless the last try failed too.
+fn fail(problem: &mut Option<WindowError>, failing: &mut bool, stale: &mut bool, failure: GpuError) -> Drawing {
+    if !*failing {
+        *problem = Some(failure.into());
+    }
+    *failing = true;
+    *stale = true;
+    Drawing::Failed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Drawing, GpuError, fail};
+
+    #[test]
+    fn a_failure_that_lasts_is_reported_once_and_tried_again() {
+        let (mut problem, mut failing, mut stale) = (None, false, false);
+        let first = fail(&mut problem, &mut failing, &mut stale, GpuError::Device("lost".to_owned()));
+        assert!(matches!(first, Drawing::Failed));
+        assert!(stale, "a window that failed must be drawn again");
+        assert!(problem.take().is_some_and(|problem| problem.to_string().contains("lost")));
+
+        let again = fail(&mut problem, &mut failing, &mut stale, GpuError::Device("lost".to_owned()));
+        assert!(matches!(again, Drawing::Failed));
+        assert!(stale);
+        assert!(problem.is_none(), "the same failure is not reported every retry");
+
+        failing = false;
+        fail(
+            &mut problem,
+            &mut failing,
+            &mut stale,
+            GpuError::Device("lost again".to_owned()),
+        );
+        assert!(problem.is_some(), "a failure after a drawn frame is reported");
+    }
 }
