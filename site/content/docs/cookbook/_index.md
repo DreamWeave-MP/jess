@@ -4,7 +4,7 @@ description: 'Small, practical jobs with an explanation of the contracts behind 
 template: docs/section.html
 page_template: docs/page.html
 sort_by: weight
-weight: 45
+weight: 20
 extra:
   kind: guide
 ---

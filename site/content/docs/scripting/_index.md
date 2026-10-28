@@ -4,7 +4,7 @@ description: 'Write Luau against the jess API: scripts, require, the built-in mo
 template: docs/section.html
 page_template: docs/page.html
 sort_by: weight
-weight: 40
+weight: 15
 
 extra:
   kind: guide
