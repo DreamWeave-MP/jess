@@ -6,7 +6,7 @@ extra:
   kind: guide
 ---
 
-jess is one Cargo crate: current stable Rust, no build scripts of its own, no system libraries to hunt down. Luau compiles itself from source. The one thing you need besides Rust is clang and lld on the same LLVM major as your `rustc` (`rustc -vV` and `clang --version` tell you), because the repo's `.cargo/config.toml` compiles Luau with clang and links everything with lld under cross-language thin LTO. That's the toolchain [l3i](https://github.com/DreamWeave-MP/l3i) is measured on, and its build script refuses anything else rather than hand you a slower binary quietly. When stable Rust moves to a new LLVM, you move clang with it; CI does the same on every platform it builds on.
+jess is one Cargo crate: current stable Rust, no system libraries to hunt down. Luau compiles itself from source, and jess's one build script compiles the vendored miniaudio under the audio device. The one thing you need besides Rust is clang and lld on the same LLVM major as your `rustc` (`rustc -vV` and `clang --version` tell you), because the repo's `.cargo/config.toml` compiles Luau and miniaudio with clang and links everything with lld under cross-language thin LTO. That's the toolchain [l3i](https://github.com/DreamWeave-MP/l3i) is measured on, and its build script refuses anything else rather than hand you a slower binary quietly. When stable Rust moves to a new LLVM, you move clang with it; CI does the same on every platform it builds on.
 
 ```sh
 sudo dnf install clang lld        # Fedora; Debian and Ubuntu want clang-N lld-N for rustc's LLVM N
@@ -32,6 +32,20 @@ The verified build wants two jobs at most: more parallel LTO links than that tak
 
 **A no-LTO build is never measured.** Luau runs without cross-language inlining in it, so it is slower than what ships, by an amount that varies with the workload. `jess --version` says `unverified toolchain, no cross-language LTO: not for measuring`, `jess.bench.verified` is `false`, and the [bench harness](@/docs/contributing/benchmarks.md) refuses to run. A measurement comes from a release build with the verified toolchain: a shell without `tools/dev/no-lto.sh`, and `cargo build --release`.
 
+## Features
+
+A default build is what a release ships: everything a desktop application needs. Each piece loads its platform's API when it runs, not when it links, so the same binary starts on a machine with no GPU, no display, and no sound, and says what it can't do when a script asks for it.
+
+| Feature | Default | What it brings |
+| --- | --- | --- |
+| `gpu` | yes | [`jess.gpu`](@/docs/api/gpu.md) through wgpu: Vulkan, Metal, Direct3D 12, or OpenGL, chosen at run time, or a software adapter |
+| `window` | yes | Native windows through winit, each with a GPU surface and its keyboard and pointer as input. Brings `gpu` |
+| `audio-device` | yes | [`jess.audio.output`](@/docs/api/audio.md): the platform's output through the vendored miniaudio, compiled by `build.rs`. Without it, offline contexts still work |
+| `linux-evdev` | no | Input devices read from Linux's evdev |
+| `gilrs` | no | Gamepads on macOS and Windows |
+
+`cargo build --no-default-features` is the kernel alone, headless: no GPU, no windows, no audio device. Each function that needs a missing feature says which one it was built without.
+
 ## What CI checks
 
 Every push and pull request goes through [StroggForge](https://github.com/DreamWeave-MP/StroggForge)'s `rustGlobalBuild.yml`, called from `.github/workflows/release.yaml`. All of these block a release. Run them before you push and you won't meet them there:
@@ -55,7 +69,9 @@ Things worth knowing about those:
   CC_x86_64_pc_windows_gnu=$PWD/tools/dev/stub-clang CXX_x86_64_pc_windows_gnu=$PWD/tools/dev/stub-clang \
     L3I_UNVERIFIED_TOOLCHAIN=1 CARGO_TARGET_DIR=target/winclippy \
     cargo clippy --workspace --all-targets --all-features --target x86_64-pc-windows-gnu -- -W clippy::pedantic -D warnings
-  ``` macOS can't be cross-checked; read its `cfg` code by eye, remember APFS is case-insensitive and refuses non-UTF-8 file names, and gate such tests `target_os = "linux"`.
+  ```
+
+  macOS can't be cross-checked; read its `cfg` code by eye, remember APFS is case-insensitive and refuses non-UTF-8 file names, and gate such tests `target_os = "linux"`.
 - **MSRV** is read from `rust-version` in `Cargo.toml` (`msrv: auto`). Rust 1.92 ships an older LLVM than current clang, so a local `cargo +1.92 check` needs `L3I_UNVERIFIED_TOOLCHAIN=1`; a check never links, so the mismatch can't matter there.
 - **Tests must not depend on the platform.** No Linux path separators, no case-sensitive filesystems, no non-UTF-8 names: compare resolved paths as paths, keep case twins off disk, and gate symlink tests with `#[cfg(unix)]`.
 
@@ -83,7 +99,7 @@ Integration tests are one `[[test]]` binary, `integration` (`autotests = false`)
 | `render` | `tests/render/` | The render graph IR, against golden dumps |
 | `shader` | `tests/shader/` | The shader IR: builder, validation, folding, and WGSL goldens, every lowered module checked by naga |
 | `gpu` | `tests/gpu/` | The GPU, behind the `gpu` feature, on whatever adapter the machine has: resources read back as written, and passes drawn and read back pixel by pixel |
-| `lua` | `tests/lua/` | Everything Luau sees: `contracts`, `kernel`, `lua_api`, `luau_style`, `network_capability`, `package` (with `application` and `workspace` under it), `script_support`, `shader`, and `stdlib` |
+| `lua` | `tests/lua/` | Everything Luau sees: `audio_codecs`, `audio_device`, `audio_extension`, `contracts`, `gpu`, `kernel`, `lua_api`, `luau_style`, `network_capability`, `package` (with `application` and `workspace` under it), `script_support`, `shader`, and `stdlib` |
 
 A filter is a prefix of a test's path. Prefer the smallest one that proves a change, then widen:
 
@@ -96,6 +112,8 @@ cargo test --test integration -- runtime:: host:: input::
 cargo test --test integration -- render:: shader:: lua::shader::
 cargo test --test integration cli::workspace::    # one file
 ```
+
+Tests that would open a real window run only where `JESS_WINDOW_TESTS` is set, on a desktop; everywhere else they say they skipped. GPU tests run on whatever adapter the machine has, a software one included, which is how CI runs them on Linux.
 
 If you add a command, test it through the binary. If you add a member to the `jess` global, `only_generic_members_are_installed` in `tests/lua/contracts.rs` is where its name is pinned, and `jess luau-types` must stub it.
 
