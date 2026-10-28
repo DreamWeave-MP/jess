@@ -13,7 +13,7 @@ Releases are boring on purpose. You bump the version, let the gates pass on `mai
 `.github/workflows/release.yaml` is a few lines that call StroggForge's reusable `rustGlobalBuild.yml`:
 
 ```yaml
-uses: DreamWeave-MP/StroggForge/.github/workflows/rustGlobalBuild.yml@v65
+uses: DreamWeave-MP/StroggForge/.github/workflows/rustGlobalBuild.yml@v70
 secrets: inherit
 with:
   binary_names: '["jess"]'
