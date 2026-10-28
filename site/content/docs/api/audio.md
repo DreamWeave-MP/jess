@@ -36,8 +36,10 @@ A stream is audio written while it plays: a bounded ring of interleaved frames t
 {{ api_signature(value="audio.stream(options: { channels: number?, rate: number?, seconds: number? }) -> AudioStream") }}
 {{ api_signature(value="audio.stream(handle: JessHandle) -> AudioStream") }}
 
-A stream of `channels` (2) at `rate` (48000) frames per second holding `seconds` (1, at most 60) of audio. Given a handle from `stream:handle()`, the same stream, wherever the handle was sent: a worker opens the stream the main script plays, and writes it.
+A stream of `channels` (2) at `rate` (48000) frames per second holding `seconds` (1, at most 60) of audio. Given a handle from `stream:handle()`, the same stream, wherever the handle was sent: a [worker](@/docs/api/worker.md) opens the stream the main script plays, and writes it.
 
+{{ api_signature(value="stream:channels() -> number") }}
+{{ api_signature(value="stream:rate() -> number") }}
 {{ api_signature(value="stream:write(samples: buffer, frames: number?) -> number") }}
 {{ api_signature(value="stream:room() -> number") }}
 {{ api_signature(value="stream:wait(frames: number, timeout: number?) -> boolean") }}
@@ -45,7 +47,7 @@ A stream of `channels` (2) at `rate` (48000) frames per second holding `seconds`
 {{ api_signature(value="stream:stats() -> { written: number, read: number, room: number, missed: number, late: number, finished: boolean }") }}
 {{ api_signature(value="stream:handle() -> JessHandle") }}
 
-`write` takes interleaved 32-bit floats and writes as many whole frames as there is room for, returning how many; given `frames`, it takes only that many from the start of the buffer, so a block that came back part full needs no copy. `wait` waits until there is room for `frames`, or `timeout` seconds pass; it sleeps exactly as long as playing at the stream's rate takes to make the room, so it is for a worker feeding a device, and in an offline context (where room comes only from rendering) it waits out its timeout. `finish` says the writer is done: the voice plays what is left and ends. A stream has one writer at a time and one voice: playing it again is an error.
+`channels` and `rate` are what the stream was made with; a feed's are its file's. `write` takes interleaved 32-bit floats and writes as many whole frames as there is room for, returning how many; given `frames`, it takes only that many from the start of the buffer, so a block that came back part full needs no copy. `wait` waits until there is room for `frames`, or `timeout` seconds pass; it sleeps exactly as long as playing at the stream's rate takes to make the room, so it is for a worker feeding a device, and in an offline context (where room comes only from rendering) it waits out its timeout. `finish` says the writer is done: the voice plays what is left and ends. A stream has one writer at a time and one voice: playing it again is an error.
 
 A stream plays once, from wherever its writer is: no `offset`, no `loop`, and a `rate` of at most 4. It is resampled to the context's rate like any source.
 
@@ -86,9 +88,9 @@ A context the script renders. Defaults: 48000 frames per second, 2 channels, 256
 
 A context an output device renders: the platform's default output, or with `device = 'null'` the null device, which plays to nowhere in real time (for tests, and machines with no sound). It takes a context's options, runs at the device's own rate unless `rate` asks for another, and asks for `period` frames at a time as a hint. Everything else is the same as an offline context, except `render`, which is the device's: the script plays into it and the device's thread mixes as time passes, whether or not the script is running.
 
-An output needs the `audio.output` capability, and a jess built with the `audio-device` feature, which is on unless a build turned it off; without it, `output` says so. An offline context needs neither.
+An output needs the [`audio.output` capability](@/docs/reference/capabilities.md), which `jess run` and `jess test` hold by default and a package's target declares, and a jess built with the `audio-device` feature, which is on unless a build turned it off; without it, `output` says so. An offline context needs neither.
 
-An output plays until it is closed or the runtime that opened it ends, whether or not the script still holds it: music started from a function that returned keeps playing after its handles are collected. A domain's restart ends its runtime, and with it every output that generation opened.
+An output plays until it is closed or the runtime that opened it ends, whether or not the script still holds it: music started from a function that returned keeps playing after its handles are collected. An [application](@/docs/scripting/applications.md)'s restart ends its runtime, and with it every output that generation opened.
 
 {{ api_signature(value="context:close()") }}
 
@@ -134,7 +136,7 @@ The next frame the engine renders. Anything stamped for it or later lands on its
 {{ api_signature(value="context:channels() -> number") }}
 {{ api_signature(value="context:stats() -> AudioStats") }}
 
-`stats` is the engine as of its last render: `frames` rendered, voices `active` (live, mixed or not) and `allocated` (playing or waiting to start), commands carried out `late`, `nonfinite` samples silenced, commands `pending` for a later frame, voices `culled` in the last block, and voices `stolen` all told.
+`stats` is the engine as of its last render: `frames` rendered, voices `active` (live, mixed or not) and `allocated` (playing or waiting to start), commands carried out `late`, `nonfinite` samples silenced, commands `pending` for a later frame, voices `culled` in the last block, voices `stolen` all told, and the graph `revisions` carried out (a [patch](#patches) is one; playing and stopping voices is none).
 
 {{ api_signature(value="context:group(body: () -> ())") }}
 {{ api_signature(value="context:room() -> number") }}
@@ -145,7 +147,7 @@ The next frame the engine renders. Anything stamped for it or later lands on its
 
 {{ api_signature(value="voice:stop(at: number?, fade: number?) -> boolean") }}
 {{ api_signature(value="voice:set(param: 'gain' | 'pan' | 'rate', value: number, at: number?) -> boolean") }}
-{{ api_signature(value="voice:state() -> 'scheduled' | 'playing' | 'ended'") }}
+{{ api_signature(value="voice:state() -> 'scheduled' | 'playing' | 'paused' | 'ended'") }}
 
 A stop or change stamped for a frame is carried out on that frame. One sent before the voice has started applies from its first frame: a voice stopped before its start never plays, and one whose gain is set before it starts starts at that gain. Both return whether the voice was still live; on an ended voice they do nothing. A stop is a cut on its frame unless it has a `fade`: then the voice fades to silence over that many frames and ends at the end of the fade.
 
@@ -224,8 +226,9 @@ Removes the node. Nothing may feed it first: a voice playing or sending into it,
 ## Processors
 
 {{ api_signature(value="node:insert(kind: string, settings: { [string]: number | string }?) -> AudioNode") }}
+{{ api_signature(value="audio.processors() -> { string }") }}
 
-Puts a processor of `kind` in the node's insert chain, last or at `index` (from 1), made with `settings`: its parameters by name, and whatever the kind is made with. The chain runs in place over what the bus summed, before its gain. An inserted processor is a node like any other: it is set, ramped, listened to, and removed through its handle. `audio.processors()` lists the kinds, including any the program running the script added:
+Puts a processor of `kind` in the node's insert chain, made with `settings`: its parameters by name, whatever the kind is made with, and `index`, its place in the chain from 1 (last without one). The chain runs in place over what the bus summed, before its gain. An inserted processor is a node like any other: it is set, ramped, listened to, and removed through its handle. `audio.processors()` lists the kinds, including any the program running the script added:
 
 | Kind | Made with | Parameters (range, default) | Does |
 | --- | --- | --- | --- |
@@ -512,7 +515,7 @@ end
 print(feed:status().loops, feed:stream():stats().missed)
 ```
 
-For a file a second long it prints `2 0`: twice round the loop, and not a frame missed, though the script never looked at the music after starting it.
+For a file a second long it prints `2 0`: twice round the loop, and not a frame missed, though the script never looked at the music after starting it. It reads the file, so `jess run` needs `--capability filesystem.read`, and it holds the device's `audio.output` already.
 
 ## Example
 
@@ -547,3 +550,5 @@ assert(fs.writeFile('target/notes.wav', wav, { createParents = true }))
 ```
 
 `last:state()` is `'ended'` afterwards, and `context:now()` is `36000`.
+
+Related: [jess](@/docs/api/jess.md), [Capabilities](@/docs/reference/capabilities.md), [jess.worker](@/docs/api/worker.md), [Applications](@/docs/scripting/applications.md), [Audio Engine](@/docs/contributing/audio-engine.md), [Audio Graph](@/docs/contributing/audio-graph.md).
