@@ -1,0 +1,158 @@
+--!strict
+-- @jess/net's scheduling, without a socket: timers, signals, joins, cancellation, failures and
+-- closing. The wire runs against loopback servers in jess's own test suite, where sockets can be
+-- granted.
+local net = require '@jess/net'
+local test = require '@jess/test'
+local expect = test.expect
+local suite = test.new()
+
+--- Steps `loop` until its tasks are done or a second passes.
+local function settle(loop: net.Loop)
+  local deadline = net.now() + 1000
+  while loop:step(5) > 0 and net.now() < deadline do
+  end
+end
+
+suite.describe('@jess/net', function()
+  suite.it('runs tasks in the order they wake, sleeps by the clock, and yields to the rest', function()
+    local loop = net.loop()
+    local order: { string } = {}
+
+    loop:spawn(function()
+      net.sleep(30)
+      table.insert(order, 'slow')
+    end)
+
+    loop:spawn(function()
+      net.sleep(5)
+      table.insert(order, 'quick')
+    end)
+
+    loop:spawn(function()
+      table.insert(order, 'first')
+      net.yield()
+      table.insert(order, 'yielded')
+    end)
+
+    settle(loop)
+    expect(table.concat(order, ' ')).toBe 'first yielded quick slow'
+    expect(loop:stats().tasks).toBe(0)
+    loop:close()
+  end)
+
+  suite.it('stepping without waiting never stalls on a sleeping task', function()
+    local loop = net.loop()
+    loop:spawn(function() net.sleep(10000) end)
+
+    local started = net.now()
+    for _ = 1, 10 do
+      loop:step(0)
+    end
+
+    expect(net.now() - started < 100).toBe(true)
+    loop:close()
+  end)
+
+  suite.it('wakes every task waiting on a signal, and a deadline ends a wait that nothing ends', function()
+    local loop = net.loop()
+    local signal = net.signal()
+    local woken: { string } = {}
+
+    for index = 1, 3 do
+      loop:spawn(function()
+        local notified, reason = signal:wait()
+        table.insert(woken, `{index} {notified} {reason}`)
+      end)
+    end
+
+    loop:spawn(function()
+      local notified, reason = net.signal():wait(net.now() + 10)
+      table.insert(woken, `late {notified} {reason}`)
+    end)
+
+    loop:step(0)
+    signal:notify()
+    settle(loop)
+    table.sort(woken)
+    expect(table.concat(woken, ', ')).toBe '1 true notified, 2 true notified, 3 true notified, late false timeout'
+    loop:close()
+  end)
+
+  suite.it('joins a task, and cancelling ends its wait and every later one', function()
+    local loop = net.loop()
+    local seen: { string } = {}
+    local sleeper = loop:spawn(function()
+      local slept = net.sleep(10000)
+      local again = net.sleep(1)
+      table.insert(seen, `sleeper {slept} {again}`)
+    end, 'sleeper')
+
+    local never = loop:spawn(function() table.insert(seen, 'never ran') end)
+    never:cancel()
+
+    loop:spawn(function()
+      local finished, problem = sleeper:join()
+      table.insert(seen, `join {finished} {problem}`)
+    end)
+
+    loop:step(0)
+    sleeper:cancel()
+    settle(loop)
+    expect(table.concat(seen, ', ')).toBe 'sleeper false false, join false cancelled'
+    expect(sleeper.status).toBe 'cancelled'
+    expect(never.status).toBe 'cancelled'
+    loop:close()
+  end)
+
+  suite.it('hands a failed task to onError and keeps the others running', function()
+    local failures: { string } = {}
+    local loop = net.loop {
+      onError = function(task: net.Task, message: string)
+        table.insert(failures, `{task.name}: {string.match(message, 'broke') or message}`)
+      end,
+    }
+
+    local survivor = loop:spawn(function() net.sleep(5) end, 'survivor')
+    local failing = loop:spawn(function() error('broke', 0) end, 'failing')
+    settle(loop)
+    expect(table.concat(failures, ', ')).toBe 'failing: broke'
+    expect(failing.status).toBe 'failed'
+    expect(failing.error).toBe 'broke'
+    expect(survivor.status).toBe 'done'
+    loop:close()
+  end)
+
+  suite.it('closing cancels what is left, once, from outside', function()
+    local loop = net.loop()
+    local cleaned = false
+    local waiting = loop:spawn(function()
+      net.sleep(10000)
+      cleaned = true
+    end)
+
+    loop:step(0)
+    loop:close()
+    loop:close()
+    expect(cleaned).toBe(true)
+    expect(waiting.status).toBe 'cancelled'
+    expect(loop.closed).toBe(true)
+    expect(loop:step(0)).toBe(0)
+    expect(function() loop:spawn(function() end) end).toThrow 'the loop is closed'
+  end)
+
+  suite.it('waits only inside a task', function()
+    expect(function() net.sleep(1) end).toThrow 'waits happen in a task'
+    expect(net.current()).toBeNil()
+
+    local finished, problem = net.run(function() expect(net.sleep(1)).toBe(true) end)
+    expect(finished).toBe(true)
+    expect(problem).toBeNil()
+
+    local failed, message = net.run(function() error('inside', 0) end)
+    expect(failed).toBe(false)
+    expect(message).toBe 'inside'
+  end)
+end)
+
+return suite

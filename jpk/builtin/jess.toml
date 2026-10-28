@@ -22,6 +22,7 @@ tests = [
   "tests/audio/session.jsl",
   "tests/backup/run.jsl",
   "tests/http/run.jsl",
+  "tests/net/run.jsl",
   "tests/render/run.jsl",
 ]
 
@@ -37,6 +38,7 @@ tests = [
 "@jess/audio" = "src/audio/init.jsl"
 "@jess/backup" = "src/backup/init.jsl"
 "@jess/http" = "src/http/init.jsl"
+"@jess/net" = "src/net/init.jsl"
 "@jess/render" = "src/render/init.jsl"
 "@jess/render/camera" = "src/render/camera.jsl"
 
@@ -67,6 +69,10 @@ exports = ["@jess/backup"]
 [[layer]]
 id = "jess.http"
 exports = ["@jess/http"]
+
+[[layer]]
+id = "jess.net"
+exports = ["@jess/net"]
 
 [[layer]]
 id = "jess.render"
