@@ -911,15 +911,18 @@ export type GpuPlanWrite = string | {
   resolve: GpuPlanLevel?,
 }
 
---- One end of a copy: a target or buffer's name; a level of a layer of a target from the texel
---- at `column` and `row`; or a buffer from byte `offset`.
+--- One end of a copy: a target or buffer's name; a level of a layer of a `target` from the texel
+--- at `column` and `row`; or a `buffer` from byte `offset`. A table names a target or a buffer,
+--- never both, with only the fields its kind has.
 export type GpuPlanCopyEnd = string | {
-  target: string,
+  target: string?,
   level: number?,
   layer: number?,
   column: number?,
   row: number?,
-} | { buffer: string, offset: number? }
+  buffer: string?,
+  offset: number?,
+}
 
 --- A buffer a compute pass writes: its name, or one zeroed first (`clear = true`) or loaded.
 export type GpuPlanStorage = string | {
@@ -963,8 +966,8 @@ export type GpuPlanPass = {
 --- What a copy pass copies: from where `from` starts (`{ column, row }` in a target, `{ offset }`
 --- in a buffer) to where `to` does, `size` of it (texels, or bytes between buffers), or the rest.
 export type GpuCopyRegion = {
-  from: ({ column: number?, row: number? } | { offset: number })?,
-  to: ({ column: number?, row: number? } | { offset: number })?,
+  from: { column: number?, row: number?, offset: number? }?,
+  to: { column: number?, row: number?, offset: number? }?,
   size: (number | { width: number, height: number })?,
 }
 
