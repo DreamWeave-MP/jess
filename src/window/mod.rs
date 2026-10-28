@@ -1163,26 +1163,35 @@ enum Raw {
 /// The most input kept for a host that hasn't polled: a frame's worth many times over.
 const QUEUED: usize = 4096;
 
-/// Input waiting for [`WindowInput`], once one exists.
-static QUEUE: Mutex<Vec<Raw>> = Mutex::new(Vec::new());
+/// Input waiting for the [`WindowInput`]s that listen, and how many do. Without one, window input
+/// is dropped, not kept: what happened while nobody listened never reaches a backend made later.
+static QUEUE: Mutex<Queue> = Mutex::new(Queue {
+    listeners: 0,
+    raws: Vec::new(),
+});
 
-/// Whether a host listens: without one, window input is dropped, not kept.
-static LISTENING: AtomicBool = AtomicBool::new(false);
+struct Queue {
+    listeners: usize,
+    raws: Vec<Raw>,
+}
+
+fn queued() -> std::sync::MutexGuard<'static, Queue> {
+    QUEUE.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 fn queue(raw: Raw) {
-    if !LISTENING.load(Ordering::Acquire) {
-        return;
-    }
-    let mut queue = QUEUE.lock().unwrap_or_else(PoisonError::into_inner);
-    if queue.len() < QUEUED {
-        queue.push(raw);
+    let mut queue = queued();
+    if queue.listeners > 0 && queue.raws.len() < QUEUED {
+        queue.raws.push(raw);
     }
 }
 
 /// A host's input backend for its windows, polled with any other backend it wraps.
 ///
 /// Each window has a keyboard and a pointer, connected at its first input and disconnected when
-/// it closes. The host is focused while any window has the keyboard.
+/// it closes. The host is focused while any window has the keyboard. Window input is kept from
+/// when the first backend is made until the last is dropped, and only then: a backend made later
+/// starts with nothing, never with what an earlier one left unpolled.
 #[derive(Debug)]
 pub struct WindowInput {
     inner: Option<Box<dyn Backend>>,
@@ -1200,7 +1209,7 @@ impl WindowInput {
     /// The backend for windows, polling `inner` (the platform's, say) first.
     #[must_use]
     pub fn new(inner: Option<Box<dyn Backend>>) -> WindowInput {
-        LISTENING.store(true, Ordering::Release);
+        queued().listeners += 1;
         WindowInput {
             inner,
             devices: Vec::new(),
@@ -1230,6 +1239,17 @@ impl WindowInput {
     }
 }
 
+impl Drop for WindowInput {
+    /// The last backend to go stops listening, and forgets what it never polled.
+    fn drop(&mut self) {
+        let mut queue = queued();
+        queue.listeners -= 1;
+        if queue.listeners == 0 {
+            queue.raws.clear();
+        }
+    }
+}
+
 impl Backend for WindowInput {
     fn name(&self) -> &'static str {
         "window"
@@ -1239,7 +1259,7 @@ impl Backend for WindowInput {
         if let Some(inner) = &mut self.inner {
             inner.poll(sender, now)?;
         }
-        let drained = std::mem::take(&mut *QUEUE.lock().unwrap_or_else(PoisonError::into_inner));
+        let drained = std::mem::take(&mut queued().raws);
         let mut refocused = false;
         for raw in drained {
             match raw {
@@ -1559,10 +1579,47 @@ mod tests {
         assert_eq!(key(KeyCode::MediaPlayPause), None, "media keys aren't jess keys");
     }
 
+    /// The window input queue is the process's: its tests take turns.
+    static INPUT: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn a_new_input_backend_gets_nothing_an_old_one_left() {
+        let _turn = INPUT.lock().unwrap_or_else(PoisonError::into_inner);
+        let input = crate::input::InputQueue::new();
+        let mut events = Vec::new();
+
+        queue(Raw::Key(1, Key::KeyA, true));
+        let backend = WindowInput::new(None);
+        queue(Raw::Key(1, Key::KeyB, true));
+        drop(backend);
+        queue(Raw::Key(1, Key::KeyC, true));
+
+        let mut backend = WindowInput::new(None);
+        queue(Raw::Key(1, Key::KeyD, true));
+        backend.poll(&input.sender(), Timestamp::ZERO).unwrap();
+        input.drain(&mut events);
+        let keys: Vec<Key> = events
+            .iter()
+            .filter_map(|event| match event.kind {
+                crate::input::InputEventKind::Button {
+                    control: Control::Key(key),
+                    ..
+                } => Some(key),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            keys,
+            [Key::KeyD],
+            "nothing from before the first backend, while none listened, or left by one dropped"
+        );
+    }
+
     #[test]
     fn each_window_has_its_own_keyboard_and_pointer() {
         use crate::input::InputEventKind as Kind;
 
+        let _turn = INPUT.lock().unwrap_or_else(PoisonError::into_inner);
         let mut backend = WindowInput::new(None);
         let input = crate::input::InputQueue::new();
         let now = Timestamp::ZERO + Duration::from_millis(16);
