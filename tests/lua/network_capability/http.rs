@@ -1,30 +1,38 @@
 //! `@jess/http` on the wire, against a loopback HTTP/1.1 server: bodies by length, by chunks and
-//! by close; redirects followed and bounded; sizes and time bounded; and nothing without the
-//! runtime's grant.
+//! by close; any method with headers and a body; redirects followed, bounded, and never carrying
+//! credentials to another origin; sizes and time bounded; requests in tasks that leave the rest of
+//! the loop running; HTTPS through the Luau TLS front; and nothing without the runtime's grant.
 
 use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Read, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::thread;
+use std::time::Duration;
 
 use jess::lua::Options;
 use jess::lua::l3i::Runtime;
 
+use super::{run_task, tls_runtime};
+
 /// What the fixture answers to one path.
 #[derive(Clone)]
-enum Answer {
+pub(super) enum Answer {
     /// A full response text, written as is.
     Raw(String),
     /// Accept, read the request, and never answer.
     Hang,
+    /// The request as it arrived (head, then body), as the response body.
+    Echo,
+    /// A full response text, written after a pause.
+    Slow(Duration, String),
 }
 
-struct Server {
+pub(super) struct Server {
     port: u16,
 }
 
 impl Server {
-    fn start(routes: Vec<(&'static str, Answer)>) -> Self {
+    pub(super) fn start(routes: Vec<(&'static str, Answer)>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         thread::spawn(move || {
@@ -36,22 +44,33 @@ impl Server {
         Self { port }
     }
 
-    fn url(&self, path: &str) -> String {
+    pub(super) fn url(&self, path: &str) -> String {
         format!("http://127.0.0.1:{}{path}", self.port)
     }
 }
 
 fn answer(mut stream: TcpStream, routes: &[(&str, Answer)]) {
     let mut reader = BufReader::new(stream.try_clone().unwrap());
-    let mut request_line = String::new();
-    if reader.read_line(&mut request_line).is_err() {
+    let mut head = String::new();
+    if reader.read_line(&mut head).is_err() {
         return;
     }
-    let path = request_line.split_whitespace().nth(1).unwrap_or("/").to_owned();
+    let path = head.split_whitespace().nth(1).unwrap_or("/").to_owned();
+    let path = path.split('?').next().unwrap_or("/").to_owned();
+    let mut length = 0;
     loop {
         let mut line = String::new();
-        if reader.read_line(&mut line).is_err() || line == "\r\n" || line.is_empty() {
+        if reader.read_line(&mut line).is_err() || line.is_empty() {
             break;
+        }
+        head.push_str(&line);
+        if line == "\r\n" {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':')
+            && name.eq_ignore_ascii_case("content-length")
+        {
+            length = value.trim().parse().unwrap_or(0);
         }
     }
     let answer = routes
@@ -62,15 +81,27 @@ fn answer(mut stream: TcpStream, routes: &[(&str, Answer)]) {
         Answer::Raw(text) => {
             drop(stream.write_all(text.as_bytes()));
         }
+        Answer::Echo => {
+            let mut body = vec![0; length];
+            if reader.read_exact(&mut body).is_err() {
+                return;
+            }
+            let echoed = format!("{head}{}", String::from_utf8_lossy(&body));
+            drop(stream.write_all(response(200, &echoed, &[]).as_bytes()));
+        }
+        Answer::Slow(pause, text) => {
+            thread::sleep(pause);
+            drop(stream.write_all(text.as_bytes()));
+        }
         Answer::Hang => {
             let mut sink = [0; 1];
             drop(reader.read(&mut sink));
-            thread::sleep(std::time::Duration::from_secs(5));
+            thread::sleep(Duration::from_secs(5));
         }
     }
 }
 
-fn response(status: u16, body: &str, headers: &[(&str, &str)]) -> String {
+pub(super) fn response(status: u16, body: &str, headers: &[(&str, &str)]) -> String {
     let mut text = format!(
         "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n",
         body.len()
@@ -200,7 +231,7 @@ fn sizes_and_time_are_bounded_and_failures_are_named() {
     let started = std::time::Instant::now();
     let (status, _, kind, ..) = fetch(&runtime, &server.url("/slow"), "{ timeoutMs = 400 }");
     assert_eq!((status, kind.as_str()), (None, "timeout"));
-    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    assert!(started.elapsed() < Duration::from_secs(3));
 
     let (status, _, kind, ..) = fetch(&runtime, &server.url("/garbage"), "{}");
     assert_eq!((status, kind.as_str()), (None, "protocol"));
@@ -230,4 +261,333 @@ fn nothing_is_fetched_without_the_runtime_s_grant() {
     });
     assert!(failed, "{message}");
     assert!(message.contains("network."), "{message}");
+}
+
+/// Evaluates `body` (Luau that returns one string) outside any task, where requests run on a loop
+/// of their own.
+fn eval(runtime: &Runtime, body: &str) -> String {
+    let script = format!("local http = require('@jess/http')\n{body}");
+    runtime.eval::<String>(&script).unwrap_or_else(|error| panic!("{error}"))
+}
+
+#[test]
+fn any_method_goes_out_with_its_headers_and_body() {
+    let server = Server::start(vec![("/echo", Answer::Echo)]);
+    let echoed = eval(
+        &runtime(),
+        &format!(
+            "
+            local lines = {{}}
+            local function send(request)
+              local response, message = http.request(request)
+              assert(response, message)
+              table.insert(lines, buffer.tostring(response.body))
+            end
+
+            send {{ url = {url:?}, method = 'POST', json = {{ content = 'hi', n = 1 }}, headers = {{ Authorization = 'Bot secret', ['X-Trace'] = 'a' }} }}
+            send {{ url = {url:?}, method = 'PUT', body = buffer.fromstring('raw bytes'), headers = {{ ['Content-Type'] = 'application/octet-stream' }} }}
+            send {{ url = {url:?}, method = 'PATCH', body = 'patched' }}
+            send {{ url = {url:?}, method = 'DELETE' }}
+            send {{ url = {url:?}, method = 'POST' }}
+            send {{ url = {url:?}, method = 'PURGE' }}
+            return table.concat(lines, '\\n=====\\n')
+            ",
+            url = server.url("/echo")
+        ),
+    );
+    let requests: Vec<&str> = echoed.split("\n=====\n").collect();
+    let expect = |request: &str, start: &str, lines: &[&str], body: &str| {
+        assert!(request.starts_with(start), "{request}");
+        for line in lines {
+            assert!(request.contains(&format!("{line}\r\n")), "{line} in {request}");
+        }
+        assert!(request.ends_with(&format!("\r\n\r\n{body}")), "{request}");
+    };
+    expect(
+        requests[0],
+        "POST /echo HTTP/1.1\r\n",
+        &[
+            "authorization: Bot secret",
+            "content-type: application/json",
+            "content-length: 22",
+            "connection: close",
+            "x-trace: a",
+        ],
+        r#"{"content":"hi","n":1}"#,
+    );
+    assert!(
+        requests[0].find("authorization").unwrap() < requests[0].find("x-trace").unwrap(),
+        "fields go out in name order"
+    );
+    expect(
+        requests[1],
+        "PUT /echo HTTP/1.1\r\n",
+        &["content-type: application/octet-stream", "content-length: 9"],
+        "raw bytes",
+    );
+    expect(requests[2], "PATCH /echo HTTP/1.1\r\n", &["content-length: 7"], "patched");
+    assert!(requests[3].starts_with("DELETE /echo HTTP/1.1\r\n") && !requests[3].contains("content-length"));
+    expect(requests[4], "POST /echo HTTP/1.1\r\n", &["content-length: 0"], "");
+    assert!(requests[5].starts_with("PURGE /echo HTTP/1.1\r\n"));
+}
+
+#[test]
+fn a_mistaken_request_raises_before_anything_is_sent() {
+    let runtime = runtime();
+    for (request, expected) in [
+        (
+            "{ url = 'http://127.0.0.1:1/', headers = { Host = 'elsewhere' } }",
+            "written by the client",
+        ),
+        (
+            "{ url = 'http://127.0.0.1:1/', headers = { ['X-Bad'] = 'a\\r\\nInjected: yes' } }",
+            "without line breaks",
+        ),
+        (
+            "{ url = 'http://127.0.0.1:1/', headers = { ['Bad Name'] = 'x' } }",
+            "not a header field name",
+        ),
+        ("{ url = 'http://127.0.0.1:1/', method = 'GET /x' }", "not an HTTP method"),
+        (
+            "{ url = 'http://127.0.0.1:1/', body = 'a', json = {} }",
+            "body or json, not both",
+        ),
+        (
+            "{ url = 'http://127.0.0.1:1/', bodyy = 'a' }",
+            "unknown jess.http.request option 'bodyy'",
+        ),
+    ] {
+        let error = runtime
+            .eval::<()>(&format!("require('@jess/http').request({request})"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(expected), "{request}: {error}");
+        assert!(!error.contains("Injected"), "a header value never reaches a message: {error}");
+    }
+}
+
+#[test]
+fn redirects_keep_or_drop_the_method_and_never_carry_credentials_to_another_origin() {
+    let other = Server::start(vec![("/echo", Answer::Echo)]);
+    let server = Server::start(vec![
+        ("/echo", Answer::Echo),
+        ("/same", Answer::Raw(response(307, "", &[("Location", "/echo")]))),
+        ("/see-other", Answer::Raw(response(303, "", &[("Location", "/echo")]))),
+        ("/found", Answer::Raw(response(302, "", &[("Location", "/echo")]))),
+        ("/away", Answer::Raw(response(308, "", &[("Location", &other.url("/echo"))]))),
+    ]);
+    let echoed = eval(
+        &runtime(),
+        &format!(
+            "
+            local lines = {{}}
+            for _, path in {{ '/same', '/see-other', '/found', '/away' }} do
+              local response, message = http.request {{
+                url = {base:?} .. path,
+                method = 'POST',
+                body = 'payload',
+                headers = {{ Authorization = 'Bearer token', Cookie = 'session=1', ['X-Kept'] = 'yes' }},
+              }}
+              assert(response, message)
+              table.insert(lines, buffer.tostring(response.body))
+            end
+            return table.concat(lines, '\\n=====\\n')
+            ",
+            base = server.url("")
+        ),
+    );
+    let requests: Vec<&str> = echoed.split("\n=====\n").collect();
+    assert!(
+        requests[0].starts_with("POST /echo") && requests[0].ends_with("payload"),
+        "307 repeats the request"
+    );
+    assert!(
+        requests[0].contains("authorization: Bearer token"),
+        "the same origin keeps credentials"
+    );
+    assert!(
+        requests[1].starts_with("GET /echo") && !requests[1].ends_with("payload"),
+        "303 goes on as GET"
+    );
+    assert!(requests[2].starts_with("GET /echo"), "302 after a POST goes on as GET");
+    assert!(
+        requests[3].starts_with("POST /echo") && requests[3].ends_with("payload"),
+        "308 repeats it"
+    );
+    assert!(
+        !requests[3].contains("authorization") && !requests[3].contains("cookie"),
+        "{}",
+        requests[3]
+    );
+    assert!(requests[3].contains("x-kept: yes"), "other fields still go");
+}
+
+#[test]
+fn framing_errors_interim_answers_and_secrets_in_urls() {
+    let server = Server::start(vec![
+        (
+            "/interim",
+            Answer::Raw(format!("HTTP/1.1 100 Continue\r\n\r\n{}", response(200, "final", &[]))),
+        ),
+        (
+            "/disagrees",
+            Answer::Raw("HTTP/1.1 200 OK\r\nContent-Length: 5, 6\r\n\r\nhello!".to_owned()),
+        ),
+        (
+            "/bad-chunk",
+            Answer::Raw("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nhello\r\n0\r\n\r\n".to_owned()),
+        ),
+        (
+            "/chunks-and-length",
+            Answer::Raw(
+                "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\nX-Trailer: t\r\n\r\n"
+                    .to_owned(),
+            ),
+        ),
+        (
+            "/big-chunks",
+            Answer::Raw(format!(
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n400\r\n{}\r\n400\r\n{}\r\n0\r\n\r\n",
+                "a".repeat(1024),
+                "b".repeat(1024)
+            )),
+        ),
+        ("/folded", Answer::Raw("HTTP/1.1 200 OK\r\nX-A: one\r\n two\r\n\r\n".to_owned())),
+        ("/json", Answer::Raw(response(200, r#"{"ok":true,"items":[1,2]}"#, &[]))),
+        ("/slow", Answer::Hang),
+    ]);
+    let runtime = runtime();
+    let (status, body, ..) = fetch(&runtime, &server.url("/interim"), "{}");
+    assert_eq!((status, body.as_str()), (Some(200.0), "final"), "a 100 answer is skipped");
+    let (status, _, kind, ..) = fetch(&runtime, &server.url("/disagrees"), "{}");
+    assert_eq!((status, kind.as_str()), (None, "protocol"));
+    let (status, _, kind, ..) = fetch(&runtime, &server.url("/bad-chunk"), "{}");
+    assert_eq!((status, kind.as_str()), (None, "protocol"));
+    let (status, body, ..) = fetch(&runtime, &server.url("/chunks-and-length"), "{}");
+    assert_eq!(
+        (status, body.as_str()),
+        (Some(200.0), "abc"),
+        "chunked wins over Content-Length"
+    );
+    let (status, _, kind, ..) = fetch(&runtime, &server.url("/big-chunks"), "{ maxBytes = 1500 }");
+    assert_eq!((status, kind.as_str()), (None, "tooLarge"));
+    let (status, body, ..) = fetch(&runtime, &server.url("/big-chunks"), "{ maxBytes = 2048 }");
+    assert_eq!((status, body.len()), (Some(200.0), 2048));
+    let (status, _, kind, ..) = fetch(&runtime, &server.url("/folded"), "{}");
+    assert_eq!((status, kind.as_str()), (None, "protocol"));
+
+    let decoded = eval(
+        &runtime,
+        &format!(
+            "local response = assert(http.get({url:?}))
+            local value = http.json(response) :: {{ ok: boolean, items: {{ number }} }}
+            local _, problem = http.json({{ body = buffer.fromstring('not json') }} :: any)
+            return `{{value.ok}} {{#value.items}} {{problem ~= nil}}`",
+            url = server.url("/json")
+        ),
+    );
+    assert_eq!(decoded, "true 2 true");
+
+    let (_, _, kind, message, ..) = fetch(&runtime, &(server.url("/slow") + "?token=SECRET"), "{ timeoutMs = 300 }");
+    assert_eq!(kind, "timeout");
+    assert!(!message.contains("SECRET"), "a query never reaches a message: {message}");
+}
+
+#[test]
+fn a_slow_request_in_a_task_leaves_the_rest_of_the_loop_running() {
+    let server = Server::start(vec![
+        (
+            "/slow",
+            Answer::Slow(Duration::from_millis(1500), response(200, "eventually", &[])),
+        ),
+        ("/fast", Answer::Raw(response(200, "at once", &[]))),
+    ]);
+    let lines = run_task(
+        &runtime(),
+        &format!(
+            "
+            local started = net.now()
+            local ticks, longestGap, last = 0, 0, net.now()
+            local done = false
+            local ticker = loop:spawn(function()
+              while not done do
+                net.sleep(20)
+                local current = net.now()
+                longestGap = math.max(longestGap, current - last)
+                last, ticks = current, ticks + 1
+              end
+            end, 'ticker')
+
+            local fastAt
+            local fast = loop:spawn(function()
+              local response = assert(http.get({fast:?}))
+              fastAt = net.now() - started
+              table.insert(out, `fast {{buffer.tostring(response.body)}}`)
+            end, 'fast')
+
+            local response = assert(http.get({slow:?}, {{ timeoutMs = 10000 }}))
+            done = true
+            ticker:join()
+            fast:join()
+            table.insert(out, `slow {{buffer.tostring(response.body)}}`)
+            table.insert(out, `fast first {{fastAt < 1000}}`)
+            table.insert(out, `ticked {{ticks >= 30}} gaps {{longestGap < 300}}`)
+            ",
+            slow = server.url("/slow"),
+            fast = server.url("/fast"),
+        ),
+    );
+    assert_eq!(
+        lines,
+        ["fast at once", "slow eventually", "fast first true", "ticked true gaps true"]
+    );
+}
+
+#[test]
+fn https_is_verified_against_the_roots_it_is_given() {
+    let server = Server::start(vec![
+        (
+            "/chunked",
+            Answer::Raw(
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n"
+                    .to_owned(),
+            ),
+        ),
+        ("/echo", Answer::Echo),
+    ]);
+    let lines = run_task(
+        &tls_runtime(),
+        &format!(
+            "
+            local port = tlsFront(loop, {port}, SERVER_CERT, SERVER_KEY)
+            local tls = require '@dream/tls'
+            local trusted = assert(tls.clientConfig {{ roots = CA, platform = false }})
+            local response = assert(http.get(`https://localhost:{{port}}/chunked`, {{ tls = trusted }}))
+            table.insert(out, `{{response.status}} {{buffer.tostring(response.body)}}`)
+
+            local posted = assert(http.request {{
+              url = `https://127.0.0.1:{{port}}/echo`,
+              method = 'POST',
+              json = {{ model = 'test' }},
+              headers = {{ Authorization = 'Bearer key' }},
+              tls = trusted,
+            }})
+            local echoed = buffer.tostring(posted.body)
+            table.insert(out, `post {{string.find(echoed, 'authorization: Bearer key', 1, true) ~= nil}} {{string.sub(echoed, -16)}}`)
+
+            local _, problem, kind = http.get(`https://localhost:{{port}}/chunked`)
+            table.insert(out, `platform trust {{kind}} {{string.find(problem, 'Untrusted') ~= nil or string.find(problem, 'trust') ~= nil}}`)
+
+            local connection, mismatch, mismatchKind = net.connect('127.0.0.1', port, {{
+              tls = true, serverName = 'example.org', tlsConfig = trusted, deadline = net.now() + 5000,
+            }})
+            table.insert(out, `wrong name {{connection == nil}} {{mismatchKind}}`)
+            ",
+            port = server.port
+        ),
+    );
+    assert_eq!(lines[0], "200 hello world");
+    assert_eq!(lines[1], r#"post true {"model":"test"}"#);
+    assert!(lines[2].starts_with("platform trust tls"), "{lines:?}");
+    assert_eq!(lines[3], "wrong name true tls");
 }

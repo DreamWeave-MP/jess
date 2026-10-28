@@ -1,0 +1,99 @@
+--!strict
+-- A TLS front for the plain loopback fixture servers: it accepts TLS on a loopback port under the
+-- fixture certificate and relays each session's bytes to the fixture's port, every session as
+-- tasks on the test's own loop. The tests prepend it to their scripts, so a wss:// or https://
+-- client meets the same independent server the plain tests do.
+local tcp = require '@dream/tcp'
+local tls = require '@dream/tls'
+local net = require '@jess/net'
+
+--- Writes all of `data` into the TLS session and flushes it; false once the session fails.
+local function writeSecure(secure: dream_tls_Stream, data: string): boolean
+  local offset = 0
+  while offset < #data do
+    local wrote, _, kind = secure:write(data, offset, #data - offset)
+    if wrote then
+      offset += wrote
+      continue
+    end
+
+    if kind ~= 'wouldBlock' then return false end
+
+    if secure:flush() == false and not net.wait(secure, 'write') then return false end
+  end
+
+  while true do
+    local flushed = secure:flush()
+    if flushed then return true end
+
+    if flushed == nil or not net.wait(secure, 'write') then return false end
+  end
+end
+
+local function relay(loop: net.Loop, socket: dream_tcp_Stream, config: dream_tls_ServerConfig, upstreamPort: number)
+  local secure = assert(tls.server(socket, config))
+  while true do
+    local done = secure:handshake()
+    if done then break end
+
+    if done == nil or not net.wait(secure, if secure.wantsWrite then 'write' else 'read') then
+      secure:close()
+      return
+    end
+  end
+
+  local upstream = net.connect('127.0.0.1', upstreamPort)
+  if not upstream then
+    secure:close()
+    return
+  end
+
+  local back = loop:spawn(function()
+    while true do
+      local piece = upstream:receiveSome(65536)
+      if not piece or not writeSecure(secure, piece) then break end
+    end
+
+    secure:shutdown 'write'
+    writeSecure(secure, '')
+  end, 'tls front: back')
+
+  local scratch = buffer.create(65536)
+  while true do
+    local count, _, kind = secure:readInto(scratch)
+    if count and count > 0 then
+      if not upstream:send(buffer.readstring(scratch, 0, count)) then break end
+
+      continue
+    end
+
+    if kind ~= 'wouldBlock' or not net.wait(secure, 'read') then break end
+  end
+
+  upstream:close()
+  back:join(net.now() + 2000)
+  secure:close()
+end
+
+--- Starts the front on `loop` and returns the port it listens on.
+local function tlsFront(loop: net.Loop, upstreamPort: number, certChain: string, privateKey: string): number
+  local config = assert(tls.serverConfig { certChain = certChain, privateKey = privateKey })
+  local listener = assert(tcp.listen '127.0.0.1:0')
+  local port = assert(tonumber(string.match(listener.localAddress, ':(%d+)$')))
+
+  loop:spawn(function()
+    while true do
+      local socket, _, kind = listener:accept()
+      if socket then
+        loop:spawn(function() relay(loop, socket, config, upstreamPort) end, 'tls front: session')
+        continue
+      end
+
+      if kind ~= 'wouldBlock' or not net.wait(listener, 'read') then break end
+    end
+
+    listener:close()
+  end, 'tls front')
+
+  return port
+end
