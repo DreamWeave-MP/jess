@@ -68,7 +68,7 @@ On a tag, once every platform built, the publisher uploads `jess` and waits for 
 
 jess takes [l3i](https://crates.io/crates/l3i) from crates.io, so a release that needs a newer l3i waits for l3i's release first. To build against an unreleased l3i locally, override it on the command line (`--config 'patch.crates-io.l3i.path="..."'`), never in a committed file.
 
-On every other run, `cargo publish --dry-run` packages and verifies the crate, so a file missing from `include` turns up on the pull request instead of on release day. The crate ships `/src`, `/jpk/builtin`, the readme, and the two licenses; `tests/` and `tools/` stay out.
+On every other run, `cargo publish --dry-run` packages and verifies the crate, so a file missing from `include` turns up on the pull request instead of on release day. The crate ships `/src`, `/jpk/builtin`, `build.rs` and the vendored miniaudio it compiles (`/vendor/miniaudio`, with its license), the readme, and the two licenses; `tests/` and `tools/` stay out.
 
 ## Discord
 
