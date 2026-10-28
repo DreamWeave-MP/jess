@@ -1163,38 +1163,45 @@ enum Raw {
 /// The most input kept for a host that hasn't polled: a frame's worth many times over.
 const QUEUED: usize = 4096;
 
-/// Input waiting for the [`WindowInput`]s that listen, and how many do. Without one, window input
+/// Input waiting for each [`WindowInput`] that listens, in a queue of its own: every one gets
+/// every window's input, and polling one takes nothing from another. Without one, window input
 /// is dropped, not kept: what happened while nobody listened never reaches a backend made later.
-static QUEUE: Mutex<Queue> = Mutex::new(Queue {
-    listeners: 0,
-    raws: Vec::new(),
+static QUEUES: Mutex<Queues> = Mutex::new(Queues {
+    next: 0,
+    listening: Vec::new(),
 });
 
-struct Queue {
-    listeners: usize,
-    raws: Vec<Raw>,
+struct Queues {
+    /// The number the next backend listens by.
+    next: u64,
+    /// Each listening backend's number and what it hasn't polled yet.
+    listening: Vec<(u64, Vec<Raw>)>,
 }
 
-fn queued() -> std::sync::MutexGuard<'static, Queue> {
-    QUEUE.lock().unwrap_or_else(PoisonError::into_inner)
+fn queues() -> std::sync::MutexGuard<'static, Queues> {
+    QUEUES.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn queue(raw: Raw) {
-    let mut queue = queued();
-    if queue.listeners > 0 && queue.raws.len() < QUEUED {
-        queue.raws.push(raw);
+    for (_, raws) in &mut queues().listening {
+        if raws.len() < QUEUED {
+            raws.push(raw);
+        }
     }
 }
 
 /// A host's input backend for its windows, polled with any other backend it wraps.
 ///
 /// Each window has a keyboard and a pointer, connected at its first input and disconnected when
-/// it closes. The host is focused while any window has the keyboard. Window input is kept from
-/// when the first backend is made until the last is dropped, and only then: a backend made later
-/// starts with nothing, never with what an earlier one left unpolled.
+/// it closes. The host is focused while any window has the keyboard. Each backend has every
+/// window's input from when it is made until it is dropped, in a queue of its own: two hosts each
+/// see all of it, polling one takes nothing from the other, and a backend made later starts with
+/// nothing, never with what an earlier one left unpolled.
 #[derive(Debug)]
 pub struct WindowInput {
     inner: Option<Box<dyn Backend>>,
+    /// The number its queue is listed by.
+    listener: u64,
     /// Each window's keyboard and pointer, by window number.
     devices: Vec<(u64, DeviceId, DeviceId)>,
     /// The windows that have the keyboard.
@@ -1209,9 +1216,14 @@ impl WindowInput {
     /// The backend for windows, polling `inner` (the platform's, say) first.
     #[must_use]
     pub fn new(inner: Option<Box<dyn Backend>>) -> WindowInput {
-        queued().listeners += 1;
+        let mut queues = queues();
+        let listener = queues.next;
+        queues.next += 1;
+        queues.listening.push((listener, Vec::new()));
+        drop(queues);
         WindowInput {
             inner,
+            listener,
             devices: Vec::new(),
             focused: Vec::new(),
             focus: true,
@@ -1240,13 +1252,9 @@ impl WindowInput {
 }
 
 impl Drop for WindowInput {
-    /// The last backend to go stops listening, and forgets what it never polled.
+    /// It stops listening, and what it never polled goes with its queue.
     fn drop(&mut self) {
-        let mut queue = queued();
-        queue.listeners -= 1;
-        if queue.listeners == 0 {
-            queue.raws.clear();
-        }
+        queues().listening.retain(|(listener, _)| *listener != self.listener);
     }
 }
 
@@ -1259,7 +1267,12 @@ impl Backend for WindowInput {
         if let Some(inner) = &mut self.inner {
             inner.poll(sender, now)?;
         }
-        let drained = std::mem::take(&mut queued().raws);
+        let drained = queues()
+            .listening
+            .iter_mut()
+            .find(|(listener, _)| *listener == self.listener)
+            .map(|(_, raws)| std::mem::take(raws))
+            .unwrap_or_default();
         let mut refocused = false;
         for raw in drained {
             match raw {
@@ -1613,6 +1626,43 @@ mod tests {
             [Key::KeyD],
             "nothing from before the first backend, while none listened, or left by one dropped"
         );
+    }
+
+    #[test]
+    fn every_input_backend_gets_every_window_input_on_its_own() {
+        let _turn = INPUT.lock().unwrap_or_else(PoisonError::into_inner);
+        let keys = |backend: &mut WindowInput| -> Vec<Key> {
+            let input = crate::input::InputQueue::new();
+            let mut events = Vec::new();
+            backend.poll(&input.sender(), Timestamp::ZERO).unwrap();
+            input.drain(&mut events);
+            events
+                .iter()
+                .filter_map(|event| match event.kind {
+                    crate::input::InputEventKind::Button {
+                        control: Control::Key(key),
+                        ..
+                    } => Some(key),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut first = WindowInput::new(None);
+        let mut second = WindowInput::new(None);
+        queue(Raw::Key(1, Key::KeyA, true));
+        queue(Raw::Key(2, Key::KeyB, true));
+
+        assert_eq!(keys(&mut first), [Key::KeyA, Key::KeyB]);
+        assert_eq!(
+            keys(&mut second),
+            [Key::KeyA, Key::KeyB],
+            "the first polling took nothing from it"
+        );
+        assert_eq!(keys(&mut first), [], "each takes its own once");
+
+        drop(first);
+        queue(Raw::Key(1, Key::KeyC, true));
+        assert_eq!(keys(&mut second), [Key::KeyC], "one going stops nothing for the other");
     }
 
     #[test]
