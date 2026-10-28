@@ -174,6 +174,19 @@ pub fn describe(d: &mut ExtensionDescriptor) {
     window.method("close", |this: &LuaGpuWindow| this.window.close()).untyped();
     window
         .method(
+            "resize",
+            |this: &LuaGpuWindow, width: ValueView<'_>, height: ValueView<'_>| -> l3i::Result<()> {
+                const FUNCTION: &str = "GpuWindow:resize";
+                this.window.request_size(
+                    whole(FUNCTION, "the width", Some(width), None)?,
+                    whole(FUNCTION, "the height", Some(height), None)?,
+                );
+                Ok(())
+            },
+        )
+        .untyped();
+    window
+        .method(
             "events",
             |this: &LuaGpuWindow, call: &Call<'_>| -> l3i::Result<StackResults> {
                 let events = this.window.events();

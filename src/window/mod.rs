@@ -139,6 +139,10 @@ pub enum WindowEvent {
 /// The most events a window keeps for whoever hasn't read them: the oldest go first.
 const EVENTS: usize = 256;
 
+/// The named event an application's host posts when a window has news: what happened to it
+/// waits in [`Window::events`], for a handler of this event to read.
+pub const NEWS: &str = "jess.window";
+
 impl Default for WindowDesc {
     fn default() -> Self {
         WindowDesc {
@@ -213,6 +217,8 @@ struct State {
     scale: f64,
     /// What happened to it since the last read, oldest first.
     events: Vec<WindowEvent>,
+    /// Whether [`news`] reported the events since they were last read.
+    announced: bool,
     closes: bool,
     key: Option<String>,
     present: PresentMode,
@@ -493,6 +499,7 @@ pub fn open(gpu: &Arc<Gpu>, desc: &WindowDesc) -> Result<Window, WindowError> {
                 height: size.height.max(1),
             },
             events: Vec::new(),
+            announced: false,
             closes: desc.closes,
             key: desc.key.clone(),
             present: desc.present,
@@ -693,6 +700,29 @@ pub fn wait_presented(timeout: Duration) {
     presenter::wait(&shared, timeout);
 }
 
+/// The windows with events nobody has read or heard of yet, by title and key, each once until
+/// its events are read: what an application's host posts as [`NEWS`].
+#[must_use]
+pub fn news() -> Vec<(String, Option<String>)> {
+    let states: Vec<Rc<RefCell<State>>> = SYSTEM.with_borrow(|system| {
+        system
+            .iter()
+            .flat_map(|system| &system.windows)
+            .filter_map(|(_, state)| state.upgrade())
+            .collect()
+    });
+    let mut news = Vec::new();
+    for state in states {
+        let mut state = state.borrow_mut();
+        if state.events.is_empty() || state.announced {
+            continue;
+        }
+        state.announced = true;
+        news.push((state.title.clone(), state.key.clone()));
+    }
+    news
+}
+
 /// The windows this thread has open.
 fn open_states() -> Vec<Rc<RefCell<State>>> {
     SYSTEM.with_borrow(|system| {
@@ -738,6 +768,19 @@ impl Window {
         self.state.borrow().shared.screen().frames
     }
 
+    /// Asks the window system for an inner size of `width` by `height` physical pixels. It may
+    /// give another, or none (a tiled window, say); whatever it gives arrives as a
+    /// [`WindowEvent::Resized`], and the shown plan is resized with it.
+    pub fn request_size(&self, width: u32, height: u32) {
+        let raw = self.state.borrow().raw.clone();
+        let Some(raw) = raw else {
+            return;
+        };
+        if let Some(given) = raw.request_inner_size(PhysicalSize::new(width.max(1), height.max(1))) {
+            resized(&mut self.state.borrow_mut(), given);
+        }
+    }
+
     /// The key it is kept by, if it was opened with one.
     #[must_use]
     pub fn key(&self) -> Option<String> {
@@ -747,7 +790,9 @@ impl Window {
     /// What happened to it since the last call, oldest first: at most the last 256 of it.
     #[must_use]
     pub fn events(&self) -> Vec<WindowEvent> {
-        std::mem::take(&mut self.state.borrow_mut().events)
+        let mut state = self.state.borrow_mut();
+        state.announced = false;
+        std::mem::take(&mut state.events)
     }
 
     /// Whether it is open: neither closed by the person nor by [`Window::close`].

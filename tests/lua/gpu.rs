@@ -1138,32 +1138,16 @@ fn plan_errors_name_the_mistake() {
     }
 }
 
-/// A window shows a plan every frame `jess.gpu.pump` draws, here copying what it drew into a
-/// buffer to read, and closes. It opens a real window, so it runs only where `JESS_WINDOW_TESTS`
-/// is set, on a desktop: winit allows one event loop a process, so this is the suite's only
-/// window.
+/// What `a_script_shows_a_plan_in_a_window` runs: everything up to showing its plan in a second
+/// window, which is refused.
 #[cfg(feature = "window")]
-#[test]
-fn a_script_shows_a_plan_in_a_window() {
-    if std::env::var_os("JESS_WINDOW_TESTS").is_none() {
-        eprintln!("SKIPPED a_script_shows_a_plan_in_a_window: set JESS_WINDOW_TESTS on a desktop to open one");
-        return;
-    }
-    if crate::gpu::gpu("a_script_shows_a_plan_in_a_window").is_none() {
-        return;
-    }
-    let capabilities = ["gpu.device".to_owned(), "gpu.window".to_owned(), "input.actions".to_owned()];
-    let runtime = jess::lua::runtime_with_capabilities(jess::lua::Options::default(), &capabilities).unwrap();
-    let refusal = runtime
-        .exec(
-            r"
+const WINDOW: &str = r"
             local shader = require('@jess/shader')
             local device = jess.gpu.device()
             local window = jess.gpu.window(device, {
               title = 'jess window test',
               width = 64,
               height = 48,
-              resizable = false,
             })
             assert(window.open and window.width > 0 and window.scale > 0, tostring(window))
             assert(string.find(tostring(window), 'GpuWindow(jess window test, ', 1, true) == 1, tostring(window))
@@ -1215,6 +1199,25 @@ fn a_script_shows_a_plan_in_a_window() {
             assert(typeof(window:events()) == 'table' and #window:events() == 0)
             local input = jess.input.runtime({ windows = true })
             assert(typeof(input:tick()) == 'table')
+            -- Asked for a size, it says what it got, and the plan goes with it.
+            window:resize(96, 72)
+            local resized = nil
+            for _ = 1, 50 do
+              jess.gpu.pump()
+              for _, event in window:events() do
+                if event.kind == 'resized' then resized = event end
+              end
+              if resized then break end
+            end
+            assert(resized and resized.width == window.width and resized.height == window.height)
+            extent = plan:extent('screen')
+            assert(extent.width == window.width and extent.height == window.height)
+            -- Left unread, its news is the host's to announce.
+            window:resize(window.width + 16, window.height + 16)
+            for _ = 1, 10 do
+              jess.gpu.pump()
+            end
+
             local closing = jess.gpu.window(device, { title = 'closing', width = 32, height = 32 })
             closing:close()
             jess.gpu.pump()
@@ -1222,11 +1225,31 @@ fn a_script_shows_a_plan_in_a_window() {
 
             -- A plan takes the size of the one window that shows it: showing it in another fails.
             jess.gpu.window(device, { title = 'other', width = 32, height = 32 }):show(plan, 'screen')
-        ",
-        )
-        .unwrap_err()
-        .to_string();
+";
+
+/// A window shows a plan every frame `jess.gpu.pump` draws, here copying what it drew into a
+/// buffer to read, and closes. It opens a real window, so it runs only where `JESS_WINDOW_TESTS`
+/// is set, on a desktop: winit allows one event loop a process, so this is the suite's only
+/// window.
+#[cfg(feature = "window")]
+#[test]
+fn a_script_shows_a_plan_in_a_window() {
+    if std::env::var_os("JESS_WINDOW_TESTS").is_none() {
+        eprintln!("SKIPPED a_script_shows_a_plan_in_a_window: set JESS_WINDOW_TESTS on a desktop to open one");
+        return;
+    }
+    if crate::gpu::gpu("a_script_shows_a_plan_in_a_window").is_none() {
+        return;
+    }
+    let capabilities = ["gpu.device".to_owned(), "gpu.window".to_owned(), "input.actions".to_owned()];
+    let runtime = jess::lua::runtime_with_capabilities(jess::lua::Options::default(), &capabilities).unwrap();
+    let refusal = runtime.exec(WINDOW).unwrap_err().to_string();
     assert!(refusal.contains("shown in another window"), "{refusal}");
+    jess::window::pump();
+    let news = jess::window::news();
+    assert!(!news.is_empty(), "the windows had news no one read");
+    assert!(jess::window::news().is_empty(), "news is announced once until it is read");
+    drop(runtime);
     kept_windows_outlive_their_code(&capabilities);
 }
 

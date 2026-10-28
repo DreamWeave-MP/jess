@@ -779,7 +779,10 @@ impl Application {
             // The window system's news reaches the frame's input; what the frame left the windows
             // showing is drawn after it.
             #[cfg(feature = "window")]
-            crate::window::pump();
+            {
+                crate::window::pump();
+                self.announce_windows(report);
+            }
             let outcome = self.frame(now - last);
             last = now;
             // What the frame changed about what the GPU draws, all of it at once.
@@ -798,6 +801,32 @@ impl Application {
             self.flush(report);
             outcome.map_err(|problem| error(problem.to_string()))?;
             ran += 1;
+        }
+    }
+
+    /// Posts [`crate::window::NEWS`] for each window something happened to, for the frame's
+    /// event drain to deliver: `{ title, key }`, and the handler reads the window's events.
+    #[cfg(feature = "window")]
+    fn announce_windows(&self, report: &mut impl FnMut(&str)) {
+        let news = crate::window::news();
+        if news.is_empty() {
+            return;
+        }
+        let Ok(mailbox) = self.host.domain().mailbox() else {
+            return;
+        };
+        for (title, key) in news {
+            let payload = crate::runtime::Message::map([
+                ("title", crate::runtime::Message::text(&title)),
+                (
+                    "key",
+                    key.as_deref()
+                        .map_or(crate::runtime::Message::Nil, crate::runtime::Message::text),
+                ),
+            ]);
+            if let Err(refused) = mailbox.post_named(crate::window::NEWS, payload) {
+                report(&format!("window {title}: its news wasn't delivered: {refused}"));
+            }
         }
     }
 

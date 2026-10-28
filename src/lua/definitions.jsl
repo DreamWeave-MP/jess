@@ -1035,8 +1035,9 @@ export type GpuWindowEvent =
 --- A native window: its inner `width` and `height` in physical pixels, the `scale` of a logical
 --- pixel, its surface's `format`, and whether it is `open`. `show` draws a plan into it every
 --- frame, the window's image as the plan's imported target `target`, the plan resized with the
---- window; `hide` stops, and `close` closes it. `events` is what happened to it since the last
---- call, oldest first. `tostring` gives `GpuWindow(title, 800×600)`.
+--- window; `hide` stops, `close` closes it, and `resize` asks for a size. `events` is what
+--- happened to it since the last call, oldest first: under an application's host, the named event
+--- `jess.window` announces that there is some. `tostring` gives `GpuWindow(title, 800×600)`.
 declare extern type GpuWindow with
   title: string
   key: string?
@@ -1055,6 +1056,7 @@ declare extern type GpuWindow with
   ): ()
   function hide(self): ()
   function close(self): ()
+  function resize(self, width: number, height: number): ()
   function events(self): { GpuWindowEvent }
   __tostring: (self: GpuWindow) -> string
 end
