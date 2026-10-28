@@ -47,6 +47,7 @@ Opening a package does not secretly start it. A host resolves packages into an a
 | --- | --- |
 | [Getting Started](@/docs/getting-started/_index.md) | Install, the first package, and an editor that knows the types. |
 | [Scripting](@/docs/scripting/_index.md) | Scripts, `require`, the built-in modules, packages, applications, performance, and the Luau pitfalls. |
+| [Cookbook](@/docs/cookbook/_index.md) | Short, task-oriented recipes with links to the underlying contracts. |
 | [Reference](@/docs/reference/_index.md) | The manifest, every capability, the glossary, and the errors. |
 | [CLI Reference](@/docs/cli/_index.md) | Every command and flag. |
 | [Luau API Reference](@/docs/api/_index.md) | Lookup-first module, type, and function reference. |
