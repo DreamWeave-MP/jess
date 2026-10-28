@@ -39,6 +39,7 @@ tests = [
 "@jess/backup" = "src/backup/init.jsl"
 "@jess/http" = "src/http/init.jsl"
 "@jess/net" = "src/net/init.jsl"
+"@jess/websocket" = "src/websocket/init.jsl"
 "@jess/render" = "src/render/init.jsl"
 "@jess/render/camera" = "src/render/camera.jsl"
 
@@ -72,7 +73,7 @@ exports = ["@jess/http"]
 
 [[layer]]
 id = "jess.net"
-exports = ["@jess/net"]
+exports = ["@jess/net", "@jess/websocket"]
 
 [[layer]]
 id = "jess.render"

@@ -2,6 +2,7 @@ use jess::lua::Options;
 use jess::lua::l3i::Runtime;
 
 mod http;
+mod websocket;
 
 fn runtime(capabilities: &[String]) -> Runtime {
     jess::lua::runtime_with_capabilities(Options::default(), capabilities).unwrap()

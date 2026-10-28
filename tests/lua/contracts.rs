@@ -123,6 +123,7 @@ fn the_types_cover_exactly_the_kernel_s_modules() {
             "@jess/shader",
             "@jess/style",
             "@jess/test",
+            "@jess/websocket",
             "@jess/worker",
             "@jess/yaml",
         ]

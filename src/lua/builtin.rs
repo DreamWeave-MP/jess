@@ -70,6 +70,10 @@ pub const FILES: &[(&str, &str)] = &[
     ("src/style/init.jsl", include_str!("../../jpk/builtin/src/style/init.jsl")),
     ("src/style/rules.jsl", include_str!("../../jpk/builtin/src/style/rules.jsl")),
     (
+        "src/websocket/init.jsl",
+        include_str!("../../jpk/builtin/src/websocket/init.jsl"),
+    ),
+    (
         "tests/analysis/run.jsl",
         include_str!("../../jpk/builtin/tests/analysis/run.jsl"),
     ),
