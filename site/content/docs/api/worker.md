@@ -122,4 +122,4 @@ return function(count: number)
 end
 ```
 
-Related: [jess.context](@/docs/api/context.md), [Script Domains](@/docs/contributing/script-domains.md).
+Related: [jess.context](@/docs/api/context.md), [Script Domains](@/docs/contributing/script-domains.md), and [@jess/audio](@/docs/api/audio.md#streams), whose streams a worker writes from a handle while the domain plays them.

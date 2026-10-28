@@ -25,7 +25,7 @@ That makes it deliberately wider than a game engine. The same runtime hosts comm
 - **New here?** [Install](@/docs/getting-started/install.md), write [your first script](@/docs/scripting/intro.md), then build [your first package](@/docs/getting-started/first-package.md).
 - **Want the runtime model?** [Script Domains](@/docs/contributing/script-domains.md), [Application Kernel](@/docs/contributing/application-kernel.md), then [Packages](@/docs/scripting/packages.md).
 - **Building a package?** [Packages](@/docs/scripting/packages.md) covers Package Sources, JPKs, layers, resolution, and activation; the [manifest reference](@/docs/reference/manifest.md) has every key; [Capabilities](@/docs/reference/capabilities.md) has every name a target can declare.
-- **Building an application?** [Applications](@/docs/scripting/applications.md): managed modules, host callbacks, named events, and interfaces.
+- **Building an application?** [Applications](@/docs/scripting/applications.md): managed modules, host callbacks, named events, interfaces, and windows. [`jess.gpu`](@/docs/api/gpu.md) draws into them, and [`jess.audio`](@/docs/api/audio.md) makes the noise.
 - **Looking something up?** The [Luau API Reference](@/docs/api/_index.md) and the [CLI Reference](@/docs/cli/_index.md).
 - **Working on Jess itself?** [Contributing](@/docs/contributing/_index.md) covers building, testing, the architecture, and the runtime internals. How decisions are made, who makes them, and what the project commits to is the [Constitution](@/governance.md).
 
@@ -50,7 +50,7 @@ Opening a package does not secretly start it. A host resolves packages into an a
 | [Reference](@/docs/reference/_index.md) | The manifest, every capability, the glossary, and the errors. |
 | [CLI Reference](@/docs/cli/_index.md) | Every command and flag. |
 | [Luau API Reference](@/docs/api/_index.md) | Lookup-first module, type, and function reference. |
-| [Contributing](@/docs/contributing/_index.md) | Building, testing, architecture, script domains, the application kernel, render graph, shader IR, input, localization, and releasing. |
+| [Contributing](@/docs/contributing/_index.md) | Building, testing, architecture, script domains, the application kernel, render graph, GPU, shader IR, input, localization, audio, and releasing. |
 
 ## Stability
 

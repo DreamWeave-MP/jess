@@ -267,7 +267,7 @@ fn generic_reports_support_yaml_json_and_toml() {
         assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
         let text = String::from_utf8(output.stdout).unwrap();
         let report: serde_json::Value = match format {
-            "yaml" => serde_yaml::from_str(&text).unwrap(),
+            "yaml" => serde_saphyr::from_str(&text).unwrap(),
             "json" => {
                 assert_eq!(text.lines().count(), 1);
                 serde_json::from_str(&text).unwrap()

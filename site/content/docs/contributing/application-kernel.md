@@ -1,12 +1,12 @@
 ---
 title: 'Application Kernel'
-description: 'What jess::host is: a script domain with its live input service, the frame a host runs, how the input phase arrives, and what a capability denial looks like.'
+description: 'What jess::host is: a script domain with its live input service, the frame a host runs, how the input phase arrives, how an application steps its windows and GPU around that frame, and what a capability denial looks like.'
 weight: 102
 extra:
   kind: guide
 ---
 
-The substrates exist on their own terms. [Script Domains](@/docs/contributing/script-domains.md) run code and know nothing about devices or text. [Input](@/docs/contributing/input-runtime.md) knows devices and action graphs and has never heard of a domain. [Localization](@/docs/contributing/localization.md) is a Luau module with a registry in every runtime, so it isn't a host's business at all. Something has to put one application together out of them, and it should be small, because the GUI, the render executor, and every application above them will stand on it.
+The substrates exist on their own terms. [Script Domains](@/docs/contributing/script-domains.md) run code and know nothing about devices or text. [Input](@/docs/contributing/input-runtime.md) knows devices and action graphs and has never heard of a domain. [Localization](@/docs/contributing/localization.md) is a Luau module with a registry in every runtime, so it isn't a host's business at all. Something has to put one application together out of them, and it should be small, because every application stands on it, windowed or headless.
 
 `jess::host` (`src/host`) is that something: one `ScriptDomain`, the services it carries, and a frame.
 
@@ -65,6 +65,18 @@ The rows are exactly what `InputRuntime:tick()` returns to a script, so reading 
 
 `ScriptDomain::advance(delta)`: fixed steps, update, late update, and the event drain.
 
+## Windows and the GPU
+
+`Host::frame` draws nothing and knows no window. The application above it does: `jess::lua::application::Application::step(delta, report)` is one frame as `jess package run` drives it, in three parts around the host's frame.
+
+1. **News.** `jess::window::pump` hands the window system's events to their windows without blocking, and to the input backends listening. For each window with events nobody has read, the application posts the named event `jess.window` (`window::NEWS`), `{ title, key }`, into its domain's mailbox, so the frame's drain delivers it to the [`on.event['jess.window']`](@/docs/api/events.md#jess-window) handlers. A window nothing happened to posts nothing, and a quiet frame enters no Luau for it.
+2. **The frame.** `Host::frame(delta)`, input then advance, exactly as above.
+3. **Commit and present.** The application's GPU device, if a generation has opened one, commits everything the frame changed about what it draws, all at once, and `jess::window::present` tells the presenter thread to draw the windows whose device committed something. Neither waits for the GPU. What the device or a window refused goes to `report` as a line, and the application runs on.
+
+The device is a service, `jess::lua::SharedDevice`, attached to the domain like the input service, so a restart keeps the device and a kept window keeps showing the old generation's last frame until the new code shows its own. When the target declares `gpu.window`, the input source is wrapped in a `jess::window::WindowInput`, which adds every window's keyboard and pointer to whatever the source polls (or stands alone when there is no source), so the host's live runtime hears the windows without the application asking. A target that doesn't declare it stays as headless as it was launched. `Application::stop` closes every kept window.
+
+`Application::frame` is the host's frame alone, for an embedder with no windows; one with windows steps. [GPU](@/docs/contributing/gpu.md#windows) has the window system and the presenter, and [A window](@/docs/scripting/applications.md#a-window) is the application that uses all of this.
+
 ## Input Sources
 
 | `InputSource` | Clock | For |
@@ -104,7 +116,7 @@ The rule for the boundary: **someone always decides.** Under a domain, the check
 capability 'input.actions' denied to domain#1 gen#1 context#2
 ```
 
-The denial is also counted (`DomainStats::capability_denials`) and reported as a `DiagnosticKind::CapabilityDenied` carrying the capability and the attribution. Outside any domain the runtime's own grant decides, the same set its l3i plan was built from: `jess run` and `jess test` grant a script its terminal (`process.stdio`), the input devices in front of the person running it (`input.actions`, `input.observe`, `input.configure`), and their GPU (`gpu.device`), since they already have the keyboard and the screen; a package target holds what it declares, once the operator grants it; and a library caller grants what it means to (`jess::lua::host_script_grant`), or gets `jess.input: needs the 'input.configure' capability, which this runtime does not grant`. Everything else in `@jess/input` (the builders, `graph`, `fromJson`, labels, presentation, conflicts, and the router) checks nothing, because it touches no device and no runtime: it is data.
+The denial is also counted (`DomainStats::capability_denials`) and reported as a `DiagnosticKind::CapabilityDenied` carrying the capability and the attribution. Outside any domain the runtime's own grant decides, the same set its l3i plan was built from: `jess run` and `jess test` grant a script its terminal (`process.stdio`), the input devices in front of the person running it (`input.actions`, `input.observe`, `input.configure`), their GPU and windows on their screen (`gpu.device`, `gpu.window`), and their speakers (`audio.output`), since they already have the keyboard, the screen, and the sound; a package target holds what it declares, those of that set without asking and the rest once the operator grants them; and a library caller grants what it means to (`jess::lua::host_script_grant`), or gets `jess.input: needs the 'input.configure' capability, which this runtime does not grant`. Everything else in `@jess/input` (the builders, `graph`, `fromJson`, labels, presentation, conflicts, and the router) checks nothing, because it touches no device and no runtime: it is data.
 
 What needs no capability: anything that works on values already in the VM (the codecs, `@jess/style`, `jess.shader`, `@jess/l10n`'s formatting), `print` and `@jess/log`, `os.time` and `os.clock`, and `require` of a module beside the caller or exported by an activated package, which reads through the script's folder or the package's provider rather than through `@dream/fs`. A package's modules may require only what its manifest declares, so that read is bounded by the plan, not by a grant.
 
@@ -128,4 +140,5 @@ Two fixtures, both headless:
 - `src/runtime/service.rs`: `Services`; `DomainSpec::service`, `ScriptDomain::service`, `jess::runtime::service`, `WorkerSpec::share`.
 - `src/input/service.rs`: `InputService`.
 - `src/lua/input.rs`: the module that binds to the service and checks the capabilities.
-- `src/lua/application.rs`: the supervisor that turns an application target into a host, its managed modules, and a frame loop.
+- `src/lua/application.rs`: the supervisor that turns an application target into a host, its managed modules, and a frame loop, and `Application::step`, the frame with its windows around it.
+- `src/window`: windows, their news and their input (`WindowInput`), and the presenter that draws them.

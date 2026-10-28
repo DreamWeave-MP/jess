@@ -81,21 +81,21 @@ The `audio-device` feature builds miniaudio's device layer (`vendor/miniaudio`, 
 
 Why miniaudio, and only its device layer:
 
-- **Deployment.** miniaudio loads ALSA, PulseAudio, PipeWire, JACK, CoreAudio, WASAPI, AAudio, and OpenSL at run time, so a jess binary links no audio library and runs on a machine with none (it falls back to nothing, and the null device is always there). cpal links libasound on Linux at build time, which a cross-built handheld image or a minimal container may not have. SDL3 would bring a window system jess has no use for here. cubeb is C++ with its own build.
+- **Deployment.** miniaudio loads ALSA, PulseAudio, PipeWire, JACK, CoreAudio, WASAPI, AAudio, and OpenSL at run time, so a jess binary links no audio library and runs on a machine with none (it falls back to nothing, and the null device is always there). Nothing about sound has to be installed where jess is built either, which matters for a cross-built handheld image or a minimal container. It is C with no build system of its own, and brings no window system with it.
 - **Behaviour.** miniaudio follows the default device when it changes and reports it, and its null device plays to nowhere in real time, so every platform's tests can run a real device thread.
 - **Licence.** Public domain or MIT No Attribution, either compatible with jess's own.
 - **Scope.** Only the device. miniaudio's engine, node graph, resampler, and decoders stay compiled out. The mixer, the clock, and the DSP are jess's, so offline and live renders are one engine.
 
 The feature is on by default, because it costs nothing at run time: miniaudio links no audio library when jess is built, so a jess on a machine with no sound system still starts and finds the null device. What it costs is jess's first build script and a C compile, which `--no-default-features` leaves out.
 
-A live context belongs to the Luau runtime that opened it, not to the script's handles: the runtime's jess state holds every output it opened until the script closes it, so a garbage collection never stops a sound. A domain restart drops its runtime and so its outputs, stopping their devices; closing one drops its engine on the spot, and the commands sent after find the engine gone.
+A live context ([`audio.output`](@/docs/api/audio.md#contexts)) belongs to the Luau runtime that opened it, not to the script's handles: the runtime's jess state holds every output it opened until the script closes it, so a garbage collection never stops a sound. A domain restart drops its runtime and so its outputs, stopping their devices; closing one drops its engine on the spot, and the commands sent after find the engine gone.
 
 ## What is deliberately left
 
 These are designed for, but not built:
 
-- **Capture.** The `audio.capture` capability is reserved, and miniaudio's duplex devices are the path.
+- **Capture.** There is no input device, and no capability for one. miniaudio's duplex devices are the path when there is.
 - **Pitch-preserving time stretch.** It would be a processor, never a playback rate.
 - **HRTF and binaural rendering.** It would be another voice stage after pan, chosen per voice.
 - **Geometric acoustics.** It is the application's to compute, and hands the engine the gains, low-passes, and send levels it already takes.
-- **MIDI, multitrack arrangement, automation lanes, and freezing tracks.** These are Luau over the same commands and graph: a transport is a tempo map and a queue of stamped commands, a note is a parameter set and a gate opened on a frame, and a freeze is an offline render into a `Pcm`. [Audio Graph](@/docs/contributing/audio-graph.md) lists what else comes next, and the graph's limits.
+- **MIDI, multitrack arrangement, automation lanes, and freezing tracks.** These are Luau over the same commands and graph: a transport is a tempo map and a queue of stamped commands, a note is a parameter set and a gate opened on a frame, and a freeze is an offline render into a `Pcm`. [Audio Graph](@/docs/contributing/audio-graph.md#limits) lists the graph's limits, and what it doesn't have yet.

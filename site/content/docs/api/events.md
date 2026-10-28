@@ -38,4 +38,31 @@ end
 died('ada')
 ```
 
+## jess.window
+
+One named event is the host's own. Under an application's host, a [window](@/docs/api/gpu.md#windows) something happened to (a resize, a close, a key, the pointer) is announced as `jess.window`, with the payload `{ title: string, key: string? }`: the window's title, and the key it was opened with, if any. The news itself isn't in the payload; it waits in the window, and the handler reads it with `window:events()`. A managed module that keeps its window:
+
+```luau
+--!strict
+local window = jess.gpu.window(jess.gpu.device(), { title = 'editor', key = 'main' })
+
+return {
+  on = {
+    event = {
+      ['jess.window'] = function(payload: { title: string, key: string? })
+        if payload.key ~= window.key then return end
+
+        for _, event in window:events() do
+          print(event.kind)
+        end
+      end,
+    },
+  },
+}
+```
+
+A window is announced once until its events are read, at most once a frame, in the frame its news came in, so nothing runs while nothing happens. A handler that leaves a window's news unread hears nothing more of that window until something reads it. Only the host posts the event: a script that runs its own frames with `jess.gpu.pump` reads `events()` when it likes, and nothing is announced to it.
+
+The name isn't reserved. `emit('jess.window', { title = 'not a window' })` is queued and delivered like any other event, to the same handlers. A handler treats the payload as a reason to look, as the one above does, never as the news itself: a window nothing happened to has no events to read.
+
 Related: [Applications](@/docs/scripting/applications.md#named-events), [jess.interfaces](@/docs/api/interfaces.md), [jess.context](@/docs/api/context.md).

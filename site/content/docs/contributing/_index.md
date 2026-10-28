@@ -15,11 +15,14 @@ jess is one Rust 2024 crate with a library and a binary. These pages cover the g
 - [Building and Testing](@/docs/contributing/building-and-testing.md): the exact checks CI runs and how to run them locally.
 - [Architecture](@/docs/contributing/architecture.md): the module map, and the rules the layout enforces.
 - [Script Domains](@/docs/contributing/script-domains.md): isolated Luau authorities in one process, and how contexts, capabilities, workers, generations, and teardown work.
-- [Application Kernel](@/docs/contributing/application-kernel.md): a script domain joined to live input, advancing frames, with no window and no renderer.
+- [Application Kernel](@/docs/contributing/application-kernel.md): a script domain joined to live input, advancing frames, and stepping the windows it opened.
 - [Render Graph](@/docs/contributing/render-graph.md): the backend-independent render graph IR, what it deliberately isn't, and how passes, targets, ordering, culling, lifetimes, and aliasing work.
+- [GPU](@/docs/contributing/gpu.md): devices, resources, pipelines, draw sets, plans that run every frame without entering Luau, and the windows they present to.
 - [Shader IR](@/docs/contributing/shader-ir.md): the typed shader IR, and how validation, source attribution, constant folding, and WGSL lowering work.
 - [Input Runtime](@/docs/contributing/input-runtime.md): device truth, the serializable action graph, sets and layers, ticks, intents, binding presentation, and the platform backends.
 - [Localization](@/docs/contributing/localization.md): message bundles, the ICU MessageFormat they speak, how locales fall back, and why every pattern compiles once.
+- [Audio Engine](@/docs/contributing/audio-engine.md): mixing on a sample clock without ever waiting on a script, frame-stamped commands, and the output device.
+- [Audio Graph](@/docs/contributing/audio-graph.md): the mixer as a compiled signal graph: definitions, plans, and node state kept apart, and revisions made whole on the render side.
 - [Luau Style](@/docs/contributing/luau-style.md): how jess's own Luau and every example here are written, and the checker that enforces it.
 - [Benchmarks](@/docs/contributing/benchmarks.md): the harness, why it refuses unverified builds, and how to compare two runs.
 - [Releasing](@/docs/contributing/releasing.md): tags, crates.io, and what the release pipeline does with them.

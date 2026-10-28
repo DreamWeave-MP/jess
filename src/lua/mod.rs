@@ -100,16 +100,17 @@ pub fn runtime(options: Options) -> l3i::Result<Runtime> {
 
 /// What a script a person runs holds without asking.
 ///
-/// Its terminal, and the input devices, GPU, and screen in front of it, which that person already
-/// has. `jess run`, `jess test`, and a package's tests grant these; a package target holds only
-/// what it declares, and running it grants the ones of these it does.
-pub const HOST_SCRIPT_CAPABILITIES: [&str; 6] = [
+/// Its terminal, and the input devices, GPU, screen, and speakers in front of it, which that person
+/// already has. `jess run`, `jess test`, and a package's tests grant these; a package target holds
+/// only what it declares, and running it grants the ones of these it does.
+pub const HOST_SCRIPT_CAPABILITIES: [&str; 7] = [
     l3i::process::STDIO_CAPABILITY,
     crate::input::capability::ACTIONS,
     crate::input::capability::OBSERVE,
     crate::input::capability::CONFIGURE,
     gpu::DEVICE_CAPABILITY,
     gpu::WINDOW_CAPABILITY,
+    crate::audio::capability::OUTPUT,
 ];
 
 /// What a host script runs with: [`HOST_SCRIPT_CAPABILITIES`] and `granted`, each once.

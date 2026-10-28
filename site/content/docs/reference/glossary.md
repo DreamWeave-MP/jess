@@ -1,6 +1,6 @@
 ---
 title: 'Glossary'
-description: 'The words these docs use without stopping to explain them: packages and their parts, plans and activation, domains and their parts, workspaces, and the files on disk.'
+description: 'The words these docs use without stopping to explain them: packages and their parts, plans and activation, domains and their parts, pictures and sound, workspaces, and the files on disk.'
 weight: 30
 extra:
   kind: reference
@@ -52,7 +52,7 @@ Grouped by what they belong to, each with the page that explains it properly.
 
 ## Authority
 
-**Capability.** A named permission, such as `filesystem.read`, denied by default and checked by the function that would use it. Fourteen exist. [Capabilities](@/docs/reference/capabilities.md).
+**Capability.** A named permission, such as `filesystem.read`, denied by default and checked by the function that would use it. Seventeen exist. [Capabilities](@/docs/reference/capabilities.md).
 
 **Grant.** The set of capabilities a runtime, domain, context, or worker holds. Made by the operator (`--capability`, `--trusted`) or the host, never by a package.
 
@@ -74,11 +74,33 @@ Grouped by what they belong to, each with the page that explains it properly.
 
 **Event.** A named message with a payload, emitted with `jess.events.emit`, queued, and delivered to handlers on the next drain. Routed between domains when the host says so. [`jess.events`](@/docs/api/events.md).
 
-**Host.** The thing that owns a domain and advances it: for an application target, a `Host` that joins the domain to live input and runs frames. Has no window and no renderer. [Application Kernel](@/docs/contributing/application-kernel.md).
+**Host.** The thing that owns a domain and advances it: for an application target, a `Host` that joins the domain to live input and runs frames. The host itself owns no window and no renderer; the windows a script opens are stepped beside it, each frame. [Application Kernel](@/docs/contributing/application-kernel.md).
 
-**Frame.** One advance of a host: the input tick, the contexts' phases in order, the event drain. An application runs until it calls `jess.application.exit`, `--frames` runs out, or Ctrl+C.
+**Frame.** One advance of a host: the input tick, the contexts' phases in order, the event drain. An application runs until it calls `jess.application.exit`, `--frames` runs out, or Ctrl+C. Not an audio frame, which is one sample per channel; [`jess.audio`](@/docs/api/audio.md) counts time in those.
 
 **L3i.** The Luau binder jess runs on, and the owner of the native `@dream/*` modules: bytes, files, processes, the network, text. The only place a missing native primitive belongs. [The @dream modules](@/docs/api/l3i.md).
+
+## Pictures and sound
+
+**Device.** A GPU as a script holds it, from `jess.gpu.device()`: what makes buffers, textures, pipelines, plans, and windows. A machine with no GPU gets a software one or an error, never a crash. [`jess.gpu`](@/docs/api/gpu.md).
+
+**GPU plan.** A render graph compiled for a device, no relation to an activation plan: the targets, buffers, and passes a frame uses, ordered, culled, and allocated up front so running it only records. [GPU plans](@/docs/api/gpu.md#plans), [Render Graph](@/docs/contributing/render-graph.md).
+
+**Draw set.** One draw kept by the device, its pipeline, bind groups, and buffers, which a plan's pass draws every time it runs without the script naming it again.
+
+**Commit.** The moment the GPU takes what a script changed about what it draws, all at once: at the end of every frame, at `jess.gpu.pump()`, and before anything that waits on the GPU. A window never shows half of one. [Commits](@/docs/api/gpu.md#commits).
+
+**Window.** A native window from `jess.gpu.window`, showing a plan every frame without entering Luau, its keyboard and pointer reaching the application's input. Needs `gpu.window`. [Windows](@/docs/api/gpu.md#windows).
+
+**Shader program.** A shader written in Luau with `jess.shader`, typed and validated in jess and lowered to WGSL, that a pipeline runs. [`jess.shader`](@/docs/api/shader.md).
+
+**Audio context.** A mixer and its clock: an output that the device renders, or an offline one the script renders itself. [Contexts](@/docs/api/audio.md#contexts).
+
+**Voice.** One playing of a sound in a context, which can be started, stopped, paused, moved, and routed while the mixer runs. [Voices](@/docs/api/audio.md#voices).
+
+**Bus.** A node of a context's graph that sums what reaches it, runs its processors over the sum, and passes it on toward the master bus. [Nodes](@/docs/api/audio.md#nodes).
+
+**Stream.** Audio written while it plays: a bounded ring that one writer, often a worker, fills while one voice drains it. [Streams](@/docs/api/audio.md#streams).
 
 ## Development
 

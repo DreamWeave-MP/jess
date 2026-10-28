@@ -101,6 +101,18 @@ cargo build --release
 
 The binary lands at `target/release/jess`. `cargo run -- <command>` runs a debug build without installing anything. [Building and Testing](@/docs/contributing/building-and-testing.md) has the rest.
 
+## What it needs at run time
+
+Nothing beyond the binary, to start. A release reaches the machine's GPU, window system, and sound system when a script first asks for one, not when jess starts, so a script that never draws or plays runs anywhere the binary does.
+
+| A script that uses | Needs | Without it |
+| --- | --- | --- |
+| [`jess.gpu.device`](@/docs/api/gpu.md) | A GPU API and its driver: Vulkan, or OpenGL, on Linux; Metal on macOS; Direct3D 12, Vulkan, or OpenGL on Windows. | A software adapter where the system has one, which draws correctly and slowly; with none at all, the call fails and says so. |
+| [`jess.gpu.window`](@/docs/api/gpu.md#windows) | A display: a Wayland or X11 session on Linux, the desktop on macOS and Windows. | The call fails (`no window system: …`), and everything offscreen still works. |
+| [`jess.audio.output`](@/docs/api/audio.md) | A sound system: PulseAudio (which PipeWire also serves), ALSA, or JACK on Linux; Core Audio on macOS; WASAPI on Windows. | The null device, which plays to nowhere in real time. |
+
+So a server, a container, or a session over SSH runs jess headless without complaint. [Troubleshooting](@/docs/reference/troubleshooting.md#gpus-windows-and-sound) has what each refusal means.
+
 ## Check it works
 
 ```sh
@@ -108,7 +120,7 @@ jess --version
 ```
 
 ```text
-jess 0.2.2
+jess 0.3.0
 ```
 
 Every subcommand takes `--version` too, and `jess help` (or `jess <command> --help`) lists what's there.

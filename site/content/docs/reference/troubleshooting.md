@@ -1,6 +1,6 @@
 ---
 title: 'Troubleshooting'
-description: 'The errors jess prints, keyed by their text, with what each one means and what to do: scripts, require, capabilities, manifests, resolution, tests, and domains.'
+description: 'The errors jess prints, keyed by their text, with what each one means and what to do: scripts, require, capabilities, manifests, resolution, tests, domains, GPUs, windows, and sound.'
 weight: 40
 extra:
   kind: reference
@@ -117,6 +117,42 @@ Each test module ran twice, from the source and from it packed, so one failing c
 **`error: 1 type error`** from `jess package check`, with a list above it
 
 The strict type checker found something, listed as `file`, `line`, `column`, and `message`, with each `require` resolved as the runtime resolves it. `Key 'gret' not found in table '{ read greet: (string) -> string }'` is a misspelled field; `unknown` where you expected a type usually means a value the checker can't see through, which you annotate. These are errors in your package, not in jess, and the check is a gate: fix them.
+
+## GPUs, windows, and sound
+
+jess loads the machine's GPU API, window system, and sound system when a script first asks for one, not when it starts, so every entry here is about a script that asked. A script that never touches [`jess.gpu`](@/docs/api/gpu.md) or [`jess.audio`](@/docs/api/audio.md) runs the same on a machine with none of them.
+
+**`error: jess.gpu.device: no GPU adapter, not even a software one`**
+
+jess looked through Vulkan, Metal, and Direct3D 12, then OpenGL, and found no adapter, hardware or software. On Linux that usually means no Vulkan driver and no working OpenGL either: install your distribution's Mesa Vulkan drivers, which include lavapipe, a software Vulkan adapter, and jess draws on the CPU where it can't draw on a GPU. A container or a CI runner needs them inside it.
+
+**`device.kind` is `cpu`, and everything is slow**
+
+Not an error. With no hardware adapter it can reach, jess opens a software one (lavapipe, llvmpipe, WARP), which draws everything correctly and none of it quickly. That's what an offscreen render on a server wants, and not what a desktop with a GPU should get: check that the GPU's own Vulkan driver is installed, then that `WGPU_BACKEND` (below) isn't steering jess away from it.
+
+**`error: jess.gpu.device: the GPU adapter opened no device: …`**
+
+An adapter answered, and its driver refused to open a device, with the driver's reason after the colon. Try another API with `WGPU_BACKEND`, and update the driver.
+
+**Choosing the API: `WGPU_BACKEND`**
+
+jess tries Vulkan, Metal, and Direct3D 12 first, and OpenGL only when none of those answers. `WGPU_BACKEND` replaces both lists with the APIs it names, comma-separated (`vulkan`, `metal`, `dx12`, `gl`): under `WGPU_BACKEND=gl jess run draw.jsl` a script draws through OpenGL or not at all. `device.backend` says which one a script got.
+
+**`error: jess.gpu.window: no window system: …`**
+
+There's no display to open a window on: a session over SSH, a container, a CI runner, a text console. On Linux the rest of the message is the window system's own, usually that none of `WAYLAND_DISPLAY`, `WAYLAND_SOCKET`, or `DISPLAY` is set. Run it from the desktop session, or forward a display. Everything that doesn't open a window still works, offscreen rendering and compute included, and the next `jess.gpu.window` tries again, in case the display came back.
+
+**`error: jess.gpu.window: on macOS, windows open on the process's main thread`**
+
+macOS lets one thread run a window system, the process's first, and jess opens windows there or nowhere. A script under `jess run` and an application's own code are on that thread; a worker isn't. Open the window from the domain's code and give the worker the work, not the window.
+
+**`error: jess.gpu.window: windows belong to the thread that opened the first one`**
+
+A process has one window system loop, on the thread that opened the first window, and every later window opens on that thread too.
+
+**No sound, and no error**
+
+A machine with no sound system (a server, a container, a session with no sound server running) still gets an output from [`jess.audio.output`](@/docs/api/audio.md): the null device, which plays to nowhere in real time, and `context:device().backend` is `Null`. Everything else about the context works, which is the point: a test or a headless run doesn't need speakers. If you expected sound, check that the platform's sound server is running for the user jess runs as.
 
 ## Editor types
 

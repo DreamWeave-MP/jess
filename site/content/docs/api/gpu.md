@@ -6,11 +6,11 @@ extra:
   kind: api
 ---
 
-{{ api_signature(value="jess.gpu: { device }") }}
+{{ api_signature(value="jess.gpu: { device, window, pump }") }}
 
 `jess.gpu` is the GPU, as the kernel reaches it: an adapter, and the device opened on it. It says what the hardware is and does what it's told with bytes, images, and [shader programs](@/docs/api/shader.md), and has no opinion about what any of it means. What drawing means (cameras, materials, techniques) is [`@jess/render`](@/docs/api/render.md)'s, in Luau, over this. `require('@jess/gpu')` is the same table.
 
-A release has the GPU and windows. A jess built without the `gpu` feature (`--no-default-features`) still has `jess.gpu`, and says so when asked for a device: `jess.gpu.device: this jess has no GPU: it was built without the gpu feature`.
+A release has the GPU and windows, and loads the machine's GPU API and window system when a script first asks for them, so a machine without either still runs jess. A jess built without the `gpu` feature (`--no-default-features`) still has `jess.gpu`, and says so when asked for a device: `jess.gpu.device: this jess has no GPU: it was built without the gpu feature`. [GPU](@/docs/contributing/gpu.md) is how it works inside, and [Troubleshooting](@/docs/reference/troubleshooting.md#gpus-windows-and-sound) has what to do when a machine has no GPU or no display.
 
 ## jess.gpu.device
 
@@ -18,9 +18,9 @@ A release has the GPU and windows. A jess built without the `gpu` feature (`--no
 
 The runtime's device. The first call opens it, on whatever adapter the machine has: a hardware one if there is one, else a software one, which is what an offscreen render or a test on a machine without a GPU wants. Every later call is the same device.
 
-- **Capability:** `gpu.device`. A script you run holds it, as it holds the input devices in front of you; a package target declares it. Without it: `jess.gpu.device: needs the 'gpu.device' capability, which this runtime does not grant`.
+- **Capability:** `gpu.device`. A script you run holds it, as it holds the input devices in front of you; a package target declares it ([Capabilities](@/docs/reference/capabilities.md) has the rest). Without it: `jess.gpu.device: needs the 'gpu.device' capability, which this runtime does not grant`.
 - **Generations:** in an application, the device is the application's: the first generation to ask opens it, and every later one gets the same device, so a restart reloads code without opening the GPU again. Everything a generation made on it (buffers, textures, pipelines, draw sets, plans, windows) goes with that generation's runtime, and no handle of one generation can reach the next.
-- **Errors:** `jess.gpu.device: no GPU adapter, not even a software one`, and an adapter that opens no device.
+- **Errors:** `jess.gpu.device: no GPU adapter, not even a software one`, and an adapter that opens no device, `jess.gpu.device: the GPU adapter opened no device: …` with the driver's reason.
 
 ## GpuDevice
 
@@ -47,7 +47,7 @@ print(device.limits.textureSize, device.limits.workgroups)
 -- 8192  65535
 ```
 
-That's this machine's: a laptop's integrated GPU, reached through Vulkan. Yours will say what yours is.
+Those numbers are an integrated GPU's, reached through Vulkan. `kind` says what yours is, and `cpu` means a software adapter: everything works, slowly.
 
 ## Commits
 
@@ -222,7 +222,7 @@ What one frequency binds. It binds for every pipeline whose program lays that fr
 
 ### GpuDevice:render
 
-{{ api_signature(value="device:render(pass: GpuPass)") }}
+{{ api_signature(value="device:render(pass: GpuPass) -> ()") }}
 
 Draws `draws`, in order, into `colors` (by location) and `depth`, and submits the pass. A target is a texture made with the `target` usage, and keeps what it holds, or a table:
 
@@ -299,7 +299,7 @@ print(pipeline, buffer.readu8(pixels, 0), buffer.readu8(pixels, 1), buffer.readu
 
 ### GpuDevice:dispatch
 
-{{ api_signature(value="device:dispatch(work: GpuDispatch)") }}
+{{ api_signature(value="device:dispatch(work: GpuDispatch) -> ()") }}
 
 Runs a compute pipeline over `workgroups` workgroups (a count, or one to three of them, one per axis, the rest 1), each of the program's workgroup size, with a bind group for each frequency its program binds, and submits it. A buffer read afterwards waits for it.
 
@@ -338,7 +338,7 @@ The last number is `string.unpack`'s: where it stopped reading.
 
 ### GpuDevice:drawSet
 
-{{ api_signature(value="device:drawSet(desc: GpuDrawSetDesc): GpuDrawSet") }}
+{{ api_signature(value="device:drawSet(desc: GpuDrawSetDesc) -> GpuDrawSet") }}
 
 Keeps a draw in a collection of draw sets, the device's own (`device.sets`) unless `sets` names another: a render pipeline, its `material` and `draw` bind groups, its `vertices`, `instances`, and `indices` (with `indexFormat`), `count` and `instanceCount` (or the `indirect` buffer the GPU writes them into), and the `tags` passes choose it by. The fields are a draw's, as `GpuDevice:render` takes them, without `pass`: a draw set is drawn with the pass group of whichever pass takes it, so one camera block serves every set a pass draws. It is checked when it is made, the way a pass checks a draw, and drawn from the next frame on by every draw pass whose tags it carries, until it is removed.
 
@@ -357,7 +357,7 @@ Changing a set changes nothing else: what it draws is read again at every frame,
 
 ### GpuDevice:drawSets
 
-{{ api_signature(value="device:drawSets(): GpuDrawSets") }}
+{{ api_signature(value="device:drawSets() -> GpuDrawSets") }}
 
 A collection of its own: the draw sets of one scene, say, which a run draws from when it is given them (`plan:run(imports, sets)`, `window:show(plan, target, imports, sets)`) instead of the device's. A set can be in any number of collections. A plan remembers which sets carry its draw passes' tags, for each collection, until something is added to or removed from it; showing and hiding a set, or changing its counts, needs no choosing again.
 
@@ -406,7 +406,7 @@ print(quad, quad.added)
 
 ### GpuDevice:plan
 
-{{ api_signature(value="device:plan(desc: GpuPlanDesc): GpuPlan") }}
+{{ api_signature(value="device:plan(desc: GpuPlanDesc) -> GpuPlan") }}
 
 Compiles a [render graph](@/docs/contributing/render-graph.md) for the device: the targets and buffers a frame uses, the passes that use them, and what each pass does. Passes are ordered by what they read and write, not by where they are in the list; passes whose work nothing sees are culled; transient targets and buffers whose lifetimes don't overlap share memory. Planning allocates them and makes every bind group it can, so a frame does nothing but record.
 
@@ -418,7 +418,7 @@ Compiles a [render graph](@/docs/contributing/render-graph.md) for the device: t
 | `buffers` | `{ GpuPlanBuffer }?` | `{ name, size \| image and scale, imported, kept }`: `size` bytes, a multiple of 4, or room for all of an `image` target of that format at the viewport's size times `scale` (1 by default), each row padded as a copy lays it out, so a copy of a whole target fits it at any viewport. |
 | `passes` | `{ GpuPlanPass }` | What runs: below. |
 
-Every pass has a `name` and a `kind`. What it reads and writes depends on the kind:
+Every pass has a `name` and a `kind`, and may name an `owner`: whoever declared it, a package or a subsystem, for profilers and graph inspectors to attribute it to. It is the plan's `name` unless the pass says otherwise, and never empty. What a pass reads and writes depends on the kind:
 
 | Kind | Does | Fields |
 | --- | --- | --- |
@@ -580,7 +580,7 @@ print(string.unpack('BBBB', buffer.tostring(pixels:read(0, 4))))
 
 {{ api_signature(value="jess.gpu.window(device: GpuDevice, desc: GpuWindowDesc?) -> GpuWindow") }}
 
-Opens a native window with a surface on `device`. The window is what a person sees an application in; which windows an application has, what they show, and when they close are the application's to decide, from Luau, with what follows.
+Opens a native window with a surface on `device`. The window is what a person sees an application in; which windows an application has, what they show, and when they close are the application's to decide, from Luau, with what follows. [A window](@/docs/scripting/applications.md#a-window) in the applications guide puts all of it together: a package whose application draws a triangle from a vertex buffer into a window, turns it every frame, and answers the window's resizes and its close.
 
 | Field | Type | Holds |
 | --- | --- | --- |
@@ -593,7 +593,7 @@ Opens a native window with a surface on `device`. The window is what a person se
 | `closes` | `boolean?` | Whether the person asking it to close (its close button, say) closes it; `true` by default. With `false`, the request is only an event, and the application decides: asks to save, say, then calls `close`. |
 
 - **Capability:** `gpu.window`. A script you run holds it, as it holds the GPU; a package target declares it.
-- **Errors:** `jess.gpu.window: no window system: …` on a machine without a display, which a later call tries again, as the display may have come back; `windows belong to the thread that opened the first one`, since a process has one window system loop; and a jess built without the `window` feature says so: `jess.gpu.window: this jess has no windows: it was built without the window feature`.
+- **Errors:** `jess.gpu.window: no window system: …` on a machine without a display (over SSH, say, or in a container), which a later call tries again, as the display may have come back; `windows belong to the thread that opened the first one`, since a process has one window system loop; on macOS, `jess.gpu.window: on macOS, windows open on the process's main thread`, so a worker can't open one there; and a jess built without the `window` feature says so: `jess.gpu.window: this jess has no windows: it was built without the window feature`.
 
 {{ api_signature(value="jess.gpu.pump() -> ()") }}
 
@@ -617,7 +617,7 @@ Handles what the window system reported since the last call (sizes, closes, keys
 | `events()` | `() -> { GpuWindowEvent }` | What happened to it since the last call, oldest first, the last 256 at most (a run of pointer moves is the last of them): `{ kind = 'resized', width, height }`, `{ kind = 'scaled', scale }`, `{ kind = 'focused', focused }`, `{ kind = 'closeRequested' }`, and `{ kind = 'closed' }`, and what the person did in it, below. A shown plan is resized already when its `resized` is read; this is for what the application does about it (a camera's aspect, say). |
 | `textInput(enabled, area?)` | `(boolean, GpuTextArea?) -> ()` | Asks for text, or stops. While it asks, an input method (the one that writes Japanese, say) may compose for it, showing its candidates beside `area`, `{ x, y, width, height }` in physical pixels from the top left: where the text goes. Keys type `text` whether it asks or not. |
 
-Under an application's host, a window something happened to is announced: the host posts the [named event](@/docs/scripting/applications.md#named-events) `jess.window`, `{ title, key }`, once until its events are read, and a handler of it (`on.event['jess.window']`) reads them with `events()`. Nothing runs while nothing happens to a window, and the handler runs in the frame the news came in. A script that drives its own frames reads `events()` when it likes.
+Under an application's host, a window something happened to is announced: the host posts the [named event](@/docs/scripting/applications.md#named-events) [`jess.window`](@/docs/api/events.md#jess-window), `{ title, key }`, once until its events are read, and a handler of it (`on.event['jess.window']`) reads them with `events()`. Nothing runs while nothing happens to a window, and the handler runs in the frame the news came in. A script that drives its own frames reads `events()` when it likes.
 
 A window kept by a key outlives the code that opened it. When an application restarts with new code (its `restart`, a reload), its kept windows stay open through the load, each showing the last frame the old code drew, and the new code's `jess.gpu.window(device, { key = 'main' })` gets its window back, size, place, and all, with the title it asks for. Once the new code has loaded, the kept windows it didn't open again close; if it failed to load, none do, so the next load can take them back. A window the new code reclaims on another device has its surface made again on that one, and shows nothing until the new code gives it a plan. If that device can't present to it, opening it fails and the window stays as it was, on its old device, showing what it showed.
 
@@ -639,7 +639,7 @@ Among the window's `events()`, in the order it happened, which is what a text fi
 | `wheel` | `x`, `y` | The wheel turned over the window, in lines, `y` positive away from the person. |
 | `modifiers` | `shift`, `control`, `alt`, `meta` | Which modifiers are held, on either side, whenever that changes. |
 
-Through [`@jess/input`](@/docs/api/input.md), as devices, which is what bindings read: under the host of an application target that declares `gpu.window`, each window has a keyboard and a pointer of its own, which connect at its first input, disconnect when it closes, and say `backend = 'window:<number>'` in `runtime:devices()`. Keys, pointer buttons, position, motion, and the wheel are named as every jess backend names them (`key:KeyW`, `pointerButton:Primary`, `pointerAxis:DeltaX`). A binding to a control on any device, which is what a game binds, sees every window; one to a device sees one window. A window's pointer is at its place in that window, and at 0, 0 once the pointer leaves, so a binding to any pointer's position follows the window the pointer is over. The mouse's own motion goes to the pointer of the window that has the keyboard. The application is focused while any of its windows has the keyboard. A script you run takes the same from `jess.input.runtime { windows = true }`, its own headless runtime, which polls its windows at every `tick`.
+Through [`@jess/input`](@/docs/api/input.md#windows), as devices, which is what bindings read: under the host of an application target that declares `gpu.window`, each window has a keyboard and a pointer of its own, which connect at its first input, disconnect when it closes, and say `backend = 'window:<number>'` in `runtime:devices()`. Keys, pointer buttons, position, motion, and the wheel are named as every jess backend names them (`key:KeyW`, `pointerButton:Primary`, `pointerAxis:DeltaX`). A binding to a control on any device, which is what a game binds, sees every window; one to a device sees one window. A window's pointer is at its place in that window, and at 0, 0 once the pointer leaves, so a binding to any pointer's position follows the window the pointer is over. The mouse's own motion goes to the pointer of the window that has the keyboard. The application is focused while any of its windows has the keyboard. A script you run takes the same from `jess.input.runtime { windows = true }`, its own headless runtime, which polls its windows at every `tick`.
 
 ```luau
 --!strict

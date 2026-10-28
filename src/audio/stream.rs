@@ -203,22 +203,27 @@ impl Stream {
 
     /// Waits until there is room for `frames` frames, or `timeout` passes; true if there is. It
     /// sleeps as long as the engine, playing at the stream's rate, takes to make the room, so a
-    /// stream that nothing plays (or an offline context nobody renders) waits the whole timeout.
+    /// stream that nothing plays (or an offline context nobody renders) waits the whole timeout. A
+    /// timeout too long for the clock to reach, such as `Duration::MAX`, waits for good.
     pub fn wait(&self, frames: u64, timeout: Duration) -> bool {
         let frames = frames.min(self.capacity);
-        let deadline = Instant::now() + timeout;
+        let deadline = Instant::now().checked_add(timeout);
         loop {
             let room = self.room();
             if room >= frames {
                 return true;
             }
-            let now = Instant::now();
-            if now >= deadline {
-                return false;
-            }
             #[allow(clippy::cast_precision_loss)] // A wait in seconds.
             let needed = Duration::from_secs_f64((frames - room) as f64 / f64::from(self.rate));
-            std::thread::sleep(needed.max(Duration::from_micros(500)).min(deadline - now));
+            let mut sleep = needed.max(Duration::from_micros(500));
+            if let Some(deadline) = deadline {
+                let now = Instant::now();
+                if now >= deadline {
+                    return false;
+                }
+                sleep = sleep.min(deadline - now);
+            }
+            std::thread::sleep(sleep);
         }
     }
 
@@ -428,5 +433,18 @@ mod tests {
         assert!(!stream.wait(5, Duration::from_millis(20)));
         assert!(started.elapsed() >= Duration::from_millis(20));
         assert!(stream.wait(0, Duration::ZERO));
+    }
+
+    #[test]
+    fn waiting_with_no_timeout_waits_until_there_is_room() {
+        let stream = Stream::new(1, 1000, 0.01).unwrap();
+        stream.write(&[0.0; 10]).unwrap();
+        let reader = Arc::clone(&stream);
+        let drained = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            assert_eq!(reader.take(&mut [0.0; 5], 5, 0, 5, 0), 5);
+        });
+        assert!(stream.wait(5, Duration::MAX));
+        drained.join().unwrap();
     }
 }
