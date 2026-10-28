@@ -294,6 +294,46 @@ Applies every event pushed so far, evaluates the graph once, and returns this ti
 
 What the last tick cost: `deviceEvents`, `ticks`, `nodesEvaluated`, `bindingsEvaluated`, `actionsChanged`, `actionEvents`, `activeSets`, `activeLayers`.
 
+## Windows
+
+A [window](@/docs/api/gpu.md#windows) is a keyboard and a pointer, as far as this module cares. Each window has one of each, its own: `window <number> keyboard` and `window <number> pointer` in `runtime:devices()`, with `backend = 'window:<number>'`, the window's [`number`](@/docs/api/gpu.md#gpuwindow). They connect at the window's first input and disconnect when it closes. Keys, pointer buttons, position (`pointerAxis:X` and `pointerAxis:Y`, physical pixels from the window's top left), motion, and the wheel are named as every backend names them, so a binding written for a keyboard is a binding for a window.
+
+- **Who gets them.** Under the host of an application target that declares `gpu.window`, the live runtime has every window's devices from its host, and asking for `{ windows = true }` there is refused: `jess.input.runtime: the live input runtime takes its windows' input from its host already`. A target without `gpu.window` stays headless. A script with no host asks with `input.runtime { windows = true }`, and its runtime polls its windows at every `tick`, stamped with the runtime's clock.
+- **Every window, or one.** A binding to a control on any device (`input.key 'Space'`) sees every window; a binding to one device sees one window. Two runtimes that both ask each get every window's input, and polling one takes nothing from the other.
+- **The pointer.** A window's pointer is where the pointer is in that window, and at 0, 0 once it leaves, so a binding to any pointer's position follows the window the pointer is over. Raw mouse motion has no window, and goes to the pointer of the window that has the keyboard.
+- **Focus.** The application is focused while any of its windows has the keyboard, and hears that it lost focus only when none has.
+- **Text is not a control.** What a key types, with the layout and dead keys applied, and what an input method composes are among the window's own [`events()`](@/docs/api/gpu.md#gpuwindow) (`text`, `preedit`, `inputMethod`), and `window:textInput(true, area)` lets an input method compose for it. Bindings are for actions; a text field reads text.
+
+```luau
+--!strict
+local window = jess.gpu.window(jess.gpu.device(), { title = 'keys', width = 320, height = 240 })
+local runtime = input.runtime { windows = true }
+runtime:install(input.graph {
+  actions = { { name = 'jump', valueType = 'digital' } },
+  sets = {
+    {
+      name = 'play',
+      owner = '@example/keys',
+      bindings = { { action = 'jump', input = input.key 'Space' } },
+    },
+  },
+})
+runtime:setActive 'play'
+
+for _ = 1, 600 do
+  jess.gpu.pump()
+  for _, event in runtime:tick() do
+    print(event.action, event.kind)
+  end
+
+  for _, event in window:events() do
+    if event.kind == 'text' then print('typed', event.text) end
+  end
+end
+```
+
+That is 600 frames of a window at the display's pace: Space pressed in it is `jump`, and what a key types arrives as `text` beside it. The window draws nothing, since nothing [shows](@/docs/api/gpu.md#gpuwindow) a plan in it; input doesn't need one.
+
 ## jess.input
 
 {{ api_signature(value="jess.input: { graph, formatVersion, control, runtime }") }}
