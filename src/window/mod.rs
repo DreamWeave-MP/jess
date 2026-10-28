@@ -1216,6 +1216,39 @@ mod tests {
         assert!(again.is_err_and(|problem| problem.to_string().contains("the thread that opened the first one")));
     }
 
+    /// It opens a real window, so it runs only where `JESS_WINDOW_TESTS` is set, on a desktop.
+    #[test]
+    fn a_lost_surface_is_made_again_on_its_window() {
+        if std::env::var_os("JESS_WINDOW_TESTS").is_none() {
+            eprintln!("SKIPPED a_lost_surface_is_made_again_on_its_window: set JESS_WINDOW_TESTS on a desktop");
+            return;
+        }
+        let gpu = Arc::new(Gpu::headless().expect("a device"));
+        let window = open(&gpu, &WindowDesc::default()).expect("a window");
+        let state = window.state.borrow();
+        let mut screen = state.shared.screen();
+        let surface = screen.surface.as_mut().expect("a surface");
+        surface.lose();
+        assert!(
+            surface.frame(&gpu).expect("made again").is_none(),
+            "the frame it was lost in has no image"
+        );
+        let mut frame = None;
+        for _ in 0..50 {
+            frame = surface.frame(&gpu).expect("a surface made again");
+            if frame.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let frame = frame.expect("an image from the surface made again");
+        assert_eq!((frame.texture().desc().width, frame.texture().desc().height), surface.size());
+        drop(frame);
+        drop(screen);
+        drop(state);
+        window.close();
+    }
+
     /// Something only one of may exist at a time, as a window's surface.
     struct Only(Rc<std::cell::Cell<u32>>, &'static str);
 

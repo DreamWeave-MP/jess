@@ -29,9 +29,13 @@ const FORMATS: [TextureFormat; 4] = [
 
 /// A window's surface on a device, configured for its size.
 pub struct Surface {
-    raw: wgpu::Surface<'static>,
+    /// None between losing the surface and making it again, which is tried every frame until it
+    /// works.
+    raw: Option<wgpu::Surface<'static>>,
     config: wgpu::SurfaceConfiguration,
     format: TextureFormat,
+    /// The window again, for a surface made anew when the old one is lost.
+    window: Box<dyn Fn() -> wgpu::SurfaceTarget<'static> + Send>,
 }
 
 impl std::fmt::Debug for Surface {
@@ -62,24 +66,25 @@ impl SurfaceFrame {
 
 impl Gpu {
     /// A surface on `window`, `width` by `height` pixels, in `format` or, without one, the first
-    /// of the plain 8-bit formats the surface offers.
+    /// of the plain 8-bit formats the surface offers. The surface keeps a handle on `window`, to
+    /// make itself again on it if it is lost.
     ///
     /// # Errors
     ///
     /// A window the device's instance can't make a surface on, an adapter that can't present to
     /// it, or a format it doesn't offer.
-    pub fn surface(
+    pub fn surface<W>(
         &self,
-        window: impl Into<wgpu::SurfaceTarget<'static>>,
+        window: W,
         width: u32,
         height: u32,
         format: Option<TextureFormat>,
         mode: PresentMode,
-    ) -> Result<Surface, GpuError> {
-        let raw = self
-            .instance
-            .create_surface(window)
-            .map_err(|problem| GpuError::Device(format!("no surface on the window: {problem}")))?;
+    ) -> Result<Surface, GpuError>
+    where
+        W: Into<wgpu::SurfaceTarget<'static>> + Clone + Send + 'static,
+    {
+        let raw = self.raw_surface(window.clone().into())?;
         let capabilities = raw.get_capabilities(&self.adapter);
         if capabilities.formats.is_empty() {
             return Err(GpuError::Device("the adapter can't present to this window".to_owned()));
@@ -117,10 +122,17 @@ impl Gpu {
         };
         self.checked(|| raw.configure(&self.device, &config))?;
         Ok(Surface {
-            raw,
+            raw: Some(raw),
             config,
             format: chosen,
+            window: Box::new(move || window.clone().into()),
         })
+    }
+
+    fn raw_surface(&self, window: wgpu::SurfaceTarget<'static>) -> Result<wgpu::Surface<'static>, GpuError> {
+        self.instance
+            .create_surface(window)
+            .map_err(|problem| GpuError::Device(format!("no surface on the window: {problem}")))
     }
 
     /// Presents `frame`: what was drawn into it reaches the window.
@@ -151,25 +163,37 @@ impl Surface {
     pub fn resize(&mut self, gpu: &Gpu, width: u32, height: u32) -> Result<(), GpuError> {
         self.config.width = width.max(1);
         self.config.height = height.max(1);
-        gpu.checked(|| self.raw.configure(&gpu.device, &self.config))
+        let Some(raw) = &self.raw else {
+            // Made again at this size when it next draws.
+            return Ok(());
+        };
+        gpu.checked(|| raw.configure(&gpu.device, &self.config))
     }
 
     /// Its next image, or `None` when there is none to draw this frame: the window is hidden or
     /// covered, the wait timed out, or the surface changed under it, in which case it is
-    /// configured again for the next.
+    /// configured again for the next. A surface that was lost (the display changed, the driver
+    /// restarted) is made again on its window, and this frame has no image either.
     ///
     /// # Errors
     ///
-    /// A surface that was lost, or that the device refuses.
+    /// A lost surface that can't be made again, or one the device refuses.
     pub fn frame(&mut self, gpu: &Gpu) -> Result<Option<SurfaceFrame>, GpuError> {
-        let raw = match self.raw.get_current_texture() {
+        let Some(surface) = &self.raw else {
+            self.remake(gpu)?;
+            return Ok(None);
+        };
+        let raw = match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(raw) | wgpu::CurrentSurfaceTexture::Suboptimal(raw) => raw,
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return Ok(None),
             wgpu::CurrentSurfaceTexture::Outdated => {
-                gpu.checked(|| self.raw.configure(&gpu.device, &self.config))?;
+                gpu.checked(|| surface.configure(&gpu.device, &self.config))?;
                 return Ok(None);
             }
-            wgpu::CurrentSurfaceTexture::Lost => return Err(GpuError::Device("the window's surface was lost".to_owned())),
+            wgpu::CurrentSurfaceTexture::Lost => {
+                self.remake(gpu)?;
+                return Ok(None);
+            }
             wgpu::CurrentSurfaceTexture::Validation => {
                 return Err(GpuError::Backend("the window's surface refused its next image".to_owned()));
             }
@@ -185,5 +209,24 @@ impl Surface {
         };
         let texture = Texture::wrap(gpu, raw.texture.clone(), desc);
         Ok(Some(SurfaceFrame { raw, texture }))
+    }
+
+    /// Drops the surface as a lost one is, for a test of what comes after.
+    #[cfg(test)]
+    pub(crate) fn lose(&mut self) {
+        self.raw = None;
+    }
+
+    /// Makes the surface again on its window, configured as it was. The lost one is dropped
+    /// first, since a window may have only one; if the new one can't be made or configured, there
+    /// is none until the next try.
+    fn remake(&mut self, gpu: &Gpu) -> Result<(), GpuError> {
+        self.raw = None;
+        let lost =
+            |problem: GpuError| GpuError::Device(format!("the window's surface was lost and isn't back yet: {problem}"));
+        let raw = gpu.raw_surface((self.window)()).map_err(lost)?;
+        gpu.checked(|| raw.configure(&gpu.device, &self.config)).map_err(lost)?;
+        self.raw = Some(raw);
+        Ok(())
     }
 }
