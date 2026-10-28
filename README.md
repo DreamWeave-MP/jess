@@ -51,7 +51,11 @@ An **application** is packages loaded into one isolated runtime and driven by fr
   ```
 
 - **Extensible packages.** Compose applications and tools from reusable Luau modules. A package is inert until a host activates it, and its tests, types, and style checks ship inside it.
-- **Game-engine foundations.** An input action graph, a typed shader IR that lowers to WGSL, a render graph, and localization bundles, none of them tied to a renderer or a game.
+- **A GPU and windows.** Buffers, textures, pipelines, compute, and render graphs compiled into plans that draw every frame without entering Luau, presented to native windows whose keyboard and pointer feed the application's input. Shaders are written in Luau, typed and validated by jess, and lowered to WGSL. Vulkan, Metal, Direct3D 12, or OpenGL, whichever the machine has, found at run time.
+- **Sound.** A mixer on its own clock that never waits for a script: voices, buses, processors, feedback, modulation, sound placed in space, streams a worker fills while they play, and changes stamped to the sample they land on. It plays through the platform's output or renders offline into a buffer.
+- **Game-engine foundations.** An input action graph, and localization bundles in ICU MessageFormat. None of it is a game, and none of it decides what yours is.
+
+A machine with no GPU, no display, or no sound still runs jess: it finds a software adapter or none, refuses a window when asked for one, and plays to a null device.
 - **Native speed where it's earned.** Luau runs on [L3i](https://github.com/DreamWeave-MP/l3i), with native code generation for the modules that ask for it and profiling built into the binary. Nothing goes native without a measurement.
 
 [Architecture](https://DreamWeave-MP.github.io/jess/docs/contributing/architecture/) covers how the pieces fit.
