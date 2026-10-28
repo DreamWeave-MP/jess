@@ -76,7 +76,7 @@ The window test opens a real window, so it runs only with `JESS_WINDOW_TESTS` se
 
 - **Not a wgpu wrapper.** No public type names a wgpu type. Usages are jess's own small sets, formats are jess's list, and errors are jess's.
 - **Not a renderer.** It doesn't know what a mesh, a camera, or a material is. What a buffer holds and why is the caller's business, and in the end Luau's.
-- **Not on by default.** It's behind the `gpu` feature, and windows behind `window`, so the kernel still builds and runs without a GPU stack or a window system.
+- **Not required.** It's behind the `gpu` feature, and windows behind `window`. Both are on by default, so a release has them, and both load the platform's GPU API and window system at run time, so a jess on a machine without either still starts. `--no-default-features` builds the kernel without a GPU stack or a window system at all.
 
 ## Why wgpu
 
@@ -88,4 +88,4 @@ A call that can fail checks its arguments in jess's terms first: a buffer of 6 b
 
 ## Testing
 
-The tests are in `tests/gpu`, behind the feature: `cargo test --test integration --features gpu -- gpu::`. Each runs on whatever adapter the machine has, a software one (lavapipe, llvmpipe, WARP) included, and skips with a `SKIPPED` line on a machine without one.
+The tests are in `tests/gpu`, behind the feature, which is on by default: `cargo test --test integration -- gpu::`. Each runs on whatever adapter the machine has, a software one (lavapipe, llvmpipe, WARP) included, and skips with a `SKIPPED` line on a machine without one.

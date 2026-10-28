@@ -29,7 +29,9 @@ exclude = ["/tests", "/tools"]
 [workspace]
 
 [features]
-default = ["audio-device"]
+# A release has everything a desktop application needs: sound, a GPU, and windows. The kernel
+# alone, headless, is `--no-default-features`.
+default = ["audio-device", "gpu", "window"]
 # Input device backends are opt-in; the native kernel reads no input device by default.
 linux-evdev = ["dep:evdev"]
 gilrs = ["dep:gilrs"]
@@ -37,9 +39,13 @@ gilrs = ["dep:gilrs"]
 # On by default: miniaudio links no audio library at build time and loads the platform's at run
 # time, so a jess on a machine with no sound system still starts, and finds only the null device.
 audio-device = ["dep:cc"]
-# A GPU through wgpu: devices, buffers, textures, pipelines, offscreen rendering and compute.
+# A GPU through wgpu: devices, buffers, textures, pipelines, offscreen rendering and compute. On
+# by default: wgpu loads the platform's GPU API at run time, so a jess on a machine with no GPU
+# still starts, and finds a software adapter or none.
 gpu = ["dep:wgpu", "dep:pollster"]
 # Native windows through winit, with a GPU surface each and their keyboard and pointer as input.
+# On by default: X11 and Wayland are loaded at run time, so a jess on a machine with no display
+# still starts, and refuses a window when asked for one.
 window = ["gpu", "dep:winit"]
 
 [dependencies]

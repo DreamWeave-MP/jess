@@ -10,7 +10,7 @@ extra:
 
 `jess.gpu` is the GPU, as the kernel reaches it: an adapter, and the device opened on it. It says what the hardware is and does what it's told with bytes, images, and [shader programs](@/docs/api/shader.md), and has no opinion about what any of it means. What drawing means (cameras, materials, techniques) is [`@jess/render`](@/docs/api/render.md)'s, in Luau, over this. `require('@jess/gpu')` is the same table.
 
-A jess built without the `gpu` feature still has `jess.gpu`, and says so when asked for a device: `jess.gpu.device: this jess has no GPU: it was built without the gpu feature`.
+A release has the GPU and windows. A jess built without the `gpu` feature (`--no-default-features`) still has `jess.gpu`, and says so when asked for a device: `jess.gpu.device: this jess has no GPU: it was built without the gpu feature`.
 
 ## jess.gpu.device
 
