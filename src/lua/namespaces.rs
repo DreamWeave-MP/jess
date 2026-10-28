@@ -16,14 +16,37 @@ pub struct Namespace {
 }
 
 /// Every jess userdata type, by its `Userdata::NAME` and the name the definitions use.
-const TYPES: [(&str, &str); 6] = [
+const TYPES: [(&str, &str); 12] = [
     ("jess.shader.Type", "ShaderType"),
     ("jess.shader.Expr", "ShaderExpr"),
     ("jess.shader.Input", "ShaderInput"),
+    ("jess.shader.Attributes", "ShaderAttributes"),
+    ("jess.shader.Builtins", "ShaderBuiltins"),
+    ("jess.shader.Var", "ShaderVar"),
+    ("jess.shader.Place", "ShaderPlace"),
+    ("jess.shader.Texture", "ShaderTexture"),
+    ("jess.shader.Sampler", "ShaderSampler"),
     ("jess.shader.Program", "ShaderProgram"),
     ("jess.input.Graph", "InputGraph"),
     ("jess.input.Runtime", "InputRuntime"),
 ];
+
+/// The GPU's handle types, in a jess built with the `gpu` feature.
+#[cfg(feature = "gpu")]
+const GPU_TYPES: &[(&str, &str)] = &[
+    ("jess.gpu.BindGroup", "GpuBindGroup"),
+    ("jess.gpu.Buffer", "GpuBuffer"),
+    ("jess.gpu.Device", "GpuDevice"),
+    ("jess.gpu.DrawSet", "GpuDrawSet"),
+    ("jess.gpu.Pipeline", "GpuPipeline"),
+    ("jess.gpu.Plan", "GpuPlan"),
+    ("jess.gpu.Sampler", "GpuSampler"),
+    ("jess.gpu.Texture", "GpuTexture"),
+    #[cfg(feature = "window")]
+    ("jess.gpu.Window", "GpuWindow"),
+];
+#[cfg(not(feature = "gpu"))]
+const GPU_TYPES: &[(&str, &str)] = &[];
 
 /// Every handle type scripts index, with the names it registers.
 ///
@@ -48,6 +71,7 @@ pub fn userdata() -> Vec<Namespace> {
     let plan = runtime.plan().expect("a planned runtime");
     TYPES
         .iter()
+        .chain(GPU_TYPES.iter())
         .map(|(key, name)| {
             let resolved = plan.userdata_by_key(key).unwrap_or_else(|| panic!("{key} is in the plan"));
             let surface = crate::lua::plan::surface_of(key);

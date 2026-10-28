@@ -197,7 +197,7 @@ print(util.answer)
 
 ## Capabilities
 
-A script you run holds what you already have: your terminal and the input devices in front of you. Everything else is a [capability](@/docs/reference/capabilities.md), denied unless you grant it, and the refusal names the function and the capability:
+A script you run holds what you already have: your terminal, and the input devices and the GPU in front of you. Everything else is a [capability](@/docs/reference/capabilities.md), denied unless you grant it, and the refusal names the function and the capability:
 
 ```luau
 --!strict

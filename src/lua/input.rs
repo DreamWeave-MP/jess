@@ -63,6 +63,9 @@ pub struct LuaInputRuntime {
     /// True for the domain's service: the host ticks it and owns its clock.
     live: bool,
     jess: Rc<Jess>,
+    /// The windows' keyboard and pointer, polled into a headless runtime at each of its ticks.
+    #[cfg(feature = "window")]
+    windows: Option<Rc<std::cell::RefCell<crate::window::WindowInput>>>,
 }
 
 // SAFETY: shared Rust state; the destructor never touches the Lua API.
@@ -178,18 +181,55 @@ pub fn module(runtime: &Runtime, jess: &Rc<Jess>) -> l3i::Result<Table> {
         Ok(control(&text)?.to_string())
     })?;
     let state = jess.clone();
-    module.function("runtime", move || {
-        let (service, live) = crate::runtime::service::<SharedInput>().map_or_else(
-            || (Arc::new(Mutex::new(InputService::new())), false),
-            |service| (service, true),
-        );
-        Owned(LuaInputRuntime {
-            service,
-            live,
-            jess: state.clone(),
-        })
-    })?;
+    module.function(
+        "runtime",
+        move |call: &Call<'_>, options: Option<ValueView<'_>>| -> l3i::Result<Owned<LuaInputRuntime>> {
+            const FUNCTION: &str = "jess.input.runtime";
+            let windows = call.with_frame(|frame| windows_option(frame, FUNCTION, options))?;
+            let (service, live) = crate::runtime::service::<SharedInput>().map_or_else(
+                || (Arc::new(Mutex::new(InputService::new())), false),
+                |service| (service, true),
+            );
+            if windows && live {
+                return Err(error(format!(
+                    "{FUNCTION}: the live input runtime takes its windows' input from its host already"
+                )));
+            }
+            Ok(Owned(LuaInputRuntime {
+                service,
+                live,
+                jess: state.clone(),
+                #[cfg(feature = "window")]
+                windows: windows.then(|| Rc::new(std::cell::RefCell::new(crate::window::WindowInput::new(None)))),
+            }))
+        },
+    )?;
     module.finish()
+}
+
+/// Whether `options`, `{ windows }`, ask a headless runtime for its windows' keyboard and pointer.
+fn windows_option(frame: &Frame<'_>, function: &str, options: Option<ValueView<'_>>) -> l3i::Result<bool> {
+    let Some(options) = options.filter(|options| !options.is_nil()) else {
+        return Ok(false);
+    };
+    crate::lua::check_options(frame, options, function, &["windows"])?;
+    let windows = options.as_table()?.raw_get(frame, "windows")?;
+    if windows.is_nil() {
+        return Ok(false);
+    }
+    if !windows.is_boolean() {
+        return Err(error(format!(
+            "{function}: windows is a boolean, not {}",
+            crate::lua::kind(windows)
+        )));
+    }
+    let wanted = windows.read::<bool>()?;
+    if wanted && !cfg!(feature = "window") {
+        return Err(error(format!(
+            "{function}: this jess was built without the window feature, so it has no windows"
+        )));
+    }
+    Ok(wanted)
 }
 
 /// Declares the graph and runtime types.
@@ -374,7 +414,18 @@ pub fn describe(d: &mut ExtensionDescriptor) {
             |this: &LuaInputRuntime, call: &Call<'_>| -> l3i::Result<StackResults> {
                 guard(&this.jess, "jess.input", capability::ACTIONS)?;
                 this.host_owned("tick")?;
-                let rows = tick_rows(&mut this.lock());
+                let mut service = this.lock();
+                #[cfg(feature = "window")]
+                if let Some(windows) = &this.windows {
+                    use crate::input::Backend as _;
+                    let now = service.now();
+                    windows
+                        .borrow_mut()
+                        .poll(&service.sender(), now)
+                        .map_err(|problem| error(format!("InputRuntime:tick: the windows' input: {problem}")))?;
+                }
+                let rows = tick_rows(&mut service);
+                drop(service);
                 push_rows(call, &rows)?;
                 Ok(StackResults)
             },
@@ -409,11 +460,14 @@ pub fn describe(d: &mut ExtensionDescriptor) {
                     .map(|device| (device.id(), device.descriptor().clone(), device.is_connected()))
                     .collect();
                 l3i::stack::push_list(call, devices.iter(), |frame, (id, descriptor, connected)| {
-                    push_table(frame, 0, 5, |frame, row| {
+                    push_table(frame, 0, 6, |frame, row| {
                         row.raw_set_value(frame, "id", &f64::from(id.index()))?;
                         row.raw_set_value(frame, "kind", descriptor.kind.name())?;
                         row.raw_set_value(frame, "name", descriptor.name.as_str())?;
                         row.raw_set_value(frame, "family", descriptor.family.name())?;
+                        if let Some(backend) = &descriptor.backend {
+                            row.raw_set_value(frame, "backend", backend.as_str())?;
+                        }
                         row.raw_set_value(frame, "connected", connected)
                     })
                 })?;

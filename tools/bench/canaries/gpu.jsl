@@ -1,0 +1,160 @@
+--!strict
+-- The GPU executor at scale: a plan whose compute pass culls half of many instances, compacting
+-- the rest through an atomic count, and whose draw pass draws them indirectly, frame after frame,
+-- offscreen. It times how long the frames take to finish, waiting for the GPU at the end, and
+-- checks the count the GPU kept before and after.
+local shader = require '@jess/shader'
+
+local Frames = 30
+local Width, Height = 256, 256
+
+type Scene = { plan: GpuPlan, imports: { [string]: GpuTexture | GpuBuffer }, arguments: GpuBuffer, kept: number }
+
+--- The device, or nil for a jess without one.
+local function device(): GpuDevice?
+  -- jess.gpu.device raises in a jess without the gpu feature or on a machine without a GPU.
+  local opened, found = pcall(jess.gpu.device)
+
+  return if opened then found else nil
+end
+
+local function filled(gpu: GpuDevice, size: number, usage: { GpuBufferUsage }, write: (buffer) -> ()): GpuBuffer
+  local bytes = buffer.create(size)
+  write(bytes)
+  local made = gpu:buffer(size, usage)
+  made:write(0, bytes)
+
+  return made
+end
+
+--- A plan culling and drawing `count` instances, half of them on the right of the target.
+local function scene(gpu: GpuDevice, count: number): Scene
+  local cull = shader.compute {
+    workgroupSize = 64,
+    pass = {
+      everything = shader.storage(shader.vec4),
+      kept = shader.storage(shader.vec4, 'readWrite'),
+      arguments = shader.storage(shader.uint, 'atomic'),
+    },
+    compute = function(input)
+      local index = input.builtin.globalInvocationId.x
+      local pass = input.pass
+      shader.when(shader.less(index, shader.arrayLength(pass.everything)), function()
+        local offset = pass.everything[index]
+        shader.when(shader.greater(offset.x, 0), function()
+          local slot = shader.atomicAdd(pass.arguments, 1, shader.uint(1))
+          shader.write(pass.kept, slot, offset)
+        end)
+      end)
+    end,
+  }
+
+  local square = shader.program {
+    attributes = { corner = shader.vec2 },
+    instance = { offset = shader.vec4 },
+    vertex = function(input)
+      return { position = shader.vec4(input.attributes.corner * 0.01 + input.instance.offset.xy, 0, 1) }
+    end,
+    fragment = function() return shader.vec4(1, 1, 1, 1) end,
+  }
+  local culling = gpu:pipeline(cull)
+  local drawing = gpu:pipeline(square, { colors = { 'rgba8Unorm' } })
+
+  local size = count * 16
+  local everything = filled(gpu, size, { 'storage' }, function(bytes)
+    for index = 0, count - 1 do
+      buffer.writef32(bytes, index * 16, (index % 2) * 1.6 - 0.8 + (index % 97) / 1000)
+      buffer.writef32(bytes, index * 16 + 4, (index % 89) / 50 - 0.9)
+    end
+  end)
+  local kept = gpu:buffer(size, { 'storage', 'vertex' })
+  local arguments = gpu:buffer(16, { 'storage', 'indirect' })
+  local template = filled(gpu, 16, {}, function(bytes) buffer.writeu32(bytes, 0, 6) end)
+  local corners = filled(gpu, 48, { 'vertex' }, function(bytes)
+    for index, value in { -1, -1, 1, -1, -1, 1, 1, -1, 1, 1, -1, 1 } do
+      buffer.writef32(bytes, (index - 1) * 4, value)
+    end
+  end)
+  gpu:drawSet { pipeline = drawing, vertices = corners, instances = kept, indirect = arguments, tags = { 'bench' } }
+
+  local storage: { [number]: string } = {}
+  for _, binding in cull.layout.pass.bindings do
+    storage[binding.binding] = binding.name
+  end
+
+  local plan = gpu:plan {
+    name = 'bench',
+    viewport = { width = Width, height = Height },
+    targets = { { name = 'screen', format = 'rgba8Unorm', imported = true } },
+    buffers = {
+      { name = 'template', size = 16, imported = true },
+      { name = 'arguments', size = 16, imported = true },
+      { name = 'everything', size = size, imported = true },
+      { name = 'kept', size = size, imported = true },
+    },
+    passes = {
+      { name = 'reset', kind = 'copy', from = 'template', to = 'arguments' },
+      {
+        name = 'cull',
+        kind = 'compute',
+        pipeline = culling,
+        pass = storage,
+        reads = { 'everything' },
+        storage = { 'kept', { buffer = 'arguments', load = true } },
+        workgroups = math.ceil(count / 64),
+      },
+      {
+        name = 'draw',
+        kind = 'draw',
+        tags = { 'bench' },
+        reads = { 'kept', 'arguments' },
+        colors = { { target = 'screen', clear = { 0, 0, 0, 1 } } },
+      },
+    },
+  }
+  local screen = gpu:texture { width = Width, height = Height, format = 'rgba8Unorm', usage = 'target' }
+  local imports: { [string]: GpuTexture | GpuBuffer } = {
+    screen = screen,
+    template = template,
+    arguments = arguments,
+    everything = everything,
+    kept = kept,
+  }
+
+  return { plan = plan, imports = imports, arguments = arguments, kept = count // 2 }
+end
+
+--- Runs one frame, waits for it, and checks the GPU kept half.
+local function check(built: Scene)
+  built.plan:run(built.imports)
+  local found = buffer.readu32(built.arguments:read(4, 4), 0)
+  assert(found == built.kept, `bench gpu: the cull kept {found} instances, not {built.kept}`)
+end
+
+local scenes: { [number]: Scene } = {}
+
+local function run(scale: number): number
+  local gpu = assert(device(), 'bench gpu: no GPU')
+  local count = math.max(64, math.floor(20000 * scale))
+  local built = scenes[count] or scene(gpu, count)
+  scenes[count] = built
+  check(built)
+
+  local started = os.clock()
+  for _ = 1, Frames do
+    built.plan:run(built.imports)
+  end
+  -- Reading back waits for every frame before it.
+  built.arguments:read(0, 4)
+  local elapsed = os.clock() - started
+
+  check(built)
+  return elapsed
+end
+
+return table.freeze {
+  name = 'gpu',
+  path = 'tools/bench/canaries/gpu.jsl',
+  available = function(): boolean return device() ~= nil end,
+  run = run,
+}

@@ -1,0 +1,153 @@
+--!strict
+-- @jess/render/camera: the standard camera, as a convention a program opts into rather than
+-- something the kernel knows.
+--
+-- The conventions: right-handed world space, a camera looking down its -Z, and clip-space depth
+-- from 0 at the near plane to 1 at the far one, which is what every backend jess draws through
+-- expects. Matrices are 16 numbers in column order, as `@jess/render` writes a `Mat4f`.
+local render = require '@jess/render'
+
+local shader = jess.shader
+
+--- A 4×4 matrix: 16 numbers, column by column.
+export type Matrix = { number }
+
+local camera = {}
+
+--- The pass members a program declares to read the standard camera: `view` and `projection`,
+--- their product `viewProjection` (projection after view), and the camera's world `position`.
+local block: { [string]: ShaderType } = {
+  view = shader.mat4,
+  projection = shader.mat4,
+  viewProjection = shader.mat4,
+  position = shader.vec3,
+}
+camera.block = table.freeze(block)
+
+--- The camera's members and `extra` together, for a program whose pass declares more.
+function camera.with(extra: { [string]: ShaderType }): { [string]: ShaderType }
+  local members: { [string]: ShaderType } = table.clone(camera.block)
+  for name, type in extra do
+    assert(members[name] == nil, `@jess/render/camera: {name} is a camera member already`)
+    members[name] = type
+  end
+
+  return members
+end
+
+--- The identity matrix.
+function camera.identity(): Matrix
+  return { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 }
+end
+
+--- `after` after `before`: the matrix that applies `before`, then `after`.
+function camera.multiply(after: Matrix, before: Matrix): Matrix
+  local product = table.create(16, 0)
+  for column = 0, 3 do
+    for row = 0, 3 do
+      local sum = 0
+      for inner = 0, 3 do
+        sum += after[inner * 4 + row + 1] * before[column * 4 + inner + 1]
+      end
+
+      product[column * 4 + row + 1] = sum
+    end
+  end
+
+  return product
+end
+
+--- A perspective projection: `fovY` radians from the bottom of the view to its top, a width
+--- `aspect` times its height, and the near and far planes' distances, both positive.
+function camera.perspective(fovY: number, aspect: number, near: number, far: number): Matrix
+  assert(fovY > 0 and fovY < math.pi, `@jess/render/camera: a field of view is between 0 and pi, not {fovY}`)
+  assert(aspect > 0, `@jess/render/camera: an aspect ratio is positive, not {aspect}`)
+  assert(near > 0 and far > near, `@jess/render/camera: planes run from near > 0 to far > near, not {near} to {far}`)
+  local focal = 1 / math.tan(fovY / 2)
+  local depth = far / (near - far)
+
+  return { focal / aspect, 0, 0, 0, 0, focal, 0, 0, 0, 0, depth, -1, 0, 0, near * depth, 0 }
+end
+
+--- An orthographic projection of the box from `left` to `right`, `bottom` to `top`, and `near` to
+--- `far` in front of the camera.
+function camera.orthographic(
+  left: number,
+  right: number,
+  bottom: number,
+  top: number,
+  near: number,
+  far: number
+): Matrix
+  assert(right ~= left and top ~= bottom and far ~= near, '@jess/render/camera: an orthographic box has depth')
+  local width, height, depth = right - left, top - bottom, near - far
+
+  return {
+    2 / width,
+    0,
+    0,
+    0,
+    0,
+    2 / height,
+    0,
+    0,
+    0,
+    0,
+    1 / depth,
+    0,
+    -(right + left) / width,
+    -(top + bottom) / height,
+    near / depth,
+    1,
+  }
+end
+
+--- The view from `eye`, looking at `target`, with `up` toward the top of the view.
+function camera.lookAt(eye: vector, target: vector, up: vector): Matrix
+  local forward = vector.normalize(target - eye)
+  local side = vector.cross(forward, up)
+  assert(vector.magnitude(side) > 0, '@jess/render/camera: up points along the view')
+  side = vector.normalize(side)
+  local above = vector.cross(side, forward)
+
+  return {
+    side.x,
+    above.x,
+    -forward.x,
+    0,
+    side.y,
+    above.y,
+    -forward.y,
+    0,
+    side.z,
+    above.z,
+    -forward.z,
+    0,
+    -vector.dot(side, eye),
+    -vector.dot(above, eye),
+    vector.dot(forward, eye),
+    1,
+  }
+end
+
+--- Writes the camera into `block`, a block whose program declares `camera.block`: `view`,
+--- `projection`, their product, and `position`.
+function camera.write(block: render.Block, view: Matrix, projection: Matrix, position: vector)
+  block:set('view', view)
+  block:set('projection', projection)
+  block:set('viewProjection', camera.multiply(projection, view))
+  block:set('position', position)
+end
+
+--- Where the matrix `matrix` takes the point `point`: `x`, `y`, and `z` over `w`.
+function camera.transform(matrix: Matrix, point: vector): vector
+  local function row(index: number): number
+    return matrix[index] * point.x + matrix[index + 4] * point.y + matrix[index + 8] * point.z + matrix[index + 12]
+  end
+
+  local divisor = row(4)
+
+  return vector.create(row(1) / divisor, row(2) / divisor, row(3) / divisor)
+end
+
+return table.freeze(camera)

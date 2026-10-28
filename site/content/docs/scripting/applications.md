@@ -275,11 +275,13 @@ game.stop()?;
 
 `package::launch_with` takes `LaunchOptions`; its `input` is the application's input source (`InputSource::Synthetic` for tests and replays, a platform backend for devices). With one, every frame polls it first and runs the `input` handlers on the action events it produced; `application.host().input()` is the service, for the host to configure.
 
+`frame` is the domain's frame alone. `Application::step(delta, report)` is the whole of one as the command line runs it: the window system's news first (and, for each window something happened to, the named event `jess.window`), then the frame, then the frame's changes to what the GPU draws committed together and the windows told to draw them, with what a window or the GPU refused passed to `report`. A host with windows steps; one without can do either.
+
 `Application::restart` loads everything again in a new generation: a new runtime, new module tables, new handlers, new interfaces, and queued events for the old generation dropped. Two applications are two domains; they share nothing, not even an interface id.
 
 ## Not yet
 
-- The command line runs applications headless, on purpose for now: no input source, so `input` handlers don't run under `jess package run`. A host that launches with `package::launch_with` and an input source in its `LaunchOptions` gets them, every frame, before update.
+- The command line runs applications without a platform input source, on purpose for now: `input` handlers run under `jess package run` only for a target that declares `gpu.window`, on its windows' keyboard and pointer. A host that launches with `package::launch_with` and an input source in its `LaunchOptions` gets them from any device, every frame, before update.
 - Interfaces are composed once, at load. No hot override.
 - Every managed context holds the target's whole grant; per-module capability subsets need manifest syntax nobody has designed.
 - Routing between domains is a host decision with a Rust API. There is no script API for it, on purpose, until there is a host that runs several application domains from one command.

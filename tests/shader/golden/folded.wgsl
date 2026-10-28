@@ -1,8 +1,8 @@
-struct Parameters {
-    p_color: vec4<f32>,
+struct MaterialUniforms {
+    f_color: vec4<f32>,
 }
 
-@group(1) @binding(0) var<uniform> parameters: Parameters;
+@group(1) @binding(0) var<uniform> u_material: MaterialUniforms;
 
 struct VertexInput {
     @location(0) a_position: vec2<f32>,
@@ -26,7 +26,7 @@ fn vertex_main(input: VertexInput) -> VertexOutput {
 
 @fragment
 fn fragment_main(input: VertexOutput) -> FragmentOutput {
-    let e0 = parameters.p_color * vec4<f32>(0.75, 0.75, 0.75, 0.75);
+    let e0 = u_material.f_color * vec4<f32>(0.75, 0.75, 0.75, 0.75);
     var output: FragmentOutput;
     output.color0 = e0;
     return output;

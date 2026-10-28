@@ -18,6 +18,9 @@ use l3i::value::{Function, Table, Value};
 
 pub use l3i;
 
+#[cfg(feature = "gpu")]
+pub use gpu::SharedDevice;
+
 pub mod application;
 mod audio;
 pub mod bench;
@@ -26,6 +29,7 @@ pub mod check;
 mod convert;
 pub mod document;
 mod files;
+mod gpu;
 pub mod image;
 pub mod init;
 mod input;
@@ -96,14 +100,16 @@ pub fn runtime(options: Options) -> l3i::Result<Runtime> {
 
 /// What a script a person runs holds without asking.
 ///
-/// Its terminal and the input devices in front of it, which that person already has. `jess run`,
-/// `jess test`, and a package's tests grant these; a package target holds only what it declares,
-/// and running it grants the ones of these it does.
-pub const HOST_SCRIPT_CAPABILITIES: [&str; 4] = [
+/// Its terminal, and the input devices, GPU, and screen in front of it, which that person already
+/// has. `jess run`, `jess test`, and a package's tests grant these; a package target holds only
+/// what it declares, and running it grants the ones of these it does.
+pub const HOST_SCRIPT_CAPABILITIES: [&str; 6] = [
     l3i::process::STDIO_CAPABILITY,
     crate::input::capability::ACTIONS,
     crate::input::capability::OBSERVE,
     crate::input::capability::CONFIGURE,
+    gpu::DEVICE_CAPABILITY,
+    gpu::WINDOW_CAPABILITY,
 ];
 
 /// What a host script runs with: [`HOST_SCRIPT_CAPABILITIES`] and `granted`, each once.

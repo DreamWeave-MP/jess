@@ -1,12 +1,133 @@
 {
   "result": {
+    "buffers": {
+      "attributes": {},
+      "draw": {},
+      "instance": {},
+      "material": [
+        {
+          "name": "particles",
+          "type": "Particle[]"
+        }
+      ],
+      "pass": [
+        {
+          "name": "counts",
+          "type": "UInt[] readWrite"
+        }
+      ],
+      "tostring": "ShaderProgram(0 attributes, 0 uniforms, 0 textures, 0 varyings)",
+      "varyings": {}
+    },
+    "buffersLayout": {
+      "attributes": {
+        "attributes": {},
+        "stride": 0
+      },
+      "draw": {
+        "bindings": {},
+        "group": 2
+      },
+      "instance": {
+        "attributes": {},
+        "stride": 0
+      },
+      "material": {
+        "bindings": [
+          {
+            "access": "read",
+            "binding": 0,
+            "element": "Particle",
+            "kind": "Storage",
+            "name": "particles",
+            "stride": 32
+          }
+        ],
+        "group": 1
+      },
+      "pass": {
+        "bindings": [
+          {
+            "access": "readWrite",
+            "binding": 0,
+            "element": "UInt",
+            "kind": "Storage",
+            "name": "counts",
+            "stride": 4
+          }
+        ],
+        "group": 0
+      },
+      "structs": [
+        {
+          "align": 16,
+          "fields": [
+            {
+              "name": "position",
+              "offset": 0,
+              "size": 16,
+              "type": "Vec4f"
+            },
+            {
+              "name": "size",
+              "offset": 16,
+              "size": 4,
+              "type": "Float"
+            }
+          ],
+          "name": "Particle",
+          "size": 32
+        }
+      ]
+    },
+    "computed": {
+      "builtin": "ShaderBuiltins(compute)",
+      "count": "ShaderExpr(Vec3u)",
+      "global": "ShaderExpr(Vec3u)",
+      "inGroup": "ShaderExpr(UInt)",
+      "input": "ShaderInput(compute)",
+      "workgroup": "ShaderExpr(Vec3u)"
+    },
     "constant": {
-      "parameters": {},
-      "textures": {},
-      "tostring": "ShaderProgram(0 parameters, 0 textures, 0 varyings)",
+      "attributes": [
+        {
+          "name": "position",
+          "type": "Vec3f"
+        }
+      ],
+      "draw": {},
+      "instance": {},
+      "material": {},
+      "pass": {},
+      "tostring": "ShaderProgram(1 attribute, 0 uniforms, 0 textures, 0 varyings)",
+      "varyings": {}
+    },
+    "flow": {
+      "attributes": [
+        {
+          "name": "position",
+          "type": "Vec4f"
+        }
+      ],
+      "draw": {},
+      "instance": {},
+      "material": [
+        {
+          "name": "count",
+          "type": "UInt"
+        }
+      ],
+      "pass": {},
+      "tostring": "ShaderProgram(1 attribute, 1 uniform, 0 textures, 0 varyings)",
       "varyings": {}
     },
     "fragment": {
+      "brightness": "ShaderExpr(Float)",
+      "builtins": {
+        "frontFacing": "ShaderExpr(Bool)",
+        "handle": "ShaderBuiltins(fragment)",
+        "position": "ShaderExpr(Vec4f)"
+      },
       "camera": "ShaderExpr(Vec3f)",
       "constant": "ShaderExpr(Float)",
       "cross": "ShaderExpr(Vec3f)",
@@ -18,7 +139,21 @@
       "fromParts": "ShaderExpr(Vec4f)",
       "input": "ShaderInput(fragment)",
       "length": "ShaderExpr(Float)",
-      "light": "ShaderExpr(Float)",
+      "logic": {
+        "both": "ShaderExpr(Bool)",
+        "chosen": "ShaderExpr(Vec4f)",
+        "less": "ShaderExpr(Bool)",
+        "negated": "ShaderExpr(Bool)"
+      },
+      "math": {
+        "absolute": "ShaderExpr(Int)",
+        "angle": "ShaderExpr(Float)",
+        "powered": "ShaderExpr(Vec4f)",
+        "smooth": "ShaderExpr(Float)",
+        "stepped": "ShaderExpr(Vec3f)",
+        "transposed": "ShaderExpr(Mat3f)",
+        "width": "ShaderExpr(Vec2f)"
+      },
       "min": "ShaderExpr(Vec4f)",
       "mixed": "ShaderExpr(Vec3f)",
       "numberFirst": "ShaderExpr(Vec4f)",
@@ -33,29 +168,291 @@
       "time": "ShaderExpr(Float)",
       "viewport": "ShaderExpr(Vec2f)"
     },
+    "integrate": {
+      "attributes": {},
+      "draw": {},
+      "instance": {},
+      "material": {},
+      "pass": [
+        {
+          "name": "cells",
+          "type": "Float[] readWrite"
+        },
+        {
+          "name": "width",
+          "type": "UInt"
+        }
+      ],
+      "tostring": "ShaderProgram(compute 8×8×1, 1 uniform, 0 textures, 1 storage buffer)",
+      "varyings": {}
+    },
+    "integrateSize": [
+      8,
+      8,
+      1
+    ],
+    "layout": {
+      "attributes": {
+        "attributes": [
+          {
+            "location": 0,
+            "locations": 1,
+            "name": "light",
+            "offset": 0,
+            "type": "UInt"
+          },
+          {
+            "location": 1,
+            "locations": 1,
+            "name": "normal",
+            "offset": 4,
+            "type": "Vec3f"
+          },
+          {
+            "location": 2,
+            "locations": 1,
+            "name": "position",
+            "offset": 16,
+            "type": "Vec3f"
+          },
+          {
+            "location": 3,
+            "locations": 1,
+            "name": "uv",
+            "offset": 28,
+            "type": "Vec2f"
+          }
+        ],
+        "stride": 36
+      },
+      "draw": {
+        "bindings": {},
+        "group": 2,
+        "members": [
+          {
+            "name": "model",
+            "offset": 0,
+            "size": 64,
+            "type": "Mat4f"
+          }
+        ],
+        "size": 64
+      },
+      "instance": {
+        "attributes": [
+          {
+            "location": 4,
+            "locations": 1,
+            "name": "shade",
+            "offset": 0,
+            "type": "Vec4u"
+          },
+          {
+            "location": 5,
+            "locations": 4,
+            "name": "transform",
+            "offset": 16,
+            "type": "Mat4f"
+          }
+        ],
+        "stride": 80
+      },
+      "material": {
+        "bindings": [
+          {
+            "binding": 1,
+            "kind": "Texture2D",
+            "name": "diffuse"
+          },
+          {
+            "binding": 2,
+            "kind": "Sampler",
+            "name": "diffuse"
+          },
+          {
+            "binding": 3,
+            "kind": "Sampler",
+            "name": "pointSampler"
+          }
+        ],
+        "group": 1,
+        "members": [
+          {
+            "name": "ambient",
+            "offset": 64,
+            "size": 4,
+            "type": "Float"
+          },
+          {
+            "name": "normalMatrix",
+            "offset": 0,
+            "size": 48,
+            "type": "Mat3f"
+          },
+          {
+            "name": "tint",
+            "offset": 48,
+            "size": 16,
+            "type": "Vec4f"
+          }
+        ],
+        "size": 80
+      },
+      "pass": {
+        "bindings": {},
+        "group": 0,
+        "members": [
+          {
+            "name": "camera",
+            "offset": 0,
+            "size": 144,
+            "type": "Camera"
+          },
+          {
+            "name": "lights",
+            "offset": 144,
+            "size": 128,
+            "stride": 32,
+            "type": "Light[4]"
+          },
+          {
+            "name": "time",
+            "offset": 280,
+            "size": 4,
+            "type": "Float"
+          },
+          {
+            "name": "viewportSize",
+            "offset": 272,
+            "size": 8,
+            "type": "Vec2f"
+          }
+        ],
+        "size": 288
+      },
+      "structs": [
+        {
+          "align": 16,
+          "fields": [
+            {
+              "name": "position",
+              "offset": 0,
+              "size": 12,
+              "type": "Vec3f"
+            },
+            {
+              "name": "projection",
+              "offset": 16,
+              "size": 64,
+              "type": "Mat4f"
+            },
+            {
+              "name": "view",
+              "offset": 80,
+              "size": 64,
+              "type": "Mat4f"
+            }
+          ],
+          "name": "Camera",
+          "size": 144
+        },
+        {
+          "align": 16,
+          "fields": [
+            {
+              "name": "color",
+              "offset": 0,
+              "size": 12,
+              "type": "Vec3f"
+            },
+            {
+              "name": "direction",
+              "offset": 16,
+              "size": 12,
+              "type": "Vec3f"
+            }
+          ],
+          "name": "Light",
+          "size": 32
+        }
+      ]
+    },
     "lit": {
-      "parameters": [
+      "attributes": [
+        {
+          "name": "light",
+          "type": "UInt"
+        },
+        {
+          "name": "normal",
+          "type": "Vec3f"
+        },
+        {
+          "name": "position",
+          "type": "Vec3f"
+        },
+        {
+          "name": "uv",
+          "type": "Vec2f"
+        }
+      ],
+      "draw": [
+        {
+          "name": "model",
+          "type": "Mat4f"
+        }
+      ],
+      "instance": [
+        {
+          "name": "shade",
+          "type": "Vec4u"
+        },
+        {
+          "name": "transform",
+          "type": "Mat4f"
+        }
+      ],
+      "material": [
         {
           "name": "ambient",
           "type": "Float"
         },
         {
-          "name": "lightDirection",
-          "type": "Vec3f"
+          "name": "diffuse",
+          "type": "Texture2D"
         },
         {
           "name": "normalMatrix",
           "type": "Mat3f"
         },
         {
+          "name": "pointSampler",
+          "type": "Sampler"
+        },
+        {
           "name": "tint",
           "type": "Vec4f"
         }
       ],
-      "textures": [
-        "diffuse"
+      "pass": [
+        {
+          "name": "camera",
+          "type": "Camera"
+        },
+        {
+          "name": "lights",
+          "type": "Light[4]"
+        },
+        {
+          "name": "time",
+          "type": "Float"
+        },
+        {
+          "name": "viewportSize",
+          "type": "Vec2f"
+        }
       ],
-      "tostring": "ShaderProgram(4 parameters, 1 texture, 2 varyings)",
+      "tostring": "ShaderProgram(6 attributes, 8 uniforms, 1 texture, 2 varyings)",
       "varyings": [
         {
           "name": "normal",
@@ -67,25 +464,212 @@
         }
       ]
     },
+    "litOutputs": [
+      {
+        "name": "color",
+        "type": "Vec4f"
+      }
+    ],
+    "litSize": true,
+    "pickingOutputs": [
+      {
+        "name": "color",
+        "type": "Vec4f"
+      },
+      {
+        "name": "depth",
+        "type": "Float"
+      },
+      {
+        "name": "id",
+        "type": "UInt"
+      }
+    ],
     "sameModule": true,
+    "sampled": {
+      "bias": "ShaderExpr(Vec4f)",
+      "compareHandle": "ShaderSampler(ComparisonSampler)",
+      "compared": "ShaderExpr(Float)",
+      "comparedAtZero": "ShaderExpr(Float)",
+      "comparedIn": "ShaderExpr(Float)",
+      "cube": "ShaderExpr(Vec4f)",
+      "depth": "ShaderExpr(Float)",
+      "explicit": "ShaderExpr(Vec4f)",
+      "handles": [
+        "ShaderTexture(Texture2DArray)",
+        "ShaderTexture(Texture3D)",
+        "ShaderTexture(TextureCube)"
+      ],
+      "id": "ShaderExpr(Vec4u)",
+      "idHandle": "ShaderTexture(Texture2Du)",
+      "layerTexel": "ShaderExpr(Vec4f)",
+      "layered": "ShaderExpr(Vec4f)",
+      "layers": "ShaderExpr(UInt)",
+      "level": "ShaderExpr(Vec4f)",
+      "levelSize": "ShaderExpr(Vec2u)",
+      "levels": "ShaderExpr(UInt)",
+      "numberLayer": "ShaderExpr(Vec4f)",
+      "shadowHandle": "ShaderTexture(DepthTexture2D)",
+      "size": "ShaderExpr(Vec3u)",
+      "volume": "ShaderExpr(Vec4f)"
+    },
+    "statements": {
+      "counted": "ShaderVar(UInt)",
+      "flag": "ShaderVar(Bool)",
+      "index": "ShaderExpr(UInt)",
+      "value": "ShaderExpr(Vec4f)",
+      "var": "ShaderVar(Vec4f)"
+    },
+    "storage": {
+      "buffer": "ShaderPlace(UInt[] readWrite)",
+      "element": "ShaderExpr(UInt)",
+      "field": "ShaderExpr(Float)",
+      "length": "ShaderExpr(UInt)",
+      "particle": "ShaderPlace(Particle)",
+      "structs": "ShaderPlace(Particle[])"
+    },
+    "textures": {
+      "attributes": [
+        {
+          "name": "position",
+          "type": "Vec4f"
+        }
+      ],
+      "draw": [
+        {
+          "name": "layer",
+          "type": "UInt"
+        }
+      ],
+      "instance": {},
+      "material": [
+        {
+          "name": "cascades",
+          "type": "DepthTexture2DArray"
+        },
+        {
+          "name": "decals",
+          "type": "Texture2DArray"
+        },
+        {
+          "name": "fog",
+          "type": "Texture3D"
+        },
+        {
+          "name": "ids",
+          "type": "Texture2Du"
+        },
+        {
+          "name": "shadow",
+          "type": "DepthTexture2D"
+        },
+        {
+          "name": "sky",
+          "type": "TextureCube"
+        }
+      ],
+      "pass": [
+        {
+          "name": "compare",
+          "type": "ComparisonSampler"
+        },
+        {
+          "name": "linear",
+          "type": "Sampler"
+        }
+      ],
+      "tostring": "ShaderProgram(1 attribute, 1 uniform, 6 textures, 1 varying)",
+      "varyings": [
+        {
+          "name": "direction",
+          "type": "Vec3f"
+        }
+      ]
+    },
     "types": {
+      "array": "Light[4]",
+      "comparisonSampler": "ComparisonSampler",
+      "depthTexture2d": "DepthTexture2D",
+      "depthTexture2dArray": "DepthTexture2DArray",
+      "depthTextureCube": "DepthTextureCube",
       "float": "Float",
+      "int": "Int",
       "mat3": "Mat3f",
       "mat4": "Mat4f",
       "sampler": "Sampler",
+      "storage": "Particle[]",
+      "storageReadWrite": "Vec4f[] readWrite",
+      "struct": "Camera",
       "texture2d": "Texture2D",
+      "texture2dArray": "Texture2DArray",
+      "texture2di": "Texture2Di",
+      "texture2du": "Texture2Du",
+      "texture3d": "Texture3D",
+      "textureCube": "TextureCube",
+      "uint": "UInt",
+      "valueArray": "Vec4f[16]",
       "vec2": "Vec2f",
+      "vec2i": "Vec2i",
+      "vec2u": "Vec2u",
       "vec3": "Vec3f",
-      "vec4": "Vec4f"
+      "vec3i": "Vec3i",
+      "vec3u": "Vec3u",
+      "vec4": "Vec4f",
+      "vec4i": "Vec4i",
+      "vec4u": "Vec4u"
     },
     "vertex": {
+      "attributes": "ShaderAttributes(attributes)",
+      "builtins": {
+        "handle": "ShaderBuiltins(vertex)",
+        "instanceIndex": "ShaderExpr(UInt)",
+        "sameRead": true,
+        "vertexIndex": "ShaderExpr(UInt)"
+      },
       "clip": "ShaderExpr(Vec4f)",
+      "conversions": {
+        "columns": "ShaderExpr(Mat3f)",
+        "scalar": "ShaderExpr(Float)",
+        "signed": "ShaderExpr(Vec4i)",
+        "vector": "ShaderExpr(Vec4f)"
+      },
       "differentValues": false,
       "input": "ShaderInput(vertex)",
+      "instance": "ShaderAttributes(instance)",
+      "integers": {
+        "cell": "ShaderExpr(Vec3i)",
+        "count": "ShaderExpr(UInt)",
+        "dot": "ShaderExpr(Int)",
+        "signed": "ShaderExpr(Int)",
+        "splat": "ShaderExpr(Vec2u)",
+        "swizzle": "ShaderExpr(Vec2u)"
+      },
       "matrix": "ShaderExpr(Mat4f)",
+      "operators": {
+        "bitAnd": "ShaderExpr(UInt)",
+        "bitNot": "ShaderExpr(UInt)",
+        "negated": "ShaderExpr(Vec3f)",
+        "negatedVector": "ShaderExpr(Vec3f)",
+        "remainder": "ShaderExpr(UInt)",
+        "shifted": "ShaderExpr(UInt)"
+      },
+      "placed": "ShaderExpr(Vec4f)",
+      "places": {
+        "camera": "ShaderPlace(Camera)",
+        "constantIndex": "ShaderExpr(Vec3f)",
+        "length": 4,
+        "light": "ShaderPlace(Light)",
+        "lights": "ShaderPlace(Light[4])",
+        "pass": "ShaderPlace(pass)",
+        "valueIndex": "ShaderExpr(Vec3f)"
+      },
       "position": "ShaderExpr(Vec3f)",
       "sameRead": true,
-      "texture": "ShaderExpr(Texture2D)"
+      "sameUniform": true,
+      "sampler": "ShaderSampler(Sampler)",
+      "shade": "ShaderExpr(Vec4u)",
+      "texture": "ShaderTexture(Texture2D)",
+      "transform": "ShaderExpr(Mat4f)"
     }
   }
 }

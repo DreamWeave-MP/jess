@@ -2,7 +2,8 @@
 //! `x / 1`, `x + 0`, `x - 0`. Nothing else: the backend compiler optimizes; Jess only avoids
 //! handing it noise.
 
-use crate::shader::expression::{Expression, ExpressionId, Literal};
+use crate::shader::expression::{BinaryOperator, Expression, ExpressionId, Literal};
+use crate::shader::flow::Statement;
 use crate::shader::program::Program;
 use crate::shader::types::Type;
 use crate::shader::validate::{ValidationError, analyze};
@@ -14,17 +15,23 @@ pub enum Arithmetic {
     Subtract,
     Multiply,
     Divide,
+    Remainder,
 }
 
 impl Arithmetic {
     pub(crate) fn of(expression: &Expression) -> Option<(Arithmetic, ExpressionId, ExpressionId)> {
-        match *expression {
-            Expression::Add(left, right) => Some((Arithmetic::Add, left, right)),
-            Expression::Subtract(left, right) => Some((Arithmetic::Subtract, left, right)),
-            Expression::Multiply(left, right) => Some((Arithmetic::Multiply, left, right)),
-            Expression::Divide(left, right) => Some((Arithmetic::Divide, left, right)),
-            _ => None,
-        }
+        let Expression::Binary(operator, left, right) = *expression else {
+            return None;
+        };
+        let arithmetic = match operator {
+            BinaryOperator::Add => Arithmetic::Add,
+            BinaryOperator::Subtract => Arithmetic::Subtract,
+            BinaryOperator::Multiply => Arithmetic::Multiply,
+            BinaryOperator::Divide => Arithmetic::Divide,
+            BinaryOperator::Remainder => Arithmetic::Remainder,
+            _ => return None,
+        };
+        Some((arithmetic, left, right))
     }
 }
 
@@ -39,6 +46,7 @@ pub fn evaluate(operator: Arithmetic, left: Literal, right: Literal) -> Option<L
                 Arithmetic::Subtract => left.checked_sub(right),
                 Arithmetic::Multiply => left.checked_mul(right),
                 Arithmetic::Divide => left.checked_div(right),
+                Arithmetic::Remainder => left.checked_rem(right),
             };
             value.map(Literal::Int)
         }
@@ -48,6 +56,7 @@ pub fn evaluate(operator: Arithmetic, left: Literal, right: Literal) -> Option<L
                 Arithmetic::Subtract => left.checked_sub(right),
                 Arithmetic::Multiply => left.checked_mul(right),
                 Arithmetic::Divide => left.checked_div(right),
+                Arithmetic::Remainder => left.checked_rem(right),
             };
             value.map(Literal::UInt)
         }
@@ -64,6 +73,8 @@ pub fn evaluate(operator: Arithmetic, left: Literal, right: Literal) -> Option<L
                     Arithmetic::Subtract => left - right,
                     Arithmetic::Multiply => left * right,
                     Arithmetic::Divide => left / right,
+                    // Truncated, as WGSL's is: the sign of `left`.
+                    Arithmetic::Remainder => left % right,
                 };
                 if !value.is_finite() {
                     return None;
@@ -139,7 +150,39 @@ impl Program {
         for output in &mut self.fragment_outputs {
             *output = forward[output.index()];
         }
+        for body in &mut self.bodies {
+            forward_statements(body, &forward);
+        }
         Ok(folded)
+    }
+}
+
+/// Points every value a statement reads at what it folded to. A placed expression stays placed, as
+/// what it folded to is visible wherever it was.
+fn forward_statements(block: &mut [Statement], forward: &[ExpressionId]) {
+    for statement in block {
+        match statement {
+            Statement::Emit(_) | Statement::Discard { .. } => {}
+            Statement::Store { value, .. } => *value = forward[value.index()],
+            Statement::Write { place, value, .. } | Statement::Atomic { place, value, .. } => {
+                place.rewrite_indices(|index| *index = forward[index.index()]);
+                *value = forward[value.index()];
+            }
+            Statement::If {
+                condition,
+                accept,
+                reject,
+                ..
+            } => {
+                *condition = forward[condition.index()];
+                forward_statements(accept, forward);
+                forward_statements(reject, forward);
+            }
+            Statement::Loop { count, body, .. } => {
+                *count = forward[count.index()];
+                forward_statements(body, forward);
+            }
+        }
     }
 }
 
@@ -155,6 +198,10 @@ fn fold(expressions: &[Expression], types: &[Option<Type>], expression: &Express
     };
 
     if let Expression::Construct { components, .. } = expression {
+        // Only a float vector folds: a matrix's columns would not fit, and integers stay as written.
+        if !ty.is_float_vector() {
+            return None;
+        }
         let mut values = [0.0f32; 4];
         let mut size = 0;
         for &component in components.iter() {

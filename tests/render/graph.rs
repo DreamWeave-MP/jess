@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use jess::render::{
     AliasGroup, Attachment, ClearValue, CompiledGraph, Dependency, DependencyKind, GraphError, Lifetime, LoadOp, Pass,
-    PassId, PassKind, PassMetadata, PassOutput, ReadUsage, RenderGraph, ResourceId, ResourceKind, StoreOp, TargetFormat,
-    TargetSize,
+    PassId, PassKind, PassMetadata, PassOutput, ReadUsage, RenderGraph, ResourceId, ResourceKind, StoreOp, TargetSize,
+    TextureFormat,
 };
 
 const OWNER: &str = "@test/viewer";
@@ -69,16 +69,16 @@ struct Standard {
 fn standard_targets() -> Standard {
     let mut graph = RenderGraph::new("mesh.standard");
     let depth = graph
-        .add_depth_target("depth", TargetFormat::Depth32Float, TargetSize::VIEWPORT)
+        .add_depth_target("depth", TextureFormat::Depth32Float, TargetSize::VIEWPORT)
         .unwrap();
     let scene_color = graph
-        .add_render_target("sceneColor", TargetFormat::Rgba16Float, TargetSize::VIEWPORT)
+        .add_render_target("sceneColor", TextureFormat::Rgba16Float, TargetSize::VIEWPORT)
         .unwrap();
     let selection_mask = graph
-        .add_render_target("selectionMask", TargetFormat::R8Unorm, TargetSize::VIEWPORT)
+        .add_render_target("selectionMask", TextureFormat::R8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     let output = graph
-        .import_render_target("output", TargetFormat::Bgra8UnormSrgb, TargetSize::VIEWPORT)
+        .import_render_target("output", TextureFormat::Bgra8UnormSrgb, TargetSize::VIEWPORT)
         .unwrap();
     Standard {
         graph,
@@ -118,10 +118,10 @@ fn standard_graph() -> Standard {
 fn scene_targets(name: &str) -> (RenderGraph, ResourceId, ResourceId) {
     let mut graph = RenderGraph::new(name);
     let scene_color = graph
-        .add_render_target("sceneColor", TargetFormat::Rgba16Float, TargetSize::VIEWPORT)
+        .add_render_target("sceneColor", TextureFormat::Rgba16Float, TargetSize::VIEWPORT)
         .unwrap();
     let output = graph
-        .import_render_target("output", TargetFormat::Bgra8UnormSrgb, TargetSize::VIEWPORT)
+        .import_render_target("output", TextureFormat::Bgra8UnormSrgb, TargetSize::VIEWPORT)
         .unwrap();
     (graph, scene_color, output)
 }
@@ -199,12 +199,12 @@ fn dependencies_fix_the_order_whatever_the_registration_order() {
 fn independent_passes_keep_registration_order() {
     let mut graph = RenderGraph::new("independent");
     let output = graph
-        .import_render_target("output", TargetFormat::Bgra8Unorm, TargetSize::VIEWPORT)
+        .import_render_target("output", TextureFormat::Bgra8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     let mut targets = Vec::new();
     for name in ["c", "a", "b"] {
         let target = graph
-            .add_render_target(name, TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+            .add_render_target(name, TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
             .unwrap();
         graph
             .add_pass(fullscreen(&format!("draw_{name}")).write(store_color(target)))
@@ -306,7 +306,8 @@ fn loading_before_the_first_write_depends_on_registration_order() {
         compile_error(&graph),
         GraphError::LoadWithoutContents {
             pass: "transparent".to_owned(),
-            resource: "sceneColor".to_owned()
+            resource: "sceneColor".to_owned(),
+            subresource: None
         }
     );
 }
@@ -315,10 +316,10 @@ fn loading_before_the_first_write_depends_on_registration_order() {
 fn imported_targets_hold_contents_before_the_first_write() {
     let mut graph = RenderGraph::new("overlay");
     let output = graph
-        .import_render_target("output", TargetFormat::Bgra8Unorm, TargetSize::VIEWPORT)
+        .import_render_target("output", TextureFormat::Bgra8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     let background = graph
-        .import_render_target("background", TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .import_render_target("background", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     graph
         .add_pass(
@@ -337,13 +338,13 @@ fn imported_targets_hold_contents_before_the_first_write() {
 fn two_pass_cycles_are_rejected_by_name() {
     let mut graph = RenderGraph::new("pingPong");
     let output = graph
-        .import_render_target("output", TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .import_render_target("output", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     let horizontal = graph
-        .add_render_target("horizontal", TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .add_render_target("horizontal", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     let vertical = graph
-        .add_render_target("vertical", TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .add_render_target("vertical", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     graph
         .add_pass(
@@ -384,16 +385,16 @@ fn two_pass_cycles_are_rejected_by_name() {
 fn longer_cycles_start_at_the_earliest_registered_pass() {
     let mut graph = RenderGraph::new("ring");
     let output = graph
-        .import_render_target("output", TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .import_render_target("output", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     let first = graph
-        .add_render_target("first", TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .add_render_target("first", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     let second = graph
-        .add_render_target("second", TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .add_render_target("second", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     let third = graph
-        .add_render_target("third", TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .add_render_target("third", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     graph
         .add_pass(fullscreen("unrelated").write(PassOutput::color(output, LoadOp::DontCare, StoreOp::Store)))
@@ -436,7 +437,7 @@ fn writing_a_target_after_it_is_read_is_a_cycle() {
     // output. A read sees final contents, so the two wait on each other.
     let (mut graph, scene_color, output) = scene_targets("regrade");
     let tonemapped = graph
-        .add_render_target("tonemapped", TargetFormat::Rgba16Float, TargetSize::VIEWPORT)
+        .add_render_target("tonemapped", TextureFormat::Rgba16Float, TargetSize::VIEWPORT)
         .unwrap();
     graph.add_pass(mesh("opaque").write(store_color(scene_color))).unwrap();
     graph
@@ -518,7 +519,8 @@ fn reading_a_transient_target_nobody_writes_is_rejected() {
         error,
         GraphError::ReadWithoutWriter {
             pass: "outline".to_owned(),
-            resource: "selectionMask".to_owned()
+            resource: "selectionMask".to_owned(),
+            subresource: None
         }
     );
     assert_eq!(
@@ -572,6 +574,7 @@ fn reading_discarded_contents_is_rejected() {
         GraphError::ReadDiscarded {
             pass: "opaque".to_owned(),
             resource: "depth".to_owned(),
+            subresource: None,
             writer: "depth".to_owned()
         }
     );
@@ -598,6 +601,7 @@ fn loading_discarded_contents_is_rejected() {
         GraphError::ReadDiscarded {
             pass: "transparent".to_owned(),
             resource: "sceneColor".to_owned(),
+            subresource: None,
             writer: "opaque".to_owned()
         }
     );
@@ -630,7 +634,7 @@ fn depth_used_only_inside_its_pass_may_be_discarded() {
 fn a_graph_that_reaches_no_imported_target_is_rejected() {
     let mut graph = RenderGraph::new("offscreen");
     let color = graph
-        .add_render_target("color", TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .add_render_target("color", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     graph.add_pass(mesh("draw").write(store_color(color))).unwrap();
     let error = compile_error(&graph);
@@ -642,7 +646,7 @@ fn a_graph_that_reaches_no_imported_target_is_rejected() {
     );
     assert_eq!(
         error.to_string(),
-        "graph \"offscreen\" stores nothing into an imported target, so every pass would be culled"
+        "graph \"offscreen\" stores nothing into an imported resource, so every pass would be culled"
     );
     assert_eq!(
         compile_error(&RenderGraph::new("empty")),
@@ -656,7 +660,7 @@ fn a_graph_that_reaches_no_imported_target_is_rejected() {
 fn overwritten_writes_are_culled_and_loaded_ones_kept() {
     let mut graph = RenderGraph::new("overwrite");
     let output = graph
-        .import_render_target("output", TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .import_render_target("output", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     graph.add_pass(fullscreen("background").write(store_color(output))).unwrap();
     graph.add_pass(fullscreen("scene").write(store_color(output))).unwrap();
@@ -685,16 +689,16 @@ fn overwritten_writes_are_culled_and_loaded_ones_kept() {
 fn culling_follows_contents_back_through_the_chain() {
     let mut graph = RenderGraph::new("culling");
     let output = graph
-        .import_render_target("output", TargetFormat::Bgra8UnormSrgb, TargetSize::VIEWPORT)
+        .import_render_target("output", TextureFormat::Bgra8UnormSrgb, TargetSize::VIEWPORT)
         .unwrap();
     let scene = graph
-        .add_render_target("scene", TargetFormat::Rgba16Float, TargetSize::VIEWPORT)
+        .add_render_target("scene", TextureFormat::Rgba16Float, TargetSize::VIEWPORT)
         .unwrap();
     let normals = graph
-        .add_render_target("normals", TargetFormat::Rgba16Float, TargetSize::VIEWPORT)
+        .add_render_target("normals", TextureFormat::Rgba16Float, TargetSize::VIEWPORT)
         .unwrap();
     let normals_view = graph
-        .add_render_target("normalsView", TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .add_render_target("normalsView", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     graph.add_pass(mesh("scene").write(store_color(scene))).unwrap();
     graph.add_pass(mesh("normals").write(store_color(normals))).unwrap();
@@ -727,23 +731,23 @@ fn bloom_graph() -> RenderGraph {
     let half = TargetSize::Relative { scale: 0.5 };
     let mut graph = RenderGraph::new("bloom");
     let depth = graph
-        .add_depth_target("depth", TargetFormat::Depth24Plus, TargetSize::VIEWPORT)
+        .add_depth_target("depth", TextureFormat::Depth24Plus, TargetSize::VIEWPORT)
         .unwrap();
     let scene = graph
-        .add_render_target("scene", TargetFormat::Rgba16Float, TargetSize::VIEWPORT)
+        .add_render_target("scene", TextureFormat::Rgba16Float, TargetSize::VIEWPORT)
         .unwrap();
-    let bright = graph.add_render_target("bright", TargetFormat::Rgba16Float, half).unwrap();
+    let bright = graph.add_render_target("bright", TextureFormat::Rgba16Float, half).unwrap();
     let blur_horizontal = graph
-        .add_render_target("blurHorizontal", TargetFormat::Rgba16Float, half)
+        .add_render_target("blurHorizontal", TextureFormat::Rgba16Float, half)
         .unwrap();
     let blur_vertical = graph
-        .add_render_target("blurVertical", TargetFormat::Rgba16Float, half)
+        .add_render_target("blurVertical", TextureFormat::Rgba16Float, half)
         .unwrap();
     let combined = graph
-        .add_render_target("combined", TargetFormat::Rgba16Float, TargetSize::VIEWPORT)
+        .add_render_target("combined", TextureFormat::Rgba16Float, TargetSize::VIEWPORT)
         .unwrap();
     let output = graph
-        .import_render_target("output", TargetFormat::Bgra8UnormSrgb, TargetSize::VIEWPORT)
+        .import_render_target("output", TextureFormat::Bgra8UnormSrgb, TargetSize::VIEWPORT)
         .unwrap();
 
     graph
@@ -842,38 +846,38 @@ fn targets_used_by_the_same_pass_never_share() {
 fn registration_rejects_malformed_targets() {
     let mut graph = RenderGraph::new("targets");
     graph
-        .add_render_target("color", TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .add_render_target("color", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     assert_eq!(
-        graph.add_render_target("", TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT),
+        graph.add_render_target("", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT),
         Err(GraphError::EmptyResourceName)
     );
     assert_eq!(
-        graph.add_depth_target("color", TargetFormat::Depth32Float, TargetSize::VIEWPORT),
+        graph.add_depth_target("color", TextureFormat::Depth32Float, TargetSize::VIEWPORT),
         Err(GraphError::DuplicateResource {
             resource: "color".to_owned()
         })
     );
 
     let error = graph
-        .add_render_target("depthAsColor", TargetFormat::Depth32Float, TargetSize::VIEWPORT)
+        .add_render_target("depthAsColor", TextureFormat::Depth32Float, TargetSize::VIEWPORT)
         .unwrap_err();
     assert_eq!(
         error.to_string(),
         "render target \"depthAsColor\" can't have format Depth32Float"
     );
     assert_eq!(
-        graph.import_depth_target("colorAsDepth", TargetFormat::R32Float, TargetSize::VIEWPORT),
+        graph.import_depth_target("colorAsDepth", TextureFormat::R32Float, TargetSize::VIEWPORT),
         Err(GraphError::FormatKind {
             resource: "colorAsDepth".to_owned(),
-            format: TargetFormat::R32Float,
+            format: TextureFormat::R32Float,
             kind: ResourceKind::DepthTarget
         })
     );
 
     let empty = TargetSize::Absolute { width: 0, height: 512 };
     assert_eq!(
-        graph.add_render_target("empty", TargetFormat::Rgba8Unorm, empty),
+        graph.add_render_target("empty", TextureFormat::Rgba8Unorm, empty),
         Err(GraphError::InvalidSize {
             resource: "empty".to_owned(),
             size: empty
@@ -881,7 +885,7 @@ fn registration_rejects_malformed_targets() {
     );
     assert!(
         graph
-            .add_render_target("nan", TargetFormat::Rgba8Unorm, TargetSize::Relative { scale: f32::NAN })
+            .add_render_target("nan", TextureFormat::Rgba8Unorm, TargetSize::Relative { scale: f32::NAN })
             .is_err()
     );
     assert_eq!(graph.resources().len(), 1);
@@ -1000,13 +1004,13 @@ fn writes_must_suit_the_target_kind() {
 fn clear_values_must_fit_the_format() {
     let mut graph = RenderGraph::new("clears");
     let color = graph
-        .add_render_target("color", TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .add_render_target("color", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     let picking = graph
-        .add_render_target("picking", TargetFormat::R32Uint, TargetSize::VIEWPORT)
+        .add_render_target("picking", TextureFormat::R32Uint, TargetSize::VIEWPORT)
         .unwrap();
     let depth = graph
-        .add_depth_target("depth", TargetFormat::Depth24Plus, TargetSize::VIEWPORT)
+        .add_depth_target("depth", TextureFormat::Depth24Plus, TargetSize::VIEWPORT)
         .unwrap();
 
     let error = graph
@@ -1017,7 +1021,7 @@ fn clear_values_must_fit_the_format() {
         GraphError::ClearValueMismatch {
             pass: "depthClear".to_owned(),
             resource: "color".to_owned(),
-            format: TargetFormat::Rgba8Unorm,
+            format: TextureFormat::Rgba8Unorm,
             clear: ClearValue::Depth(1.0),
         }
     );
@@ -1029,7 +1033,7 @@ fn clear_values_must_fit_the_format() {
     assert!(matches!(
         graph.add_pass(mesh("floatIds").write(PassOutput::color(picking, BLACK, StoreOp::Store))),
         Err(GraphError::ClearValueMismatch {
-            format: TargetFormat::R32Uint,
+            format: TextureFormat::R32Uint,
             ..
         })
     ));
@@ -1128,12 +1132,12 @@ fn attachments_must_fit_together() {
     let standard = standard_graph();
     let mut graph = standard.graph;
     let shadow = graph
-        .add_depth_target("shadow", TargetFormat::Depth32Float, TargetSize::VIEWPORT)
+        .add_depth_target("shadow", TextureFormat::Depth32Float, TargetSize::VIEWPORT)
         .unwrap();
     let small = graph
         .add_render_target(
             "small",
-            TargetFormat::Rgba8Unorm,
+            TextureFormat::Rgba8Unorm,
             TargetSize::Absolute { width: 256, height: 256 },
         )
         .unwrap();
@@ -1183,7 +1187,7 @@ fn metadata_carries_attribution() {
 
     let mut graph = RenderGraph::new("attributed");
     let output = graph
-        .import_render_target("output", TargetFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .import_render_target("output", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
         .unwrap();
     let id = graph
         .add_pass(Pass::new(PassKind::Fullscreen, metadata.clone()).write(store_color(output)))
@@ -1196,4 +1200,321 @@ fn metadata_carries_attribution() {
 fn compiling_twice_gives_the_same_dump() {
     let graph = bloom_graph();
     assert_eq!(graph.compile().unwrap().to_string(), graph.compile().unwrap().to_string());
+}
+
+#[test]
+fn every_format_clears_with_its_own_kind_of_value() {
+    for format in TextureFormat::ALL {
+        let fitting = [
+            ClearValue::Color([0.0; 4]),
+            ClearValue::Uint([0; 4]),
+            ClearValue::Sint([0; 4]),
+            ClearValue::Depth(1.0),
+        ]
+        .into_iter()
+        .filter(|clear| clear.fits(format))
+        .count();
+        assert_eq!(fitting, 1, "{format} fits exactly one kind of clear value");
+    }
+    assert!(ClearValue::Sint([-1, 0, 0, 0]).fits(TextureFormat::R32Sint));
+    assert!(!ClearValue::Uint([1, 0, 0, 0]).fits(TextureFormat::Rgba32Sint));
+    assert_eq!(TextureFormat::Rgba32Float.texel_bytes(), Some(16));
+    assert_eq!(TextureFormat::Depth24Plus.texel_bytes(), None);
+    assert_eq!(TextureFormat::Rgba8Uint.sample_kind(), jess::render::SampleKind::Uint);
+    assert_eq!(
+        TextureFormat::R32Float.sample_kind(),
+        jess::render::SampleKind::UnfilterableFloat
+    );
+}
+
+fn compute(name: &str) -> Pass {
+    Pass::new(PassKind::Compute, PassMetadata::new(name, OWNER))
+}
+
+fn copy(name: &str) -> Pass {
+    Pass::new(PassKind::Copy, PassMetadata::new(name, OWNER))
+}
+
+const ZERO: LoadOp = LoadOp::Clear(ClearValue::Zero);
+
+/// GPU culling and picking: a compute pass counts what is visible into a transient buffer, a
+/// second compacts instances into an imported one, the scene draws from it with ids in a target,
+/// and a copy reads the id under the cursor back into another imported buffer.
+#[test]
+fn compute_and_copy_passes_order_cull_and_alias_buffers() {
+    let mut graph = RenderGraph::new("culling");
+    let counts = graph.add_buffer("counts", 64).unwrap();
+    let scratch = graph.add_buffer("scratch", 64).unwrap();
+    let unused = graph.add_buffer("unused", 256).unwrap();
+    let instances = graph.import_buffer("instances", 4096).unwrap();
+    let ids = graph
+        .add_render_target("ids", TextureFormat::R32Uint, TargetSize::VIEWPORT)
+        .unwrap();
+    let output = graph
+        .import_render_target("output", TextureFormat::Bgra8UnormSrgb, TargetSize::VIEWPORT)
+        .unwrap();
+    let picked = graph.import_buffer("picked", 256).unwrap();
+
+    graph
+        .add_pass(compute("count").write(PassOutput::storage(counts, ZERO, StoreOp::Store)))
+        .unwrap();
+    graph
+        .add_pass(compute("compact").read(counts, ReadUsage::Buffer).write(PassOutput::storage(
+            instances,
+            LoadOp::DontCare,
+            StoreOp::Store,
+        )))
+        .unwrap();
+    graph
+        .add_pass(compute("unobserved").write(PassOutput::storage(unused, ZERO, StoreOp::Store)))
+        .unwrap();
+    graph
+        .add_pass(
+            compute("histogram")
+                .read(instances, ReadUsage::Buffer)
+                .write(PassOutput::storage(scratch, ZERO, StoreOp::Store)),
+        )
+        .unwrap();
+    graph
+        .add_pass(
+            mesh("scene")
+                .read(instances, ReadUsage::Buffer)
+                .read(scratch, ReadUsage::Buffer)
+                .write(store_color(output))
+                .write(PassOutput::color(
+                    ids,
+                    LoadOp::Clear(ClearValue::Uint([0; 4])),
+                    StoreOp::Store,
+                )),
+        )
+        .unwrap();
+    graph
+        .add_pass(
+            copy("pick")
+                .read(ids, ReadUsage::Copy)
+                .write(PassOutput::copy(picked, LoadOp::DontCare, StoreOp::Store)),
+        )
+        .unwrap();
+
+    let compiled = graph.compile().unwrap();
+    assert_eq!(order(&compiled), ["count", "compact", "histogram", "scene", "pick"]);
+    assert_eq!(names(&compiled, compiled.culled()), ["unobserved"]);
+    let groups: Vec<Vec<String>> = compiled
+        .alias_groups()
+        .iter()
+        .map(|group| resource_names(&graph, group))
+        .collect();
+    assert_eq!(groups, [vec!["counts", "scratch"], vec!["ids"]], "buffers of one size share");
+    assert_eq!(graph.resource(counts).unwrap().kind(), ResourceKind::Buffer);
+    assert_eq!(graph.resource(counts).unwrap().bytes(), Some(64));
+    assert_eq!(graph.resource(ids).unwrap().bytes(), None);
+    assert_golden("compute", &compiled.to_string());
+}
+
+#[test]
+fn buffers_have_a_size_in_whole_words() {
+    let mut graph = RenderGraph::new("buffers");
+    for bytes in [0, 6] {
+        let error = graph.add_buffer("odd", bytes).unwrap_err();
+        assert_eq!(
+            error,
+            GraphError::InvalidBufferSize {
+                resource: "odd".to_owned(),
+                bytes
+            }
+        );
+    }
+    assert_eq!(
+        graph.import_buffer("odd", 6).unwrap_err().to_string(),
+        "buffer \"odd\" has invalid size 6: expected a nonzero multiple of 4 bytes"
+    );
+    graph.add_buffer("words", 8).unwrap();
+    assert_eq!(
+        graph.add_buffer("words", 8),
+        Err(GraphError::DuplicateResource {
+            resource: "words".to_owned()
+        })
+    );
+}
+
+#[test]
+fn each_kind_of_pass_reads_and_writes_its_own_way() {
+    let mut graph = RenderGraph::new("kinds");
+    let buffer = graph.add_buffer("buffer", 16).unwrap();
+    let color = graph
+        .add_render_target("color", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .unwrap();
+    let depth = graph
+        .add_depth_target("depth", TextureFormat::Depth24Plus, TargetSize::VIEWPORT)
+        .unwrap();
+
+    let error = graph.add_pass(compute("drawsColor").write(store_color(color))).unwrap_err();
+    assert_eq!(
+        error,
+        GraphError::PassCantWrite {
+            pass: "drawsColor".to_owned(),
+            kind: PassKind::Compute,
+            attachment: Attachment::Color,
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "compute pass \"drawsColor\" can't write through a color attachment"
+    );
+
+    let error = graph
+        .add_pass(
+            compute("testsDepth")
+                .read(depth, ReadUsage::DepthTest)
+                .write(PassOutput::storage(buffer, ZERO, StoreOp::Store)),
+        )
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "compute pass \"testsDepth\" can't read anything as its depth-test attachment"
+    );
+
+    assert!(matches!(
+        graph.add_pass(mesh("copiesIn").read(buffer, ReadUsage::Copy).write(store_color(color))),
+        Err(GraphError::PassCantRead {
+            kind: PassKind::Mesh,
+            usage: ReadUsage::Copy,
+            ..
+        })
+    ));
+    assert!(matches!(
+        graph.add_pass(mesh("storesBuffer").write(PassOutput::storage(buffer, ZERO, StoreOp::Store))),
+        Err(GraphError::PassCantWrite {
+            attachment: Attachment::Storage,
+            ..
+        })
+    ));
+
+    let error = graph
+        .add_pass(compute("storesColor").write(PassOutput::storage(color, LoadOp::DontCare, StoreOp::Store)))
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "pass \"storesColor\" writes render target \"color\" through a storage attachment, which only a buffer allows"
+    );
+    assert_eq!(
+        graph
+            .add_pass(
+                mesh("samplesBuffer")
+                    .read(buffer, ReadUsage::Texture)
+                    .write(store_color(color))
+            )
+            .unwrap_err()
+            .to_string(),
+        "pass \"samplesBuffer\" reads buffer \"buffer\" as a color texture, which only a render target allows"
+    );
+
+    let error = graph
+        .add_pass(compute("onesBuffer").write(PassOutput::storage(buffer, BLACK, StoreOp::Store)))
+        .unwrap_err();
+    assert_eq!(
+        error,
+        GraphError::BufferClearValue {
+            pass: "onesBuffer".to_owned(),
+            resource: "buffer".to_owned(),
+            clear: ClearValue::Color([0.0, 0.0, 0.0, 1.0]),
+        }
+    );
+    assert!(matches!(
+        graph.add_pass(mesh("zeroColor").write(PassOutput::color(color, ZERO, StoreOp::Store))),
+        Err(GraphError::ClearValueMismatch {
+            clear: ClearValue::Zero,
+            ..
+        })
+    ));
+
+    graph
+        .add_pass(
+            compute("samplesDepth")
+                .read(depth, ReadUsage::DepthTexture)
+                .read(color, ReadUsage::Texture)
+                .write(PassOutput::storage(buffer, ZERO, StoreOp::Store)),
+        )
+        .unwrap();
+}
+
+#[test]
+fn a_copy_copies_one_resource_into_one_it_fits() {
+    let mut graph = RenderGraph::new("copies");
+    let small = graph.add_buffer("small", 16).unwrap();
+    let large = graph.add_buffer("large", 64).unwrap();
+    let color = graph
+        .add_render_target("color", TextureFormat::Rgba8Unorm, TargetSize::VIEWPORT)
+        .unwrap();
+    let half = graph
+        .add_render_target("half", TextureFormat::Rgba8Unorm, TargetSize::Relative { scale: 0.5 })
+        .unwrap();
+    let ids = graph
+        .add_render_target("ids", TextureFormat::R32Uint, TargetSize::VIEWPORT)
+        .unwrap();
+    let depth = graph
+        .add_depth_target("depth", TextureFormat::Depth24Plus, TargetSize::VIEWPORT)
+        .unwrap();
+    let dont_care = |resource| PassOutput::copy(resource, LoadOp::DontCare, StoreOp::Store);
+    let invalid = |pass: &str, problem: &str| GraphError::InvalidCopy {
+        pass: pass.to_owned(),
+        problem: problem.to_owned(),
+    };
+
+    assert_eq!(
+        graph.add_pass(copy("nothing").write(dont_care(large))),
+        Err(invalid("nothing", "expected one source and one destination"))
+    );
+    assert_eq!(
+        graph.add_pass(
+            copy("both")
+                .read(small, ReadUsage::Copy)
+                .read(color, ReadUsage::Copy)
+                .write(dont_care(large))
+        ),
+        Err(invalid("both", "expected one source and one destination"))
+    );
+    assert_eq!(
+        graph
+            .add_pass(copy("shrink").read(large, ReadUsage::Copy).write(dont_care(small)))
+            .unwrap_err()
+            .to_string(),
+        "copy pass \"shrink\" is invalid: \"large\" holds 64 bytes and \"small\" only 16"
+    );
+    assert_eq!(
+        graph.add_pass(copy("halve").read(color, ReadUsage::Copy).write(dont_care(half))),
+        Err(invalid(
+            "halve",
+            "\"color\" is viewport and \"half\" is viewport*0.5: copying all of one into the other needs the same size"
+        ))
+    );
+    assert!(matches!(
+        graph.add_pass(copy("reinterpret").read(color, ReadUsage::Copy).write(dont_care(ids))),
+        Err(GraphError::InvalidCopy { .. })
+    ));
+    assert_eq!(
+        graph.add_pass(copy("depthOut").read(depth, ReadUsage::Copy).write(dont_care(large))),
+        Err(invalid(
+            "depthOut",
+            "Depth24Plus has no layout in a buffer: the backend chooses it"
+        ))
+    );
+    assert_eq!(
+        graph.add_pass(
+            copy("cleared")
+                .read(small, ReadUsage::Copy)
+                .write(PassOutput::copy(large, ZERO, StoreOp::Store))
+        ),
+        Err(invalid(
+            "cleared",
+            "the copy writes its destination, so clearing it first is wasted: load it or don't care"
+        ))
+    );
+
+    graph
+        .add_pass(copy("grow").read(small, ReadUsage::Copy).write(dont_care(large)))
+        .unwrap();
+    graph
+        .add_pass(copy("readBack").read(ids, ReadUsage::Copy).write(dont_care(small)))
+        .unwrap();
 }

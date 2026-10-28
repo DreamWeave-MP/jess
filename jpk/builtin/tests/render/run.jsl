@@ -1,0 +1,193 @@
+--!strict
+-- @jess/render's cases: blocks, vertices, and elements written where program.layout puts each
+-- member, and the standard camera's matrices.
+local camera = require '@jess/render/camera'
+local render = require '@jess/render'
+local test = require '@jess/test'
+local expect = test.expect
+local suite = test.new()
+
+local shader = jess.shader
+
+local Light = shader.struct('Light', { color = shader.vec3, intensity = shader.float })
+
+local function program(): ShaderProgram
+  return shader.program {
+    attributes = { position = shader.vec3, uv = shader.vec2, model = shader.mat4 },
+    instance = { tint = shader.vec4 },
+    pass = {
+      exposure = shader.float,
+      lights = shader.array(Light, 2),
+      normal = shader.mat3,
+      view = shader.mat4,
+      cell = shader.vec2i,
+    },
+    material = { particles = shader.storage(Light) },
+    vertex = function(input)
+      return { position = shader.vec4(input.attributes.position, 1) }
+    end,
+    fragment = function(input) return shader.vec4(input.pass.exposure) end,
+  }
+end
+
+--- The pass block's member `name`.
+local function member(layout: ShaderLayout, name: string): ShaderMemberLayout
+  for _, found in assert(layout.pass.members) do
+    if found.name == name then
+      return found
+    end
+  end
+
+  error(`no member {name}`)
+end
+
+local function offset(layout: ShaderLayout, name: string): number return member(layout, name).offset end
+
+local function near(actual: number, expected: number) expect(actual).toBeCloseTo(expected, 1e-5) end
+
+suite.describe('@jess/render', function()
+  suite.it('writes a block where its layout puts each member', function()
+    local layout = program().layout
+    local block = render.block(layout, 'pass')
+    expect(block.size).toBe(layout.pass.size)
+    expect(buffer.len(block.bytes)).toBe(block.size)
+
+    block:set('exposure', 2.5)
+    block:set('cell', { -3, 7 })
+    block:set('lights', { { color = vector.create(1, 0.5, 0.25), intensity = 4 }, { intensity = 8 } })
+    block:set('normal', { 1, 2, 3, 4, 5, 6, 7, 8, 9 })
+    block:set('view', { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 10, 20, 30, 1 })
+
+    local bytes = block.bytes
+    expect(buffer.readf32(bytes, offset(layout, 'exposure'))).toBe(2.5)
+    expect(buffer.readi32(bytes, offset(layout, 'cell') + 4)).toBe(7)
+    local lights = offset(layout, 'lights')
+    expect(buffer.readf32(bytes, lights + 4)).toBe(0.5)
+    expect(buffer.readf32(bytes, lights + 12)).toBe(4)
+    expect(buffer.readf32(bytes, lights + assert(member(layout, 'lights').stride) + 12)).toBe(8)
+    -- A Mat3f's columns are 16 bytes apart in a uniform block.
+    local normal = offset(layout, 'normal')
+    expect(buffer.readf32(bytes, normal + 16)).toBe(4)
+    expect(buffer.readf32(bytes, normal + 32 + 8)).toBe(9)
+    expect(buffer.readf32(bytes, offset(layout, 'view') + 52)).toBe(20)
+  end)
+
+  suite.it('writes vertices and instances attribute by attribute, packed', function()
+    local layout = program().layout
+    local vertices = render.vertices(layout, 3)
+    expect(vertices.stride).toBe(layout.attributes.stride)
+    expect(buffer.len(vertices.bytes)).toBe(vertices.stride * 3)
+    vertices:set(2, 'uv', { 0.25, 0.75 })
+    vertices:set(3, 'position', vector.create(1, 2, 3))
+    vertices:set(1, 'model', camera.identity())
+
+    local function at(name: string): number
+      for _, attribute in layout.attributes.attributes do
+        if attribute.name == name then
+          return attribute.offset
+        end
+      end
+
+      error(`no attribute {name}`)
+    end
+
+    expect(buffer.readf32(vertices.bytes, vertices.stride + at 'uv' + 4)).toBe(0.75)
+    expect(buffer.readf32(vertices.bytes, vertices.stride * 2 + at 'position' + 8)).toBe(3)
+    -- A Mat4f attribute's columns are packed: the second column's y is 5 numbers in.
+    expect(buffer.readf32(vertices.bytes, at 'model' + 20)).toBe(1)
+
+    local instances = render.vertices(layout, 2, 'instance')
+    instances:set(2, 'tint', { 1, 0, 0, 1 })
+    expect(buffer.readf32(instances.bytes, instances.stride)).toBe(1)
+  end)
+
+  suite.it('writes storage elements by their stride', function()
+    local elements = render.elements(program().layout, 'material', 'particles', 4)
+    expect(elements.stride).toBe(16)
+    elements:set(3, { color = { 0, 0, 1 }, intensity = 2 })
+    expect(buffer.readf32(elements.bytes, 32 + 8)).toBe(1)
+    expect(buffer.readf32(elements.bytes, 32 + 12)).toBe(2)
+  end)
+
+  suite.it('names what doesnt fit', function()
+    local layout = program().layout
+    local block = render.block(layout, 'pass')
+    expect(function() block:set('gamma', 1) end).toThrow 'the pass block has no member gamma'
+    expect(function() block:set('cell', { 1 }) end).toThrow 'pass.cell is 2 numbers, not 1'
+    expect(function() block:set('exposure', 'bright') end).toThrow 'pass.exposure is a number'
+    expect(function() block:set('view', { 1, 2 }) end).toThrow 'pass.view is 16 numbers in column order, not 2'
+    expect(function() block:set('lights', { { glow = 1 } }) end).toThrow 'a Light has no field glow'
+    expect(function() render.block(layout, 'draw') end).toThrow 'the program declares no draw uniforms'
+    expect(function() render.vertices(layout, 1):set(2, 'uv', { 0, 0 }) end).toThrow "vertex 2 isn't one of the 1"
+    expect(function() render.elements(layout, 'pass', 'particles', 1) end)
+      .toThrow 'the program declares no pass storage buffer particles'
+  end)
+end)
+
+suite.describe('@jess/render/camera', function()
+  suite.it('projects the near plane to depth 0 and the far plane to 1', function()
+    local projection = camera.perspective(math.pi / 2, 2, 1, 10)
+    local close = camera.transform(projection, vector.create(1, 1, -1))
+    near(close.x, 0.5)
+    near(close.y, 1)
+    near(close.z, 0)
+    near(camera.transform(projection, vector.create(0, 0, -10)).z, 1)
+
+    local box = camera.orthographic(-2, 2, -1, 1, 0, 4)
+    local corner = camera.transform(box, vector.create(2, -1, -4))
+    near(corner.x, 1)
+    near(corner.y, -1)
+    near(corner.z, 1)
+  end)
+
+  suite.it('looks from the eye at the target', function()
+    local view = camera.lookAt(vector.create(0, 0, 5), vector.zero, vector.create(0, 1, 0))
+    local origin = camera.transform(view, vector.zero)
+    near(origin.z, -5)
+    local right = camera.transform(view, vector.create(1, 0, 0))
+    near(right.x, 1)
+
+    local sideways = camera.lookAt(vector.zero, vector.create(1, 0, 0), vector.create(0, 1, 0))
+    near(camera.transform(sideways, vector.create(3, 0, 0)).z, -3)
+    expect(function() camera.lookAt(vector.zero, vector.create(0, 1, 0), vector.create(0, 1, 0)) end)
+      .toThrow 'up points along the view'
+  end)
+
+  suite.it('multiplies in application order', function()
+    local move = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 5, 0, 0, 1 }
+    local double = { 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1 }
+    near(camera.transform(camera.multiply(double, move), vector.create(1, 0, 0)).x, 12)
+    expect(camera.multiply(camera.identity(), move)).toEqual(move)
+  end)
+
+  suite.it('writes the standard block a program declares', function()
+    local lit = shader.program {
+      attributes = { position = shader.vec3 },
+      pass = camera.with { time = shader.float },
+      vertex = function(input)
+        local world = shader.vec4(input.attributes.position, 1)
+
+        return { position = input.pass.viewProjection * world }
+      end,
+      fragment = function(input) return shader.vec4(input.pass.time) end,
+    }
+    local block = render.block(lit.layout, 'pass')
+    local view = camera.lookAt(vector.create(0, 0, 5), vector.zero, vector.create(0, 1, 0))
+    camera.write(block, view, camera.perspective(1, 1, 0.1, 100), vector.create(0, 0, 5))
+    block:set('time', 3)
+
+    for _, member in assert(lit.layout.pass.members) do
+      if member.name == 'position' then
+        expect(buffer.readf32(block.bytes, member.offset + 8)).toBe(5)
+      end
+
+      if member.name == 'view' then
+        expect(buffer.readf32(block.bytes, member.offset + 56)).toBe(-5)
+      end
+    end
+
+    expect(function() camera.with { view = shader.mat4 } end).toThrow 'view is a camera member already'
+  end)
+end)
+
+return suite

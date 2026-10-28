@@ -6,11 +6,11 @@ use super::common;
 
 use std::sync::Arc;
 
-use common::{assert_golden, assert_valid_wgsl};
+use common::{assert_golden, assert_valid_wgsl, read};
 use jess::shader::wgsl::{self, WgslModule};
 use jess::shader::{
-    Literal, Program, ProgramBuilder, Semantic, Site, SourceOrigin, Swizzle, Type, ValidationError, ValidationErrorKind,
-    Value,
+    DataType, Frequency, Literal, Program, ProgramBuilder, Rate, ResourceKind, Site, SourceOrigin, Swizzle, Type,
+    ValidationError, ValidationErrorKind, Value,
 };
 
 fn origin(line: u32, column: u32) -> SourceOrigin {
@@ -26,9 +26,9 @@ fn origin(line: u32, column: u32) -> SourceOrigin {
 fn clip(site: &mut Site<'_>, position: Value) -> Result<Value, ValidationError> {
     let one = site.float(1.0)?;
     let local = site.construct(Type::Vec4f, &[position, one])?;
-    let model = site.semantic(Semantic::Model);
-    let view = site.semantic(Semantic::View);
-    let projection = site.semantic(Semantic::Projection);
+    let model = read(site, Frequency::Draw, "model", Type::Mat4f);
+    let view = read(site, Frequency::Pass, "view", Type::Mat4f);
+    let projection = read(site, Frequency::Pass, "projection", Type::Mat4f);
     let world = site.multiply(model, local)?;
     let eye = site.multiply(view, world)?;
     site.multiply(projection, eye)
@@ -41,12 +41,13 @@ fn lowered(builder: ProgramBuilder) -> (Program, WgslModule) {
     (program, module)
 }
 
-/// 12.1: a vertex position and a parameter color.
+/// 12.1: a vertex position and a material color.
 fn solid_color() -> Result<ProgramBuilder, ValidationError> {
     let mut builder = ProgramBuilder::new();
     let mut site = builder.site();
-    let position = site.vertex_input("position", Type::Vec3f)?;
-    let color = site.parameter("color", Type::Vec4f)?;
+    let position = site.attribute(Rate::Vertex, "position", Type::Vec3f)?;
+    let position = site.read_attribute(position);
+    let color = read(&mut site, Frequency::Material, "color", Type::Vec4f);
     let clip = clip(&mut site, position)?;
     site.set_position(clip)?;
     site.output(color)?;
@@ -58,14 +59,17 @@ fn solid_color() -> Result<ProgramBuilder, ValidationError> {
 fn textured_lit() -> Result<ProgramBuilder, ValidationError> {
     let mut builder = ProgramBuilder::new();
     let mut site = builder.site();
-    let position = site.vertex_input("position", Type::Vec3f)?;
-    let normal = site.vertex_input("normal", Type::Vec3f)?;
-    let uv = site.vertex_input("uv", Type::Vec2f)?;
-    let normal_matrix = site.parameter("normalMatrix", Type::Mat3f)?;
-    let light_direction = site.parameter("lightDirection", Type::Vec3f)?;
-    let ambient = site.parameter("ambient", Type::Float)?;
-    let texture = site.parameter("diffuse", Type::Texture2D)?;
-    let sampler = site.parameter("diffuse", Type::Sampler)?;
+    let position = site.attribute(Rate::Vertex, "position", Type::Vec3f)?;
+    let position = site.read_attribute(position);
+    let normal = site.attribute(Rate::Vertex, "normal", Type::Vec3f)?;
+    let normal = site.read_attribute(normal);
+    let uv = site.attribute(Rate::Vertex, "uv", Type::Vec2f)?;
+    let uv = site.read_attribute(uv);
+    let normal_matrix = read(&mut site, Frequency::Material, "normalMatrix", Type::Mat3f);
+    let light_direction = read(&mut site, Frequency::Material, "lightDirection", Type::Vec3f);
+    let ambient = read(&mut site, Frequency::Material, "ambient", Type::Float);
+    let texture = site.resource(Frequency::Material, "diffuse", ResourceKind::Texture2D)?;
+    let sampler = site.resource(Frequency::Material, "diffuse", ResourceKind::Sampler)?;
 
     let clip = clip(&mut site, position)?;
     site.set_position(clip)?;
@@ -73,7 +77,7 @@ fn textured_lit() -> Result<ProgramBuilder, ValidationError> {
     let normal = site.pass("normal", transformed)?;
     let uv = site.pass("uv", uv)?;
 
-    let diffuse = site.sample(texture, sampler, uv)?;
+    let diffuse = site.sample(texture, sampler, uv, None)?;
     let unit_normal = site.normalize(normal)?;
     let facing = site.dot(unit_normal, light_direction)?;
     let zero = site.float(0.0)?;
@@ -115,14 +119,16 @@ fn textured_lit_lowers_like_the_hand_built_program() {
 fn vertex_transform_and_color_keep_their_origins() {
     let mut builder = ProgramBuilder::new();
     let mut site = builder.at(origin(4, 5));
-    let tint = site.parameter("tint", Type::Vec4f).unwrap();
-    let position = site.vertex_input("position", Type::Vec3f).unwrap();
-    let color = site.vertex_input("color", Type::Vec4f).unwrap();
+    let tint = read(&mut site, Frequency::Material, "tint", Type::Vec4f);
+    let position = site.attribute(Rate::Vertex, "position", Type::Vec3f).unwrap();
+    let position = site.read_attribute(position);
+    let color = site.attribute(Rate::Vertex, "color", Type::Vec4f).unwrap();
+    let color = site.read_attribute(color);
 
     let mut site = builder.at(origin(9, 17));
-    let projection = site.semantic(Semantic::Projection);
-    let view = site.semantic(Semantic::View);
-    let model = site.semantic(Semantic::Model);
+    let projection = read(&mut site, Frequency::Pass, "projection", Type::Mat4f);
+    let view = read(&mut site, Frequency::Pass, "view", Type::Mat4f);
+    let model = read(&mut site, Frequency::Draw, "model", Type::Mat4f);
     let one = site.float(1.0).unwrap();
     let projection_view = site.multiply(projection, view).unwrap();
     let transform = site.multiply(projection_view, model).unwrap();
@@ -141,8 +147,8 @@ fn vertex_transform_and_color_keep_their_origins() {
     site.output(tinted).unwrap();
 
     let program = builder.program();
-    assert_eq!(program.parameters()[0].origin, Some(origin(4, 5)));
-    assert_eq!(program.vertex_inputs()[1].origin, Some(origin(4, 5)));
+    assert_eq!(program.uniforms()[0].origin, Some(origin(4, 5)));
+    assert_eq!(program.attributes()[1].origin, Some(origin(4, 5)));
     assert_eq!(program.varyings()[0].name, "color");
     assert_eq!(program.varyings()[0].origin, Some(origin(14, 7)));
     assert_eq!(program.origin(clip.expression()), Some(&origin(9, 17)));
@@ -150,9 +156,9 @@ fn vertex_transform_and_color_keep_their_origins() {
     assert_eq!(program.origin(tinted.expression()), Some(&origin(18, 12)));
 
     let (_, module) = lowered(builder);
-    assert!(module.source.contains("let e0 = semantics.projection * semantics.view;"));
+    assert!(module.source.contains("let e0 = u_pass.f_projection * u_pass.f_view;"));
     assert!(module.source.contains("output.v_color = input.a_color;"));
-    assert!(module.source.contains("let e0 = input.v_color * parameters.p_tint;"));
+    assert!(module.source.contains("let e0 = input.v_color * u_material.f_tint;"));
 }
 
 /// 12.5 on its own: every swizzle shape, and construction from a vector and floats, from two
@@ -161,8 +167,9 @@ fn vertex_transform_and_color_keep_their_origins() {
 fn swizzles_and_constructions_are_typed_as_they_are_built() {
     let mut builder = ProgramBuilder::new();
     let mut site = builder.site();
-    let position = site.vertex_input("position", Type::Vec2f).unwrap();
-    let tint = site.parameter("tint", Type::Vec3f).unwrap();
+    let position = site.attribute(Rate::Vertex, "position", Type::Vec2f).unwrap();
+    let position = site.read_attribute(position);
+    let tint = read(&mut site, Frequency::Material, "tint", Type::Vec3f);
     let zero = site.float(0.0).unwrap();
     let one = site.float(1.0).unwrap();
     let clip = site.construct(Type::Vec4f, &[position, zero, one]).unwrap();
@@ -180,8 +187,8 @@ fn swizzles_and_constructions_are_typed_as_they_are_built() {
     site.output(color).unwrap();
 
     let (_, module) = lowered(builder);
-    assert!(module.source.contains("let e0 = parameters.p_tint.zyx;"));
-    assert!(module.source.contains("let e1 = parameters.p_tint.x;"));
+    assert!(module.source.contains("let e0 = u_material.f_tint.zyx;"));
+    assert!(module.source.contains("let e1 = u_material.f_tint.x;"));
     assert!(module.source.contains("let e3 = vec4<f32>(e1);"));
     assert!(module.source.contains("let e4 = vec4<f32>(e2, e2);"));
 }
@@ -198,7 +205,7 @@ fn dot_of_different_sizes_fails_at_its_site() {
     let error = builder.at(origin(12, 5)).dot(normal, light).unwrap_err();
     assert_eq!(
         error.to_string(),
-        "shaders/lit.jsl:12:5 (@test/viewer): dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size"
+        "shaders/lit.jsl:12:5 (@test/viewer): dot(Vec3f, Vec4f) is invalid: expected two vectors of the same type"
     );
     assert!(matches!(
         error.kind,
@@ -233,8 +240,10 @@ fn every_operation_is_typed_at_its_site() {
     let pair = site.literal(Literal::Vec2f([1.0, 2.0])).unwrap();
     let triple = site.literal(Literal::Vec3f([1.0, 2.0, 3.0])).unwrap();
     let quad = site.literal(Literal::Vec4f([1.0, 2.0, 3.0, 4.0])).unwrap();
-    let model = site.semantic(Semantic::Model);
-    let texture = site.parameter("diffuse", Type::Texture2D).unwrap();
+    let model = read(&mut site, Frequency::Draw, "model", Type::Mat4f);
+    let texture = site
+        .resource(Frequency::Material, "diffuse", ResourceKind::Texture2D)
+        .unwrap();
     let before = builder.program().expressions().len();
 
     let mut site = builder.at(origin(30, 1));
@@ -247,37 +256,32 @@ fn every_operation_is_typed_at_its_site() {
         site.clamp(triple, pair, scalar).unwrap_err().to_string(),
         site.length(integer).unwrap_err().to_string(),
         site.normalize(scalar).unwrap_err().to_string(),
-        site.sample(texture, texture, pair).unwrap_err().to_string(),
-        site.add(texture, scalar).unwrap_err().to_string(),
+        site.sample(texture, texture, pair, None).unwrap_err().to_string(),
         site.construct(Type::Vec4f, &[triple, pair]).unwrap_err().to_string(),
         site.construct(Type::Vec4f, &[scalar, scalar, scalar, scalar, scalar])
             .unwrap_err()
             .to_string(),
-        site.construct(Type::Mat3f, &[triple, triple, triple])
-            .unwrap_err()
-            .to_string(),
+        site.construct(Type::Mat3f, &[triple, triple]).unwrap_err().to_string(),
         site.swizzle(pair, Swizzle::parse("xyz").unwrap()).unwrap_err().to_string(),
         site.swizzle(scalar, Swizzle::parse("x").unwrap()).unwrap_err().to_string(),
     ];
     let expected = [
-        "min(Int, Float) is invalid: expected two values of the same numeric type, or a float vector and a Float",
-        "Mat4f * Vec3f is invalid: expected two values of the same numeric type, a float vector and a Float, a matrix \
+        "min(Int, Float) is invalid: expected two values of the same numeric type, or a vector and a scalar of its kind",
+        "Mat4f * Vec3f is invalid: expected two values of the same numeric type, a vector and a scalar of its kind, a matrix \
          and a Float, a matrix and a vector of its size, or two matrices of the same size",
-        "Mat4f / Mat4f is invalid: expected two values of the same numeric type, or a float vector and a Float",
+        "Mat4f / Mat4f is invalid: expected two values of the same numeric type, or a vector and a scalar of its kind",
         "cross(Vec4f, Vec4f) is invalid: expected two Vec3f",
         "mix(Vec2f, Vec3f, Float) is invalid: expected two Floats or float vectors of the same type, and an amount of \
          that type or Float",
-        "clamp(Vec3f, Vec2f, Float) is invalid: expected a numeric value and two bounds of its type, or a float vector \
-         and two Floats",
+        "clamp(Vec3f, Vec2f, Float) is invalid: expected a numeric value and two bounds of its type, or a vector \
+         and two scalars of its kind",
         "length(Int) is invalid: expected a Float or float vector",
         "normalize(Float) is invalid: expected a float vector",
         "sample(Texture2D, Texture2D, Vec2f) is invalid: expected sample(Texture2D, Sampler, Vec2f)",
-        "Texture2D + Float is invalid: expected two values of the same numeric type, a float vector and a Float, or two \
-         matrices of the same size",
         "Vec4f(Vec3f, Vec2f) is invalid: expected floats and float vectors adding up to 4 components, or one Float",
         "Vec4f(Float, Float, Float, Float, Float) is invalid: expected floats and float vectors adding up to 4 \
          components, or one Float",
-        "Mat3f(Vec3f, Vec3f, Vec3f) is invalid: expected a Vec2f, Vec3f, or Vec4f target",
+        "Mat3f(Vec3f, Vec3f) is invalid: expected three Vec3f columns",
         "Vec2f.xyz is invalid: expected components a Vec2f has",
         "Float.x is invalid: expected components a Float has",
     ];
@@ -298,7 +302,7 @@ fn an_origin_without_a_column_prints_the_line_alone() {
     let light = site.literal(Literal::Vec4f([0.0, 1.0, 0.0, 0.0])).unwrap();
     assert_eq!(
         site.dot(normal, light).unwrap_err().to_string(),
-        "shaders/lit.jsl:12 (@test/viewer): dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size"
+        "shaders/lit.jsl:12 (@test/viewer): dot(Vec3f, Vec4f) is invalid: expected two vectors of the same type"
     );
 }
 
@@ -332,20 +336,35 @@ fn literals_wgsl_cannot_write_fail_at_their_site() {
 fn declarations_are_checked_at_their_site() {
     let mut builder = ProgramBuilder::new();
     let mut site = builder.at(origin(1, 1));
-    site.parameter("tint", Type::Vec4f).unwrap();
-    // A texture and a value of the same name lower to different prefixes.
-    site.parameter("tint", Type::Texture2D).unwrap();
-    let model = site.semantic(Semantic::Model);
+    site.uniform(Frequency::Material, "tint", DataType::Value(Type::Vec4f))
+        .unwrap();
+    // A texture and the sampler declared with it share a name.
+    site.resource(Frequency::Material, "diffuse", ResourceKind::Texture2D)
+        .unwrap();
+    site.resource(Frequency::Material, "diffuse", ResourceKind::Sampler).unwrap();
+    // Another frequency's names are its own.
+    site.uniform(Frequency::Pass, "tint", DataType::Value(Type::Vec4f)).unwrap();
+    let model = read(&mut site, Frequency::Draw, "model", Type::Mat4f);
     let uv = site.literal(Literal::Vec2f([0.5, 0.5])).unwrap();
     site.pass("uv", uv).unwrap();
-    let declared = (builder.program().parameters().len(), builder.program().varyings().len());
+    let declared = (builder.program().uniforms().len(), builder.program().resources().len());
 
     let mut site = builder.at(origin(1, 1));
     let messages = [
-        site.parameter("tint", Type::Vec3f).unwrap_err().to_string(),
-        site.parameter("visible", Type::Bool).unwrap_err().to_string(),
-        site.vertex_input("1st", Type::Float).unwrap_err().to_string(),
-        site.vertex_input("diffuse", Type::Texture2D).unwrap_err().to_string(),
+        site.uniform(Frequency::Material, "tint", DataType::Value(Type::Vec3f))
+            .unwrap_err()
+            .to_string(),
+        site.uniform(Frequency::Material, "visible", DataType::Value(Type::Bool))
+            .unwrap_err()
+            .to_string(),
+        site.resource(Frequency::Material, "tint", ResourceKind::Texture2D)
+            .unwrap_err()
+            .to_string(),
+        site.uniform(Frequency::Material, "diffuse", DataType::Value(Type::Float))
+            .unwrap_err()
+            .to_string(),
+        site.attribute(Rate::Vertex, "1st", Type::Float).unwrap_err().to_string(),
+        site.attribute(Rate::Vertex, "flag", Type::Bool).unwrap_err().to_string(),
         site.pass("transform", model).unwrap_err().to_string(),
         site.pass("uv", uv).unwrap_err().to_string(),
         site.pass("light-direction", uv).unwrap_err().to_string(),
@@ -353,13 +372,15 @@ fn declarations_are_checked_at_their_site() {
     assert_eq!(
         messages,
         [
-            "shaders/lit.jsl:1:1 (@test/viewer): parameter \"tint\" is declared twice",
-            "shaders/lit.jsl:1:1 (@test/viewer): parameter \"visible\" cannot be Bool: expected Int, UInt, Float, \
-             a vector, a matrix, Texture2D, or Sampler",
-            "shaders/lit.jsl:1:1 (@test/viewer): vertex input name \"1st\" is invalid: expected ASCII letters, \
+            "shaders/lit.jsl:1:1 (@test/viewer): material uniform \"tint\" is declared twice",
+            "shaders/lit.jsl:1:1 (@test/viewer): material uniform \"visible\" cannot be Bool: expected Int, UInt, \
+             Float, a vector, a matrix, a struct, or an array of one of those",
+            "shaders/lit.jsl:1:1 (@test/viewer): material texture \"tint\" is declared twice",
+            "shaders/lit.jsl:1:1 (@test/viewer): material uniform \"diffuse\" is declared twice",
+            "shaders/lit.jsl:1:1 (@test/viewer): attribute name \"1st\" is invalid: expected ASCII letters, \
              digits, and underscores, not starting with a digit",
-            "shaders/lit.jsl:1:1 (@test/viewer): vertex input \"diffuse\" cannot be Texture2D: expected Int, \
-             UInt, Float, or a vector",
+            "shaders/lit.jsl:1:1 (@test/viewer): attribute \"flag\" cannot be Bool: expected Int, UInt, Float, \
+             a vector, or a matrix",
             "shaders/lit.jsl:1:1 (@test/viewer): varying \"transform\" cannot be Mat4f: expected Int, UInt, \
              Float, or a vector",
             "shaders/lit.jsl:1:1 (@test/viewer): varying \"uv\" is declared twice",
@@ -368,8 +389,8 @@ fn declarations_are_checked_at_their_site() {
         ]
     );
     let program = builder.program();
-    assert_eq!((program.parameters().len(), program.varyings().len()), declared);
-    assert_eq!(program.vertex_inputs(), []);
+    assert_eq!((program.uniforms().len(), program.resources().len()), declared);
+    assert_eq!(program.attributes(), []);
     assert_eq!(program.varying_writes().len(), 1, "a rejected pass writes nothing");
 }
 
@@ -406,23 +427,22 @@ fn values_from_another_program_are_refused() {
 fn finish_reports_whole_program_mistakes_with_origins() {
     let mut builder = ProgramBuilder::new();
     let mut site = builder.at(origin(3, 1));
-    let position = site.vertex_input("position", Type::Vec3f).unwrap();
+    let position = site.attribute(Rate::Vertex, "position", Type::Vec3f).unwrap();
+    let position = site.read_attribute(position);
     site.set_position(position).unwrap();
 
     let mut site = builder.at(origin(9, 2));
-    let color = site.vertex_input("color", Type::Vec4f).unwrap();
+    let color = site.attribute(Rate::Vertex, "color", Type::Vec4f).unwrap();
+    let color = site.read_attribute(color);
     site.output(color).unwrap();
 
-    let mut site = builder.at(origin(20, 3));
-    let scene = site.semantic(Semantic::SceneColor);
-    let sampler = site.parameter("scene", Type::Sampler).unwrap();
-    let uv = site.literal(Literal::Vec2f([0.5, 0.5])).unwrap();
-    let texel = site.sample(scene, sampler, uv).unwrap();
-    site.output(texel).unwrap();
-
     let mut site = builder.at(origin(25, 4));
-    let texture = site.parameter("diffuse", Type::Texture2D).unwrap();
-    let texel = site.sample(texture, sampler, uv).unwrap();
+    let texture = site
+        .resource(Frequency::Material, "diffuse", ResourceKind::Texture2D)
+        .unwrap();
+    let sampler = site.resource(Frequency::Material, "diffuse", ResourceKind::Sampler).unwrap();
+    let uv = site.literal(Literal::Vec2f([0.5, 0.5])).unwrap();
+    let texel = site.sample(texture, sampler, uv, None).unwrap();
     site.pass("texel", texel).unwrap();
 
     let errors = builder.finish().unwrap_err();
@@ -430,11 +450,10 @@ fn finish_reports_whole_program_mistakes_with_origins() {
     assert_eq!(
         messages,
         [
-            "shaders/lit.jsl:9:2 (@test/viewer): vertex input \"color\" is read in the fragment stage: pass it \
+            "shaders/lit.jsl:9:2 (@test/viewer): attribute \"color\" is read in the fragment stage: pass it \
              through a varying",
-            "shaders/lit.jsl:20:3 (@test/viewer): semantic sceneColor is not supported by the WGSL lowering yet",
-            "shaders/lit.jsl:25:4 (@test/viewer): sample is used in the vertex stage: textures are sampled in the \
-             fragment stage",
+            "shaders/lit.jsl:25:4 (@test/viewer): sample is used in the vertex stage, which has no derivatives to \
+             pick a mip level with: sample at a level with sampleLevel",
             "shaders/lit.jsl:3:1 (@test/viewer): the vertex position is Vec3f: expected Vec4f",
         ]
     );

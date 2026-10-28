@@ -6,6 +6,7 @@ mod audio_device;
 mod audio_extension;
 mod common;
 mod contracts;
+mod gpu;
 mod kernel;
 mod lua_api;
 mod luau_style;

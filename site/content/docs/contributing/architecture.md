@@ -15,6 +15,7 @@ jess is one crate, `jess`, with a library and the `jess` binary. Rust owns opera
 | `src/input` | Device and control vocabulary, action graph compilation, the evaluator, synthetic input, and the optional platform backends (features `linux-evdev`, `gilrs`). Input policy is Luau, `@jess/input`. |
 | `src/audio` | The audio engine: voices, buses, and processors mixed on a sample clock by frame-stamped commands, offline or on an output device (feature `audio-device`, on by default). Audio policy is Luau, `@jess/audio`. See [Audio Engine](@/docs/contributing/audio-engine.md). |
 | `src/render` | The backend-independent render graph IR. Not a renderer. |
+| `src/gpu` | The GPU through wgpu, behind the `gpu` feature: a device, buffers, textures, samplers, render and compute pipelines from shader programs, bind groups, offscreen passes, dispatches, and readback. Generic: it knows bytes and formats, never what they mean. |
 | `src/shader` | The typed shader IR, validation, deterministic WGSL lowering. |
 | `src/lua` | The l3i extension plan: everything Luau sees. `stdlib/` holds the built-in Luau (`@jess/log`, `@jess/test`, `@jess/jpk`, `@jess/package`, and the private package bootstrap); `templates/` is `jess init`'s; `definitions.jsl` feeds `jess luau-types`. |
 | `src/cli` | Thin argv and printing layers for the binary; `src/main.rs` pulls them in. |

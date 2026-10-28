@@ -80,8 +80,16 @@ export type InputActionEvent = {
   device: number?,
 }
 
---- A device the runtime connected.
-export type InputDevice = { id: number, kind: 'keyboard' | 'pointer' | 'gamepad' | 'touch' | 'unknown', name: string, family: InputFamily, connected: boolean }
+--- A device the runtime connected, and the `backend` that found it and what it calls it, where it
+--- says: a window's keyboard and pointer are `window:<number>`, the window's `GpuWindow.number`.
+export type InputDevice = {
+  id: number,
+  kind: 'keyboard' | 'pointer' | 'gamepad' | 'touch' | 'unknown',
+  name: string,
+  family: InputFamily,
+  connected: boolean,
+  backend: string?,
+}
 
 --- What the last tick did.
 export type InputStats = {
@@ -516,67 +524,713 @@ export type AudioContext = {
   group: (self: AudioContext, body: () -> ()) -> (),
 }
 
---- A shader type, from `jess.shader` (`float`, `vec2`, `vec3`, `vec4`, `mat3`, `mat4`,
---- `texture2d`, `sampler`): what a program's `parameters` and `textures` declare
---- (`tint = shader.vec4`). Called, the vector types build a vector from values and numbers whose
---- sizes add up to theirs, or from one number repeated (`shader.vec4(position, 1)`), and
---- `shader.float(0.5)` is a `Float` constant; the other types can't be constructed. `tostring`
---- gives the type's name (`Vec4f`).
+--- A shader type, from `jess.shader`: a value type (`float`, `int`, `uint`, `vec2`..`vec4`,
+--- `vec2i`..`vec4i`, `vec2u`..`vec4u`, `mat3`, `mat4`), a texture (`texture2d`, `texture2dArray`,
+--- `textureCube`, `texture3d`, the integer `texture2di` and `texture2du`, and the depth
+--- `depthTexture2d`, `depthTexture2dArray`, and `depthTextureCube`), a `sampler` or
+--- `comparisonSampler`, or a struct or array type from `shader.struct` and `shader.array`. It's
+--- what a program's attributes and bindings declare (`tint = shader.vec4`).
+--- Called, the vector types build a vector from values and numbers whose sizes add up to theirs,
+--- or from one number repeated (`shader.vec4(position, 1)`); a number in an integer vector is
+--- that vector's integer, and must be whole. `shader.float(0.5)`, `shader.int(-3)`, and
+--- `shader.uint(7)` are constants. One value of another scalar converts (`shader.float(index)`,
+--- `shader.vec3(cell)`), keeping its size; `shader.mat3` and `shader.mat4` take their columns.
+--- The other types can't be constructed. `tostring` gives the type's name (`Vec4f`, `Light`,
+--- `Light[8]`).
 declare extern type ShaderType with
   __call: (self: ShaderType, ...ShaderExpr | number) -> ShaderExpr
   __tostring: (self: ShaderType) -> string
 end
 
 --- A symbolic, typed value in the shader program under construction: not a number, and not a GPU
---- value. Operators append expressions to the program and return new values; a bare number
---- beside one is a `Float`. `.x`, `.xyz`, `.zyx`: a swizzle of one to four of `x`, `y`, `z`, and
---- `w`, the only names a value has. A mistake fails at the line that made it, with the types
---- involved. `tostring` gives `ShaderExpr(Vec4f)`, and `==` whether two handles name one
---- expression. A value is only usable while its `shader.program` call runs.
+--- value. Operators (`+ - * / %` and unary `-`) append expressions to the program and return new
+--- values; a bare number beside one is a `Float`. `.x`, `.xyz`, `.zyx`: a swizzle of one to four
+--- of `x`, `y`, `z`, and `w`. A mistake fails at the line that made it, with the types involved.
+--- `tostring` gives `ShaderExpr(Vec4f)`, and `==` whether two handles name one expression. A value
+--- is only usable while its `shader.program` call runs.
+---
+--- The checker sees every name a binding has as one of these, as it sees every value's shader
+--- type as this one: a struct, an array, and a texture are indexed, measured, and sampled through
+--- it, and which one a name is gets checked when the module runs.
 declare extern type ShaderExpr with
-  [string]: ShaderExpr
+  [string | number | ShaderExpr]: ShaderExpr
   __add: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr
   __sub: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr
   __mul: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr
   __div: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr
+  __mod: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr
+  __unm: (self: ShaderExpr) -> ShaderExpr
+  __len: (self: ShaderExpr) -> number
   __eq: (self: ShaderExpr, other: ShaderExpr) -> boolean
   __tostring: (self: ShaderExpr) -> string
 end
 
---- A stage function's input. Every name is a declared parameter or texture, a semantic input
---- (`model`, `view`, `projection`: `Mat4f`; `cameraPosition`: `Vec3f`; `viewportSize`: `Vec2f`;
---- `time`: `Float`), or, in the vertex function, a vertex attribute (`position` and `normal`:
---- `Vec3f`; `uv`: `Vec2f`; `color`: `Vec4f`) and, in the fragment function, a value the vertex
---- function returned. A name it doesn't have is an error listing the ones it does.
+--- The declared attributes of one rate, by name: `input.attributes` (per vertex) or
+--- `input.instance` (per instance), readable in the vertex function. A name the program didn't
+--- declare is an error listing the ones it did.
+declare extern type ShaderAttributes with
+  [string]: ShaderExpr
+  __tostring: (self: ShaderAttributes) -> string
+end
+
+--- What one frequency binds (`input.pass`, `input.material`, `input.draw`), a struct member, or
+--- an array, on the way to a value. Indexing it by name, or an array by a number or shader value
+--- (from 0), goes one step in; `#` is an array's length. A step that reaches a value reads it, and
+--- a texture or sampler is its handle. `tostring` gives `ShaderPlace(material)`.
+declare extern type ShaderPlace with
+  [string | number | ShaderExpr]: ShaderExpr
+  __len: (self: ShaderPlace) -> number
+  __tostring: (self: ShaderPlace) -> string
+end
+
+--- A declared texture, with the sampler declared with it, for `shader.sample`. `tostring` gives
+--- its kind: `ShaderTexture(TextureCube)`.
+declare extern type ShaderTexture with
+  __tostring: (self: ShaderTexture) -> string
+end
+
+--- A sampler declared on its own, filtering or comparing, for a texture function that takes one
+--- after the texture. `tostring` gives its kind: `ShaderSampler(ComparisonSampler)`.
+declare extern type ShaderSampler with
+  __tostring: (self: ShaderSampler) -> string
+end
+
+--- The values the pipeline gives one stage, by name: `input.builtin`. The vertex function has
+--- `vertexIndex` and `instanceIndex`, `UInt`s; the fragment function has `position`, a `Vec4f`
+--- (`x` and `y` in pixels from the target's top left, at the pixel's centre, `z` its depth, `w`
+--- one over the clip position's `w`), and `frontFacing`, a `Bool`.
+declare extern type ShaderBuiltins with
+  [string]: ShaderExpr
+  __tostring: (self: ShaderBuiltins) -> string
+end
+
+--- A value a stage function keeps and changes, from `shader.var`: `.value` reads it as of where
+--- it is read, and `:set` stores a value of its type into it from there on. `tostring` gives
+--- `ShaderVar(Vec3f)`.
+declare extern type ShaderVar with
+  value: ShaderExpr
+  function set(self, value: ShaderExpr | number | boolean): ()
+  __tostring: (self: ShaderVar) -> string
+end
+
+--- A stage function's input. `pass`, `material`, and `draw` are what each frequency binds;
+--- `builtin` the values the pipeline gives the stage; `attributes` and `instance`, in the vertex
+--- function, the declared attributes; in the fragment function every other name is a value the
+--- vertex function returned. A name it doesn't have is an error listing the ones it does.
 declare extern type ShaderInput with
+  attributes: ShaderAttributes
+  instance: ShaderAttributes
+  builtin: ShaderBuiltins
+  pass: ShaderPlace
+  material: ShaderPlace
+  draw: ShaderPlace
   [string]: ShaderExpr
   __tostring: (self: ShaderInput) -> string
 end
 
+--- What a GPU buffer is for: its vertices, its indices, a uniform block, or a storage buffer.
+export type GpuBufferUsage = 'vertex' | 'index' | 'uniform' | 'storage' | 'indirect'
+
+--- What a texture is for: sampled by shaders, drawn into, or both.
+export type GpuTextureUsage = 'sampled' | 'target'
+
+--- A texel format: its channels, their bits, and how a shader reads them.
+export type GpuTextureFormat =
+  | 'rgba8Unorm'
+  | 'rgba8UnormSrgb'
+  | 'bgra8Unorm'
+  | 'bgra8UnormSrgb'
+  | 'rgba16Float'
+  | 'r8Unorm'
+  | 'rg8Unorm'
+  | 'r16Float'
+  | 'rg16Float'
+  | 'r32Float'
+  | 'rg32Float'
+  | 'rgba32Float'
+  | 'r32Uint'
+  | 'rgba8Uint'
+  | 'rgba32Uint'
+  | 'r32Sint'
+  | 'rgba32Sint'
+  | 'depth24Plus'
+  | 'depth32Float'
+
+--- One image, layers of them, six cube faces, or a volume.
+export type GpuTextureShape = '2d' | '2dArray' | 'cube' | '3d'
+
+--- A comparison a comparison sampler makes between a reference and what it reads.
+export type GpuCompare =
+  | 'never'
+  | 'less'
+  | 'equal'
+  | 'lessEqual'
+  | 'greater'
+  | 'notEqual'
+  | 'greaterEqual'
+  | 'always'
+
+--- Bytes on the GPU. `write` copies a Luau `buffer` or string, or `length` bytes of it from
+--- `from`, into the buffer at `offset` at the device's next commit; `read` commits and waits for
+--- everything submitted so far and returns `length` bytes from `offset` (the rest of the buffer
+--- by default) as a new `buffer`, and `readLater` the same without waiting. Offsets and lengths
+--- are multiples of 4. `tostring` gives `GpuBuffer(16 bytes, vertex, storage)`.
+declare extern type GpuBuffer with
+  size: number
+  usage: { GpuBufferUsage }
+  function write(self, offset: number, bytes: buffer | string, from: number?, length: number?): ()
+  function read(self, offset: number?, length: number?): buffer
+  function readLater(self, offset: number?, length: number?): GpuRead
+  __tostring: (self: GpuBuffer) -> string
+end
+
+--- Bytes on their way back from the GPU, from `readLater`: what a copy saw when it was asked
+--- for, taken when the GPU has finished it. `poll` gives them once they are there and `nil` until
+--- then, never waiting; `wait` waits for them. Both give the same bytes every time after. `ready`
+--- says whether the last `poll` or `wait` found them. `tostring` gives `GpuRead(waiting)`.
+declare extern type GpuRead with
+  ready: boolean
+  function poll(self): buffer?
+  function wait(self): buffer
+  __tostring: (self: GpuRead) -> string
+end
+
+--- An image on the GPU. `write` replaces every texel of one mip `level` of one `layer` (an array's
+--- layer, a cube's face), rows packed tightly, top row first; `read` returns them the same way,
+--- once everything submitted so far is done, and `readLater` without waiting. All default to
+--- level 0 of layer 0. `tostring` gives `GpuTexture(2×2 rgba8Unorm, 2d)`.
+declare extern type GpuTexture with
+  width: number
+  height: number
+  format: GpuTextureFormat
+  shape: GpuTextureShape
+  layers: number
+  mips: number
+  function write(self, bytes: buffer | string, level: number?, layer: number?): ()
+  function read(self, level: number?, layer: number?): buffer
+  function readLater(self, level: number?, layer: number?): GpuRead
+  __tostring: (self: GpuTexture) -> string
+end
+
+--- How shaders read a texture between and past its texels. `tostring` gives
+--- `GpuSampler(linear)`, or `GpuSampler(nearest, comparing)` for a comparison sampler.
+declare extern type GpuSampler with
+  __tostring: (self: GpuSampler) -> string
+end
+
+--- What `GpuDevice:texture` makes. `layers` is a `2dArray`'s and `depth` a `3d` texture's; `mips`
+--- is 1 by default, `shape` `2d`. `samples = 4` makes a multisampled 2D `target` of one level,
+--- which a pass draws into and resolves, and nothing samples, writes, or reads back.
+export type GpuTextureDesc = {
+  width: number,
+  height: number,
+  format: GpuTextureFormat,
+  usage: GpuTextureUsage | { GpuTextureUsage },
+  shape: GpuTextureShape?,
+  layers: number?,
+  depth: number?,
+  mips: number?,
+  samples: number?,
+}
+
+--- What `GpuDevice:sampler` makes: `nearest` filters and `clamp` addressing by default, and a
+--- filtering sampler unless it names a `compare`.
+export type GpuSamplerDesc = {
+  filter: ('nearest' | 'linear')?,
+  mipmapFilter: ('nearest' | 'linear')?,
+  address: ('clamp' | 'repeat' | 'mirror')?,
+  compare: GpuCompare?,
+}
+
+--- What one frequency binds for a pipeline: its uniform block, textures, samplers, and storage
+--- buffers, from `GpuPipeline:bind`. `tostring` gives `GpuBindGroup(material)`.
+declare extern type GpuBindGroup with
+  frequency: 'pass' | 'material' | 'draw'
+  __tostring: (self: GpuBindGroup) -> string
+end
+
+--- A shader program made ready to draw (`kind` `render`) or to compute (`compute`). `bind` makes
+--- what one frequency binds for it from resources by the binding numbers `program.layout`
+--- reports: the uniform block at 0, then each texture, sampler, and storage buffer. `tostring`
+--- gives `GpuPipeline(render, 1 color target, depth)` or `GpuPipeline(compute 64×1×1)`.
+declare extern type GpuPipeline with
+  kind: 'render' | 'compute'
+  function bind(
+    self,
+    frequency: 'pass' | 'material' | 'draw',
+    bindings: { [number]: GpuBuffer | GpuTexture | GpuSampler }
+  ): GpuBindGroup
+  __tostring: (self: GpuPipeline) -> string
+end
+
+--- How a pipeline combines a fragment's color with what its target holds.
+export type GpuBlend = 'replace' | 'alpha' | 'premultiplied' | 'additive'
+
+--- A render pipeline's fixed-function state: a color target per fragment output (a format's name,
+--- or one with a `blend`), the depth target it tests against (a format's name tests `less` and
+--- writes), and how it assembles and culls primitives. A triangle facing the camera runs
+--- counter-clockwise unless `clockwise` says otherwise. A `multisampled` pipeline draws into
+--- targets of 4 samples a texel.
+export type GpuPipelineState = {
+  colors: { GpuTextureFormat | { format: GpuTextureFormat, blend: GpuBlend? } },
+  depth: (GpuTextureFormat | { format: GpuTextureFormat, compare: GpuCompare?, write: boolean? })?,
+  topology: ('triangles' | 'triangleStrip' | 'lines' | 'lineStrip' | 'points')?,
+  cull: ('none' | 'front' | 'back')?,
+  clockwise: boolean?,
+  multisampled: boolean?,
+}
+
+--- A level of a layer of a texture a pass draws into: a texture alone keeps what it holds, and a
+--- `clear` (four channels, or a depth) replaces it. `store = false` throws away what the pass drew.
+--- A multisampled color target's samples average into its `resolve` when the pass ends: level 0
+--- of layer 0 of a texture, or the level and layer named.
+export type GpuTarget = GpuTexture | {
+  texture: GpuTexture,
+  clear: ({ number } | number)?,
+  level: number?,
+  layer: number?,
+  store: boolean?,
+  resolve: (GpuTexture | { texture: GpuTexture, level: number?, layer: number? })?,
+}
+
+--- One draw: `count` vertices (or indices, with `indices`) of `instanceCount` instances, or the
+--- counts the GPU wrote into `indirect`, its pipeline's bind groups by frequency, and its vertex,
+--- instance, and index buffers. `count` is needed unless the draw is indirect.
+export type GpuDraw = {
+  pipeline: GpuPipeline,
+  count: number?,
+  instanceCount: number?,
+  pass: GpuBindGroup?,
+  material: GpuBindGroup?,
+  draw: GpuBindGroup?,
+  vertices: GpuBuffer?,
+  instances: GpuBuffer?,
+  indices: GpuBuffer?,
+  indexFormat: ('u16' | 'u32')?,
+  indirect: GpuBuffer?,
+  indirectOffset: number?,
+}
+
+--- A render pass: its color targets by location, its depth target, and its draws, in order.
+export type GpuPass = {
+  colors: { GpuTarget }?,
+  depth: GpuTarget?,
+  draws: { GpuDraw }?,
+}
+
+--- A compute dispatch: its pipeline, its bind groups by frequency, and how many workgroups on each
+--- axis, one count meaning the rest are 1.
+export type GpuDispatch = {
+  pipeline: GpuPipeline,
+  workgroups: number | { number },
+  pass: GpuBindGroup?,
+  material: GpuBindGroup?,
+  draw: GpuBindGroup?,
+}
+
+--- A draw kept in a collection of draw sets, which a plan's draw passes take by its `tags`, frame
+--- after frame, with the pass's own pass group. `count`, `instanceCount`, and `visible` change it
+--- in place, from the next frame on; `remove` takes it out of the collection it was made into,
+--- `add` puts it back, and `added` says which. `tostring` gives `GpuDrawSet(6 vertices, opaque)`.
+declare extern type GpuDrawSet with
+  count: number
+  instanceCount: number
+  visible: boolean
+  tags: { string }
+  added: boolean
+  function add(self): ()
+  function remove(self): boolean
+  __tostring: (self: GpuDrawSet) -> string
+end
+
+--- Draw sets a run draws from: the device's own (`device.sets`), which a draw set joins unless
+--- told otherwise, or a collection from `device:drawSets()`, kept for one scene. A set can be in
+--- any number of them. `tostring` gives `GpuDrawSets(3 sets)`.
+declare extern type GpuDrawSets with
+  count: number
+  function add(self, set: GpuDrawSet): ()
+  function remove(self, set: GpuDrawSet): boolean
+  function has(self, set: GpuDrawSet): boolean
+  __tostring: (self: GpuDrawSets) -> string
+end
+
+--- What `GpuDevice:drawSet` keeps: a draw without its pass group, which is the pass's, the tags
+--- passes choose it by, and the collection it joins, the device's own unless `sets` says.
+export type GpuDrawSetDesc = {
+  sets: GpuDrawSets?,
+  pipeline: GpuPipeline,
+  count: number?,
+  instanceCount: number?,
+  material: GpuBindGroup?,
+  draw: GpuBindGroup?,
+  vertices: GpuBuffer?,
+  instances: GpuBuffer?,
+  indices: GpuBuffer?,
+  indexFormat: ('u16' | 'u32')?,
+  indirect: GpuBuffer?,
+  indirectOffset: number?,
+  tags: { string }?,
+}
+
+--- A target a plan declares: a color or depth format, the viewport's size times `scale` (1 by
+--- default) or a fixed `width` and `height`, and whether the run gives it (`imported`) or the
+--- plan keeps it from run to run (`kept`), for the script to read with `GpuPlan:read`. It has
+--- `mips` levels and `layers` layers, 1 of each by default, and `samples` samples a texel: 1, or 4
+--- for a multisampled target of one level and one layer, drawn into and resolved.
+export type GpuPlanTarget = {
+  name: string,
+  format: GpuTextureFormat,
+  scale: number?,
+  width: number?,
+  height: number?,
+  mips: number?,
+  layers: number?,
+  samples: number?,
+  imported: boolean?,
+  kept: boolean?,
+}
+
+--- A buffer a plan declares: `size` bytes, a multiple of 4, or room for all of an `image` target
+--- of that format at the viewport's size times `scale` (1), rows padded as a copy lays them; and
+--- whether the run gives it (`imported`) or the plan keeps it (`kept`).
+export type GpuPlanBuffer = {
+  name: string,
+  size: number?,
+  image: GpuTextureFormat?,
+  scale: number?,
+  imported: boolean?,
+  kept: boolean?,
+}
+
+--- A target, all of it or one `level` of one `layer` of it.
+export type GpuPlanLevel = string | { target: string, level: number?, layer: number? }
+
+--- A target a pass draws into: its name, or one cleared first (four channels, or a depth), loaded
+--- from what it held, or neither, and stored unless `store` is `false`. It draws into level 0 of
+--- layer 0 unless it names a `level` and `layer`, and a multisampled color target's samples
+--- average into its `resolve` when the pass ends.
+export type GpuPlanWrite = string | {
+  target: string,
+  clear: ({ number } | number)?,
+  load: boolean?,
+  store: boolean?,
+  level: number?,
+  layer: number?,
+  resolve: GpuPlanLevel?,
+}
+
+--- One end of a copy: a target or buffer's name; a level of a layer of a `target` from the texel
+--- at `column` and `row`; or a `buffer` from byte `offset`. A table names a target or a buffer,
+--- never both, with only the fields its kind has.
+export type GpuPlanCopyEnd = string | {
+  target: string?,
+  level: number?,
+  layer: number?,
+  column: number?,
+  row: number?,
+  buffer: string?,
+  offset: number?,
+}
+
+--- A buffer a compute pass writes: its name, or one zeroed first (`clear = true`) or loaded.
+export type GpuPlanStorage = string | {
+  buffer: string,
+  clear: boolean?,
+  load: boolean?,
+  store: boolean?,
+}
+
+--- A group a plan's pass binds: one made already, or bindings by binding number, each a resource or
+--- the name of one of the plan's targets or buffers.
+export type GpuPlanGroup = GpuBindGroup | { [number]: GpuBuffer | GpuTexture | GpuSampler | string }
+
+--- One pass of a plan and what it does: a `draw` pass draws the device's visible draw sets carrying
+--- any of its `tags` with its `pass` group, a `fullscreen` pass draws one triangle of its
+--- `pipeline`, a `compute` pass dispatches its `pipeline`, and a `copy` pass copies `from` into
+--- `to`: everything from where `from` starts, or `size`, a rectangle of texels or a number of
+--- bytes. `reads` names the targets and buffers its shaders read, all of each or one level of one
+--- layer of a target, and `depthTest` the depth target it tests against without writing.
+export type GpuPlanPass = {
+  name: string,
+  kind: 'draw' | 'fullscreen' | 'compute' | 'copy',
+  owner: string?,
+  tags: { string }?,
+  pipeline: GpuPipeline?,
+  pass: GpuPlanGroup?,
+  material: GpuPlanGroup?,
+  draw: GpuPlanGroup?,
+  colors: { GpuPlanWrite }?,
+  depth: GpuPlanWrite?,
+  depthTest: GpuPlanLevel?,
+  reads: { GpuPlanLevel }?,
+  storage: { GpuPlanStorage }?,
+  workgroups: (number | { number })?,
+  from: GpuPlanCopyEnd?,
+  to: GpuPlanCopyEnd?,
+  size: (number | { width: number, height: number })?,
+  load: boolean?,
+}
+
+--- What a copy pass copies: from where `from` starts (`{ column, row }` in a target, `{ offset }`
+--- in a buffer) to where `to` does, `size` of it (texels, or bytes between buffers), or the rest.
+export type GpuCopyRegion = {
+  from: { column: number?, row: number?, offset: number? }?,
+  to: { column: number?, row: number?, offset: number? }?,
+  size: (number | { width: number, height: number })?,
+}
+
+--- What `GpuDevice:plan` compiles: a render graph's targets, buffers, and passes, for a viewport.
+export type GpuPlanDesc = {
+  name: string?,
+  viewport: { width: number, height: number },
+  targets: { GpuPlanTarget }?,
+  buffers: { GpuPlanBuffer }?,
+  passes: { GpuPlanPass },
+}
+
+--- A render graph compiled for its device and a viewport: the passes that run, in `order`, and the
+--- textures and buffers it allocated (`allocations`) for its own targets and buffers. `run` runs
+--- every pass once, in one submission, with a texture or buffer for each imported one by name,
+--- drawing from `sets` or the device's own; `resized` is the same plan for another viewport,
+--- `dump` the compiled graph, and `timings` how long each pass of the last run took on the GPU,
+--- on a device with `timestamps`. `setEnabled` leaves passes out of later runs or puts them back,
+--- and `setRegion` changes what a copy pass copies, in this plan and every plan resized from it.
+--- `read` and `readLater` read a kept target or buffer as the last run left it, and `bytes` and
+--- `extent` say how big a buffer or target is at the plan's viewport.
+--- `tostring` gives `GpuPlan(scene, 4 of 5 passes, 640×480)`.
+declare extern type GpuPlan with
+  name: string
+  order: { string }
+  viewport: { width: number, height: number }
+  allocations: number
+  function run(self, imports: { [string]: GpuTexture | GpuBuffer }?, sets: GpuDrawSets?): ()
+  function setEnabled(self, passes: string | { string }, enabled: boolean): ()
+  function enabled(self, pass: string): boolean
+  function setRegion(self, pass: string, region: GpuCopyRegion): ()
+  function read(self, name: string, level: number?, layer: number?): buffer
+  function readLater(self, name: string, level: number?, layer: number?): GpuRead
+  function bytes(self, buffer: string): number
+  function extent(self, target: string): { width: number, height: number }
+  function resized(self, width: number, height: number): GpuPlan
+  function dump(self): string
+  function timings(self): { { pass: string, ms: number? } }?
+  __tostring: (self: GpuPlan) -> string
+end
+
+--- What `jess.gpu.window` opens: an inner size in physical pixels (800 by 600 by default),
+--- whether the person may resize it, whether presenting waits for the display (`vsync`, the
+--- default), and the format its surface draws in, the first plain 8-bit one it offers by default;
+--- and whether asking it to close closes it (`closes`, the default) or only says so in its events.
+--- A window opened with a `key` is kept: it outlives the code that opened it, and opening the
+--- key again, in the next generation of the application, say, hands it back.
+export type GpuWindowDesc = {
+  title: string?,
+  width: number?,
+  height: number?,
+  resizable: boolean?,
+  vsync: boolean?,
+  format: GpuTextureFormat?,
+  closes: boolean?,
+  key: string?,
+}
+
+--- What happened to a window, from `GpuWindow:events`: it was `resized` (to `width` by `height`),
+--- `scaled` (to `scale`), `focused` (or not), asked to close (`closeRequested`), or `closed`; or
+--- the person did something in it: a `key` pressed, held (`repeated`), or released; `text` typed by
+--- a key or an input method; an input method's composition so far (`preedit`, its cursor
+--- `text:sub(from, to)`), and whether one composes (`inputMethod`); the pointer entering, moving
+--- (to `x`, `y` physical pixels from the top left), and leaving; a pointer button; the `wheel`, in
+--- lines; and the `modifiers` held.
+export type GpuWindowEvent =
+  { kind: 'resized', width: number, height: number }
+  | { kind: 'scaled', scale: number }
+  | { kind: 'focused', focused: boolean }
+  | { kind: 'closeRequested' }
+  | { kind: 'closed' }
+  | { kind: 'key', key: string, pressed: boolean, repeated: boolean }
+  | { kind: 'text', text: string }
+  | { kind: 'preedit', text: string, from: number?, to: number? }
+  | { kind: 'inputMethod', enabled: boolean }
+  | { kind: 'pointerEntered' }
+  | { kind: 'pointerMoved', x: number, y: number }
+  | { kind: 'pointerLeft' }
+  | {
+    kind: 'pointerButton',
+    button: 'Primary' | 'Secondary' | 'Middle' | 'Back' | 'Forward',
+    pressed: boolean,
+  }
+  | { kind: 'wheel', x: number, y: number }
+  | { kind: 'modifiers', shift: boolean, control: boolean, alt: boolean, meta: boolean }
+
+--- Where in a window text goes, in physical pixels from its top left.
+export type GpuTextArea = { x: number, y: number, width: number, height: number }
+
+--- A native window: its inner `width` and `height` in physical pixels, the `scale` of a logical
+--- pixel, its surface's `format`, and whether it is `open`. `show` draws a plan into it every
+--- frame, the window's image as the plan's imported target `target`, the plan resized with the
+--- window; `hide` stops, `close` closes it, and `resize` asks for a size. `events` is what
+--- happened to it since the last call, oldest first: under an application's host, the named event
+--- `jess.window` announces that there is some. `textInput` asks for text, which lets an input
+--- method compose for it beside `area`. `number` is its own, and names its input devices.
+--- `tostring` gives `GpuWindow(title, 800×600)`.
+declare extern type GpuWindow with
+  title: string
+  number: number
+  key: string?
+  frames: number
+  width: number
+  height: number
+  scale: number
+  format: GpuTextureFormat?
+  open: boolean
+  function show(
+    self,
+    plan: GpuPlan,
+    target: string,
+    imports: { [string]: GpuTexture | GpuBuffer }?,
+    sets: GpuDrawSets?
+  ): ()
+  function hide(self): ()
+  function close(self): ()
+  function resize(self, width: number, height: number): ()
+  function events(self): { GpuWindowEvent }
+  function textInput(self, enabled: boolean, area: GpuTextArea?): ()
+  __tostring: (self: GpuWindow) -> string
+end
+
+--- The GPU a script draws and computes with: the adapter's `name`, the `backend` API wgpu reaches it
+--- through (`vulkan`, `metal`, `dx12`, `gl`), its `kind` (`discrete`, `integrated`, `virtual`,
+--- `cpu`, `other`), its `limits`, how many `pipelines` it compiled and reused, what it has `live`,
+--- and how much it ever `made`. `buffer`, `texture`, and `sampler` make resources on it,
+--- `pipeline` makes a program ready to draw or compute, `render` and `dispatch` submit work,
+--- `drawSet` keeps a draw in the device's draw sets (`sets`) or a collection of them `drawSets`
+--- makes, and `plan` compiles a render graph to run every frame. What a script changes about
+--- what the GPU draws waits for the next `commit`, which applies it all at once; `room` is how
+--- much more fits before it. `tostring` gives `GpuDevice(name, backend)`.
+declare extern type GpuDevice with
+  name: string
+  backend: string
+  kind: string
+  limits: { textureSize: number, textureLayers: number, bufferSize: number, workgroups: number }
+  pipelines: { compiled: number, reused: number }
+  timestamps: boolean
+  live: { buffers: number, textures: number, samplers: number, bindGroups: number, pipelines: number }
+  made: { buffers: number, textures: number, samplers: number, bindGroups: number, pipelines: number }
+  function buffer(self, size: number, usage: GpuBufferUsage | { GpuBufferUsage }): GpuBuffer
+  function texture(self, desc: GpuTextureDesc): GpuTexture
+  function sampler(self, desc: GpuSamplerDesc?): GpuSampler
+  function pipeline(self, program: ShaderProgram, state: GpuPipelineState?): GpuPipeline
+  function render(self, pass: GpuPass): ()
+  function dispatch(self, work: GpuDispatch): ()
+  sets: GpuDrawSets
+  room: { changes: number, bytes: number }
+  function commit(self): boolean
+  function drawSet(self, desc: GpuDrawSetDesc): GpuDrawSet
+  function drawSets(self): GpuDrawSets
+  function plan(self, desc: GpuPlanDesc): GpuPlan
+  __tostring: (self: GpuDevice) -> string
+end
+
 --- A finished, validated shader program: what a shader module returns, for jess to lower to the
---- backend. `tostring` gives `ShaderProgram(2 parameters, 1 texture, 2 varyings)`.
+--- backend. `tostring` gives `ShaderProgram(3 attributes, 2 uniforms, 1 texture, 2 varyings)`, or
+--- for a compute program `ShaderProgram(compute 64×1×1, 1 uniform, 0 textures, 2 storage buffers)`.
 declare extern type ShaderProgram with
-  --- The value parameters (not the textures and samplers), sorted by name, each with its type's
-  --- name (`Vec4f`).
-  parameters: { { name: string, type: string } }
-  --- The texture names, each declared with a sampler of the same name.
-  textures: { string }
+  --- The fragment outputs by color location, each with its type's name: `color` alone for a
+  --- fragment function that returned one value.
+  outputs: { { name: string, type: string } }
+  --- Where everything the program declares lives: every block member's and struct field's
+  --- offset, every binding, and every vertex buffer's stride and attribute offsets.
+  layout: ShaderLayout
+  --- A compute program's workgroup size, `{ x, y, z }`; `nil` for a vertex and fragment program.
+  workgroupSize: { number }?
+  --- The per-vertex attributes, sorted by name, each with its type's name (`Vec3f`).
+  attributes: { { name: string, type: string } }
+  --- The per-instance attributes, the same way.
+  instance: { { name: string, type: string } }
+  --- What the pass binds, sorted by name, each with its type's name (`Vec4f`, `Camera`,
+  --- `Light[8]`, `Texture2D`, `Sampler`).
+  pass: { { name: string, type: string } }
+  --- What the material binds, the same way.
+  material: { { name: string, type: string } }
+  --- What each draw binds, the same way.
+  draw: { { name: string, type: string } }
   --- What the vertex function returned besides `position`, sorted by name, as the fragment
   --- function reads it.
   varyings: { { name: string, type: string } }
   __tostring: (self: ShaderProgram) -> string
 end
 
---- What `shader.program` takes. `parameters` are values (`float`, the vectors, the matrices, and
---- `sampler`), `textures` are `texture2d`, each declared with a sampler of the same name; both
---- are declared sorted by name. Neither may be named like a semantic input or a vertex attribute.
---- `vertex` returns `position` (a `Vec4f`) and the values to pass to the fragment stage, each
---- named; `fragment` returns the `Vec4f` color. Both run once, while `shader.program` runs.
+--- What `shader.program` takes. `attributes` and `instance` are what each vertex and each
+--- instance has (`Int`, `UInt`, `Float`, vectors, and matrices), read from its vertex buffers.
+--- `pass`, `material`, and `draw` are what each frequency binds: values, structs, and arrays in
+--- its uniform block, `texture2d` (each declared with a sampler of the same name), and `sampler`.
+--- All are declared sorted by name. `vertex` returns `position` (a `Vec4f`) and the values to pass
+--- to the fragment stage, each named; `fragment` returns the `Vec4f` color. Both run once, while
+--- `shader.program` runs.
 export type ShaderProgramSpec = {
-  parameters: { [string]: ShaderType }?,
-  textures: { [string]: ShaderType }?,
+  attributes: { [string]: ShaderType }?,
+  instance: { [string]: ShaderType }?,
+  pass: { [string]: ShaderType }?,
+  material: { [string]: ShaderType }?,
+  draw: { [string]: ShaderType }?,
   vertex: (input: ShaderInput) -> { [string]: ShaderExpr },
-  fragment: (input: ShaderInput) -> ShaderExpr,
+  fragment: (input: ShaderInput) -> ShaderExpr | { [string]: ShaderExpr },
+}
+
+--- A member of a struct or uniform block, where it is: `stride` is an array's, from one element
+--- to the next.
+export type ShaderMemberLayout = {
+  name: string,
+  offset: number,
+  size: number,
+  type: string,
+  stride: number?,
+}
+
+--- A binding of a frequency's group besides its uniform block: a texture, sampler, or storage
+--- buffer (`kind` `Storage`, with its `element`, `access`, and `stride`).
+export type ShaderBindingLayout = {
+  name: string,
+  kind: string,
+  binding: number,
+  element: string?,
+  access: string?,
+  stride: number?,
+}
+
+--- One frequency's bind group: its uniform block at binding 0, if it has members, and its other
+--- bindings after it.
+export type ShaderGroupLayout = {
+  group: number,
+  size: number?,
+  members: { ShaderMemberLayout }?,
+  bindings: { ShaderBindingLayout },
+}
+
+--- One vertex buffer: the bytes from one vertex or instance to the next, and each attribute's
+--- place in it, a matrix taking a location per column.
+export type ShaderVertexLayout = {
+  stride: number,
+  attributes: { { name: string, offset: number, location: number, locations: number, type: string } },
+}
+
+--- Where everything a program declares lives, for whatever fills its buffers.
+export type ShaderLayout = {
+  structs: { { name: string, size: number, align: number, fields: { ShaderMemberLayout } } },
+  pass: ShaderGroupLayout,
+  material: ShaderGroupLayout,
+  draw: ShaderGroupLayout,
+  attributes: ShaderVertexLayout,
+  instance: ShaderVertexLayout,
+}
+
+--- What `shader.compute` takes.
+export type ShaderComputeSpec = {
+  workgroupSize: number | { number },
+  pass: { [string]: ShaderType }?,
+  material: { [string]: ShaderType }?,
+  draw: { [string]: ShaderType }?,
+  compute: (input: ShaderInput) -> (),
 }
 
 --- The arguments after the script's name, as strings, for a script `jess run` runs from a file;
@@ -586,17 +1240,63 @@ declare arg: { [number]: string }
 --- `jess.shader`, and what `require("@jess/shader")` returns. A shader module runs once and
 --- returns `shader.program { ... }`. Every function takes shader values or numbers (a number is
 --- a `Float`) and fails at its line, in shader terms, when the types don't fit:
---- `dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size`.
+--- `dot(Vec3f, Vec4f) is invalid: expected two vectors of the same type`.
 export type ShaderModule = {
   float: ShaderType,
+  int: ShaderType,
+  uint: ShaderType,
   vec2: ShaderType,
   vec3: ShaderType,
   vec4: ShaderType,
+  vec2i: ShaderType,
+  vec3i: ShaderType,
+  vec4i: ShaderType,
+  vec2u: ShaderType,
+  vec3u: ShaderType,
+  vec4u: ShaderType,
   mat3: ShaderType,
   mat4: ShaderType,
   texture2d: ShaderType,
+  texture2dArray: ShaderType,
+  textureCube: ShaderType,
+  texture3d: ShaderType,
+  texture2di: ShaderType,
+  texture2du: ShaderType,
+  depthTexture2d: ShaderType,
+  depthTexture2dArray: ShaderType,
+  depthTextureCube: ShaderType,
   sampler: ShaderType,
-  --- Builds a program: declares the parameters and textures, runs `vertex` and passes what it
+  comparisonSampler: ShaderType,
+  --- A struct type: named fields of value, struct, and array types, laid out by jess.
+  struct: (name: string, fields: { [string]: ShaderType }) -> ShaderType,
+  --- An array type: `length` (at least 1) values or structs.
+  array: (element: ShaderType, length: number) -> ShaderType,
+  --- A storage buffer type: as many `element`s (a value or struct type) as the buffer bound holds,
+  --- which the stages read (`'read'`, the default), or read and write (`'readWrite'`; never in the
+  --- vertex function). Index it from 0 by a number or shader value; `shader.arrayLength` says how
+  --- many elements are bound.
+  storage: (element: ShaderType, access: ("read" | "readWrite" | "atomic")?) -> ShaderType,
+  --- How many elements the storage buffer bound holds, a `UInt`.
+  arrayLength: (buffer: ShaderPlace | ShaderExpr) -> ShaderExpr,
+  --- Writes `value` at `place[key]`, which must reach a value, in a `readWrite` storage buffer:
+  --- `shader.write(input.pass.counts, i, n)`, `shader.write(particles[i], 'position', p)`.
+  write: (place: ShaderPlace | ShaderExpr, key: string | number | ShaderExpr, value: ShaderExpr | number | boolean) -> (),
+  --- Updates `buffer[key]`, in an `'atomic'` storage buffer, in one atomic operation, and gives
+  --- what it held before: adds `value`, subtracts it, keeps the lesser or greater, ands, ors, or
+  --- exclusive-ors its bits, or replaces it.
+  atomicAdd: (buffer: ShaderPlace, key: number | ShaderExpr, value: ShaderExpr | number) -> ShaderExpr,
+  atomicSubtract: (buffer: ShaderPlace, key: number | ShaderExpr, value: ShaderExpr | number) -> ShaderExpr,
+  atomicMin: (buffer: ShaderPlace, key: number | ShaderExpr, value: ShaderExpr | number) -> ShaderExpr,
+  atomicMax: (buffer: ShaderPlace, key: number | ShaderExpr, value: ShaderExpr | number) -> ShaderExpr,
+  atomicAnd: (buffer: ShaderPlace, key: number | ShaderExpr, value: ShaderExpr | number) -> ShaderExpr,
+  atomicOr: (buffer: ShaderPlace, key: number | ShaderExpr, value: ShaderExpr | number) -> ShaderExpr,
+  atomicXor: (buffer: ShaderPlace, key: number | ShaderExpr, value: ShaderExpr | number) -> ShaderExpr,
+  atomicExchange: (buffer: ShaderPlace, key: number | ShaderExpr, value: ShaderExpr | number) -> ShaderExpr,
+  --- Builds a compute program: declares the bindings, runs `compute`, which returns nothing and
+  --- writes what it computes to storage buffers, then validates the program. `workgroupSize` is
+  --- how many invocations run together: a number, or one to three in a table, the rest 1.
+  compute: (spec: ShaderComputeSpec) -> ShaderProgram,
+  --- Builds a program: declares the attributes and bindings, runs `vertex` and passes what it
   --- returned to the fragment stage, runs `fragment`, then validates the whole program, listing
   --- every problem with its line.
   program: (spec: ShaderProgramSpec) -> ShaderProgram,
@@ -611,13 +1311,114 @@ export type ShaderModule = {
   --- A vector scaled to length 1, and a vector's length (a `Float`'s absolute value).
   normalize: (value: ShaderExpr | number) -> ShaderExpr,
   length: (value: ShaderExpr | number) -> ShaderExpr,
-  --- The greatest integer no larger than a float or each component of a float vector.
+  --- The distance between two points, `incident` reflected about the plane of a unit `normal`,
+  --- and refracted through it at the ratio of indices `eta`.
+  distance: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr,
+  reflect: (incident: ShaderExpr, normal: ShaderExpr) -> ShaderExpr,
+  refract: (incident: ShaderExpr, normal: ShaderExpr, eta: ShaderExpr | number) -> ShaderExpr,
+  --- A matrix's rows as its columns, and its determinant.
+  transpose: (matrix: ShaderExpr) -> ShaderExpr,
+  determinant: (matrix: ShaderExpr) -> ShaderExpr,
+  --- How fast a `Float` or float vector changes across the screen: horizontally, vertically,
+  --- and the sum of both sizes. Fragment stage only.
+  dpdx: (value: ShaderExpr) -> ShaderExpr,
+  dpdy: (value: ShaderExpr) -> ShaderExpr,
+  fwidth: (value: ShaderExpr) -> ShaderExpr,
+  --- The absolute value of a number, and its sign (-1, 0, or 1) of an `Int` or `Float`, per
+  --- component.
+  abs: (value: ShaderExpr | number) -> ShaderExpr,
+  sign: (value: ShaderExpr | number) -> ShaderExpr,
+  --- A `Float` or float vector rounded, per component: down, up, to the nearest integer (halves
+  --- to even), and toward zero; and what `floor` drops.
   floor: (value: ShaderExpr | number) -> ShaderExpr,
+  ceil: (value: ShaderExpr | number) -> ShaderExpr,
+  round: (value: ShaderExpr | number) -> ShaderExpr,
+  trunc: (value: ShaderExpr | number) -> ShaderExpr,
+  fract: (value: ShaderExpr | number) -> ShaderExpr,
+  --- Roots, powers, and logarithms of a `Float` or float vector, per component.
+  sqrt: (value: ShaderExpr | number) -> ShaderExpr,
+  inverseSqrt: (value: ShaderExpr | number) -> ShaderExpr,
+  exp: (value: ShaderExpr | number) -> ShaderExpr,
+  exp2: (value: ShaderExpr | number) -> ShaderExpr,
+  log: (value: ShaderExpr | number) -> ShaderExpr,
+  log2: (value: ShaderExpr | number) -> ShaderExpr,
+  pow: (base: ShaderExpr | number, exponent: ShaderExpr | number) -> ShaderExpr,
+  --- Trigonometry in radians, per component; `atan2(y, x)` is the angle of the point `(x, y)`.
+  sin: (value: ShaderExpr | number) -> ShaderExpr,
+  cos: (value: ShaderExpr | number) -> ShaderExpr,
+  tan: (value: ShaderExpr | number) -> ShaderExpr,
+  asin: (value: ShaderExpr | number) -> ShaderExpr,
+  acos: (value: ShaderExpr | number) -> ShaderExpr,
+  atan: (value: ShaderExpr | number) -> ShaderExpr,
+  atan2: (y: ShaderExpr | number, x: ShaderExpr | number) -> ShaderExpr,
+  radians: (degrees: ShaderExpr | number) -> ShaderExpr,
+  degrees: (radians: ShaderExpr | number) -> ShaderExpr,
+  --- A `Float` or float vector clamped to `0..1`; 0 below `edge` and 1 from it; and a smooth
+  --- curve from 0 at `low` to 1 at `high`. Edges may be a `Float` beside a vector.
+  saturate: (value: ShaderExpr | number) -> ShaderExpr,
+  step: (edge: ShaderExpr | number, value: ShaderExpr | number) -> ShaderExpr,
+  smoothstep: (low: ShaderExpr | number, high: ShaderExpr | number, value: ShaderExpr | number) -> ShaderExpr,
   --- `start + (finish - start) * amount`, per component.
   mix: (start: ShaderExpr | number, finish: ShaderExpr | number, amount: ShaderExpr | number) -> ShaderExpr,
-  --- A texture read, a `Vec4f`: a texture from `textures` with the sampler declared with it and
-  --- `Vec2f` coordinates, or any texture, a sampler, and coordinates. Fragment stage only.
-  sample: ((texture: ShaderExpr, coordinates: ShaderExpr) -> ShaderExpr) & ((texture: ShaderExpr, sampler: ShaderExpr, coordinates: ShaderExpr) -> ShaderExpr),
+  --- A var of the stage function running, holding `initial` and of its type.
+  var: (initial: ShaderExpr | number | boolean) -> ShaderVar,
+  --- Runs `accept` where the `Bool` condition holds, and `reject` where it doesn't; a value
+  --- computed in either exists only inside it, so keep what outlives it in a `shader.var`.
+  when: (condition: ShaderExpr | boolean, accept: () -> (), reject: (() -> ())?) -> (),
+  --- Runs `body` `count` times (an `Int` or `UInt`, a number being a `UInt`), given its index
+  --- from 0.
+  loop: (count: ShaderExpr | number, body: (index: ShaderExpr) -> ()) -> (),
+  --- Throws the fragment away where it runs: it writes nothing. Fragment function only.
+  discard: () -> (),
+  --- Comparisons of two scalars of one type, to a `Bool`: `equal` and `notEqual` any scalars, the
+  --- rest `Int`, `UInt`, or `Float`.
+  equal: (left: ShaderExpr | number | boolean, right: ShaderExpr | number | boolean) -> ShaderExpr,
+  notEqual: (left: ShaderExpr | number | boolean, right: ShaderExpr | number | boolean) -> ShaderExpr,
+  less: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr,
+  lessEqual: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr,
+  greater: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr,
+  greaterEqual: (left: ShaderExpr | number, right: ShaderExpr | number) -> ShaderExpr,
+  --- Both, either, and not, of `Bool`s; a Luau boolean is a `Bool` constant.
+  logicalAnd: (left: ShaderExpr | boolean, right: ShaderExpr | boolean) -> ShaderExpr,
+  logicalOr: (left: ShaderExpr | boolean, right: ShaderExpr | boolean) -> ShaderExpr,
+  logicalNot: (value: ShaderExpr | boolean) -> ShaderExpr,
+  --- Bitwise and, or, and exclusive or of two `Int` or `UInt` values of one type, and every bit
+  --- flipped.
+  bitAnd: (left: ShaderExpr, right: ShaderExpr) -> ShaderExpr,
+  bitOr: (left: ShaderExpr, right: ShaderExpr) -> ShaderExpr,
+  bitXor: (left: ShaderExpr, right: ShaderExpr) -> ShaderExpr,
+  bitNot: (value: ShaderExpr) -> ShaderExpr,
+  --- An `Int` or `UInt` value shifted by a `UInt` amount, or a `UInt` vector of its size: right
+  --- shifts of an `Int` keep its sign.
+  shiftLeft: (value: ShaderExpr, amount: ShaderExpr) -> ShaderExpr,
+  shiftRight: (value: ShaderExpr, amount: ShaderExpr) -> ShaderExpr,
+  --- `accept` where `condition` holds, else `reject`, two values of one scalar or vector type.
+  --- Both are computed.
+  select: (condition: ShaderExpr | boolean, accept: ShaderExpr | number, reject: ShaderExpr | number) -> ShaderExpr,
+  --- A texture read, a `Vec4f`: a declared texture with the sampler declared with it and its
+  --- coordinates (`Vec2f` for `texture2d` and `texture2dArray`, `Vec3f` for `textureCube` and
+  --- `texture3d`), or a texture, a sampler declared on its own, and coordinates. An array texture
+  --- takes its layer last, an `Int` or `UInt`. Fragment stage only.
+  sample: ((texture: ShaderExpr, coordinates: ShaderExpr, layer: (ShaderExpr | number)?) -> ShaderExpr) & ((texture: ShaderExpr, sampler: ShaderExpr, coordinates: ShaderExpr, layer: (ShaderExpr | number)?) -> ShaderExpr),
+  --- `sample` at the `Float` mip level given last (0 the largest), in either stage; and at the
+  --- level `sample` would pick, moved by the `Float` bias given last, in the fragment stage. A
+  --- sampler and a layer go where they go in `sample`.
+  sampleLevel: (texture: ShaderExpr, ...ShaderExpr | number) -> ShaderExpr,
+  sampleBias: (texture: ShaderExpr, ...ShaderExpr | number) -> ShaderExpr,
+  --- A depth texture's depths compared with the `Float` depth given last, through its comparison
+  --- sampler or the one given, and filtered: a `Float` from 0 (every texel failed) to 1 (every one
+  --- passed). `sampleCompare` in the fragment stage; `sampleCompareLevel`, in level 0, in either.
+  sampleCompare: (texture: ShaderExpr, ...ShaderExpr | number) -> ShaderExpr,
+  sampleCompareLevel: (texture: ShaderExpr, ...ShaderExpr | number) -> ShaderExpr,
+  --- One texel, without a sampler: integer coordinates, then a layer for an array texture, then
+  --- the `Int` or `UInt` mip level. A `Vec4f`, or a `Vec4i` or `Vec4u` from an integer texture.
+  --- Not a cube.
+  load: (texture: ShaderExpr, ...ShaderExpr | number) -> ShaderExpr,
+  --- A texture's size in texels (a `Vec2u`, or a `Vec3u` for a 3D texture) of the level given or
+  --- the largest, its mip levels, and an array texture's layers.
+  dimensions: (texture: ShaderExpr, level: (ShaderExpr | number)?) -> ShaderExpr,
+  levels: (texture: ShaderExpr) -> ShaderExpr,
+  layers: (texture: ShaderExpr) -> ShaderExpr,
 }
 
 declare jess: {
@@ -701,8 +1502,9 @@ declare jess: {
     formatVersion: number,
     --- A control's canonical `class:Name` form, or an error naming what is wrong with it.
     control: (control: string) -> string,
-    --- The domain's live input runtime under a host; a headless one of the script's own otherwise.
-    runtime: () -> InputRuntime,
+    --- The domain's live input runtime under a host; a headless one of the script's own
+    --- otherwise, which with `windows` takes its windows' keyboard and pointer at every `tick`.
+    runtime: (options: { windows: boolean? }?) -> InputRuntime,
   },
 
   --- The native half of `@jess/audio`, which wraps it: PCM from interleaved bytes, and contexts
@@ -725,5 +1527,21 @@ declare jess: {
     feed: (data: buffer | string, options: AudioFeedOptions?) -> AudioFeed,
     --- The processor kinds `AudioContext:node` and `AudioNode:insert` make, a host's own included.
     processors: () -> { string },
+  },
+
+  --- The GPU in front of the script, as `jess::gpu` reaches it; `require("@jess/gpu")` is the same
+  --- table. See `@jess/render` for what drawing with it means.
+  gpu: {
+    --- The runtime's device, opened on the first call on whatever adapter the machine has, a
+    --- software one included. Needs `gpu.device`; a jess built without the `gpu` feature says
+    --- it has no GPU.
+    device: () -> GpuDevice,
+    --- A native window with a surface on `device`, which `GpuWindow:show` gives a plan to draw
+    --- every frame. Needs `gpu.window`; a jess built without the `window` feature says it has no
+    --- windows.
+    window: (device: GpuDevice, desc: GpuWindowDesc?) -> GpuWindow,
+    --- Handles what the window system reported since the last call and draws every window showing
+    --- a plan: what an application's host does every frame, for a script no host drives.
+    pump: () -> (),
   },
 }

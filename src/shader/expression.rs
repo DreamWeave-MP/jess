@@ -4,29 +4,9 @@ use std::fmt;
 use std::ops::Deref;
 use std::sync::Arc;
 
+use crate::shader::flow::{LocalId, Stage};
+use crate::shader::interface::{AttributeId, Frequency, ResourceId, StorageId};
 use crate::shader::types::Type;
-
-macro_rules! arena_id {
-    ($(#[$attribute:meta])* $name:ident, $position:literal) => {
-        $(#[$attribute])*
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-        pub struct $name(pub(crate) u32);
-
-        impl $name {
-            #[doc = concat!("The ", $position, ".")]
-            #[must_use]
-            pub fn index(self) -> usize {
-                self.0 as usize
-            }
-
-            /// The id at `index`, which the program's push already bounded to `u32`.
-            #[allow(clippy::cast_possible_truncation)]
-            pub(crate) fn at(index: usize) -> $name {
-                $name(index as u32)
-            }
-        }
-    };
-}
 
 arena_id!(
     /// An expression in a [`Program`](crate::shader::Program)'s arena.
@@ -35,16 +15,6 @@ arena_id!(
     /// already in dependency order. Validation rejects an operand that does not.
     ExpressionId,
     "expression's position in the arena"
-);
-arena_id!(
-    /// A parameter declared with [`Program::parameter`](crate::shader::Program::parameter).
-    ParameterId,
-    "parameter's position in declaration order"
-);
-arena_id!(
-    /// A vertex input declared with [`Program::vertex_input`](crate::shader::Program::vertex_input).
-    VertexInputId,
-    "vertex input's position in declaration order"
 );
 arena_id!(
     /// A varying declared with [`Program::varying`](crate::shader::Program::varying).
@@ -122,78 +92,6 @@ impl Literal {
             Literal::Vec4f(values) => values,
             _ => &[],
         }
-    }
-}
-
-/// A value the renderer provides, named by what it means rather than where it is bound.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Semantic {
-    /// The object's model-to-world matrix (`Mat4f`).
-    Model,
-    /// The camera's world-to-view matrix (`Mat4f`).
-    View,
-    /// The camera's view-to-clip matrix (`Mat4f`).
-    Projection,
-    /// The camera position in world space (`Vec3f`).
-    CameraPosition,
-    /// The viewport size in pixels (`Vec2f`).
-    ViewportSize,
-    /// Seconds since the renderer started (`Float`).
-    Time,
-    /// The color the pass reads from the scene (`Texture2D`). Pass-specific.
-    SceneColor,
-    /// The depth the pass reads from the scene (`Texture2D`). Pass-specific.
-    SceneDepth,
-    /// The previous pass's output (`Texture2D`). Pass-specific.
-    PreviousPass,
-}
-
-impl Semantic {
-    /// Every semantic, in declaration order.
-    pub const ALL: [Semantic; 9] = [
-        Semantic::Model,
-        Semantic::View,
-        Semantic::Projection,
-        Semantic::CameraPosition,
-        Semantic::ViewportSize,
-        Semantic::Time,
-        Semantic::SceneColor,
-        Semantic::SceneDepth,
-        Semantic::PreviousPass,
-    ];
-
-    /// The semantic's type.
-    #[must_use]
-    pub fn ty(self) -> Type {
-        match self {
-            Semantic::Model | Semantic::View | Semantic::Projection => Type::Mat4f,
-            Semantic::CameraPosition => Type::Vec3f,
-            Semantic::ViewportSize => Type::Vec2f,
-            Semantic::Time => Type::Float,
-            Semantic::SceneColor | Semantic::SceneDepth | Semantic::PreviousPass => Type::Texture2D,
-        }
-    }
-
-    /// The Jess name of the semantic, as errors print it.
-    #[must_use]
-    pub fn name(self) -> &'static str {
-        match self {
-            Semantic::Model => "model",
-            Semantic::View => "view",
-            Semantic::Projection => "projection",
-            Semantic::CameraPosition => "cameraPosition",
-            Semantic::ViewportSize => "viewportSize",
-            Semantic::Time => "time",
-            Semantic::SceneColor => "sceneColor",
-            Semantic::SceneDepth => "sceneDepth",
-            Semantic::PreviousPass => "previousPass",
-        }
-    }
-}
-
-impl fmt::Display for Semantic {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.name())
     }
 }
 
@@ -330,63 +228,692 @@ impl Deref for Operands {
     }
 }
 
+/// The most steps a [`Place`] can take.
+pub const MAX_PLACE_STEPS: usize = 8;
+/// The most of a [`Place`]'s steps that can be indices.
+pub const MAX_PLACE_INDICES: usize = 4;
+
+/// Where a place starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[allow(variant_size_differences)] // an id beside a one-byte frequency: a few bytes either way
+pub enum PlaceRoot {
+    /// A frequency's uniform block; the first step names one of its members.
+    Uniform(Frequency),
+    /// A storage buffer; the first step is an index, of an element.
+    Storage(StorageId),
+}
+
+/// One step into a struct or an array.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Step {
+    /// A uniform block's member, by its position among the frequency's members, or a struct's
+    /// field, by its position among the struct's fields.
+    Field(u32),
+    /// An array's element at an `Int` or `UInt` index, counted from 0.
+    Index(ExpressionId),
+}
+
+/// A value in a buffer: a root, then fields and indices down to one value. `pass.lights[i].color`
+/// is the pass's uniform block, member `lights`, element `i`, field `color`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Place {
+    /// Where the place starts.
+    pub root: PlaceRoot,
+    steps: [Step; MAX_PLACE_STEPS],
+    count: u8,
+}
+
+impl Place {
+    /// A place of `steps` from `root`; `None` with more than [`MAX_PLACE_STEPS`] steps, or more
+    /// than [`MAX_PLACE_INDICES`] indices among them.
+    #[must_use]
+    pub fn new(root: PlaceRoot, steps: &[Step]) -> Option<Place> {
+        let indices = steps.iter().filter(|step| matches!(step, Step::Index(_))).count();
+        if steps.len() > MAX_PLACE_STEPS || indices > MAX_PLACE_INDICES {
+            return None;
+        }
+        let mut place = Place {
+            root,
+            steps: [Step::Field(0); MAX_PLACE_STEPS],
+            #[allow(clippy::cast_possible_truncation)] // at most MAX_PLACE_STEPS
+            count: steps.len() as u8,
+        };
+        place.steps[..steps.len()].copy_from_slice(steps);
+        Some(place)
+    }
+
+    /// The place one step further in; `None` past the limits of [`Place::new`].
+    #[must_use]
+    pub fn then(&self, step: Step) -> Option<Place> {
+        let mut steps = self.steps().to_vec();
+        steps.push(step);
+        Place::new(self.root, &steps)
+    }
+
+    /// The steps, in order.
+    #[must_use]
+    pub fn steps(&self) -> &[Step] {
+        &self.steps[..self.count as usize]
+    }
+
+    /// The index expressions, in order.
+    #[must_use]
+    pub fn indices(&self) -> Operands {
+        let mut operands = Operands::from_short_slice(&[]);
+        for step in self.steps() {
+            if let Step::Index(index) = step {
+                operands.ids[operands.count as usize] = *index;
+                operands.count += 1;
+            }
+        }
+        operands
+    }
+
+    pub(crate) fn rewrite_indices(&mut self, mut rewrite: impl FnMut(&mut ExpressionId)) {
+        for step in &mut self.steps[..self.count as usize] {
+            if let Step::Index(index) = step {
+                rewrite(index);
+            }
+        }
+    }
+}
+
+/// An operator between two values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BinaryOperator {
+    /// `left + right`.
+    Add,
+    /// `left - right`.
+    Subtract,
+    /// `left * right`, including matrix × vector and matrix × matrix.
+    Multiply,
+    /// `left / right`.
+    Divide,
+    /// Whether two scalars are equal.
+    Equal,
+    /// Whether two scalars differ.
+    NotEqual,
+    /// `left < right`, between two numeric scalars.
+    Less,
+    /// `left <= right`.
+    LessEqual,
+    /// `left > right`.
+    Greater,
+    /// `left >= right`.
+    GreaterEqual,
+    /// Whether two `Bool`s both hold.
+    And,
+    /// Whether either of two `Bool`s holds.
+    Or,
+    /// `left % right`: what's left of truncated division, with the sign of `left`.
+    Remainder,
+    /// Bitwise and, of two integer values of one type.
+    BitAnd,
+    /// Bitwise or.
+    BitOr,
+    /// Bitwise exclusive or.
+    BitXor,
+    /// `left` shifted left by a `UInt` amount, or a `UInt` vector of its size.
+    ShiftLeft,
+    /// `left` shifted right: arithmetically for `Int`, logically for `UInt`.
+    ShiftRight,
+}
+
+impl BinaryOperator {
+    /// The operator's Jess name, as errors print it: `+` for the arithmetic, which is written between
+    /// its operands, and the function's name (`less`, `bitAnd`) for the rest.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            BinaryOperator::Add => "+",
+            BinaryOperator::Subtract => "-",
+            BinaryOperator::Multiply => "*",
+            BinaryOperator::Divide => "/",
+            BinaryOperator::Equal => "equal",
+            BinaryOperator::NotEqual => "notEqual",
+            BinaryOperator::Less => "less",
+            BinaryOperator::LessEqual => "lessEqual",
+            BinaryOperator::Greater => "greater",
+            BinaryOperator::GreaterEqual => "greaterEqual",
+            BinaryOperator::And => "logicalAnd",
+            BinaryOperator::Or => "logicalOr",
+            BinaryOperator::Remainder => "%",
+            BinaryOperator::BitAnd => "bitAnd",
+            BinaryOperator::BitOr => "bitOr",
+            BinaryOperator::BitXor => "bitXor",
+            BinaryOperator::ShiftLeft => "shiftLeft",
+            BinaryOperator::ShiftRight => "shiftRight",
+        }
+    }
+
+    /// The operator as WGSL writes it.
+    #[must_use]
+    pub fn symbol(self) -> &'static str {
+        match self {
+            BinaryOperator::Add => "+",
+            BinaryOperator::Subtract => "-",
+            BinaryOperator::Multiply => "*",
+            BinaryOperator::Divide => "/",
+            BinaryOperator::Equal => "==",
+            BinaryOperator::NotEqual => "!=",
+            BinaryOperator::Less => "<",
+            BinaryOperator::LessEqual => "<=",
+            BinaryOperator::Greater => ">",
+            BinaryOperator::GreaterEqual => ">=",
+            BinaryOperator::And => "&&",
+            BinaryOperator::Or => "||",
+            BinaryOperator::Remainder => "%",
+            BinaryOperator::BitAnd => "&",
+            BinaryOperator::BitOr => "|",
+            BinaryOperator::BitXor => "^",
+            BinaryOperator::ShiftLeft => "<<",
+            BinaryOperator::ShiftRight => ">>",
+        }
+    }
+}
+
+/// An operator on one value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum UnaryOperator {
+    /// Whether a `Bool` doesn't hold.
+    Not,
+    /// `-value`, of a signed or float scalar or vector.
+    Negate,
+    /// Every bit of an integer value flipped.
+    BitNot,
+}
+
+impl UnaryOperator {
+    /// The operator's Jess name, as errors print it.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            UnaryOperator::Not => "logicalNot",
+            UnaryOperator::Negate => "-",
+            UnaryOperator::BitNot => "bitNot",
+        }
+    }
+
+    /// The operator as WGSL writes it.
+    #[must_use]
+    pub fn symbol(self) -> &'static str {
+        match self {
+            UnaryOperator::Not => "!",
+            UnaryOperator::Negate => "-",
+            UnaryOperator::BitNot => "~",
+        }
+    }
+}
+
+/// A built-in function. Its name is the one Luau and WGSL both give it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Function {
+    /// The smaller of two values, per component.
+    Min,
+    /// The larger of two values, per component.
+    Max,
+    /// `value` clamped to `low..=high`, per component.
+    Clamp,
+    /// The absolute value, per component.
+    Abs,
+    /// -1, 0, or 1, per component, as the value is negative, zero, or positive.
+    Sign,
+    /// The greatest integer no larger than a float, per component.
+    Floor,
+    /// The least integer no smaller than a float, per component.
+    Ceil,
+    /// The nearest integer, per component; halves round to even.
+    Round,
+    /// A float with its fraction dropped, per component: toward zero.
+    Trunc,
+    /// `x - floor(x)`, per component.
+    Fract,
+    /// The square root, per component.
+    Sqrt,
+    /// One over the square root, per component.
+    InverseSqrt,
+    /// `e` to the power, per component.
+    Exp,
+    /// 2 to the power, per component.
+    Exp2,
+    /// The natural logarithm, per component.
+    Log,
+    /// The base-2 logarithm, per component.
+    Log2,
+    /// `base` to the power `exponent`, per component.
+    Pow,
+    /// The sine of radians, per component.
+    Sin,
+    /// The cosine of radians, per component.
+    Cos,
+    /// The tangent of radians, per component.
+    Tan,
+    /// The arcsine, in radians, per component.
+    Asin,
+    /// The arccosine, in radians, per component.
+    Acos,
+    /// The arctangent, in radians, per component.
+    Atan,
+    /// The angle of the point `(x, y)`, `atan2(y, x)`, in radians from -π to π, per component.
+    Atan2,
+    /// Degrees in radians, per component.
+    Radians,
+    /// Radians in degrees, per component.
+    Degrees,
+    /// A float clamped to `0..=1`, per component.
+    Saturate,
+    /// 0 where `x < edge`, else 1, per component.
+    Step,
+    /// 0 at `low`, 1 at `high`, a Hermite curve between, per component.
+    Smoothstep,
+    /// `start + (end - start) * amount`, per component.
+    Mix,
+    /// The dot product of two vectors of one type.
+    Dot,
+    /// The cross product of two `Vec3f`.
+    Cross,
+    /// A vector's length, or a float's absolute value.
+    Length,
+    /// The length of the difference of two floats or float vectors.
+    Distance,
+    /// A vector scaled to length 1.
+    Normalize,
+    /// `incident` reflected about the plane of `normal`, a unit vector.
+    Reflect,
+    /// `incident` refracted through the plane of `normal` at the ratio of indices `eta`.
+    Refract,
+    /// A matrix's rows as its columns.
+    Transpose,
+    /// A matrix's determinant.
+    Determinant,
+    /// How fast a value changes across the screen horizontally. Fragment stage only.
+    Dpdx,
+    /// How fast a value changes across the screen vertically. Fragment stage only.
+    Dpdy,
+    /// `abs(dpdx(value)) + abs(dpdy(value))`. Fragment stage only.
+    Fwidth,
+}
+
+impl Function {
+    /// Every function, in the order the docs list them.
+    pub const ALL: [Function; 42] = [
+        Function::Min,
+        Function::Max,
+        Function::Clamp,
+        Function::Abs,
+        Function::Sign,
+        Function::Floor,
+        Function::Ceil,
+        Function::Round,
+        Function::Trunc,
+        Function::Fract,
+        Function::Sqrt,
+        Function::InverseSqrt,
+        Function::Exp,
+        Function::Exp2,
+        Function::Log,
+        Function::Log2,
+        Function::Pow,
+        Function::Sin,
+        Function::Cos,
+        Function::Tan,
+        Function::Asin,
+        Function::Acos,
+        Function::Atan,
+        Function::Atan2,
+        Function::Radians,
+        Function::Degrees,
+        Function::Saturate,
+        Function::Step,
+        Function::Smoothstep,
+        Function::Mix,
+        Function::Dot,
+        Function::Cross,
+        Function::Length,
+        Function::Distance,
+        Function::Normalize,
+        Function::Reflect,
+        Function::Refract,
+        Function::Transpose,
+        Function::Determinant,
+        Function::Dpdx,
+        Function::Dpdy,
+        Function::Fwidth,
+    ];
+
+    /// The function's name, as Luau, errors, and WGSL write it.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Function::Min => "min",
+            Function::Max => "max",
+            Function::Clamp => "clamp",
+            Function::Abs => "abs",
+            Function::Sign => "sign",
+            Function::Floor => "floor",
+            Function::Ceil => "ceil",
+            Function::Round => "round",
+            Function::Trunc => "trunc",
+            Function::Fract => "fract",
+            Function::Sqrt => "sqrt",
+            Function::InverseSqrt => "inverseSqrt",
+            Function::Exp => "exp",
+            Function::Exp2 => "exp2",
+            Function::Log => "log",
+            Function::Log2 => "log2",
+            Function::Pow => "pow",
+            Function::Sin => "sin",
+            Function::Cos => "cos",
+            Function::Tan => "tan",
+            Function::Asin => "asin",
+            Function::Acos => "acos",
+            Function::Atan => "atan",
+            Function::Atan2 => "atan2",
+            Function::Radians => "radians",
+            Function::Degrees => "degrees",
+            Function::Saturate => "saturate",
+            Function::Step => "step",
+            Function::Smoothstep => "smoothstep",
+            Function::Mix => "mix",
+            Function::Dot => "dot",
+            Function::Cross => "cross",
+            Function::Length => "length",
+            Function::Distance => "distance",
+            Function::Normalize => "normalize",
+            Function::Reflect => "reflect",
+            Function::Refract => "refract",
+            Function::Transpose => "transpose",
+            Function::Determinant => "determinant",
+            Function::Dpdx => "dpdx",
+            Function::Dpdy => "dpdy",
+            Function::Fwidth => "fwidth",
+        }
+    }
+
+    /// How many arguments it takes.
+    #[must_use]
+    pub fn arity(self) -> usize {
+        match self {
+            Function::Min
+            | Function::Max
+            | Function::Pow
+            | Function::Atan2
+            | Function::Step
+            | Function::Dot
+            | Function::Cross
+            | Function::Distance
+            | Function::Reflect => 2,
+            Function::Clamp | Function::Smoothstep | Function::Mix | Function::Refract => 3,
+            _ => 1,
+        }
+    }
+
+    /// Whether it reads the fragment stage's derivatives, which the vertex stage has none of.
+    #[must_use]
+    pub fn needs_derivatives(self) -> bool {
+        matches!(self, Function::Dpdx | Function::Dpdy | Function::Fwidth)
+    }
+}
+
+/// How a sample picks its mip level.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SampleLevel {
+    /// From the fragment stage's derivatives. Fragment stage only.
+    Implicit,
+    /// From the derivatives, offset by a `Float` bias. Fragment stage only.
+    Bias(ExpressionId),
+    /// The `Float` level given, 0 the largest. Any stage.
+    Explicit(ExpressionId),
+}
+
+impl SampleLevel {
+    /// The Jess name of a sample that picks its level this way: `sample`, `sampleBias`, or
+    /// `sampleLevel`.
+    #[must_use]
+    pub fn operation(self) -> &'static str {
+        match self {
+            SampleLevel::Implicit => "sample",
+            SampleLevel::Bias(_) => "sampleBias",
+            SampleLevel::Explicit(_) => "sampleLevel",
+        }
+    }
+
+    /// The bias or level, if there is one.
+    #[must_use]
+    pub fn expression(self) -> Option<ExpressionId> {
+        match self {
+            SampleLevel::Implicit => None,
+            SampleLevel::Bias(level) | SampleLevel::Explicit(level) => Some(level),
+        }
+    }
+
+    /// Whether it needs the fragment stage's derivatives.
+    #[must_use]
+    pub fn needs_derivatives(self) -> bool {
+        !matches!(self, SampleLevel::Explicit(_))
+    }
+}
+
+/// What a texture query asks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TextureQuery {
+    /// The size in texels, a `Vec2u` (a `Vec3u` for a 3D texture), of the `Int` or `UInt` mip
+    /// level given, or of the largest.
+    Dimensions(Option<ExpressionId>),
+    /// How many mip levels it has, a `UInt`.
+    Levels,
+    /// How many layers an array texture has, a `UInt`.
+    Layers,
+}
+
+impl TextureQuery {
+    /// The Jess name of the query: `dimensions`, `levels`, or `layers`.
+    #[must_use]
+    pub fn operation(self) -> &'static str {
+        match self {
+            TextureQuery::Dimensions(_) => "dimensions",
+            TextureQuery::Levels => "levels",
+            TextureQuery::Layers => "layers",
+        }
+    }
+}
+
+/// A texture read's operands in order: its coordinates, its layer, and its level.
+fn texture_operands(coordinates: ExpressionId, layer: Option<ExpressionId>, level: Option<ExpressionId>) -> Operands {
+    let mut operands = Operands::from_short_slice(&[coordinates]);
+    for id in [layer, level].into_iter().flatten() {
+        operands.ids[operands.count as usize] = id;
+        operands.count += 1;
+    }
+    operands
+}
+
+/// A value the pipeline gives a stage rather than a buffer: which vertex, instance, or
+/// invocation this is, and where the fragment is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Builtin {
+    /// The vertex's index in the draw, a `UInt`: with an index buffer, the index it read.
+    /// Vertex stage only.
+    VertexIndex,
+    /// The instance's index in the draw, a `UInt`. Vertex stage only.
+    InstanceIndex,
+    /// The fragment's position, a `Vec4f`: `x` and `y` in pixels from the target's top left, at
+    /// the pixel's centre, `z` its depth, and `w` one over the clip position's `w`. Fragment
+    /// stage only.
+    Position,
+    /// Whether the fragment belongs to a front-facing triangle, a `Bool`. Fragment stage only.
+    FrontFacing,
+    /// The invocation's position among every invocation of the dispatch, a `Vec3u`: its
+    /// workgroup's times the workgroup size, plus its own within it. Compute stage only.
+    GlobalInvocationId,
+    /// The invocation's position within its workgroup, a `Vec3u`. Compute stage only.
+    LocalInvocationId,
+    /// The invocation's position within its workgroup as one `UInt`, `x` fastest. Compute stage
+    /// only.
+    LocalInvocationIndex,
+    /// The workgroup's position among the dispatch's, a `Vec3u`. Compute stage only.
+    WorkgroupId,
+    /// How many workgroups the dispatch has, a `Vec3u`. Compute stage only.
+    NumWorkgroups,
+}
+
+impl Builtin {
+    /// Every built-in value.
+    pub const ALL: [Builtin; 9] = [
+        Builtin::VertexIndex,
+        Builtin::InstanceIndex,
+        Builtin::Position,
+        Builtin::FrontFacing,
+        Builtin::GlobalInvocationId,
+        Builtin::LocalInvocationId,
+        Builtin::LocalInvocationIndex,
+        Builtin::WorkgroupId,
+        Builtin::NumWorkgroups,
+    ];
+
+    /// Its name, as Luau and errors write it.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Builtin::VertexIndex => "vertexIndex",
+            Builtin::InstanceIndex => "instanceIndex",
+            Builtin::Position => "position",
+            Builtin::FrontFacing => "frontFacing",
+            Builtin::GlobalInvocationId => "globalInvocationId",
+            Builtin::LocalInvocationId => "localInvocationId",
+            Builtin::LocalInvocationIndex => "localInvocationIndex",
+            Builtin::WorkgroupId => "workgroupId",
+            Builtin::NumWorkgroups => "numWorkgroups",
+        }
+    }
+
+    /// Its type.
+    #[must_use]
+    pub fn ty(self) -> Type {
+        match self {
+            Builtin::VertexIndex | Builtin::InstanceIndex | Builtin::LocalInvocationIndex => Type::UInt,
+            Builtin::Position => Type::Vec4f,
+            Builtin::FrontFacing => Type::Bool,
+            Builtin::GlobalInvocationId | Builtin::LocalInvocationId | Builtin::WorkgroupId | Builtin::NumWorkgroups => {
+                Type::Vec3u
+            }
+        }
+    }
+
+    /// The only stage that has it.
+    #[must_use]
+    pub fn stage(self) -> Stage {
+        match self {
+            Builtin::VertexIndex | Builtin::InstanceIndex => Stage::Vertex,
+            Builtin::Position | Builtin::FrontFacing => Stage::Fragment,
+            _ => Stage::Compute,
+        }
+    }
+}
+
 /// A node in a [`Program`](crate::shader::Program)'s expression arena.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Expression {
     /// A constant.
     Literal(Literal),
-    /// A declared parameter's value, texture, or sampler.
-    Parameter(ParameterId),
-    /// A declared vertex input. Vertex stage only.
-    VertexInput(VertexInputId),
+    /// A value in a uniform block.
+    Load(Place),
+    /// A declared vertex attribute, per vertex or per instance. Vertex stage only.
+    Attribute(AttributeId),
+    /// A value the pipeline gives the stage that has it.
+    Builtin(Builtin),
+    /// A local's value as of here. It is computed where it is placed, so it must be placed.
+    Local(LocalId),
+    /// How many elements the bound storage buffer holds, a `UInt`.
+    StorageLength(StorageId),
     /// A declared varying, as the vertex stage wrote it and the rasterizer interpolated it.
     /// Fragment stage only.
     Varying(VaryingId),
-    /// A value the renderer provides.
-    Semantic(Semantic),
-    /// A texture read: `Texture2D`, `Sampler`, `Vec2f` coordinates, to `Vec4f`. Fragment stage
-    /// only.
+    /// A float texture read through a sampler, to `Vec4f`.
     Sample {
-        /// The `Texture2D`.
-        texture: ExpressionId,
-        /// The `Sampler`.
-        sampler: ExpressionId,
-        /// The `Vec2f` coordinates.
+        /// A float texture.
+        texture: ResourceId,
+        /// A `Sampler`.
+        sampler: ResourceId,
+        /// The coordinates, of the type [`ResourceKind::coordinates`](crate::shader::ResourceKind::coordinates) gives.
         coordinates: ExpressionId,
+        /// The layer of an array texture, an `Int` or `UInt`; `None` for any other.
+        layer: Option<ExpressionId>,
+        /// How it picks a mip level.
+        level: SampleLevel,
     },
-    /// `left + right`.
-    Add(ExpressionId, ExpressionId),
-    /// `left - right`.
-    Subtract(ExpressionId, ExpressionId),
-    /// `left * right`, including matrix × vector and matrix × matrix.
-    Multiply(ExpressionId, ExpressionId),
-    /// `left / right`.
-    Divide(ExpressionId, ExpressionId),
-    /// The smaller of two values, per component.
-    Min(ExpressionId, ExpressionId),
-    /// The larger of two values, per component.
-    Max(ExpressionId, ExpressionId),
-    /// `value` clamped to `low..=high`, per component.
-    Clamp(ExpressionId, ExpressionId, ExpressionId),
-    /// The dot product of two vectors of the same size.
-    Dot(ExpressionId, ExpressionId),
-    /// The cross product of two `Vec3f`.
-    Cross(ExpressionId, ExpressionId),
-    /// A vector scaled to length 1.
-    Normalize(ExpressionId),
-    /// A vector's length, or a float's absolute value.
-    Length(ExpressionId),
-    /// The greatest integer no larger than a float or each component of a float vector.
-    Floor(ExpressionId),
-    /// `start + (end - start) * amount`, per component.
-    Mix(ExpressionId, ExpressionId, ExpressionId),
-    /// A float vector from floats and smaller vectors whose sizes add up to the target's, or
-    /// from one float repeated.
+    /// A depth texture's depths compared with a `Float` reference depth through a comparison
+    /// sampler and filtered, to a `Float` from 0, where every texel read fails, to 1, where every
+    /// one passes.
+    SampleCompare {
+        /// A depth texture.
+        texture: ResourceId,
+        /// A `ComparisonSampler`.
+        sampler: ResourceId,
+        /// The coordinates, of the type [`ResourceKind::coordinates`](crate::shader::ResourceKind::coordinates) gives.
+        coordinates: ExpressionId,
+        /// The layer of an array texture, an `Int` or `UInt`; `None` for any other.
+        layer: Option<ExpressionId>,
+        /// The `Float` depth compared with.
+        reference: ExpressionId,
+        /// Whether it compares in mip level 0, in any stage, rather than at the level the fragment
+        /// stage's derivatives pick.
+        level_zero: bool,
+    },
+    /// One texel of a texture that isn't a cube, read without a sampler, to `Vec4f`, `Vec4i`, or
+    /// `Vec4u` as the texture holds.
+    TextureLoad {
+        /// The texture.
+        texture: ResourceId,
+        /// The texel's integer coordinates, a `Vec2i` or `Vec2u` (a `Vec3i` or `Vec3u` in a 3D
+        /// texture).
+        coordinates: ExpressionId,
+        /// The layer of an array texture, an `Int` or `UInt`; `None` for any other.
+        layer: Option<ExpressionId>,
+        /// The mip level, an `Int` or `UInt`.
+        level: ExpressionId,
+    },
+    /// What a texture is: its size, its mip levels, or its layers.
+    TextureQuery {
+        /// The texture.
+        texture: ResourceId,
+        /// What is asked.
+        query: TextureQuery,
+    },
+    /// An operator on one value.
+    Unary(UnaryOperator, ExpressionId),
+    /// An operator between two values.
+    Binary(BinaryOperator, ExpressionId, ExpressionId),
+    /// `accept` where `condition` holds, else `reject`: both are computed.
+    Select {
+        /// A `Bool`.
+        condition: ExpressionId,
+        /// The value where it holds.
+        accept: ExpressionId,
+        /// The value where it doesn't, of the same type.
+        reject: ExpressionId,
+    },
+    /// A built-in function.
+    Call {
+        /// The function.
+        function: Function,
+        /// Its arguments, as many as [`Function::arity`].
+        arguments: Operands,
+    },
+    /// A vector from scalars and smaller vectors of its scalar whose sizes add up to its, or from
+    /// one scalar repeated; or a matrix from its columns.
     Construct {
-        /// `Vec2f`, `Vec3f`, or `Vec4f`.
+        /// A vector or matrix type.
         target: Type,
         /// The components, in order.
         components: Operands,
+    },
+    /// A scalar or vector as `target`, a type of the same size: `f32(index)`.
+    Convert {
+        /// The type converted to.
+        target: Type,
+        /// The value.
+        value: ExpressionId,
     },
     /// Components read from a vector.
     Swizzle {
@@ -404,30 +931,57 @@ impl Expression {
         Operands::new(components).map(|components| Expression::Construct { target, components })
     }
 
+    /// A call of `function`; `None` if there are more than four arguments.
+    #[must_use]
+    pub fn call(function: Function, arguments: &[ExpressionId]) -> Option<Expression> {
+        Operands::new(arguments).map(|arguments| Expression::Call { function, arguments })
+    }
+
     /// The expressions this one reads, in order.
     #[must_use]
     pub fn operands(&self) -> Operands {
         let ids: &[ExpressionId] = match self {
             Expression::Literal(_)
-            | Expression::Parameter(_)
-            | Expression::VertexInput(_)
+            | Expression::Attribute(_)
+            | Expression::Builtin(_)
+            | Expression::Local(_)
+            | Expression::StorageLength(_)
             | Expression::Varying(_)
-            | Expression::Semantic(_) => &[],
+            | Expression::TextureQuery {
+                query: TextureQuery::Dimensions(None) | TextureQuery::Levels | TextureQuery::Layers,
+                ..
+            } => &[],
+            Expression::Load(place) => return place.indices(),
             Expression::Sample {
-                texture,
-                sampler,
                 coordinates,
-            } => &[*texture, *sampler, *coordinates],
-            Expression::Add(left, right)
-            | Expression::Subtract(left, right)
-            | Expression::Multiply(left, right)
-            | Expression::Divide(left, right)
-            | Expression::Min(left, right)
-            | Expression::Max(left, right)
-            | Expression::Dot(left, right)
-            | Expression::Cross(left, right) => &[*left, *right],
-            Expression::Clamp(first, second, third) | Expression::Mix(first, second, third) => &[*first, *second, *third],
-            Expression::Normalize(value) | Expression::Length(value) | Expression::Floor(value) => &[*value],
+                layer,
+                level,
+                ..
+            } => return texture_operands(*coordinates, *layer, level.expression()),
+            Expression::SampleCompare {
+                coordinates,
+                layer,
+                reference,
+                ..
+            } => return texture_operands(*coordinates, *layer, Some(*reference)),
+            Expression::TextureLoad {
+                coordinates,
+                layer,
+                level,
+                ..
+            } => return texture_operands(*coordinates, *layer, Some(*level)),
+            Expression::TextureQuery {
+                query: TextureQuery::Dimensions(Some(level)),
+                ..
+            } => &[*level],
+            Expression::Unary(_, value) | Expression::Convert { value, .. } => &[*value],
+            Expression::Binary(_, left, right) => &[*left, *right],
+            Expression::Select {
+                condition,
+                accept,
+                reject,
+            } => &[*condition, *accept, *reject],
+            Expression::Call { arguments, .. } => return *arguments,
             Expression::Construct { components, .. } => return *components,
             Expression::Swizzle { vector, .. } => &[*vector],
         };
@@ -438,52 +992,80 @@ impl Expression {
     pub(crate) fn rewrite_operands(&mut self, mut rewrite: impl FnMut(&mut ExpressionId)) {
         match self {
             Expression::Literal(_)
-            | Expression::Parameter(_)
-            | Expression::VertexInput(_)
-            | Expression::Varying(_)
-            | Expression::Semantic(_) => {}
+            | Expression::Attribute(_)
+            | Expression::Builtin(_)
+            | Expression::Local(_)
+            | Expression::StorageLength(_)
+            | Expression::Varying(_) => {}
+            Expression::Load(place) => place.rewrite_indices(rewrite),
             Expression::Sample {
-                texture,
-                sampler,
                 coordinates,
+                layer,
+                level,
+                ..
             } => {
-                rewrite(texture);
-                rewrite(sampler);
                 rewrite(coordinates);
+                layer.iter_mut().for_each(&mut rewrite);
+                match level {
+                    SampleLevel::Implicit => {}
+                    SampleLevel::Bias(level) | SampleLevel::Explicit(level) => rewrite(level),
+                }
             }
-            Expression::Add(left, right)
-            | Expression::Subtract(left, right)
-            | Expression::Multiply(left, right)
-            | Expression::Divide(left, right)
-            | Expression::Min(left, right)
-            | Expression::Max(left, right)
-            | Expression::Dot(left, right)
-            | Expression::Cross(left, right) => {
+            Expression::SampleCompare {
+                coordinates,
+                layer,
+                reference,
+                ..
+            } => {
+                rewrite(coordinates);
+                layer.iter_mut().for_each(&mut rewrite);
+                rewrite(reference);
+            }
+            Expression::TextureLoad {
+                coordinates,
+                layer,
+                level,
+                ..
+            } => {
+                rewrite(coordinates);
+                layer.iter_mut().for_each(&mut rewrite);
+                rewrite(level);
+            }
+            Expression::TextureQuery { query, .. } => {
+                if let TextureQuery::Dimensions(Some(level)) = query {
+                    rewrite(level);
+                }
+            }
+            Expression::Unary(_, value) | Expression::Convert { value, .. } => rewrite(value),
+            Expression::Binary(_, left, right) => {
                 rewrite(left);
                 rewrite(right);
             }
-            Expression::Clamp(first, second, third) | Expression::Mix(first, second, third) => {
-                rewrite(first);
-                rewrite(second);
-                rewrite(third);
+            Expression::Select {
+                condition,
+                accept,
+                reject,
+            } => {
+                rewrite(condition);
+                rewrite(accept);
+                rewrite(reject);
             }
-            Expression::Normalize(value) | Expression::Length(value) | Expression::Floor(value) => rewrite(value),
+            Expression::Call { arguments, .. } => arguments.as_mut_slice().iter_mut().for_each(rewrite),
             Expression::Construct { components, .. } => components.as_mut_slice().iter_mut().for_each(rewrite),
             Expression::Swizzle { vector, .. } => rewrite(vector),
         }
     }
 
-    /// Whether the expression reads no other expression.
+    /// Whether the lowering writes the expression where it is read instead of computing it once:
+    /// literals, attributes, varyings, and uniform values reached without an index. Each reads no
+    /// other expression.
     #[must_use]
     pub fn is_leaf(&self) -> bool {
-        matches!(
-            self,
-            Expression::Literal(_)
-                | Expression::Parameter(_)
-                | Expression::VertexInput(_)
-                | Expression::Varying(_)
-                | Expression::Semantic(_)
-        )
+        match self {
+            Expression::Literal(_) | Expression::Attribute(_) | Expression::Builtin(_) | Expression::Varying(_) => true,
+            Expression::Load(place) => place.indices().is_empty(),
+            _ => false,
+        }
     }
 
     /// The Jess name of the operation, as errors print it: `+`, `dot`, `sample`.
@@ -491,25 +1073,21 @@ impl Expression {
     pub fn operation(&self) -> &'static str {
         match self {
             Expression::Literal(_) => "literal",
-            Expression::Parameter(_) => "parameter",
-            Expression::VertexInput(_) => "vertex input",
+            Expression::Load(_) | Expression::TextureLoad { .. } => "load",
+            Expression::Attribute(_) => "attribute",
+            Expression::Builtin(builtin) => builtin.name(),
+            Expression::Local(_) => "local",
+            Expression::StorageLength(_) => "#",
             Expression::Varying(_) => "varying",
-            Expression::Semantic(_) => "semantic",
-            Expression::Sample { .. } => "sample",
-            Expression::Add(..) => "+",
-            Expression::Subtract(..) => "-",
-            Expression::Multiply(..) => "*",
-            Expression::Divide(..) => "/",
-            Expression::Min(..) => "min",
-            Expression::Max(..) => "max",
-            Expression::Clamp(..) => "clamp",
-            Expression::Dot(..) => "dot",
-            Expression::Cross(..) => "cross",
-            Expression::Normalize(..) => "normalize",
-            Expression::Length(..) => "length",
-            Expression::Floor(..) => "floor",
-            Expression::Mix(..) => "mix",
-            Expression::Construct { target, .. } => target.name(),
+            Expression::Sample { level, .. } => level.operation(),
+            Expression::SampleCompare { level_zero: false, .. } => "sampleCompare",
+            Expression::SampleCompare { level_zero: true, .. } => "sampleCompareLevel",
+            Expression::TextureQuery { query, .. } => query.operation(),
+            Expression::Unary(operator, _) => operator.name(),
+            Expression::Binary(operator, ..) => operator.name(),
+            Expression::Select { .. } => "select",
+            Expression::Call { function, .. } => function.name(),
+            Expression::Construct { target, .. } | Expression::Convert { target, .. } => target.name(),
             Expression::Swizzle { .. } => "swizzle",
         }
     }

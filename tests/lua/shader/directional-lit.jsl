@@ -1,31 +1,52 @@
 --!strict
--- A textured surface lit by one directional light: normals through a matrix parameter,
--- normalize, dot, max, swizzles, clamp, and a vector built back from parts.
+-- A textured surface lit by one directional light: the camera as a struct the pass binds,
+-- normals through a matrix the material binds, normalize, dot, max, swizzles, clamp, and a vector
+-- built back from parts.
 local shader = require '@jess/shader'
 
+local Camera = shader.struct('Camera', {
+  projection = shader.mat4,
+  view = shader.mat4,
+})
+
 return shader.program {
-  parameters = {
-    normalMatrix = shader.mat3,
-    lightDirection = shader.vec3,
-    ambient = shader.float,
+  attributes = {
+    normal = shader.vec3,
+    position = shader.vec3,
+    uv = shader.vec2,
   },
 
-  textures = {
+  pass = {
+    camera = Camera,
+  },
+
+  material = {
+    ambient = shader.float,
     diffuse = shader.texture2d,
+    lightDirection = shader.vec3,
+    normalMatrix = shader.mat3,
+  },
+
+  draw = {
+    model = shader.mat4,
   },
 
   vertex = function(input)
+    local camera = input.pass.camera
+    local placed = input.draw.model * shader.vec4(input.attributes.position, 1.0)
+
     return {
-      position = input.projection * input.view * input.model * shader.vec4(input.position, 1.0),
-      normal = input.normalMatrix * input.normal,
-      uv = input.uv,
+      position = camera.projection * camera.view * placed,
+      normal = input.material.normalMatrix * input.attributes.normal,
+      uv = input.attributes.uv,
     }
   end,
 
   fragment = function(input)
-    local diffuse = shader.sample(input.diffuse, input.uv)
-    local facing = shader.dot(shader.normalize(input.normal), input.lightDirection)
-    local light = shader.max(facing, 0.0) + input.ambient
+    local material = input.material
+    local diffuse = shader.sample(material.diffuse, input.uv)
+    local facing = shader.dot(shader.normalize(input.normal), material.lightDirection)
+    local light = shader.max(facing, 0.0) + material.ambient
     local lit = shader.clamp(diffuse.xyz * light, 0.0, 1.0)
 
     return shader.vec4(lit, diffuse.w)

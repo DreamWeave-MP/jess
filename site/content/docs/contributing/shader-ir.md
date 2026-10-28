@@ -39,44 +39,45 @@ Exactly what a first renderer needs:
 | Type | Notes |
 | --- | --- |
 | `Bool`, `Int`, `UInt`, `Float` | 32-bit scalars |
-| `Vec2f`, `Vec3f`, `Vec4f` | float vectors only; nothing needs integer vectors yet |
+| `Vec2f`, `Vec3f`, `Vec4f` | float vectors |
+| `Vec2i`..`Vec4i`, `Vec2u`..`Vec4u` | signed and unsigned integer vectors; varyings of them pass flat |
 | `Mat3f`, `Mat4f` | column-major float matrices |
-| `Texture2D`, `Sampler` | resources, never values: only a parameter has these types |
 
-Not the entire WGSL type system. If a first-party shader needs another type, it gets added then.
+Not the entire WGSL type system. If a first-party shader needs another type, it gets added then. Structs, arrays, textures, and samplers aren't values at all: a program declares them (see [Layout](#layout)), and expressions read the values in them.
 
 ## Expressions
 
 Expressions live in an arena and name each other by `ExpressionId`. Ids only point backwards: an operand always comes before the expression that reads it. The arena is already in dependency order, so validation, folding, and lowering are single passes over a vector. No recursion, no boxed trees, no visitor.
 
-The leaves are literals, declared parameters, vertex inputs, varyings, and semantics. The operations are `sample`, `+ - * /`, `min`, `max`, `clamp`, `dot`, `cross`, `normalize`, `length`, `mix`, vector constructors, and swizzles. `*` covers matrix × vector and matrix × matrix. `min`, `max`, `clamp`, and `mix` take a `Float` where a vector is expected, because every shader author writes `clamp(color, 0.0, 1.0)` and WGSL refusing it helps nobody.
+The leaves are literals, attributes, built-in values, varyings, and loads of uniform values. A built-in value is what the pipeline gives a stage: `VertexIndex` and `InstanceIndex` in the vertex stage, `Position` and `FrontFacing` in the fragment stage, and validation refuses one read in the other. The operations are `sample`, the binary operators (`+ - * / %`, the comparisons, logical and and or, the bitwise operators, and the shifts), the unary ones (negation, logical not, bitwise not), `select`, the built-in functions (WGSL's, by its names: `min` and `max`, rounding, roots, powers and logarithms, trigonometry, `step` and `smoothstep`, `mix`, the geometric ones from `dot` to `refract`, `transpose` and `determinant`, and the derivatives), constructors (a vector from components, a matrix from its columns), conversions between scalars that keep a value's size (`Float(index)`, `Vec3f(cell)`), and swizzles. A comparison takes two scalars and gives a `Bool`; there are no vectors of `Bool`, because nothing needs them. `*` covers matrix × vector and matrix × matrix. `min`, `max`, and `clamp` take a scalar of a vector's kind where the vector is expected, `pow`, `atan2`, `step`, and `smoothstep` a `Float` beside a float vector, and `mix` a `Float` amount, because every shader author writes `clamp(color, 0.0, 1.0)` and WGSL refusing it helps nobody. Integer vectors get the same arithmetic, constructors, and swizzles as float vectors; what only makes sense for floats (`normalize`, `length`, `floor`, `mix`, `cross`, and the rest) refuses them. The derivatives, `dpdx`, `dpdy`, and `fwidth`, exist only in the fragment stage, as sampling does.
 
-Semantics are values the renderer provides, named by what they mean rather than where they live:
+A load reads a value through a `Place`: a frequency's uniform block, then fields and indices down to one value, `pass.lights[i].color` being the pass block, member `lights`, element `i`, field `color`. A place can also start at a storage buffer, whose first step is an index of an element and whose length is the bound buffer's, read as `StorageLength`; a `Write` statement stores a value at a place in a `ReadWrite` one. A `ReadWrite` buffer is never in the vertex stage, which WGSL forbids, and a read of one is never uniform, since another invocation may write it between two reads. An `Atomic` buffer is a `ReadWrite` one of `Int`s or `UInt`s lowered to `array<atomic<T>>`: its loads and writes become `atomicLoad` and `atomicStore`, and an `Atomic` statement updates an element by an `AtomicOp` (`atomicAdd` to `atomicExchange`) and stores what it held into a var, which is never uniform either. An update is a statement, not an expression, because an expression runs only where it's read, and an update has to run whether anything reads what it gives back or not. An index is an `Int` or `UInt` expression, so a place can depend on what the program computes; a load whose place has an index is computed once, like any other operation, and one without is written where it's read. `sample` names its texture and sampler by the resources the program declared, never by a value. A float texture is a `Texture2D`, a `Texture2DArray`, a `TextureCube`, or a `Texture3D`, each sampled at its own coordinates (`Vec2f`, `Vec2f` and an integer layer, a `Vec3f` direction, `Vec3f`), and lowered to the WGSL texture type of the same shape; `Texture2Di` and `Texture2Du` hold integers and are only loaded; `DepthTexture2D`, `DepthTexture2DArray`, and `DepthTextureCube` hold depths, compared through a `ComparisonSampler` by `SampleCompare` (at the derivatives' level, fragment stage only, or in level 0, any stage) or loaded to a `Float`. A sample picks its mip level from the derivatives (`SampleLevel::Implicit`, fragment stage only), from them and a bias (`Bias`, fragment stage only), or as given (`Explicit`, any stage). A fragment output is any numeric scalar or vector, lowered at its own type, so an integer target (an id, for picking) is an output like any other. `TextureLoad` reads one texel at integer coordinates without a sampler, and `TextureQuery` asks a texture's size, levels, or layers. Their value operands are always in WGSL's order, coordinates, layer, level, so the lowering writes them as they come.
 
-| Semantic | Type | Lowered |
-| --- | --- | --- |
-| `model`, `view`, `projection` | `Mat4f` | yes |
-| `cameraPosition` | `Vec3f` | yes |
-| `viewportSize` | `Vec2f` | yes |
-| `time` | `Float` | yes |
-| `sceneColor`, `sceneDepth`, `previousPass` | `Texture2D` | not yet |
+Nothing else is built in. There's no model matrix, no camera, no time: a program that wants one declares it, as a uniform member some frequency binds, and so the IR holds no notion of what a camera is.
 
-The pass inputs exist in the IR so the render graph can grow into them. Until the lowering can bind them, validation says so instead of generating something that half works.
+## Statements
+
+A program is a vertex and a fragment stage, or a compute program (`Program::compute`, with a workgroup size): one compute stage, run per invocation, with no attributes, varyings, or outputs, which reads and writes storage buffers and takes no derivatives. Each stage has a body: a list of `Statement`s that run in order before it writes its outputs. `Emit(id)` computes an expression at that point; `Store` writes a local; `If` and `Loop` hold blocks of their own; `Discard` ends a fragment. A local is a `Var` or a loop's index, declared per stage and zero until something stores into it. A loop counts its index from 0 to an `Int` or `UInt` count computed before the first pass, and nothing stores into the index, so every loop ends.
+
+Where an expression is emitted is where its value exists: in that block and the blocks inside it, after it, in that stage. An expression no statement emits is computed at the top of whichever stage reads it, as every expression was before bodies existed, and may read only others like it; native code that never calls `Site::enter` builds that way. A `Local` read is computed where it is placed, because a local's value depends on what was stored before.
+
+Uniformity is checked here too. Derivatives come from a fragment's neighbours, so WGSL requires every derivative (implicit-level sampling, `dpdx`, `dpdy`, `fwidth`) to sit in control flow every fragment of a draw agrees on, and naga doesn't check it yet. Validation computes which fragment values are uniform (constants and uniform members, and what is computed only from them; a local only if every store into it is uniform and on a uniform path) and refuses a derivative under an `If` or `Loop` decided by anything else.
 
 ## Validation
 
 `Program::validate` returns every problem it finds, in Jess terms, as a typed `ValidationErrorKind`:
 
 ```text
-dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size
+dot(Vec3f, Vec4f) is invalid: expected two vectors of the same type
 sample(Texture2D, Sampler, Vec3f) is invalid: expected sample(Texture2D, Sampler, Vec2f)
-fragment output 0 is Vec3f: expected Vec4f
+fragment output 0 is Mat4f: expected a Float, Int, or UInt, or a vector of one
 varying "uv" is read by the fragment stage but never written by the vertex stage
-vertex input "position" is read in the fragment stage: pass it through a varying
-semantic sceneColor is not supported by the WGSL lowering yet
+attribute "position" is read in the fragment stage: pass it through a varying
+a load reads element 8 of an array of 4
+uniform material.weights is an array of elements 4 bytes apart: a uniform array's elements must be a multiple of 16 bytes apart, so give it 16-byte elements (a Vec4f, a struct), or read it from a storage buffer
 ```
 
-It checks declarations (names, duplicates, and types their kind can't have, such as a `Bool` parameter, which no uniform buffer can hold), references to anything undeclared or from another program, operand types, which stage reads what (vertex inputs are vertex-only, varyings fragment-only, and `sample` needs the fragment stage's derivatives), the stage interface, and output types. Constant arithmetic that WGSL would reject while compiling (integer overflow, integer division by zero, a non-finite float) is rejected here first, along with NaN and infinite literals, which WGSL can't write at all.
+It checks declarations (names, duplicates, and types their kind can't have, such as a `Bool` uniform member, which no buffer can hold, or a uniform array whose elements aren't 16 bytes apart), references to anything undeclared or from another program, every load's place, operand types, which stage reads what (attributes are vertex-only, varyings fragment-only, and `sample` and `sampleBias` need the fragment stage's derivatives), the stage interface, and output types. Constant arithmetic that WGSL would reject while compiling (integer overflow, integer division by zero, a non-finite float) is rejected here first, along with NaN and infinite literals, which WGSL can't write at all.
 
 Errors are collected, not thrown one at a time. An expression whose operand already failed is left untyped and not reported again, so one bad `dot` is one error, not one per expression downstream of it. Expressions no stage reads aren't checked. They aren't lowered either.
 
@@ -84,12 +85,12 @@ naga validating the output is a test, not a diagnostic. If naga ever rejects a p
 
 ## Source Attribution
 
-Every expression and declaration can carry a `SourceOrigin`: owner, file, line, and column. `push_at`, `parameter_at`, `vertex_input_at`, and `varying_at` record one; plain `push` doesn't. Origins are stored sparsely beside the arena, so native Rust that never records one pays nothing for them.
+Every expression and declaration can carry a `SourceOrigin`: owner, file, line, and column. `push_at` and `varying_at` record one, as does an `origin` on a declaration such as an `Attribute` or a `Uniform`; plain `push` doesn't. Origins are stored sparsely beside the arena, so native Rust that never records one pays nothing for them.
 
 Errors carry the origin of the expression or declaration at fault:
 
 ```text
-shaders/lit.jsl:12:5 (com.example.viewer): dot(Vec3f, Vec4f) is invalid: expected two float vectors of the same size
+shaders/lit.jsl:12:5 (com.example.viewer): dot(Vec3f, Vec4f) is invalid: expected two vectors of the same type
 ```
 
 The Luau front end fills these in from the module that built the expression. The IR doesn't know what Luau is; it just refuses to be structurally incapable of pointing at it.
@@ -100,34 +101,48 @@ The Luau front end fills these in from the module that built the expression. The
 
 A folded expression becomes a literal in place. An identity's readers read `x` instead. Ids stay valid. The program is validated first and left untouched when it's invalid. Folding is a separate step: `wgsl::lower` lowers exactly what it's given.
 
+## Layout
+
+A program declares structs, vertex attributes, uniform members, and textures and samplers, each by what it is and how often it changes: an attribute advances per vertex or per instance, and a uniform member or resource is bound per pass, per material, or per draw (the three `Frequency` values). Where any of it lives is `jess::shader::layout`'s decision, and `Program::layout` asks for it. Nothing about it is the author's to choose, so it's the same for every program that declares the same things.
+
+- **Buffers** follow WebGPU's rules for memory the host shares with the GPU, plus one rule of jess's: a struct or array member aligns to a multiple of 16 bytes, and a struct member's slot rounds up to one. That's what a uniform block demands, so every struct is valid in every buffer and one layout serves them all. Members lie largest alignment first, then in declaration order, so no member pads the next: a `Float` after two `Vec3f`s sits in the second one's padding.
+- **Bindings:** each frequency is one bind group, pass 0, material 1, draw 2. Its uniform members are one block at binding 0; its resources follow in declaration order.
+- **Vertex buffers:** per-vertex attributes are buffer 0 and per-instance attributes buffer 1, each packed in declaration order with no padding. Locations count across both, per-vertex first, and a matrix takes one per column.
+
+`ProgramLayout` reports every offset, size, stride, binding, and location, so whatever writes a buffer for a program writes it from the layout rather than from the generated source.
+
 ## Lowering
 
 One module writes all WGSL, with one naming scheme:
 
 | What | WGSL name |
 | --- | --- |
-| value parameter `color` | `parameters.p_color` |
-| texture and sampler `diffuse` | `t_diffuse`, `s_diffuse` |
-| vertex input `uv` | `input.a_uv` |
+| uniform member `color` of the material | `u_material.f_color`, of struct `MaterialUniforms` |
+| struct `Light`, declared third | `S2_Light`, its fields `f_color`, ... |
+| texture and sampler `diffuse` of the material | `t_material_diffuse`, `s_material_diffuse` |
+| storage buffer `particles` of the material | `b_material_particles`, an `array` of its element |
+| attribute `uv` | `input.a_uv`; per instance, `input.i_uv` |
+| matrix attribute `transform` at location 3 | its columns, `input.m3_transform` to `input.m6_transform` |
 | varying `uv` | `input.v_uv` |
-| semantic `cameraPosition` | `semantics.camera_position` |
+| built-in values | `vertex_index`, `instance_index`, and `front_facing`, entry point parameters only when the stage reads them; the fragment position is `input.position` |
 | fragment output 0 | `color0` |
 | temporaries | `e0`, `e1`, ... per entry point, in arena order |
+| locals | `l0`, `l1`, ..., declared at the top of their stage's entry point; a loop is `for (lN = 0u; lN < count; lN = lN + 1u)` |
 
-Every non-leaf expression a stage reads becomes one `let`. The entry points are `vertex_main` and `fragment_main`. The same program always lowers to the same bytes.
+Every non-leaf expression a stage reads becomes one `let`, where its stage's body emits it. The entry points are `vertex_main` and `fragment_main`, or a compute program's one, `compute_main`, with its `@workgroup_size`. The same program always lowers to the same bytes.
 
-Bindings belong to jess, never the author. Semantics are one uniform block at `@group(0) @binding(0)`, holding only the semantics the program reads. Value parameters are one uniform block at `@group(1) @binding(0)`, in declaration order, and textures and samplers follow in `@group(1)`. Vertex inputs get locations in declaration order. `WgslModule` reports all of it, including each uniform member's offset and size under WGSL's layout rules (a `Vec3f` aligns to 16 bytes, a `Mat3f` is three padded 16-byte columns), so the renderer never has to rediscover the layout from the source.
+Bindings and layouts belong to jess, never the author, and the lowering writes out what [Layout](#layout) decided: each frequency's block at binding 0 of its group, its textures and samplers after it, its storage buffers after them, struct and block members in memory order, with `@align` and `@size` wherever jess's 16-byte rule differs from what WGSL would pick by itself. `WgslModule` carries the `ProgramLayout`, so the renderer never has to rediscover a layout from the source.
 
 The fragment half of the textured, lit golden:
 
 ```wgsl
 @fragment
 fn fragment_main(input: VertexOutput) -> FragmentOutput {
-    let e0 = textureSample(t_diffuse, s_diffuse, input.v_uv);
+    let e0 = textureSample(t_material_diffuse, s_material_diffuse, input.v_uv);
     let e1 = normalize(input.v_normal);
-    let e2 = dot(e1, parameters.p_lightDirection);
+    let e2 = dot(e1, u_material.f_lightDirection);
     let e3 = max(e2, 0.0);
-    let e4 = e3 + parameters.p_ambient;
+    let e4 = e3 + u_material.f_ambient;
     let e5 = e0.xyz;
     let e6 = e5 * e4;
     let e7 = clamp(e6, vec3<f32>(0.0), vec3<f32>(1.0));
@@ -148,4 +163,4 @@ cargo test --test integration lua::shader::
 
 Every lowered module in the tests goes through naga's parser and validator, and the uniform layouts jess reports are checked against the ones naga computes. The golden WGSL lives in `tests/shader/golden`; `JESS_BLESS=1` rewrites it. Only bless when every change to the output is intended, and say why in the commit. `lua_shader` builds a corpus of Luau shader modules (`tests/lua/shader/*.jsl`) through `jess.shader`, folds them, and lowers each to WGSL naga accepts, with the invalid ones failing where they should.
 
-`tests/shader/triangle.rs` is the proof the layers compose: it builds a triangle program in the IR, lowers it, renders it headless with wgpu into an offscreen texture using only the bindings and locations `WgslModule` reported, and reads the center and corner pixels back. On a machine with no adapter at all, not even a software one, it prints `SKIPPED` and passes; `--nocapture` shows which adapter ran it.
+`tests/gpu/draw.rs`, behind the `gpu` feature, is the proof the layers compose: it builds programs in the IR, and [`jess::gpu`](@/docs/contributing/gpu.md) draws them offscreen from nothing but the layout each reports, instanced triangles, a sampled texture, a depth test, and an integer id target, and reads the pixels back. On a machine with no adapter at all, not even a software one, each prints `SKIPPED` and passes.

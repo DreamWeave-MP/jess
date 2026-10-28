@@ -1,0 +1,36 @@
+culling
+
+count
+    writes: counts
+
+compact
+    reads:  counts
+    writes: instances
+
+histogram
+    reads:  instances
+    writes: scratch
+
+scene
+    reads:  instances, scratch
+    writes: output, ids
+
+pick
+    reads:  ids
+    writes: picked
+
+culled
+    unobserved
+
+resources
+    counts     buffer          64 bytes    transient  count .. compact
+    scratch    buffer          64 bytes    transient  histogram .. scene
+    unused     buffer          256 bytes   transient  culled
+    instances  buffer          4096 bytes  imported   compact .. scene
+    ids        R32Uint         viewport    transient  scene .. pick
+    output     Bgra8UnormSrgb  viewport    imported   scene
+    picked     buffer          256 bytes   imported   pick
+
+aliasing
+    counts, scratch
+    ids

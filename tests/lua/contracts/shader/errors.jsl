@@ -6,19 +6,24 @@ local oracle, env = ...
 local shader = require '@jess/shader'
 
 local function vertex(input: ShaderInput): { [string]: ShaderExpr }
-  return { position = shader.vec4(input.position, 1.0) }
+  return { position = shader.vec4(0.0, 0.0, 0.0, 1.0) }
 end
 
 local function white(): ShaderExpr return shader.vec4(1.0) end
 
+local Camera = shader.struct('Camera', { projection = shader.mat4, view = shader.mat4 })
+local Light = shader.struct('Light', { color = shader.vec3, direction = shader.vec3 })
+
 local captured: ShaderExpr?
+local doubled: ShaderExpr? = nil
+local kept: ShaderVar? = nil
 
 local finished = shader.program {
-  parameters = { tint = shader.vec4 },
+  material = { tint = shader.vec4 },
   vertex = vertex,
   fragment = function(input)
-    captured = input.tint
-    return input.tint
+    captured = input.material.tint
+    return input.material.tint
   end,
 }
 
@@ -30,8 +35,14 @@ end
 
 local function inFragment(body: (ShaderInput) -> ShaderExpr): string
   return build {
-    parameters = { tint = shader.vec4, light = shader.vec3, pointSampler = shader.sampler },
-    textures = { diffuse = shader.texture2d },
+    pass = { camera = Camera, lights = shader.array(Light, 4) },
+    material = {
+      diffuse = shader.texture2d,
+      light = shader.vec3,
+      pointSampler = shader.sampler,
+      tint = shader.vec4,
+    },
+    draw = { model = shader.mat4 },
     vertex = vertex,
     fragment = body,
   }
@@ -40,53 +51,317 @@ end
 return {
   finished = tostring(finished),
   operations = {
-    dot = inFragment(function(input) return shader.vec4(shader.dot(input.light, input.tint)) end),
-    add = inFragment(function(input) return input.tint + input.model end),
-    construct = inFragment(function(input) return shader.vec4(input.tint, 1.0) end),
+    dot = inFragment(
+      function(input) return shader.vec4(shader.dot(input.material.light, input.material.tint)) end
+    ),
+    add = inFragment(function(input) return input.material.tint + input.draw.model end),
+    construct = inFragment(function(input) return shader.vec4(input.material.tint, 1.0) end),
     matrix = inFragment(function() return shader.mat4(1.0) end),
-    floatOfVector = inFragment(function(input) return shader.float(input.tint) end),
-    swizzle = inFragment(function(input) return input.light.xyzw end),
-    foreign = inFragment(function(input) return shader.min(input.tint, captured :: ShaderExpr) end),
-    sampler = inFragment(function(input) return shader.sample(input.tint, input.light.xy) end),
+    floatOfVector = inFragment(function(input) return shader.float(input.material.tint) end),
+    swizzle = inFragment(function(input) return input.material.light.xyzw end),
+    sign = inFragment(function() return shader.vec4(shader.float(shader.sign(shader.uint(3)))) end),
+    smoothstep = inFragment(
+      function(input) return shader.smoothstep(input.material.light, 1, input.material.tint) end
+    ),
+    notWhole = inFragment(function() return shader.vec4(shader.vec3i(1.5, 2, 3).x) end),
+    uintRange = inFragment(function() return shader.vec4(shader.uint(-1)) end),
+    integerFloat = inFragment(function() return shader.vec4(shader.vec2i(1, 2) * 2) end),
+    foreign = inFragment(
+      function(input) return shader.min(input.material.tint, captured :: ShaderExpr) end
+    ),
+    notATexture = inFragment(
+      function(input) return shader.sample(input.material.tint, input.material.light.xy) end
+    ),
+    cubeAtUv = build {
+      material = { sky = shader.textureCube },
+      vertex = vertex,
+      fragment = function(input) return shader.sample(input.material.sky, shader.vec2(0.5)) end,
+    },
+    noLayer = build {
+      material = { decals = shader.texture2dArray },
+      vertex = vertex,
+      fragment = function(input) return shader.sample(input.material.decals, shader.vec2(0.5)) end,
+    },
+    sampleIntegers = build {
+      material = { ids = shader.texture2du },
+      vertex = vertex,
+      fragment = function(input) return shader.sample(input.material.ids, shader.vec2(0.5)) end,
+    },
+    loadCube = build {
+      material = { sky = shader.textureCube },
+      vertex = vertex,
+      fragment = function(input)
+        return shader.load(input.material.sky, shader.vec2u(0), 0)
+      end,
+    },
+    levelAsLayer = inFragment(
+      function(input) return shader.sampleLevel(input.material.diffuse, shader.vec2(0.5), 0, 1) end
+    ),
+    dimensionsOfTwo = inFragment(
+      function(input)
+        local size = shader.dimensions(input.material.diffuse, 0, 1)
+
+        return shader.vec4(shader.float(size.x))
+      end
+    ),
+    sampleDepth = build {
+      material = { shadow = shader.depthTexture2d },
+      vertex = vertex,
+      fragment = function(input) return shader.sample(input.material.shadow, shader.vec2(0.5)) end,
+    },
+    compareColor = inFragment(
+      function(input)
+        return shader.vec4(shader.sampleCompare(input.material.diffuse, shader.vec2(0.5), 0))
+      end
+    ),
+    setType = inFragment(function(input)
+      local color = shader.var(input.material.tint)
+      color:set(1)
+
+      return color.value
+    end),
+    whenFunction = inFragment(function(input)
+      shader.when(true, 1 :: any)
+
+      return input.material.tint
+    end),
+    loopCount = inFragment(function(input)
+      shader.loop(1.5, function() end)
+
+      return input.material.tint
+    end),
+    discardInVertex = build {
+      vertex = function()
+        shader.discard()
+
+        return { position = shader.vec4(1.0) }
+      end,
+      fragment = white,
+    },
+    writeReadOnly = build {
+      material = { weights = shader.storage(shader.float) },
+      vertex = vertex,
+      fragment = function(input)
+        shader.write(input.material.weights, 0, 1)
+
+        return shader.vec4(1)
+      end,
+    },
+    writeInVertex = build {
+      material = { sums = shader.storage(shader.float, 'readWrite') },
+      vertex = function(input)
+        shader.write(input.material.sums, 0, 1)
+
+        return { position = shader.vec4(1) }
+      end,
+      fragment = white,
+    },
+    writeStruct = build {
+      material = { lights = shader.storage(Light, 'readWrite') },
+      vertex = vertex,
+      fragment = function(input)
+        shader.write(input.material.lights, 0, shader.vec3(1))
+
+        return shader.vec4(1)
+      end,
+    },
+    writeType = build {
+      material = { sums = shader.storage(shader.float, 'readWrite') },
+      vertex = vertex,
+      fragment = function(input)
+        shader.write(input.material.sums, 0, shader.vec2(1))
+
+        return shader.vec4(1)
+      end,
+    },
+    writeUniform = inFragment(function(input)
+      shader.write(input.pass.lights[0] :: any, 'color', shader.vec3(1))
+
+      return input.material.tint
+    end),
+    storageLength = inFragment(function(input)
+      shader.arrayLength(input.material.tint)
+
+      return input.material.tint
+    end),
+    noWorkgroup = oracle.message(
+      function() return shader.compute({ compute = function() end } :: any) end
+    ),
+    bigWorkgroup = oracle.message(
+      function() return shader.compute { workgroupSize = { 512 }, compute = function() end } end
+    ),
+    computeAttributes = oracle.message(function()
+      return shader.compute {
+        workgroupSize = 64,
+        compute = function(input) local _ = (input.attributes :: any).position end,
+      }
+    end),
+    computeBuiltin = oracle.message(function()
+      return shader.compute {
+        workgroupSize = 64,
+        compute = function(input) local _ = input.builtin.position end,
+      }
+    end),
+    computeReturns = oracle.message(function()
+      return shader.compute { workgroupSize = 64, compute = function() return 1 end :: any }
+    end),
+    computeKey = oracle.message(
+      function()
+        local spec = { workgroupSize = 64, vertex = vertex, compute = function() end }
+
+        return shader.compute(spec :: any)
+      end
+    ),
+    storageAccess = oracle.message(
+      function() return shader.storage(shader.float, 'write' :: any) end
+    ),
+    storageInStruct = oracle.message(
+      function() return shader.struct('Bad', { counts = shader.storage(shader.uint) }) end
+    ),
+    notASampler = inFragment(
+      function(input)
+        return shader.sample(input.material.diffuse, input.material.tint, input.material.light.xy)
+      end
+    ),
+    compare = inFragment(
+      function(input)
+        local light = input.material.light
+        return shader.select(shader.less(light, 1), input.material.tint, input.material.tint)
+      end
+    ),
+    selectTypes = inFragment(
+      function(input) return shader.select(true, input.material.tint, input.material.light) end
+    ),
+    negateMatrix = inFragment(function(input) return shader.vec4(-input.draw.model) end),
+    negateTexture = inFragment(function(input) return -input.material.diffuse end),
+    shiftTooFar = inFragment(
+      function()
+        return shader.vec4(shader.float(shader.shiftLeft(shader.uint(1), shader.uint(40))))
+      end
+    ),
+    textureAsValue = inFragment(function(input) return input.material.diffuse * 2.0 end),
+    structAsValue = inFragment(function(input) return input.pass.camera + 1.0 end),
 
     name = build {
-      parameters = { ['light-dir'] = shader.vec3 },
+      material = { ['light-dir'] = shader.vec3 },
       vertex = vertex,
       fragment = white,
     },
   },
 
+  places = {
+    unknownMember = inFragment(function(input) return input.material.tnit end),
+    nothingBound = inFragment(function(input) return input.draw.tint end),
+    unknownField = inFragment(
+      function(input) return shader.vec4(input.pass.lights[0].colour, 1.0) end
+    ),
+    pastTheEnd = inFragment(
+      function(input) return shader.vec4(input.pass.lights[4].color, 1.0) end
+    ),
+    notWholeIndex = inFragment(
+      function(input) return shader.vec4(input.pass.lights[1.5].color, 1.0) end
+    ),
+    indexKind = inFragment(function(input) return (input.pass.lights :: any).first end),
+    fieldKind = inFragment(function(input) return (input.pass.camera :: any)[1] end),
+    noLength = inFragment(function(input) return shader.vec4(#input.pass.camera) end),
+    unknownBuiltin = inFragment(function(input) return shader.vec4(input.builtin.fragCoord.x) end),
+    builtinOfVertex = inFragment(
+      function(input) return shader.vec4(shader.float(input.builtin.vertexIndex)) end
+    ),
+  },
+
   program = {
-    fragmentType = inFragment(function(input) return input.light.xyz end),
+    fragmentType = inFragment(function(input) return input.draw.model end),
 
     position = build {
-      vertex = function(input) return { position = input.position } end,
+      attributes = { position = shader.vec3 },
+      vertex = function(input) return { position = input.attributes.position } end,
       fragment = white,
     },
 
     sampleInVertex = build {
-      textures = { diffuse = shader.texture2d },
+      attributes = { uv = shader.vec2 },
+      material = { diffuse = shader.texture2d },
       vertex = function(input)
         return {
-          position = shader.vec4(shader.sample(input.diffuse, input.uv).xyz, 1.0),
+          position = shader.vec4(
+            shader.sample(input.material.diffuse, input.attributes.uv).xyz,
+            1.0
+          ),
         }
       end,
       fragment = white,
     },
 
-    unsupportedSemantic = inFragment(
-      function(input) return shader.sample(input.sceneColor, input.pointSampler, input.light.xy) end
-    ),
+    derivativeInVertex = build {
+      attributes = { position = shader.vec4 },
+      vertex = function(input) return { position = shader.dpdx(input.attributes.position) } end,
+      fragment = white,
+    },
+
+    outOfScope = inFragment(function(input)
+      local inside: ShaderExpr? = nil
+      shader.when(shader.greater(input.material.tint.x, 0), function()
+        inside = input.material.tint * 2
+      end)
+      assert(inside)
+
+      return inside
+    end),
+
+    otherStage = build {
+      attributes = { position = shader.vec4 },
+      material = { tint = shader.vec4 },
+      vertex = function(input)
+        doubled = input.material.tint * 2
+
+        return { position = input.attributes.position }
+      end,
+      fragment = function() return doubled :: ShaderExpr end,
+    },
+
+    varInOtherStage = build {
+      attributes = { position = shader.vec4 },
+      vertex = function(input)
+        kept = shader.var(input.attributes.position)
+
+        return { position = input.attributes.position }
+      end,
+      fragment = function() return (kept :: ShaderVar).value end,
+    },
+
+    nonUniform = build {
+      attributes = { uv = shader.vec2 },
+      material = { diffuse = shader.texture2d },
+      vertex = function(input)
+        return { position = shader.vec4(input.attributes.uv, 0, 1), uv = input.attributes.uv }
+      end,
+      fragment = function(input)
+        local color = shader.var(shader.vec4(0))
+        shader.when(shader.greater(input.uv.x, 0.5), function()
+          color:set(shader.sample(input.material.diffuse, input.uv))
+        end)
+
+        return color.value
+      end,
+    },
+
+    uniformStride = build {
+      material = { weights = shader.array(shader.float, 4) },
+      vertex = vertex,
+      fragment = white,
+    },
 
     several = build {
-      textures = { diffuse = shader.texture2d },
+      attributes = { position = shader.vec3, uv = shader.vec2 },
+      material = { diffuse = shader.texture2d },
       vertex = function(input)
         return {
-          position = input.position,
-          shade = shader.sample(input.diffuse, input.uv),
+          position = input.attributes.position,
+          shade = shader.sample(input.material.diffuse, input.attributes.uv),
         }
       end,
-      fragment = function(input) return input.shade.xyz end,
+      fragment = function(input) return shader.less(input.shade.x, 0) end,
     },
   },
 
@@ -103,57 +378,60 @@ return {
       shader.program,
       { fragment = white }
     ),
-    parametersKind = oracle.raises(
+    unknownKey = oracle.raises(
       'argument',
-      'parameters must be a table of shader types, not number',
+      "unknown jess.shader.program option 'parameters': expected attributes, draw, fragment, instance, material, pass, or vertex",
       shader.program,
-      { parameters = 5, vertex = vertex, fragment = white }
+      { parameters = { tint = shader.vec4 }, vertex = vertex, fragment = white } :: any
     ),
-    parameterKind = oracle.raises(
+    groupKind = oracle.raises(
       'argument',
-      'parameters.tint must be a shader type such as shader.vec4, not number',
+      'material must be a table of shader types, not number',
       shader.program,
-      { parameters = { tint = 5 }, vertex = vertex, fragment = white }
+      { material = 5 :: any, vertex = vertex, fragment = white }
     ),
-    parameterName = oracle.raises(
+    memberKind = oracle.raises(
       'argument',
-      'parameters are named by strings, not number',
+      'material.tint must be a shader type such as shader.vec4, not number',
       shader.program,
-      { parameters = { shader.vec4 }, vertex = vertex, fragment = white }
+      { material = { tint = 5 :: any }, vertex = vertex, fragment = white }
     ),
-    textureInParameters = oracle.raises(
+    memberName = oracle.raises(
       'argument',
-      'parameter "diffuse" is a Texture2D: textures are declared in textures',
+      'the names in pass must be strings, not number',
       shader.program,
-      { parameters = { diffuse = shader.texture2d }, vertex = vertex, fragment = white }
+      { pass = { shader.vec4 } :: any, vertex = vertex, fragment = white }
     ),
-    valueInTextures = oracle.raises(
+    attributeType = oracle.raises(
       'argument',
-      'texture "diffuse" is Vec4f: textures are shader.texture2d; values go in parameters',
+      'attributes.diffuse must be a value type such as shader.vec3, not Texture2D',
       shader.program,
-      { textures = { diffuse = shader.vec4 }, vertex = vertex, fragment = white }
+      { attributes = { diffuse = shader.texture2d }, vertex = vertex, fragment = white }
     ),
-    semanticName = oracle.raises(
+    instanceStruct = oracle.raises(
       'argument',
-      'parameter "model" has the name of a semantic input, which the input would hide',
+      'instance.camera must be a value type such as shader.vec3, not Camera',
       shader.program,
-      { parameters = { model = shader.mat4 }, vertex = vertex, fragment = white }
-    ),
-    attributeName = oracle.raises(
-      'argument',
-      'texture "color" has the name of a vertex attribute, which the input would hide',
-      shader.program,
-      { textures = { color = shader.texture2d }, vertex = vertex, fragment = white }
+      { instance = { camera = Camera }, vertex = vertex, fragment = white }
     ),
     varyingName = oracle.raises(
       'argument',
-      'vertex output "tint" has the name of a parameter, which the input would hide',
+      'vertex output "material" has the name of a namespace of the input, which the input would hide',
       shader.program,
       {
-        parameters = { tint = shader.vec4 },
+        material = { tint = shader.vec4 },
         vertex = function(input)
-          return { position = shader.vec4(input.position, 1.0), tint = input.color }
+          return { position = shader.vec4(1.0), material = input.material.tint }
         end,
+        fragment = white,
+      }
+    ),
+    builtinName = oracle.raises(
+      'argument',
+      'vertex output "builtin" has the name of a namespace of the input, which the input would hide',
+      shader.program,
+      {
+        vertex = function() return { position = shader.vec4(1.0), builtin = shader.vec4(0.0) } end,
         fragment = white,
       }
     ),
@@ -167,41 +445,119 @@ return {
       'argument',
       'the vertex function\'s table has no position',
       shader.program,
-      { vertex = function(input) return { uv = input.uv } end, fragment = white }
+      {
+        attributes = { uv = shader.vec2 },
+        vertex = function(input) return { uv = input.attributes.uv } end,
+        fragment = white,
+      }
     ),
     vertexOutput = oracle.raises(
       'argument',
       'vertex output "uv" is number: expected a shader value',
       shader.program,
       {
-        vertex = function(input) return { position = shader.vec4(input.position, 1.0), uv = 3 } end,
+        vertex = function() return { position = shader.vec4(1.0), uv = 3 } end,
         fragment = white,
       }
     ),
     fragmentReturn = oracle.raises(
       'argument',
-      'the fragment function returned table: expected a shader value, the Vec4f color',
+      'the fragment function returned number: expected a shader value, the color, or a table of named outputs',
       shader.program,
-      { vertex = vertex, fragment = function() return {} end }
+      { vertex = vertex, fragment = function() return 1 end :: any }
+    ),
+    fragmentEmpty = oracle.raises(
+      'argument',
+      "the fragment function's table has no outputs",
+      shader.program,
+      { vertex = vertex, fragment = function() return {} end :: any }
+    ),
+    fragmentOutputName = oracle.raises(
+      'argument',
+      'fragment output "id" is number: expected a shader value',
+      shader.program,
+      { vertex = vertex, fragment = function() return { color = white(), id = 3 } end :: any }
+    ),
+  },
+
+  types = {
+    structFields = oracle.raises(
+      'argument',
+      'shader.struct takes a name and a table of fields, not number',
+      shader.struct,
+      'Bad',
+      5
+    ),
+    textureField = oracle.raises(
+      'argument',
+      'Bad.tex is a Texture2D: textures and samplers are bound, not held in a struct or array',
+      shader.struct,
+      'Bad',
+      { tex = shader.texture2d }
+    ),
+    arrayOfArrays = oracle.raises(
+      'argument',
+      'shader.array\'s element is an array: an array holds values or structs, not arrays',
+      shader.array,
+      shader.array(shader.float, 2),
+      2
+    ),
+    emptyArray = oracle.raises(
+      'argument',
+      'shader.array\'s length must be a whole number of at least 1, not 0',
+      shader.array,
+      shader.vec4,
+      0
+    ),
+    constructStruct = oracle.raises(
+      'argument',
+      'Camera can\'t be constructed: it is declared, and read from the input',
+      Camera :: any,
+      1.0
     ),
   },
 
   input = {
     unknown = oracle.raises(
       'unknownName',
-      'the vertex input has no "foo": it has cameraPosition, color, model, normal, position, previousPass, projection, sceneColor, sceneDepth, time, tint, uv, view, viewportSize',
+      'the vertex input has no "foo": it has attributes, builtin, draw, instance, material, pass',
       shader.program,
       {
-        parameters = { tint = shader.vec4 },
+        material = { tint = shader.vec4 },
         vertex = function(input) return { position = input.foo } end,
         fragment = white,
       }
     ),
-    attributeInFragment = oracle.raises(
+    attributesInFragment = oracle.raises(
       'unknownName',
-      'vertex input "normal" is only readable in the vertex function; return it from there to pass it to the fragment function as a varying',
+      'the attributes are only readable in the vertex function; return what the fragment function needs from them, to pass it as a varying',
       shader.program,
-      { vertex = vertex, fragment = function(input) return input.normal end }
+      {
+        attributes = { normal = shader.vec3 },
+        vertex = vertex,
+        fragment = function(input) return input.attributes.normal end,
+      }
+    ),
+    unknownAttribute = oracle.raises(
+      'unknownName',
+      'the attributes have no "normals": they have normal, position',
+      shader.program,
+      {
+        attributes = { normal = shader.vec3, position = shader.vec3 },
+        vertex = function(input)
+          return { position = shader.vec4(input.attributes.normals, 1.0) }
+        end,
+        fragment = white,
+      }
+    ),
+    noInstanceAttributes = oracle.raises(
+      'unknownName',
+      'the instance attributes have no "transform": the program declares none',
+      shader.program,
+      {
+        vertex = function(input) return { position = input.instance.transform } end,
+        fragment = white,
+      }
     ),
     indexKind = oracle.raises(
       'argument',
@@ -218,8 +574,8 @@ return {
       shader.program,
       {
         vertex = vertex,
-        fragment = function(input) return input.tint.rgb end,
-        parameters = { tint = shader.vec4 },
+        fragment = function(input) return input.material.tint.rgb end,
+        material = { tint = shader.vec4 },
       }
     ),
     indexKind = oracle.raises(
@@ -228,8 +584,8 @@ return {
       shader.program,
       {
         vertex = vertex,
-        fragment = function(input) return (input.tint :: any)[1] end,
-        parameters = { tint = shader.vec4 },
+        fragment = function(input) return (input.material.tint :: any)[1] end,
+        material = { tint = shader.vec4 },
       }
     ),
     operandKind = oracle.raises(
@@ -238,8 +594,8 @@ return {
       shader.program,
       {
         vertex = vertex,
-        fragment = function(input) return (input.tint :: any) + 'one' end,
-        parameters = { tint = shader.vec4 },
+        fragment = function(input) return (input.material.tint :: any) + 'one' end,
+        material = { tint = shader.vec4 },
       }
     ),
     finished = oracle.raises(

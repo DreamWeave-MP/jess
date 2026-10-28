@@ -3,35 +3,61 @@
 use std::fmt;
 
 use crate::shader::expression::{
-    Expression, ExpressionId, Literal, ParameterId, Semantic, SourceOrigin, Swizzle, VaryingId, VertexInputId,
+    BinaryOperator, Builtin, Expression, ExpressionId, Function, Literal, Place, PlaceRoot, SampleLevel, SourceOrigin, Step,
+    Swizzle, TextureQuery, UnaryOperator, VaryingId,
 };
+use crate::shader::flow::{self, LocalId, LocalKind, Placements, Stage, Statement};
 use crate::shader::fold::{Arithmetic, evaluate};
+use crate::shader::interface::{
+    Access, Attribute, AttributeId, DataType, Element, Frequency, Rate, ResourceId, ResourceKind, StorageBuffer, StorageId,
+    StructDecl, StructId,
+};
+use crate::shader::layout::ProgramLayout;
 use crate::shader::program::{Declaration, Program};
-use crate::shader::types::Type;
+use crate::shader::types::{Scalar, Type};
 
 /// The most color outputs a fragment stage can have.
 pub const MAX_FRAGMENT_OUTPUTS: usize = 8;
+/// The most shader locations a program's attributes can take, both rates together.
+pub const MAX_ATTRIBUTE_LOCATIONS: u32 = 16;
 
 pub const VERTEX: u8 = 1;
 pub const FRAGMENT: u8 = 2;
+/// The compute stage's bit in an expression's stage marks.
+pub const COMPUTE: u8 = 4;
 
 /// What kind of thing a declaration declares.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DeclarationKind {
-    /// A parameter.
-    Parameter,
-    /// A vertex input.
-    VertexInput,
+    /// A struct.
+    Struct,
+    /// A struct's field.
+    Field,
+    /// A vertex attribute of the rate.
+    Attribute(Rate),
+    /// A uniform member the frequency binds.
+    Uniform(Frequency),
+    /// A texture the frequency binds.
+    Texture(Frequency),
+    /// A sampler the frequency binds.
+    Sampler(Frequency),
+    /// A storage buffer the frequency binds.
+    Storage(Frequency),
     /// A varying.
     Varying,
 }
 
-impl DeclarationKind {
-    fn name(self) -> &'static str {
+impl fmt::Display for DeclarationKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            DeclarationKind::Parameter => "parameter",
-            DeclarationKind::VertexInput => "vertex input",
-            DeclarationKind::Varying => "varying",
+            DeclarationKind::Struct => formatter.write_str("struct"),
+            DeclarationKind::Field => formatter.write_str("field"),
+            DeclarationKind::Attribute(rate) => formatter.write_str(rate.name()),
+            DeclarationKind::Uniform(frequency) => write!(formatter, "{frequency} uniform"),
+            DeclarationKind::Texture(frequency) => write!(formatter, "{frequency} texture"),
+            DeclarationKind::Sampler(frequency) => write!(formatter, "{frequency} sampler"),
+            DeclarationKind::Storage(frequency) => write!(formatter, "{frequency} storage buffer"),
+            DeclarationKind::Varying => formatter.write_str("varying"),
         }
     }
 }
@@ -90,19 +116,67 @@ pub enum ValidationErrorKind {
         /// The expression, in the other program's arena.
         expression: ExpressionId,
     },
-    /// An expression reads a parameter that was never declared.
-    UndefinedParameter {
-        /// The reader.
-        expression: ExpressionId,
-        /// The parameter.
-        parameter: ParameterId,
+    /// A struct field or uniform member names a struct that isn't declared before the struct
+    /// it belongs to, or at all.
+    UndefinedStruct {
+        /// What names it.
+        kind: DeclarationKind,
+        /// Its name.
+        name: String,
+        /// The struct named.
+        structure: StructId,
     },
-    /// An expression reads a vertex input that was never declared.
-    UndefinedVertexInput {
+    /// A struct has no fields.
+    EmptyStruct {
+        /// The struct's name.
+        name: String,
+    },
+    /// A struct field or uniform member is an array of no elements.
+    EmptyArray {
+        /// What it is.
+        kind: DeclarationKind,
+        /// Its name.
+        name: String,
+    },
+    /// A uniform member is or holds an array whose elements are not a multiple of 16 bytes apart,
+    /// which no uniform block can hold.
+    UniformArrayStride {
+        /// The array, from its frequency: `material.weights`, `pass.light.samples`.
+        path: String,
+        /// The bytes from one element to the next.
+        stride: u32,
+    },
+    /// A load's place doesn't lead to a value.
+    InvalidPlace {
+        /// The load.
+        expression: ExpressionId,
+        /// What's wrong with it.
+        problem: PlaceProblem,
+    },
+    /// An expression reads a texture or sampler that was never declared.
+    UndefinedResource {
         /// The reader.
         expression: ExpressionId,
-        /// The vertex input.
-        input: VertexInputId,
+        /// The resource.
+        resource: ResourceId,
+    },
+    /// A texture read or query is given what its texture doesn't take.
+    InvalidTexture {
+        /// The read or query.
+        expression: ExpressionId,
+        /// Its Jess name: `sample`, `load`, `dimensions`, ...
+        operation: &'static str,
+        /// What it was given: the resources' kinds, then the values' types.
+        arguments: Vec<&'static str>,
+        /// What it takes.
+        expected: String,
+    },
+    /// An expression reads an attribute that was never declared.
+    UndefinedAttribute {
+        /// The reader.
+        expression: ExpressionId,
+        /// The attribute.
+        attribute: AttributeId,
     },
     /// An expression reads, or the vertex stage writes, a varying that was never declared.
     UndefinedVarying {
@@ -133,6 +207,13 @@ pub enum ValidationErrorKind {
         /// The arithmetic.
         expression: ExpressionId,
     },
+    /// A shift by a constant of 32 or more, which WGSL rejects while compiling.
+    ShiftTooFar {
+        /// The shift.
+        expression: ExpressionId,
+        /// The amount.
+        amount: u32,
+    },
     /// A swizzle reads a component its vector does not have, or reads a non-vector.
     InvalidSwizzle {
         /// The swizzle.
@@ -142,12 +223,26 @@ pub enum ValidationErrorKind {
         /// The components.
         swizzle: Swizzle,
     },
-    /// The fragment stage reads a vertex input; it only sees varyings.
-    VertexInputInFragment {
+    /// The fragment stage reads an attribute; it only sees varyings.
+    AttributeInFragment {
         /// The reader.
         expression: ExpressionId,
-        /// The vertex input's name.
-        input: String,
+        /// The attribute's name.
+        attribute: String,
+    },
+    /// A stage reads a built-in value only another stage has.
+    BuiltinInStage {
+        /// The reader.
+        expression: ExpressionId,
+        /// The value.
+        builtin: Builtin,
+        /// The stage reading it.
+        read: Stage,
+    },
+    /// The attributes take more than [`MAX_ATTRIBUTE_LOCATIONS`] locations.
+    TooManyAttributeLocations {
+        /// How many they take.
+        count: u32,
     },
     /// The vertex stage reads a varying; it only writes them.
     VaryingInVertex {
@@ -156,17 +251,161 @@ pub enum ValidationErrorKind {
         /// The varying's name.
         varying: String,
     },
-    /// The vertex stage samples a texture; sampling needs the fragment stage's derivatives.
-    SampleInVertex {
+    /// A stage other than the fragment samples at a level the fragment stage's derivatives pick.
+    SampleOutsideFragment {
         /// The sample.
         expression: ExpressionId,
+        /// `sample`, `sampleBias`, or `sampleCompare`.
+        operation: &'static str,
+        /// What the stage can do instead.
+        instead: &'static str,
+        /// The stage.
+        stage: Stage,
     },
-    /// A semantic the lowering cannot provide yet (the pass-specific inputs).
-    UnsupportedSemantic {
-        /// The reader.
+    /// A stage other than the fragment takes a derivative, which only the fragment stage has.
+    DerivativeOutsideFragment {
+        /// The call.
         expression: ExpressionId,
-        /// The semantic.
-        semantic: Semantic,
+        /// `dpdx`, `dpdy`, or `fwidth`.
+        function: Function,
+        /// The stage.
+        stage: Stage,
+    },
+    /// A statement places an expression a second time, or one not in the program.
+    Misplaced {
+        /// The expression.
+        expression: ExpressionId,
+    },
+    /// A value is read in a stage other than the one whose body computes it.
+    ReadInOtherStage {
+        /// The value.
+        expression: ExpressionId,
+        /// The stage that computes it.
+        computed: Stage,
+        /// The stage that reads it.
+        read: Stage,
+    },
+    /// A value computed inside a [`Statement::If`] or [`Statement::Loop`] is read outside it.
+    ReadOutOfScope {
+        /// The value.
+        expression: ExpressionId,
+    },
+    /// An expression no statement places reads one a statement does.
+    UnplacedReadsPlaced {
+        /// The unplaced expression.
+        expression: ExpressionId,
+        /// The placed one it reads.
+        operand: ExpressionId,
+    },
+    /// A statement or expression names a local that is not declared.
+    UndefinedLocal {
+        /// The local.
+        local: LocalId,
+    },
+    /// A local is used in a stage other than the one that declares it.
+    LocalInOtherStage {
+        /// The local's kind.
+        kind: LocalKind,
+        /// The stage that declares it.
+        declared: Stage,
+        /// The stage that uses it.
+        used: Stage,
+    },
+    /// A store into a loop's index, or a loop over a var.
+    LocalKindMismatch {
+        /// What the statement needs.
+        expected: LocalKind,
+    },
+    /// A var is stored a value of another type.
+    StoreType {
+        /// The var's type.
+        declared: Type,
+        /// The stored value's.
+        stored: Type,
+    },
+    /// An if's condition is not a `Bool`.
+    ConditionType {
+        /// Its type.
+        found: Type,
+    },
+    /// A loop's count is not an `Int` or `UInt`, or its index is not of the count's type.
+    LoopCountType {
+        /// The count's type.
+        count: Type,
+        /// The index's.
+        index: Type,
+    },
+    /// A body other than the fragment's discards.
+    DiscardOutsideFragment {
+        /// The stage.
+        stage: Stage,
+    },
+    /// A compute program has something only a vertex and fragment program has.
+    ComputeHas {
+        /// What it has.
+        what: &'static str,
+    },
+    /// A vertex and fragment program has compute statements.
+    RenderHasCompute,
+    /// A compute program's workgroup size is out of WebGPU's limits.
+    WorkgroupSize {
+        /// The size.
+        size: [u32; 3],
+    },
+    /// A derivative is taken where fragments may disagree on the path to it.
+    NonUniformDerivative {
+        /// The expression.
+        expression: ExpressionId,
+        /// Its Jess name: `sample`, `dpdx`, ...
+        operation: &'static str,
+        /// What to do instead.
+        instead: &'static str,
+    },
+    /// A builder's statements don't nest: an else, end, or statement where none fits.
+    Unbalanced {
+        /// What doesn't fit.
+        problem: &'static str,
+    },
+    /// A `ReadWrite` or `Atomic` storage buffer is used in the vertex stage, which WGSL forbids.
+    StorageInVertex {
+        /// The buffer's name.
+        name: String,
+        /// How it is declared.
+        access: Access,
+    },
+    /// An `Atomic` storage buffer holds something other than `Int`s or `UInt`s.
+    AtomicElement {
+        /// The buffer's name.
+        name: String,
+    },
+    /// An atomic update's place is in a storage buffer that isn't `Atomic`.
+    AtomicOnPlain {
+        /// The buffer's name, or `None` for a uniform block.
+        name: Option<String>,
+    },
+    /// An atomic update's result is kept in something other than a var of the element's type.
+    AtomicResult {
+        /// The element's type.
+        element: Type,
+    },
+    /// A write's place is in a uniform block, which only the host writes.
+    WriteToUniform,
+    /// A write's place is in a `Read` storage buffer.
+    WriteToReadOnly {
+        /// The buffer's name.
+        name: String,
+    },
+    /// A write's place doesn't reach a value.
+    InvalidWrite {
+        /// What is wrong with it.
+        problem: PlaceProblem,
+    },
+    /// A write's value is not of its place's type.
+    WriteType {
+        /// The place's type.
+        place: Type,
+        /// The value's.
+        value: Type,
     },
     /// The vertex stage has no position.
     MissingPosition,
@@ -175,7 +414,7 @@ pub enum ValidationErrorKind {
         /// Its type.
         found: Type,
     },
-    /// A fragment output is not a `Vec4f`.
+    /// A fragment output is not a numeric scalar or vector: a `Bool` or a matrix.
     FragmentOutputType {
         /// The output's color location.
         location: u32,
@@ -214,18 +453,18 @@ impl fmt::Display for ValidationErrorKind {
         match self {
             ValidationErrorKind::InvalidName { kind, name } => write!(
                 formatter,
-                "{} name {name:?} is invalid: expected ASCII letters, digits, and underscores, not starting with a digit",
-                kind.name()
+                "{kind} name {name:?} is invalid: expected ASCII letters, digits, and underscores, not starting with a digit"
             ),
             ValidationErrorKind::DuplicateName { kind, name } => {
-                write!(formatter, "{} {name:?} is declared twice", kind.name())
+                write!(formatter, "{kind} {name:?} is declared twice")
             }
             ValidationErrorKind::UnsupportedDeclarationType { kind, name, ty } => {
                 let expected = match kind {
-                    DeclarationKind::Parameter => "Int, UInt, Float, a vector, a matrix, Texture2D, or Sampler",
-                    DeclarationKind::VertexInput | DeclarationKind::Varying => "Int, UInt, Float, or a vector",
+                    DeclarationKind::Attribute(_) => "Int, UInt, Float, a vector, or a matrix",
+                    DeclarationKind::Varying => "Int, UInt, Float, or a vector",
+                    _ => "Int, UInt, Float, a vector, a matrix, a struct, or an array of one of those",
                 };
-                write!(formatter, "{} {name:?} cannot be {ty}: expected {expected}", kind.name())
+                write!(formatter, "{kind} {name:?} cannot be {ty}: expected {expected}")
             }
             ValidationErrorKind::InvalidOperand { expression, operand } => write!(
                 formatter,
@@ -243,17 +482,43 @@ impl fmt::Display for ValidationErrorKind {
                     expression.index()
                 )
             }
-            ValidationErrorKind::UndefinedParameter { expression, parameter } => write!(
+            ValidationErrorKind::UndefinedStruct { kind, name, structure } => write!(
                 formatter,
-                "expression {} reads parameter {}, which is not declared",
-                expression.index(),
-                parameter.index()
+                "{kind} {name:?} names struct {}, which is not declared before it",
+                structure.index()
             ),
-            ValidationErrorKind::UndefinedVertexInput { expression, input } => write!(
+            ValidationErrorKind::EmptyStruct { name } => write!(formatter, "struct {name:?} has no fields"),
+            ValidationErrorKind::EmptyArray { kind, name } => {
+                write!(formatter, "{kind} {name:?} is an array of no elements")
+            }
+            ValidationErrorKind::UniformArrayStride { path, stride } => write!(
                 formatter,
-                "expression {} reads vertex input {}, which is not declared",
+                "uniform {path} is an array of elements {stride} bytes apart: a uniform array's elements \
+                 must be a multiple of 16 bytes apart, so give it 16-byte elements (a Vec4f, a struct), or \
+                 read it from a storage buffer"
+            ),
+            ValidationErrorKind::InvalidPlace { problem, .. } => write!(formatter, "a load {problem}"),
+            ValidationErrorKind::UndefinedResource { expression, resource } => write!(
+                formatter,
+                "expression {} reads resource {}, which is not declared",
                 expression.index(),
-                input.index()
+                resource.index()
+            ),
+            ValidationErrorKind::InvalidTexture {
+                operation,
+                arguments,
+                expected,
+                ..
+            } => write!(
+                formatter,
+                "{operation}({}) is invalid: expected {expected}",
+                arguments.join(", ")
+            ),
+            ValidationErrorKind::UndefinedAttribute { expression, attribute } => write!(
+                formatter,
+                "expression {} reads attribute {}, which is not declared",
+                expression.index(),
+                attribute.index()
             ),
             ValidationErrorKind::UndefinedVarying { expression, varying } => write!(
                 formatter,
@@ -273,7 +538,7 @@ impl fmt::Display for ValidationErrorKind {
                 ..
             } => {
                 if let [left, right] = operands.as_slice()
-                    && matches!(*operation, "+" | "-" | "*" | "/")
+                    && matches!(*operation, "+" | "-" | "*" | "/" | "%")
                 {
                     return write!(formatter, "{left} {operation} {right} is invalid: expected {expected}");
                 }
@@ -291,29 +556,158 @@ impl fmt::Display for ValidationErrorKind {
                 "expression {} is constant arithmetic that overflows, divides an integer by zero, or is not finite",
                 expression.index()
             ),
+            ValidationErrorKind::ShiftTooFar { amount, .. } => {
+                write!(formatter, "a shift by {amount} is too far: shift by less than 32")
+            }
             ValidationErrorKind::InvalidSwizzle { vector, swizzle, .. } => {
                 write!(formatter, "{vector}.{swizzle} is invalid: expected components a {vector} has")
             }
-            ValidationErrorKind::VertexInputInFragment { input, .. } => write!(
+            ValidationErrorKind::AttributeInFragment { attribute, .. } => write!(
                 formatter,
-                "vertex input {input:?} is read in the fragment stage: pass it through a varying"
+                "attribute {attribute:?} is read in the fragment stage: pass it through a varying"
+            ),
+            ValidationErrorKind::BuiltinInStage { builtin, read, .. } => write!(
+                formatter,
+                "builtin {} is read in the {read} stage: only the {} stage has it",
+                builtin.name(),
+                builtin.stage()
+            ),
+            ValidationErrorKind::TooManyAttributeLocations { count } => write!(
+                formatter,
+                "the attributes take {count} locations: at most {MAX_ATTRIBUTE_LOCATIONS}"
             ),
             ValidationErrorKind::VaryingInVertex { varying, .. } => write!(
                 formatter,
                 "varying {varying:?} is read in the vertex stage, which only writes varyings"
             ),
-            ValidationErrorKind::SampleInVertex { .. } => {
-                formatter.write_str("sample is used in the vertex stage: textures are sampled in the fragment stage")
+            ValidationErrorKind::SampleOutsideFragment {
+                operation,
+                instead,
+                stage,
+                ..
+            } => write!(
+                formatter,
+                "{operation} is used in the {stage} stage, which has no derivatives to pick a mip level with: \
+                 {instead}"
+            ),
+            ValidationErrorKind::DerivativeOutsideFragment { function, stage, .. } => write!(
+                formatter,
+                "{} is used in the {stage} stage: derivatives are taken in the fragment stage",
+                function.name()
+            ),
+            ValidationErrorKind::Misplaced { expression } => write!(
+                formatter,
+                "expression {} is placed twice, or isn't in the program",
+                expression.index()
+            ),
+            ValidationErrorKind::ReadInOtherStage { computed, read, .. } => write!(
+                formatter,
+                "a value computed in the {computed} function is read in the {read} function: return it from \
+                 the vertex function, to pass it as a varying"
+            ),
+            ValidationErrorKind::ReadOutOfScope { .. } => formatter.write_str(
+                "a value computed inside a shader.when or shader.loop is read after it: keep it in a \
+                 shader.var declared before",
+            ),
+            ValidationErrorKind::UnplacedReadsPlaced { expression, operand } => write!(
+                formatter,
+                "expression {} is placed in no stage body but reads expression {}, which is: place it too",
+                expression.index(),
+                operand.index()
+            ),
+            ValidationErrorKind::UndefinedLocal { local } => {
+                write!(formatter, "local {} is not declared", local.index())
             }
-            ValidationErrorKind::UnsupportedSemantic { semantic, .. } => {
-                write!(formatter, "semantic {semantic} is not supported by the WGSL lowering yet")
+            ValidationErrorKind::LocalInOtherStage { kind, declared, used } => write!(
+                formatter,
+                "{} of the {declared} function is used in the {used} function",
+                local_noun(*kind)
+            ),
+            ValidationErrorKind::LocalKindMismatch { expected } => match expected {
+                LocalKind::Var => formatter.write_str("a loop's index is stored into: only a shader.var is"),
+                LocalKind::LoopIndex => formatter.write_str("a loop counts with a shader.var: it needs an index of its own"),
+            },
+            ValidationErrorKind::StoreType { declared, stored } => {
+                write!(formatter, "a shader.var of {declared} is set to a {stored}")
+            }
+            ValidationErrorKind::ConditionType { found } => {
+                write!(formatter, "shader.when's condition is a {found}: expected a Bool")
+            }
+            ValidationErrorKind::LoopCountType { count, index } if count == index => {
+                write!(formatter, "shader.loop's count is a {count}: expected an Int or UInt")
+            }
+            ValidationErrorKind::LoopCountType { count, index } => {
+                write!(
+                    formatter,
+                    "a loop counts to a {count} with a {index} index: expected one type"
+                )
+            }
+            ValidationErrorKind::DiscardOutsideFragment { stage } => write!(
+                formatter,
+                "shader.discard is used in the {stage} function: only a fragment is discarded"
+            ),
+            ValidationErrorKind::ComputeHas { what } => write!(
+                formatter,
+                "a compute program has no {what}: it runs one function, compute, per invocation"
+            ),
+            ValidationErrorKind::RenderHasCompute => {
+                formatter.write_str("a vertex and fragment program has compute statements: they belong to a compute program")
+            }
+            ValidationErrorKind::WorkgroupSize { size: [x, y, z] } => write!(
+                formatter,
+                "a workgroup of {x}×{y}×{z} is invalid: expected each size at least 1, x and y at most 256, z \
+                 at most 64, and at most 256 invocations in all"
+            ),
+            ValidationErrorKind::NonUniformDerivative { operation, instead, .. } => write!(
+                formatter,
+                "{operation} is used where fragments may take different paths, in a shader.when or \
+                 shader.loop decided by a value that varies per fragment, and derivatives need them all: \
+                 {instead}"
+            ),
+            ValidationErrorKind::Unbalanced { problem } => write!(formatter, "the statements don't nest: {problem}"),
+            ValidationErrorKind::StorageInVertex { name, access } => write!(
+                formatter,
+                "storage buffer {name:?} is {} and used in the vertex function, which may only read storage \
+                 buffers declared to be read",
+                access.name()
+            ),
+            ValidationErrorKind::AtomicElement { name } => write!(
+                formatter,
+                "atomic storage buffer {name:?} holds something other than Ints or UInts, the only values an \
+                 atomic operation updates"
+            ),
+            ValidationErrorKind::AtomicOnPlain { name: Some(name) } => write!(
+                formatter,
+                "storage buffer {name:?} is updated atomically, but it isn't atomic: declare it \
+                 shader.storage(shader.uint, 'atomic')"
+            ),
+            ValidationErrorKind::AtomicOnPlain { name: None } => {
+                formatter.write_str("a uniform is updated atomically: only an atomic storage buffer is")
+            }
+            ValidationErrorKind::AtomicResult { element } => write!(
+                formatter,
+                "an atomic update keeps what the element held in something other than a var of its type, {element}"
+            ),
+            ValidationErrorKind::WriteToUniform => {
+                formatter.write_str("a uniform is written: only a readWrite storage buffer is")
+            }
+            ValidationErrorKind::WriteToReadOnly { name } => write!(
+                formatter,
+                "storage buffer {name:?} is written, but it is read: declare it shader.storage(element, 'readWrite')"
+            ),
+            ValidationErrorKind::InvalidWrite { problem } => write!(formatter, "a write {problem}"),
+            ValidationErrorKind::WriteType { place, value } => {
+                write!(formatter, "a {place} in a storage buffer is written a {value}")
             }
             ValidationErrorKind::MissingPosition => formatter.write_str("the vertex stage has no position"),
             ValidationErrorKind::PositionType { found } => {
                 write!(formatter, "the vertex position is {found}: expected Vec4f")
             }
             ValidationErrorKind::FragmentOutputType { location, found } => {
-                write!(formatter, "fragment output {location} is {found}: expected Vec4f")
+                write!(
+                    formatter,
+                    "fragment output {location} is {found}: expected a Float, Int, or UInt, or a vector of one"
+                )
             }
             ValidationErrorKind::TooManyFragmentOutputs { count } => write!(
                 formatter,
@@ -337,6 +731,81 @@ impl fmt::Display for ValidationErrorKind {
     }
 }
 
+/// Why a [`Place`] doesn't lead to a value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PlaceProblem {
+    /// It takes no step: a uniform block itself is not a value.
+    Empty,
+    /// Its first step is not a member of the root's uniform block.
+    UndefinedMember {
+        /// The block's frequency.
+        frequency: Frequency,
+        /// The member's position, as the step gives it.
+        member: u32,
+    },
+    /// It takes a field of something that is not a struct.
+    NotAStruct,
+    /// It takes a field the struct doesn't have.
+    UndefinedField {
+        /// The struct's name.
+        structure: String,
+        /// The field's position, as the step gives it.
+        field: u32,
+    },
+    /// It indexes something that is not an array.
+    NotAnArray,
+    /// An index is not an `Int` or `UInt`.
+    IndexType {
+        /// The index's type.
+        found: Type,
+    },
+    /// A constant index is past the array's end.
+    IndexOutOfRange {
+        /// The index.
+        index: i64,
+        /// How many elements the array has.
+        length: u32,
+    },
+    /// It ends at a struct or an array.
+    NotAValue,
+    /// Its root is a storage buffer that is not declared.
+    UndefinedStorage {
+        /// The buffer.
+        storage: StorageId,
+    },
+}
+
+impl fmt::Display for PlaceProblem {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PlaceProblem::Empty => formatter.write_str("names a uniform block, not one of its members"),
+            PlaceProblem::UndefinedMember { frequency, member } => {
+                write!(
+                    formatter,
+                    "reads member {member} of the {frequency} uniforms, which is not declared"
+                )
+            }
+            PlaceProblem::NotAStruct => formatter.write_str("takes a field of something that is not a struct"),
+            PlaceProblem::UndefinedField { structure, field } => {
+                write!(formatter, "reads field {field} of {structure}, which it doesn't have")
+            }
+            PlaceProblem::NotAnArray => formatter.write_str("indexes something that is not an array"),
+            PlaceProblem::IndexType { found } => {
+                write!(formatter, "indexes an array with a {found}: expected an Int or UInt")
+            }
+            PlaceProblem::IndexOutOfRange { index, length } => {
+                write!(formatter, "reads element {index} of an array of {length}")
+            }
+            PlaceProblem::NotAValue => {
+                formatter.write_str("ends at a struct or an array, not a value: read one of its fields or elements")
+            }
+            PlaceProblem::UndefinedStorage { storage } => {
+                write!(formatter, "reads storage buffer {}, which is not declared", storage.index())
+            }
+        }
+    }
+}
+
 impl fmt::Display for ValidationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.origin {
@@ -355,6 +824,9 @@ pub struct Analysis {
     pub(crate) stages: Vec<u8>,
     /// Every reachable expression's type; `None` for unreachable ones.
     pub(crate) types: Vec<Option<Type>>,
+    /// Per expression: the stage and block whose body computes it, or `None` for one no
+    /// statement places.
+    pub(crate) placed: Vec<Option<(Stage, u32)>>,
 }
 
 impl Program {
@@ -373,38 +845,164 @@ impl Program {
 pub fn analyze(program: &Program) -> Result<Analysis, Vec<ValidationError>> {
     let mut errors = Vec::new();
     check_declarations(program, &mut errors);
-    let stages = mark_stages(program, &mut errors);
+    check_kind(program, &mut errors);
+    let placements = flow::place(program);
+    for &expression in &placements.misplaced {
+        errors.push(ValidationError {
+            kind: ValidationErrorKind::Misplaced { expression },
+            origin: program.origin(expression).cloned(),
+        });
+    }
+    let stages = mark_stages(program, &placements, &mut errors);
     let mut varyings_read = vec![false; program.varyings.len()];
     let types = infer_types(program, &stages, &mut varyings_read, &mut errors);
+    check_flow(program, &placements, &stages, &types, &mut errors);
     check_outputs(program, &types, &varyings_read, &mut errors);
     if !errors.is_empty() {
         return Err(errors);
     }
-    Ok(Analysis { stages, types })
+    Ok(Analysis {
+        stages,
+        types,
+        placed: placements.placed,
+    })
 }
 
 fn check_declarations(program: &Program, errors: &mut Vec<ValidationError>) {
-    let kinds = [
-        (DeclarationKind::Parameter, &program.parameters),
-        (DeclarationKind::VertexInput, &program.vertex_inputs),
-        (DeclarationKind::Varying, &program.varyings),
-    ];
-    for (kind, declarations) in kinds {
-        for (index, declaration) in declarations.iter().enumerate() {
-            let Declaration { name, ty, origin } = declaration;
-            for kind in declaration_errors(kind, &declarations[..index], name, *ty) {
-                errors.push(ValidationError {
-                    kind,
-                    origin: origin.clone(),
-                });
-            }
+    let mut report = |kinds: Vec<ValidationErrorKind>, origin: &Option<SourceOrigin>| {
+        errors.extend(kinds.into_iter().map(|kind| ValidationError {
+            kind,
+            origin: origin.clone(),
+        }));
+    };
+    for (index, declaration) in program.structs.iter().enumerate() {
+        report(struct_errors(&program.structs[..index], declaration), &declaration.origin);
+    }
+    for (index, attribute) in program.attributes.iter().enumerate() {
+        report(attribute_errors(&program.attributes[..index], attribute), &attribute.origin);
+    }
+    for (index, uniform) in program.uniforms.iter().enumerate() {
+        let earlier = program.uniforms[..index]
+            .iter()
+            .filter(|earlier| earlier.frequency == uniform.frequency)
+            .map(|earlier| earlier.name.as_str());
+        let mut kinds = binding_errors(DeclarationKind::Uniform(uniform.frequency), earlier, &uniform.name);
+        kinds.extend(data_type_errors(
+            DeclarationKind::Uniform(uniform.frequency),
+            &uniform.name,
+            uniform.ty,
+            &program.structs,
+        ));
+        report(kinds, &uniform.origin);
+    }
+    for (index, resource) in program.resources.iter().enumerate() {
+        let kind = resource_kind(resource.frequency, resource.kind);
+        // A texture and the sampler declared with it share a name; nothing else of a frequency
+        // does.
+        let earlier = program
+            .uniforms_of(resource.frequency)
+            .map(|(_, uniform)| uniform.name.as_str())
+            .chain(
+                program.resources[..index]
+                    .iter()
+                    .filter(|earlier| earlier.frequency == resource.frequency && earlier.kind == resource.kind)
+                    .map(|earlier| earlier.name.as_str()),
+            );
+        report(binding_errors(kind, earlier, &resource.name), &resource.origin);
+    }
+    for (index, buffer) in program.storage.iter().enumerate() {
+        let kind = DeclarationKind::Storage(buffer.frequency);
+        let frequency = buffer.frequency;
+        let earlier = program
+            .uniforms_of(frequency)
+            .map(|(_, uniform)| uniform.name.as_str())
+            .chain(
+                program
+                    .resources
+                    .iter()
+                    .filter(|resource| resource.frequency == frequency)
+                    .map(|resource| resource.name.as_str()),
+            )
+            .chain(
+                program.storage[..index]
+                    .iter()
+                    .filter(|earlier| earlier.frequency == frequency)
+                    .map(|earlier| earlier.name.as_str()),
+            );
+        let mut kinds = binding_errors(kind, earlier, &buffer.name);
+        kinds.extend(data_type_errors(kind, &buffer.name, buffer.element.into(), &program.structs));
+        kinds.extend(atomic_element_error(buffer));
+        report(kinds, &buffer.origin);
+    }
+    check_named(DeclarationKind::Varying, &program.varyings, errors);
+
+    let layout = program.layout();
+    for uniform in &program.uniforms {
+        let path = format!("{}.{}", uniform.frequency, uniform.name);
+        uniform_stride_errors(program, &layout, uniform.ty, &path, errors);
+    }
+    let count = layout
+        .vertex_buffers
+        .iter()
+        .flat_map(|buffer| &buffer.attributes)
+        .map(|layout| layout.locations)
+        .sum();
+    if count > MAX_ATTRIBUTE_LOCATIONS {
+        errors.push(ValidationError {
+            kind: ValidationErrorKind::TooManyAttributeLocations { count },
+            origin: None,
+        });
+    }
+}
+
+/// Checks each of `declarations` against the ones before it.
+fn check_named(kind: DeclarationKind, declarations: &[Declaration], errors: &mut Vec<ValidationError>) {
+    for (index, declaration) in declarations.iter().enumerate() {
+        let Declaration { name, ty, origin } = declaration;
+        let earlier = declarations[..index]
+            .iter()
+            .map(|earlier| (earlier.name.as_str(), earlier.ty));
+        for kind in declaration_errors(kind, earlier, name, *ty) {
+            errors.push(ValidationError {
+                kind,
+                origin: origin.clone(),
+            });
         }
     }
 }
 
-/// What is wrong with declaring `name` as `ty` after `earlier` declarations of the same `kind`:
-/// an invalid name, a name already taken, or a type the kind cannot have. Empty when nothing is.
-pub fn declaration_errors(kind: DeclarationKind, earlier: &[Declaration], name: &str, ty: Type) -> Vec<ValidationErrorKind> {
+/// What is wrong with declaring `declaration` after the `earlier` structs, which are the only ones
+/// its fields may name: an invalid name, no fields, or a field that is badly named, named twice, or
+/// of a type no buffer holds. Empty when nothing is.
+pub fn struct_errors(earlier: &[StructDecl], declaration: &StructDecl) -> Vec<ValidationErrorKind> {
+    let mut errors = Vec::new();
+    if !is_valid_name(&declaration.name) {
+        errors.push(ValidationErrorKind::InvalidName {
+            kind: DeclarationKind::Struct,
+            name: declaration.name.clone(),
+        });
+    }
+    if declaration.fields.is_empty() {
+        errors.push(ValidationErrorKind::EmptyStruct {
+            name: declaration.name.clone(),
+        });
+    }
+    for (index, field) in declaration.fields.iter().enumerate() {
+        let names = declaration.fields[..index].iter().map(|earlier| earlier.name.as_str());
+        errors.extend(binding_errors(DeclarationKind::Field, names, &field.name));
+        errors.extend(data_type_errors(DeclarationKind::Field, &field.name, field.ty, earlier));
+    }
+    errors
+}
+
+/// What is wrong with the name of a uniform member, resource, or field declared after the `earlier`
+/// names it may not share: an invalid name, or one already taken.
+#[allow(single_use_lifetimes)] // Rust 1.92 needs the name: it can't elide one in `impl Trait` here
+pub fn binding_errors<'a>(
+    kind: DeclarationKind,
+    mut earlier: impl Iterator<Item = &'a str>,
+    name: &str,
+) -> Vec<ValidationErrorKind> {
     let mut errors = Vec::new();
     if !is_valid_name(name) {
         errors.push(ValidationErrorKind::InvalidName {
@@ -412,20 +1010,138 @@ pub fn declaration_errors(kind: DeclarationKind, earlier: &[Declaration], name: 
             name: name.to_owned(),
         });
     }
-    // Textures, samplers, and values of the same name lower to different prefixes.
-    let key = |ty: Type| (ty == Type::Texture2D, ty == Type::Sampler);
-    if earlier
+    if earlier.any(|earlier| earlier == name) {
+        errors.push(ValidationErrorKind::DuplicateName {
+            kind,
+            name: name.to_owned(),
+        });
+    }
+    errors
+}
+
+/// What is wrong with a field or uniform member `name` of `ty`, which may name only the `structs`:
+/// a `Bool`, a struct not among them, or an array of no elements.
+pub fn data_type_errors(
+    kind: DeclarationKind,
+    name: &str,
+    ty: DataType,
+    structs: &[StructDecl],
+) -> Vec<ValidationErrorKind> {
+    let element = match ty {
+        DataType::Value(ty) => Element::Value(ty),
+        DataType::Struct(id) => Element::Struct(id),
+        DataType::Array { element, length } => {
+            if length == 0 {
+                return vec![ValidationErrorKind::EmptyArray {
+                    kind,
+                    name: name.to_owned(),
+                }];
+            }
+            element
+        }
+    };
+    match element {
+        Element::Value(Type::Bool) => vec![ValidationErrorKind::UnsupportedDeclarationType {
+            kind,
+            name: name.to_owned(),
+            ty: Type::Bool,
+        }],
+        Element::Struct(structure) if structure.index() >= structs.len() => vec![ValidationErrorKind::UndefinedStruct {
+            kind,
+            name: name.to_owned(),
+            structure,
+        }],
+        Element::Value(_) | Element::Struct(_) => Vec::new(),
+    }
+}
+
+/// The declaration kind of a resource of `kind` that `frequency` binds.
+pub fn resource_kind(frequency: Frequency, kind: ResourceKind) -> DeclarationKind {
+    match kind {
+        ResourceKind::Sampler | ResourceKind::ComparisonSampler => DeclarationKind::Sampler(frequency),
+        _ => DeclarationKind::Texture(frequency),
+    }
+}
+
+/// Reports every array in a uniform member of `ty`, at `path`, whose elements are not a multiple of
+/// 16 bytes apart, looking through structs.
+fn uniform_stride_errors(
+    program: &Program,
+    layout: &ProgramLayout,
+    ty: DataType,
+    path: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    let structure = match ty {
+        DataType::Value(_) => return,
+        DataType::Struct(id) => Some(id),
+        DataType::Array { element, .. } => {
+            let stride = layout.element_stride(element);
+            if !stride.is_multiple_of(16) {
+                errors.push(ValidationError {
+                    kind: ValidationErrorKind::UniformArrayStride {
+                        path: path.to_owned(),
+                        stride,
+                    },
+                    origin: None,
+                });
+                return;
+            }
+            match element {
+                Element::Struct(id) => Some(id),
+                Element::Value(_) => None,
+            }
+        }
+    };
+    let Some(declaration) = structure.and_then(|id| program.structs.get(id.index())) else {
+        return;
+    };
+    for field in &declaration.fields {
+        uniform_stride_errors(program, layout, field.ty, &format!("{path}.{}", field.name), errors);
+    }
+}
+
+/// What is wrong with declaring `attribute` after `earlier` attributes: an invalid name, a name
+/// already taken at its rate, or a type no vertex buffer holds. Empty when nothing is.
+pub fn attribute_errors(earlier: &[Attribute], attribute: &Attribute) -> Vec<ValidationErrorKind> {
+    let earlier = earlier
         .iter()
-        .any(|declaration| declaration.name == name && key(declaration.ty) == key(ty))
-    {
+        .filter(|earlier| earlier.rate == attribute.rate)
+        .map(|earlier| (earlier.name.as_str(), earlier.ty));
+    declaration_errors(
+        DeclarationKind::Attribute(attribute.rate),
+        earlier,
+        &attribute.name,
+        attribute.ty,
+    )
+}
+
+/// What is wrong with declaring `name` as `ty` after `earlier` declarations of the same `kind`:
+/// an invalid name, a name already taken, or a type the kind cannot have. Empty when nothing is.
+#[allow(single_use_lifetimes)] // Rust 1.92 needs the name: it can't elide one in `impl Trait` here
+pub fn declaration_errors<'a>(
+    kind: DeclarationKind,
+    mut earlier: impl Iterator<Item = (&'a str, Type)>,
+    name: &str,
+    ty: Type,
+) -> Vec<ValidationErrorKind> {
+    let mut errors = Vec::new();
+    if !is_valid_name(name) {
+        errors.push(ValidationErrorKind::InvalidName {
+            kind,
+            name: name.to_owned(),
+        });
+    }
+    if earlier.any(|(earlier, _)| earlier == name) {
         errors.push(ValidationErrorKind::DuplicateName {
             kind,
             name: name.to_owned(),
         });
     }
     let supported = match kind {
-        DeclarationKind::Parameter => ty != Type::Bool,
-        DeclarationKind::VertexInput | DeclarationKind::Varying => ty.is_numeric_scalar() || ty.is_vector(),
+        DeclarationKind::Attribute(_) => ty.is_numeric() || ty.is_matrix(),
+        DeclarationKind::Varying => ty.is_numeric(),
+        _ => ty != Type::Bool,
     };
     if !supported {
         errors.push(ValidationErrorKind::UnsupportedDeclarationType {
@@ -447,7 +1163,7 @@ fn is_valid_name(name: &str) -> bool {
 
 /// Marks which stages reach each expression, walking the arena backwards: operands always come
 /// first, so one reverse pass visits every reader before what it reads.
-fn mark_stages(program: &Program, errors: &mut Vec<ValidationError>) -> Vec<u8> {
+fn mark_stages(program: &Program, placements: &Placements, errors: &mut Vec<ValidationError>) -> Vec<u8> {
     let count = program.expressions.len();
     let mut stages = vec![0u8; count];
     let mut mark_root = |expression: ExpressionId, stage: u8, errors: &mut Vec<ValidationError>| {
@@ -463,10 +1179,11 @@ fn mark_stages(program: &Program, errors: &mut Vec<ValidationError>) -> Vec<u8> 
 
     match program.position {
         Some(position) => mark_root(position, VERTEX, errors),
-        None => errors.push(ValidationError {
+        None if program.workgroup_size.is_none() => errors.push(ValidationError {
             kind: ValidationErrorKind::MissingPosition,
             origin: None,
         }),
+        None => {}
     }
     let mut written = vec![false; program.varyings.len()];
     for &(varying, expression) in &program.varying_writes {
@@ -499,6 +1216,9 @@ fn mark_stages(program: &Program, errors: &mut Vec<ValidationError>) -> Vec<u8> 
     }
     for &output in &program.fragment_outputs {
         mark_root(output, FRAGMENT, errors);
+    }
+    for used in &placements.uses {
+        mark_root(used.expression, stage_bit(used.stage), errors);
     }
 
     for index in (0..count).rev() {
@@ -550,11 +1270,12 @@ fn infer_types(
 }
 
 /// What a vector constructor's target must be.
-pub const CONSTRUCT_TARGET: &str = "a Vec2f, Vec3f, or Vec4f target";
-const ARITHMETIC: &str = "two values of the same numeric type, or a float vector and a Float";
+pub const CONSTRUCT_TARGET: &str = "a vector or matrix target";
+const FLOAT: &str = "a Float or float vector";
+const ARITHMETIC: &str = "two values of the same numeric type, or a vector and a scalar of its kind";
 const ADD_SUBTRACT: &str =
-    "two values of the same numeric type, a float vector and a Float, or two matrices of the same size";
-const MULTIPLY: &str = "two values of the same numeric type, a float vector and a Float, a matrix and a Float, \
+    "two values of the same numeric type, a vector and a scalar of its kind, or two matrices of the same size";
+const MULTIPLY: &str = "two values of the same numeric type, a vector and a scalar of its kind, a matrix and a Float, \
                         a matrix and a vector of its size, or two matrices of the same size";
 
 /// The type of one expression, `Ok(None)` when an operand already failed (so one mistake is
@@ -583,27 +1304,49 @@ fn infer(
 
     let ty = match *expression {
         Expression::Literal(literal) => literal_type(id, literal)?,
-        Expression::Parameter(parameter) => {
-            let Some(declaration) = program.parameters.get(parameter.index()) else {
-                return Err(ValidationErrorKind::UndefinedParameter {
+        // Every index was typed: an untyped operand returned above.
+        Expression::Load(place) => {
+            read_write_in_vertex(program, place.root, stage)?;
+            place_type(program, &place, |index| types[index.index()].unwrap_or(Type::Bool))
+                .map_err(|problem| ValidationErrorKind::InvalidPlace { expression: id, problem })?
+        }
+        Expression::StorageLength(storage) => {
+            if program.storage.get(storage.index()).is_none() {
+                return Err(ValidationErrorKind::InvalidPlace {
                     expression: id,
-                    parameter,
+                    problem: PlaceProblem::UndefinedStorage { storage },
+                });
+            }
+            read_write_in_vertex(program, PlaceRoot::Storage(storage), stage)?;
+            Type::UInt
+        }
+        Expression::Attribute(attribute) => {
+            let Some(declaration) = program.attributes.get(attribute.index()) else {
+                return Err(ValidationErrorKind::UndefinedAttribute {
+                    expression: id,
+                    attribute,
                 });
             };
-            declaration.ty
-        }
-        Expression::VertexInput(input) => {
-            let Some(declaration) = program.vertex_inputs.get(input.index()) else {
-                return Err(ValidationErrorKind::UndefinedVertexInput { expression: id, input });
-            };
             if stage & FRAGMENT != 0 {
-                return Err(ValidationErrorKind::VertexInputInFragment {
+                return Err(ValidationErrorKind::AttributeInFragment {
                     expression: id,
-                    input: declaration.name.clone(),
+                    attribute: declaration.name.clone(),
                 });
             }
             declaration.ty
         }
+        Expression::Builtin(builtin) => {
+            let foreign = stage & !stage_bit(builtin.stage());
+            if foreign != 0 {
+                return Err(ValidationErrorKind::BuiltinInStage {
+                    expression: id,
+                    builtin,
+                    read: stage_of(foreign),
+                });
+            }
+            builtin.ty()
+        }
+        Expression::Local(local) => local_type(program, local, stage)?,
         Expression::Varying(varying) => {
             let Some(declaration) = program.varyings.get(varying.index()) else {
                 return Err(ValidationErrorKind::UndefinedVarying { expression: id, varying });
@@ -617,22 +1360,280 @@ fn infer(
             varyings_read[varying.index()] = true;
             declaration.ty
         }
-        Expression::Semantic(semantic) => {
-            if semantic.ty().is_resource() {
-                return Err(ValidationErrorKind::UnsupportedSemantic {
-                    expression: id,
-                    semantic,
-                });
-            }
-            semantic.ty()
+        Expression::Sample { level, .. } if level.needs_derivatives() && stage & !FRAGMENT != 0 => {
+            return Err(ValidationErrorKind::SampleOutsideFragment {
+                expression: id,
+                operation: level.operation(),
+                instead: "sample at a level with sampleLevel",
+                stage: stage_of(stage & !FRAGMENT),
+            });
         }
-        Expression::Sample { .. } if stage & VERTEX != 0 => {
-            return Err(ValidationErrorKind::SampleInVertex { expression: id });
+        Expression::SampleCompare { level_zero: false, .. } if stage & !FRAGMENT != 0 => {
+            return Err(ValidationErrorKind::SampleOutsideFragment {
+                expression: id,
+                operation: "sampleCompare",
+                instead: "compare in level 0 with sampleCompareLevel",
+                stage: stage_of(stage & !FRAGMENT),
+            });
         }
+        Expression::Call { function, .. } if function.needs_derivatives() && stage & !FRAGMENT != 0 => {
+            return Err(ValidationErrorKind::DerivativeOutsideFragment {
+                expression: id,
+                function,
+                stage: stage_of(stage & !FRAGMENT),
+            });
+        }
+        Expression::Sample { .. }
+        | Expression::SampleCompare { .. }
+        | Expression::TextureLoad { .. }
+        | Expression::TextureQuery { .. } => texture_type(program, id, expression, operands)?,
         _ => operation_type(id, expression, operands)?,
     };
     constant_out_of_range(&program.expressions, id, expression)?;
     Ok(Some(ty))
+}
+
+/// The type of the value at `place`, or why there is none. `index_type` gives each index's type.
+pub fn place_type(
+    program: &Program,
+    place: &Place,
+    index_type: impl Fn(ExpressionId) -> Type,
+) -> Result<Type, PlaceProblem> {
+    let mut steps = place.steps().iter();
+    let first = steps.next().ok_or(PlaceProblem::Empty)?;
+    let mut current = match (place.root, *first) {
+        (PlaceRoot::Uniform(frequency), Step::Field(member)) => program
+            .uniforms_of(frequency)
+            .nth(member as usize)
+            .map(|(_, uniform)| uniform.ty)
+            .ok_or(PlaceProblem::UndefinedMember { frequency, member })?,
+        // A storage buffer is as long as what is bound, so no index is out of range here.
+        (PlaceRoot::Storage(storage), Step::Index(index)) => {
+            let buffer = program.storage.get(storage.index());
+            let buffer = buffer.ok_or(PlaceProblem::UndefinedStorage { storage })?;
+            let found = index_type(index);
+            if !matches!(found, Type::Int | Type::UInt) {
+                return Err(PlaceProblem::IndexType { found });
+            }
+            buffer.element.into()
+        }
+        (PlaceRoot::Uniform(_), Step::Index(_)) => return Err(PlaceProblem::NotAnArray),
+        (PlaceRoot::Storage(_), Step::Field(_)) => return Err(PlaceProblem::NotAStruct),
+    };
+    for step in steps {
+        current = match (*step, current) {
+            (Step::Field(field), DataType::Struct(id)) => {
+                let declaration = program.structs.get(id.index()).ok_or(PlaceProblem::NotAStruct)?;
+                let found = declaration.fields.get(field as usize).map(|field| field.ty);
+                found.ok_or_else(|| PlaceProblem::UndefinedField {
+                    structure: declaration.name.clone(),
+                    field,
+                })?
+            }
+            (Step::Index(index), DataType::Array { element, length }) => {
+                let found = index_type(index);
+                if !matches!(found, Type::Int | Type::UInt) {
+                    return Err(PlaceProblem::IndexType { found });
+                }
+                let constant = match program.expressions.get(index.index()) {
+                    Some(Expression::Literal(Literal::Int(value))) => Some(i64::from(*value)),
+                    Some(Expression::Literal(Literal::UInt(value))) => Some(i64::from(*value)),
+                    _ => None,
+                };
+                if let Some(index) = constant
+                    && !(0..i64::from(length)).contains(&index)
+                {
+                    return Err(PlaceProblem::IndexOutOfRange { index, length });
+                }
+                element.into()
+            }
+            (Step::Field(_), _) => return Err(PlaceProblem::NotAStruct),
+            (Step::Index(_), _) => return Err(PlaceProblem::NotAnArray),
+        };
+    }
+    match current {
+        DataType::Value(ty) => Ok(ty),
+        DataType::Struct(_) | DataType::Array { .. } => Err(PlaceProblem::NotAValue),
+    }
+}
+
+/// What a texture read or query of a texture of `kind` takes, as errors print it.
+fn texture_signature(kind: ResourceKind, expression: &Expression) -> String {
+    let layer = if kind.is_array() { ", an Int or UInt layer" } else { "" };
+    match *expression {
+        Expression::Sample { level, .. } => {
+            let operation = level.operation();
+            if kind.is_integer() {
+                return format!("a float texture: a {} is read with load", kind.name());
+            }
+            if kind.is_depth() {
+                return format!(
+                    "a float texture: a {} is compared with sampleCompare, or read with load",
+                    kind.name()
+                );
+            }
+            let Some(coordinates) = kind.coordinates() else {
+                return format!("{operation}(a texture, a Sampler, its coordinates)");
+            };
+            let tail = match level {
+                SampleLevel::Implicit => "",
+                SampleLevel::Bias(_) => ", a Float bias",
+                SampleLevel::Explicit(_) => ", a Float level",
+            };
+            format!("{operation}({}, Sampler, {coordinates}{layer}{tail})", kind.name())
+        }
+        Expression::SampleCompare { level_zero, .. } => {
+            let operation = if level_zero { "sampleCompareLevel" } else { "sampleCompare" };
+            let Some(coordinates) = kind.coordinates().filter(|_| kind.is_depth()) else {
+                return format!("a depth texture: {operation} compares depths");
+            };
+            format!(
+                "{operation}({}, ComparisonSampler, {coordinates}{layer}, a Float depth)",
+                kind.name()
+            )
+        }
+        Expression::TextureLoad { .. } if kind.is_cube() => "a texture that isn't a cube: a cube is only sampled".to_owned(),
+        Expression::TextureLoad { .. } if kind.is_texture() => {
+            let coordinates = if kind.dimensions() == 3 {
+                "Vec3i or Vec3u"
+            } else {
+                "Vec2i or Vec2u"
+            };
+            format!("load({}, {coordinates}{layer}, an Int or UInt level)", kind.name())
+        }
+        Expression::TextureLoad { .. } => "load(a texture, its texel coordinates, a level)".to_owned(),
+        Expression::TextureQuery {
+            query: TextureQuery::Dimensions(_),
+            ..
+        } => "a texture, and maybe an Int or UInt level".to_owned(),
+        Expression::TextureQuery {
+            query: TextureQuery::Layers,
+            ..
+        } => "an array texture".to_owned(),
+        _ => "a texture".to_owned(),
+    }
+}
+
+/// The type of a texture read or query, `expression`, whose value operands have the types
+/// `operands` (coordinates, then layer, then level), or what is wrong with it.
+pub fn texture_type(
+    program: &Program,
+    id: ExpressionId,
+    expression: &Expression,
+    operands: &[Type],
+) -> Result<Type, ValidationErrorKind> {
+    let kind = |resource: ResourceId| {
+        let found = program.resources.get(resource.index()).map(|declared| declared.kind);
+        found.ok_or(ValidationErrorKind::UndefinedResource {
+            expression: id,
+            resource,
+        })
+    };
+    let integer = |ty: &Type| ty.is_integer() && ty.is_scalar();
+    // An array texture takes one integer layer, and no other texture takes any.
+    let layered = |texture: ResourceKind, layer: Option<ExpressionId>| {
+        texture.is_array() == layer.is_some() && layer.is_none_or(|_| integer(&operands[1]))
+    };
+    let (texture, resources, ty) = match *expression {
+        Expression::Sample {
+            texture,
+            sampler,
+            layer,
+            level,
+            ..
+        } => {
+            let (texture, sampler) = (kind(texture)?, kind(sampler)?);
+            let level = level.expression().map(|_| operands[operands.len() - 1]);
+            let fits = sampler == ResourceKind::Sampler
+                && !texture.is_depth()
+                && texture.coordinates() == Some(operands[0])
+                && layered(texture, layer)
+                && level.is_none_or(|level| level == Type::Float);
+            (texture, vec![texture.name(), sampler.name()], fits.then_some(Type::Vec4f))
+        }
+        Expression::SampleCompare {
+            texture, sampler, layer, ..
+        } => {
+            let (texture, sampler) = (kind(texture)?, kind(sampler)?);
+            let fits = sampler == ResourceKind::ComparisonSampler
+                && texture.is_depth()
+                && texture.coordinates() == Some(operands[0])
+                && layered(texture, layer)
+                && operands[operands.len() - 1] == Type::Float;
+            (texture, vec![texture.name(), sampler.name()], fits.then_some(Type::Float))
+        }
+        Expression::TextureLoad { texture, layer, .. } => {
+            let texture = kind(texture)?;
+            let coordinates = operands[0];
+            let fits = !texture.is_cube()
+                && coordinates.is_integer()
+                && coordinates.components() == texture.dimensions()
+                && layered(texture, layer)
+                && integer(&operands[operands.len() - 1]);
+            (texture, vec![texture.name()], texture.texel().filter(|_| fits))
+        }
+        Expression::TextureQuery { texture, query } => {
+            let texture = kind(texture)?;
+            let ty = match query {
+                TextureQuery::Dimensions(_) if texture.is_texture() && operands.iter().all(integer) => {
+                    Type::vector(Scalar::UInt, texture.dimensions())
+                }
+                TextureQuery::Levels if texture.is_texture() => Some(Type::UInt),
+                TextureQuery::Layers if texture.is_array() => Some(Type::UInt),
+                _ => None,
+            };
+            (texture, vec![texture.name()], ty)
+        }
+        _ => unreachable!("{} is not a texture operation", expression.operation()),
+    };
+    ty.ok_or_else(|| ValidationErrorKind::InvalidTexture {
+        expression: id,
+        operation: expression.operation(),
+        arguments: resources
+            .into_iter()
+            .chain(operands.iter().map(|operand| operand.name()))
+            .collect(),
+        expected: texture_signature(texture, expression),
+    })
+}
+
+/// The type of reading `local` in `stage`'s bits, or why it can't be read there.
+fn local_type(program: &Program, local: LocalId, stage: u8) -> Result<Type, ValidationErrorKind> {
+    let Some(declared) = program.locals.get(local.index()) else {
+        return Err(ValidationErrorKind::UndefinedLocal { local });
+    };
+    let foreign = stage & !stage_bit(declared.stage);
+    if foreign != 0 {
+        return Err(ValidationErrorKind::LocalInOtherStage {
+            kind: declared.kind,
+            declared: declared.stage,
+            used: stage_of(foreign),
+        });
+    }
+    Ok(declared.ty)
+}
+
+/// The error for an atomic storage buffer of anything but `Int`s or `UInt`s, which are all an
+/// atomic operation updates.
+pub fn atomic_element_error(buffer: &StorageBuffer) -> Option<ValidationErrorKind> {
+    let atomic = matches!(buffer.element, Element::Value(Type::Int | Type::UInt));
+    (buffer.access == Access::Atomic && !atomic).then(|| ValidationErrorKind::AtomicElement {
+        name: buffer.name.clone(),
+    })
+}
+
+/// The error for a vertex stage (in `stage`'s bits) using a written storage buffer at `root`.
+fn read_write_in_vertex(program: &Program, root: PlaceRoot, stage: u8) -> Result<(), ValidationErrorKind> {
+    let PlaceRoot::Storage(storage) = root else {
+        return Ok(());
+    };
+    match program.storage.get(storage.index()) {
+        Some(buffer) if buffer.access.writes() && stage & VERTEX != 0 => Err(ValidationErrorKind::StorageInVertex {
+            name: buffer.name.clone(),
+            access: buffer.access,
+        }),
+        _ => Ok(()),
+    }
 }
 
 /// The type of `literal`, or the error for a NaN or infinite one.
@@ -656,15 +1657,29 @@ pub fn constant_out_of_range(
     {
         return Err(ValidationErrorKind::ConstantOutOfRange { expression: id });
     }
+    if let Expression::Binary(BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight, _, amount) = *expression
+        && let Expression::Literal(Literal::UInt(amount)) = expressions[amount.index()]
+        && amount >= 32
+    {
+        return Err(ValidationErrorKind::ShiftTooFar { expression: id, amount });
+    }
     Ok(())
 }
 
-/// What a vector constructor of `target` accepts; `None` when `target` is not a float vector.
+/// What a constructor of `target` accepts; `None` when `target` is a scalar.
 pub fn construct_expected(target: Type) -> Option<&'static str> {
     match target {
         Type::Vec2f => Some("floats and float vectors adding up to 2 components, or one Float"),
         Type::Vec3f => Some("floats and float vectors adding up to 3 components, or one Float"),
         Type::Vec4f => Some("floats and float vectors adding up to 4 components, or one Float"),
+        Type::Vec2i => Some("Ints and Int vectors adding up to 2 components, or one Int"),
+        Type::Vec3i => Some("Ints and Int vectors adding up to 3 components, or one Int"),
+        Type::Vec4i => Some("Ints and Int vectors adding up to 4 components, or one Int"),
+        Type::Vec2u => Some("UInts and UInt vectors adding up to 2 components, or one UInt"),
+        Type::Vec3u => Some("UInts and UInt vectors adding up to 3 components, or one UInt"),
+        Type::Vec4u => Some("UInts and UInt vectors adding up to 4 components, or one UInt"),
+        Type::Mat3f => Some("three Vec3f columns"),
+        Type::Mat4f => Some("four Vec4f columns"),
         _ => None,
     }
 }
@@ -682,111 +1697,287 @@ pub fn operation_type(id: ExpressionId, expression: &Expression, operands: &[Typ
     };
     let ty = match *expression {
         Expression::Literal(_)
-        | Expression::Parameter(_)
-        | Expression::VertexInput(_)
+        | Expression::Attribute(_)
+        | Expression::Local(_)
+        | Expression::StorageLength(_)
+        | Expression::Builtin(_)
         | Expression::Varying(_)
-        | Expression::Semantic(_) => unreachable!("leaves are typed by their declaration"),
-        Expression::Sample { .. } => {
-            if operands != [Type::Texture2D, Type::Sampler, Type::Vec2f] {
-                return Err(invalid("sample(Texture2D, Sampler, Vec2f)"));
-            }
-            Type::Vec4f
-        }
-        Expression::Add(..) | Expression::Subtract(..) => {
+        | Expression::Load(_)
+        | Expression::Sample { .. }
+        | Expression::SampleCompare { .. }
+        | Expression::TextureLoad { .. }
+        | Expression::TextureQuery { .. } => unreachable!("typed by their declarations, not their operands"),
+        Expression::Binary(operator, ..) => {
             let (left, right) = (operands[0], operands[1]);
-            if left == right && left.is_matrix() {
-                left
-            } else {
-                arithmetic(left, right).ok_or_else(|| invalid(ADD_SUBTRACT))?
-            }
+            let (ty, expected) = match operator {
+                BinaryOperator::Add | BinaryOperator::Subtract if left == right && left.is_matrix() => (Some(left), ""),
+                BinaryOperator::Add | BinaryOperator::Subtract => (arithmetic(left, right), ADD_SUBTRACT),
+                BinaryOperator::Divide | BinaryOperator::Remainder => (arithmetic(left, right), ARITHMETIC),
+                BinaryOperator::Multiply => (multiply(left, right), MULTIPLY),
+                BinaryOperator::Equal | BinaryOperator::NotEqual => {
+                    let same = left == right && left.is_scalar();
+                    (same.then_some(Type::Bool), "two scalars of the same type")
+                }
+                BinaryOperator::Less
+                | BinaryOperator::LessEqual
+                | BinaryOperator::Greater
+                | BinaryOperator::GreaterEqual => {
+                    let same = left == right && left.is_numeric_scalar();
+                    (same.then_some(Type::Bool), "two Ints, UInts, or Floats of the same type")
+                }
+                BinaryOperator::And | BinaryOperator::Or => {
+                    let both = left == Type::Bool && right == Type::Bool;
+                    (both.then_some(Type::Bool), "two Bools")
+                }
+                BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor => {
+                    let same = left == right && left.is_integer();
+                    (same.then_some(left), "two Int or UInt values of the same type")
+                }
+                BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight => {
+                    let amount = Type::vector(Scalar::UInt, left.components());
+                    let shifts = left.is_integer() && amount == Some(right);
+                    (shifts.then_some(left), "an Int or UInt value, and a UInt amount of its size")
+                }
+            };
+            ty.ok_or_else(|| invalid(expected))?
         }
-        Expression::Divide(..) | Expression::Min(..) | Expression::Max(..) => {
-            arithmetic(operands[0], operands[1]).ok_or_else(|| invalid(ARITHMETIC))?
-        }
-        Expression::Multiply(..) => multiply(operands[0], operands[1]).ok_or_else(|| invalid(MULTIPLY))?,
-        Expression::Clamp(..) => {
+        Expression::Unary(operator, _) => {
             let value = operands[0];
-            let accepts = |bound: Type| bound == value || (value.is_vector() && bound == Type::Float);
-            if !(value.is_numeric_scalar() || value.is_vector()) || !accepts(operands[1]) || !accepts(operands[2]) {
-                return Err(invalid(
-                    "a numeric value and two bounds of its type, or a float vector and two Floats",
-                ));
+            let (accepts, expected) = match operator {
+                UnaryOperator::Not => (value == Type::Bool, "a Bool"),
+                UnaryOperator::Negate => (
+                    value.is_numeric() && value.scalar() != Scalar::UInt,
+                    "a signed or float scalar or vector",
+                ),
+                UnaryOperator::BitNot => (value.is_integer(), "an Int or UInt value"),
+            };
+            if !accepts {
+                return Err(invalid(expected));
             }
             value
         }
-        Expression::Dot(..) => {
-            if operands[0] != operands[1] || !operands[0].is_vector() {
-                return Err(invalid("two float vectors of the same size"));
+        Expression::Select { .. } => {
+            let (condition, accept, reject) = (operands[0], operands[1], operands[2]);
+            if condition != Type::Bool || accept != reject || accept.is_matrix() {
+                return Err(invalid("a Bool, then two scalars or vectors of the same type"));
             }
-            Type::Float
+            accept
         }
-        Expression::Cross(..) => {
-            if operands != [Type::Vec3f, Type::Vec3f] {
-                return Err(invalid("two Vec3f"));
+        Expression::Call { function, .. } => {
+            if operands.len() != function.arity() {
+                return Err(invalid(match function.arity() {
+                    1 => "one argument",
+                    2 => "two arguments",
+                    _ => "three arguments",
+                }));
             }
-            Type::Vec3f
-        }
-        Expression::Normalize(..) => {
-            if !operands[0].is_vector() {
-                return Err(invalid("a float vector"));
-            }
-            operands[0]
-        }
-        Expression::Length(..) => {
-            if operands[0].float_components() == 0 {
-                return Err(invalid("a Float or float vector"));
-            }
-            Type::Float
-        }
-        Expression::Floor(..) => {
-            if operands[0].float_components() == 0 {
-                return Err(invalid("a Float or float vector"));
-            }
-            operands[0]
-        }
-        Expression::Mix(..) => {
-            let (start, end, amount) = (operands[0], operands[1], operands[2]);
-            if start != end || start.float_components() == 0 || (amount != start && amount != Type::Float) {
-                return Err(invalid(
-                    "two Floats or float vectors of the same type, and an amount of that type or Float",
-                ));
-            }
-            start
+            function_type(function, operands).map_err(invalid)?
         }
         Expression::Construct { target, .. } => {
             let expected = construct_expected(target).ok_or_else(|| invalid(CONSTRUCT_TARGET))?;
-            let sizes = operands.iter().map(|operand| operand.float_components());
-            let splat = operands == [Type::Float];
-            if !splat && (sizes.clone().any(|size| size == 0) || sizes.sum::<u8>() != target.float_components()) {
+            if let Some(column) = target.column() {
+                if operands.len() != usize::from(column.components()) || operands.iter().any(|operand| *operand != column) {
+                    return Err(invalid(expected));
+                }
+                return Ok(target);
+            }
+            let splat = operands.len() == 1 && Some(operands[0]) == target.component();
+            let of_its_kind = operands
+                .iter()
+                .all(|operand| operand.scalar() == target.scalar() && operand.components() > 0);
+            let size: u8 = operands.iter().map(|operand| operand.components()).sum();
+            if !splat && (!of_its_kind || size != target.components()) {
                 return Err(invalid(expected));
+            }
+            target
+        }
+        Expression::Convert { target, .. } => {
+            let value = operands[0];
+            if target.is_matrix() || value.is_matrix() || target.components() != value.components() {
+                return Err(invalid("a scalar or vector of the same size"));
             }
             target
         }
         Expression::Swizzle { swizzle, .. } => {
             let vector = operands[0];
-            let size = vector.float_components();
-            if !vector.is_vector() || swizzle.components().iter().any(|component| component.index() >= size) {
-                return Err(ValidationErrorKind::InvalidSwizzle {
-                    expression: id,
-                    vector,
-                    swizzle,
-                });
+            let size = vector.components();
+            let read = u8::try_from(swizzle.components().len())
+                .ok()
+                .and_then(|count| Type::vector(vector.scalar(), count));
+            match read {
+                Some(ty) if vector.is_vector() && swizzle.components().iter().all(|component| component.index() < size) => {
+                    ty
+                }
+                _ => {
+                    return Err(ValidationErrorKind::InvalidSwizzle {
+                        expression: id,
+                        vector,
+                        swizzle,
+                    });
+                }
             }
-            Type::float_vector(swizzle.components().len()).unwrap_or(Type::Float)
         }
     };
     Ok(ty)
 }
 
-/// `+ - / min max` on non-matrices: same numeric type, or a float vector and a `Float`.
+/// The type of calling `function` with arguments of the types `operands`, as many as it takes,
+/// or what it accepts.
+fn function_type(function: Function, operands: &[Type]) -> Result<Type, &'static str> {
+    let float = |ty: Type| ty.float_components() > 0;
+    // Its type, or a Float where `value` is a float vector: what WGSL is given splatted.
+    let float_beside = |ty: Type, value: Type| ty == value || (ty == Type::Float && value.is_float_vector());
+    let ty = match function {
+        Function::Min | Function::Max => arithmetic(operands[0], operands[1]).ok_or(ARITHMETIC)?,
+        Function::Clamp => {
+            let value = operands[0];
+            let accepts = |bound: Type| bound == value || Some(bound) == value.component();
+            if !value.is_numeric() || !accepts(operands[1]) || !accepts(operands[2]) {
+                return Err("a numeric value and two bounds of its type, or a vector and two scalars of its kind");
+            }
+            value
+        }
+        Function::Abs => {
+            if !operands[0].is_numeric() {
+                return Err("a numeric scalar or vector");
+            }
+            operands[0]
+        }
+        Function::Sign => {
+            if !operands[0].is_numeric() || operands[0].scalar() == Scalar::UInt {
+                return Err("a signed or float scalar or vector");
+            }
+            operands[0]
+        }
+        Function::Floor
+        | Function::Ceil
+        | Function::Round
+        | Function::Trunc
+        | Function::Fract
+        | Function::Sqrt
+        | Function::InverseSqrt
+        | Function::Exp
+        | Function::Exp2
+        | Function::Log
+        | Function::Log2
+        | Function::Sin
+        | Function::Cos
+        | Function::Tan
+        | Function::Asin
+        | Function::Acos
+        | Function::Atan
+        | Function::Radians
+        | Function::Degrees
+        | Function::Saturate
+        | Function::Dpdx
+        | Function::Dpdy
+        | Function::Fwidth => {
+            if !float(operands[0]) {
+                return Err(FLOAT);
+            }
+            operands[0]
+        }
+        Function::Pow | Function::Atan2 | Function::Step => {
+            let (left, right) = (operands[0], operands[1]);
+            let value = if left.is_float_vector() { left } else { right };
+            if !float(value) || !float_beside(left, value) || !float_beside(right, value) {
+                return Err("two Floats or float vectors of the same type, or a float vector and a Float");
+            }
+            value
+        }
+        Function::Smoothstep => {
+            let (low, high, value) = (operands[0], operands[1], operands[2]);
+            if !float(value) || !float_beside(low, value) || !float_beside(high, value) {
+                return Err("two edges and a Float or float vector, each edge of its type or a Float");
+            }
+            value
+        }
+        Function::Mix => {
+            let (start, end, amount) = (operands[0], operands[1], operands[2]);
+            if start != end || !float(start) || (amount != start && amount != Type::Float) {
+                return Err("two Floats or float vectors of the same type, and an amount of that type or Float");
+            }
+            start
+        }
+        Function::Dot
+        | Function::Cross
+        | Function::Length
+        | Function::Distance
+        | Function::Normalize
+        | Function::Reflect
+        | Function::Refract => return geometric_type(function, operands),
+        Function::Transpose | Function::Determinant => {
+            if !operands[0].is_matrix() {
+                return Err("a matrix");
+            }
+            if function == Function::Determinant {
+                Type::Float
+            } else {
+                operands[0]
+            }
+        }
+    };
+    Ok(ty)
+}
+
+/// The type of calling a vector function, `dot` to `refract`, or what it accepts.
+fn geometric_type(function: Function, operands: &[Type]) -> Result<Type, &'static str> {
+    let float = |ty: Type| ty.float_components() > 0;
+    let ty = match function {
+        Function::Length => {
+            if !float(operands[0]) {
+                return Err(FLOAT);
+            }
+            Type::Float
+        }
+        Function::Dot => operands[0]
+            .component()
+            .filter(|_| operands[0] == operands[1])
+            .ok_or("two vectors of the same type")?,
+        Function::Cross => {
+            if operands != [Type::Vec3f, Type::Vec3f] {
+                return Err("two Vec3f");
+            }
+            Type::Vec3f
+        }
+        Function::Distance => {
+            if operands[0] != operands[1] || !float(operands[0]) {
+                return Err("two Floats or float vectors of the same type");
+            }
+            Type::Float
+        }
+        Function::Normalize => {
+            if !operands[0].is_float_vector() {
+                return Err("a float vector");
+            }
+            operands[0]
+        }
+        Function::Reflect => {
+            if operands[0] != operands[1] || !operands[0].is_float_vector() {
+                return Err("two float vectors of the same type");
+            }
+            operands[0]
+        }
+        Function::Refract => {
+            if operands[0] != operands[1] || !operands[0].is_float_vector() || operands[2] != Type::Float {
+                return Err("two float vectors of the same type and a Float");
+            }
+            operands[0]
+        }
+        _ => unreachable!("{} is not a vector function", function.name()),
+    };
+    Ok(ty)
+}
+
+/// `+ - / min max` on non-matrices: same numeric type, or a vector and a scalar of its kind.
 fn arithmetic(left: Type, right: Type) -> Option<Type> {
-    if left == right && (left.is_numeric_scalar() || left.is_vector()) {
+    if left == right && left.is_numeric() {
         return Some(left);
     }
-    if left.is_vector() && right == Type::Float {
+    if left.component() == Some(right) {
         return Some(left);
     }
-    if right.is_vector() && left == Type::Float {
+    if right.component() == Some(left) {
         return Some(right);
     }
     None
@@ -803,6 +1994,316 @@ fn multiply(left: Type, right: Type) -> Option<Type> {
         (Type::Mat4f, Type::Vec4f) | (Type::Vec4f, Type::Mat4f) => Some(Type::Vec4f),
         _ => None,
     }
+}
+
+/// Checks that a compute program has only what one has, and a vertex and fragment program no
+/// compute statements.
+fn check_kind(program: &Program, errors: &mut Vec<ValidationError>) {
+    let mut report = |kind| errors.push(ValidationError { kind, origin: None });
+    let Some(size) = program.workgroup_size else {
+        if !program.bodies[Stage::Compute as usize].is_empty() {
+            report(ValidationErrorKind::RenderHasCompute);
+        }
+        return;
+    };
+    let [x, y, z] = size;
+    let invocations = u64::from(x) * u64::from(y) * u64::from(z);
+    if size.contains(&0) || x > 256 || y > 256 || z > 64 || invocations > 256 {
+        report(ValidationErrorKind::WorkgroupSize { size });
+    }
+    let has = [
+        (!program.attributes.is_empty(), "attributes"),
+        (!program.varyings.is_empty(), "varyings"),
+        (program.position.is_some(), "position"),
+        (!program.fragment_outputs.is_empty(), "fragment outputs"),
+        (
+            !(program.bodies[Stage::Vertex as usize].is_empty() && program.bodies[Stage::Fragment as usize].is_empty()),
+            "vertex or fragment statements",
+        ),
+    ];
+    for (present, what) in has {
+        if present {
+            report(ValidationErrorKind::ComputeHas { what });
+        }
+    }
+}
+
+/// The bit of `stage` in an expression's stage marks.
+fn stage_bit(stage: Stage) -> u8 {
+    match stage {
+        Stage::Vertex => VERTEX,
+        Stage::Fragment => FRAGMENT,
+        Stage::Compute => COMPUTE,
+    }
+}
+
+/// The first stage among `bits`, for an error naming one.
+fn stage_of(bits: u8) -> Stage {
+    Stage::ALL
+        .into_iter()
+        .find(|stage| bits & stage_bit(*stage) != 0)
+        .unwrap_or(Stage::Compute)
+}
+
+/// What a local of `kind` is called in errors.
+fn local_noun(kind: LocalKind) -> &'static str {
+    match kind {
+        LocalKind::Var => "a shader.var",
+        LocalKind::LoopIndex => "a loop's index",
+    }
+}
+
+/// Checks that every value is read where it exists, that every statement is well-formed, and that
+/// derivatives are taken only where every fragment agrees on the path.
+fn check_flow(
+    program: &Program,
+    placements: &Placements,
+    stages: &[u8],
+    types: &[Option<Type>],
+    errors: &mut Vec<ValidationError>,
+) {
+    // A read in `block` of `stage` sees what that stage computes in `block` or around it.
+    let read = |operand: ExpressionId, stage: Stage, block: u32, origin: Option<SourceOrigin>, errors: &mut Vec<_>| {
+        let Some(Some((computed, home))) = placements.placed.get(operand.index()).copied() else {
+            return;
+        };
+        let kind = if computed != stage {
+            ValidationErrorKind::ReadInOtherStage {
+                expression: operand,
+                computed,
+                read: stage,
+            }
+        } else if !placements.sees(home, block) {
+            ValidationErrorKind::ReadOutOfScope { expression: operand }
+        } else {
+            return;
+        };
+        errors.push(ValidationError { kind, origin });
+    };
+    for (index, expression) in program.expressions.iter().enumerate() {
+        if stages[index] == 0 {
+            continue;
+        }
+        let id = ExpressionId::at(index);
+        for &operand in expression.operands().iter() {
+            match placements.placed[index] {
+                Some((stage, block)) => read(operand, stage, block, program.origin(id).cloned(), errors),
+                None if placements.placed.get(operand.index()).copied().flatten().is_some() => {
+                    errors.push(ValidationError {
+                        kind: ValidationErrorKind::UnplacedReadsPlaced { expression: id, operand },
+                        origin: program.origin(id).cloned(),
+                    });
+                }
+                None => {}
+            }
+        }
+    }
+    for used in &placements.uses {
+        read(used.expression, used.stage, used.block, used.origin.clone(), errors);
+    }
+    let vertex = Placements::top(Stage::Vertex);
+    let outputs = program
+        .position
+        .iter()
+        .chain(program.varying_writes.iter().map(|(_, expression)| expression))
+        .map(|&expression| (expression, Stage::Vertex, vertex))
+        .chain(
+            program
+                .fragment_outputs
+                .iter()
+                .map(|&expression| (expression, Stage::Fragment, Placements::top(Stage::Fragment))),
+        );
+    for (expression, stage, block) in outputs {
+        read(expression, stage, block, program.origin(expression).cloned(), errors);
+    }
+
+    for stage in Stage::ALL {
+        check_statements(program, stage, &program.bodies[stage as usize], types, errors);
+    }
+    check_uniformity(program, stages, errors);
+}
+
+fn check_statements(
+    program: &Program,
+    stage: Stage,
+    block: &[Statement],
+    types: &[Option<Type>],
+    errors: &mut Vec<ValidationError>,
+) {
+    let type_of = |expression: &ExpressionId| types.get(expression.index()).copied().flatten();
+    let report = |errors: &mut Vec<ValidationError>, kind: ValidationErrorKind, origin: &Option<SourceOrigin>| {
+        errors.push(ValidationError {
+            kind,
+            origin: origin.clone(),
+        });
+    };
+    // The local a statement names, if it is one of this stage of the kind the statement needs.
+    let local_of = |local: LocalId, expected: LocalKind| {
+        let Some(declared) = program.locals.get(local.index()) else {
+            return Err(ValidationErrorKind::UndefinedLocal { local });
+        };
+        if declared.stage != stage {
+            return Err(ValidationErrorKind::LocalInOtherStage {
+                kind: declared.kind,
+                declared: declared.stage,
+                used: stage,
+            });
+        }
+        if declared.kind != expected {
+            return Err(ValidationErrorKind::LocalKindMismatch { expected });
+        }
+        Ok(declared.ty)
+    };
+    for statement in block {
+        match statement {
+            Statement::Emit(_) => {}
+            Statement::Store { local, value, origin } => match local_of(*local, LocalKind::Var) {
+                Err(kind) => report(errors, kind, origin),
+                Ok(declared) => {
+                    if let Some(stored) = type_of(value)
+                        && stored != declared
+                    {
+                        report(errors, ValidationErrorKind::StoreType { declared, stored }, origin);
+                    }
+                }
+            },
+            Statement::Write { place, value, origin } => {
+                if let Some(kind) = write_error(program, stage, place, *value, types) {
+                    report(errors, kind, origin);
+                }
+            }
+            Statement::Atomic {
+                place,
+                value,
+                result,
+                origin,
+                ..
+            } => {
+                if let Some(kind) = atomic_error(program, place) {
+                    report(errors, kind, origin);
+                } else if let Some(kind) = write_error(program, stage, place, *value, types) {
+                    report(errors, kind, origin);
+                } else if let Some(element) = type_of(value)
+                    && local_of(*result, LocalKind::Var) != Ok(element)
+                {
+                    report(errors, ValidationErrorKind::AtomicResult { element }, origin);
+                }
+            }
+            Statement::If {
+                condition,
+                accept,
+                reject,
+                origin,
+            } => {
+                if let Some(found) = type_of(condition)
+                    && found != Type::Bool
+                {
+                    report(errors, ValidationErrorKind::ConditionType { found }, origin);
+                }
+                check_statements(program, stage, accept, types, errors);
+                check_statements(program, stage, reject, types, errors);
+            }
+            Statement::Loop {
+                index,
+                count,
+                body,
+                origin,
+            } => {
+                match (local_of(*index, LocalKind::LoopIndex), type_of(count)) {
+                    (Err(kind), _) => report(errors, kind, origin),
+                    (Ok(index), Some(count)) if !(count.is_integer() && count.is_scalar()) || index != count => {
+                        let index = if count.is_integer() { index } else { count };
+                        report(errors, ValidationErrorKind::LoopCountType { count, index }, origin);
+                    }
+                    _ => {}
+                }
+                check_statements(program, stage, body, types, errors);
+            }
+            Statement::Discard { origin } => {
+                if stage != Stage::Fragment {
+                    report(errors, ValidationErrorKind::DiscardOutsideFragment { stage }, origin);
+                }
+            }
+        }
+    }
+}
+
+/// The error for an atomic update of a place outside an atomic storage buffer.
+pub fn atomic_error(program: &Program, place: &Place) -> Option<ValidationErrorKind> {
+    match place.root {
+        PlaceRoot::Uniform(_) => Some(ValidationErrorKind::AtomicOnPlain { name: None }),
+        PlaceRoot::Storage(storage) => program
+            .storage
+            .get(storage.index())
+            .filter(|buffer| buffer.access != Access::Atomic)
+            .map(|buffer| ValidationErrorKind::AtomicOnPlain {
+                name: Some(buffer.name.clone()),
+            }),
+    }
+}
+
+/// What is wrong with writing `value` at `place` in `stage`, if anything.
+fn write_error(
+    program: &Program,
+    stage: Stage,
+    place: &Place,
+    value: ExpressionId,
+    types: &[Option<Type>],
+) -> Option<ValidationErrorKind> {
+    let type_of = |expression: ExpressionId| types.get(expression.index()).copied().flatten();
+    match place.root {
+        PlaceRoot::Uniform(_) => return Some(ValidationErrorKind::WriteToUniform),
+        PlaceRoot::Storage(storage) => match program.storage.get(storage.index()) {
+            Some(buffer) if buffer.access == Access::Read => {
+                return Some(ValidationErrorKind::WriteToReadOnly {
+                    name: buffer.name.clone(),
+                });
+            }
+            Some(buffer) if stage == Stage::Vertex => {
+                return Some(ValidationErrorKind::StorageInVertex {
+                    name: buffer.name.clone(),
+                    access: buffer.access,
+                });
+            }
+            _ => {}
+        },
+    }
+    // Every index was typed: the statement's uses are roots.
+    let index_type = |index: ExpressionId| type_of(index).unwrap_or(Type::Bool);
+    match place_type(program, place, index_type) {
+        Err(problem) => Some(ValidationErrorKind::InvalidWrite { problem }),
+        Ok(ty) => type_of(value)
+            .filter(|written| *written != ty)
+            .map(|written| ValidationErrorKind::WriteType {
+                place: ty,
+                value: written,
+            }),
+    }
+}
+
+/// Reports every derivative the fragment body takes where fragments may disagree on the path.
+fn check_uniformity(program: &Program, stages: &[u8], errors: &mut Vec<ValidationError>) {
+    let reachable: Vec<bool> = stages.iter().map(|stage| stage & FRAGMENT != 0).collect();
+    let (uniform, _) = flow::uniform_locals(program, &reachable);
+    let known = |expression: ExpressionId| uniform.get(expression.index()).copied().unwrap_or(false);
+    flow::walk(&program.bodies[Stage::Fragment as usize], &known, &mut |statement, agreed| {
+        let Statement::Emit(id) = statement else {
+            return;
+        };
+        if agreed || !reachable.get(id.index()).copied().unwrap_or(false) {
+            return;
+        }
+        if let Some((operation, instead)) = flow::derivative(&program.expressions[id.index()]) {
+            errors.push(ValidationError {
+                kind: ValidationErrorKind::NonUniformDerivative {
+                    expression: *id,
+                    operation,
+                    instead,
+                },
+                origin: program.origin(*id).cloned(),
+            });
+        }
+    });
 }
 
 fn check_outputs(program: &Program, types: &[Option<Type>], varyings_read: &[bool], errors: &mut Vec<ValidationError>) {
@@ -842,7 +2343,8 @@ fn check_outputs(program: &Program, types: &[Option<Type>], varyings_read: &[boo
         let Some(found) = type_of(output) else {
             continue;
         };
-        if found != Type::Vec4f {
+        // A target holds floats, or signed or unsigned integers, of one to four channels.
+        if !found.is_numeric() {
             errors.push(ValidationError {
                 kind: ValidationErrorKind::FragmentOutputType { location, found },
                 origin: origin_of(output),

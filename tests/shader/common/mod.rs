@@ -1,11 +1,14 @@
-//! Shared checks: every lowered module goes through naga, and goldens compare or bless.
+//! Shared checks and helpers: every lowered module goes through naga, every layout jess reports
+//! is the one naga computes, and goldens compare or bless.
 
 use std::path::PathBuf;
 
-use jess::shader::wgsl::{UniformBlock, WgslModule};
+use jess::shader::layout::StructLayout;
+use jess::shader::wgsl::WgslModule;
+use jess::shader::{DataType, Frequency, Place, PlaceRoot, Program, Site, Step, Type, Uniform, Value};
 
-/// Parses and validates `module`'s WGSL with naga, and checks the uniform layouts the lowering
-/// reported against the ones naga computes.
+/// Parses and validates `module`'s WGSL with naga, and checks every struct and uniform block
+/// layout the lowering reported against the one naga computes.
 pub fn assert_valid_wgsl(module: &WgslModule) {
     let parsed = match naga::front::wgsl::parse_str(&module.source) {
         Ok(parsed) => parsed,
@@ -20,27 +23,70 @@ pub fn assert_valid_wgsl(module: &WgslModule) {
     if let Err(error) = validator.validate(&parsed) {
         panic!("naga rejects the WGSL: {error:?}\n{}", module.source);
     }
-    if let Some(semantics) = &module.semantics {
-        assert_layout(&parsed, "Semantics", semantics);
+    for group in &module.layout.groups {
+        if let Some(block) = &group.uniform {
+            let name = match group.frequency {
+                Frequency::Pass => "PassUniforms",
+                Frequency::Material => "MaterialUniforms",
+                Frequency::Draw => "DrawUniforms",
+            };
+            assert_layout(&parsed, |candidate| candidate == name, name, block);
+        }
     }
-    if let Some(parameters) = &module.parameters {
-        assert_layout(&parsed, "Parameters", parameters);
+    for (index, layout) in module.layout.structs.iter().enumerate() {
+        let prefix = format!("S{index}_");
+        assert_layout(&parsed, |candidate| candidate.starts_with(&prefix), &prefix, layout);
     }
 }
 
-fn assert_layout<Source>(module: &naga::Module, name: &str, block: &UniformBlock<Source>) {
+fn assert_layout(module: &naga::Module, named: impl Fn(&str) -> bool, name: &str, layout: &StructLayout) {
     let (_, ty) = module
         .types
         .iter()
-        .find(|(_, ty)| ty.name.as_deref() == Some(name))
+        .find(|(_, ty)| ty.name.as_deref().is_some_and(&named))
         .unwrap_or_else(|| panic!("no struct {name}"));
     let naga::TypeInner::Struct { members, span } = &ty.inner else {
         panic!("{name} is not a struct");
     };
-    assert_eq!(*span, block.size, "{name} size");
+    assert_eq!(*span, layout.size, "{name} size");
     let offsets: Vec<u32> = members.iter().map(|member| member.offset).collect();
-    let reported: Vec<u32> = block.members.iter().map(|member| member.offset).collect();
+    let reported: Vec<u32> = layout
+        .order
+        .iter()
+        .map(|position| layout.members[*position as usize].offset)
+        .collect();
     assert_eq!(offsets, reported, "{name} offsets");
+}
+
+/// The place of `frequency`'s uniform member `name`, declared as `ty` if the program doesn't
+/// have it yet.
+pub fn uniform(program: &mut Program, frequency: Frequency, name: &str, ty: Type) -> Place {
+    let existing = program.uniforms_of(frequency).position(|(_, uniform)| uniform.name == name);
+    let position = existing.unwrap_or_else(|| {
+        program.uniform(Uniform::new(frequency, name, DataType::Value(ty)));
+        program.uniforms_of(frequency).count() - 1
+    });
+    member(frequency, position)
+}
+
+/// The value of `frequency`'s uniform member `name`, declared through `site` as `ty` if the
+/// program doesn't have it yet.
+pub fn read(site: &mut Site<'_>, frequency: Frequency, name: &str, ty: Type) -> Value {
+    let existing = site
+        .program()
+        .uniforms_of(frequency)
+        .position(|(_, uniform)| uniform.name == name);
+    let position = existing.unwrap_or_else(|| {
+        site.uniform(frequency, name, DataType::Value(ty)).unwrap();
+        site.program().uniforms_of(frequency).count() - 1
+    });
+    site.load(member(frequency, position), &[]).unwrap()
+}
+
+/// The place of `frequency`'s member at `position`.
+pub fn member(frequency: Frequency, position: usize) -> Place {
+    let step = Step::Field(u32::try_from(position).unwrap());
+    Place::new(PlaceRoot::Uniform(frequency), &[step]).unwrap()
 }
 
 /// Compares `source` with `tests/golden/{name}.wgsl`; with `JESS_BLESS` set, rewrites it instead.

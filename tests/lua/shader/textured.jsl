@@ -3,16 +3,32 @@
 local shader = require '@jess/shader'
 
 return shader.program {
-  textures = {
+  attributes = {
+    position = shader.vec3,
+    uv = shader.vec2,
+  },
+
+  pass = {
+    projection = shader.mat4,
+    view = shader.mat4,
+  },
+
+  material = {
     diffuse = shader.texture2d,
   },
 
+  draw = {
+    model = shader.mat4,
+  },
+
   vertex = function(input)
+    local placed = input.draw.model * shader.vec4(input.attributes.position, 1.0)
+
     return {
-      position = input.projection * input.view * input.model * shader.vec4(input.position, 1.0),
-      uv = input.uv,
+      position = input.pass.projection * input.pass.view * placed,
+      uv = input.attributes.uv,
     }
   end,
 
-  fragment = function(input) return shader.sample(input.diffuse, input.uv) end,
+  fragment = function(input) return shader.sample(input.material.diffuse, input.uv) end,
 }

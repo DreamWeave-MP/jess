@@ -1,0 +1,22 @@
+--!strict
+-- Particles moved by their velocities, one invocation each: a compute program, which reads and
+-- writes storage buffers and draws nothing.
+local shader = require '@jess/shader'
+
+return shader.compute {
+  workgroupSize = { 64 },
+  pass = {
+    positions = shader.storage(shader.vec4, 'readWrite'),
+    step = shader.float,
+    velocities = shader.storage(shader.vec4),
+  },
+
+  compute = function(input)
+    local index = input.builtin.globalInvocationId.x
+    local pass = input.pass
+    shader.when(shader.less(index, shader.arrayLength(pass.positions)), function()
+      local moved = pass.positions[index] + pass.velocities[index] * pass.step
+      shader.write(pass.positions, index, moved)
+    end)
+  end,
+}

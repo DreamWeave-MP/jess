@@ -483,6 +483,9 @@ pub struct Application {
     diagnostics: Arc<Diagnostics>,
     /// Context names by id, kept past teardown for the diagnostics it reports.
     names: BTreeMap<ContextId, String>,
+    /// The GPU device the application's generations share, committed at the end of each frame.
+    #[cfg(feature = "gpu")]
+    device: Arc<crate::lua::SharedDevice>,
 }
 
 impl std::fmt::Debug for Application {
@@ -547,6 +550,29 @@ pub(crate) fn launch(
             step: FRAME,
             max_catch_up: MAX_CATCH_UP,
         });
+    // One GPU device for every generation, so a restart reloads code without reopening it.
+    #[cfg(feature = "gpu")]
+    let device = Arc::new(crate::lua::SharedDevice::default());
+    #[cfg(feature = "gpu")]
+    let spec = spec.service(Arc::clone(&device));
+    // A target that may open windows hears their keyboard and pointer, whatever else its host
+    // polls; one that may not stays as headless as it was asked to be.
+    #[cfg(feature = "window")]
+    let input = if target
+        .capabilities
+        .iter()
+        .any(|capability| capability == crate::lua::gpu::WINDOW_CAPABILITY)
+    {
+        match input {
+            Some(InputSource::Backend(backend)) => {
+                Some(InputSource::Backend(Box::new(crate::window::WindowInput::new(Some(backend)))))
+            }
+            Some(InputSource::Synthetic) => Some(InputSource::Synthetic),
+            None => Some(InputSource::Backend(Box::new(crate::window::WindowInput::new(None)))),
+        }
+    } else {
+        input
+    };
     let host_spec = match input {
         Some(source) => HostSpec::new(spec).input(source),
         None => HostSpec::new(spec),
@@ -583,6 +609,8 @@ pub(crate) fn launch(
         setup,
         diagnostics,
         names: BTreeMap::new(),
+        #[cfg(feature = "gpu")]
+        device,
     };
     application.remember_contexts();
     Ok(application)
@@ -640,6 +668,10 @@ impl Application {
     /// As [`Host::restart`]; a failed load leaves nothing running.
     pub fn restart(&mut self) -> Result<Generation, RuntimeError> {
         let loading = Rc::clone(&self.setup);
+        // Windows the new code opens again by key stay open through the load, showing the last.
+        #[cfg(feature = "window")]
+        let generation = crate::window::reclaim(|| self.host.restart(|runtime| loading.load(runtime)));
+        #[cfg(not(feature = "window"))]
         let generation = self.host.restart(|runtime| loading.load(runtime));
         self.remember_contexts();
         generation
@@ -685,7 +717,10 @@ impl Application {
     ///
     /// As [`ScriptDomain::stop`].
     pub fn stop(self) -> Result<TeardownReport, RuntimeError> {
-        self.host.stop()
+        let stopped = self.host.stop();
+        #[cfg(feature = "window")]
+        crate::window::release();
+        stopped
     }
 
     /// Runs the application to the end: starts it, drives frames of [`FRAME`] at that pace until
@@ -741,11 +776,71 @@ impl Application {
                 next = Instant::now();
             }
             let now = Instant::now();
-            let outcome = self.frame(now - last);
+            let outcome = self.step(now - last, report);
             last = now;
             self.flush(report);
             outcome.map_err(|problem| error(problem.to_string()))?;
             ran += 1;
+        }
+    }
+
+    /// One frame of `delta` as [`Application::run`] runs it: the window system's news, the frame
+    /// ([`Application::frame`]), the frame's changes to what the GPU draws committed together,
+    /// and the windows told to draw them. What windows and the GPU refused goes to `report`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Application::frame`].
+    // Without a GPU there are no windows or commits to report on.
+    #[cfg_attr(not(feature = "gpu"), allow(unused_variables))]
+    pub fn step(&mut self, delta: Duration, report: &mut impl FnMut(&str)) -> Result<FrameReport, crate::host::Error> {
+        // The window system's news reaches the frame's input; what the frame left the windows
+        // showing is drawn after it.
+        #[cfg(feature = "window")]
+        {
+            crate::window::pump();
+            self.announce_windows(report);
+        }
+        let outcome = self.frame(delta);
+        // What the frame changed about what the GPU draws, all of it at once.
+        #[cfg(feature = "gpu")]
+        if let Some(gpu) = self.device.opened()
+            && let Err(problem) = gpu.commit()
+        {
+            report(&format!("the GPU refused a change: {problem}"));
+        }
+        #[cfg(feature = "window")]
+        if let Err(failures) = crate::window::present() {
+            for (title, problem) in failures {
+                report(&format!("window {title}: {problem}"));
+            }
+        }
+        outcome
+    }
+
+    /// Posts [`crate::window::NEWS`] for each window something happened to, for the frame's
+    /// event drain to deliver: `{ title, key }`, and the handler reads the window's events.
+    #[cfg(feature = "window")]
+    fn announce_windows(&self, report: &mut impl FnMut(&str)) {
+        let news = crate::window::news();
+        if news.is_empty() {
+            return;
+        }
+        let Ok(mailbox) = self.host.domain().mailbox() else {
+            return;
+        };
+        for (title, key) in news {
+            let payload = crate::runtime::Message::map([
+                ("title", crate::runtime::Message::text(&title)),
+                (
+                    "key",
+                    key.as_deref()
+                        .map_or(crate::runtime::Message::Nil, crate::runtime::Message::text),
+                ),
+            ]);
+            if let Err(refused) = mailbox.post_named(crate::window::NEWS, payload) {
+                report(&format!("window {title}: its news wasn't delivered: {refused}"));
+            }
         }
     }
 

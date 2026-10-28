@@ -60,6 +60,11 @@ pub const FILES: &[(&str, &str)] = &[
     ("src/l10n/init.jsl", include_str!("../../jpk/builtin/src/l10n/init.jsl")),
     ("src/l10n/locale.jsl", include_str!("../../jpk/builtin/src/l10n/locale.jsl")),
     ("src/l10n/pattern.jsl", include_str!("../../jpk/builtin/src/l10n/pattern.jsl")),
+    (
+        "src/render/camera.jsl",
+        include_str!("../../jpk/builtin/src/render/camera.jsl"),
+    ),
+    ("src/render/init.jsl", include_str!("../../jpk/builtin/src/render/init.jsl")),
     ("src/style/check.jsl", include_str!("../../jpk/builtin/src/style/check.jsl")),
     ("src/style/init.jsl", include_str!("../../jpk/builtin/src/style/init.jsl")),
     ("src/style/rules.jsl", include_str!("../../jpk/builtin/src/style/rules.jsl")),
@@ -97,6 +102,7 @@ pub const FILES: &[(&str, &str)] = &[
         include_str!("../../jpk/builtin/tests/l10n/fixtures.jsl"),
     ),
     ("tests/l10n/run.jsl", include_str!("../../jpk/builtin/tests/l10n/run.jsl")),
+    ("tests/render/run.jsl", include_str!("../../jpk/builtin/tests/render/run.jsl")),
     ("tests/style/run.jsl", include_str!("../../jpk/builtin/tests/style/run.jsl")),
 ];
 

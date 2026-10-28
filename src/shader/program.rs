@@ -1,9 +1,15 @@
 //! A shader program: its declarations, its expression arena, and what each stage outputs.
 
-use crate::shader::expression::{Expression, ExpressionId, ParameterId, SourceOrigin, VaryingId, VertexInputId};
+use crate::shader::expression::{Expression, ExpressionId, SourceOrigin, VaryingId};
+use crate::shader::flow::{Local, LocalId, Stage, Statement};
+use crate::shader::interface::{
+    Attribute, AttributeId, Frequency, Resource, ResourceId, StorageBuffer, StorageId, StructDecl, StructId, Uniform,
+    UniformId,
+};
+use crate::shader::layout::ProgramLayout;
 use crate::shader::types::Type;
 
-/// A named, typed parameter, vertex input, or varying.
+/// A named, typed varying.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Declaration {
     /// The name the author gave it. The lowering derives every backend name from it.
@@ -16,9 +22,11 @@ pub struct Declaration {
 
 /// A vertex stage and a fragment stage over one expression arena.
 ///
-/// The vertex stage writes the clip position and any varyings; the fragment stage reads those
-/// varyings and writes color outputs. Parameters, textures, samplers, and semantics are resources
-/// the lowering binds: the author never picks a bind group or binding.
+/// The vertex stage reads the declared attributes and writes the clip position and any varyings;
+/// the fragment stage reads those varyings and writes color outputs. Uniform members, textures, and
+/// samplers are bound per [`Frequency`], and attributes come from vertex buffers, all where
+/// [`layout`](crate::shader::layout) says: the author never picks a bind group, binding, or
+/// location.
 ///
 /// Expressions are appended and never removed, so an [`ExpressionId`] stays valid for the
 /// program's lifetime; [`fold_constants`](Program::fold_constants) rewrites nodes in place.
@@ -27,40 +35,63 @@ pub struct Program {
     pub(crate) expressions: Vec<Expression>,
     /// Sparse and sorted by id: native construction rarely has origins, and only errors read them.
     pub(crate) origins: Vec<(ExpressionId, SourceOrigin)>,
-    pub(crate) parameters: Vec<Declaration>,
-    pub(crate) vertex_inputs: Vec<Declaration>,
+    pub(crate) structs: Vec<StructDecl>,
+    pub(crate) attributes: Vec<Attribute>,
+    pub(crate) uniforms: Vec<Uniform>,
+    pub(crate) resources: Vec<Resource>,
+    pub(crate) storage: Vec<StorageBuffer>,
     pub(crate) varyings: Vec<Declaration>,
     pub(crate) position: Option<ExpressionId>,
     pub(crate) varying_writes: Vec<(VaryingId, ExpressionId)>,
     pub(crate) fragment_outputs: Vec<ExpressionId>,
+    pub(crate) locals: Vec<Local>,
+    /// Each stage's statements, by [`Stage`] order.
+    pub(crate) bodies: [Vec<Statement>; Stage::ALL.len()],
+    /// A compute program's workgroup size; `None` for a vertex and fragment program.
+    pub(crate) workgroup_size: Option<[u32; 3]>,
 }
 
 impl Program {
-    /// An empty program.
+    /// An empty program of a vertex and a fragment stage.
     #[must_use]
     pub fn new() -> Program {
         Program::default()
     }
 
-    /// Declares a parameter: a value (`Int`, `UInt`, `Float`, a vector, or a matrix), a
-    /// `Texture2D`, or a `Sampler`.
-    pub fn parameter(&mut self, name: &str, ty: Type) -> ParameterId {
-        ParameterId::at(push_declaration(&mut self.parameters, name, ty, None))
+    /// An empty compute program: one stage, run once per invocation, in workgroups of
+    /// `workgroup_size` invocations.
+    #[must_use]
+    pub fn compute(workgroup_size: [u32; 3]) -> Program {
+        Program {
+            workgroup_size: Some(workgroup_size),
+            ..Program::default()
+        }
     }
 
-    /// [`parameter`](Program::parameter), recording where it was declared.
-    pub fn parameter_at(&mut self, name: &str, ty: Type, origin: SourceOrigin) -> ParameterId {
-        ParameterId::at(push_declaration(&mut self.parameters, name, ty, Some(origin)))
+    /// A compute program's workgroup size; `None` for a vertex and fragment program.
+    #[must_use]
+    pub fn workgroup_size(&self) -> Option<[u32; 3]> {
+        self.workgroup_size
     }
 
-    /// Declares a per-vertex attribute: `Int`, `UInt`, `Float`, or a vector.
-    pub fn vertex_input(&mut self, name: &str, ty: Type) -> VertexInputId {
-        VertexInputId::at(push_declaration(&mut self.vertex_inputs, name, ty, None))
+    /// Declares a struct. Its fields may only name structs declared before it.
+    pub fn structure(&mut self, declaration: StructDecl) -> StructId {
+        StructId::at(push(&mut self.structs, declaration))
     }
 
-    /// [`vertex_input`](Program::vertex_input), recording where it was declared.
-    pub fn vertex_input_at(&mut self, name: &str, ty: Type, origin: SourceOrigin) -> VertexInputId {
-        VertexInputId::at(push_declaration(&mut self.vertex_inputs, name, ty, Some(origin)))
+    /// Declares a vertex attribute.
+    pub fn attribute(&mut self, attribute: Attribute) -> AttributeId {
+        AttributeId::at(push(&mut self.attributes, attribute))
+    }
+
+    /// Declares a member of a frequency's uniform block.
+    pub fn uniform(&mut self, uniform: Uniform) -> UniformId {
+        UniformId::at(push(&mut self.uniforms, uniform))
+    }
+
+    /// Declares a texture or sampler a frequency binds.
+    pub fn resource(&mut self, resource: Resource) -> ResourceId {
+        ResourceId::at(push(&mut self.resources, resource))
     }
 
     /// Declares a value the vertex stage passes to the fragment stage: `Int`, `UInt` (both
@@ -117,6 +148,78 @@ impl Program {
         location
     }
 
+    /// Declares a storage buffer.
+    pub fn storage_buffer(&mut self, buffer: StorageBuffer) -> StorageId {
+        StorageId::at(push(&mut self.storage, buffer))
+    }
+
+    /// The declared storage buffers, in order.
+    #[must_use]
+    pub fn storage_buffers(&self) -> &[StorageBuffer] {
+        &self.storage
+    }
+
+    /// Declares a local of a stage body, for a [`Statement::Store`] or a [`Statement::Loop`].
+    pub fn local(&mut self, local: Local) -> LocalId {
+        LocalId::at(push(&mut self.locals, local))
+    }
+
+    /// `stage`'s statements, run before it writes its outputs.
+    pub fn body_mut(&mut self, stage: Stage) -> &mut Vec<Statement> {
+        &mut self.bodies[stage as usize]
+    }
+
+    /// `stage`'s statements.
+    #[must_use]
+    pub fn body(&self, stage: Stage) -> &[Statement] {
+        &self.bodies[stage as usize]
+    }
+
+    /// The declared locals, in order.
+    #[must_use]
+    pub fn locals(&self) -> &[Local] {
+        &self.locals
+    }
+
+    /// The declared structs, in order.
+    #[must_use]
+    pub fn structs(&self) -> &[StructDecl] {
+        &self.structs
+    }
+
+    /// The declared vertex attributes, of both rates, in order.
+    #[must_use]
+    pub fn attributes(&self) -> &[Attribute] {
+        &self.attributes
+    }
+
+    /// The declared uniform members, of every frequency, in order.
+    #[must_use]
+    pub fn uniforms(&self) -> &[Uniform] {
+        &self.uniforms
+    }
+
+    /// The uniform members `frequency` binds, with their ids, in order.
+    pub fn uniforms_of(&self, frequency: Frequency) -> impl Iterator<Item = (UniformId, &Uniform)> {
+        self.uniforms
+            .iter()
+            .enumerate()
+            .filter(move |(_, uniform)| uniform.frequency == frequency)
+            .map(|(index, uniform)| (UniformId::at(index), uniform))
+    }
+
+    /// The declared textures and samplers, of every frequency, in order.
+    #[must_use]
+    pub fn resources(&self) -> &[Resource] {
+        &self.resources
+    }
+
+    /// Where everything the program declares lives: see [`layout`](crate::shader::layout).
+    #[must_use]
+    pub fn layout(&self) -> ProgramLayout {
+        ProgramLayout::of(self)
+    }
+
     /// Every expression, in arena order.
     #[must_use]
     pub fn expressions(&self) -> &[Expression] {
@@ -134,18 +237,6 @@ impl Program {
     pub fn origin(&self, id: ExpressionId) -> Option<&SourceOrigin> {
         let position = self.origins.binary_search_by_key(&id, |(origin_id, _)| *origin_id).ok()?;
         Some(&self.origins[position].1)
-    }
-
-    /// The declared parameters, in order.
-    #[must_use]
-    pub fn parameters(&self) -> &[Declaration] {
-        &self.parameters
-    }
-
-    /// The declared vertex inputs, in order.
-    #[must_use]
-    pub fn vertex_inputs(&self) -> &[Declaration] {
-        &self.vertex_inputs
     }
 
     /// The declared varyings, in order.
@@ -174,12 +265,17 @@ impl Program {
 }
 
 fn push_declaration(declarations: &mut Vec<Declaration>, name: &str, ty: Type, origin: Option<SourceOrigin>) -> usize {
-    let index = declarations.len();
-    assert!(u32::try_from(index).is_ok(), "more than u32::MAX shader declarations");
-    declarations.push(Declaration {
+    let declaration = Declaration {
         name: name.to_owned(),
         ty,
         origin,
-    });
+    };
+    push(declarations, declaration)
+}
+
+fn push<T>(declarations: &mut Vec<T>, declaration: T) -> usize {
+    let index = declarations.len();
+    assert!(u32::try_from(index).is_ok(), "more than u32::MAX shader declarations");
+    declarations.push(declaration);
     index
 }

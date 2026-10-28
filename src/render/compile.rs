@@ -1,11 +1,11 @@
 //! Whole-graph checks, ordering, culling, lifetimes, and aliasing.
 
 use std::cmp::Reverse;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, HashSet};
 
 use crate::render::error::GraphError;
 use crate::render::graph::{PassId, RenderGraph, Resource, ResourceId, ResourceOrigin};
-use crate::render::pass::{LoadOp, StoreOp};
+use crate::render::pass::{LoadOp, StoreOp, Subresource};
 
 /// Why one pass must run after another.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -59,8 +59,8 @@ impl Lifetime {
     }
 }
 
-/// Transient targets that can share one allocation: same kind, format, and size, with pairwise
-/// disjoint lifetimes.
+/// Transient resources that can share one allocation: targets of the same format and size, or
+/// buffers of the same size, with pairwise disjoint lifetimes.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct AliasGroup {
     /// The members, in order of first use.
@@ -130,12 +130,43 @@ impl<'graph> CompiledGraph<'graph> {
     }
 }
 
-/// Every pass's use of every target, in registration order.
+/// One write of one level of one layer.
+#[derive(Clone, Copy)]
+struct Write {
+    pass: usize,
+    load: LoadOp,
+    store: StoreOp,
+}
+
+/// Every pass's use of every level of every layer of every resource, in registration order. A
+/// buffer is one unit; a target is one for each level of each layer.
 struct Uses {
-    /// Per target, `(pass, output)` for each write.
-    writers: Vec<Vec<(usize, usize)>>,
-    /// Per target, each pass that reads it.
+    /// Per resource, its first unit.
+    first: Vec<usize>,
+    /// Per unit, each write.
+    writers: Vec<Vec<Write>>,
+    /// Per unit, each pass that reads it.
     readers: Vec<Vec<usize>>,
+}
+
+impl Uses {
+    /// The units of resource `index`, and the level of the layer each is.
+    fn units(&self, resources: &[Resource], index: usize) -> impl Iterator<Item = (usize, Subresource)> {
+        let layers = resources[index].target().map_or(1, |target| target.layers);
+        let first = self.first[index];
+        (0..resources[index].subresources()).map(move |offset| {
+            let subresource = Subresource {
+                level: offset / layers,
+                layer: offset % layers,
+            };
+            (first + offset as usize, subresource)
+        })
+    }
+
+    fn unit(&self, resources: &[Resource], resource: ResourceId, subresource: Subresource) -> usize {
+        let layers = resources[resource.0].target().map_or(1, |target| target.layers);
+        self.first[resource.0] + (subresource.level * layers + subresource.layer) as usize
+    }
 }
 
 impl RenderGraph {
@@ -143,9 +174,9 @@ impl RenderGraph {
     ///
     /// # Errors
     ///
-    /// When a transient target is unused, read without a writer, or loaded before it is written;
-    /// when anything reads or loads contents a writer discarded; when the dependencies form a
-    /// cycle; or when nothing reaches an imported target.
+    /// When a transient target is unused, or a level of a layer of one is read without a writer
+    /// or loaded before it is written; when anything reads or loads contents a writer discarded;
+    /// when the dependencies form a cycle; or when nothing reaches an imported target.
     pub fn compile(&self) -> Result<CompiledGraph<'_>, GraphError> {
         let uses = self.uses();
         self.check_contents(&uses)?;
@@ -165,7 +196,9 @@ impl RenderGraph {
             .into_iter()
             .filter(|dependency| live[dependency.before.0] && live[dependency.after.0])
             .collect();
-        live_dependencies.sort_unstable_by_key(|dependency| {
+        // Stable: two kinds of edge between one pair through one resource keep the order they
+        // were found in.
+        live_dependencies.sort_by_key(|dependency| {
             (
                 positions[dependency.after.0],
                 positions[dependency.before.0],
@@ -187,18 +220,52 @@ impl RenderGraph {
     }
 
     fn uses(&self) -> Uses {
-        let resource_count = self.resources().len();
+        let resources = self.resources();
+        let mut first = Vec::with_capacity(resources.len());
+        let mut units = 0;
+        for resource in resources {
+            first.push(units);
+            units += resource.subresources() as usize;
+        }
+
         let mut uses = Uses {
-            writers: vec![Vec::new(); resource_count],
-            readers: vec![Vec::new(); resource_count],
+            first,
+            writers: vec![Vec::new(); units],
+            readers: vec![Vec::new(); units],
         };
         for (pass_index, pass) in self.passes().iter().enumerate() {
             for input in &pass.inputs {
-                uses.readers[input.resource.0].push(pass_index);
+                let Some(subresource) = input.one() else {
+                    let first = uses.first[input.resource.0];
+                    let count = resources[input.resource.0].subresources() as usize;
+                    for readers in &mut uses.readers[first..first + count] {
+                        readers.push(pass_index);
+                    }
+                    continue;
+                };
+
+                let unit = uses.unit(resources, input.resource, subresource);
+                uses.readers[unit].push(pass_index);
             }
 
-            for (output_index, output) in pass.outputs.iter().enumerate() {
-                uses.writers[output.resource.0].push((pass_index, output_index));
+            for output in &pass.outputs {
+                let unit = uses.unit(resources, output.resource, output.subresource);
+                uses.writers[unit].push(Write {
+                    pass: pass_index,
+                    load: output.load,
+                    store: output.store,
+                });
+                let Some((target, subresource)) = output.resolve else {
+                    continue;
+                };
+
+                // A resolve replaces what it resolves into, and keeps it.
+                let unit = uses.unit(resources, target, subresource);
+                uses.writers[unit].push(Write {
+                    pass: pass_index,
+                    load: LoadOp::DontCare,
+                    store: StoreOp::Store,
+                });
             }
         }
 
@@ -206,102 +273,137 @@ impl RenderGraph {
     }
 
     fn check_contents(&self, uses: &Uses) -> Result<(), GraphError> {
-        let passes = self.passes();
-        for (index, resource) in self.resources().iter().enumerate() {
-            let writers = &uses.writers[index];
-            let readers = &uses.readers[index];
+        let resources = self.resources();
+        for (index, resource) in resources.iter().enumerate() {
             let transient = resource.origin == ResourceOrigin::Transient;
-            if transient && writers.is_empty() && readers.is_empty() {
+            let touched = uses
+                .units(resources, index)
+                .any(|(unit, _)| !uses.writers[unit].is_empty() || !uses.readers[unit].is_empty());
+            if transient && !touched {
                 return Err(GraphError::UnusedResource {
                     resource: resource.name.clone(),
                 });
             }
 
-            for (rank, &(pass, output)) in writers.iter().enumerate() {
-                if passes[pass].outputs[output].load != LoadOp::Load {
-                    continue;
-                }
-
-                if rank == 0 {
-                    if transient {
-                        return Err(GraphError::LoadWithoutContents {
-                            pass: passes[pass].name().to_owned(),
-                            resource: resource.name.clone(),
-                        });
-                    }
-
-                    continue;
-                }
-
-                let (previous, previous_output) = writers[rank - 1];
-                if passes[previous].outputs[previous_output].store == StoreOp::Discard {
-                    return Err(GraphError::ReadDiscarded {
-                        pass: passes[pass].name().to_owned(),
-                        resource: resource.name.clone(),
-                        writer: passes[previous].name().to_owned(),
-                    });
-                }
-            }
-
-            let Some(&first_reader) = readers.first() else {
-                continue;
-            };
-
-            let Some(&(last_writer, last_output)) = writers.last() else {
-                if transient {
-                    return Err(GraphError::ReadWithoutWriter {
-                        pass: passes[first_reader].name().to_owned(),
-                        resource: resource.name.clone(),
-                    });
-                }
-
-                continue;
-            };
-
-            if passes[last_writer].outputs[last_output].store == StoreOp::Discard {
-                return Err(GraphError::ReadDiscarded {
-                    pass: passes[first_reader].name().to_owned(),
-                    resource: resource.name.clone(),
-                    writer: passes[last_writer].name().to_owned(),
-                });
+            let several = resource.subresources() > 1;
+            for (unit, subresource) in uses.units(resources, index) {
+                self.check_unit(uses, unit, resource, several.then_some(subresource))?;
             }
         }
 
         Ok(())
     }
 
-    fn dependencies(&self, uses: &Uses) -> Vec<Dependency> {
+    /// The content checks of one level of one layer of `resource`, `subresource` where it has
+    /// more than one.
+    fn check_unit(
+        &self,
+        uses: &Uses,
+        unit: usize,
+        resource: &Resource,
+        subresource: Option<Subresource>,
+    ) -> Result<(), GraphError> {
         let passes = self.passes();
-        let mut dependencies = Vec::new();
-        for (index, writers) in uses.writers.iter().enumerate() {
-            let resource = ResourceId(index);
-            for pair in writers.windows(2) {
-                let (before, _) = pair[0];
-                let (after, output) = pair[1];
-                let kind = if passes[after].outputs[output].load == LoadOp::Load {
-                    DependencyKind::LoadAfterWrite
-                } else {
-                    DependencyKind::WriteAfterWrite
-                };
-                dependencies.push(Dependency {
-                    before: PassId(before),
-                    after: PassId(after),
-                    resource,
-                    kind,
+        let writers = &uses.writers[unit];
+        let readers = &uses.readers[unit];
+        let transient = resource.origin == ResourceOrigin::Transient;
+        for (rank, write) in writers.iter().enumerate() {
+            if write.load != LoadOp::Load {
+                continue;
+            }
+
+            if rank == 0 {
+                if transient {
+                    return Err(GraphError::LoadWithoutContents {
+                        pass: passes[write.pass].name().to_owned(),
+                        resource: resource.name.clone(),
+                        subresource,
+                    });
+                }
+
+                continue;
+            }
+
+            let previous = writers[rank - 1];
+            if previous.store == StoreOp::Discard {
+                return Err(GraphError::ReadDiscarded {
+                    pass: passes[write.pass].name().to_owned(),
+                    resource: resource.name.clone(),
+                    subresource,
+                    writer: passes[previous.pass].name().to_owned(),
+                });
+            }
+        }
+
+        let Some(&first_reader) = readers.first() else {
+            return Ok(());
+        };
+
+        let Some(last) = writers.last() else {
+            if transient {
+                return Err(GraphError::ReadWithoutWriter {
+                    pass: passes[first_reader].name().to_owned(),
+                    resource: resource.name.clone(),
+                    subresource,
                 });
             }
 
-            let Some(&(last_writer, _)) = writers.last() else {
-                continue;
-            };
+            return Ok(());
+        };
 
-            for &reader in &uses.readers[index] {
-                dependencies.push(Dependency {
-                    before: PassId(last_writer),
-                    after: PassId(reader),
-                    resource,
-                    kind: DependencyKind::ReadAfterWrite,
-                });
+        if last.store == StoreOp::Discard {
+            return Err(GraphError::ReadDiscarded {
+                pass: passes[first_reader].name().to_owned(),
+                resource: resource.name.clone(),
+                subresource,
+                writer: passes[last.pass].name().to_owned(),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// The edges every level of every layer asks for, each pair of passes linked once a
+    /// resource and kind.
+    fn dependencies(&self, uses: &Uses) -> Vec<Dependency> {
+        let resources = self.resources();
+        let mut seen = HashSet::new();
+        let mut dependencies = Vec::new();
+        let mut add = |dependency: Dependency| {
+            if seen.insert(dependency) {
+                dependencies.push(dependency);
+            }
+        };
+        for index in 0..resources.len() {
+            let resource = ResourceId(index);
+            for (unit, _) in uses.units(resources, index) {
+                let writers = &uses.writers[unit];
+                for pair in writers.windows(2) {
+                    let kind = if pair[1].load == LoadOp::Load {
+                        DependencyKind::LoadAfterWrite
+                    } else {
+                        DependencyKind::WriteAfterWrite
+                    };
+                    add(Dependency {
+                        before: PassId(pair[0].pass),
+                        after: PassId(pair[1].pass),
+                        resource,
+                        kind,
+                    });
+                }
+
+                let Some(last) = writers.last() else {
+                    continue;
+                };
+
+                for &reader in &uses.readers[unit] {
+                    add(Dependency {
+                        before: PassId(last.pass),
+                        after: PassId(reader),
+                        resource,
+                        kind: DependencyKind::ReadAfterWrite,
+                    });
+                }
             }
         }
 
@@ -386,23 +488,26 @@ impl RenderGraph {
 
     fn live_passes(&self, uses: &Uses, dependencies: &[Dependency]) -> Result<Vec<bool>, GraphError> {
         let passes = self.passes();
+        let resources = self.resources();
         let mut live = vec![false; passes.len()];
         let mut worklist = Vec::new();
-        for (index, resource) in self.resources().iter().enumerate() {
-            if resource.origin != ResourceOrigin::Imported {
+        for (index, resource) in resources.iter().enumerate() {
+            if !resource.is_observed() {
                 continue;
             }
 
-            let Some(&(writer, output)) = uses.writers[index].last() else {
-                continue;
-            };
+            for (unit, _) in uses.units(resources, index) {
+                let Some(last) = uses.writers[unit].last() else {
+                    continue;
+                };
 
-            if passes[writer].outputs[output].store == StoreOp::Discard || live[writer] {
-                continue;
+                if last.store == StoreOp::Discard || live[last.pass] {
+                    continue;
+                }
+
+                live[last.pass] = true;
+                worklist.push(last.pass);
             }
-
-            live[writer] = true;
-            worklist.push(writer);
         }
 
         let mut sources = vec![Vec::new(); passes.len()];
@@ -433,10 +538,7 @@ impl RenderGraph {
     fn lifetimes(&self, order: &[PassId]) -> Vec<Option<Lifetime>> {
         let mut lifetimes: Vec<Option<Lifetime>> = vec![None; self.resources().len()];
         for (position, pass) in order.iter().enumerate() {
-            let pass = &self.passes()[pass.0];
-            let inputs = pass.inputs.iter().map(|input| input.resource);
-            let outputs = pass.outputs.iter().map(|output| output.resource);
-            for resource in inputs.chain(outputs) {
+            for resource in self.passes()[pass.0].resources() {
                 let lifetime = &mut lifetimes[resource.0];
                 let Some(lifetime) = lifetime else {
                     *lifetime = Some(Lifetime {
@@ -454,13 +556,11 @@ impl RenderGraph {
     }
 }
 
-/// First-fit over transient targets in order of first use: each joins the earliest group with
-/// the same descriptor whose last member is done before it starts.
+/// First-fit over transient resources in order of first use: each joins the earliest group with
+/// the same description whose last member is done before it starts.
 ///
-/// The descriptor is kind, format, and size, because that is everything a target's allocation
-/// depends on today. Anything that later changes an allocation (sample count, storage or copy
-/// usage, mip levels, array layers) must join this comparison when it's added, or two targets
-/// the backend can't share memory between will be put in one group.
+/// The description is everything an allocation depends on: a target's format, size, levels,
+/// layers, and samples, or a buffer's size.
 fn alias_groups(resources: &[Resource], lifetimes: &[Option<Lifetime>]) -> Vec<AliasGroup> {
     let mut candidates: Vec<(Lifetime, usize)> = lifetimes
         .iter()
@@ -476,10 +576,7 @@ fn alias_groups(resources: &[Resource], lifetimes: &[Option<Lifetime>]) -> Vec<A
         let resource = &resources[index];
         let fitting = groups.iter().zip(&group_ends).position(|(group, &end)| {
             let member = &resources[group.resources[0].0];
-            end < lifetime.first
-                && member.kind == resource.kind
-                && member.format == resource.format
-                && member.size == resource.size
+            end < lifetime.first && member.desc == resource.desc
         });
 
         let Some(fitting) = fitting else {

@@ -11,14 +11,14 @@ fn only_generic_members_are_installed() {
         &runtime,
         r"
         local expected = {
-            'application', 'audio', 'bench', 'context', 'events', 'granted', 'input', 'interfaces',
-            'null', 'payload', 'shader', 'version', 'worker',
+            'application', 'audio', 'bench', 'context', 'events', 'gpu', 'granted', 'input',
+            'interfaces', 'null', 'payload', 'shader', 'version', 'worker',
         }
         local members = {}
         for name in jess do table.insert(members, name) end
         table.sort(members)
         assert(table.concat(members, ' ') == table.concat(expected, ' '), table.concat(members, ' '))
-        for _, name in { 'shader', 'context', 'worker', 'events', 'interfaces', 'application', 'bench' } do
+        for _, name in { 'shader', 'gpu', 'context', 'worker', 'events', 'interfaces', 'application', 'bench' } do
             assert(require('@jess/' .. name) == jess[name], name)
         end
         -- @jess/input is the built-in package's Luau, over jess.input.
@@ -108,6 +108,7 @@ fn the_types_cover_exactly_the_kernel_s_modules() {
             "@jess/data/toml",
             "@jess/data/value",
             "@jess/events",
+            "@jess/gpu",
             "@jess/http",
             "@jess/input",
             "@jess/interfaces",
@@ -116,6 +117,8 @@ fn the_types_cover_exactly_the_kernel_s_modules() {
             "@jess/l10n",
             "@jess/log",
             "@jess/package",
+            "@jess/render",
+            "@jess/render/camera",
             "@jess/shader",
             "@jess/style",
             "@jess/test",
@@ -148,7 +151,14 @@ fn generic_contract_fixtures_keep_their_answers() {
         let values = function.invoke_multi(&runtime.stack(), (&oracle,)).unwrap();
         let finish: l3i::value::Function = oracle.get(&runtime.stack(), "finish").unwrap();
         let actual: String = finish.invoke_with_values(&runtime.stack(), &values).unwrap();
-        let expected = std::fs::read_to_string(root.join(format!("{fixture}.expected.json"))).unwrap();
+        let path = root.join(format!("{fixture}.expected.json"));
+        // Re-blessing is deliberate, as the WGSL goldens' is: the reason goes in the commit.
+        if std::env::var_os("JESS_BLESS").is_some() {
+            let newline = if actual.ends_with('\n') { "" } else { "\n" };
+            std::fs::write(&path, actual + newline).unwrap();
+            continue;
+        }
+        let expected = std::fs::read_to_string(path).unwrap();
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&actual).unwrap(),
             serde_json::from_str::<serde_json::Value>(&expected).unwrap(),

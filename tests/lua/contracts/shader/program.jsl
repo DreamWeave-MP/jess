@@ -6,69 +6,168 @@ local shader = require '@jess/shader'
 
 local observed: { [string]: any } = {}
 
+local Camera = shader.struct('Camera', {
+  position = shader.vec3,
+  projection = shader.mat4,
+  view = shader.mat4,
+})
+
+local Light = shader.struct('Light', {
+  color = shader.vec3,
+  direction = shader.vec3,
+})
+
 local lit = shader.program {
-  parameters = {
-    normalMatrix = shader.mat3,
-    lightDirection = shader.vec3,
-    ambient = shader.float,
-    tint = shader.vec4,
-    pointSampler = shader.sampler,
+  attributes = {
+    light = shader.uint,
+    normal = shader.vec3,
+    position = shader.vec3,
+    uv = shader.vec2,
   },
 
-  textures = {
+  instance = {
+    shade = shader.vec4u,
+    transform = shader.mat4,
+  },
+
+  pass = {
+    camera = Camera,
+    lights = shader.array(Light, 4),
+    time = shader.float,
+    viewportSize = shader.vec2,
+  },
+
+  material = {
+    ambient = shader.float,
     diffuse = shader.texture2d,
+    normalMatrix = shader.mat3,
+    pointSampler = shader.sampler,
+    tint = shader.vec4,
+  },
+
+  draw = {
+    model = shader.mat4,
   },
 
   vertex = function(input)
-    local clip = input.projection * input.view * input.model * shader.vec4(input.position, 1.0)
+    local camera = input.pass.camera
+    local placed = input.instance.transform * shader.vec4(input.attributes.position, 1.0)
+    local clip = camera.projection * camera.view * input.draw.model * placed
+    local lights = input.pass.lights
     observed.vertex = {
       input = tostring(input),
-      position = tostring(input.position),
+      attributes = tostring(input.attributes),
+      instance = tostring(input.instance),
+      position = tostring(input.attributes.position),
+      transform = tostring(input.instance.transform),
+      shade = tostring(input.instance.shade),
+      placed = tostring(placed),
       clip = tostring(clip),
-      matrix = tostring(input.projection * input.view),
-      sameRead = input.position == input.position,
-      differentValues = input.position == input.normal,
-      texture = tostring(input.diffuse),
+      matrix = tostring(camera.projection * camera.view),
+      sameRead = input.attributes.position == input.attributes.position,
+      differentValues = input.attributes.position == input.attributes.normal,
+      sameUniform = camera.view == input.pass.camera.view,
+      places = {
+        pass = tostring(input.pass),
+        camera = tostring(camera),
+        lights = tostring(lights),
+        light = tostring(lights[0]),
+        length = #lights,
+        constantIndex = tostring(lights[3].color),
+        valueIndex = tostring(lights[input.attributes.light].direction),
+      },
+      operators = {
+        negated = tostring(-camera.position),
+        negatedVector = tostring(-input.attributes.normal),
+        remainder = tostring(input.attributes.light % shader.uint(4)),
+        bitAnd = tostring(shader.bitAnd(input.attributes.light, shader.uint(3))),
+        shifted = tostring(shader.shiftLeft(input.attributes.light, shader.uint(2))),
+        bitNot = tostring(shader.bitNot(input.attributes.light)),
+      },
+      texture = tostring(input.material.diffuse),
+      sampler = tostring(input.material.pointSampler),
+      integers = {
+        cell = tostring(shader.vec3i(1, -2, 3)),
+        count = tostring(shader.uint(7)),
+        signed = tostring(shader.int(-3) + shader.int(2)),
+        splat = tostring(shader.vec2u(shader.uint(1))),
+        dot = tostring(shader.dot(shader.vec3i(1), shader.vec3i(2))),
+        swizzle = tostring(shader.vec4u(1, 2, 3, 4).wx),
+      },
+      builtins = {
+        handle = tostring(input.builtin),
+        vertexIndex = tostring(input.builtin.vertexIndex),
+        instanceIndex = tostring(input.builtin.instanceIndex),
+        sameRead = input.builtin.vertexIndex == input.builtin.vertexIndex,
+      },
+      conversions = {
+        scalar = tostring(shader.float(input.attributes.light)),
+        vector = tostring(shader.vec4(input.instance.shade)),
+        signed = tostring(shader.vec4i(input.instance.shade)),
+        columns = tostring(shader.mat3(camera.position, input.attributes.normal, camera.position)),
+      },
     }
 
     return {
       position = clip,
-      normal = input.normalMatrix * input.normal,
-      uv = input.uv,
+      normal = input.material.normalMatrix * input.attributes.normal,
+      uv = input.attributes.uv,
     }
   end,
 
   fragment = function(input)
-    local diffuse = shader.sample(input.diffuse, input.uv)
-    local facing = shader.dot(shader.normalize(input.normal), input.lightDirection)
-    local light = shader.max(facing, 0.0) + input.ambient
-    local lit = shader.clamp(diffuse.xyz * light, 0.0, 1.0)
+    local material = input.material
+    local light = input.pass.lights[0]
+    local diffuse = shader.sample(material.diffuse, input.uv)
+    local facing = shader.dot(shader.normalize(input.normal), light.direction)
+    local brightness = shader.max(facing, 0.0) + material.ambient
+    local lit = shader.clamp(diffuse.xyz * light.color * brightness, 0.0, 1.0)
     observed.fragment = {
       input = tostring(input),
       diffuse = tostring(diffuse),
       facing = tostring(facing),
-      light = tostring(light),
+      brightness = tostring(brightness),
       swizzles = {
         tostring(diffuse.x),
         tostring(diffuse.xy),
         tostring(diffuse.zyx),
         tostring(diffuse.wzyx),
       },
-      mixed = tostring(shader.mix(diffuse.xyz, input.tint.xyz, 0.5)),
-      length = tostring(shader.length(input.lightDirection)),
+      mixed = tostring(shader.mix(diffuse.xyz, material.tint.xyz, 0.5)),
+      length = tostring(shader.length(light.direction)),
       floor = tostring(shader.floor(diffuse.xyz * 3.5)),
-      cross = tostring(shader.cross(input.normal, input.lightDirection)),
-      min = tostring(shader.min(diffuse, input.tint)),
+      cross = tostring(shader.cross(input.normal, light.direction)),
+      min = tostring(shader.min(diffuse, material.tint)),
       splat = tostring(shader.vec3(0.5)),
-      fromParts = tostring(shader.vec4(diffuse.xy, 1.0, input.ambient)),
+      fromParts = tostring(shader.vec4(diffuse.xy, 1.0, material.ambient)),
       numberFirst = tostring(2.0 * diffuse),
       divided = tostring(diffuse / 2.0),
       subtracted = tostring(1.0 - diffuse.x),
       constant = tostring(shader.float(0.25)),
-      explicitSampler = tostring(shader.sample(input.diffuse, input.pointSampler, input.uv)),
-      time = tostring(input.time),
-      camera = tostring(input.cameraPosition),
-      viewport = tostring(input.viewportSize),
+      explicitSampler = tostring(shader.sample(material.diffuse, material.pointSampler, input.uv)),
+      time = tostring(input.pass.time),
+      camera = tostring(input.pass.camera.position),
+      viewport = tostring(input.pass.viewportSize),
+      builtins = {
+        handle = tostring(input.builtin),
+        position = tostring(input.builtin.position),
+        frontFacing = tostring(input.builtin.frontFacing),
+      },
+      math = {
+        smooth = tostring(shader.smoothstep(0.2, 0.8, facing)),
+        stepped = tostring(shader.step(0.5, diffuse.xyz)),
+        angle = tostring(shader.atan2(input.uv.y, input.uv.x)),
+        width = tostring(shader.fwidth(input.uv)),
+        transposed = tostring(shader.transpose(material.normalMatrix)),
+        absolute = tostring(shader.abs(shader.int(-2))),
+        powered = tostring(shader.pow(diffuse, 2)),
+      },
+      logic = {
+        less = tostring(shader.less(facing, 0.5)),
+        both = tostring(shader.logicalAnd(true, shader.greater(facing, 0))),
+        negated = tostring(shader.logicalNot(false)),
+        chosen = tostring(shader.select(shader.equal(facing, 0), diffuse, material.tint)),
+      },
     }
 
     return shader.vec4(lit, diffuse.w)
@@ -76,15 +175,159 @@ local lit = shader.program {
 }
 
 local constant = shader.program {
-  vertex = function(input) return { position = shader.vec4(input.position, 1.0) } end,
+  attributes = { position = shader.vec3 },
+  vertex = function(input) return { position = shader.vec4(input.attributes.position, 1.0) } end,
   fragment = function() return shader.vec4(1.0, 0.5, 0.0, 1.0) end,
+}
+
+local textures = shader.program {
+  attributes = { position = shader.vec4 },
+  pass = { linear = shader.sampler, compare = shader.comparisonSampler },
+  material = {
+    decals = shader.texture2dArray,
+    fog = shader.texture3d,
+    ids = shader.texture2du,
+    shadow = shader.depthTexture2d,
+    cascades = shader.depthTexture2dArray,
+    sky = shader.textureCube,
+  },
+  draw = { layer = shader.uint },
+  vertex = function(input)
+    return { position = input.attributes.position, direction = input.attributes.position.xyz }
+  end,
+
+  fragment = function(input)
+    local material = input.material
+    observed.textures = {
+      level = tostring(shader.sampleLevel(material.decals, input.direction.xy, 1, 0)),
+      bias = tostring(shader.sampleBias(material.sky, input.pass.linear, input.direction, -1)),
+      id = tostring(shader.load(material.ids, shader.vec2u(3, 4), 0)),
+      layerTexel = tostring(shader.load(material.decals, shader.vec2i(0), 2, 0)),
+      size = tostring(shader.dimensions(material.fog)),
+      levelSize = tostring(shader.dimensions(material.ids, 1)),
+      levels = tostring(shader.levels(material.sky)),
+      layers = tostring(shader.layers(material.decals)),
+      idHandle = tostring(material.ids),
+      shadowHandle = tostring(material.shadow),
+      compareHandle = tostring(input.pass.compare),
+      compared = tostring(shader.sampleCompare(material.shadow, input.direction.xy, 0.5)),
+      comparedIn = tostring(
+        shader.sampleCompare(material.cascades, input.pass.compare, input.direction.xy, 1, 0.5)
+      ),
+      comparedAtZero = tostring(
+        shader.sampleCompareLevel(material.shadow, input.direction.xy, 0.5)
+      ),
+      depth = tostring(shader.load(material.shadow, shader.vec2u(0), 0)),
+      handles = { tostring(material.decals), tostring(material.fog), tostring(material.sky) },
+      layered = tostring(shader.sample(material.decals, input.direction.xy, input.draw.layer)),
+      numberLayer = tostring(shader.sample(material.decals, input.direction.xy, 2)),
+      explicit = tostring(
+        shader.sample(material.decals, input.pass.linear, input.direction.xy, input.draw.layer)
+      ),
+      cube = tostring(shader.sample(material.sky, input.direction)),
+      volume = tostring(shader.sample(material.fog, input.pass.linear, input.direction)),
+    }
+
+    return shader.sample(material.sky, input.direction)
+  end,
+}
+
+local flow = shader.program {
+  attributes = { position = shader.vec4 },
+  material = { count = shader.uint },
+  vertex = function(input)
+    local kept = shader.var(input.attributes.position)
+    kept:set(kept.value * 2)
+
+    return { position = kept.value }
+  end,
+
+  fragment = function(input)
+    local color = shader.var(shader.vec4(0))
+    local index: ShaderExpr? = nil
+    shader.loop(input.material.count, function(each)
+      index = each
+      color:set(color.value + 0.25)
+    end)
+    shader.when(
+      shader.greater(input.builtin.position.x, 10),
+      function() color:set(shader.vec4(1)) end,
+      shader.discard
+    )
+    observed.flow = {
+      var = tostring(color),
+      value = tostring(color.value),
+      index = tostring(index),
+      flag = tostring(shader.var(true)),
+      counted = tostring(shader.var(shader.uint(3))),
+    }
+
+    return color.value
+  end,
+}
+
+local Particle = shader.struct('Particle', { position = shader.vec4, size = shader.float })
+
+local buffers = shader.program {
+  pass = { counts = shader.storage(shader.uint, 'readWrite') },
+  material = { particles = shader.storage(Particle) },
+  vertex = function(input)
+    local particle = input.material.particles[input.builtin.vertexIndex]
+
+    return { position = particle.position }
+  end,
+
+  fragment = function(input)
+    local counts = input.pass.counts
+    shader.write(counts, 0, counts[0] + shader.uint(1))
+    observed.storage = {
+      buffer = tostring(counts),
+      element = tostring(counts[1]),
+      length = tostring(shader.arrayLength(counts)),
+      structs = tostring(input.material.particles),
+      particle = tostring(input.material.particles[2]),
+      field = tostring(input.material.particles[shader.uint(3)].size),
+    }
+
+    return shader.vec4(1)
+  end,
+}
+
+local integrate = shader.compute {
+  workgroupSize = { 8, 8 },
+  pass = { cells = shader.storage(shader.float, 'readWrite'), width = shader.uint },
+  compute = function(input)
+    local cell = input.builtin.globalInvocationId
+    local index = cell.y * input.pass.width + cell.x
+    shader.write(input.pass.cells, index, input.pass.cells[index] * 0.5)
+    observed.compute = {
+      input = tostring(input),
+      builtin = tostring(input.builtin),
+      global = tostring(cell),
+      inGroup = tostring(input.builtin.localInvocationIndex),
+      workgroup = tostring(input.builtin.workgroupId),
+      count = tostring(input.builtin.numWorkgroups),
+    }
+  end,
+}
+
+local picking = shader.program {
+  attributes = { position = shader.vec4 },
+  draw = { id = shader.uint },
+  vertex = function(input) return { position = input.attributes.position } end,
+  fragment = function(input)
+    return { color = shader.vec4(1), id = input.draw.id, depth = input.builtin.position.z }
+  end,
 }
 
 local function describe(program: ShaderProgram): { [string]: any }
   return {
     tostring = tostring(program),
-    parameters = program.parameters,
-    textures = program.textures,
+    attributes = program.attributes,
+    instance = program.instance,
+    pass = program.pass,
+    material = program.material,
+    draw = program.draw,
     varyings = program.varyings,
   }
 end
@@ -98,10 +341,46 @@ return {
     mat3 = tostring(shader.mat3),
     mat4 = tostring(shader.mat4),
     texture2d = tostring(shader.texture2d),
+    texture2dArray = tostring(shader.texture2dArray),
+    texture2di = tostring(shader.texture2di),
+    texture2du = tostring(shader.texture2du),
+    depthTexture2d = tostring(shader.depthTexture2d),
+    depthTexture2dArray = tostring(shader.depthTexture2dArray),
+    depthTextureCube = tostring(shader.depthTextureCube),
+    comparisonSampler = tostring(shader.comparisonSampler),
+    storage = tostring(shader.storage(Particle)),
+    storageReadWrite = tostring(shader.storage(shader.vec4, 'readWrite')),
+    textureCube = tostring(shader.textureCube),
+    texture3d = tostring(shader.texture3d),
     sampler = tostring(shader.sampler),
+    int = tostring(shader.int),
+    uint = tostring(shader.uint),
+    vec2i = tostring(shader.vec2i),
+    vec3i = tostring(shader.vec3i),
+    vec4i = tostring(shader.vec4i),
+    vec2u = tostring(shader.vec2u),
+    vec3u = tostring(shader.vec3u),
+    vec4u = tostring(shader.vec4u),
+    struct = tostring(Camera),
+    array = tostring(shader.array(Light, 4)),
+    valueArray = tostring(shader.array(shader.vec4, 16)),
   },
   lit = describe(lit),
   constant = describe(constant),
+  flow = describe(flow),
+  buffers = describe(buffers),
+  layout = lit.layout,
+  pickingOutputs = picking.outputs,
+  litOutputs = lit.outputs,
+  buffersLayout = buffers.layout,
+  integrate = describe(integrate),
+  integrateSize = integrate.workgroupSize,
+  litSize = lit.workgroupSize == nil,
+  computed = observed.compute,
+  storage = observed.storage,
+  statements = observed.flow,
+  textures = describe(textures),
+  sampled = observed.textures,
   vertex = observed.vertex,
   fragment = observed.fragment,
   sameModule = require '@jess/shader' == jess.shader,

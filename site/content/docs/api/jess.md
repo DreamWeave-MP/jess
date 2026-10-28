@@ -31,6 +31,7 @@ extra:
 | `jess.shader` | Typed shader programs from Luau modules | [jess.shader](@/docs/api/shader.md) |
 | `jess.input` | The native half of `@jess/input`: compiling binding documents, and the runtime | [@jess/input](@/docs/api/input.md) |
 | `jess.audio` | The native half of `@jess/audio`: PCM and contexts that mix voices on a sample clock | [@jess/audio](@/docs/api/audio.md) |
+| `jess.gpu` | The GPU: the device jess opens on it | [jess.gpu](@/docs/api/gpu.md) |
 | `jess.bench` | What a measurement needs from the host | [jess.bench](@/docs/api/bench.md) |
 | `@jess/log` | Structured logging with one sink the host owns | [@jess/log](@/docs/api/log.md) |
 | `@jess/test` | Test suites, expectations, and reports | [@jess/test](@/docs/api/test.md) |
