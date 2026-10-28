@@ -12,8 +12,12 @@
                 {% if child_page.description %}<span>{{ child_page.description }}</span>{% endif %}
             </a>
         {% endfor %}
+        {% set_global child_sections = [] %}
         {% for subsection_path in section.subsections %}
             {% set subsection = get_section(path=subsection_path) %}
+            {% set_global child_sections = child_sections | concat(with=[subsection]) %}
+        {% endfor %}
+        {% for subsection in child_sections | sort(attribute="weight") %}
             <a class="docs-section-link" href="{{ subsection.permalink | safe }}">
                 <strong>{{ subsection.title }}</strong>
                 {% if subsection.description %}<span>{{ subsection.description }}</span>{% endif %}

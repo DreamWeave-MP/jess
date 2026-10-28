@@ -108,8 +108,12 @@
         {% endif %}
     {% endfor %}
     {% endif %}
+    {% set_global sidebar_subsections = [] %}
     {% for subsection_path in subsections %}
         {% set subsection = get_section(path=subsection_path) %}
+        {% set_global sidebar_subsections = sidebar_subsections | concat(with=[subsection]) %}
+    {% endfor %}
+    {% for subsection in sidebar_subsections | sort(attribute="weight") %}
         <li class="docs-sidebar__section">
             {{ docs_sidebar::render(nav_section=subsection, current_url=current_url, active_paths=active_paths) }}
         </li>
