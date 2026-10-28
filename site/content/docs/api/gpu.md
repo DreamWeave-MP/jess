@@ -53,7 +53,7 @@ That's this machine's: a laptop's integrated GPU, reached through Vulkan. Yours 
 
 What a script changes about what the GPU draws (a buffer or texture it writes, a draw set's counts, whether it is visible, which collection holds it, which passes a plan leaves out, what a copy pass copies) waits for the device's next commit, and the commit applies all of it at once. Whatever draws a frame on its own, a window, draws a commit's changes whole or none of them, never half a frame.
 
-A commit happens at the end of every frame under an application's host, at `jess.gpu.pump()`, at `device:commit()`, and before anything that uses the GPU and waits for it (`plan:run`, `device:render`, `device:dispatch`, a read), so a script always sees its own changes when it asks the GPU for something. What reads a draw set or a plan back (`set.count`, `set.added`, `sets:has`, `plan:enabled`) says what the last commit left. Mistakes are refused when the change is asked for, not at the commit.
+A commit happens at the end of every frame under an application's host, at `jess.gpu.pump()`, at `device:commit()`, and before anything that uses the GPU and waits for it (`plan:run`, `device:render`, `device:dispatch`, a read), so a script always sees its own changes when it asks the GPU for something. What reads a draw set or a plan back (`set.count`, `set.added`, `sets:has`, `plan:enabled`) says what the last commit left. Mistakes are refused when the change is asked for, not at the commit. A commit is whole in what a frame sees, but it isn't a transaction: a change the GPU itself refuses at the commit is reported, the changes after it still apply, and nothing before it is rolled back.
 
 | Member | Type | Does |
 | --- | --- | --- |

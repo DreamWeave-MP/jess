@@ -86,6 +86,10 @@ impl Gpu {
     /// Applies every deferred change, in the order they were deferred, while nothing records a
     /// frame; whether there were any.
     ///
+    /// A commit is whole in what a frame sees, not a transaction: a change that fails is reported,
+    /// not undone, the changes after it still apply, and none before it is rolled back, so a
+    /// frame drawn after it sees every other change in full.
+    ///
     /// # Errors
     ///
     /// The first change that failed; the rest were applied.

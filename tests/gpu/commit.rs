@@ -30,7 +30,7 @@ fn deferred_changes_apply_together_at_the_commit() {
     assert!(!gpu.commit().unwrap(), "nothing left to apply");
     assert_eq!(gpu.commits(), commits + 1);
 
-    // In order, and every change applied even when one before it failed.
+    // In order, and every change applied even when one before it failed: whole, not transactional.
     let order = Arc::new(AtomicU32::new(0));
     for step in 1..=3 {
         let order = Arc::clone(&order);
