@@ -15,8 +15,9 @@ error style, one idea of list order. What jess adds is the gate in front of it. 
 declares); joining and taking paths apart needs neither. The
 [Files recipes](@/docs/scripting/files-toml-regex.md#files) use it.
 
-A `@dream/fs` function that fails answers `nil`, a message naming the path, and a kind, and
-never raises: wrap the call in `assert` where a failure should stop the script.
+An ordinary `@dream/fs` operation failure answers `nil`, a message naming the path, and a kind:
+wrap the call in `assert` where a failure should stop the script. A denied capability raises before
+the operation; see [Capabilities](@/docs/reference/capabilities.md).
 
 ```luau
 --!strict

@@ -14,7 +14,7 @@ This section is for looking things up, not for reading front to back; [Scripting
 
 Three kinds of module live here:
 
-- **The `jess` global and its members**: `jess.context`, `jess.worker`, `jess.events`, `jess.interfaces`, `jess.application`, `jess.shader`, `jess.gpu`, `jess.input`, `jess.audio`, and the values that belong to no module. Each member is also `require('@jess/<name>')`.
+- **The `jess` global and its members**: `jess.context`, `jess.worker`, `jess.events`, `jess.interfaces`, `jess.application`, `jess.shader`, `jess.gpu`, `jess.input`, `jess.audio`, `jess.bench`, and the values that belong to no module. Each member is also `require('@jess/<name>')`.
 - **The built-in modules**, Luau that ships inside the binary: `@jess/log`, `@jess/test`, `@jess/jpk`, `@jess/package`.
 - **The built-in package's exports**: `@jess/style`, `@jess/analysis`, `@jess/json`, `@jess/yaml`, `@jess/data/toml`, `@jess/data/value`, `@jess/l10n`, `@jess/input`, `@jess/audio`, `@jess/render`, `@jess/render/camera`, `@jess/backup`, `@jess/http`.
 
