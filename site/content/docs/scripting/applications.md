@@ -1,6 +1,6 @@
 ---
 title: 'Applications'
-description: 'Application targets: managed modules loaded into one ScriptDomain, host callbacks, named events, and domain-local interfaces that later packages override on purpose.'
+description: 'Application targets: managed modules loaded into one ScriptDomain, host callbacks, named events, domain-local interfaces that later packages override on purpose, and windows.'
 weight: 50
 extra:
   kind: guide
@@ -181,6 +181,8 @@ A table that contains itself is refused the same way, as too deep, with a path t
 
 Script events and host callbacks never meet. `events.emit('update')` delivers to `on.event.update` handlers if there are any, and never runs an `on.host.update`. `events.emit('interfaceOverride')` is just an event with a silly name. A script can't enter a host phase at all; the host owns the scheduler.
 
+One named event comes from the host rather than from a script: [`jess.window`](@/docs/api/events.md#jess-window), posted when something happened to one of the application's windows. It is delivered like any other, at the frame's drain, to `on.event['jess.window']` handlers; [A window](#a-window) handles one.
+
 ### Between domains
 
 Each domain has its own queue, and nothing is broadcast. A host that wants one domain's events in another routes them, explicitly, by name:
@@ -241,6 +243,146 @@ director shutdown
 
 Read it top to bottom and it's the whole contract: the override ran once, during load; the entry saw the composed interface; `load` before `startup`; three subscribers to `playerDied` in load order; the scoreboard's `gameOver` a frame later; shutdown last. Pack the four packages into JPKs and run `game.jpk` with `--package-path` pointing at them, and the output is the same, byte for byte.
 
+## A window
+
+An application with a window is the same machinery and one more capability. The target declares `gpu.window` beside `gpu.device`; a managed module opens a window, gives it a [plan](@/docs/api/gpu.md#plans) to show, changes what the plan draws from its handlers, and answers the window's news from a handler of the named event [`jess.window`](@/docs/api/events.md#jess-window). The host does the rest every frame: the window system's news first, then the frame, then one [commit](@/docs/api/gpu.md#commits) of everything the frame changed about what the GPU draws, which the windows draw on a thread of their own.
+
+```text
+triangle/
+  jess.toml
+  src/main.jsl
+  src/viewer.jsl
+```
+
+```toml
+manifest_version = 1
+
+[package]
+id = "org.example.triangle"
+version = "1.0.0"
+jess_api = "1"
+include = ["src"]
+default_target = "triangle"
+
+[managed.viewer]
+module = "src/viewer.jsl"
+
+[targets.triangle]
+kind = "application"
+entry = "src/main.jsl"
+capabilities = ["gpu.device", "gpu.window"]
+```
+
+The entry has nothing to do but say hello: `print('triangle: close the window to stop')`. The work is the managed module's, `src/viewer.jsl`:
+
+```luau
+--!strict
+local application = require '@jess/application'
+local render = require '@jess/render'
+local shader = require '@jess/shader'
+
+local program = shader.program {
+  attributes = { position = shader.vec2, color = shader.vec3 },
+  pass = { angle = shader.float, aspect = shader.float },
+  vertex = function(input)
+    local corner, turn = input.attributes.position, input.pass.angle
+    local cosine, sine = shader.cos(turn), shader.sin(turn)
+    local across = corner.x * cosine - corner.y * sine
+    local up = corner.x * sine + corner.y * cosine
+
+    return {
+      position = shader.vec4(across / input.pass.aspect, up, 0, 1),
+      color = input.attributes.color,
+    }
+  end,
+  fragment = function(input) return shader.vec4(input.color, 1) end,
+}
+
+local device = jess.gpu.device()
+local window = jess.gpu.window(device, { title = 'triangle', width = 640, height = 480 })
+local format = assert(window.format)
+local pipeline = device:pipeline(program, { colors = { format } })
+
+local corners = render.vertices(program.layout, 3)
+corners:set(1, 'position', { 0, 0.8 })
+corners:set(1, 'color', { 1, 0.3, 0.1 })
+corners:set(2, 'position', { -0.7, -0.5 })
+corners:set(2, 'color', { 0.1, 1, 0.3 })
+corners:set(3, 'position', { 0.7, -0.5 })
+corners:set(3, 'color', { 0.2, 0.4, 1 })
+
+local vertices = device:buffer(corners.stride * corners.count, 'vertex')
+corners:upload(vertices)
+device:drawSet { pipeline = pipeline, vertices = vertices, count = 3, tags = { 'scene' } }
+
+local turning = render.block(program.layout, 'pass')
+local turningBuffer = device:buffer(turning.size, 'uniform')
+turning:set('aspect', window.width / window.height)
+
+window:show(
+  device:plan {
+    viewport = { width = window.width, height = window.height },
+    targets = { { name = 'screen', format = format, imported = true } },
+    passes = {
+      {
+        name = 'scene',
+        kind = 'draw',
+        tags = { 'scene' },
+        pass = pipeline:bind('pass', { [0] = turningBuffer }),
+        colors = { { target = 'screen', clear = { 0.05, 0.05, 0.08, 1 } } },
+      },
+    },
+  },
+  'screen'
+)
+
+local angle = 0
+
+return {
+  on = {
+    host = {
+      update = function(deltaSeconds: number)
+        angle += deltaSeconds
+        turning:set('angle', angle)
+        turning:upload(turningBuffer)
+      end,
+
+      shutdown = function() print(`drew {window.frames} frames`) end,
+    },
+
+    event = {
+      ['jess.window'] = function()
+        for _, event in window:events() do
+          if event.kind == 'resized' then
+            turning:set('aspect', event.width / event.height)
+            print(`resized to {event.width}×{event.height}`)
+          elseif event.kind == 'closed' then
+            application.exit(0)
+          end
+        end
+      end,
+    },
+  },
+}
+```
+
+```text
+$ jess package run triangle --frames 120
+triangle: close the window to stop
+drew 119 frames
+```
+
+Without `--frames` it turns until you close the window. The run needs no `--trusted`: `gpu.device` and `gpu.window` are what a script you run holds anyway, so running a target grants the ones it declares; it still holds nothing it didn't declare.
+
+What each piece is doing:
+
+- **The module body runs once, at load.** The window, the pipeline, the vertex buffer, the draw set, and the plan are made there and live as long as the module's locals do, which is as long as the application. Nothing is made per frame.
+- **`update` changes one uniform block.** The write waits for the frame's commit, so the window draws a new frame every frame and never half of one. A frame that changes nothing commits nothing, and the window draws nothing new; drop the `update` and a still scene runs no Luau at all.
+- **The window's news arrives as an event.** `jess.window` is posted only when something happened to a window, and the handler reads what with `window:events()`. A resize has already resized the plan by the time the handler hears of it; the handler only fixes the aspect. The person's close button closes the window (`closes` is `true` unless the window is opened with `false`), and `closed` is the application's cue to stop.
+- **Its keys and pointer are input.** A target that declares `gpu.window` gets each window's keyboard and pointer as [input devices](@/docs/api/input.md#windows), so the bindings it installs see them and its `on.host.input` handlers get their actions, and the same keys are among `window:events()` for code that wants them raw.
+
+`window.frames` counts what reached the screen, and the last frame's draw can still be on its way when `shutdown` reads it: here, 120 frames drew 119.
+
 ## Authority
 
 An application holds what its target declares and nothing more, as a command target does. Every managed module's context holds that grant; a package doesn't get a VM or a capability of its own for being in the graph. Workers a module spawns hold a subset, and have no interfaces and no event queue of their own to emit into. `require` works in managed modules exactly as in any package module: their own files, their declared dependencies' exports, never past their package's root.
@@ -275,13 +417,13 @@ game.stop()?;
 
 `package::launch_with` takes `LaunchOptions`; its `input` is the application's input source (`InputSource::Synthetic` for tests and replays, a platform backend for devices). With one, every frame polls it first and runs the `input` handlers on the action events it produced; `application.host().input()` is the service, for the host to configure.
 
-`frame` is the domain's frame alone. `Application::step(delta, report)` is the whole of one as the command line runs it: the window system's news first (and, for each window something happened to, the named event `jess.window`), then the frame, then the frame's changes to what the GPU draws committed together and the windows told to draw them, with what a window or the GPU refused passed to `report`. A host with windows steps; one without can do either.
+`frame` is the domain's frame alone. `Application::step(delta, report)` is the whole of one as the command line runs it: the window system's news first (and, for each window something happened to, the named event [`jess.window`](@/docs/api/events.md#jess-window)), then the frame, then the frame's changes to what the GPU draws committed together and the windows told to draw them, with what a window or the GPU refused passed to `report`. A host with windows steps; one without can do either.
 
 `Application::restart` loads everything again in a new generation: a new runtime, new module tables, new handlers, new interfaces, and queued events for the old generation dropped. Two applications are two domains; they share nothing, not even an interface id.
 
-## Not yet
+## Current limits
 
-- The command line runs applications without a platform input source, on purpose for now: `input` handlers run under `jess package run` only for a target that declares `gpu.window`, on its windows' keyboard and pointer. A host that launches with `package::launch_with` and an input source in its `LaunchOptions` gets them from any device, every frame, before update.
+- The command line attaches no device backend of its own. Under `jess package run` and `jess workspace run`, an application's input is the keyboard and pointer of each of its [windows](@/docs/api/gpu.md#windows), for a target that declares `gpu.window`, and nothing for one that doesn't. A gamepad, or a keyboard with no window in front of it, reaches an application only through a host that launches it with `package::launch_with` and an input source in its `LaunchOptions`, which then gets every device, every frame, before update.
 - Interfaces are composed once, at load. No hot override.
 - Every managed context holds the target's whole grant; per-module capability subsets need manifest syntax nobody has designed.
 - Routing between domains is a host decision with a Rust API. There is no script API for it, on purpose, until there is a host that runs several application domains from one command.
