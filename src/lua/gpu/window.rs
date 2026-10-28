@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use l3i::bind::{Call, StackResults};
 use l3i::extension::{ExtensionDescriptor, TagPolicy};
-use l3i::stack::{Scope, ValueView};
+use l3i::stack::{Frame, Scope, TableView, ValueView};
 use l3i::userdata::{Owned, Userdata, receiver};
 
 use super::device::LuaGpuDevice;
@@ -15,7 +15,7 @@ use super::plan::{Given, LuaGpuPlan, given};
 use super::resources::{format_name, format_of, whole};
 use crate::gpu::PresentMode;
 use crate::lua::{error, kind, push_table};
-use crate::window::{Imported, Showing, Window, WindowDesc, WindowEvent};
+use crate::window::{Imported, Showing, TextArea, Window, WindowDesc, WindowEvent};
 
 /// A window and the device its surface is on.
 #[derive(Debug)]
@@ -29,6 +29,8 @@ unsafe impl Userdata for LuaGpuWindow {
 }
 
 const WINDOW_KEYS: [&str; 8] = ["closes", "format", "height", "key", "resizable", "title", "vsync", "width"];
+
+const AREA_KEYS: [&str; 4] = ["height", "width", "x", "y"];
 
 /// `jess.gpu.window(device, { title, width, height, resizable, vsync, format })`.
 pub fn open(call: &Call<'_>, device: ValueView<'_>, desc: Option<ValueView<'_>>) -> l3i::Result<Owned<LuaGpuWindow>> {
@@ -150,6 +152,10 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .tag(TagPolicy::Never)
         .doc("A native window, its surface on a GPU device, and the plan it draws every frame.");
     window.getter("title", |this: &LuaGpuWindow| this.window.title()).untyped();
+    #[allow(clippy::cast_precision_loss)] // window numbers are small
+    window
+        .getter("number", |this: &LuaGpuWindow| this.window.number() as f64)
+        .untyped();
     window.getter("key", |this: &LuaGpuWindow| this.window.key()).untyped();
     window.getter("frames", |this: &LuaGpuWindow| this.window.frames()).untyped();
     window
@@ -187,27 +193,44 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .untyped();
     window
         .method(
+            "textInput",
+            |this: &LuaGpuWindow, call: &Call<'_>, enabled: ValueView<'_>, area: Option<ValueView<'_>>| -> l3i::Result<()> {
+                const FUNCTION: &str = "GpuWindow:textInput";
+                if !enabled.is_boolean() {
+                    return Err(error(format!("{FUNCTION}: enabled is a boolean, not {}", kind(enabled))));
+                }
+                let area = match area.filter(|area| !area.is_nil()) {
+                    None => None,
+                    Some(area) => Some(call.with_frame(|frame| {
+                        let fields = options(frame, FUNCTION, "the area", area, &AREA_KEYS)?;
+                        let field = |key: &str| -> l3i::Result<u32> {
+                            whole(
+                                FUNCTION,
+                                &format!("the area's {key}"),
+                                Some(fields.raw_get(frame, key)?),
+                                None,
+                            )
+                        };
+                        Ok(TextArea {
+                            x: field("x")?,
+                            y: field("y")?,
+                            width: field("width")?,
+                            height: field("height")?,
+                        })
+                    })?),
+                };
+                this.window.text_input(enabled.read::<bool>()?, area);
+                Ok(())
+            },
+        )
+        .untyped();
+    window
+        .method(
             "events",
             |this: &LuaGpuWindow, call: &Call<'_>| -> l3i::Result<StackResults> {
                 let events = this.window.events();
                 l3i::stack::push_list(call, events.iter(), |frame, event| {
-                    push_table(frame, 0, 3, |frame, table| match *event {
-                        WindowEvent::Resized(size) => {
-                            table.raw_set_value(frame, "kind", "resized")?;
-                            table.raw_set_value(frame, "width", &f64::from(size.width))?;
-                            table.raw_set_value(frame, "height", &f64::from(size.height))
-                        }
-                        WindowEvent::ScaleChanged(scale) => {
-                            table.raw_set_value(frame, "kind", "scaled")?;
-                            table.raw_set_value(frame, "scale", &scale)
-                        }
-                        WindowEvent::Focused(focused) => {
-                            table.raw_set_value(frame, "kind", "focused")?;
-                            table.raw_set_value(frame, "focused", &focused)
-                        }
-                        WindowEvent::CloseRequested => table.raw_set_value(frame, "kind", "closeRequested"),
-                        WindowEvent::Closed => table.raw_set_value(frame, "kind", "closed"),
-                    })
+                    push_table(frame, 0, 5, |frame, table| event_fields(frame, table, event))
                 })?;
                 Ok(StackResults)
             },
@@ -218,4 +241,77 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         let closed = if this.window.is_open() { "" } else { ", closed" };
         format!("GpuWindow({}, {}×{}{closed})", this.window.title(), size.width, size.height)
     });
+}
+
+/// Fills `table` with `event`'s kind and fields, as `GpuWindow:events` lists it.
+fn event_fields(frame: &Frame<'_>, table: &TableView<'_>, event: &WindowEvent) -> l3i::Result<()> {
+    match event {
+        WindowEvent::Resized(size) => {
+            table.raw_set_value(frame, "kind", "resized")?;
+            table.raw_set_value(frame, "width", &f64::from(size.width))?;
+            table.raw_set_value(frame, "height", &f64::from(size.height))
+        }
+        WindowEvent::ScaleChanged(scale) => {
+            table.raw_set_value(frame, "kind", "scaled")?;
+            table.raw_set_value(frame, "scale", &scale)
+        }
+        WindowEvent::Focused(focused) => {
+            table.raw_set_value(frame, "kind", "focused")?;
+            table.raw_set_value(frame, "focused", &focused)
+        }
+        WindowEvent::CloseRequested => table.raw_set_value(frame, "kind", "closeRequested"),
+        WindowEvent::Closed => table.raw_set_value(frame, "kind", "closed"),
+        WindowEvent::Key { key, pressed, repeat } => {
+            table.raw_set_value(frame, "kind", "key")?;
+            table.raw_set_value(frame, "key", key.name())?;
+            table.raw_set_value(frame, "pressed", pressed)?;
+            table.raw_set_value(frame, "repeated", repeat)
+        }
+        WindowEvent::Text(text) => {
+            table.raw_set_value(frame, "kind", "text")?;
+            table.raw_set_value(frame, "text", text.as_str())
+        }
+        WindowEvent::Preedit { text, cursor } => {
+            table.raw_set_value(frame, "kind", "preedit")?;
+            table.raw_set_value(frame, "text", text.as_str())?;
+            let Some((start, end)) = cursor else {
+                return Ok(());
+            };
+            // As `string.sub` takes it: the first byte, and the last, which is
+            // the one before the first for a caret.
+            #[allow(clippy::cast_precision_loss)] // offsets into a short string
+            {
+                table.raw_set_value(frame, "from", &((start + 1) as f64))?;
+                table.raw_set_value(frame, "to", &(*end as f64))
+            }
+        }
+        WindowEvent::InputMethod(enabled) => {
+            table.raw_set_value(frame, "kind", "inputMethod")?;
+            table.raw_set_value(frame, "enabled", enabled)
+        }
+        WindowEvent::PointerEntered => table.raw_set_value(frame, "kind", "pointerEntered"),
+        WindowEvent::PointerMoved { x, y } => {
+            table.raw_set_value(frame, "kind", "pointerMoved")?;
+            table.raw_set_value(frame, "x", x)?;
+            table.raw_set_value(frame, "y", y)
+        }
+        WindowEvent::PointerLeft => table.raw_set_value(frame, "kind", "pointerLeft"),
+        WindowEvent::PointerButton { button, pressed } => {
+            table.raw_set_value(frame, "kind", "pointerButton")?;
+            table.raw_set_value(frame, "button", button.name())?;
+            table.raw_set_value(frame, "pressed", pressed)
+        }
+        WindowEvent::Wheel { x, y } => {
+            table.raw_set_value(frame, "kind", "wheel")?;
+            table.raw_set_value(frame, "x", &f64::from(*x))?;
+            table.raw_set_value(frame, "y", &f64::from(*y))
+        }
+        WindowEvent::Modifiers(held) => {
+            table.raw_set_value(frame, "kind", "modifiers")?;
+            table.raw_set_value(frame, "shift", &held.shift)?;
+            table.raw_set_value(frame, "control", &held.control)?;
+            table.raw_set_value(frame, "alt", &held.alt)?;
+            table.raw_set_value(frame, "meta", &held.meta)
+        }
+    }
 }

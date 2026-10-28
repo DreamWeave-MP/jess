@@ -33,10 +33,22 @@
 //!
 //! # Input
 //!
-//! Key presses, pointer buttons, motion, and the wheel in any window reach the host's input
-//! service through [`WindowInput`], a [`Backend`] that stamps them with the host's clock: one
-//! keyboard and one pointer, whichever window they happened in. Keys are named by position, as
-//! every jess backend names them.
+//! What a person does in a window reaches the application two ways, for two kinds of code.
+//!
+//! Its keys, pointer buttons, pointer, and wheel reach the host's input service through
+//! [`WindowInput`], a [`Backend`] that stamps them with the host's clock, as devices of the window
+//! they happened in: each window has a keyboard and a pointer of its own, which connect at its first
+//! input and disconnect when it closes. A binding to a control on any device, which is what a game
+//! binds, sees every window; one to a device sees one. A window's pointer is where the pointer is
+//! in that window, and nowhere once it leaves. Keys are named by position, as every jess backend
+//! names them.
+//!
+//! The same input, and the text it types, also arrives in order among the window's own events
+//! ([`Window::events`]): keys with their repeats, the text a key or an input method typed, an input
+//! method's composition in progress, the pointer entering, moving, and leaving, its buttons, the
+//! wheel, and the modifiers. That is what a text field, an editor, or anything else that is about
+//! one window reads. An input method composes only for a window that asked for text
+//! ([`Window::text_input`]).
 
 #![warn(missing_docs)]
 
@@ -50,9 +62,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use winit::application::ApplicationHandler;
-use winit::dpi::PhysicalSize;
+use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{
-    DeviceEvent, DeviceId as RawDeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent as RawEvent,
+    DeviceEvent, DeviceId as RawDeviceId, ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent as RawEvent,
 };
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
@@ -122,7 +134,7 @@ pub struct WindowDesc {
 }
 
 /// What happened to a window, in the order it happened, for whoever drives it to read.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum WindowEvent {
     /// Its inner size changed, to this many physical pixels; the plan it shows resized with it.
     Resized(Extent),
@@ -134,6 +146,84 @@ pub enum WindowEvent {
     CloseRequested,
     /// The window system closed it, or a close request did.
     Closed,
+    /// A key was pressed, held (`repeat`), or released while it had the keyboard.
+    Key {
+        /// The key, by position.
+        key: Key,
+        /// Pressed or held, rather than released.
+        pressed: bool,
+        /// Held: the system's repeat of a key still down.
+        repeat: bool,
+    },
+    /// Text was typed into it, by a key or by an input method finishing a composition. Control
+    /// characters (backspace, return, escape) are keys, not text.
+    Text(String),
+    /// An input method's composition in progress, shown where the text goes until it is typed or
+    /// abandoned; empty when there is none any more.
+    Preedit {
+        /// The composition so far.
+        text: String,
+        /// The byte range of `text` the input method's cursor selects, if it shows one; empty
+        /// where it is a caret.
+        cursor: Option<(usize, usize)>,
+    },
+    /// An input method started or stopped composing for it.
+    InputMethod(bool),
+    /// The pointer came over it.
+    PointerEntered,
+    /// The pointer moved over it, to this position in physical pixels from its top left.
+    PointerMoved {
+        /// Pixels from the left.
+        x: f64,
+        /// Pixels from the top.
+        y: f64,
+    },
+    /// The pointer left it.
+    PointerLeft,
+    /// A pointer button was pressed or released over it.
+    PointerButton {
+        /// The button.
+        button: PointerButton,
+        /// Pressed, rather than released.
+        pressed: bool,
+    },
+    /// The wheel turned over it, in lines: up and right are positive.
+    Wheel {
+        /// Lines to the right.
+        x: f32,
+        /// Lines up.
+        y: f32,
+    },
+    /// The modifier keys held changed.
+    Modifiers(Modifiers),
+}
+
+/// Which modifier keys are held, on either side.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[allow(clippy::struct_excessive_bools)] // four keys, each held or not
+pub struct Modifiers {
+    /// Shift.
+    pub shift: bool,
+    /// Control.
+    pub control: bool,
+    /// Alt, Option on a Mac.
+    pub alt: bool,
+    /// The logo key: Windows, Command, Super.
+    pub meta: bool,
+}
+
+/// Where in a window text goes, in physical pixels from its top left: an input method shows its
+/// composition and candidates beside it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct TextArea {
+    /// Pixels from the left.
+    pub x: u32,
+    /// Pixels from the top.
+    pub y: u32,
+    /// Its width.
+    pub width: u32,
+    /// Its height.
+    pub height: u32,
 }
 
 /// The most events a window keeps for whoever hasn't read them: the oldest go first.
@@ -234,11 +324,23 @@ impl Drop for State {
 
 impl State {
     fn happened(&mut self, event: WindowEvent) {
-        if self.events.len() == EVENTS {
-            self.events.remove(0);
-        }
-        self.events.push(event);
+        happen(&mut self.events, event);
     }
+}
+
+/// Adds `event` to a window's `events`, the oldest going when there are [`EVENTS`].
+fn happen(events: &mut Vec<WindowEvent>, event: WindowEvent) {
+    // Where the pointer is now is all a move says: a run of them is the last one.
+    if matches!(event, WindowEvent::PointerMoved { .. })
+        && let Some(last @ WindowEvent::PointerMoved { .. }) = events.last_mut()
+    {
+        *last = event;
+        return;
+    }
+    if events.len() == EVENTS {
+        events.remove(0);
+    }
+    events.push(event);
 }
 
 /// A window on the screen. Dropping every handle to it closes it.
@@ -323,6 +425,7 @@ impl ApplicationHandler for Handler<'_> {
         let Some(state) = self.state(id) else {
             return;
         };
+        let number = u64::from(id);
         match event {
             RawEvent::Resized(size) => resized(&mut state.borrow_mut(), size),
             RawEvent::ScaleFactorChanged { scale_factor, .. } => {
@@ -347,27 +450,59 @@ impl ApplicationHandler for Handler<'_> {
             }
             RawEvent::Focused(focused) => {
                 state.borrow_mut().happened(WindowEvent::Focused(focused));
-                queue(Raw::Focus(focused));
+                queue(Raw::Focus(number, focused));
             }
             RawEvent::KeyboardInput { event, .. } => {
+                let pressed = event.state == ElementState::Pressed;
+                let mut state = state.borrow_mut();
                 if let PhysicalKey::Code(code) = event.physical_key
                     && let Some(key) = key(code)
-                    && !event.repeat
                 {
-                    queue(Raw::Key(key, event.state == ElementState::Pressed));
+                    state.happened(WindowEvent::Key {
+                        key,
+                        pressed,
+                        repeat: event.repeat,
+                    });
+                    if !event.repeat {
+                        queue(Raw::Key(number, key, pressed));
+                    }
                 }
+                if pressed && let Some(text) = event.text.as_deref().and_then(typed) {
+                    state.happened(WindowEvent::Text(text));
+                }
+            }
+            RawEvent::Ime(ime) => state.borrow_mut().happened(composed(ime)),
+            RawEvent::ModifiersChanged(modifiers) => {
+                let held = modifiers.state();
+                state.borrow_mut().happened(WindowEvent::Modifiers(Modifiers {
+                    shift: held.shift_key(),
+                    control: held.control_key(),
+                    alt: held.alt_key(),
+                    meta: held.super_key(),
+                }));
             }
             RawEvent::MouseInput {
                 state: pressed, button, ..
             } => {
                 if let Some(button) = pointer_button(button) {
-                    queue(Raw::Button(button, pressed == ElementState::Pressed));
+                    let pressed = pressed == ElementState::Pressed;
+                    state.borrow_mut().happened(WindowEvent::PointerButton { button, pressed });
+                    queue(Raw::Button(number, button, pressed));
                 }
             }
+            RawEvent::CursorEntered { .. } => state.borrow_mut().happened(WindowEvent::PointerEntered),
             RawEvent::CursorMoved { position, .. } => {
+                state.borrow_mut().happened(WindowEvent::PointerMoved {
+                    x: position.x,
+                    y: position.y,
+                });
                 // Positions are pixels: a window wider than f32 counts exactly is no window.
                 #[allow(clippy::cast_possible_truncation)]
-                queue(Raw::Position(position.x as f32, position.y as f32));
+                queue(Raw::Position(number, position.x as f32, position.y as f32));
+            }
+            RawEvent::CursorLeft { .. } => {
+                state.borrow_mut().happened(WindowEvent::PointerLeft);
+                queue(Raw::Left(number));
             }
             RawEvent::MouseWheel { delta, .. } => {
                 let (x, y) = match delta {
@@ -376,7 +511,8 @@ impl ApplicationHandler for Handler<'_> {
                     #[allow(clippy::cast_possible_truncation)]
                     MouseScrollDelta::PixelDelta(pixels) => ((pixels.x / 20.0) as f32, (pixels.y / 20.0) as f32),
                 };
-                queue(Raw::Wheel(x, y));
+                state.borrow_mut().happened(WindowEvent::Wheel { x, y });
+                queue(Raw::Wheel(number, x, y));
             }
             _ => {}
         }
@@ -421,6 +557,9 @@ fn resized(state: &mut State, size: PhysicalSize<u32>) {
 }
 
 fn close(state: &mut State) {
+    if let Some(raw) = &state.raw {
+        queue(Raw::Closed(u64::from(raw.id())));
+    }
     state.shared.arrive(Incoming::Hide);
     {
         // The surface goes before the window it was made from.
@@ -961,17 +1100,64 @@ impl Window {
     pub fn id(&self) -> WindowId {
         self.id
     }
+
+    /// Its number, which no other window of the process has: its input devices are
+    /// `window:<number>:keyboard` and `window:<number>:pointer`, and their backend is
+    /// `window:<number>`.
+    #[must_use]
+    pub fn number(&self) -> u64 {
+        u64::from(self.id)
+    }
+
+    /// Asks for text, or stops: while it is `enabled`, an input method may compose for it, and
+    /// what it composes arrives as [`WindowEvent::Preedit`] and [`WindowEvent::Text`]. `area` is
+    /// where the text goes, which the input method shows its composition and candidates beside.
+    /// Keys type text either way.
+    pub fn text_input(&self, enabled: bool, area: Option<TextArea>) {
+        let state = self.state.borrow();
+        let Some(raw) = &state.raw else {
+            return;
+        };
+        raw.set_ime_allowed(enabled);
+        if let Some(area) = area {
+            raw.set_ime_cursor_area(
+                PhysicalPosition::new(area.x, area.y),
+                PhysicalSize::new(area.width, area.height),
+            );
+        }
+    }
+}
+
+/// The text a key typed, without the control characters that are keys and not text, if any is
+/// left.
+fn typed(text: &str) -> Option<String> {
+    let text: String = text.chars().filter(|character| !character.is_control()).collect();
+    (!text.is_empty()).then_some(text)
+}
+
+/// What an input method did, as a window's event.
+fn composed(ime: Ime) -> WindowEvent {
+    match ime {
+        Ime::Enabled => WindowEvent::InputMethod(true),
+        Ime::Disabled => WindowEvent::InputMethod(false),
+        Ime::Preedit(text, cursor) => WindowEvent::Preedit { text, cursor },
+        Ime::Commit(text) => WindowEvent::Text(text),
+    }
 }
 
 /// What a window reported, before a host's clock stamps it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Raw {
-    Key(Key, bool),
-    Button(PointerButton, bool),
-    Position(f32, f32),
+    Key(u64, Key, bool),
+    Button(u64, PointerButton, bool),
+    Position(u64, f32, f32),
+    /// The pointer left the window.
+    Left(u64),
+    /// Motion of the mouse itself, not of the pointer in any window.
     Motion(f32, f32),
-    Wheel(f32, f32),
-    Focus(bool),
+    Wheel(u64, f32, f32),
+    Focus(u64, bool),
+    Closed(u64),
 }
 
 /// The most input kept for a host that hasn't polled: a frame's worth many times over.
@@ -993,12 +1179,21 @@ fn queue(raw: Raw) {
     }
 }
 
-/// A host's input backend for its windows, polled with any other backend it wraps: one keyboard
-/// and one pointer, connected at the first poll.
+/// A host's input backend for its windows, polled with any other backend it wraps.
+///
+/// Each window has a keyboard and a pointer, connected at its first input and disconnected when
+/// it closes. The host is focused while any window has the keyboard.
 #[derive(Debug)]
 pub struct WindowInput {
     inner: Option<Box<dyn Backend>>,
-    devices: Option<(DeviceId, DeviceId)>,
+    /// Each window's keyboard and pointer, by window number.
+    devices: Vec<(u64, DeviceId, DeviceId)>,
+    /// The windows that have the keyboard.
+    focused: Vec<u64>,
+    /// Whether the host was last told it is focused.
+    focus: bool,
+    /// The window the mouse's own motion goes to: the last one focused or touched.
+    current: Option<u64>,
 }
 
 impl WindowInput {
@@ -1006,7 +1201,32 @@ impl WindowInput {
     #[must_use]
     pub fn new(inner: Option<Box<dyn Backend>>) -> WindowInput {
         LISTENING.store(true, Ordering::Release);
-        WindowInput { inner, devices: None }
+        WindowInput {
+            inner,
+            devices: Vec::new(),
+            focused: Vec::new(),
+            focus: true,
+            current: None,
+        }
+    }
+
+    /// The keyboard and pointer of window `number`, connected if this is its first input.
+    fn devices(&mut self, sender: &EventSender, number: u64, now: Timestamp) -> (DeviceId, DeviceId) {
+        self.current = Some(number);
+        if let Some((_, keyboard, pointer)) = self.devices.iter().find(|(known, ..)| *known == number) {
+            return (*keyboard, *pointer);
+        }
+        let connect = |kind: &str, descriptor: DeviceDescriptor| {
+            let descriptor = DeviceDescriptor {
+                backend: Some(format!("window:{number}")),
+                ..descriptor
+            };
+            sender.connect(&DeviceIdentity::new(format!("window:{number}:{kind}")), descriptor, now)
+        };
+        let keyboard = connect("keyboard", DeviceDescriptor::keyboard(format!("window {number} keyboard")));
+        let pointer = connect("pointer", DeviceDescriptor::pointer(format!("window {number} pointer")));
+        self.devices.push((number, keyboard, pointer));
+        (keyboard, pointer)
     }
 }
 
@@ -1020,41 +1240,73 @@ impl Backend for WindowInput {
             inner.poll(sender, now)?;
         }
         let drained = std::mem::take(&mut *QUEUE.lock().unwrap_or_else(PoisonError::into_inner));
-        if drained.is_empty() {
-            return Ok(());
-        }
-        let (keyboard, pointer) = *self.devices.get_or_insert_with(|| {
-            (
-                sender.connect(
-                    &DeviceIdentity::new("window:keyboard"),
-                    DeviceDescriptor::keyboard("window keyboard"),
-                    now,
-                ),
-                sender.connect(
-                    &DeviceIdentity::new("window:pointer"),
-                    DeviceDescriptor::pointer("window pointer"),
-                    now,
-                ),
-            )
-        });
+        let mut refocused = false;
         for raw in drained {
             match raw {
-                Raw::Key(key, pressed) => sender.button(keyboard, Control::Key(key), pressed, now),
-                Raw::Button(button, pressed) => sender.button(pointer, Control::PointerButton(button), pressed, now),
-                Raw::Position(x, y) => {
+                Raw::Key(number, key, pressed) => {
+                    let (keyboard, _) = self.devices(sender, number, now);
+                    sender.button(keyboard, Control::Key(key), pressed, now);
+                }
+                Raw::Button(number, button, pressed) => {
+                    let (_, pointer) = self.devices(sender, number, now);
+                    sender.button(pointer, Control::PointerButton(button), pressed, now);
+                }
+                Raw::Position(number, x, y) => {
+                    let (_, pointer) = self.devices(sender, number, now);
                     sender.axis(pointer, Control::PointerAxis(PointerAxis::X), x, now);
                     sender.axis(pointer, Control::PointerAxis(PointerAxis::Y), y, now);
                 }
+                Raw::Left(number) => {
+                    // A pointer at no place in this window: a binding to any pointer's position
+                    // takes the window the pointer is in, the furthest from zero.
+                    if let Some((_, _, pointer)) = self.devices.iter().find(|(known, ..)| *known == number) {
+                        sender.axis(*pointer, Control::PointerAxis(PointerAxis::X), 0.0, now);
+                        sender.axis(*pointer, Control::PointerAxis(PointerAxis::Y), 0.0, now);
+                    }
+                }
                 Raw::Motion(x, y) => {
+                    let Some(number) = self.focused.last().copied().or(self.current) else {
+                        continue;
+                    };
+                    let (_, pointer) = self.devices(sender, number, now);
                     sender.axis(pointer, Control::PointerAxis(PointerAxis::DeltaX), x, now);
                     sender.axis(pointer, Control::PointerAxis(PointerAxis::DeltaY), y, now);
                 }
-                Raw::Wheel(x, y) => {
+                Raw::Wheel(number, x, y) => {
+                    let (_, pointer) = self.devices(sender, number, now);
                     sender.axis(pointer, Control::PointerAxis(PointerAxis::WheelX), x, now);
                     sender.axis(pointer, Control::PointerAxis(PointerAxis::WheelY), y, now);
                 }
-                Raw::Focus(focused) => sender.focus(focused, now),
+                Raw::Focus(number, focused) => {
+                    refocused = true;
+                    self.focused.retain(|known| *known != number);
+                    if focused {
+                        self.focused.push(number);
+                        self.current = Some(number);
+                    }
+                }
+                Raw::Closed(number) => {
+                    let had = self.focused.len();
+                    self.focused.retain(|known| *known != number);
+                    refocused |= self.focused.len() != had;
+                    if self.current == Some(number) {
+                        self.current = None;
+                    }
+                    let Some(position) = self.devices.iter().position(|(known, ..)| *known == number) else {
+                        continue;
+                    };
+                    let (_, keyboard, pointer) = self.devices.remove(position);
+                    sender.disconnect(keyboard, now);
+                    sender.disconnect(pointer, now);
+                }
             }
+        }
+        // One window losing the keyboard to another is no change to the host: it is told only
+        // when no window has the keyboard, or one has it again.
+        let focus = !self.focused.is_empty();
+        if refocused && focus != self.focus {
+            self.focus = focus;
+            sender.focus(focus, now);
         }
         Ok(())
     }
@@ -1308,34 +1560,141 @@ mod tests {
     }
 
     #[test]
-    fn window_input_reaches_the_host_at_its_clock() {
+    fn each_window_has_its_own_keyboard_and_pointer() {
+        use crate::input::InputEventKind as Kind;
+
         let mut backend = WindowInput::new(None);
-        queue(Raw::Key(Key::KeyW, true));
-        queue(Raw::Motion(3.0, -2.0));
         let input = crate::input::InputQueue::new();
         let now = Timestamp::ZERO + Duration::from_millis(16);
+        for raw in [
+            Raw::Focus(1, true),
+            Raw::Key(1, Key::KeyW, true),
+            Raw::Position(1, 10.0, 20.0),
+            Raw::Position(2, 5.0, 6.0),
+            Raw::Motion(3.0, -2.0),
+            Raw::Focus(1, false),
+            Raw::Focus(2, true),
+            Raw::Left(1),
+            Raw::Closed(1),
+        ] {
+            queue(raw);
+        }
         backend.poll(&input.sender(), now).unwrap();
         let mut events = Vec::new();
         input.drain(&mut events);
-        assert!(events.iter().all(|event| event.timestamp == now));
-        let kinds: Vec<&crate::input::InputEventKind> = events.iter().map(|event| &event.kind).collect();
-        assert_eq!(kinds.len(), 5, "a keyboard and a pointer connect, then a key and two axes");
-        assert!(matches!(
-            kinds[2],
-            crate::input::InputEventKind::Button {
-                control: Control::Key(Key::KeyW),
-                pressed: true,
-                ..
-            }
-        ));
-        assert!(matches!(
-            kinds[4],
-            crate::input::InputEventKind::Axis { control: Control::PointerAxis(PointerAxis::DeltaY), value, .. }
-                if (*value + 2.0).abs() < f32::EPSILON
-        ));
+        assert!(
+            events.iter().all(|event| event.timestamp == now),
+            "stamped at the host's clock"
+        );
+        let connected: Vec<(DeviceId, String, Option<String>)> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                Kind::Connected { device, descriptor } => {
+                    Some((*device, descriptor.name.clone(), descriptor.backend.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        let names: Vec<&str> = connected.iter().map(|(_, name, _)| name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "window 1 keyboard",
+                "window 1 pointer",
+                "window 2 keyboard",
+                "window 2 pointer"
+            ]
+        );
+        assert_eq!(connected[3].2.as_deref(), Some("window:2"));
+        let (keyboard, pointer, other) = (connected[0].0, connected[1].0, connected[3].0);
 
+        let axes = |device: DeviceId, axis: PointerAxis| -> Vec<f32> {
+            events
+                .iter()
+                .filter_map(|event| match event.kind {
+                    Kind::Axis {
+                        device: on,
+                        control,
+                        value,
+                    } if on == device && control == Control::PointerAxis(axis) => Some(value),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert!(events.iter().any(|event| matches!(
+            event.kind,
+            Kind::Button { device, control: Control::Key(Key::KeyW), pressed: true } if device == keyboard
+        )));
+        assert_eq!(
+            axes(pointer, PointerAxis::X),
+            [10.0, 0.0],
+            "where it was, then nowhere once it left"
+        );
+        assert_eq!(
+            axes(other, PointerAxis::X),
+            [5.0],
+            "each window's pointer is where it is in that window"
+        );
+        assert_eq!(
+            axes(pointer, PointerAxis::DeltaY),
+            [-2.0],
+            "the mouse moves the focused window's pointer"
+        );
+        let disconnected: Vec<DeviceId> = events
+            .iter()
+            .filter_map(|event| match event.kind {
+                Kind::Disconnected { device } => Some(device),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(disconnected, [keyboard, pointer], "a closed window's devices go with it");
+        assert!(
+            !events.iter().any(|event| matches!(event.kind, Kind::Focus { .. })),
+            "the keyboard moving from one window to another is no change to the host"
+        );
+
+        queue(Raw::Closed(3));
+        queue(Raw::Focus(2, false));
         backend.poll(&input.sender(), now).unwrap();
+        events.clear();
         input.drain(&mut events);
-        assert_eq!(events.len(), 5, "nothing new, and the devices connect once");
+        let kinds: Vec<&Kind> = events.iter().map(|event| &event.kind).collect();
+        assert!(
+            matches!(kinds.as_slice(), [Kind::Focus { focused: false }]),
+            "no window has the keyboard: {kinds:?}"
+        );
+    }
+
+    #[test]
+    fn text_is_what_a_key_or_an_input_method_typed() {
+        assert_eq!(typed("é"), Some("é".to_owned()));
+        assert_eq!(typed("\u{8}"), None, "backspace is a key");
+        assert_eq!(typed("\r"), None);
+        assert_eq!(composed(Ime::Commit("日本".to_owned())), WindowEvent::Text("日本".to_owned()));
+        assert_eq!(
+            composed(Ime::Preedit("にほ".to_owned(), Some((3, 6)))),
+            WindowEvent::Preedit {
+                text: "にほ".to_owned(),
+                cursor: Some((3, 6))
+            }
+        );
+        assert_eq!(composed(Ime::Enabled), WindowEvent::InputMethod(true));
+    }
+
+    #[test]
+    fn a_run_of_pointer_moves_keeps_the_last() {
+        let moved = |x: f64| WindowEvent::PointerMoved { x, y: 0.0 };
+        let mut events = vec![moved(1.0)];
+        happen(&mut events, moved(2.0));
+        happen(&mut events, WindowEvent::PointerLeft);
+        happen(&mut events, moved(3.0));
+        assert_eq!(events, [moved(2.0), WindowEvent::PointerLeft, moved(3.0)]);
+
+        for line in 0..EVENTS {
+            #[allow(clippy::cast_precision_loss)] // a few hundred
+            happen(&mut events, WindowEvent::Wheel { x: 0.0, y: line as f32 });
+        }
+        assert_eq!(events.len(), EVENTS);
+        assert_eq!(events[0], WindowEvent::Wheel { x: 0.0, y: 0.0 }, "the oldest went");
     }
 }

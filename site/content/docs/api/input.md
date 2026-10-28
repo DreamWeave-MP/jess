@@ -220,7 +220,7 @@ end
 
 Under a host, the domain's live runtime: every call returns a handle over the same one, the host ticks it once per frame, and the input context's handler receives that tick's events as its payload (`{ time, generation, events }`, rows shaped as below; a router makes intents of them). `tick` and `advance` are refused there (`InputRuntime:tick is the host's on a live input runtime: ...`); synthetic events (`connect`, `press`, ...) still work, under `input.configure`, and land in the next host tick.
 
-Anywhere else, a headless runtime of the script's own: synthetic devices, a clock that moves only when the script says so, and one graph at a time. With `windows = true` it also takes the keyboard and pointer of the [windows](@/docs/api/gpu.md#windows) the script opens, polled at every `tick` and stamped with the runtime's clock, as a host's are; a live runtime has them from its host already, and refuses the option.
+Anywhere else, a headless runtime of the script's own: synthetic devices, a clock that moves only when the script says so, and one graph at a time. With `windows = true` it also takes the keyboard and pointer of each of the [windows](@/docs/api/gpu.md#windows) the script opens, polled at every `tick` and stamped with the runtime's clock, as a host's are; a live runtime has them from its host already, and refuses the option.
 
 ```luau
 --!strict
@@ -269,7 +269,7 @@ Activate (the default) or deactivate a set; push a layer on top of the stack, or
 {{ api_signature(value="runtime:disconnect(device: number)") }}
 {{ api_signature(value="runtime:devices() -> { InputDevice }") }}
 
-Synthetic devices, by id. Disconnecting releases everything the device held. `devices` lists every connected device the runtime has seen, real ones included, as of the last tick.
+Synthetic devices, by id. Disconnecting releases everything the device held. `devices` lists every connected device the runtime has seen, real ones included, as of the last tick, each with the `backend` that found it where it says: a window's keyboard and pointer say `window:<number>`, the window's [`number`](@/docs/api/gpu.md#gpuwindow).
 
 - **Errors:** `no device 3 is known to this runtime`.
 

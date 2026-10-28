@@ -1196,9 +1196,13 @@ const WINDOW: &str = r"
             assert(window.frames == frames + 1, `{window.frames} frames, not {frames + 1}`)
 
             -- What happened is the script's to read, once.
-            assert(typeof(window:events()) == 'table' and #window:events() == 0)
+            assert(typeof(window:events()) == 'table')
             local input = jess.input.runtime({ windows = true })
             assert(typeof(input:tick()) == 'table')
+            assert(window.number > 0 and window.number ~= jess.gpu.window(device, { title = 'two', width = 8, height = 8 }).number)
+            -- An input method may compose for it while it asks for text.
+            window:textInput(true, { x = 4, y = 4, width = 64, height = 16 })
+            window:textInput(false)
             -- Asked for a size, it says what it got, and the plan goes with it.
             window:resize(96, 72)
             local resized = nil

@@ -460,11 +460,14 @@ pub fn describe(d: &mut ExtensionDescriptor) {
                     .map(|device| (device.id(), device.descriptor().clone(), device.is_connected()))
                     .collect();
                 l3i::stack::push_list(call, devices.iter(), |frame, (id, descriptor, connected)| {
-                    push_table(frame, 0, 5, |frame, row| {
+                    push_table(frame, 0, 6, |frame, row| {
                         row.raw_set_value(frame, "id", &f64::from(id.index()))?;
                         row.raw_set_value(frame, "kind", descriptor.kind.name())?;
                         row.raw_set_value(frame, "name", descriptor.name.as_str())?;
                         row.raw_set_value(frame, "family", descriptor.family.name())?;
+                        if let Some(backend) = &descriptor.backend {
+                            row.raw_set_value(frame, "backend", backend.as_str())?;
+                        }
                         row.raw_set_value(frame, "connected", connected)
                     })
                 })?;

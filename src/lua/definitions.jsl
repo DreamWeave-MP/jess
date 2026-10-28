@@ -80,8 +80,16 @@ export type InputActionEvent = {
   device: number?,
 }
 
---- A device the runtime connected.
-export type InputDevice = { id: number, kind: 'keyboard' | 'pointer' | 'gamepad' | 'touch' | 'unknown', name: string, family: InputFamily, connected: boolean }
+--- A device the runtime connected, and the `backend` that found it and what it calls it, where it
+--- says: a window's keyboard and pointer are `window:<number>`, the window's `GpuWindow.number`.
+export type InputDevice = {
+  id: number,
+  kind: 'keyboard' | 'pointer' | 'gamepad' | 'touch' | 'unknown',
+  name: string,
+  family: InputFamily,
+  connected: boolean,
+  backend: string?,
+}
 
 --- What the last tick did.
 export type InputStats = {
@@ -1027,22 +1035,47 @@ export type GpuWindowDesc = {
 }
 
 --- What happened to a window, from `GpuWindow:events`: it was `resized` (to `width` by `height`),
---- `scaled` (to `scale`), `focused` (or not), asked to close (`closeRequested`), or `closed`.
+--- `scaled` (to `scale`), `focused` (or not), asked to close (`closeRequested`), or `closed`; or
+--- the person did something in it: a `key` pressed, held (`repeated`), or released; `text` typed by
+--- a key or an input method; an input method's composition so far (`preedit`, its cursor
+--- `text:sub(from, to)`), and whether one composes (`inputMethod`); the pointer entering, moving
+--- (to `x`, `y` physical pixels from the top left), and leaving; a pointer button; the `wheel`, in
+--- lines; and the `modifiers` held.
 export type GpuWindowEvent =
   { kind: 'resized', width: number, height: number }
   | { kind: 'scaled', scale: number }
   | { kind: 'focused', focused: boolean }
   | { kind: 'closeRequested' }
   | { kind: 'closed' }
+  | { kind: 'key', key: string, pressed: boolean, repeated: boolean }
+  | { kind: 'text', text: string }
+  | { kind: 'preedit', text: string, from: number?, to: number? }
+  | { kind: 'inputMethod', enabled: boolean }
+  | { kind: 'pointerEntered' }
+  | { kind: 'pointerMoved', x: number, y: number }
+  | { kind: 'pointerLeft' }
+  | {
+    kind: 'pointerButton',
+    button: 'Primary' | 'Secondary' | 'Middle' | 'Back' | 'Forward',
+    pressed: boolean,
+  }
+  | { kind: 'wheel', x: number, y: number }
+  | { kind: 'modifiers', shift: boolean, control: boolean, alt: boolean, meta: boolean }
+
+--- Where in a window text goes, in physical pixels from its top left.
+export type GpuTextArea = { x: number, y: number, width: number, height: number }
 
 --- A native window: its inner `width` and `height` in physical pixels, the `scale` of a logical
 --- pixel, its surface's `format`, and whether it is `open`. `show` draws a plan into it every
 --- frame, the window's image as the plan's imported target `target`, the plan resized with the
 --- window; `hide` stops, `close` closes it, and `resize` asks for a size. `events` is what
 --- happened to it since the last call, oldest first: under an application's host, the named event
---- `jess.window` announces that there is some. `tostring` gives `GpuWindow(title, 800×600)`.
+--- `jess.window` announces that there is some. `textInput` asks for text, which lets an input
+--- method compose for it beside `area`. `number` is its own, and names its input devices.
+--- `tostring` gives `GpuWindow(title, 800×600)`.
 declare extern type GpuWindow with
   title: string
+  number: number
   key: string?
   frames: number
   width: number
@@ -1061,6 +1094,7 @@ declare extern type GpuWindow with
   function close(self): ()
   function resize(self, width: number, height: number): ()
   function events(self): { GpuWindowEvent }
+  function textInput(self, enabled: boolean, area: GpuTextArea?): ()
   __tostring: (self: GpuWindow) -> string
 end
 
