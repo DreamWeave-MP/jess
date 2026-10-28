@@ -575,17 +575,52 @@ pub fn release() {
     });
 }
 
+/// What `make` makes, if `claimed` says nothing was made before: the first success claims it, and a
+/// failure leaves it for the next try. What winit allows once per process is tried this way, so a
+/// first try without a display doesn't stop a later one.
+fn once<T>(claimed: &AtomicBool, make: impl FnOnce() -> Result<T, WindowError>) -> Result<T, WindowError> {
+    if claimed.swap(true, Ordering::AcqRel) {
+        return Err(WindowError::System(
+            "windows belong to the thread that opened the first one".to_owned(),
+        ));
+    }
+    let made_now = make();
+    if made_now.is_err() {
+        claimed.store(false, Ordering::Release);
+    }
+    made_now
+}
+
+/// Puts what `new` makes in `slot` in place of what is there, which goes first: a window has one
+/// surface at a time. If `new` fails, `slot` gets what `old` makes again, or nothing if that fails
+/// too, and the error is `new`'s.
+fn replace<T, E>(
+    slot: &mut Option<T>,
+    new: impl FnOnce() -> Result<T, E>,
+    old: impl FnOnce() -> Result<T, E>,
+) -> Result<(), E> {
+    *slot = None;
+    match new() {
+        Ok(made) => {
+            *slot = Some(made);
+            Ok(())
+        }
+        Err(problem) => {
+            *slot = old().ok();
+            Err(problem)
+        }
+    }
+}
+
 impl System {
     fn new() -> Result<System, WindowError> {
-        if MADE.swap(true, Ordering::AcqRel) {
-            return Err(WindowError::System(
-                "windows belong to the thread that opened the first one".to_owned(),
-            ));
-        }
+        once(&MADE, System::build)
+    }
+
+    fn build() -> Result<System, WindowError> {
         // macOS has one thread a window system may run on, and winit panics on any other.
         #[cfg(target_os = "macos")]
         if std::thread::current().name() != Some("main") {
-            MADE.store(false, Ordering::Release);
             return Err(WindowError::System(
                 "on macOS, windows open on the process's main thread".to_owned(),
             ));
@@ -611,7 +646,8 @@ impl System {
     /// there is none, after forgetting one that closed.
     ///
     /// Claimed for another device than its own, its surface is made again on that one and it
-    /// stops showing the plan it showed, which was the other device's.
+    /// stops showing the plan it showed, which was the other device's. If the new device can't
+    /// present to it, it keeps its device, its surface (made again there), and what it showed.
     fn claim(&mut self, gpu: &Arc<Gpu>, key: &str, title: &str) -> Result<Option<Window>, WindowError> {
         let Some(position) = self.kept.iter().position(|kept| kept.key == key) else {
             return Ok(None);
@@ -626,13 +662,19 @@ impl System {
         let mut screen = state.shared.screen();
         if !Arc::ptr_eq(&screen.gpu, gpu) {
             let format = screen.surface.as_ref().map(Surface::format);
-            state.shared.arrive(Incoming::Hide);
-            // A window has one surface at a time: the old one goes before the new one is made.
-            screen.surface = None;
-            screen.showing = None;
-            let surface = gpu.surface(raw.clone(), state.size.width, state.size.height, format, state.present)?;
-            screen.surface = Some(surface);
+            let (width, height, present) = (state.size.width, state.size.height, state.present);
+            let before = Arc::clone(&screen.gpu);
+            let replaced = replace(
+                &mut screen.surface,
+                || gpu.surface(raw.clone(), width, height, format, present),
+                || before.surface(raw.clone(), width, height, format, present),
+            );
+            // Either way the surface is new and has drawn nothing yet.
+            screen.stale = true;
+            replaced?;
             screen.gpu = Arc::clone(gpu);
+            screen.showing = None;
+            state.shared.arrive(Incoming::Hide);
         }
         drop(screen);
         if state.title != title {
@@ -1161,6 +1203,68 @@ const fn key(code: KeyCode) -> Option<Key> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_window_system_that_failed_to_start_can_be_started_again() {
+        let made = AtomicBool::new(false);
+        let failed = once(&made, || Err::<(), _>(WindowError::System("no display".to_owned())));
+        assert!(failed.is_err_and(|problem| problem.to_string() == "no display"));
+        assert!(!made.load(Ordering::Acquire), "a failed start claims nothing");
+
+        assert!(once(&made, || Ok(())).is_ok());
+        let again = once(&made, || Ok(()));
+        assert!(again.is_err_and(|problem| problem.to_string().contains("the thread that opened the first one")));
+    }
+
+    /// Something only one of may exist at a time, as a window's surface.
+    struct Only(Rc<std::cell::Cell<u32>>, &'static str);
+
+    impl Only {
+        fn make(live: &Rc<std::cell::Cell<u32>>, name: &'static str) -> Result<Only, String> {
+            if live.get() > 0 {
+                return Err(format!("{name} made while another lives"));
+            }
+            live.set(live.get() + 1);
+            Ok(Only(Rc::clone(live), name))
+        }
+    }
+
+    impl Drop for Only {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() - 1);
+        }
+    }
+
+    #[test]
+    fn a_replacement_that_fails_puts_the_old_one_back() {
+        let live = Rc::new(std::cell::Cell::new(0));
+        let mut slot = Some(Only::make(&live, "old").unwrap());
+
+        let failed = replace(
+            &mut slot,
+            || Err("the new device can't present".to_owned()),
+            || Only::make(&live, "old"),
+        );
+        assert_eq!(failed, Err("the new device can't present".to_owned()));
+        assert_eq!(slot.as_ref().map(|only| only.1), Some("old"));
+        assert_eq!(live.get(), 1);
+
+        replace(&mut slot, || Only::make(&live, "new"), || Only::make(&live, "old")).unwrap();
+        assert_eq!(
+            slot.as_ref().map(|only| only.1),
+            Some("new"),
+            "the old one went before the new was made"
+        );
+        assert_eq!(live.get(), 1);
+
+        let lost = replace(
+            &mut slot,
+            || Err("refused".to_owned()),
+            || Err::<Only, _>("gone too".to_owned()),
+        );
+        assert_eq!(lost, Err("refused".to_owned()), "the new one's failure is the one reported");
+        assert!(slot.is_none());
+    }
 
     #[test]
     fn keys_are_named_by_position() {
