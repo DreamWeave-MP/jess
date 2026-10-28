@@ -14,3 +14,4 @@ These recipes start with a job and point to the reference for its full contract.
 - [Write a JSON report](@/docs/cookbook/json-report.md): choose an explicit value shape and produce deterministic output.
 - [Keep a backup when writing](@/docs/cookbook/safe-write.md): preserve a previous file before replacing it.
 - [Trace a package before running it](@/docs/cookbook/inspect-package.md): inspect its payload, plan, and requested authority.
+- [Send a named event](@/docs/cookbook/named-event.md): queue an application event and receive its payload.
