@@ -17,7 +17,7 @@ use super::pipeline::{
     workgroups,
 };
 use super::resources::{LuaGpuBuffer, LuaGpuRead, LuaGpuSampler, LuaGpuTexture, format_of, shown, whole};
-use crate::gpu::{DrawSets, Gpu, Group, Import, Plan, PlanBinding, PlanGroup, Slot, Work};
+use crate::gpu::{DrawSets, Gpu, Group, Import, Plan, PlanBinding, PlanGroup, SharedPlan, Slot, Work};
 use crate::lua::{check_options, error, kind, push_table};
 use crate::render::{
     BufferSize, ClearValue, CopyAt, CopyRegion, CopySize, Extent, LoadOp, Pass, PassKind, PassMetadata, PassOutput,
@@ -30,12 +30,19 @@ use crate::shader::Frequency;
 pub struct LuaGpuPlan {
     pub gpu: Arc<Gpu>,
     pub sets: Arc<DrawSets>,
-    pub plan: Arc<Plan>,
+    pub plan: Arc<SharedPlan>,
 }
 
 // SAFETY: plain Rust state; the destructor never touches the Lua API.
 unsafe impl Userdata for LuaGpuPlan {
     const NAME: &'static str = "jess.gpu.Plan";
+}
+
+impl LuaGpuPlan {
+    /// The plan as it is now: resized with the window that shows it, if one does.
+    fn current(&self) -> Arc<Plan> {
+        self.plan.get()
+    }
 }
 
 const FUNCTION: &str = "GpuDevice:plan";
@@ -703,7 +710,7 @@ fn plan(this: &LuaGpuDevice, call: &Call<'_>, desc: ValueView<'_>) -> l3i::Resul
     Ok(Owned(LuaGpuPlan {
         gpu: this.gpu.clone(),
         sets: this.sets.clone(),
-        plan: Arc::new(plan),
+        plan: SharedPlan::new(plan),
     }))
 }
 
@@ -775,7 +782,7 @@ fn run(this: &LuaGpuPlan, call: &Call<'_>, imports: Option<ValueView<'_>>, sets:
         .collect();
     committed(&this.gpu, RUN)?;
     this.gpu
-        .run(&this.plan, &sets, &imports)
+        .run(&this.current(), &sets, &imports)
         .map_err(|problem| gpu_error(RUN, &problem))
 }
 
@@ -798,14 +805,14 @@ fn set_enabled(this: &LuaGpuPlan, call: &Call<'_>, passes: ValueView<'_>, enable
     };
     let enabled = enabled.read::<bool>()?;
     let borrowed: Vec<&str> = names.iter().map(String::as_str).collect();
-    this.plan
+    this.current()
         .check_enabled(&borrowed, enabled)
         .map_err(|problem| gpu_error(FUNCTION, &problem))?;
     let plan = Arc::clone(&this.plan);
     this.gpu
         .defer(0, move |_| {
             let names: Vec<&str> = names.iter().map(String::as_str).collect();
-            plan.set_enabled(&names, enabled)
+            plan.get().set_enabled(&names, enabled)
         })
         .map_err(|problem| gpu_error(FUNCTION, &problem))
 }
@@ -847,12 +854,12 @@ fn set_region(this: &LuaGpuPlan, call: &Call<'_>, pass: ValueView<'_>, region: V
         })
     })?;
     let pass = pass.read::<&str>()?.to_owned();
-    this.plan
+    this.current()
         .check_region(&pass, region)
         .map_err(|problem| gpu_error(FUNCTION, &problem))?;
     let plan = Arc::clone(&this.plan);
     this.gpu
-        .defer(0, move |_| plan.set_region(&pass, region))
+        .defer(0, move |_| plan.get().set_region(&pass, region))
         .map_err(|problem| gpu_error(FUNCTION, &problem))
 }
 
@@ -881,13 +888,13 @@ fn resized(this: &LuaGpuPlan, width: ValueView<'_>, height: ValueView<'_>) -> l3
         height: whole(RESIZED, "the height", Some(height), None)?,
     };
     let plan = this
-        .plan
+        .current()
         .resized(&this.gpu, viewport)
         .map_err(|problem| gpu_error(RESIZED, &problem))?;
     Ok(Owned(LuaGpuPlan {
         gpu: this.gpu.clone(),
         sets: this.sets.clone(),
-        plan: Arc::new(plan),
+        plan: SharedPlan::new(plan),
     }))
 }
 
@@ -901,10 +908,10 @@ pub fn describe(d: &mut ExtensionDescriptor) {
     let mut plan = d.userdata::<LuaGpuPlan>(LuaGpuPlan::NAME);
     plan.tag(TagPolicy::Never)
         .doc("A render graph compiled for its device and a viewport, run whole every frame.");
-    plan.getter("name", |this: &LuaGpuPlan| this.plan.graph().name().to_owned())
+    plan.getter("name", |this: &LuaGpuPlan| this.current().graph().name().to_owned())
         .untyped();
     plan.getter("order", |this: &LuaGpuPlan, call: &Call<'_>| -> l3i::Result<StackResults> {
-        l3i::stack::push_list(call, this.plan.order().into_iter(), |frame, name| {
+        l3i::stack::push_list(call, this.current().order().into_iter(), |frame, name| {
             frame.push_string(name).map(drop)
         })?;
         Ok(StackResults)
@@ -913,7 +920,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
     plan.getter(
         "viewport",
         |this: &LuaGpuPlan, call: &Call<'_>| -> l3i::Result<StackResults> {
-            let viewport = this.plan.viewport();
+            let viewport = this.current().viewport();
             push_table(call, 0, 2, |frame, table| {
                 table.raw_set_value(frame, "width", &f64::from(viewport.width))?;
                 table.raw_set_value(frame, "height", &f64::from(viewport.height))
@@ -923,7 +930,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
     )
     .untyped();
     plan.getter("allocations", |this: &LuaGpuPlan| {
-        u32::try_from(this.plan.allocations()).unwrap_or(u32::MAX)
+        u32::try_from(this.current().allocations()).unwrap_or(u32::MAX)
     })
     .untyped();
     plan.method("run", run).untyped();
@@ -935,7 +942,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         if !pass.is_string() {
             return Err(error(format!("{FUNCTION} takes a pass's name, not {}", shown(pass))));
         }
-        this.plan
+        this.current()
             .enabled(pass.read::<&str>()?)
             .map_err(|problem| gpu_error(FUNCTION, &problem))
     })
@@ -943,7 +950,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
     plan.method("timings", |this: &LuaGpuPlan, call: &Call<'_>| -> l3i::Result<StackResults> {
         let timings = this
             .gpu
-            .timings(&this.plan)
+            .timings(&this.current())
             .map_err(|problem| gpu_error("GpuPlan:timings", &problem))?;
         let Some(timings) = timings else {
             call.with_frame(|frame| frame.push_nil().map(drop))?;
@@ -963,7 +970,8 @@ pub fn describe(d: &mut ExtensionDescriptor) {
     .untyped();
     plan.method("resized", resized).untyped();
     plan.method("dump", |this: &LuaGpuPlan| -> l3i::Result<String> {
-        let graph = this.plan.graph();
+        let plan = this.current();
+        let graph = plan.graph();
         graph
             .compile()
             .map(|compiled| compiled.to_string())
@@ -971,11 +979,11 @@ pub fn describe(d: &mut ExtensionDescriptor) {
     })
     .untyped();
     crate::lua::plan::metamethod(&mut plan, "__tostring", |this: &LuaGpuPlan| {
-        let viewport = this.plan.viewport();
-        let (running, all) = (this.plan.order().len(), this.plan.graph().passes().len());
+        let viewport = this.current().viewport();
+        let (running, all) = (this.current().order().len(), this.current().graph().passes().len());
         format!(
             "GpuPlan({}, {running} of {all} passes, {}×{})",
-            this.plan.graph().name(),
+            this.current().graph().name(),
             viewport.width,
             viewport.height
         )
@@ -995,7 +1003,7 @@ fn describe_reads(plan: &mut UserdataBuilder<'_, LuaGpuPlan>) {
             let (name, level, layer) = kept_args(READ, name, level, layer)?;
             committed(&this.gpu, READ)?;
             this.gpu
-                .read_kept(&this.plan, &name, level, layer)
+                .read_kept(&this.current(), &name, level, layer)
                 .map(NewBuffer)
                 .map_err(|problem| gpu_error(READ, &problem))
         },
@@ -1013,7 +1021,7 @@ fn describe_reads(plan: &mut UserdataBuilder<'_, LuaGpuPlan>) {
             committed(&this.gpu, READ)?;
             let read = this
                 .gpu
-                .read_kept_later(&this.plan, &name, level, layer)
+                .read_kept_later(&this.current(), &name, level, layer)
                 .map_err(|problem| gpu_error(READ, &problem))?;
             Ok(Owned(LuaGpuRead {
                 read: std::cell::RefCell::new(read),
@@ -1027,7 +1035,7 @@ fn describe_reads(plan: &mut UserdataBuilder<'_, LuaGpuPlan>) {
             return Err(error(format!("{BYTES} takes a buffer's name, not {}", shown(name))));
         }
         let bytes = this
-            .plan
+            .current()
             .buffer_bytes(name.read::<&str>()?)
             .map_err(|problem| gpu_error(BYTES, &problem))?;
         // A buffer's bytes stay far below 2^53.
@@ -1043,7 +1051,7 @@ fn describe_reads(plan: &mut UserdataBuilder<'_, LuaGpuPlan>) {
                 return Err(error(format!("{EXTENT} takes a target's name, not {}", shown(name))));
             }
             let extent = this
-                .plan
+                .current()
                 .target_extent(name.read::<&str>()?)
                 .map_err(|problem| gpu_error(EXTENT, &problem))?;
             push_table(call, 0, 2, |frame, table| {

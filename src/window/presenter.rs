@@ -236,7 +236,7 @@ fn draw(shared: &Shared) -> Drawing {
     }));
     let ran = {
         let _frame = gpu.frame();
-        gpu.run(&showing.plan, &showing.sets, &imports)
+        gpu.run(&showing.plan.get(), &showing.sets, &imports)
     };
     drop(imports);
     if let Err(failure) = ran {

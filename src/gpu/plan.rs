@@ -235,6 +235,73 @@ pub struct Plan {
     controls: Arc<Controls>,
 }
 
+/// A plan and everyone who holds it: the script that made it and the window that shows it.
+///
+/// The window replaces it with itself resized whenever the window is resized, so every holder
+/// runs, reads, and controls the plan the window draws, at the window's size.
+#[derive(Debug)]
+pub struct SharedPlan {
+    plan: Mutex<Arc<Plan>>,
+    /// The window it is shown in, by the window system's number for it, and how many times: one
+    /// window at a time, since it takes that window's size.
+    shown: Mutex<Option<(u64, usize)>>,
+}
+
+impl SharedPlan {
+    /// `plan`, shared.
+    #[must_use]
+    pub fn new(plan: Plan) -> Arc<SharedPlan> {
+        Arc::new(SharedPlan {
+            plan: Mutex::new(Arc::new(plan)),
+            shown: Mutex::new(None),
+        })
+    }
+
+    /// The plan as it is now.
+    #[must_use]
+    pub fn get(&self) -> Arc<Plan> {
+        Arc::clone(&lock(&self.plan))
+    }
+
+    /// Replaces the plan: with itself resized, say.
+    pub fn set(&self, plan: Plan) {
+        *lock(&self.plan) = Arc::new(plan);
+    }
+
+    /// Marks it shown once more in the window numbered `window`.
+    ///
+    /// # Errors
+    ///
+    /// It is shown in another window already: a plan takes one window's size.
+    pub fn show_in(&self, window: u64) -> Result<(), GpuError> {
+        let mut shown = lock(&self.shown);
+        let times = match *shown {
+            Some((other, _)) if other != window => {
+                return Err(GpuError::Invalid(
+                    "the plan is shown in another window, whose size it takes: show a plan of its own, plan:resized \
+                 makes one"
+                        .to_owned(),
+                ));
+            }
+            Some((_, times)) => times + 1,
+            None => 1,
+        };
+        *shown = Some((window, times));
+        drop(shown);
+        Ok(())
+    }
+
+    /// Marks it shown once less in the window numbered `window`.
+    pub fn release(&self, window: u64) {
+        let mut shown = lock(&self.shown);
+        if let Some((held, times)) = *shown
+            && held == window
+        {
+            *shown = (times > 1).then_some((held, times - 1));
+        }
+    }
+}
+
 /// A plan's timestamps: a pair of queries for each drawing or compute pass, and the buffer they
 /// resolve into at the end of every run.
 #[derive(Debug)]

@@ -44,7 +44,7 @@ pub use live::LiveCounts;
 pub use pass::{Draw, IndexFormat, Resolve, Target};
 pub use pipeline::{Blend, ColorState, Cull, DepthState, PipelineState, RenderPipeline, Topology};
 pub(crate) use pipeline::{Group, Slot};
-pub use plan::{Import, PassTiming, Plan, PlanBinding, PlanGroup, Work};
+pub use plan::{Import, PassTiming, Plan, PlanBinding, PlanGroup, SharedPlan, Work};
 pub use read::PendingRead;
 pub use sampler::{AddressMode, Compare, Filter, Sampler, SamplerDesc};
 #[cfg(feature = "window")]

@@ -1153,8 +1153,8 @@ fn a_script_shows_a_plan_in_a_window() {
         return;
     }
     let capabilities = ["gpu.device".to_owned(), "gpu.window".to_owned(), "input.actions".to_owned()];
-    jess::lua::runtime_with_capabilities(jess::lua::Options::default(), &capabilities)
-        .unwrap()
+    let runtime = jess::lua::runtime_with_capabilities(jess::lua::Options::default(), &capabilities).unwrap();
+    let refusal = runtime
         .exec(
             r"
             local shader = require('@jess/shader')
@@ -1180,25 +1180,26 @@ fn a_script_shows_a_plan_in_a_window() {
               fragment = function() return shader.vec4(0, 1, 0, 1) end,
             })
             local pipeline = device:pipeline(green, { colors = { window.format } })
-            local row = math.ceil(window.width * 4 / 256) * 256
             local plan = device:plan({
               viewport = { width = window.width, height = window.height },
               targets = { { name = 'screen', format = window.format, imported = true } },
-              buffers = { { name = 'pixels', size = row * window.height, imported = true } },
+              buffers = { { name = 'pixels', image = window.format, kept = true } },
               passes = {
                 { name = 'fill', kind = 'fullscreen', pipeline = pipeline, colors = { 'screen' } },
                 { name = 'grab', kind = 'copy', from = 'screen', to = 'pixels' },
               },
             })
-            local pixels = device:buffer(row * window.height, {})
-            window:show(plan, 'screen', { pixels = pixels })
+            window:show(plan, 'screen')
             for _ = 1, 10 do
               jess.gpu.pump()
             end
+            -- The script's plan is the plan the window draws, at the window's size.
+            local extent = plan:extent('screen')
+            assert(extent.width == window.width and extent.height == window.height)
+            local row = plan:bytes('pixels') // window.height
             local middle = row * (window.height // 2) + 4 * (window.width // 2)
-            local texel = buffer.readu32(pixels:read(middle, 4), 0)
+            local texel = buffer.readu32(plan:read('pixels'), middle)
             assert(texel == 0xff00ff00, string.format('%08x', texel))
-
             -- A scene nothing changes draws nothing more; a commit that changes something draws it.
             local frames = window.frames
             assert(frames >= 1, tostring(frames))
@@ -1214,17 +1215,26 @@ fn a_script_shows_a_plan_in_a_window() {
             assert(typeof(window:events()) == 'table' and #window:events() == 0)
             local input = jess.input.runtime({ windows = true })
             assert(typeof(input:tick()) == 'table')
-
-            window:close()
+            local closing = jess.gpu.window(device, { title = 'closing', width = 32, height = 32 })
+            closing:close()
             jess.gpu.pump()
-            assert(not window.open and window.format == nil)
+            assert(not closing.open and closing.format == nil)
+
+            -- A plan takes the size of the one window that shows it: showing it in another fails.
+            jess.gpu.window(device, { title = 'other', width = 32, height = 32 }):show(plan, 'screen')
         ",
         )
-        .unwrap_or_else(|error| panic!("{error}"));
+        .unwrap_err()
+        .to_string();
+    assert!(refusal.contains("shown in another window"), "{refusal}");
+    kept_windows_outlive_their_code(&capabilities);
+}
 
-    // A window kept by a key outlives the code that opened it, and the next code takes it back,
-    // on its own device.
-    let generation = || jess::lua::runtime_with_capabilities(jess::lua::Options::default(), &capabilities).unwrap();
+/// A window kept by a key outlives the code that opened it, and the next code takes it back, on
+/// its own device: part of `a_script_shows_a_plan_in_a_window`, on the thread its windows are on.
+#[cfg(feature = "window")]
+fn kept_windows_outlive_their_code(capabilities: &[String]) {
+    let generation = || jess::lua::runtime_with_capabilities(jess::lua::Options::default(), capabilities).unwrap();
     generation()
         .exec(
             "local window = jess.gpu.window(jess.gpu.device(), { key = 'kept', title = 'one', width = 64, height = 48 })

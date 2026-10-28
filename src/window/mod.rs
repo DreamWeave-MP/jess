@@ -24,10 +24,12 @@
 //!
 //! # Showing a plan
 //!
-//! A window shows a [`Plan`] whose graph imports the window's image as one of its targets: every
-//! [`present`] takes the surface's next image, runs the plan into it with the draw sets as they
-//! are, and presents it. Nothing on that path enters Luau, so a static scene draws frame after
-//! frame without a single call into a script. A resized window resizes the plan with it.
+//! A window shows a plan ([`SharedPlan`]) whose graph imports the window's image as one of its
+//! targets. The presenter, a thread of its own, draws it when something is new: a commit of the
+//! plan's device changed something, or the window was shown it or resized. It takes the surface's
+//! next image, runs the plan into it with the draw sets as the last commit left them, and presents
+//! it. Nothing on that path enters Luau, and a static scene draws nothing at all. A resized window
+//! resizes the plan with it, for every holder of the plan.
 //!
 //! # Input
 //!
@@ -57,7 +59,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::platform::pump_events::EventLoopExtPumpEvents;
 use winit::window::{Window as RawWindow, WindowAttributes, WindowId};
 
-use crate::gpu::{Buffer, DrawSets, Gpu, GpuError, Plan, PresentMode, Surface, Texture};
+use crate::gpu::{Buffer, DrawSets, Gpu, GpuError, PresentMode, SharedPlan, Surface, Texture};
 use crate::input::{
     Backend, BackendError, Control, DeviceDescriptor, DeviceId, DeviceIdentity, EventSender, Key, PointerAxis,
     PointerButton, Timestamp,
@@ -165,14 +167,40 @@ pub enum Imported {
 /// target its image is, and the rest of what it imports.
 #[derive(Debug)]
 pub struct Showing {
-    /// The plan, resized with the window.
-    pub plan: Plan,
+    /// The plan, resized with the window: whoever else holds it holds the plan the window draws.
+    pub plan: Arc<SharedPlan>,
     /// The draw sets.
     pub sets: Arc<DrawSets>,
     /// The imported target the window's image is.
     pub target: String,
     /// Everything else it imports.
     pub imports: Vec<Imported>,
+    /// The window it is shown in, once it is.
+    window: Option<u64>,
+}
+
+impl Showing {
+    /// What a window shows: `plan`, drawing `sets`, its image as the plan's imported target
+    /// `target`, with `imports` for the rest of what the plan imports.
+    #[must_use]
+    pub fn new(plan: Arc<SharedPlan>, sets: Arc<DrawSets>, target: String, imports: Vec<Imported>) -> Showing {
+        Showing {
+            plan,
+            sets,
+            target,
+            imports,
+            window: None,
+        }
+    }
+}
+
+impl Drop for Showing {
+    /// The plan is free to be shown elsewhere once no window shows it.
+    fn drop(&mut self) {
+        if let Some(window) = self.window {
+            self.plan.release(window);
+        }
+    }
 }
 
 /// One window's state, shared by its handle and the event loop; what it draws with is the
@@ -375,9 +403,9 @@ fn resized(state: &mut State, size: PhysicalSize<u32>) {
     {
         screen.problem = Some(problem.into());
     }
-    if let Some(showing) = &mut screen.showing {
-        match showing.plan.resized(&gpu, size) {
-            Ok(plan) => showing.plan = plan,
+    if let Some(showing) = &screen.showing {
+        match showing.plan.get().resized(&gpu, size) {
+            Ok(plan) => showing.plan.set(plan),
             Err(problem) => screen.problem = Some(problem.into()),
         }
     }
@@ -779,7 +807,7 @@ impl Window {
         Ok(())
     }
 
-    /// `showing`, checked against the window and resized to it.
+    /// `showing`, checked against the window, resized to it, and marked shown in it.
     fn prepared(&self, mut showing: Showing) -> Result<Showing, WindowError> {
         let state = self.state.borrow();
         let screen = state.shared.screen();
@@ -789,7 +817,8 @@ impl Window {
         let format = surface.format();
         let gpu = Arc::clone(&screen.gpu);
         drop(screen);
-        let graph = showing.plan.graph();
+        let plan = showing.plan.get();
+        let graph = plan.graph();
         let declared = graph
             .resource_id(&showing.target)
             .map(|id| &graph.resources()[id.index()])
@@ -806,8 +835,10 @@ impl Window {
                 showing.target
             )));
         }
-        if showing.plan.viewport() != state.size {
-            showing.plan = showing.plan.resized(&gpu, state.size)?;
+        showing.plan.show_in(u64::from(self.id))?;
+        showing.window = Some(u64::from(self.id));
+        if plan.viewport() != state.size {
+            showing.plan.set(plan.resized(&gpu, state.size)?);
         }
         Ok(showing)
     }

@@ -2,6 +2,8 @@
 //! every frame, and `jess.gpu.pump` handles the window system and draws, for a script no
 //! application host drives.
 
+use std::sync::Arc;
+
 use l3i::bind::{Call, StackResults};
 use l3i::extension::{ExtensionDescriptor, TagPolicy};
 use l3i::stack::{Scope, ValueView};
@@ -131,17 +133,13 @@ fn show(
             Given::Buffer(name, buffer) => Imported::Buffer(name, buffer),
         })
         .collect();
-    let plan_for_window = plan
-        .plan
-        .resized(&plan.gpu, this.window.size())
-        .map_err(|problem| error(format!("{FUNCTION}: {problem}")))?;
     this.window
-        .show_later(Showing {
-            plan: plan_for_window,
-            sets: super::draw_set::collection(FUNCTION, "the draw sets", sets, &plan.sets)?,
-            target: target.read::<&str>()?.to_owned(),
+        .show_later(Showing::new(
+            Arc::clone(&plan.plan),
+            super::draw_set::collection(FUNCTION, "the draw sets", sets, &plan.sets)?,
+            target.read::<&str>()?.to_owned(),
             imports,
-        })
+        ))
         .map_err(|problem| error(format!("{FUNCTION}: {problem}")))
 }
 
