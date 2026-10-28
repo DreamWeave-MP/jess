@@ -46,7 +46,9 @@ extra:
 | `@jess/input` | Action graphs, labels, conflicts, intents, and the input runtime | [@jess/input](@/docs/api/input.md) |
 | `@jess/audio` | Voices on a sample clock through a graph of buses and processors, streams and feeds, voices in space, tempo maps, offline renders, WAV, and compressed files | [@jess/audio](@/docs/api/audio.md) |
 | `@jess/backup` | Overwrite a file, keeping what was there as `.bak` | [@jess/backup](@/docs/api/backup.md) |
-| `@jess/http` | HTTP/1.1 requests and responses over the transport the runtime exposes | [@jess/http](@/docs/api/http.md) |
+| `@jess/http` | HTTP/1.1 requests and responses, any method and body, without stopping the loop they run on | [@jess/http](@/docs/api/http.md) |
+| `@jess/net` | Tasks on a loop that wait on sockets, lookups, timers and each other, and buffered connections | [@jess/net](@/docs/api/net.md) |
+| `@jess/websocket` | WebSocket client connections, `ws://` and `wss://` | [@jess/websocket](@/docs/api/websocket.md) |
 | `@dream/fs` | Files and folders | [Files](@/docs/api/fs.md) |
 | `bytes.regex` | Regular expressions | [Regular expressions](@/docs/api/regex.md) |
 | `@dream/*` | Everything native underneath: bytes, processes, the network, text | [The @dream modules](@/docs/api/l3i.md) |

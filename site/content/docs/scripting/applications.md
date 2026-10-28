@@ -383,6 +383,104 @@ What each piece is doing:
 
 `window.frames` counts what reached the screen, and the last frame's draw can still be on its way when `shutdown` reads it: here, 120 frames drew 119.
 
+## On the network
+
+An application that talks to the network for weeks needs two things the host already gives it: a frame that comes around whether or not anything happened, and a shutdown that runs however it stops. What it needs on top is never to wait in a callback. A request that takes forty seconds inside `update` is forty seconds with no frames, no heartbeat and no `shutdown` either.
+
+[`@jess/net`](@/docs/api/net.md) is how not to. A managed module keeps one loop, runs its network work as tasks on it, and steps it from `update` without waiting. Here, one task keeps a WebSocket open and reconnects with a backoff when it drops, one sends a heartbeat on it, and one makes a slow JSON POST; the heartbeat keeps its time while the POST waits:
+
+```luau
+--!strict
+local application = require '@jess/application'
+local http = require '@jess/http'
+local net = require '@jess/net'
+local websocket = require '@jess/websocket'
+local config = require './config'
+
+local loop = net.loop()
+local socket: websocket.Socket?
+local beats = 0
+
+local function heartbeat(connected: websocket.Socket)
+  while connected.state == 'open' do
+    if not net.sleep(config.intervalMs) then return end
+
+    beats += 1
+    connected:send(`heartbeat {beats}`)
+  end
+end
+
+local gateway = loop:spawn(function()
+  local backoff = 1000
+  while true do
+    local connected, message, kind = websocket.connect(config.gateway)
+    if connected then
+      socket, backoff = connected, 1000
+      print('connected')
+      loop:spawn(function() heartbeat(connected) end, 'heartbeat')
+
+      while connected:receive() do
+      end
+    elseif kind ~= 'cancelled' then
+      print(`gateway: {kind}: {message}`)
+    end
+
+    if not net.sleep(backoff) then return end
+
+    backoff = math.min(backoff * 2, 60000)
+  end
+end, 'gateway')
+
+local inference = loop:spawn(function()
+  local response, message, kind = http.request {
+    url = config.inference,
+    method = 'POST',
+    json = { prompt = 'hello' },
+    headers = { Authorization = `Bearer {config.key}` },
+    timeoutMs = 120000,
+  }
+
+  -- Shutdown cancels a request still in flight; that is an answer, not a failure.
+  if kind == 'cancelled' then return end
+
+  assert(response, message)
+  print(`inference {response.status} after {beats} heartbeats`)
+  if config.exitAfterInference then application.exit(0) end
+end, 'inference')
+
+return {
+  on = {
+    host = {
+      update = function() loop:step(0) end,
+      shutdown = function()
+        gateway:cancel()
+        inference:cancel()
+        local open = socket
+        if open then loop:spawn(function() open:close(1001, 'shutting down') end, 'close') end
+
+        loop:run(3000)
+        loop:close()
+        print('shut down')
+      end,
+    },
+  },
+}
+```
+
+The target declares what the module does and nothing else, `network.dns.resolve` and `network.tcp.connect`, and runs with exactly those, never `--trusted`:
+
+```sh
+jess package run agent --capability network.dns.resolve --capability network.tcp.connect
+```
+
+What makes it hold up:
+
+- **One loop, stepped with no wait.** `loop:step(0)` runs whatever is ready and returns. A message that arrives between frames waits at most a frame, about 16 ms, and a frame never waits for the network.
+- **Every wait is a task's.** The request, the receive and the heartbeat's sleep each wait on the loop, so none holds up the others. jess's own suite runs this module against a server that takes 1.5 seconds to answer the POST, and checks that heartbeats 100 ms apart keep arriving with no gap past 400 ms.
+- **Failures come back as values.** `connect`, `receive` and `request` return `nil`, a message and a kind, and the module decides what each means: back off and reconnect, give up, or carry on. A task that raises anyway is reported by the `step` that ran it, as a failure in `update`, and the loop runs on.
+- **Shutdown is ordinary code.** Ctrl+C, SIGTERM and `application.exit` all run `shutdown`. It cancels what's in flight (the cancelled request returns `cancelled`, which the task takes as the answer it is), starts the close handshake as a task, gives the loop three seconds to finish, and closes it, which closes anything left. A `shutdown` that raised part way would leave the rest undone, which is why the inference task checks for `cancelled` before it asserts.
+- **Nothing piles up.** A loop watches a socket only while a task waits on it, connections count against `maxConnections`, sends wait for the socket instead of queueing, and every received message is bounded by `maxMessageBytes`. The suite reconnects 200 times and checks that the loop holds nothing afterwards and the heap hasn't grown.
+
 ## Authority
 
 An application holds what its target declares and nothing more, as a command target does. Every managed module's context holds that grant; a package doesn't get a VM or a capability of its own for being in the graph. Workers a module spawns hold a subset, and have no interfaces and no event queue of their own to emit into. `require` works in managed modules exactly as in any package module: their own files, their declared dependencies' exports, never past their package's root.
