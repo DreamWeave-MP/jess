@@ -10,7 +10,7 @@ extra:
 
 A shader, written in Luau. `require("@jess/shader")` is the same table as `jess.shader`, and a shader module is an ordinary Luau module that runs once and returns a `ShaderProgram`.
 
-The vertex and fragment functions you hand `shader.program` don't run on the GPU, and they don't run per frame. Each runs exactly once, while `shader.program` does, to write the program down: `shader.dot(normal, light)` computes nothing, it appends one typed `dot` expression and hands back a value naming it. What comes out is a validated program in jess's own shader IR, which jess lowers to whatever the backend wants. You never write WGSL, and you never see a binding index.
+The vertex and fragment functions you hand `shader.program` don't run on the GPU, and they don't run per frame. Each runs exactly once, while `shader.program` does, to write the program down: `shader.dot(normal, light)` computes nothing, it appends one typed `dot` expression and hands back a value naming it. What comes out is a validated program in jess's own [shader IR](@/docs/contributing/shader-ir.md), which [`device:pipeline`](@/docs/api/gpu.md#gpudevice-pipeline) lowers to whatever the backend wants and compiles once. You never write WGSL, and you never see a binding index.
 
 A program declares everything it reads. Nothing is built in: no camera, no model matrix, no time. A program that wants a camera declares one, and so does every other program that wants one, which is what a shared module of declarations is for.
 
@@ -70,7 +70,7 @@ return program
 ```
 
 {% usage_note(title="What this is, today") %}
-- This is the authoring half. Nothing draws with a `ShaderProgram` yet: the renderer that takes one is a later piece of work, and this page will say so when it isn't.
+- This is the authoring half. A program draws once [`device:pipeline`](@/docs/api/gpu.md#gpudevice-pipeline) makes a pipeline of it, and computes once [`device:dispatch`](@/docs/api/gpu.md#gpudevice-dispatch) runs one; what drawing means beyond that (cameras, blocks filled by name) is [`@jess/render`](@/docs/api/render.md)'s.
 - The expression set is the one real materials need, and no more: arithmetic, WGSL's functions, comparisons and `select`, construction and conversion, swizzles, texture reads, and [statements](#statements): vars, `when`, bounded loops, and `discard`. A compute program is [shader.compute](#shader-compute).
 {% end %}
 
@@ -992,4 +992,4 @@ render/materials/water.jsl: expected the module to return a jess.shader.Program,
 
 `nil`, a string, a table, and another kind of userdata are all named the same way. The contract isn't shader-specific: it's how jess will load anything a module is supposed to *be*.
 
-Related: [require](@/docs/api/jess.md#require).
+Related: [jess.gpu](@/docs/api/gpu.md), [@jess/render](@/docs/api/render.md), [Shader IR](@/docs/contributing/shader-ir.md), [require](@/docs/api/jess.md#require).
