@@ -84,4 +84,4 @@ print(pass.size, string.format('%.3f', origin.z))
 -- 224  0.982
 ```
 
-`pass:upload(buffer)` then writes the block into a uniform buffer of `pass.size` bytes, which `pipeline:bind('pass', { [0] = buffer })` binds.
+`pass:upload(cameraBuffer)` then writes the block into a uniform buffer of `pass.size` bytes, which `pipeline:bind('pass', { [0] = cameraBuffer })` binds. The [windowed application](@/docs/scripting/applications.md#a-window) does exactly that every frame.
