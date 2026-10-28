@@ -6,7 +6,7 @@ extra:
   kind: guide
 ---
 
-A crowded game scene, a procedural instrument, an adaptive score, and a multitrack session are all compositions of the same machinery: nodes that make, change, and mix signal, joined by connections, run on one sample clock. This page is the contract that machinery keeps. [Audio Engine](@/docs/contributing/audio-engine.md) covers the render path's rules, time, voices, streams, and devices; this one covers the graph.
+A crowded game scene, a procedural instrument, an adaptive score, and a multitrack session are all compositions of the same machinery: nodes that make, change, and mix signal, joined by connections, run on one sample clock. This page is the contract that machinery keeps. [Audio Engine](@/docs/contributing/audio-engine.md) covers the render path's rules, time, voices, streams, and devices; this one covers the graph. Scripts reach it through [`@jess/audio`](@/docs/api/audio.md#nodes).
 
 ## Three things, owned apart
 
@@ -41,7 +41,7 @@ Capacity is a budget, not a shape. A context has room for so many nodes and so m
 
 ## Voices stay out of the graph
 
-A voice is not a node. It is an entry in a fixed table that renders its source and adds the result into one or more node inputs: its outputs, each with a level. The plan doesn't mention voices. Starting, stopping, culling, or ending one, or a thousand, compiles nothing and changes no plan. This is the path a game's sound effects take every tick, and it costs what it did when buses were all there was.
+A voice is not a node. It is an entry in a fixed table that renders its source and adds the result into one or more node inputs: its outputs, each with a level. The plan doesn't mention voices. Starting, stopping, culling, or ending one, or a thousand, compiles nothing and changes no plan. This is the path a game's sound effects take every tick, and it costs a voice's mixing and nothing for the graph.
 
 A voice can play into any node with an audio input: a bus, or a filter that only that voice goes through. Its outputs change with a command of their own (`route`, `send`, `unsend`). Inside a patch, that command reaches the engine in the same command as the plan, so the voice moves when the graph does.
 
@@ -61,7 +61,7 @@ A revision either takes effect whole on its frame, or it fails and leaves the de
 
 New nodes' processors are installed in the node table as soon as the engine takes the command. A node does nothing until the plan it came with runs: a voice sent to it before then is not heard, and is from the revision's frame.
 
-Revisions take effect in the order they were made. A revision can be stamped for a later frame, and plans for later revisions are compiled on top of earlier ones. So a revision may not be stamped earlier than one still waiting: the control side refuses it (`GraphOrder`), naming the frame of the one it would overtake. That keeps every plan a simple function of the revisions before it. Nothing pending is ever recompiled, and the engine never has to work out which plan is current. Commands that aren't revisions (voices, parameters, the listener) keep their own stamps and order, as before.
+Revisions take effect in the order they were made. A revision can be stamped for a later frame, and plans for later revisions are compiled on top of earlier ones. So a revision may not be stamped earlier than one still waiting: the control side refuses it (`GraphOrder`), naming the frame of the one it would overtake. That keeps every plan a simple function of the revisions before it. Nothing pending is ever recompiled, and the engine never has to work out which plan is current. Commands that aren't revisions (voices, parameters, the listener) keep their own stamps and order.
 
 ## The plan
 
@@ -144,14 +144,14 @@ None of the conveniences is a second mixer. They are the patch a script would wr
 
 ## What it costs
 
-A game's graph is mostly buses, and most of its work is voices played into them. Both paths are kept as short as they were:
+A game's graph is mostly buses, and most of its work is voices played into them. Both paths are kept short:
 
 - **The voices a block walks** are the live ones, kept in a list in slot order, not a table of every slot a context could fill: a context sized for thousands of voices that plays hundreds pays for hundreds.
 - **A voice's outputs** are a fixed first output and a slice of sends, allocated only when it has sends. Each output is checked against a flat table of the nodes' generations and channels, not against the nodes themselves, so a voice into a bus touches only the bus's buffer.
 - **A bus's step** runs the mixer's own gain and mute kernel straight on its buffer, from the automation the engine holds. That is the same function the `mixer` processor calls, so a bus costs no virtual call and no `Io`. The processor still defines what a bus does.
 - **A node whose parameters hold still** skips automation and modulation entirely, and **a block with nothing ringing out** doesn't look for anything to retire.
 
-`tools/bench` measures it. `audio` is a crowded scene; `audio-churn` and `audio-render` start and stop hundreds of one-shots a second, each on its own frame, which cuts blocks down to a few frames and makes per-block cost dominate. Against the bus mixer the graph replaced, built from the tree a commit before it and run interleaved on one machine, the crowded scene is a little faster and the churning ones much faster, mostly for walking only the live voices.
+`tools/bench` measures it. `audio` is a crowded scene; `audio-churn` and `audio-render` start and stop hundreds of one-shots a second, each on its own frame, which cuts blocks down to a few frames and makes per-block cost dominate.
 
 ## Limits
 
@@ -170,10 +170,12 @@ These are deliberate, and each is checked:
 - **Commands a cancel drops** keep counting against the schedule's room until their frames pass.
 - **There is no binary plugin interface.** A processor from outside jess is Rust registered by the host that links it.
 
-## What comes next, without replacing this
+## Not built
 
-- **Capture** is a source node whose processor reads a device's input ring, filled by miniaudio's duplex devices. A recording is a stream a node writes and a script reads. Neither needs a change to plans or steps.
-- **Multichannel output** is a context of up to eight channels. Wider buses and the conversion rules carry it, and a surround panner is a processor with an output per speaker.
-- **Shared input buffers** for nodes that have inputs need voices mixed into a node just before its step, rather than all at the start of a block, so a buffer lives only from its first writer to its last reader. Placement is already the plan's, so that is a change to the compiler and the engine's voice walk, not to any API.
-- **Synthesis** is more processors (wavetables, noise, filters with audio-rate cutoff) and more modulation sources. MIDI is a Luau schedule of `set` and `gate` commands.
-- **Third-party DSP** is the registry. A restricted, deterministic DSP language could later register processors the same way, compiled before they reach the render thread.
+None of these exists, and each fits the graph as it stands:
+
+- **Capture.** There is no input device. One would be a source node whose processor reads a device's input ring, and a recording a stream a node writes and a script reads.
+- **Surround panning.** A context has up to eight channels, and the conversion rules carry them, but a voice's `pan`, its place in space, and the `pan` processor are stereo. A surround panner would be a processor with an output per speaker.
+- **Shared input buffers.** Voices are mixed in at the start of a block, so every node with an audio input keeps a buffer of its own. Mixing a node's voices in just before its step would let a buffer live only from its first writer to its last reader. Placement is already the plan's, so that is a change to the compiler and the engine's voice walk, not to any API.
+- **More synthesis.** Wavetables, noise, and filters with an audio-rate cutoff are processors nobody has written. MIDI is a Luau schedule of `set` and `gate` commands.
+- **Third-party DSP** is Rust in the registry. A restricted, deterministic DSP language could register processors the same way, compiled before they reach the render thread.
