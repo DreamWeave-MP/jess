@@ -291,15 +291,16 @@ local shot = audio.pcm(buffer.create(4 * 4800), { format = 'f32', channels = 1, 
 for index, cutoff in { 500, 2000, 8000 } do
   local filter = context:node('filter', { frequency = cutoff })
   local drive = context:node('drive', { drive = index * 6 })
-  local voice = context:voice(shot)
+  local voice = context:voice(shot, { bus = filter })
   context:patch(function(graph)
-    graph:connect(voice, filter)
     graph:connect(filter, drive)
     graph:connect(drive, effects)
   end)
   voice:play()
 end
 ```
+
+Each voice plays into its filter and nowhere else. Made without a `bus`, it would play into the master as well, and connecting it in the patch would add the filter as a send: every shot would play dry too.
 
 ### Feedback
 
