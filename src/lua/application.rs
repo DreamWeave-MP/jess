@@ -776,32 +776,44 @@ impl Application {
                 next = Instant::now();
             }
             let now = Instant::now();
-            // The window system's news reaches the frame's input; what the frame left the windows
-            // showing is drawn after it.
-            #[cfg(feature = "window")]
-            {
-                crate::window::pump();
-                self.announce_windows(report);
-            }
-            let outcome = self.frame(now - last);
+            let outcome = self.step(now - last, report);
             last = now;
-            // What the frame changed about what the GPU draws, all of it at once.
-            #[cfg(feature = "gpu")]
-            if let Some(gpu) = self.device.opened()
-                && let Err(problem) = gpu.commit()
-            {
-                report(&format!("the GPU refused a change: {problem}"));
-            }
-            #[cfg(feature = "window")]
-            if let Err(failures) = crate::window::present() {
-                for (title, problem) in failures {
-                    report(&format!("window {title}: {problem}"));
-                }
-            }
             self.flush(report);
             outcome.map_err(|problem| error(problem.to_string()))?;
             ran += 1;
         }
+    }
+
+    /// One frame of `delta` as [`Application::run`] runs it: the window system's news, the frame
+    /// ([`Application::frame`]), the frame's changes to what the GPU draws committed together,
+    /// and the windows told to draw them. What windows and the GPU refused goes to `report`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Application::frame`].
+    pub fn step(&mut self, delta: Duration, report: &mut impl FnMut(&str)) -> Result<FrameReport, crate::host::Error> {
+        // The window system's news reaches the frame's input; what the frame left the windows
+        // showing is drawn after it.
+        #[cfg(feature = "window")]
+        {
+            crate::window::pump();
+            self.announce_windows(report);
+        }
+        let outcome = self.frame(delta);
+        // What the frame changed about what the GPU draws, all of it at once.
+        #[cfg(feature = "gpu")]
+        if let Some(gpu) = self.device.opened()
+            && let Err(problem) = gpu.commit()
+        {
+            report(&format!("the GPU refused a change: {problem}"));
+        }
+        #[cfg(feature = "window")]
+        if let Err(failures) = crate::window::present() {
+            for (title, problem) in failures {
+                report(&format!("window {title}: {problem}"));
+            }
+        }
+        outcome
     }
 
     /// Posts [`crate::window::NEWS`] for each window something happened to, for the frame's

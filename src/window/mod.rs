@@ -723,6 +723,19 @@ pub fn news() -> Vec<(String, Option<String>)> {
     news
 }
 
+/// Every window this thread has open, oldest first: what a host looks over, what a test counts.
+#[must_use]
+pub fn windows() -> Vec<Window> {
+    SYSTEM.with_borrow(|system| {
+        system
+            .iter()
+            .flat_map(|system| &system.windows)
+            .filter_map(|(id, state)| state.upgrade().map(|state| Window { id: *id, state }))
+            .filter(Window::is_open)
+            .collect()
+    })
+}
+
 /// The windows this thread has open.
 fn open_states() -> Vec<Rc<RefCell<State>>> {
     SYSTEM.with_borrow(|system| {

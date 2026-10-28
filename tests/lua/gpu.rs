@@ -1251,6 +1251,121 @@ fn a_script_shows_a_plan_in_a_window() {
     assert!(jess::window::news().is_empty(), "news is announced once until it is read");
     drop(runtime);
     kept_windows_outlive_their_code(&capabilities);
+    a_shown_scene_that_does_not_change_runs_no_luau();
+}
+
+/// What `a_shown_scene_that_does_not_change_runs_no_luau` launches: an application that shows a
+/// plan in a window and handles input and the window's news, as a viewer does.
+#[cfg(feature = "window")]
+const STILL: [(&str, &str); 3] = [
+    (
+        "jess.toml",
+        r#"manifest_version = 1
+
+[package]
+id = "org.example.still"
+version = "1.0.0"
+jess_api = "1"
+include = ["src"]
+
+[managed.handlers]
+module = "src/handlers.jsl"
+
+[targets.still]
+kind = "application"
+entry = "src/main.jsl"
+capabilities = ["gpu.device", "gpu.window"]
+"#,
+    ),
+    (
+        "src/handlers.jsl",
+        r"--!strict
+return {
+  on = {
+    host = { input = function() end },
+    event = { ['jess.window'] = function() end },
+  },
+}
+",
+    ),
+    (
+        "src/main.jsl",
+        r"--!strict
+local shader = jess.shader
+local device = jess.gpu.device()
+local window = jess.gpu.window(device, { title = 'still', width = 48, height = 32 })
+local format = assert(window.format)
+local fill = shader.program {
+  vertex = function(input)
+    local index = input.builtin.vertexIndex
+    local x = shader.float(shader.bitAnd(shader.shiftLeft(index, shader.uint(1)), shader.uint(2)))
+    local y = shader.float(shader.bitAnd(index, shader.uint(2)))
+    return { position = shader.vec4(shader.vec2(x, y) * 2 - 1, 0, 1) }
+  end,
+  fragment = function() return shader.vec4(0, 0, 1, 1) end,
+}
+local plan = device:plan {
+  viewport = { width = window.width, height = window.height },
+  targets = { { name = 'screen', format = format, imported = true } },
+  passes = {
+    { name = 'fill', kind = 'fullscreen', pipeline = device:pipeline(fill, { colors = { format } }), colors = { 'screen' } },
+  },
+}
+window:show(plan, 'screen')
+",
+    ),
+];
+
+/// An application showing a scene that doesn't change: frame after frame, its host runs no Luau,
+/// and its window presents nothing new. Part of `a_script_shows_a_plan_in_a_window`, on the thread
+/// its windows are on.
+#[cfg(feature = "window")]
+fn a_shown_scene_that_does_not_change_runs_no_luau() {
+    use jess::lua::package::{self, Launched, TargetRequest};
+
+    let root = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("still");
+    for (path, text) in STILL {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    let request = TargetRequest {
+        package: root.display().to_string(),
+        target: Some("still".to_owned()),
+        grant: Some(vec!["gpu.device".to_owned(), "gpu.window".to_owned()]),
+        ..TargetRequest::default()
+    };
+    let Launched::Application(mut application) =
+        package::launch(&jess::lua::Options::default(), &request).unwrap_or_else(|error| panic!("{error}"))
+    else {
+        panic!("still is an application");
+    };
+    application.start().unwrap();
+    let frame = |application: &mut jess::lua::application::Application| -> usize {
+        let report = application
+            .step(std::time::Duration::from_millis(16), &mut |line| panic!("{line}"))
+            .unwrap();
+        let input = report.input.map_or(0, |phase| phase.ran);
+        let phases: usize = report.tick.phases.iter().map(|phase| phase.ran).sum();
+        input + phases + report.tick.events.delivered
+    };
+    // Its first frames show the plan, and the window manager may say a few things about it.
+    for _ in 0..10 {
+        frame(&mut application);
+    }
+    jess::window::wait_presented(std::time::Duration::from_secs(1));
+    let window = jess::window::windows()
+        .into_iter()
+        .find(|window| window.title() == "still")
+        .expect("the application's window is open");
+    let presented = window.frames();
+    assert!(presented >= 1, "the scene was drawn");
+    let entered: usize = (0..30).map(|_| frame(&mut application)).sum();
+    jess::window::wait_presented(std::time::Duration::from_secs(1));
+    assert_eq!(entered, 0, "no handler ran in 30 frames of a scene that doesn't change");
+    assert_eq!(window.frames(), presented, "nothing new was presented");
+    drop(window);
+    application.stop().unwrap();
 }
 
 /// A window kept by a key outlives the code that opened it, and the next code takes it back, on
