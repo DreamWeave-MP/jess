@@ -80,4 +80,19 @@ suite.it('refuses an unsupported source export instead of omitting it', function
   test.expect(function() catalog.sourceSymbols(source, '## json.decode', 'json') end).toThrow 'unsupported json export'
 end)
 
+suite.it('indexes generated types and native methods without claiming behavioral verification', function()
+  local definitions = [[export type AudioOptions = { rate: number }
+declare extern type jess_runtime_Worker with
+  function send(self, message: any): ()
+end]]
+  local symbols = catalog.typeInventory(definitions)
+  test.expect(#symbols).toBe(4)
+  test.expect(symbols[1].name).toBe 'AudioOptions'
+  test.expect(symbols[2].signature).toBe 'AudioOptions.rate: number'
+  test.expect(symbols[3].page).toBe 'docs/api/worker/'
+  test.expect(symbols[4].name).toBe 'jess_runtime_Worker.send'
+  test.expect(symbols[4].signature).toBe 'function send(self, message: any): ()'
+  test.expect(symbols[4].checked).toBe(false)
+end)
+
 return suite
