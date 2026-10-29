@@ -20,7 +20,7 @@ The [GitHub releases](https://github.com/DreamWeave-MP/jess/releases) page has o
 | `jess-macOS-X64.zip` | Intel Macs. |
 | `jess-Portmaster-ARM64.zip` | 64-bit ARM Linux with glibc 2.34 or newer: PortMaster handhelds, Raspberry Pi OS Bookworm, Ubuntu 22.04, RHEL 9, and anything later. |
 
-There's no 32-bit build and no Android one; use `cargo install` there. Each zip holds, with no folder around them:
+There are no 32-bit or Android release archives. A source build on those targets is not an established supported distribution. Each zip holds, with no folder around them:
 
 - `jess` (`jess.exe` on Windows), the whole tool
 - `jess-<platform>.bundle`, the binary's [Sigstore](https://www.sigstore.dev) signature (below)
