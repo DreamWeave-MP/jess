@@ -56,4 +56,12 @@ if not forwarded or not forwarded.success then error(`CLI reference: argument te
 
 assert(forwarded.stdout == 'hello\t--format\tjson\n', 'trailing options did not reach the script')
 
+local denied, denyProblem = process.run('jess', {
+  'run', 'tests/fixtures/docs/http-denied.jsl',
+}, { stdout = 'capture', stderr = 'capture' })
+
+if not denied or not denied.success then error(`CLI reference: HTTP denial test failed: {denyProblem}`, 0) end
+
+assert(denied.stdout == 'denied\n', 'HTTP capability denial did not raise')
+
 print 'CLI help options are documented'

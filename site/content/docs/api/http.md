@@ -22,7 +22,9 @@ that fetches declares both; `jess run` takes them with `--capability`.
 {{ api_signature(value="http.get(url: string, options: Options?) -> (Response?, string?, ErrorKind?)") }}
 
 Fetches `url` and answers the response, whatever its status, or `nil`, a message and the kind of
-failure. A 404 is a response; a host that will not talk is a failure.
+failure. A 404 is a response; a host that will not talk is a failure. The call waits for the request
+and its redirects to finish or fail, so use a [worker](@/docs/api/worker.md) if the calling domain
+must remain responsive.
 
 - **Parameters:** `options.maxBytes` bounds the body (16 MiB unless given; more is `tooLarge`,
   whether the server declares the length or just keeps sending). `options.timeoutMs` bounds the
@@ -34,11 +36,13 @@ failure. A 404 is a response; a host that will not talk is a failure.
   and repeated fields joined with `, `. `body` is a `buffer`, empty after HEAD or a bodiless
   status. `url` is where the body came from and `redirects` every URL that answered with a
   redirect on the way.
-- **Errors:** returned, not raised, as the third value: `invalidUrl`, `unsupportedScheme` (only
+- **Request failures:** returned as the third value: `invalidUrl`, `unsupportedScheme` (only
   http and https, and never a redirect from https down to http), `credentialsInUrl`, `resolve`,
   `connect`, `tls`, `timeout`, `protocol` (a response that is not HTTP/1.x), `tooLarge`,
-  `tooManyRedirects`, `closed` (the connection ended early). An option the function does not take
-  raises, as every jess option table does: `unknown jess.http.get option 'maxByte': expected maxBytes, timeoutMs, maxRedirects, headers, tls, method`.
+  `tooManyRedirects`, `closed` (the connection ended early). The response head is also limited to
+  64 KiB; a longer one is a `protocol` error. Capability denial by an underlying network operation
+  raises rather than returning an `ErrorKind`. An option the function does not take also raises:
+  `unknown jess.http.get option 'maxByte': expected maxBytes, timeoutMs, maxRedirects, headers, tls, method`.
 
 ```luau
 --!strict

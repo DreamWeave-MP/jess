@@ -79,6 +79,7 @@ jobs:
       - name: Check CLI reference options
         run: |
           jess check tools/site/tests/cli-reference.jsl
+          jess check tests/fixtures/docs/arguments.jsl tests/fixtures/docs/http-denied.jsl
           jess run --capability process.spawn --capability filesystem.read tools/site/tests/cli-reference.jsl
 
       - name: Check the tutorials

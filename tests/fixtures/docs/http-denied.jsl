@@ -1,0 +1,7 @@
+--!strict
+local http = require '@jess/http'
+
+-- The DNS capability gate raises before the client can contact a resolver.
+local ok, problem = pcall(http.get, 'http://example.invalid', nil)
+assert(not ok and string.find(tostring(problem), 'network.dns.resolve', 1, true))
+print 'denied'
