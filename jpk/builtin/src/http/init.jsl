@@ -960,10 +960,13 @@ local function discard(head: Head, body: Body, url: Url, transport: Transport, d
   transport.release(url, body.connection, reusable(head, body))
 end
 
---- Follows `settings` through its redirects to the final response: its head and its body still on
---- the connection, with the URL that answered and those that redirected.
-local function follow(settings: Plan, transport: Transport): (Head?, Body?, Url?, string, { string }, string?, ErrorKind?)
-  local deadline = net.now() + settings.timeoutMs
+--- Follows `settings` through its redirects to the final response by `deadline`: its head and its
+--- body still on the connection, with the URL that answered and those that redirected.
+local function follow(
+  settings: Plan,
+  transport: Transport,
+  deadline: number
+): (Head?, Body?, Url?, string, { string }, string?, ErrorKind?)
   local redirects: { string } = {}
   local current, method, headers, body = settings.url, settings.method, table.clone(settings.headers), settings.body
   local secureSoFar = false
@@ -1041,11 +1044,12 @@ end
 
 --- `settings` performed in full: the response with its body read and decoded.
 local function perform(settings: Plan, transport: Transport): (Response?, string?, ErrorKind?)
-  local head, framed, target, url, redirects, problem, kind = follow(settings, transport)
+  -- One deadline for the whole of it: every hop, every head, and the body that ends it.
+  local deadline = net.now() + settings.timeoutMs
+  local head, framed, target, url, redirects, problem, kind = follow(settings, transport, deadline)
   if not head then return nil, problem, kind end
 
   local response, body = head :: Head, framed :: Body
-  local deadline = net.now() + settings.timeoutMs
   local data, readProblem, readKind = readAll(body, deadline)
   transport.release(target :: Url, body.connection, data ~= nil and reusable(response, body))
   if not data then return nil, `{describe(target :: Url)}: {readProblem}`, readKind end
@@ -1072,7 +1076,7 @@ end
 
 --- `settings` followed to its final head, the body left to read.
 local function openStream(settings: Plan, transport: Transport): (Stream?, string?, ErrorKind?)
-  local head, framed, target, url, redirects, problem, kind = follow(settings, transport)
+  local head, framed, target, url, redirects, problem, kind = follow(settings, transport, net.now() + settings.timeoutMs)
   if not head then return nil, problem, kind end
 
   local response, body, answered = head :: Head, framed :: Body, target :: Url

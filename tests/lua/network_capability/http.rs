@@ -1118,3 +1118,26 @@ fn a_request_that_failed_part_way_out_on_a_kept_connection_is_replayed_only_if_i
         .collect();
     assert_eq!(drops, ["POST", "PUT", "PUT"], "the POST went out once; the PUT went again");
 }
+
+#[test]
+fn timeout_ms_bounds_the_head_and_the_body_together() {
+    let pause = Duration::from_millis(600);
+    let server = Server::start(vec![(
+        "/late",
+        Answer::Trickle(vec![
+            (
+                pause,
+                "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\n".to_owned(),
+            ),
+            (pause, "late".to_owned()),
+        ]),
+    )]);
+    let runtime = runtime();
+    let started = std::time::Instant::now();
+    let (status, _, kind, message, ..) = fetch(&runtime, &server.url("/late"), "{ timeoutMs = 1000 }");
+    assert_eq!((status, kind.as_str()), (None, "timeout"), "{message}");
+    assert!(started.elapsed() < Duration::from_millis(1500), "{:?}", started.elapsed());
+
+    let (status, body, ..) = fetch(&runtime, &server.url("/late"), "{ timeoutMs = 3000 }");
+    assert_eq!((status, body.as_str()), (Some(200.0), "late"));
+}
