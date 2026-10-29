@@ -49,6 +49,10 @@ suite.it('keeps tutorial code and fixtures identical', function()
   documented('site/content/docs/cookbook/http-get.md', 'tests/fixtures/docs/http-get.jsl', 'luau')
   documented('site/content/docs/cookbook/configuration.md', 'tests/fixtures/docs/config.jsl', 'luau')
   documented('site/content/docs/cookbook/offline-audio.md', 'tests/fixtures/docs/offline-audio.jsl', 'luau')
+  local headlessPage = 'site/content/docs/cookbook/headless.md'
+  documented(headlessPage, 'tests/fixtures/docs/headless/jess.toml', 'toml')
+  documented(headlessPage, 'tests/fixtures/docs/headless/src/main.jsl', 'luau')
+  documented(headlessPage, 'tests/fixtures/docs/headless/src/service.jsl', 'luau')
   local workerPage = 'site/content/docs/cookbook/worker.md'
   documented(workerPage, 'tests/fixtures/docs/worker/jess.toml', 'toml')
   documented(workerPage, 'tests/fixtures/docs/worker/src/main.jsl', 'luau')
@@ -119,6 +123,12 @@ suite.it('checks and runs the counter application', function()
   run { 'package', 'check', path }
   test.expect(run { 'package', 'run', path }).toBe 'entry\nstartup\nstopped after 3 frames\n'
   test.expect(run { 'package', 'run', path, '--frames', '2' }).toBe 'entry\nstartup\nstopped after 2 frames\n'
+end)
+
+suite.it('checks and shuts down a headless application', function()
+  local path = 'tests/fixtures/docs/headless'
+  run { 'package', 'check', path }
+  test.expect(run { 'package', 'run', path, '--frames', '3' }).toBe 'entry\nready\nstopped after 3 frames\n'
 end)
 
 suite.it('checks and runs the named event application', function()

@@ -12,6 +12,8 @@ Once [your first application](@/docs/getting-started/first-application.md) runs,
 
 Read [Modules, Layers, and Dependencies](@/docs/getting-started/modules-and-layers.md), then [Application Lifecycle and State](@/docs/getting-started/application-lifecycle.md). Decide which package owns each public API and which managed module owns mutable state. An exported module, a layer entrypoint, and a managed module have different jobs.
 
+The [headless application recipe](@/docs/cookbook/headless.md) runs a host until a frame limit or interrupt, then exercises its shutdown handler.
+
 ## Communicate deliberately
 
 [Applications](@/docs/scripting/applications.md) explains managed handlers, startup order, named events, and interface composition. Try the [named-event recipe](@/docs/cookbook/named-event.md), then consult [events](@/docs/api/events.md) for queueing and payload rules and [interfaces](@/docs/api/interfaces.md) for domain-local contracts. A worker is a separate Luau state communicating through messages; its [reference](@/docs/api/worker.md) covers delegation, queues, and shutdown.

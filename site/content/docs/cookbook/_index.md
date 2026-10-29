@@ -15,6 +15,7 @@ These recipes start with a job and point to the reference for its full contract.
 - [Keep a backup when writing](@/docs/cookbook/safe-write.md): preserve a previous file before replacing it.
 - [Trace a package before running it](@/docs/cookbook/inspect-package.md): inspect its payload, plan, and requested authority.
 - [Send a named event](@/docs/cookbook/named-event.md): queue an application event and receive its payload.
+- [Run a headless application](@/docs/cookbook/headless.md): keep a service running and shut it down cleanly.
 - [Fetch a resource over HTTP](@/docs/cookbook/http-get.md): bound a request and handle its response.
 - [Do work in a worker](@/docs/cookbook/worker.md): send a message and poll for a reply without blocking a frame.
 - [Write and read configuration](@/docs/cookbook/configuration.md): preserve the previous file and validate decoded data.

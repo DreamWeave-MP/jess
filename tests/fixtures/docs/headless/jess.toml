@@ -1,0 +1,15 @@
+manifest_version = 1
+
+[package]
+id = "com.example.headless"
+version = "0.1.0"
+jess_api = "1"
+include = ["src"]
+default_target = "service"
+
+[managed.service]
+module = "src/service.jsl"
+
+[targets.service]
+kind = "application"
+entry = "src/main.jsl"
