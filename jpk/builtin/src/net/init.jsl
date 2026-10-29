@@ -357,6 +357,13 @@ local function waitOn(handle: dream_tcp_Watchable, interest: Interest, deadline:
   if state.cancelled then return false, 'cancelled' end
 
   local loop = state.loop
+  -- A handle belongs to the one loop that watches it: two pollers over one handle would each think
+  -- the readiness theirs, and releasing it could reach only one of them.
+  local owner = watchers[handle]
+  if owner and owner ~= loop then
+    error(`{Name}.wait: another loop is already waiting on this handle; a handle is waited on from one loop`, 0)
+  end
+
   local watch = loop.byHandle[handle]
   if not watch then
     local token = table.remove(loop.freeTokens) or loop.nextToken

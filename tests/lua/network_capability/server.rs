@@ -733,3 +733,38 @@ fn net_release_wakes_a_task_waiting_on_a_listener_so_it_can_be_closed_at_once() 
     );
     assert_eq!(lines, ["joined true", "false closed"]);
 }
+
+#[test]
+fn a_handle_is_waited_on_from_one_loop_at_a_time() {
+    let text = tls_runtime()
+        .eval::<String>(
+            "
+            local net = require '@jess/net'
+            local tcp = require '@dream/tcp'
+            local listener = assert(tcp.listen('127.0.0.1:0'))
+            local failures: { string } = {}
+            local reasons: { string } = {}
+            local first = net.loop()
+            local second = net.loop { onError = function(_task, message) table.insert(failures, message) end }
+            first:spawn(function() net.wait(listener, 'read') end)
+            first:step(0)
+            second:spawn(function() net.wait(listener, 'read') end)
+            second:step(0)
+
+            -- Once the first loop lets go of it, the second may wait on it.
+            first:close()
+            second:spawn(function()
+              local _, reason = net.wait(listener, 'read', net.now() + 10)
+              table.insert(reasons, reason)
+            end)
+            second:run(1000)
+            second:close()
+            listener:close()
+            return `{failures[1]}\\n{reasons[1]}`
+            ",
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+    let lines: Vec<_> = text.lines().collect();
+    assert!(lines[0].contains("another loop is already waiting on this handle"), "{text}");
+    assert_eq!(lines[1], "timeout", "{text}");
+}

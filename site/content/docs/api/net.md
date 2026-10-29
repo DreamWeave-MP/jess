@@ -130,13 +130,13 @@ In a task: starts another task on the same loop, as `Loop:spawn` does, for code 
 
 {{ api_signature(value="net.wait(handle: dream_tcp_Watchable, interest: 'read' | 'write', deadline: number?) -> (boolean, WakeReason)") }}
 
-Waits until a `@dream/tcp` listener or stream, a `@dream/tls` session, or a `@dream/dns` lookup is ready. It's the primitive the rest is built on, for protocols that need a raw handle (a listener, a server-side TLS session). Readiness is level-triggered, as the poller's is: try the operation, and wait only when it says `wouldBlock`. One task at a time may wait to read a handle, and one to write it.
+Waits until a `@dream/tcp` listener or stream, a `@dream/tls` session, or a `@dream/dns` lookup is ready. It's the primitive the rest is built on, for protocols that need a raw handle (a listener, a server-side TLS session). Readiness is level-triggered, as the poller's is: try the operation, and wait only when it says `wouldBlock`. One task at a time may wait to read a handle, and one to write it, and while anyone waits on a handle it belongs to that task's loop: a wait on it from another loop raises.
 
 ## net.release
 
 {{ api_signature(value="net.release(handle: dream_tcp_Watchable) -> ()") }}
 
-Wakes whoever waits on `handle`, with `closed`, and stops watching it, from a task or from anywhere else. Release a raw handle another task may be waiting on before you close it: the wait ends, and the handle can be closed at once. A handle nobody waits on is left as it is. A `Connection` does this itself when it closes.
+Wakes whoever waits on `handle`, with `closed`, and stops watching it on the one loop that does, from a task or from anywhere else. Release a raw handle another task may be waiting on before you close it: the wait ends, and the handle can be closed at once. A handle nobody waits on is left as it is. A `Connection` does this itself when it closes.
 
 ## net.connect
 
