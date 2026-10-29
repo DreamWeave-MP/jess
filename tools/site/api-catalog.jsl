@@ -362,6 +362,11 @@ local function sourceSymbols(source: string, documentation: string, member: stri
   for _, statement in parsed.root.body do
     if statement.kind ~= 'StatReturn' then continue end
     local call = statement.list[1]
+    if member == 'audio' and call and call.kind == 'ExprTable' then
+      exported = call
+      continue
+    end
+
     if not call or call.kind ~= 'ExprCall' or call.func.kind ~= 'ExprIndexName' or call.func.index ~= 'freeze' then continue end
     if call.func.expr.kind ~= 'ExprGlobal' or call.func.expr.name ~= 'table' then continue end
     local value = call.args[1]
@@ -480,6 +485,7 @@ local function generate(root: string): string
     { name = 'value', path = 'data/value.jsl', grouped = true, moduleName = '@jess/data/value' },
     { name = 'l10n', path = 'l10n/init.jsl', grouped = true, moduleName = '@jess/l10n' },
     { name = 'input', path = 'input/init.jsl', grouped = true, moduleName = '@jess/input' },
+    { name = 'audio', path = 'audio/init.jsl', grouped = true, moduleName = '@jess/audio' },
   } do
     local source, message = fs.readFileString(fs.join(folder, 'jess', item.path))
     if not source then
@@ -604,11 +610,24 @@ local function generate(root: string): string
 
     table.insert(modules, item.moduleName or `@jess/{item.name}`)
     local aliases: { [string]: string }? = nil
-    if item.name == 'input' then
+    if item.name == 'input' or item.name == 'audio' then
       aliases = {}
-      for _, symbol in globalInventory(definitions, 'input') do
-        local name = string.sub(symbol.name, #'jess.input.' + 1)
-        aliases[`Native.{name}`] = string.gsub(symbol.signature, '^jess%.input%.', 'input.')
+      for _, symbol in globalInventory(definitions, item.name) do
+        local prefix = `jess.{item.name}.`
+        local name = string.sub(symbol.name, #prefix + 1)
+        aliases[`Native.{name}`] = `{item.name}.{string.sub(symbol.signature, #prefix + 1)}`
+      end
+
+      if item.name == 'audio' then
+        for _, stub in dreamStubs do
+          if stub.name ~= 'audio' then continue end
+
+          for _, symbol in externalStubSymbols(stub.source, 'audio') do
+            local prefix = '@dream/audio.'
+            local name = string.sub(symbol.name, #prefix + 1)
+            aliases[`Decoders.{name}`] = `audio.{string.sub(symbol.signature, #prefix + 1)}`
+          end
+        end
       end
     end
 

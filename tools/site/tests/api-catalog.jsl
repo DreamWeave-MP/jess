@@ -103,6 +103,14 @@ return table.freeze { runtime = Native.runtime }]]
   test.expect(function() catalog.sourceSymbols(source, 'input.runtime', 'input', true, '@jess/input', {}) end).toThrow 'unsupported input export'
 end)
 
+suite.it('indexes the audio module returned as a plain table', function()
+  local source = [[local Native = {}
+return { pcm = Native.pcm }]]
+  local aliases = { ['Native.pcm'] = 'audio.pcm(data: buffer) -> Pcm' }
+  local symbols = catalog.sourceSymbols(source, 'audio.pcm', 'audio', true, '@jess/audio', aliases)
+  test.expect(symbols[1].signature).toBe 'audio.pcm(data: buffer) -> Pcm'
+end)
+
 suite.it('preserves an exported string literal', function()
   local source = [[return table.freeze { version = '1.2' }]]
   local symbols = catalog.sourceSymbols(source, '', 'yaml')
