@@ -6,7 +6,7 @@ extra:
   kind: api
 ---
 
-{{ api_signature(value="require('@jess/net'): { loop, run, now, current, sleep, yield, signal, wait, connect }") }}
+{{ api_signature(value="require('@jess/net'): { loop, run, now, current, spawn, sleep, yield, signal, wait, connect, adopt }") }}
 
 The `@dream` network modules never wait: a read with nothing to read says `wouldBlock` and returns. Something has to do the waiting, and if it is a loop around `poller:wait` in the middle of your `update`, everything else in the application waits with it. `@jess/net` is that something, done once. A **loop** owns one poller. **Tasks** are coroutines on it. Every wait a task makes, on a socket, a name lookup, a timer, a signal or another task, yields to the loop, which runs whatever else is ready and comes back when the wait is over or its deadline passes.
 
@@ -120,6 +120,12 @@ Runs `body` as the only task of a loop of its own, to its end, and closes the lo
 
 The simplest way for tasks to tell each other something happened. `wait` waits for the next `notify`; `notify` wakes everyone waiting now, and may be called from anywhere, task or not, a host callback included.
 
+## net.spawn
+
+{{ api_signature(value="net.spawn(body: () -> (), name: string?) -> Task") }}
+
+In a task: starts another task on the same loop, as `Loop:spawn` does, for code that has a task but not its loop: a server starting a task per connection, a library fanning out work.
+
 ## net.wait
 
 {{ api_signature(value="net.wait(handle: dream_tcp_Watchable, interest: 'read' | 'write', deadline: number?) -> (boolean, WakeReason)") }}
@@ -133,6 +139,12 @@ Waits until a `@dream/tcp` listener or stream, a `@dream/tls` session, or a `@dr
 Resolves `host`, connects to the first address that accepts, and with `tls = true` runs the TLS handshake, verifying `serverName` (the host unless given) against `tlsConfig` (a `@dream/tls` client config; the platform's trust store unless given). `alpn` lists the protocols offered. `deadline` bounds the whole of it, and `bufferBytes` (1 MiB) the received bytes held for the reader.
 
 - **Errors:** returned, as the third value: `resolve`, `connect`, `tls` (the session failed or the certificate didn't verify), `timeout`, `cancelled`, `limitReached`. An option it doesn't take raises.
+
+## net.adopt
+
+{{ api_signature(value="net.adopt(stream: dream_tcp_Stream, options: { tls: dream_tls_Stream?, bufferBytes: number? }?) -> (Connection?, string?, ErrorKind?)") }}
+
+In a task: a `Connection` over a stream already open, such as one a `@dream/tcp` listener accepted, on the running task's loop. With `tls`, a `@dream/tls` session over `stream` whose handshake is done, the connection reads and writes through the session. It counts against the loop's `maxConnections` (`limitReached` past it), and its `host` and `port` are the peer's.
 
 ### Connection
 

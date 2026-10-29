@@ -1214,6 +1214,42 @@ local function newLoop(options: LoopOptions?): Loop
   return public
 end
 
+--- In a task: starts `body` as another task on the same loop, as `Loop:spawn` does.
+local function spawnHere(body: () -> (), name: string?): Task
+  local state = currentTask 'spawn'
+
+  return spawn(state.loop, body, name)
+end
+
+--- In a task: a connection over a stream already open, such as one a listener accepted, on the
+--- running task's loop. `tls` is a session over `stream` whose handshake the caller has finished;
+--- the connection then reads and writes through it. It counts against the loop's
+--- `maxConnections`, and its `host` and `port` are the peer's.
+local function adopt(
+  stream: dream_tcp_Stream,
+  options: { tls: dream_tls_Stream?, bufferBytes: number? }?
+): (Connection?, string?, ErrorKind?)
+  local task = currentTask 'adopt'
+  local settings: { tls: dream_tls_Stream?, bufferBytes: number? } = options or {}
+  for key in settings :: { [string]: unknown } do
+    if key ~= 'tls' and key ~= 'bufferBytes' then
+      error(`unknown {Name}.adopt option '{key}': expected tls, bufferBytes`, 0)
+    end
+  end
+
+  local bufferBytes = whole(settings.bufferBytes or DefaultBufferBytes, 1, 2 ^ 30, 'adopt', 'bufferBytes')
+  local loop = task.loop
+  if loop.connectionCount >= loop.maxConnections then
+    return nil, `the loop already holds {loop.maxConnections} connections, the most it allows`, 'limitReached'
+  end
+
+  loop.connectionCount += 1
+  local peer = stream.peerAddress
+  local host, port = string.match(peer, '^%[?(.-)%]?:(%d+)$')
+
+  return newConnection(loop, host or peer, tonumber(port) or 0, stream, settings.tls, bufferBytes), nil, nil
+end
+
 --- In a task: waits `milliseconds`. False when the task was cancelled first.
 local function sleep(milliseconds: number): boolean
   duration(milliseconds, 'sleep', 'milliseconds')
@@ -1261,4 +1297,6 @@ return table.freeze {
   signal = newSignal,
   wait = waitOn,
   connect = connect,
+  adopt = adopt,
+  spawn = spawnHere,
 }
