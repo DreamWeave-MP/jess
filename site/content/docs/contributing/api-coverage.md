@@ -33,7 +33,7 @@ This is a review map, not a promise that every listed function has been checked.
 
 ## CLI and distribution
 
-The [CLI reference](@/docs/cli/_index.md), [workspace reference](@/docs/cli/workspace.md), and [capabilities](@/docs/reference/capabilities.md) map to `src/cli/`, `src/main.rs`, `src/lua/stdlib/workspace.jsl`, and `tests/cli/`. A complete parser-to-reference audit, including exit statuses, flag placement, install behavior, and platform-specific standalone artifacts, remains open.
+The [CLI reference](@/docs/cli/_index.md), [workspace reference](@/docs/cli/workspace.md), and [capabilities](@/docs/reference/capabilities.md) map to `src/cli/`, `src/main.rs`, `src/lua/stdlib/workspace.jsl`, and `tests/cli/`. `tools/site/tests/cli-reference.jsl` compares the command tree and option names with the actual help and exercises trailing argument forwarding. A complete behavioral audit, including every exit path, install behavior, and platform-specific standalone artifact, remains open.
 
 The tutorial checks exercise a small set of complete paths. They do not replace the remaining API audit, browser and keyboard testing, or platform verification. For entries marked `checked`, the build verifies the generated signature and handwritten heading. For the catalog as a whole, the build also compares per-module fingerprints to a recorded baseline so a generated signature change requires review. A matching fingerprint does not establish the accuracy or completeness of behavioral prose.
 

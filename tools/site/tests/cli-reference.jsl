@@ -30,16 +30,44 @@ local Commands = {
   { args = { 'man' }, page = 'utility-commands' },
 }
 
+local function help(args: { string }): string
+  local request = table.clone(args)
+  table.insert(request, '--help')
+  local result, problem = process.run('jess', request, { stdout = 'capture', stderr = 'capture' })
+  if not result or not result.success then error(`CLI reference: help failed for {table.concat(request, ' ')}: {problem}`, 0) end
+  return result.stdout or ''
+end
+
+local function verifyCommands(parent: string?)
+  local output = help(if parent then { parent } else {})
+  local section = string.match(output, 'Commands:\n(.-)\nOptions:')
+  if not section then error('CLI reference: no command list in help', 0) end
+  local expected: { [string]: boolean } = {}
+  for _, command in Commands do
+    if parent and #command.args == 2 and command.args[1] == parent then expected[command.args[2]] = true end
+    if not parent and #command.args == 1 then expected[command.args[1]] = true end
+  end
+
+  for name in string.gmatch('\n' .. section, '\n  ([%l][%l%d%-]*)%s') do
+    if name == 'help' then continue end
+    if not expected[name] then error(`CLI reference: unmapped command {parent or 'jess'} {name}`, 0) end
+    expected[name] = nil
+  end
+
+  for name in expected do error(`CLI reference: obsolete command mapping {parent or 'jess'} {name}`, 0) end
+end
+
+verifyCommands(nil)
+verifyCommands 'package'
+verifyCommands 'workspace'
+
 for _, command in Commands do
-  local args = table.clone(command.args)
-  table.insert(args, '--help')
-  local result, problem = process.run('jess', args, { stdout = 'capture', stderr = 'capture' })
-  if not result or not result.success then error(`CLI reference: help failed for {table.concat(args, ' ')}: {problem}`, 0) end
+  local output = help(command.args)
   local path = `site/content/docs/cli/{command.page}.md`
   local documentation, readProblem = fs.readFileString(path)
   if not documentation then error(`CLI reference: cannot read {path}: {readProblem}`, 0) end
 
-  for option in string.gmatch(result.stdout or '', '%-%-[%l][%l%-]+') do
+  for option in string.gmatch(output, '%-%-[%l][%l%d%-]*') do
     if option == '--help' or option == '--version' or option == '--format' then continue end
 
     if not string.find(documentation, option, 1, true) then
@@ -64,4 +92,4 @@ if not denied or not denied.success then error(`CLI reference: HTTP denial test 
 
 assert(denied.stdout == 'denied\n', 'HTTP capability denial did not raise')
 
-print 'CLI help options are documented'
+print 'CLI help commands and options are documented'
