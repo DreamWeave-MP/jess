@@ -105,10 +105,10 @@ A name the table doesn't take is an error listing the ones it does, so `layer = 
 | `size` | `number` | Its size in bytes. |
 | `usage` | `{ GpuBufferUsage }` | What it is for, in the order `vertex`, `index`, `uniform`, `storage`, `indirect`. |
 | `write` | `(self, offset: number, bytes: buffer \| string, from: number?, length: number?) -> ()` | Copies `bytes` (or `length` of them from `from`) into the buffer at `offset`, at the next [commit](#commits). |
-| `read` | `(self, offset: number?, length: number?) -> buffer` | Waits for submitted work, and returns `length` bytes from `offset` as a new `buffer`. The offset defaults to zero and the length to the remainder. |
-| `readLater` | `(self, offset: number?, length: number?) -> GpuRead` | The same bytes, without waiting: a [read](#gpuread) the GPU fills once it has done everything submitted before it. |
+| `read` | `(self, offset: number?, length: number?) -> buffer` | Commits pending changes and returns `length` bytes from `offset` as a new `buffer`, waiting for submitted work when the length is nonzero. The offset defaults to zero and the length to the remainder. |
+| `readLater` | `(self, offset: number?, length: number?) -> GpuRead` | Commits pending changes and submits a copy without waiting for GPU completion; the [read](#gpuread) supplies the bytes when ready. |
 
-GPU offsets and transferred lengths are multiples of 4, and a range past the end is an error. The source `from` offset for `write` is zero-based, defaults to zero, and can be unaligned as long as the resulting transferred length is aligned; its `length` defaults to the remaining source bytes. `tostring(gpuBuffer)` is `GpuBuffer(16 bytes, vertex, storage)`.
+Offsets and lengths are whole numbers from 0 through 4,294,967,295. GPU offsets and transferred lengths must also be multiples of 4, and a range past the end is an error. The source `from` offset for `write` is zero-based, defaults to zero, and can be unaligned as long as the resulting transferred length is aligned; its `length` defaults to the remaining source bytes, capped at 4,294,967,295. `read` and `readLater` apply the same cap to their default length. An unaligned default is rejected, so specify an aligned length when the remaining range exceeds that cap. `tostring(gpuBuffer)` is `GpuBuffer(16 bytes, vertex, storage)`.
 
 ```luau
 --!strict
@@ -136,7 +136,7 @@ print(positions, buffer.readf32(back, 0), buffer.readstring(back, 4, 4), buffer.
 | `mips` | `number` | How many mip levels. |
 | `write` | `(self, bytes: buffer \| string, level: number?, layer: number?) -> ()` | Replaces every texel of mip `level` of `layer` (every slice, for a `3d` texture), rows packed tightly, top row first, at the next [commit](#commits). Both default to 0. |
 | `read` | `(self, level: number?, layer: number?) -> buffer` | Waits for everything submitted so far, and returns that level of that layer the way `write` takes it. |
-| `readLater` | `(self, level: number?, layer: number?) -> GpuRead` | The same, without waiting: a [read](#gpuread). |
+| `readLater` | `(self, level: number?, layer: number?) -> GpuRead` | Commits pending changes and submits a copy without waiting for GPU completion: a [read](#gpuread). |
 
 The bytes are exactly the level's: width × height × the format's texel size. A pass writes a depth texture; a script can't, and `depth24Plus`, whose layout is the backend's, can't be read back either. `tostring(texture)` is `GpuTexture(2×2 rgba8Unorm, 2dArray)`.
 
