@@ -65,11 +65,13 @@ One case. It passes when its `beforeEach` hooks, its body, and its `afterEach` h
 
 Hooks for every case in the current group and the groups inside it. `beforeEach` hooks run outermost first; `afterEach` hooks run innermost first, and they run even when setup or the body failed. Every failure is in the case's `error`, one traceback each.
 
+Within one group, hooks run in registration order. The first failing `beforeEach` stops the rest of setup and skips the case body; every registered `afterEach` still runs, including hooks in groups whose setup did not finish. A failing `afterEach` does not stop the remaining cleanup hooks.
+
 ### JessTestSuite.run
 
 {{ api_signature(value="suite.run() -> JessTestReport") }}
 
-Runs every case in registration order and returns `{ passed, failed, tests }`, each test a `{ name, passed, error, logs }`. Nothing is printed; that's the host's job. Cases can't be added while the suite runs.
+Runs every case in registration order and returns `{ passed, failed, tests }`, each test a `{ name, passed, error, logs }`. Nothing is printed; that's the host's job. Cases and hooks can't be added while the suite runs; calling `run` recursively or inside `describe` raises.
 
 ### test.expect
 
@@ -82,7 +84,7 @@ An assertion on `actual`. Each check raises with what it saw and what it wanted,
 | `toBe(expected)` | `rawequal(actual, expected)`. |
 | `toEqual(expected)` | Deep equality: same keys, values compared the same way, cycles handled. Tables only compare with tables; anything else is `rawequal`. |
 | `toBeTruthy()`, `toBeFalsy()`, `toBeNil()` | What they say. |
-| `toContain(item)` | `actual` is a string containing `item`, or a list with an element that `toEqual`s it. |
+| `toContain(item)` | `actual` is a string containing the literal string `item`, or a table with a value that `toEqual`s it. |
 | `toBeCloseTo(expected, tolerance?)` | `actual` is a number within `tolerance` (default `1e-9`) of `expected`, for floating-point results that needn't be exact. |
 | `toThrow(contains?)` | `actual` is a function that raises, and its message contains `contains` when given. The one place a test catches an error on purpose. |
 
