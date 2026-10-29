@@ -48,11 +48,13 @@ Every wait takes a **deadline**, a time on `net.now()`'s clock in milliseconds, 
 
 A wait that ends returns why: `ready` (or `notified` for a signal), `timeout`, `cancelled` (its task was cancelled), or `closed` (the handle it waited on was closed under it).
 
+Numbers are checked where they come in. A deadline that is NaN raises, as does a span of time that is negative or not finite (`sleep`, `step`, `run`), and a count that is negative, fractional or out of range (`maxConnections`, `maxTasks`, `bufferBytes`, a receive's count or offset): `jess.net.loop: maxTasks is a whole number from 1 to 16777216, not 1.5`. A NaN would never time out, and a negative count has no meaning anyone wants.
+
 ## net.loop
 
-{{ api_signature(value="net.loop(options: { maxConnections: number?, onError: ((task: Task, message: string) -> ())? }?) -> Loop") }}
+{{ api_signature(value="net.loop(options: { maxConnections: number?, maxTasks: number?, onError: ((task: Task, message: string) -> ())? }?) -> Loop") }}
 
-A loop with its own poller. `maxConnections` (256 unless given, at most 16384) bounds the connections open on it at once; `connect` past it fails with `limitReached` instead of exhausting the process's descriptors. `onError` gets each task that raised, instead of `step` raising.
+A loop with its own poller. `maxConnections` (256 unless given, at most 16384) bounds the connections open on it at once; `connect` past it fails with `limitReached` instead of exhausting the process's descriptors. `maxTasks` (65536 unless given) bounds the tasks alive on it at once; `spawn` past it raises. It bounds what the loop holds, not how fast work arrives: an application that spawns a task per incoming event still keeps its own bounded queue. `onError` gets each task that raised, instead of `step` raising.
 
 ### Loop:spawn
 

@@ -68,6 +68,9 @@ export type Loop = {
 export type LoopOptions = {
   --- Connections open at once; `connect` past it fails with `limitReached`. 256 unless given.
   maxConnections: number?,
+  --- Tasks alive at once; `spawn` past it raises. 65536 unless given. It bounds what a loop holds,
+  --- not how fast work arrives: a caller spawning a task per event still keeps its own queue.
+  maxTasks: number?,
   --- Called with each task that raised, instead of `step` raising.
   onError: ((task: Task, message: string) -> ())?,
 }
@@ -142,6 +145,7 @@ type LoopState = {
   public: Loop,
   poller: dream_tcp_Poller,
   maxConnections: number,
+  maxTasks: number,
   onError: ((task: Task, message: string) -> ())?,
   ready: { TaskState },
   deferred: { TaskState },
@@ -197,6 +201,9 @@ type ConnectionState = {
 
 local Name = 'jess.net'
 local DefaultMaxConnections = 256
+local DefaultMaxTasks = 65536
+--- The largest single receive or buffer a connection takes: 2 GiB.
+local MaxCount = 2 ^ 31
 local DefaultBufferBytes = 1024 * 1024
 local ReadChunk = 65536
 --- Rounds of woken tasks one step runs before it leaves the rest for the next step, so tasks
@@ -206,6 +213,24 @@ local MaxRoundsPerStep = 64
 local running: TaskState?
 
 local function now(): number return os.clock() * 1000 end
+
+--- `value` as a whole number from `low` to `high`, or an error naming `name` and the call.
+local function whole(value: number, low: number, high: number, what: string, name: string): number
+  if type(value) ~= 'number' or value ~= math.floor(value) or value < low or value > high then
+    error(`{Name}.{what}: {name} is a whole number from {low} to {high}, not {value}`, 0)
+  end
+
+  return value
+end
+
+--- `value` as a span of milliseconds: a finite number, not negative.
+local function duration(value: number, what: string, name: string): number
+  if type(value) ~= 'number' or value ~= value or value < 0 or value == math.huge then
+    error(`{Name}.{what}: {name} is a finite number of milliseconds, not {value}`, 0)
+  end
+
+  return value
+end
 
 --- The task running now, which a wait has to be made from.
 local function currentTask(what: string): TaskState
@@ -229,6 +254,10 @@ end
 
 --- Parks the running task until something wakes it or `deadline` passes.
 local function park(state: TaskState, deadline: number?): WakeReason
+  if deadline and (type(deadline) ~= 'number' or deadline ~= deadline) then
+    error(`{Name}: a deadline is a time on net.now()'s clock, not {deadline}`, 0)
+  end
+
   if state.cancelled then return 'cancelled' end
 
   state.waiting = true
@@ -489,6 +518,7 @@ end
 
 --- Waits until `count` bytes are held, consuming none of them.
 local function await(state: ConnectionState, count: number, deadline: number?, what: string): (boolean, string?, ErrorKind?)
+  whole(count, 0, MaxCount, what, 'count')
   claimReader(state, what)
   ensureCapacity(state, count)
 
@@ -523,6 +553,7 @@ local function peek(state: ConnectionState, count: number, deadline: number?): (
 end
 
 local function receiveSome(state: ConnectionState, maxBytes: number, deadline: number?): (string?, string?, ErrorKind?)
+  whole(maxBytes, 1, MaxCount, 'Connection:receiveSome', 'maxBytes')
   claimReader(state, 'Connection:receiveSome')
   if state.tail == state.head then
     local filled, problem, kind = fill(state, deadline)
@@ -543,6 +574,11 @@ local function receiveUntil(
   maxBytes: number,
   deadline: number?
 ): (string?, string?, ErrorKind?)
+  if type(delimiter) ~= 'string' or delimiter == '' then
+    error(`{Name}.Connection:receiveUntil: the delimiter is a string of at least one byte`, 0)
+  end
+
+  whole(maxBytes, 0, MaxCount, 'Connection:receiveUntil', 'maxBytes')
   claimReader(state, 'Connection:receiveUntil')
   local scanned = 0
 
@@ -580,6 +616,8 @@ local function receiveInto(
   count: number,
   deadline: number?
 ): (boolean, string?, ErrorKind?)
+  whole(offset, 0, buffer.len(target), 'Connection:receiveInto', 'offset')
+  whole(count, 0, buffer.len(target) - offset, 'Connection:receiveInto', 'count')
   claimReader(state, 'Connection:receiveInto')
   local copied = 0
 
@@ -898,6 +936,11 @@ local function connect(host: string, port: number, options: ConnectOptions?): (C
     end
   end
 
+  if type(host) ~= 'string' or host == '' then error(`{Name}.connect: the host is a name or an address`, 0) end
+
+  whole(port, 1, 65535, 'connect', 'port')
+  local bufferBytes = whole(settings.bufferBytes or DefaultBufferBytes, 1, 2 ^ 30, 'connect', 'bufferBytes')
+
   local loop = task.loop
   if loop.connectionCount >= loop.maxConnections then
     return nil, `the loop already holds {loop.maxConnections} connections, the most it allows`, 'limitReached'
@@ -930,8 +973,6 @@ local function connect(host: string, port: number, options: ConnectOptions?): (C
     secure = session
   end
 
-  local bufferBytes = settings.bufferBytes or DefaultBufferBytes
-
   return newConnection(loop, host, port, socket :: dream_tcp_Stream, secure, bufferBytes), nil, nil
 end
 
@@ -963,6 +1004,12 @@ end
 
 local function spawn(loop: LoopState, body: () -> (), name: string?): Task
   if loop.public.closed then error(`{Name}.Loop:spawn: the loop is closed`, 0) end
+
+  if type(body) ~= 'function' then error(`{Name}.Loop:spawn: a task's body is a function`, 0) end
+
+  if loop.liveCount >= loop.maxTasks then
+    error(`{Name}.Loop:spawn: the loop already runs {loop.maxTasks} tasks, the most it allows`, 0)
+  end
 
   local state: TaskState
   local public: Task = {
@@ -1009,6 +1056,8 @@ local function report(loop: LoopState)
 end
 
 local function step(loop: LoopState, waitMs: number?): number
+  if waitMs then duration(waitMs, 'Loop:step', 'waitMs') end
+
   if loop.public.closed then return 0 end
 
   if running and running.loop == loop then error(`{Name}.Loop:step: a task cannot step its own loop`, 0) end
@@ -1054,6 +1103,8 @@ local function step(loop: LoopState, waitMs: number?): number
 end
 
 local function run(loop: LoopState, timeoutMs: number?): boolean
+  if timeoutMs then duration(timeoutMs, 'Loop:run', 'timeoutMs') end
+
   local deadline = if timeoutMs then now() + timeoutMs else nil
 
   while loop.liveCount > 0 do
@@ -1097,15 +1148,13 @@ end
 local function newLoop(options: LoopOptions?): Loop
   local settings: LoopOptions = options or {}
   for key in settings :: { [string]: unknown } do
-    if not table.find({ 'maxConnections', 'onError' }, key) then
-      error(`unknown {Name}.loop option '{key}': expected maxConnections, onError`, 0)
+    if not table.find({ 'maxConnections', 'maxTasks', 'onError' }, key) then
+      error(`unknown {Name}.loop option '{key}': expected maxConnections, maxTasks, onError`, 0)
     end
   end
 
-  local maxConnections = settings.maxConnections or DefaultMaxConnections
-  if maxConnections < 1 or maxConnections > 16384 then
-    error(`{Name}.loop: maxConnections is from 1 to 16384, not {maxConnections}`, 0)
-  end
+  local maxConnections = whole(settings.maxConnections or DefaultMaxConnections, 1, 16384, 'loop', 'maxConnections')
+  local maxTasks = whole(settings.maxTasks or DefaultMaxTasks, 1, 2 ^ 24, 'loop', 'maxTasks')
 
   local state: LoopState
   local public: Loop = {
@@ -1128,6 +1177,7 @@ local function newLoop(options: LoopOptions?): Loop
     -- A connection being made also watches its name lookup, so the poller has room for both.
     poller = tcp.poller { maxWatches = maxConnections * 4, maxEvents = 1024, maxWaitMs = tcp.MAX_WAIT_MS },
     maxConnections = maxConnections,
+    maxTasks = maxTasks,
     onError = settings.onError,
     ready = {},
     deferred = {},
@@ -1148,6 +1198,7 @@ end
 
 --- In a task: waits `milliseconds`. False when the task was cancelled first.
 local function sleep(milliseconds: number): boolean
+  duration(milliseconds, 'sleep', 'milliseconds')
   local state = currentTask 'sleep'
 
   return park(state, now() + milliseconds) == 'timeout'
@@ -1167,6 +1218,8 @@ end
 --- or a command target uses this module's waits. True when the body returned; false and its error,
 --- or `timeout`.
 local function runAlone(body: () -> (), timeoutMs: number?): (boolean, string?)
+  if timeoutMs then duration(timeoutMs, 'run', 'timeoutMs') end
+
   local loop = newLoop { onError = function(_task: Task, _message: string) end }
   local task = loop:spawn(body, 'net.run')
   local finished = loop:run(timeoutMs)

@@ -149,6 +149,24 @@ local Redirects: { [number]: boolean } = { [301] = true, [302] = true, [303] = t
 --- `url` as a message may name it: up to its query, which is where some APIs put their keys.
 local function unqueried(url: string): string return string.match(url, '^[^?#]*') or '' end
 
+--- `value` as a whole number from `low` to `high`, or an error naming the option.
+local function whole(value: number, low: number, high: number, what: string, name: string): number
+  if type(value) ~= 'number' or value ~= math.floor(value) or value < low or value > high then
+    error(`{Name}.{what}: {name} is a whole number from {low} to {high}, not {value}`, 0)
+  end
+
+  return value
+end
+
+--- `value` as a span of milliseconds: finite and above zero.
+local function duration(value: number, what: string, name: string): number
+  if type(value) ~= 'number' or value ~= value or value <= 0 or value == math.huge then
+    error(`{Name}.{what}: {name} is a finite number of milliseconds above 0, not {value}`, 0)
+  end
+
+  return value
+end
+
 --- `url` taken apart, or nil and why. Only http and https, no user name or password, no fragment.
 --- A space, a control character, or a byte past ASCII outside the host is refused rather than
 --- encoded: the target goes on the request line as it is, and a line break there would be a
@@ -601,9 +619,9 @@ local function plan(url: string, options: Options, what: string): Plan
     method = method,
     headers = headers,
     body = body,
-    maxBytes = options.maxBytes or DefaultMaxBytes,
-    timeoutMs = options.timeoutMs or DefaultTimeoutMs,
-    maxRedirects = options.maxRedirects or DefaultMaxRedirects,
+    maxBytes = whole(options.maxBytes or DefaultMaxBytes, 0, 2 ^ 53, what, 'maxBytes'),
+    timeoutMs = duration(options.timeoutMs or DefaultTimeoutMs, what, 'timeoutMs'),
+    maxRedirects = whole(options.maxRedirects or DefaultMaxRedirects, 0, 20, what, 'maxRedirects'),
     crossOriginRedirects = crossOrigin,
     tls = options.tls,
   }
@@ -812,18 +830,20 @@ local function upgrade(spec: UpgradeRequest): (Response?, NetConnection?, string
     error(`{Name}.upgrade: the protocol is a token like 'websocket'`, 0)
   end
 
+  local maxBytes = whole(spec.maxBytes or DefaultMaxBytes, 0, 2 ^ 53, 'upgrade', 'maxBytes')
+  local timeoutMs = duration(spec.timeoutMs or DefaultTimeoutMs, 'upgrade', 'timeoutMs')
   local headers = checkHeaders(spec.headers, 'upgrade')
   headers.upgrade = protocol
   local parsed, problem, kind = parseUrl(spec.url)
   if not parsed then return nil, nil, problem, kind end
 
   local url = parsed :: Url
-  local deadline = net.now() + (spec.timeoutMs or DefaultTimeoutMs)
+  local deadline = net.now() + timeoutMs
   local connection, openProblem, openKind = open(url, 'GET', headers, nil, 'Upgrade', spec.tls, deadline)
   if not connection then return nil, nil, `{describe(url)}: {openProblem}`, openKind end
 
   local live = connection :: NetConnection
-  local head, body, receiveProblem, receiveKind = receive(live, 'GET', spec.maxBytes or DefaultMaxBytes, deadline)
+  local head, body, receiveProblem, receiveKind = receive(live, 'GET', maxBytes, deadline)
   if not head then
     live:close()
     return nil, nil, `{describe(url)}: {receiveProblem}`, receiveKind

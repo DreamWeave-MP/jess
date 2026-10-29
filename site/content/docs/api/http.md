@@ -41,7 +41,9 @@ of failure. A 404 is a response; a host that will not talk is a failure.
   and repeated fields joined with `, `. `body` is a `buffer`, empty after HEAD or a bodiless
   status. `url` is where the body came from and `redirects` every URL that answered with a
   redirect on the way.
-- **Errors:** returned, not raised, as the third value: `invalidUrl`, `unsupportedScheme` (only
+- **Errors:** returned, not raised, as the third value: `invalidUrl` (also for a space, a control
+  character, or a byte past ASCII outside the host: percent-encode them; the request line takes
+  the URL as it is), `unsupportedScheme` (only
   http and https, and never a redirect from https down to http), `credentialsInUrl`, `resolve`,
   `connect`, `tls` (the session failed, or the certificate didn't verify), `timeout`, `protocol`
   (a response that is not HTTP/1.x, or frames its body in a way that contradicts itself),
@@ -53,7 +55,8 @@ of failure. A 404 is a response; a host that will not talk is a failure.
   (`unknown jess.http.request option 'bodyy': expected method, headers, body, json, maxBytes, timeoutMs, maxRedirects, crossOriginRedirects, tls`),
   a field the client writes itself (`Host`, `Content-Length`, `Transfer-Encoding`, `Connection`,
   `Upgrade`), a field name that isn't a token or a value with a line break in it, a method that
-  isn't a token, and `body` with `json`.
+  isn't a token, `body` with `json`, and a number out of its range: `maxBytes` and `maxRedirects`
+  (0 to 20) are whole numbers, `timeoutMs` is finite and above 0.
 
 ```luau
 --!strict

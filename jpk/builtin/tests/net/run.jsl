@@ -153,6 +153,57 @@ suite.describe('@jess/net', function()
     expect(failed).toBe(false)
     expect(message).toBe 'inside'
   end)
+
+  suite.it('holds at most maxTasks live tasks, and room comes back as they end', function()
+    local loop = net.loop { maxTasks = 2 }
+    loop:spawn(function() net.sleep(5) end)
+    loop:spawn(function() net.sleep(5) end)
+    expect(function() loop:spawn(function() end) end).toThrow 'already runs 2 tasks'
+
+    settle(loop)
+    expect(loop:stats().tasks).toBe(0)
+    loop:spawn(function() end)
+    settle(loop)
+    loop:close()
+  end)
+
+  suite.it('runs ten thousand short tasks and is left holding none', function()
+    local loop = net.loop()
+    local finished = 0
+    for _ = 1, 10000 do
+      loop:spawn(function()
+        net.yield()
+        finished += 1
+      end)
+    end
+
+    local deadline = net.now() + 5000
+    while loop:step(0) > 0 and net.now() < deadline do
+    end
+
+    expect(finished).toBe(10000)
+    expect(loop:stats().tasks).toBe(0)
+    loop:close()
+  end)
+
+  suite.it('refuses numbers that are not counts or spans of time', function()
+    expect(function() net.loop { maxConnections = 0 / 0 } end).toThrow 'maxConnections is a whole number'
+    expect(function() net.loop { maxTasks = 1.5 } end).toThrow 'maxTasks is a whole number'
+    expect(function() net.loop { maxConnections = -1 } end).toThrow 'from 1 to 16384'
+
+    local loop = net.loop()
+    expect(function() loop:step(-1) end).toThrow 'finite number of milliseconds'
+    expect(function() loop:run(math.huge) end).toThrow 'finite number of milliseconds'
+    loop:close()
+
+    local finished, problem = net.run(function() net.sleep(0 / 0) end)
+    expect(finished).toBe(false)
+    expect(string.find(problem :: string, 'finite number of milliseconds', 1, true) ~= nil).toBe(true)
+
+    local signalled, deadlineProblem = net.run(function() net.signal():wait(0 / 0) end)
+    expect(signalled).toBe(false)
+    expect(string.find(deadlineProblem :: string, 'a deadline is a time', 1, true) ~= nil).toBe(true)
+  end)
 end)
 
 return suite

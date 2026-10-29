@@ -758,3 +758,27 @@ fn mangled_chunked_responses_come_back_as_responses_or_named_failures() {
     );
     assert!(started.elapsed() < Duration::from_secs(60), "{:?}", started.elapsed());
 }
+
+#[test]
+fn numbers_that_are_not_counts_or_spans_of_time_raise_before_anything_is_sent() {
+    let runtime = runtime();
+    for (options, expected) in [
+        ("{ maxBytes = -1 }", "maxBytes is a whole number from 0"),
+        ("{ maxBytes = 0 / 0 }", "maxBytes is a whole number"),
+        ("{ maxBytes = 1.5 }", "maxBytes is a whole number"),
+        ("{ timeoutMs = 0 }", "timeoutMs is a finite number of milliseconds above 0"),
+        ("{ timeoutMs = math.huge }", "timeoutMs is a finite number"),
+        ("{ timeoutMs = 0 / 0 }", "timeoutMs is a finite number"),
+        ("{ maxRedirects = 21 }", "maxRedirects is a whole number from 0 to 20"),
+        (
+            "{ crossOriginRedirects = 'sometimes' }",
+            "crossOriginRedirects is 'follow' or 'refuse'",
+        ),
+    ] {
+        let error = runtime
+            .eval::<()>(&format!("require('@jess/http').get('http://127.0.0.1:1/', {options})"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(expected), "{options}: {error}");
+    }
+}
