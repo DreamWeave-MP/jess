@@ -37,6 +37,8 @@ The [CLI reference](@/docs/cli/_index.md), [workspace reference](@/docs/cli/work
 
 The tutorial checks exercise a small set of complete paths. They do not replace the remaining API audit, browser and keyboard testing, or platform verification. For entries marked `checked`, the build verifies the generated signature and handwritten heading. Other entries are indexed without that signature check.
 
+A WebKit visual review covered the first application page at 1440 and 390 CSS pixels and the GPU reference at 390 pixels. The pages and navigation rendered at those widths; this is not a complete keyboard, assistive technology, browser, or platform audit.
+
 ## Executable coverage and restrictions
 
 The fixtures below are run or checked by `tools/site/tests/tutorials.jsl` unless another check is named. Paths are relative to the repository root. These examples cover representative paths, not every option or error in the corresponding reference.
