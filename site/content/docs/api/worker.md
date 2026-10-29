@@ -53,6 +53,8 @@ summer:join()
 
 A worker whose module does not load, does not return a function, or raises in its handler reports a structured failure to the host, attributed to the domain and worker, and (by default) stops; the domain is untouched. A worker's handler runs inside the budget the host gave it.
 
+A non-`nil` value returned by the handler is sent through the bounded reply channel after the handler finishes. That send can wait for the domain to receive replies when the channel is full. Drain replies while the worker runs, or call `join`, which drains and retains them as it waits. This differs from an explicit `jess.worker.send`, which refuses a full queue instead of waiting.
+
 ## Worker
 
 {{ api_signature(value="type Worker = { send, receive, close, join }") }}
@@ -61,7 +63,7 @@ A worker whose module does not load, does not return a function, or raises in it
 
 {{ api_signature(value="worker:send(message: unknown) -> ()") }}
 
-Queues a message for the worker's handler. Messages arrive in order. At most 1,024 wait for the handler at once: a domain that sends faster than its worker handles is told so, instead of queueing without bound.
+Copies and queues a message for the worker's handler. Messages arrive in order. At most 1,024 wait for the handler at once: a domain that sends faster than its worker handles is told so, instead of queueing without bound. Queue insertion does not wait for room, but copying a large message takes time and memory. The worker message queue is bounded by count, not by a fixed total payload-byte budget.
 
 Only transferable values cross: `nil`, booleans, numbers, integers, strings, vectors, buffers, resource handles, and tables of those with string or number keys, nested at most 32 deep. Other userdata, functions, and threads cannot cross. Anything else is an error naming where it was, and nothing is sent.
 
@@ -77,13 +79,13 @@ local reply = echo:receive(20)
 print(reply.name, buffer.tostring(reply.bytes), reply.at)
 ```
 
-A buffer arrives as a fresh buffer of the same bytes: writing the copy changes nothing on the other side.
+Tables and buffers arrive as fresh, mutable values: changing them does not change the sender's copy. Shared table identity is not preserved, and a cycle exceeds the nesting limit. A resource handle instead names the same native resource; the resource's own access and lifetime rules still apply.
 
 ### Worker:receive
 
 {{ api_signature(value="worker:receive(timeoutSeconds: number?) -> unknown") }}
 
-The worker's next reply, waiting up to `timeoutSeconds` for one; without a timeout it does not wait. The wait never outlasts the execution time limit of the code that waits: when the limit runs out first, the call is stopped with the limit's error, as a loop would be. `nil` when there is none in that time, or when the worker has ended with nothing left to say. A failure the worker reported comes back as an error, once.
+The worker's next reply, waiting up to `timeoutSeconds` for one; without a timeout it does not wait. A timeout must be finite and nonnegative. The wait never outlasts the execution time limit of the code that waits: when the limit runs out first, the call is stopped with the limit's error, as a loop would be. `nil` when there is none in that time, or when the worker has ended with nothing left to say. A failure the worker reported comes back as an error, once.
 
 - **Errors:** the worker's failure, as `<domain> <generation> <worker> (<module>) failed at <stage>: <message>`.
 
@@ -97,7 +99,7 @@ Asks the worker to stop after the messages already queued for it.
 
 {{ api_signature(value="worker:join(timeoutSeconds: number?) -> string") }}
 
-Closes the worker and waits for it to end, up to `timeoutSeconds` (without a timeout, as long as it takes), and never past the execution time limit of the code that waits, then returns its final state: `stopped` or `failed`. Replies it sent before ending stay readable through `receive`.
+Closes the worker and waits for it to end, up to `timeoutSeconds` (without a timeout, as long as it takes), and never past the execution time limit of the code that waits, then returns its final state: `stopped` or `failed`. A timeout must be finite and nonnegative. `join` drains replies while it waits and retains them for later `receive` calls; account for that memory when a worker produces many or large replies.
 
 - **Errors:** `<worker> did not answer in time`.
 
@@ -105,7 +107,7 @@ Closes the worker and waits for it to end, up to `timeoutSeconds` (without a tim
 
 {{ api_signature(value="jess.worker.send(message: unknown) -> ()") }}
 
-From inside a worker: sends a message to the domain, besides what the handler returns. For progress, or for more than one reply per message. It never waits: at most 1,024 messages wait for the domain to receive them, and a send past that fails, so a handler that floods a domain that isn't receiving finds out instead of stalling.
+From inside a worker: sends a message to the domain, besides what the handler returns. For progress, or for more than one reply per message. Queue insertion does not wait: at most 1,024 messages wait for the domain to receive them, and a send past that fails. Copying the message itself still takes time and memory. If the domain has stopped listening, this explicit send is dropped without an error.
 
 - **Errors:** in a domain's own code, `worker.send is for a worker's own code; a domain sends through the handle worker.spawn returned`; `jess.worker.send: the domain's queue is full: 1024 messages wait for it to receive them; send fewer, or reply less often`.
 
