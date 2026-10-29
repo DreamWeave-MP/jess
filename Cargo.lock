@@ -1387,9 +1387,9 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "l3i"
-version = "2.3.0"
+version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf269c99ff9f44f4cccb54a1cd2fb38c3289aace87413ff12a16fd76d7c5abc0"
+checksum = "5729079e30ba69713182e3d3f2fbedcf44df158053cdeabace09125889a7a1c4"
 dependencies = [
  "adler2",
  "blake3",
@@ -1413,6 +1413,7 @@ dependencies = [
  "mio",
  "nanomp3",
  "regex",
+ "ring",
  "rustls",
  "rustls-platform-verifier",
  "ruzstd",

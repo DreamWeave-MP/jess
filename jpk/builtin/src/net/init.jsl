@@ -1,0 +1,1325 @@
+--!strict
+-- @jess/net: network I/O for code that has to keep running while it waits. A loop owns one
+-- @dream/tcp poller; tasks are coroutines on it, and every wait a task makes (on a socket, a name
+-- lookup, a timer, a signal, another task) yields to the loop instead of stopping the runtime. An
+-- application steps its loop from a host callback without waiting; a script runs one to the end.
+-- It holds no authority of its own: resolving needs network.dns.resolve and connecting needs
+-- network.tcp.connect, both the runtime's to grant.
+local dns = require '@dream/dns'
+local tcp = require '@dream/tcp'
+local tls = require '@dream/tls'
+
+export type ErrorKind =
+  'resolve'
+  | 'connect'
+  | 'tls'
+  | 'timeout'
+  | 'closed'
+  | 'truncated'
+  | 'cancelled'
+  | 'limitReached'
+
+--- Why a wait ended: what it waited for happened (`ready`, or `notified` for a signal), its
+--- deadline passed, its task was cancelled, or the handle it waited on was closed under it.
+export type WakeReason = 'ready' | 'notified' | 'timeout' | 'cancelled' | 'closed'
+
+export type TaskStatus = 'running' | 'done' | 'failed' | 'cancelled'
+
+export type Task = {
+  name: string,
+  --- `running` until the body returns (`done`), raises (`failed`) or ends cancelled.
+  status: TaskStatus,
+  --- What a failed task raised.
+  error: string?,
+  --- Asks the task to stop: its current and every later wait ends with `cancelled`. A task that
+  --- has not started yet never starts.
+  cancel: (self: Task) -> (),
+  --- From another task: waits until this one ends. True when it ended `done`; otherwise false and
+  --- its error, or why the wait ended first.
+  join: (self: Task, deadline: number?) -> (boolean, string?),
+}
+
+export type Stats = {
+  --- Tasks not yet ended.
+  tasks: number,
+  --- Connections opened on the loop and not yet closed.
+  connections: number,
+  --- Handles the loop's poller is watching right now, for tasks waiting on them.
+  watching: number,
+}
+
+export type Loop = {
+  --- Starts `body` as a task. It first runs at the loop's next step.
+  spawn: (self: Loop, body: () -> (), name: string?) -> Task,
+  --- Runs every task that can run, waiting at most `waitMs` (0 unless given) for a socket or a
+  --- deadline when none can. Returns how many tasks are left. A task that raised is reported here:
+  --- to `onError` when the loop has one, and otherwise by raising once the step is done.
+  step: (self: Loop, waitMs: number?) -> number,
+  --- Steps until no task is left, or `timeoutMs` passes; true when the tasks all ended.
+  run: (self: Loop, timeoutMs: number?) -> boolean,
+  --- Cancels every task, lets each run once to clean up, abandons any still going, and closes
+  --- every connection and the poller. From outside the loop's tasks only. Closing twice does
+  --- nothing.
+  close: (self: Loop) -> (),
+  stats: (self: Loop) -> Stats,
+  closed: boolean,
+}
+
+export type LoopOptions = {
+  --- Connections open at once; `connect` past it fails with `limitReached`. 256 unless given.
+  maxConnections: number?,
+  --- Tasks alive at once; `spawn` past it raises. 65536 unless given. It bounds what a loop holds,
+  --- not how fast work arrives: a caller spawning a task per event still keeps its own queue.
+  maxTasks: number?,
+  --- Called with each task that raised, instead of `step` raising.
+  onError: ((task: Task, message: string) -> ())?,
+}
+
+export type Signal = {
+  --- Wakes every task waiting on the signal now. Callable from anywhere, task or not.
+  notify: (self: Signal) -> (),
+  --- In a task: waits for the next `notify`. True when notified, otherwise false and why not.
+  wait: (self: Signal, deadline: number?) -> (boolean, WakeReason),
+}
+
+export type ConnectOptions = {
+  --- TLS over the connection, verifying `serverName` (the host unless given).
+  tls: boolean?,
+  serverName: string?,
+  --- A @dream/tls client config; the platform's trust store unless given.
+  tlsConfig: dream_tls_ClientConfig?,
+  alpn: { string }?,
+  --- When resolving, connecting and the TLS handshake must be done, on `net.now()`'s clock.
+  deadline: number?,
+  --- The most received bytes held for the reader at once. 1 MiB unless given; a single
+  --- `receive` of more grows past it for that call.
+  bufferBytes: number?,
+}
+
+export type Connection = {
+  host: string,
+  port: number,
+  secure: boolean,
+  --- The protocol TLS negotiated, if any.
+  alpn: string?,
+  peerAddress: string,
+  closed: boolean,
+  --- Exactly `count` bytes, waiting for them as needed.
+  receive: (self: Connection, count: number, deadline: number?) -> (string?, string?, ErrorKind?),
+  --- The next `count` bytes, waiting for them as needed, left in place for the next receive: a
+  --- protocol reads a whole unit before it consumes any of it, so a timeout part way through
+  --- leaves the stream where it was.
+  peek: (self: Connection, count: number, deadline: number?) -> (string?, string?, ErrorKind?),
+  --- Between 1 and `maxBytes` bytes: what is held already, or the next that arrive.
+  receiveSome: (self: Connection, maxBytes: number, deadline: number?) -> (string?, string?, ErrorKind?),
+  --- The bytes up to `delimiter`, which is consumed and not returned. More than `maxBytes` before
+  --- it is `limitReached`.
+  receiveUntil: (
+    self: Connection,
+    delimiter: string,
+    maxBytes: number,
+    deadline: number?
+  ) -> (string?, string?, ErrorKind?),
+  --- Exactly `count` bytes into `target` at `offset`, without making a string of them.
+  receiveInto: (
+    self: Connection,
+    target: buffer,
+    offset: number,
+    count: number,
+    deadline: number?
+  ) -> (boolean, string?, ErrorKind?),
+  --- Received bytes not yet taken.
+  buffered: (self: Connection) -> number,
+  --- Whether the connection is open and quiet: nobody is receiving or sending on it, nothing is
+  --- held unread, and a read that does not wait finds nothing either. A pool asks before it reuses
+  --- one: a peer that closed it, or sent something nobody asked for, makes it false. Never waits.
+  idle: (self: Connection) -> boolean,
+  --- Sends every byte of `data`, or fails. Sends from several tasks never interleave: each waits
+  --- for the one before it, and a send waits, without holding memory of its own, until the socket
+  --- takes the bytes.
+  send: (self: Connection, data: string | buffer, deadline: number?) -> (boolean, string?, ErrorKind?),
+  --- Closes the connection at once; a task waiting on it wakes with `closed`. A TLS session sends
+  --- close_notify first, as far as the socket takes it. Closing twice does nothing.
+  close: (self: Connection) -> (),
+}
+
+type Interest = 'read' | 'write'
+
+type LoopState = {
+  public: Loop,
+  poller: dream_tcp_Poller,
+  maxConnections: number,
+  maxTasks: number,
+  onError: ((task: Task, message: string) -> ())?,
+  ready: { TaskState },
+  deferred: { TaskState },
+  parked: { [TaskState]: boolean },
+  live: { [TaskState]: boolean },
+  liveCount: number,
+  watches: { [number]: Watch },
+  byHandle: { [dream_tcp_Watchable]: Watch },
+  freeTokens: { number },
+  nextToken: number,
+  connections: { [ConnectionState]: boolean },
+  connectionCount: number,
+  failures: { TaskState },
+}
+
+type TaskState = {
+  public: Task,
+  loop: LoopState,
+  thread: thread,
+  started: boolean,
+  cancelled: boolean,
+  waiting: boolean,
+  deadline: number?,
+  reason: WakeReason?,
+  joiners: { TaskState },
+}
+
+type Watch = {
+  token: number,
+  handle: dream_tcp_Watchable,
+  reader: TaskState?,
+  writer: TaskState?,
+}
+
+--- A plain or TLS stream, through the operations both have; their error kinds differ, so the
+--- kind is a string here and each caller names what it means.
+type ConnectionState = {
+  public: Connection,
+  loop: LoopState,
+  handle: dream_tcp_Watchable,
+  readInto: (target: buffer, offset: number) -> (number?, string?, string?),
+  write: (data: string | buffer, offset: number, length: number) -> (number?, string?, string?),
+  closeStream: () -> (),
+  secure: dream_tls_Stream?,
+  inbox: buffer,
+  head: number,
+  tail: number,
+  bufferBytes: number,
+  reader: TaskState?,
+  sender: TaskState?,
+  sendDone: Signal,
+}
+
+local Name = 'jess.net'
+local DefaultMaxConnections = 256
+local DefaultMaxTasks = 65536
+--- The largest single receive or buffer a connection takes: 2 GiB.
+local MaxCount = 2 ^ 31
+local DefaultBufferBytes = 1024 * 1024
+local ReadChunk = 65536
+--- Rounds of woken tasks one step runs before it leaves the rest for the next step, so tasks
+--- that keep waking each other cannot hold a frame forever.
+local MaxRoundsPerStep = 64
+
+local running: TaskState?
+--- The loop watching each handle a task waits on, so the handle can be released from anywhere.
+local watchers: { [dream_tcp_Watchable]: LoopState } = {}
+
+local function now(): number return os.clock() * 1000 end
+
+--- `value` as a whole number from `low` to `high`, or an error naming `name` and the call.
+local function whole(value: number, low: number, high: number, what: string, name: string): number
+  if type(value) ~= 'number' or value ~= math.floor(value) or value < low or value > high then
+    error(`{Name}.{what}: {name} is a whole number from {low} to {high}, not {value}`, 0)
+  end
+
+  return value
+end
+
+--- `value` as a span of milliseconds: a finite number, not negative.
+local function duration(value: number, what: string, name: string): number
+  if type(value) ~= 'number' or value ~= value or value < 0 or value == math.huge then
+    error(`{Name}.{what}: {name} is a finite number of milliseconds, not {value}`, 0)
+  end
+
+  return value
+end
+
+--- The task running now, which a wait has to be made from.
+local function currentTask(what: string): TaskState
+  local state = running
+  if not state then error(`{Name}.{what}: waits happen in a task; spawn one on a loop, or use net.run`, 0) end
+
+  if coroutine.running() ~= state.thread then
+    error(`{Name}.{what}: waits happen on a task's own thread, not a coroutine it made`, 0)
+  end
+
+  return state
+end
+
+local function wake(state: TaskState, reason: WakeReason)
+  if not state.waiting then return end
+
+  state.waiting = false
+  state.reason = reason
+  table.insert(state.loop.ready, state)
+end
+
+--- Parks the running task until something wakes it or `deadline` passes.
+local function park(state: TaskState, deadline: number?): WakeReason
+  if deadline and (type(deadline) ~= 'number' or deadline ~= deadline) then
+    error(`{Name}: a deadline is a time on net.now()'s clock, not {deadline}`, 0)
+  end
+
+  if state.cancelled then return 'cancelled' end
+
+  state.waiting = true
+  state.deadline = deadline
+  state.reason = nil
+  state.loop.parked[state] = true
+  coroutine.yield()
+  state.loop.parked[state] = nil
+
+  return state.reason or 'ready'
+end
+
+local function finish(state: TaskState, status: TaskStatus, problem: string?)
+  local loop = state.loop
+  if not loop.live[state] then return end
+
+  loop.live[state] = nil
+  loop.liveCount -= 1
+  state.public.status = status
+  state.public.error = problem
+  if status == 'failed' then table.insert(loop.failures, state) end
+
+  local joiners = state.joiners
+  state.joiners = {}
+  for _, joiner in joiners do
+    wake(joiner, 'notified')
+  end
+end
+
+local function resume(state: TaskState)
+  if not state.started and state.cancelled then
+    finish(state, 'cancelled', nil)
+    return
+  end
+
+  state.started = true
+  local previous = running
+  running = state
+  local resumed, problem = coroutine.resume(state.thread)
+  running = previous
+
+  if not resumed then
+    finish(state, 'failed', tostring(problem))
+    return
+  end
+
+  if coroutine.status(state.thread) == 'dead' then
+    finish(state, if state.cancelled then 'cancelled' else 'done', nil)
+    return
+  end
+
+  -- A bare coroutine.yield in a task is a yield to the loop: it runs again next step.
+  if not state.waiting then
+    state.waiting = true
+    table.insert(state.loop.deferred, state)
+  end
+end
+
+local function runReady(loop: LoopState)
+  for _ = 1, MaxRoundsPerStep do
+    if #loop.ready == 0 then return end
+
+    local batch = loop.ready
+    loop.ready = {}
+    for _, state in batch do
+      resume(state)
+    end
+  end
+end
+
+local function interestOf(watch: Watch): dream_tcp_Interest
+  if watch.reader and watch.writer then return 'readwrite' end
+
+  return if watch.writer then 'write' else 'read'
+end
+
+local function forget(loop: LoopState, watch: Watch)
+  if loop.watches[watch.token] ~= watch then return end
+
+  loop.poller:unwatch(watch.token)
+  loop.watches[watch.token] = nil
+  loop.byHandle[watch.handle] = nil
+  watchers[watch.handle] = nil
+  table.insert(loop.freeTokens, watch.token)
+end
+
+--- Waits in the running task until `handle` is ready for `interest`. One task at a time may wait
+--- to read a handle and one to write it.
+local function waitOn(handle: dream_tcp_Watchable, interest: Interest, deadline: number?): (boolean, WakeReason)
+  local state = currentTask 'wait'
+  if state.cancelled then return false, 'cancelled' end
+
+  local loop = state.loop
+  -- A handle belongs to the one loop that watches it: two pollers over one handle would each think
+  -- the readiness theirs, and releasing it could reach only one of them.
+  local owner = watchers[handle]
+  if owner and owner ~= loop then
+    error(`{Name}.wait: another loop is already waiting on this handle; a handle is waited on from one loop`, 0)
+  end
+
+  local watch = loop.byHandle[handle]
+  if not watch then
+    local token = table.remove(loop.freeTokens) or loop.nextToken
+    if token == loop.nextToken then loop.nextToken += 1 end
+
+    local watched = loop.poller:watch(handle, token, interest)
+    if not watched then
+      table.insert(loop.freeTokens, token)
+      return false, 'closed'
+    end
+
+    local created: Watch = { token = token, handle = handle }
+    watch = created
+    loop.watches[token] = watch
+    loop.byHandle[handle] = watch
+    watchers[handle] = loop
+  end
+
+  local current = watch :: Watch
+  if interest == 'read' then
+    if current.reader then error(`{Name}.wait: another task is already waiting to read this handle`, 0) end
+
+    current.reader = state
+  else
+    if current.writer then error(`{Name}.wait: another task is already waiting to write this handle`, 0) end
+
+    current.writer = state
+  end
+
+  loop.poller:modify(current.token, interestOf(current))
+  local reason = park(state, deadline)
+
+  if current.reader == state then current.reader = nil end
+  if current.writer == state then current.writer = nil end
+
+  if loop.watches[current.token] == current then
+    if current.reader or current.writer then
+      loop.poller:modify(current.token, interestOf(current))
+    else
+      forget(loop, current)
+    end
+  end
+
+  return reason == 'ready', reason
+end
+
+--- Wakes whoever waits on `handle`, with `closed`, and stops watching it.
+local function release(loop: LoopState, handle: dream_tcp_Watchable)
+  local watch = loop.byHandle[handle]
+  if not watch then return end
+
+  forget(loop, watch)
+  if watch.reader then wake(watch.reader, 'closed') end
+  if watch.writer then wake(watch.writer, 'closed') end
+end
+
+local function newSignal(): Signal
+  local waiters: { TaskState } = {}
+
+  return {
+    notify = function(_self: Signal)
+      local waiting = waiters
+      waiters = {}
+      for _, state in waiting do
+        wake(state, 'notified')
+      end
+    end,
+
+    wait = function(_self: Signal, deadline: number?): (boolean, WakeReason)
+      local state = currentTask 'Signal:wait'
+      if state.cancelled then return false, 'cancelled' end
+
+      table.insert(waiters, state)
+      local reason = park(state, deadline)
+      local at = table.find(waiters, state)
+      if at then table.remove(waiters, at) end
+
+      return reason == 'notified', reason
+    end,
+  }
+end
+
+local function failureMessage(reason: WakeReason, doing: string): (string, ErrorKind)
+  if reason == 'timeout' then return `{doing} took longer than the time allowed`, 'timeout' end
+  if reason == 'cancelled' then return `{doing} was cancelled`, 'cancelled' end
+
+  return `{doing} stopped: the connection was closed`, 'closed'
+end
+
+--- Reads what the socket has into the inbox, waiting for something if it has nothing.
+local function fill(state: ConnectionState, deadline: number?): (boolean, string?, ErrorKind?)
+  if state.public.closed then return false, 'the connection is closed', 'closed' end
+
+  if state.tail == buffer.len(state.inbox) then
+    local held = state.tail - state.head
+    local capacity = buffer.len(state.inbox)
+    if state.head == 0 then capacity *= 2 end
+
+    local target = if capacity == buffer.len(state.inbox) then state.inbox else buffer.create(capacity)
+    buffer.copy(target, 0, state.inbox, state.head, held)
+    state.inbox, state.head, state.tail = target, 0, held
+  end
+
+  while true do
+    local count, message, kind = state.readInto(state.inbox, state.tail)
+    if count == 0 then return false, 'the peer closed the connection', 'closed' end
+
+    if count then
+      state.tail += count
+      return true, nil, nil
+    end
+
+    if kind == 'truncated' then return false, 'the connection ended without TLS close_notify', 'truncated' end
+    if kind ~= 'wouldBlock' then return false, `receiving failed: {message}`, 'closed' end
+
+    local ready, reason = waitOn(state.handle, 'read', deadline)
+    if not ready then
+      local problem, failure = failureMessage(reason, 'receiving')
+      return false, problem, failure
+    end
+  end
+end
+
+--- Claims the connection for the running task's receive; two tasks receiving on one connection
+--- at once is a mistake in the caller.
+local function claimReader(state: ConnectionState, what: string)
+  local task = currentTask(what)
+  if state.reader and state.reader ~= task then
+    error(`{Name}.{what}: another task is already receiving on this connection`, 0)
+  end
+
+  state.reader = task
+end
+
+local function take(state: ConnectionState, count: number): string
+  local text = buffer.readstring(state.inbox, state.head, count)
+  state.head += count
+  if state.head == state.tail then state.head, state.tail = 0, 0 end
+
+  return text
+end
+
+--- Room for `count` bytes from the read position on.
+local function ensureCapacity(state: ConnectionState, count: number)
+  if buffer.len(state.inbox) - state.head >= count then return end
+
+  local capacity = buffer.len(state.inbox)
+  while capacity < count do
+    capacity *= 2
+  end
+
+  local held = state.tail - state.head
+  local target = buffer.create(capacity)
+  buffer.copy(target, 0, state.inbox, state.head, held)
+  state.inbox, state.head, state.tail = target, 0, held
+end
+
+--- Back to the configured size once a large receive is done with the extra room.
+local function shrink(state: ConnectionState)
+  local held = state.tail - state.head
+  if buffer.len(state.inbox) <= state.bufferBytes or held > state.bufferBytes then return end
+
+  local target = buffer.create(state.bufferBytes)
+  buffer.copy(target, 0, state.inbox, state.head, held)
+  state.inbox, state.head, state.tail = target, 0, held
+end
+
+--- Waits until `count` bytes are held, consuming none of them.
+local function await(state: ConnectionState, count: number, deadline: number?, what: string): (boolean, string?, ErrorKind?)
+  whole(count, 0, MaxCount, what, 'count')
+  claimReader(state, what)
+  ensureCapacity(state, count)
+
+  while state.tail - state.head < count do
+    local filled, problem, kind = fill(state, deadline)
+    if not filled then
+      state.reader = nil
+      return false, problem, kind
+    end
+  end
+
+  state.reader = nil
+
+  return true, nil, nil
+end
+
+local function receive(state: ConnectionState, count: number, deadline: number?): (string?, string?, ErrorKind?)
+  local held, problem, kind = await(state, count, deadline, 'Connection:receive')
+  if not held then return nil, problem, kind end
+
+  local text = take(state, count)
+  shrink(state)
+
+  return text, nil, nil
+end
+
+local function peek(state: ConnectionState, count: number, deadline: number?): (string?, string?, ErrorKind?)
+  local held, problem, kind = await(state, count, deadline, 'Connection:peek')
+  if not held then return nil, problem, kind end
+
+  return buffer.readstring(state.inbox, state.head, count), nil, nil
+end
+
+local function receiveSome(state: ConnectionState, maxBytes: number, deadline: number?): (string?, string?, ErrorKind?)
+  whole(maxBytes, 1, MaxCount, 'Connection:receiveSome', 'maxBytes')
+  claimReader(state, 'Connection:receiveSome')
+  if state.tail == state.head then
+    local filled, problem, kind = fill(state, deadline)
+    if not filled then
+      state.reader = nil
+      return nil, problem, kind
+    end
+  end
+
+  state.reader = nil
+
+  return take(state, math.min(maxBytes, state.tail - state.head)), nil, nil
+end
+
+local function receiveUntil(
+  state: ConnectionState,
+  delimiter: string,
+  maxBytes: number,
+  deadline: number?
+): (string?, string?, ErrorKind?)
+  if type(delimiter) ~= 'string' or delimiter == '' then
+    error(`{Name}.Connection:receiveUntil: the delimiter is a string of at least one byte`, 0)
+  end
+
+  whole(maxBytes, 0, MaxCount, 'Connection:receiveUntil', 'maxBytes')
+  claimReader(state, 'Connection:receiveUntil')
+  local scanned = 0
+
+  while true do
+    local held = state.tail - state.head
+    local window = buffer.readstring(state.inbox, state.head, math.min(held, maxBytes + #delimiter))
+    local found = string.find(window, delimiter, math.max(1, scanned - #delimiter + 2), true)
+    if found then
+      state.reader = nil
+      local text = take(state, found - 1)
+      take(state, #delimiter)
+      shrink(state)
+
+      return text, nil, nil
+    end
+
+    if held >= maxBytes + #delimiter then
+      state.reader = nil
+      return nil, `more than {maxBytes} bytes arrived without the delimiter`, 'limitReached'
+    end
+
+    scanned = #window
+    local filled, problem, kind = fill(state, deadline)
+    if not filled then
+      state.reader = nil
+      return nil, problem, kind
+    end
+  end
+end
+
+local function receiveInto(
+  state: ConnectionState,
+  target: buffer,
+  offset: number,
+  count: number,
+  deadline: number?
+): (boolean, string?, ErrorKind?)
+  whole(offset, 0, buffer.len(target), 'Connection:receiveInto', 'offset')
+  whole(count, 0, buffer.len(target) - offset, 'Connection:receiveInto', 'count')
+  claimReader(state, 'Connection:receiveInto')
+  local copied = 0
+
+  while copied < count do
+    if state.tail == state.head then
+      local filled, problem, kind = fill(state, deadline)
+      if not filled then
+        state.reader = nil
+        return false, problem, kind
+      end
+    end
+
+    local piece = math.min(count - copied, state.tail - state.head)
+    buffer.copy(target, offset + copied, state.inbox, state.head, piece)
+    state.head += piece
+    copied += piece
+    if state.head == state.tail then state.head, state.tail = 0, 0 end
+  end
+
+  state.reader = nil
+
+  return true, nil, nil
+end
+
+local function flushSecure(state: ConnectionState, secure: dream_tls_Stream, deadline: number?): (boolean, string?, ErrorKind?)
+  while true do
+    local flushed, message = secure:flush()
+    if flushed then return true, nil, nil end
+
+    if flushed == nil then return false, `sending failed: {message}`, 'closed' end
+
+    local ready, reason = waitOn(secure, 'write', deadline)
+    if not ready then
+      local problem, failure = failureMessage(reason, 'sending')
+      return false, problem, failure
+    end
+  end
+end
+
+local function writeAll(state: ConnectionState, data: string | buffer, deadline: number?): (boolean, string?, ErrorKind?)
+  local length = if type(data) == 'string' then #data else buffer.len(data)
+  local offset = 0
+
+  while offset < length do
+    local wrote, message, kind = state.write(data, offset, length - offset)
+    if wrote then
+      offset += wrote
+      continue
+    end
+
+    if kind ~= 'wouldBlock' then return false, `sending failed: {message}`, 'closed' end
+
+    -- A full TLS send buffer drains only through flush; a full socket waits to be writable.
+    local secure = state.secure
+    if secure then
+      local flushed, problem, failure = flushSecure(state, secure, deadline)
+      if not flushed then return false, problem, failure end
+
+      continue
+    end
+
+    local ready, reason = waitOn(state.handle, 'write', deadline)
+    if not ready then
+      local problem, failure = failureMessage(reason, 'sending')
+      return false, problem, failure
+    end
+  end
+
+  local secure = state.secure
+  if secure then return flushSecure(state, secure, deadline) end
+
+  return true, nil, nil
+end
+
+local function send(state: ConnectionState, data: string | buffer, deadline: number?): (boolean, string?, ErrorKind?)
+  local task = currentTask 'Connection:send'
+
+  while state.sender do
+    if state.public.closed then return false, 'the connection is closed', 'closed' end
+
+    local notified, reason = state.sendDone:wait(deadline)
+    if not notified then
+      local problem, failure = failureMessage(reason, 'waiting to send')
+      return false, problem, failure
+    end
+  end
+
+  if state.public.closed then return false, 'the connection is closed', 'closed' end
+
+  state.sender = task
+  local sent, problem, kind = writeAll(state, data, deadline)
+  state.sender = nil
+  state.sendDone:notify()
+
+  return sent, problem, kind
+end
+
+--- See `Connection.idle`.
+local function isIdle(state: ConnectionState): boolean
+  if state.public.closed or state.reader or state.sender or state.tail > state.head then return false end
+
+  state.head, state.tail = 0, 0
+  local count, _, kind = state.readInto(state.inbox, 0)
+  if count == nil and kind == 'wouldBlock' then return true end
+
+  if count and count > 0 then state.tail = count end
+
+  return false
+end
+
+local function closeConnection(state: ConnectionState)
+  if state.public.closed then return end
+
+  state.public.closed = true
+  local loop = state.loop
+  if loop.connections[state] then
+    loop.connections[state] = nil
+    loop.connectionCount -= 1
+  end
+
+  release(loop, state.handle)
+  if state.secure then state.secure:shutdown 'write' end
+
+  state.closeStream()
+  state.sendDone:notify()
+end
+
+--- `host` resolved: the addresses, or why not.
+local function resolve(host: string, port: number, deadline: number?): ({ string }?, string?, ErrorKind?)
+  local remaining = if deadline then deadline - now() else dns.MAX_TIMEOUT_MS
+  local timeout = math.floor(math.clamp(remaining, 1, dns.MAX_TIMEOUT_MS))
+  local request, message = dns.resolve(host, port, { timeoutMs = timeout })
+  if not request then return nil, `could not resolve {host}: {message}`, 'resolve' end
+
+  local lookup = request :: dream_dns_Request
+  while lookup.status == 'pending' do
+    local ready, reason = waitOn(lookup, 'read', deadline)
+    if ready then continue end
+
+    lookup:close()
+    local problem, failure = failureMessage(reason, `resolving {host}`)
+
+    return nil, problem, failure
+  end
+
+  local addresses, problem, kind = lookup:take()
+  lookup:close()
+  if not addresses then
+    return nil, `could not resolve {host}: {problem}`, if kind == 'timedOut' then 'timeout' else 'resolve'
+  end
+
+  return addresses, nil, nil
+end
+
+--- One TCP connection to the first of `addresses` that accepts.
+local function connectAny(addresses: { string }, deadline: number?): (dream_tcp_Stream?, string?, ErrorKind?)
+  local lastProblem = 'no address to connect to'
+  for _, address in addresses do
+    local stream, message = tcp.connect(address, { noDelay = true })
+    if not stream then
+      lastProblem = `{address}: {message}`
+      continue
+    end
+
+    local socket = stream :: dream_tcp_Stream
+    local connected, problem = socket:finishConnect()
+    while connected == false do
+      local ready, reason = waitOn(socket, 'write', deadline)
+      if not ready then
+        socket:close()
+        local failure, kind = failureMessage(reason, `connecting to {address}`)
+        return nil, failure, kind
+      end
+
+      connected, problem = socket:finishConnect()
+    end
+
+    if connected then return socket, nil, nil end
+
+    socket:close()
+    lastProblem = `{address}: {problem}`
+  end
+
+  return nil, lastProblem, 'connect'
+end
+
+local function handshake(
+  socket: dream_tcp_Stream,
+  serverName: string,
+  options: ConnectOptions,
+  deadline: number?
+): (dream_tls_Stream?, string?, ErrorKind?)
+  local remaining = if deadline then deadline - now() else 60000
+  local session, message = tls.client(socket, {
+    serverName = serverName,
+    alpn = options.alpn,
+    config = options.tlsConfig,
+    handshakeTimeoutMs = math.floor(math.clamp(remaining, 1, 60000)),
+  })
+
+  if not session then
+    socket:close()
+    return nil, `TLS to {serverName}: {message}`, 'tls'
+  end
+
+  local secure = session :: dream_tls_Stream
+  local done, problem = secure:handshake()
+  while done == false do
+    local ready, reason = waitOn(secure, if secure.wantsWrite then 'write' else 'read', deadline)
+    if not ready then
+      secure:close()
+      local failure, kind = failureMessage(reason, `the TLS handshake with {serverName}`)
+      return nil, failure, kind
+    end
+
+    done, problem = secure:handshake()
+  end
+
+  if not done then
+    secure:close()
+    return nil, `TLS to {serverName}: {problem}`, 'tls'
+  end
+
+  return secure, nil, nil
+end
+
+--- The connection's state behind its public face, every method a closure over it.
+local function newConnection(
+  loop: LoopState,
+  host: string,
+  port: number,
+  socket: dream_tcp_Stream,
+  secure: dream_tls_Stream?,
+  bufferBytes: number
+): Connection
+  local state: ConnectionState
+  local public: Connection = {
+    host = host,
+    port = port,
+    secure = secure ~= nil,
+    alpn = if secure then secure.alpn else nil,
+    peerAddress = socket.peerAddress,
+    closed = false,
+    receive = function(_self: Connection, count: number, deadline: number?): (string?, string?, ErrorKind?)
+      return receive(state, count, deadline)
+    end,
+    peek = function(_self: Connection, count: number, deadline: number?): (string?, string?, ErrorKind?)
+      return peek(state, count, deadline)
+    end,
+    receiveSome = function(_self: Connection, maxBytes: number, deadline: number?): (string?, string?, ErrorKind?)
+      return receiveSome(state, maxBytes, deadline)
+    end,
+    receiveUntil = function(
+      _self: Connection,
+      delimiter: string,
+      maxBytes: number,
+      deadline: number?
+    ): (string?, string?, ErrorKind?)
+      return receiveUntil(state, delimiter, maxBytes, deadline)
+    end,
+    receiveInto = function(
+      _self: Connection,
+      target: buffer,
+      offset: number,
+      count: number,
+      deadline: number?
+    ): (boolean, string?, ErrorKind?)
+      return receiveInto(state, target, offset, count, deadline)
+    end,
+    buffered = function(_self: Connection): number return state.tail - state.head end,
+    idle = function(_self: Connection): boolean return isIdle(state) end,
+    send = function(_self: Connection, data: string | buffer, deadline: number?): (boolean, string?, ErrorKind?)
+      return send(state, data, deadline)
+    end,
+    close = function(_self: Connection) closeConnection(state) end,
+  }
+
+  local handle: dream_tcp_Watchable = secure or socket
+  local readInto: (target: buffer, offset: number) -> (number?, string?, string?)
+  local write: (data: string | buffer, offset: number, length: number) -> (number?, string?, string?)
+  local closeStream: () -> ()
+  if secure then
+    readInto = function(target: buffer, offset: number): (number?, string?, string?)
+      return secure:readInto(target, offset)
+    end
+
+    write = function(data: string | buffer, offset: number, length: number): (number?, string?, string?)
+      return secure:write(data, offset, length)
+    end
+
+    closeStream = function() secure:close() end
+  else
+    readInto = function(target: buffer, offset: number): (number?, string?, string?)
+      return socket:readInto(target, offset)
+    end
+
+    write = function(data: string | buffer, offset: number, length: number): (number?, string?, string?)
+      return socket:write(data, offset, length)
+    end
+
+    closeStream = function() socket:close() end
+  end
+
+  state = {
+    public = public,
+    loop = loop,
+    handle = handle,
+    readInto = readInto,
+    write = write,
+    closeStream = closeStream,
+    secure = secure,
+    inbox = buffer.create(math.min(ReadChunk, bufferBytes)),
+    head = 0,
+    tail = 0,
+    bufferBytes = bufferBytes,
+    sendDone = newSignal(),
+  } :: ConnectionState
+
+  loop.connections[state] = true
+
+  return public
+end
+
+local function connect(host: string, port: number, options: ConnectOptions?): (Connection?, string?, ErrorKind?)
+  local task = currentTask 'connect'
+  local settings: ConnectOptions = options or {}
+  for key in settings :: { [string]: unknown } do
+    if not table.find({ 'tls', 'serverName', 'tlsConfig', 'alpn', 'deadline', 'bufferBytes' }, key) then
+      error(`unknown {Name}.connect option '{key}': expected tls, serverName, tlsConfig, alpn, deadline, bufferBytes`, 0)
+    end
+  end
+
+  if type(host) ~= 'string' or host == '' then error(`{Name}.connect: the host is a name or an address`, 0) end
+
+  whole(port, 1, 65535, 'connect', 'port')
+  local bufferBytes = whole(settings.bufferBytes or DefaultBufferBytes, 1, 2 ^ 30, 'connect', 'bufferBytes')
+
+  local loop = task.loop
+  if loop.connectionCount >= loop.maxConnections then
+    return nil, `the loop already holds {loop.maxConnections} connections, the most it allows`, 'limitReached'
+  end
+
+  -- The slot is held from the start, so connections made at once cannot overshoot the limit.
+  loop.connectionCount += 1
+  local name = string.match(host, '^%[(.*)%]$') or host
+  local deadline = settings.deadline
+  local addresses, problem, kind = resolve(name, port, deadline)
+  if not addresses then
+    loop.connectionCount -= 1
+    return nil, problem, kind
+  end
+
+  local socket, connectProblem, connectKind = connectAny(addresses :: { string }, deadline)
+  if not socket then
+    loop.connectionCount -= 1
+    return nil, connectProblem, connectKind
+  end
+
+  local secure: dream_tls_Stream?
+  if settings.tls then
+    local session, tlsProblem, tlsKind = handshake(socket :: dream_tcp_Stream, settings.serverName or name, settings, deadline)
+    if not session then
+      loop.connectionCount -= 1
+      return nil, tlsProblem, tlsKind
+    end
+
+    secure = session
+  end
+
+  return newConnection(loop, host, port, socket :: dream_tcp_Stream, secure, bufferBytes), nil, nil
+end
+
+local function cancelTask(state: TaskState)
+  if not state.loop.live[state] then return end
+
+  state.cancelled = true
+  if state.waiting then wake(state, 'cancelled') end
+end
+
+local function joinTask(state: TaskState, deadline: number?): (boolean, string?)
+  local caller = currentTask 'Task:join'
+  if caller == state then error(`{Name}.Task:join: a task cannot wait for itself`, 0) end
+
+  if state.loop.live[state] then
+    table.insert(state.joiners, caller)
+    local reason = park(caller, deadline)
+    local at = table.find(state.joiners, caller)
+    if at then table.remove(state.joiners, at) end
+
+    if reason ~= 'notified' then return false, reason end
+  end
+
+  local task = state.public
+  if task.status == 'cancelled' then return false, 'cancelled' end
+
+  return task.status == 'done', task.error
+end
+
+local function spawn(loop: LoopState, body: () -> (), name: string?): Task
+  if loop.public.closed then error(`{Name}.Loop:spawn: the loop is closed`, 0) end
+
+  if type(body) ~= 'function' then error(`{Name}.Loop:spawn: a task's body is a function`, 0) end
+
+  if loop.liveCount >= loop.maxTasks then
+    error(`{Name}.Loop:spawn: the loop already runs {loop.maxTasks} tasks, the most it allows`, 0)
+  end
+
+  local state: TaskState
+  local public: Task = {
+    name = name or `task {loop.liveCount + 1}`,
+    status = 'running',
+    error = nil,
+    cancel = function(_self: Task) cancelTask(state) end,
+    join = function(_self: Task, deadline: number?): (boolean, string?) return joinTask(state, deadline) end,
+  }
+
+  state = {
+    public = public,
+    loop = loop,
+    thread = coroutine.create(body),
+    started = false,
+    cancelled = false,
+    waiting = false,
+    joiners = {},
+  } :: TaskState
+
+  loop.live[state] = true
+  loop.liveCount += 1
+  table.insert(loop.ready, state)
+
+  return public
+end
+
+local function report(loop: LoopState)
+  if #loop.failures == 0 then return end
+
+  local failed = loop.failures
+  loop.failures = {}
+  local onError = loop.onError
+  if onError then
+    for _, task in failed do
+      onError(task.public, task.public.error or 'failed')
+    end
+
+    return
+  end
+
+  local lines = [for task in failed => `{task.public.name}: {task.public.error or 'failed'}`]
+  error(`{Name}: {table.concat(lines, '; ')}`, 0)
+end
+
+local function step(loop: LoopState, waitMs: number?): number
+  if waitMs then duration(waitMs, 'Loop:step', 'waitMs') end
+
+  if loop.public.closed then return 0 end
+
+  if running and running.loop == loop then error(`{Name}.Loop:step: a task cannot step its own loop`, 0) end
+
+  runReady(loop)
+
+  local idle = #loop.ready == 0 and #loop.deferred == 0 and loop.liveCount > 0
+  local timeout = if idle then waitMs or 0 else 0
+  local current = now()
+  for parked in loop.parked do
+    if parked.deadline then timeout = math.min(timeout, math.max(0, parked.deadline - current)) end
+  end
+
+  local queued, problem = loop.poller:wait(math.ceil(timeout))
+  if not queued then error(`{Name}: the poller failed: {problem}`, 0) end
+
+  while true do
+    local token, readable, writable, closed = loop.poller:next()
+    if not token then break end
+
+    local watch = loop.watches[token]
+    if not watch then continue end
+
+    if (readable or closed) and watch.reader then wake(watch.reader, 'ready') end
+    if (writable or closed) and watch.writer then wake(watch.writer, 'ready') end
+  end
+
+  current = now()
+  for parked in loop.parked do
+    if parked.waiting and parked.deadline and parked.deadline <= current then wake(parked, 'timeout') end
+  end
+
+  local deferred = loop.deferred
+  loop.deferred = {}
+  for _, task in deferred do
+    wake(task, 'ready')
+  end
+
+  runReady(loop)
+  report(loop)
+
+  return loop.liveCount
+end
+
+local function run(loop: LoopState, timeoutMs: number?): boolean
+  if timeoutMs then duration(timeoutMs, 'Loop:run', 'timeoutMs') end
+
+  local deadline = if timeoutMs then now() + timeoutMs else nil
+
+  while loop.liveCount > 0 do
+    local remaining = if deadline then deadline - now() else tcp.MAX_WAIT_MS
+    if remaining <= 0 then return false end
+
+    step(loop, math.min(remaining, tcp.MAX_WAIT_MS))
+  end
+
+  return true
+end
+
+local function closeLoop(loop: LoopState)
+  if loop.public.closed then return end
+
+  if running and running.loop == loop then
+    error(`{Name}.Loop:close: a task cannot close its own loop; cancel it, or close from outside`, 0)
+  end
+
+  for task in loop.live do
+    task.cancelled = true
+    if task.waiting then wake(task, 'cancelled') end
+  end
+
+  runReady(loop)
+
+  for task in loop.live do
+    coroutine.close(task.thread)
+    finish(task, 'cancelled', nil)
+  end
+
+  for connection in loop.connections do
+    closeConnection(connection)
+  end
+
+  for _, watch in loop.watches do
+    watchers[watch.handle] = nil
+  end
+
+  loop.poller:close()
+  loop.public.closed = true
+  loop.failures = {}
+end
+
+local function newLoop(options: LoopOptions?): Loop
+  local settings: LoopOptions = options or {}
+  for key in settings :: { [string]: unknown } do
+    if not table.find({ 'maxConnections', 'maxTasks', 'onError' }, key) then
+      error(`unknown {Name}.loop option '{key}': expected maxConnections, maxTasks, onError`, 0)
+    end
+  end
+
+  local maxConnections = whole(settings.maxConnections or DefaultMaxConnections, 1, 16384, 'loop', 'maxConnections')
+  local maxTasks = whole(settings.maxTasks or DefaultMaxTasks, 1, 2 ^ 24, 'loop', 'maxTasks')
+
+  local state: LoopState
+  local public: Loop = {
+    spawn = function(_self: Loop, body: () -> (), name: string?): Task return spawn(state, body, name) end,
+    step = function(_self: Loop, waitMs: number?): number return step(state, waitMs) end,
+    run = function(_self: Loop, timeoutMs: number?): boolean return run(state, timeoutMs) end,
+    close = function(_self: Loop) closeLoop(state) end,
+    stats = function(_self: Loop): Stats
+      return {
+        tasks = state.liveCount,
+        connections = state.connectionCount,
+        watching = if state.public.closed then 0 else state.poller.watching,
+      }
+    end,
+    closed = false,
+  }
+
+  state = {
+    public = public,
+    -- A connection being made also watches its name lookup, so the poller has room for both.
+    poller = tcp.poller { maxWatches = maxConnections * 4, maxEvents = 1024, maxWaitMs = tcp.MAX_WAIT_MS },
+    maxConnections = maxConnections,
+    maxTasks = maxTasks,
+    onError = settings.onError,
+    ready = {},
+    deferred = {},
+    parked = {},
+    live = {},
+    liveCount = 0,
+    watches = {},
+    byHandle = {},
+    freeTokens = {},
+    nextToken = 1,
+    connections = {},
+    connectionCount = 0,
+    failures = {},
+  }
+
+  return public
+end
+
+--- In a task: starts `body` as another task on the same loop, as `Loop:spawn` does.
+local function spawnHere(body: () -> (), name: string?): Task
+  local state = currentTask 'spawn'
+
+  return spawn(state.loop, body, name)
+end
+
+--- In a task: a connection over a stream already open, such as one a listener accepted, on the
+--- running task's loop. `tls` is a session over `stream` whose handshake the caller has finished;
+--- the connection then reads and writes through it. It counts against the loop's
+--- `maxConnections`, and its `host` and `port` are the peer's.
+local function adopt(
+  stream: dream_tcp_Stream,
+  options: { tls: dream_tls_Stream?, bufferBytes: number? }?
+): (Connection?, string?, ErrorKind?)
+  local task = currentTask 'adopt'
+  local settings: { tls: dream_tls_Stream?, bufferBytes: number? } = options or {}
+  for key in settings :: { [string]: unknown } do
+    if key ~= 'tls' and key ~= 'bufferBytes' then
+      error(`unknown {Name}.adopt option '{key}': expected tls, bufferBytes`, 0)
+    end
+  end
+
+  local bufferBytes = whole(settings.bufferBytes or DefaultBufferBytes, 1, 2 ^ 30, 'adopt', 'bufferBytes')
+  local loop = task.loop
+  if loop.connectionCount >= loop.maxConnections then
+    return nil, `the loop already holds {loop.maxConnections} connections, the most it allows`, 'limitReached'
+  end
+
+  loop.connectionCount += 1
+  local peer = stream.peerAddress
+  local host, port = string.match(peer, '^%[?(.-)%]?:(%d+)$')
+
+  return newConnection(loop, host or peer, tonumber(port) or 0, stream, settings.tls, bufferBytes), nil, nil
+end
+
+--- In a task: waits `milliseconds`. False when the task was cancelled first.
+local function sleep(milliseconds: number): boolean
+  duration(milliseconds, 'sleep', 'milliseconds')
+  local state = currentTask 'sleep'
+
+  return park(state, now() + milliseconds) == 'timeout'
+end
+
+--- In a task: lets every other task run, and carries on at the loop's next step.
+local function yield(): boolean
+  local state = currentTask 'yield'
+  if state.cancelled then return false end
+
+  coroutine.yield()
+
+  return not state.cancelled
+end
+
+--- Runs `body` as the one task of a loop of its own, to its end, and closes the loop: how a script
+--- or a command target uses this module's waits. True when the body returned; false and its error,
+--- or `timeout`.
+local function runAlone(body: () -> (), timeoutMs: number?): (boolean, string?)
+  if timeoutMs then duration(timeoutMs, 'run', 'timeoutMs') end
+
+  local loop = newLoop { onError = function(_task: Task, _message: string) end }
+  local task = loop:spawn(body, 'net.run')
+  local finished = loop:run(timeoutMs)
+  loop:close()
+  if not finished then return false, 'timeout' end
+
+  return task.status == 'done', task.error
+end
+
+local function current(): Task?
+  return if running then running.public else nil
+end
+
+--- Wakes whoever waits on `handle`, with `closed`, and stops watching it, from a task or not; the
+--- handle can then be closed at once. A handle nobody waits on is left as it is.
+local function releaseHandle(handle: dream_tcp_Watchable)
+  local loop = watchers[handle]
+  if loop then release(loop, handle) end
+end
+
+return table.freeze {
+  loop = newLoop,
+  run = runAlone,
+  now = now,
+  current = current,
+  sleep = sleep,
+  yield = yield,
+  signal = newSignal,
+  wait = waitOn,
+  release = releaseHandle,
+  connect = connect,
+  adopt = adopt,
+  spawn = spawnHere,
+}
