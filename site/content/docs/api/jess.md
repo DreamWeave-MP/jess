@@ -52,7 +52,7 @@ extra:
 | `bytes.regex` | Regular expressions | [Regular expressions](@/docs/api/regex.md) |
 | `@dream/*` | Everything native underneath: bytes, processes, the network, text | [The @dream modules](@/docs/api/l3i.md) |
 
-The `jess` members in the first part of the table are also available through `require('@jess/<name>')`. The next four are [built-in modules](@/docs/scripting/built-in-modules.md), Luau that ships inside the binary. The `@jess/` names after those are the exports of the built-in package, which every runtime carries. The `@dream/` names are [L3i](https://DreamWeave-MP.github.io/l3i/)'s native primitives.
+Most `jess` members in the first part of the table are also available through `require('@jess/<name>')`. The exceptions are input and audio: `@jess/input` and `@jess/audio` are built-in package modules that wrap `jess.input` and `jess.audio`, not the same tables. The next four are [built-in modules](@/docs/scripting/built-in-modules.md), Luau that ships inside the binary. The `@jess/` names after those are the exports of the built-in package, which every runtime carries. The `@dream/` names are [L3i](https://DreamWeave-MP.github.io/l3i/)'s native primitives.
 
 ## jess.version
 
