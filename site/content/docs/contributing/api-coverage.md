@@ -35,4 +35,16 @@ This is a review map, not a promise that every listed function has been checked.
 
 The [CLI reference](@/docs/cli/_index.md), [workspace reference](@/docs/cli/workspace.md), and [capabilities](@/docs/reference/capabilities.md) map to `src/cli/`, `src/main.rs`, `src/lua/stdlib/workspace.jsl`, and `tests/cli/`. A complete parser-to-reference audit, including exit statuses, flag placement, install behavior, and platform-specific standalone artifacts, remains open.
 
-The tutorial checks exercise a small set of complete paths. They do not replace the remaining API audit, browser and keyboard testing, or platform verification. When a new symbol is added to the catalog, its generated signature and handwritten heading must agree; the catalog's module list states its coverage explicitly.
+The tutorial checks exercise a small set of complete paths. They do not replace the remaining API audit, browser and keyboard testing, or platform verification. For entries marked `checked`, the build verifies the generated signature and handwritten heading. Other entries are indexed without that signature check.
+
+## Findings from this pass
+
+| Classification | Surface | Evidence and action |
+| --- | --- | --- |
+| Incorrect | Default target grants and host file reads | `src/lua/package.rs` and `src/lua/mod.rs` distinguish the host's default grants from a target's declared authority. [Capabilities](@/docs/reference/capabilities.md) now states that boundary. |
+| Incorrect | Package inspection and resolution | `src/lua/stdlib/package.jsl` returns both the plan and selected packages from `resolve` and exposes `peek` and `candidates`; [package](@/docs/api/package.md) now describes them. |
+| Incorrect | Message transfer | `src/runtime/message.rs` accepts integers and resource handles and limits nested values to 32 levels; [events](@/docs/api/events.md) and [workers](@/docs/api/worker.md) now describe the shared boundary. |
+| Incorrect | Platform distribution | Release archives do not establish Android or 32-bit support. [Installation](@/docs/getting-started/install.md) no longer directs those users to an unverified source build. |
+| Incomplete | Exact behavior of generated types and handle methods | The catalog exposes their declarations for search, but `checked = false` does not certify lifecycle, error, scheduling, or resource contracts. The API pages and tests remain the behavioral evidence. |
+| Incomplete | CLI and platform contracts | The command groups have reference pages and exercised examples, but a complete parser-to-reference and cross-platform audit remains open. |
+| Lacking examples | Device-dependent operations | The window fixture is checked without a device in CI; the offline audio fixture exercises processing without an audio device. Driver and hardware behavior still needs destination testing. |
