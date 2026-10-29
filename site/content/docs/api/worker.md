@@ -59,6 +59,8 @@ A non-`nil` value returned by the handler is sent through the bounded reply chan
 
 {{ api_signature(value="type Worker = { send, receive, close, join }") }}
 
+The handle belongs to its domain and cannot itself cross a worker boundary. It does not keep the domain alive; operations fail if the domain is gone. On a domain restart or teardown, shutdown handlers run first, then the host closes and joins the generation's workers before releasing its owned resources. Do not retain a worker handle as state for the next generation.
+
 ### Worker:send
 
 {{ api_signature(value="worker:send(message: unknown) -> ()") }}
