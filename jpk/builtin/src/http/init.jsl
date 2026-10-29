@@ -913,8 +913,9 @@ local function exchange(
   deadline: number
 ): (Head?, Body?, string?, ErrorKind?)
   -- A connection kept from an earlier request may have been closed by the server while it waited.
-  -- A request that met that before any answer arrived goes again once on a fresh connection, if
-  -- going again can't do anything twice.
+  -- A request that met that before any answer arrived goes again once on a fresh connection, but
+  -- only if going twice can't change anything: a send that failed may still have delivered the
+  -- request, since the head and body go out separately and part of either may have arrived.
   for attempt = 1, 2 do
     local connection, reused, problem, kind = transport.acquire(url, deadline)
     if not connection then return nil, nil, problem, kind end
@@ -923,7 +924,7 @@ local function exchange(
     local sent, sendProblem, sendKind = sendRequest(live, url, method, headers, body, transport.connectionField, deadline)
     if not sent then
       transport.release(url, live, false)
-      if reused and attempt == 1 then continue end
+      if reused and attempt == 1 and Idempotent[method] then continue end
 
       return nil, nil, sendProblem, sendKind
     end

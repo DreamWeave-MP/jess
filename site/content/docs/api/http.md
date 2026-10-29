@@ -217,10 +217,10 @@ A connection goes back to the pool only when its response was read to an end its
 declared, and neither side asked to close it: a body read until the connection ended, an
 HTTP/1.0 answer, and `Connection: close` all cost the connection. Before reusing one, the client
 checks, without waiting, that the server hasn't closed it in the meantime. If the server closed it
-anyway, at the moment the request went out, the request goes again once on a fresh connection:
-always when it couldn't even be sent, since the server can't have read it whole, and after it was
-sent only when going twice can't change anything (`GET`, `HEAD`, `PUT`, `DELETE`, `OPTIONS`). A
-`POST` that was sent and met a closed connection fails, and the caller decides.
+anyway, at the moment the request went out, the request goes again once on a fresh connection,
+but only when going twice can't change anything (`GET`, `HEAD`, `PUT`, `DELETE`, `OPTIONS`): a
+send that failed part way may already have delivered the request, so a `POST` that met a closed
+connection fails, whether it was sending or waiting, and the caller decides.
 
 `client:close()` closes every idle connection at once, and every busy one as its request ends;
 anything asked of a closed client fails with `closed`. Nothing about one request stays on the

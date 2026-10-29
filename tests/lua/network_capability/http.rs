@@ -36,6 +36,11 @@ pub(super) enum Answer {
     KeptThenClosed(String),
     /// Pieces of one response written with a pause before each, then the connection is closed.
     Trickle(Vec<(Duration, String)>),
+    /// Pieces of any bytes, written with a pause before each, then the connection is closed.
+    TrickleBytes(Vec<(Duration, Vec<u8>)>),
+    /// Read the request head, then close with the body unread, so the peer sees a reset while it is
+    /// still sending.
+    DropUnread,
 }
 
 pub(super) struct Server {
@@ -125,15 +130,18 @@ fn answer(
                 length = value.trim().parse().unwrap_or(0);
             }
         }
-        let mut body = vec![0; length];
-        if reader.read_exact(&mut body).is_err() {
-            return;
-        }
-        heads.lock().unwrap().push(head.clone());
         let answer = routes
             .iter()
             .find(|(route, _)| *route == path)
             .map_or_else(|| Answer::Raw(response(404, "not found", &[])), |(_, answer)| answer.clone());
+        heads.lock().unwrap().push(head.clone());
+        if matches!(answer, Answer::DropUnread) {
+            return;
+        }
+        let mut body = vec![0; length];
+        if reader.read_exact(&mut body).is_err() {
+            return;
+        }
         match answer {
             Answer::Raw(text) => {
                 drop(stream.write_all(text.as_bytes()));
@@ -169,6 +177,16 @@ fn answer(
                 drop(stream.shutdown(std::net::Shutdown::Both));
                 return;
             }
+            Answer::TrickleBytes(pieces) => {
+                for (pause, piece) in pieces {
+                    thread::sleep(pause);
+                    if stream.write_all(&piece).is_err() {
+                        return;
+                    }
+                }
+                return;
+            }
+            Answer::DropUnread => return,
             Answer::Trickle(pieces) => {
                 for (pause, piece) in pieces {
                     thread::sleep(pause);
@@ -1066,4 +1084,37 @@ fn a_client_keeps_its_connections_and_bounds_them_per_origin() {
     // after it, whose connection the server had closed too; one for the stream.
     assert_eq!(server.accepted(), 6, "{} requests", server.requests());
     assert_eq!(server.requests(), 5 + 8 + 1 + 3 + 1);
+}
+
+/// A pooled connection the server resets while a request's body is still going out: a request
+/// that might have reached the server already goes again only if going twice can't change
+/// anything.
+#[test]
+fn a_request_that_failed_part_way_out_on_a_kept_connection_is_replayed_only_if_idempotent() {
+    let server = Server::start(vec![("/kept", Answer::Kept(kept("ok"))), ("/drop", Answer::DropUnread)]);
+    let lines = run_task(
+        &runtime(),
+        &format!(
+            "
+            local body = string.rep('x', 8 * 1024 * 1024)
+            for _, method in {{ 'POST', 'PUT' }} do
+              local client = http.client()
+              assert(client:request {{ url = {kept:?} }})
+              local response, _, kind = client:request {{ url = {drop:?}, method = method, body = body }}
+              table.insert(out, `{{method}} {{response == nil}} {{kind}}`)
+              client:close()
+            end
+            ",
+            kept = server.url("/kept"),
+            drop = server.url("/drop"),
+        ),
+    );
+    assert_eq!(lines, ["POST true closed", "PUT true closed"]);
+    let drops: Vec<String> = server
+        .heads()
+        .iter()
+        .filter(|head| head.contains(" /drop "))
+        .map(|head| head.split_whitespace().next().unwrap().to_owned())
+        .collect();
+    assert_eq!(drops, ["POST", "PUT", "PUT"], "the POST went out once; the PUT went again");
 }
