@@ -6,7 +6,7 @@ extra:
   kind: api
 ---
 
-{{ api_signature(value="require('@jess/package'): { open, openJpk, pack, resolve, manifest, satisfies }") }}
+{{ api_signature(value="require('@jess/package'): { open, openJpk, peek, candidates, pack, resolve, manifest, satisfies, requirement }") }}
 
 A [built-in module](@/docs/scripting/built-in-modules.md), typed as `Module__jess_package`. It is the package model [Packages](@/docs/scripting/packages.md) describes, as functions: open a package from either of its forms, pack one, and resolve layers over several into a plan. The container underneath is [`@jess/jpk`](@/docs/api/jpk.md).
 
@@ -80,6 +80,18 @@ org.example.words	jpk	words.jpk, in memory
 true
 ```
 
+## package.peek
+
+{{ api_signature(value="package.peek(location: string) -> JessPackageOffer") }}
+
+Reads and checks the manifest at a source folder or JPK without opening the package's complete payload. It requires `filesystem.read`. The frozen offer contains `manifest`, `id`, `version`, `kind` (`'source'` or `'jpk'`), and `location`. A missing or invalid manifest raises. For a JPK, the archive directory and manifest entry must be read; this is not validation of every payload file. Nothing executes.
+
+## package.candidates
+
+{{ api_signature(value="package.candidates(folder: string) -> { JessPackageOffer }") }}
+
+Reads package offers directly inside `folder`, in name order: directories containing `jess.toml` and files ending in `.jpk`. It requires `filesystem.read` and does not recurse. A folder that is not a package path, or an unreadable or invalid candidate, raises rather than silently omitting that candidate. Nothing executes.
+
 ## package.pack
 
 {{ api_signature(value="package.pack(source: string, output: string, options: { version: string? }?) -> JessPackResult") }}
@@ -90,9 +102,9 @@ With `options.version`, the payload is packed at that version: the one `version`
 
 ## package.resolve
 
-{{ api_signature(value="package.resolve(packages: { JessPackage }, request: JessPackageRequest) -> JessActivationPlan") }}
+{{ api_signature(value="package.resolve(packages: { JessPackage }, request: JessPackageRequest) -> (JessActivationPlan, { JessPackage })") }}
 
-Resolves `request.layers` over `packages` into an activation plan, deterministically, or fails naming exactly what's wrong. Every rule is checked before a plan exists:
+Resolves `request.layers` over `packages` into an activation plan, deterministically, or fails naming exactly what's wrong. The second return is the selected package objects, in the plan's package order. Every rule is checked before a plan exists:
 
 - one provider per package id: the same package offered twice is an error, even as its source and its JPK (`com.example.greeter is offered twice (...); choose one`);
 - one provider per layer id;

@@ -45,7 +45,23 @@ A logger with the same target and more context.
 
 ### log.debug, info, warn, error
 
-The module's own functions log with the target `jess`, for a script that doesn't want a logger of its own.
+These module functions log with the target `jess`, for a script that doesn't want a logger of its own.
+
+#### log.debug
+
+{{ api_signature(value="log.debug(message: string, fields: JessLogFields?) -> ()") }}
+
+#### log.info
+
+{{ api_signature(value="log.info(message: string, fields: JessLogFields?) -> ()") }}
+
+#### log.warn
+
+{{ api_signature(value="log.warn(message: string, fields: JessLogFields?) -> ()") }}
+
+#### log.error
+
+{{ api_signature(value="log.error(message: string, fields: JessLogFields?) -> ()") }}
 
 ### log.capture
 

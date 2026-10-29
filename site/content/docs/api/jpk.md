@@ -96,3 +96,9 @@ The canonical archive of `files`, each `{ path, data }`, as described above. A f
 {{ api_signature(value="jpk.checkPath(path: string) -> string?") }}
 
 Why `path` can't name an entry, or nil when it can. Package manifests are checked with this, so a `jess.toml` can't name a file the container couldn't hold.
+
+## jpk.budgets
+
+{{ api_signature(value="jpk.budgets: JessJpkBudgets") }}
+
+The default reader budgets listed under [jpk.open](#jpk-open). Pass budget options to `open` when a caller needs different limits.
