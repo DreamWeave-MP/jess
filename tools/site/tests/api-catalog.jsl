@@ -78,6 +78,16 @@ return table.freeze { first = first, second = second }]]
   test.expect(function() catalog.sourceSymbols(source, 'sample.first', 'sample', true) end).toThrow 'missing documentation'
 end)
 
+suite.it('keeps the qualified module name and inferred constants', function()
+  local source = [[local Null = nil
+local function array(items: { string }): { string } return items end
+return table.freeze { Null = Null, array = array }]]
+  local symbols = catalog.sourceSymbols(source, 'value.Null value.array', 'value', true, '@jess/data/value')
+  test.expect(symbols[1].module).toBe '@jess/data/value'
+  test.expect(symbols[1].signature).toBe 'value.Null'
+  test.expect(symbols[2].signature).toBe 'value.array(items: { string }) -> { string }'
+end)
+
 suite.it('preserves an exported string literal', function()
   local source = [[return table.freeze { version = '1.2' }]]
   local symbols = catalog.sourceSymbols(source, '', 'yaml')

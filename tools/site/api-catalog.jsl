@@ -287,7 +287,7 @@ local function sourceTypes(source: string, moduleName: string, page: string): { 
   return symbols
 end
 
-local function sourceSymbols(source: string, documentation: string, member: string, grouped: boolean?): { Symbol }
+local function sourceSymbols(source: string, documentation: string, member: string, grouped: boolean?, moduleName: string?): { Symbol }
   local parsed = luau.parse(source)
   if #parsed.errors > 0 then error(`api catalog: generated {member} source does not parse`, 0) end
   local exported: dream_luau_ExprTable?
@@ -338,7 +338,9 @@ local function sourceSymbols(source: string, documentation: string, member: stri
       break
     end
 
-    if not signature and name ~= 'null' then error(`api catalog: unsupported {member} export {name}`, 0) end
+    if not signature and name ~= 'null' and not (member == 'value' and (name == 'Null' or name == 'None')) then
+      error(`api catalog: unsupported {member} export {name}`, 0)
+    end
     local stableSignature = signature or symbolName
 
     local heading = string.find(documentation, `## {symbolName}`, 1, true)
@@ -353,7 +355,7 @@ local function sourceSymbols(source: string, documentation: string, member: stri
 
     table.insert(symbols, {
       name = symbolName,
-      module = `@jess/{member}`,
+      module = moduleName or `@jess/{member}`,
       signature = stableSignature,
       page = `docs/api/{member}/`,
       anchor = anchor,
@@ -383,16 +385,17 @@ local function generate(root: string): string
 
   local result, problem = process.run('jess', { 'luau-types', folder }, { stdout = 'null', stderr = 'capture' })
   local definitions, readProblem = fs.readFileString(fs.join(folder, 'jess.d.jsl'))
-  local sources: { { name: string, source: string, grouped: boolean? } } = {}
+  local sources: { { name: string, source: string, grouped: boolean?, moduleName: string? } } = {}
   local typeSources: { { name: string, page: string, source: string } } = {}
   local sourceProblem: string?
 
   for _, item in {
-    { name = 'json', path = 'data/json.jsl', grouped = false },
-    { name = 'yaml', path = 'data/yaml.jsl', grouped = false },
-    { name = 'backup', path = 'backup/init.jsl', grouped = false },
-    { name = 'http', path = 'http/init.jsl', grouped = false },
-    { name = 'analysis', path = 'analysis/init.jsl', grouped = true },
+    { name = 'json', path = 'data/json.jsl', grouped = false, moduleName = '@jess/json' },
+    { name = 'yaml', path = 'data/yaml.jsl', grouped = false, moduleName = '@jess/yaml' },
+    { name = 'backup', path = 'backup/init.jsl', grouped = false, moduleName = '@jess/backup' },
+    { name = 'http', path = 'http/init.jsl', grouped = false, moduleName = '@jess/http' },
+    { name = 'analysis', path = 'analysis/init.jsl', grouped = true, moduleName = '@jess/analysis' },
+    { name = 'value', path = 'data/value.jsl', grouped = true, moduleName = '@jess/data/value' },
   } do
     local source, message = fs.readFileString(fs.join(folder, 'jess', item.path))
     if not source then
@@ -400,7 +403,7 @@ local function generate(root: string): string
       break
     end
 
-    table.insert(sources, { name = item.name, source = source, grouped = item.grouped })
+    table.insert(sources, { name = item.name, source = source, grouped = item.grouped, moduleName = item.moduleName })
   end
 
   if not sourceProblem then
@@ -515,8 +518,8 @@ local function generate(root: string): string
     local documentation, docProblem = fs.readFileString(path)
     if not documentation then error(`api catalog: cannot read {path}: {docProblem}`, 0) end
 
-    table.insert(modules, `@jess/{item.name}`)
-    for _, symbol in sourceSymbols(item.source, documentation, item.name, item.grouped) do
+    table.insert(modules, item.moduleName or `@jess/{item.name}`)
+    for _, symbol in sourceSymbols(item.source, documentation, item.name, item.grouped, item.moduleName) do
       table.insert(symbols, symbol)
     end
   end
