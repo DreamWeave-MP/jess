@@ -162,12 +162,12 @@ print(atlas, atlas.layers, atlas.mips, buffer.len(level), buffer.readu8(level, 2
 
 ## GpuRead
 
-Bytes on their way back from the GPU, from `readLater`. They are what the copy saw when it was asked for, so a script that wants a frame's picking id asks after the run and takes it a frame or two later, and never waits on the GPU to finish the frame it is drawing.
+Bytes on their way back from the GPU, from `readLater`. They are what the submitted copy saw, so a script that wants a frame's picking id can ask after the run and poll for it later without waiting for GPU completion. Completion time depends on the device and workload.
 
 | Member | Type | Does |
 | --- | --- | --- |
-| `poll()` | `() -> buffer?` | The bytes, once the GPU has copied them; `nil` until then. It never waits. |
-| `wait()` | `() -> buffer` | The bytes, waiting for the GPU if it hasn't copied them yet. |
+| `poll()` | `() -> buffer?` | The bytes, once the GPU has copied them; `nil` until then. It polls the device without waiting for GPU completion and copies the mapped bytes when ready. Device or mapping failures raise. |
+| `wait()` | `() -> buffer` | The bytes, waiting for submitted GPU work if needed. Device or mapping failures raise. |
 | `ready` | `boolean` | Whether the last `poll` or `wait` found them. |
 
 Once there, the same bytes come back every time. `tostring(read)` is `GpuRead(waiting)` or `GpuRead(ready)`.
