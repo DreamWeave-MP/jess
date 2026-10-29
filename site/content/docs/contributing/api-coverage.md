@@ -37,6 +37,12 @@ The [CLI reference](@/docs/cli/_index.md), [workspace reference](@/docs/cli/work
 
 The tutorial checks exercise a small set of complete paths. They do not replace the remaining API audit, browser and keyboard testing, or platform verification. For entries marked `checked`, the build verifies the generated signature and handwritten heading. Other entries are indexed without that signature check.
 
+## Writing and navigation review
+
+The reference pages generally put signatures and concrete behavior before examples, and the larger GPU, shader, and audio pages keep related operations together under a local table of contents. The getting-started landing page now separates a first script, application distribution, and larger application development; the cookbook links complete fixtures where it promises runnable programs. Guides link back to the reference for contracts rather than copying it wholesale.
+
+The audit found absolute claims that contradicted the implementation, especially around default grants, returned errors, scheduling, and recovery. The findings below record corrections and their sources. Some older reference snippets are fragments or depend on a host, a device, or data that the snippet does not create; they are not covered by the tutorial fixture gate. Some generated signatures remain unchecked against the prose, and platform behavior needs testing on the destination. Treat the catalog as a discovery aid and its `checked` field as a signature-check status, not proof that every behavioral claim has been reviewed.
+
 ## Findings from this pass
 
 | Classification | Surface | Evidence and action |
