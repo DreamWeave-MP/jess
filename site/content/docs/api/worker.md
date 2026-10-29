@@ -63,7 +63,7 @@ A worker whose module does not load, does not return a function, or raises in it
 
 Queues a message for the worker's handler. Messages arrive in order. At most 1,024 wait for the handler at once: a domain that sends faster than its worker handles is told so, instead of queueing without bound.
 
-Only transferable values cross: `nil`, booleans, numbers, integers, strings, vectors, buffers, tables of those with string or number keys, and resource handles. Anything else is an error naming where it was, and nothing is sent.
+Only transferable values cross: `nil`, booleans, numbers, integers, strings, vectors, buffers, resource handles, and tables of those with string or number keys, nested at most 32 deep. Other userdata, functions, and threads cannot cross. Anything else is an error naming where it was, and nothing is sent.
 
 - **Errors:** `message.<path>: a <type> can't cross a worker or event boundary`; `the worker is stopped; it takes no more messages`; `the worker's queue is full: 1024 messages wait for its handler; receive its replies, or send fewer`.
 
