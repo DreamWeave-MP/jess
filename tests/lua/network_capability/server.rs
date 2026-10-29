@@ -478,3 +478,27 @@ fn nothing_listens_without_the_runtime_s_grant() {
         .unwrap_or_else(|error| error.to_string());
     assert!(error.contains("network.tcp.listen"), "{error}");
 }
+
+#[test]
+fn net_release_wakes_a_task_waiting_on_a_listener_so_it_can_be_closed_at_once() {
+    let lines = run_task(
+        &tls_runtime(),
+        "
+        local tcp = require '@dream/tcp'
+        local listener = assert(tcp.listen('127.0.0.1:0'))
+        local woke = ''
+        local waiter = net.spawn(function()
+          local ready, reason = net.wait(listener, 'read')
+          woke = `{ready} {reason}`
+        end)
+        net.sleep(20)
+        net.release(listener)
+        listener:close()
+        -- Releasing a handle nobody waits on does nothing.
+        net.release(listener)
+        table.insert(out, `joined {waiter:join(net.now() + 1000)}`)
+        table.insert(out, woke)
+        ",
+    );
+    assert_eq!(lines, ["joined true", "false closed"]);
+}

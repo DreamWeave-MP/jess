@@ -215,6 +215,8 @@ local ReadChunk = 65536
 local MaxRoundsPerStep = 64
 
 local running: TaskState?
+--- The loop watching each handle a task waits on, so the handle can be released from anywhere.
+local watchers: { [dream_tcp_Watchable]: LoopState } = {}
 
 local function now(): number return os.clock() * 1000 end
 
@@ -344,6 +346,7 @@ local function forget(loop: LoopState, watch: Watch)
   loop.poller:unwatch(watch.token)
   loop.watches[watch.token] = nil
   loop.byHandle[watch.handle] = nil
+  watchers[watch.handle] = nil
   table.insert(loop.freeTokens, watch.token)
 end
 
@@ -369,6 +372,7 @@ local function waitOn(handle: dream_tcp_Watchable, interest: Interest, deadline:
     watch = created
     loop.watches[token] = watch
     loop.byHandle[handle] = watch
+    watchers[handle] = loop
   end
 
   local current = watch :: Watch
@@ -1158,6 +1162,10 @@ local function closeLoop(loop: LoopState)
     closeConnection(connection)
   end
 
+  for _, watch in loop.watches do
+    watchers[watch.handle] = nil
+  end
+
   loop.poller:close()
   loop.public.closed = true
   loop.failures = {}
@@ -1287,6 +1295,13 @@ local function current(): Task?
   return if running then running.public else nil
 end
 
+--- Wakes whoever waits on `handle`, with `closed`, and stops watching it, from a task or not; the
+--- handle can then be closed at once. A handle nobody waits on is left as it is.
+local function releaseHandle(handle: dream_tcp_Watchable)
+  local loop = watchers[handle]
+  if loop then release(loop, handle) end
+end
+
 return table.freeze {
   loop = newLoop,
   run = runAlone,
@@ -1296,6 +1311,7 @@ return table.freeze {
   yield = yield,
   signal = newSignal,
   wait = waitOn,
+  release = releaseHandle,
   connect = connect,
   adopt = adopt,
   spawn = spawnHere,

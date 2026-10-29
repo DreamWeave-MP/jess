@@ -6,7 +6,7 @@ extra:
   kind: api
 ---
 
-{{ api_signature(value="require('@jess/net'): { loop, run, now, current, spawn, sleep, yield, signal, wait, connect, adopt }") }}
+{{ api_signature(value="require('@jess/net'): { loop, run, now, current, spawn, sleep, yield, signal, wait, release, connect, adopt }") }}
 
 The `@dream` network modules never wait: a read with nothing to read says `wouldBlock` and returns. Something has to do the waiting, and if it is a loop around `poller:wait` in the middle of your `update`, everything else in the application waits with it. `@jess/net` is that something, done once. A **loop** owns one poller. **Tasks** are coroutines on it. Every wait a task makes, on a socket, a name lookup, a timer, a signal or another task, yields to the loop, which runs whatever else is ready and comes back when the wait is over or its deadline passes.
 
@@ -131,6 +131,12 @@ In a task: starts another task on the same loop, as `Loop:spawn` does, for code 
 {{ api_signature(value="net.wait(handle: dream_tcp_Watchable, interest: 'read' | 'write', deadline: number?) -> (boolean, WakeReason)") }}
 
 Waits until a `@dream/tcp` listener or stream, a `@dream/tls` session, or a `@dream/dns` lookup is ready. It's the primitive the rest is built on, for protocols that need a raw handle (a listener, a server-side TLS session). Readiness is level-triggered, as the poller's is: try the operation, and wait only when it says `wouldBlock`. One task at a time may wait to read a handle, and one to write it.
+
+## net.release
+
+{{ api_signature(value="net.release(handle: dream_tcp_Watchable) -> ()") }}
+
+Wakes whoever waits on `handle`, with `closed`, and stops watching it, from a task or from anywhere else. Release a raw handle another task may be waiting on before you close it: the wait ends, and the handle can be closed at once. A handle nobody waits on is left as it is. A `Connection` does this itself when it closes.
 
 ## net.connect
 
