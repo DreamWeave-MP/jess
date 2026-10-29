@@ -13,6 +13,8 @@ back. It's jess's one TOML codec, Luau in the built-in package: package manifest
 and `jess-workspace.toml` are read with the same decoder. It needs no capability; reading the file
 is yours.
 
+`toml.version` is the TOML specification version the decoder implements.
+
 ## decode
 
 {{ api_signature(value="toml.decode(text: string, options: { positions: boolean? }?) -> (toml.Table, toml.Layout)") }}

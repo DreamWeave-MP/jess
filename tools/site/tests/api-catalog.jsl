@@ -19,6 +19,13 @@ suite.it('extracts the documented signature', function()
   test.expect(symbols[1].anchor).toBe 'jess-application-exit'
 end)
 
+suite.it('indexes the generated global itself', function()
+  local symbols = catalog.rootInventory('declare jess: { version: string, granted: (name: string) -> boolean }')
+  test.expect(#symbols).toBe(2)
+  test.expect(symbols[1].name).toBe 'jess.version'
+  test.expect(symbols[2].signature).toBe 'jess.granted(name: string) -> boolean'
+end)
+
 suite.it('refuses an undocumented new member', function()
   local changed = string.gsub(Definitions, 'exit:', 'stop:')
   test.expect(function() catalog.moduleSymbols(changed, Documentation, 'application') end).toThrow 'missing documentation'

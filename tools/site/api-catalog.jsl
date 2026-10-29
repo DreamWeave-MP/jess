@@ -4,6 +4,7 @@ local luau = require '@dream/luau'
 local fs = require '@dream/fs'
 local process = require '@dream/process'
 local json = require '@jess/json'
+local toml = require '@jess/data/toml'
 
 export type Symbol = {
   name: string,
@@ -182,6 +183,19 @@ local function globalInventory(definitions: string, member: string): { Symbol }
   end
 
   error(`api catalog: generated definitions have no jess.{member}`, 0)
+end
+
+local function rootInventory(definitions: string): { Symbol }
+  local parsed = luau.parse(definitions, { declarations = true })
+  if #parsed.errors > 0 then error('api catalog: generated definitions do not parse', 0) end
+
+  for _, statement in parsed.root.body do
+    if statement.kind ~= 'StatDeclareGlobal' or statement.name ~= 'jess' then continue end
+    if statement.type.kind ~= 'TypeTable' then error('api catalog: jess is not a table', 0) end
+    return inventory(definitions, parsed.lineStarts, statement.type, 'jess', '@jess', 'docs/api/jess/')
+  end
+
+  error('api catalog: generated definitions have no jess global', 0)
 end
 
 -- These definitions include native handle methods and structural types as well as module tables.
@@ -507,6 +521,7 @@ local function generate(root: string): string
     { name = 'input', path = 'input/init.jsl', grouped = true, moduleName = '@jess/input' },
     { name = 'audio', path = 'audio/init.jsl', grouped = true, moduleName = '@jess/audio' },
     { name = 'style', path = 'style/init.jsl', grouped = true, moduleName = '@jess/style' },
+    { name = 'toml', path = 'data/toml.jsl', grouped = true, moduleName = '@jess/data/toml' },
   } do
     local source, message = fs.readFileString(fs.join(folder, 'jess', item.path))
     if not source then
@@ -519,6 +534,8 @@ local function generate(root: string): string
 
   local styleCheck, styleCheckProblem = fs.readFileString(fs.join(folder, 'jess', 'style', 'check.jsl'))
   if not styleCheck then sourceProblem = `cannot read style checker source: {styleCheckProblem}` end
+  local tomlDecode, tomlDecodeProblem = fs.readFileString(fs.join(folder, 'jess', 'data', 'tomldecode.jsl'))
+  if not tomlDecode then sourceProblem = `cannot read TOML decoder source: {tomlDecodeProblem}` end
 
   if not sourceProblem then
     for _, item in {
@@ -594,9 +611,28 @@ local function generate(root: string): string
     error(`api catalog: jess on PATH generated types for {version}, but the site runs on {jess.version}`, 0)
   end
 
+  local manifestPath = fs.join(root, 'jpk', 'builtin', 'jess.toml')
+  local manifestText, manifestProblem = fs.readFileString(manifestPath)
+  if not manifestText then error(`api catalog: cannot read {manifestPath}: {manifestProblem}`, 0) end
+  local manifest = toml.decode(manifestText) :: { modules: { [string]: string } }
+  local sourceModules: { [string]: boolean } = {}
+  for _, item in typeSources do sourceModules[`@jess/{item.name}`] = true end
+
+  for name in manifest.modules do
+    if not sourceModules[name] then error(`api catalog: new built-in module {name} needs a reference mapping`, 0) end
+    sourceModules[name] = nil
+  end
+
+  for name in sourceModules do error(`api catalog: obsolete built-in module mapping {name}`, 0) end
+
   local members = { 'application', 'bench', 'context', 'events', 'interfaces', 'worker' }
   local modules: { string } = {}
   local symbols: { Symbol } = {}
+
+  table.insert(modules, '@jess')
+  for _, symbol in rootInventory(definitions) do
+    table.insert(symbols, symbol)
+  end
 
   for _, member in members do
     local path = fs.join(root, 'site', 'content', 'docs', 'api', `{member}.md`)
@@ -674,6 +710,15 @@ local function generate(root: string): string
           if symbol.name ~= 'analysis.analyze' and symbol.name ~= 'analysis.workspace' then continue end
           aliases[symbol.name] = `style.{string.sub(symbol.signature, #'analysis.' + 1)}`
         end
+      end
+    end
+
+    if item.name == 'toml' then
+      if not tomlDecode then error('api catalog: missing TOML decoder source', 0) end
+      aliases = {}
+      for _, symbol in sourceSymbols(tomlDecode, documentation, 'toml', true) do
+        local name = string.sub(symbol.name, #'toml.' + 1)
+        aliases[`Decode.{name}`] = symbol.signature
       end
     end
 
@@ -761,4 +806,4 @@ local function publish(output: string, api: string)
   if not saved then error(`api catalog: cannot write catalog: {saveProblem}`, 0) end
 end
 
-return table.freeze { moduleSymbols = moduleSymbols, stubSymbols = stubSymbols, sourceSymbols = sourceSymbols, typeInventory = typeInventory, sourceTypes = sourceTypes, tableFunctions = tableFunctions, generate = generate, publish = publish }
+return table.freeze { moduleSymbols = moduleSymbols, stubSymbols = stubSymbols, sourceSymbols = sourceSymbols, typeInventory = typeInventory, sourceTypes = sourceTypes, tableFunctions = tableFunctions, rootInventory = rootInventory, generate = generate, publish = publish }
