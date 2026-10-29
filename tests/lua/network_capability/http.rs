@@ -29,19 +29,28 @@ pub(super) enum Answer {
 
 pub(super) struct Server {
     port: u16,
+    /// Connections accepted, whatever they asked for.
+    accepted: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Server {
     pub(super) fn start(routes: Vec<(&'static str, Answer)>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
+        let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = std::sync::Arc::clone(&accepted);
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let routes = routes.clone();
                 thread::spawn(move || answer(stream, &routes));
             }
         });
-        Self { port }
+        Self { port, accepted }
+    }
+
+    fn accepted(&self) -> usize {
+        self.accepted.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub(super) fn url(&self, path: &str) -> String {
@@ -367,59 +376,95 @@ fn a_mistaken_request_raises_before_anything_is_sent() {
 }
 
 #[test]
-fn redirects_keep_or_drop_the_method_and_never_carry_credentials_to_another_origin() {
+fn redirects_keep_or_drop_the_method_and_never_carry_credentials_or_a_body_to_another_origin() {
     let other = Server::start(vec![("/echo", Answer::Echo)]);
+    let away = other.url("/echo");
     let server = Server::start(vec![
         ("/echo", Answer::Echo),
         ("/same", Answer::Raw(response(307, "", &[("Location", "/echo")]))),
         ("/see-other", Answer::Raw(response(303, "", &[("Location", "/echo")]))),
         ("/found", Answer::Raw(response(302, "", &[("Location", "/echo")]))),
-        ("/away", Answer::Raw(response(308, "", &[("Location", &other.url("/echo"))]))),
+        ("/away-307", Answer::Raw(response(307, "", &[("Location", &away)]))),
+        ("/away-308", Answer::Raw(response(308, "", &[("Location", &away)]))),
+        ("/away-303", Answer::Raw(response(303, "", &[("Location", &away)]))),
+        ("/away-302", Answer::Raw(response(302, "", &[("Location", &away)]))),
     ]);
-    let echoed = eval(
-        &runtime(),
-        &format!(
-            "
-            local lines = {{}}
-            for _, path in {{ '/same', '/see-other', '/found', '/away' }} do
-              local response, message = http.request {{
-                url = {base:?} .. path,
-                method = 'POST',
-                body = 'payload',
-                headers = {{ Authorization = 'Bearer token', Cookie = 'session=1', ['X-Kept'] = 'yes' }},
-              }}
-              assert(response, message)
-              table.insert(lines, buffer.tostring(response.body))
-            end
-            return table.concat(lines, '\\n=====\\n')
-            ",
-            base = server.url("")
-        ),
-    );
-    let requests: Vec<&str> = echoed.split("\n=====\n").collect();
+    let runtime = runtime();
+    let headers = "{ Authorization = 'Bearer token', Cookie = 'session=1', ['X-API-Key'] = 'secret', \
+                   ['Api-Key'] = 'secret', ['X-Auth-Token'] = 'secret', Accept = 'application/json' }";
+    let send = |path: &str, method: &str, body: &str, extra: &str| {
+        eval(
+            &runtime,
+            &format!(
+                "local response, message, kind = http.request {{
+                  url = {base:?} .. {path:?}, method = {method:?}, body = {body}, headers = {headers}, {extra}
+                }}
+                if not response then return `failed {{kind}}: {{message}}` end
+                return buffer.tostring(response.body)",
+                base = server.url("")
+            ),
+        )
+    };
+
+    let same = send("/same", "POST", "'payload'", "");
     assert!(
-        requests[0].starts_with("POST /echo") && requests[0].ends_with("payload"),
-        "307 repeats the request"
+        same.starts_with("POST /echo") && same.ends_with("payload"),
+        "307 repeats it: {same}"
     );
+    for field in [
+        "authorization: Bearer token",
+        "cookie: session=1",
+        "x-api-key: secret",
+        "x-auth-token: secret",
+    ] {
+        assert!(same.contains(field), "the same origin keeps {field}: {same}");
+    }
+    let see_other = send("/see-other", "POST", "'payload'", "");
     assert!(
-        requests[0].contains("authorization: Bearer token"),
-        "the same origin keeps credentials"
-    );
-    assert!(
-        requests[1].starts_with("GET /echo") && !requests[1].ends_with("payload"),
-        "303 goes on as GET"
-    );
-    assert!(requests[2].starts_with("GET /echo"), "302 after a POST goes on as GET");
-    assert!(
-        requests[3].starts_with("POST /echo") && requests[3].ends_with("payload"),
-        "308 repeats it"
+        see_other.starts_with("GET /echo") && !see_other.ends_with("payload"),
+        "{see_other}"
     );
     assert!(
-        !requests[3].contains("authorization") && !requests[3].contains("cookie"),
-        "{}",
-        requests[3]
+        send("/found", "POST", "'payload'", "").starts_with("GET /echo"),
+        "302 after POST is GET"
     );
-    assert!(requests[3].contains("x-kept: yes"), "other fields still go");
+
+    for path in ["/away-307", "/away-308"] {
+        let refused = send(path, "POST", "'private context'", "");
+        assert!(refused.starts_with("failed crossOriginRedirect:"), "{path}: {refused}");
+        assert!(
+            !refused.contains("private context") && !refused.contains("secret"),
+            "{refused}"
+        );
+    }
+    assert_eq!(
+        other.accepted(),
+        0,
+        "the body never reached the other origin, nor did anything else"
+    );
+
+    let crossed = send("/away-303", "POST", "'private context'", "");
+    assert!(crossed.starts_with("GET /echo"), "303 crosses as a bare GET: {crossed}");
+    assert!(
+        crossed.contains("accept: application/json"),
+        "fields carrying nothing go on: {crossed}"
+    );
+    for field in [
+        "authorization",
+        "cookie",
+        "x-api-key",
+        "api-key",
+        "x-auth-token",
+        "private context",
+    ] {
+        assert!(!crossed.contains(field), "{field} crossed origins: {crossed}");
+    }
+
+    let bare = send("/away-302", "GET", "nil", "");
+    assert!(bare.starts_with("GET /echo") && !bare.contains("x-api-key"), "{bare}");
+    let strict = send("/away-302", "GET", "nil", "crossOriginRedirects = 'refuse'");
+    assert!(strict.starts_with("failed crossOriginRedirect:"), "{strict}");
+    assert_eq!(other.accepted(), 2, "only the two bare GETs reached the other origin");
 }
 
 #[test]

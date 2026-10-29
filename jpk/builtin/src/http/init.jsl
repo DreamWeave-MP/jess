@@ -49,6 +49,10 @@ export type Options = {
   timeoutMs: number?,
   --- Redirect hops followed. 5 unless given; 0 returns the redirect as the response.
   maxRedirects: number?,
+  --- What a redirect to another origin may do: `follow` (the default) goes on with only fields
+  --- that carry no credentials (Accept, User-Agent and the cache and range fields) and never with a
+  --- body; `refuse` fails it as `crossOriginRedirect`.
+  crossOriginRedirects: ('follow' | 'refuse')?,
   --- TLS client settings; the platform's trust store unless given.
   tls: dream_tls_ClientConfig?,
 }
@@ -62,6 +66,7 @@ export type Request = {
   maxBytes: number?,
   timeoutMs: number?,
   maxRedirects: number?,
+  crossOriginRedirects: ('follow' | 'refuse')?,
   tls: dream_tls_ClientConfig?,
 }
 
@@ -92,6 +97,7 @@ export type ErrorKind =
   | 'cancelled'
   | 'limitReached'
   | 'upgrade'
+  | 'crossOriginRedirect'
 
 local Name = 'jess.http'
 local DefaultMaxBytes = 16 * 1024 * 1024
@@ -104,7 +110,17 @@ local MaxChunkLine = 4096
 local ReadChunk = 65536
 local UserAgent = 'jess/0.1.0 (+https://github.com/DreamWeave-MP/jess)'
 local Token = "^[!#$%%&'*+.^_`|~%w-]+$"
-local OptionNames = { 'method', 'headers', 'body', 'json', 'maxBytes', 'timeoutMs', 'maxRedirects', 'tls' }
+local OptionNames = {
+  'method',
+  'headers',
+  'body',
+  'json',
+  'maxBytes',
+  'timeoutMs',
+  'maxRedirects',
+  'crossOriginRedirects',
+  'tls',
+}
 
 --- Fields the client writes itself; a caller's value for one would contradict the framing.
 local Reserved: { [string]: boolean } = {
@@ -115,11 +131,17 @@ local Reserved: { [string]: boolean } = {
   upgrade = true,
 }
 
---- Fields that carry credentials, dropped when a redirect leaves the origin they were sent to.
-local Credentials: { [string]: boolean } = {
-  authorization = true,
-  ['proxy-authorization'] = true,
-  cookie = true,
+--- The only fields a request carries on to another origin when a redirect leaves the one it was
+--- given for. Everything else (Authorization, Cookie, an API key under any name) was written for
+--- that origin, and stays with it for the rest of the chain.
+local CrossOriginFields: { [string]: boolean } = {
+  accept = true,
+  ['accept-language'] = true,
+  ['cache-control'] = true,
+  ['if-modified-since'] = true,
+  ['if-none-match'] = true,
+  range = true,
+  ['user-agent'] = true,
 }
 
 local Redirects: { [number]: boolean } = { [301] = true, [302] = true, [303] = true, [307] = true, [308] = true }
@@ -482,6 +504,7 @@ type Plan = {
   maxBytes: number,
   timeoutMs: number,
   maxRedirects: number,
+  crossOriginRedirects: 'follow' | 'refuse',
   tls: dream_tls_ClientConfig?,
 }
 
@@ -526,6 +549,11 @@ local function plan(url: string, options: Options, what: string): Plan
     if not headers['content-type'] then headers['content-type'] = 'application/json' end
   end
 
+  local crossOrigin = options.crossOriginRedirects or 'follow'
+  if crossOrigin ~= 'follow' and crossOrigin ~= 'refuse' then
+    error(`{Name}.{what}: crossOriginRedirects is 'follow' or 'refuse', not '{crossOrigin}'`, 0)
+  end
+
   return {
     url = url,
     method = method,
@@ -534,6 +562,7 @@ local function plan(url: string, options: Options, what: string): Plan
     maxBytes = options.maxBytes or DefaultMaxBytes,
     timeoutMs = options.timeoutMs or DefaultTimeoutMs,
     maxRedirects = options.maxRedirects or DefaultMaxRedirects,
+    crossOriginRedirects = crossOrigin,
     tls = options.tls,
   }
 end
@@ -639,10 +668,20 @@ local function perform(settings: Plan): (Response?, string?, ErrorKind?)
       return nil, `a redirect from https to {describe(target)} would downgrade the connection`, 'unsupportedScheme'
     end
 
-    -- Credentials were given for one origin; a redirect to another does not carry them on.
+    -- A request was written for one origin. Another gets none of its body, and none of its
+    -- fields but the few that carry nothing of the caller's, from this hop to the end of the chain.
     if previous and origin(previous) ~= origin(target) then
-      for name in Credentials do
-        headers[name] = nil
+      local leaving = `a redirect from {describe(previous)} to {describe(target)}`
+      if settings.crossOriginRedirects == 'refuse' then
+        return nil, `{leaving} leaves the origin, and this request refuses that`, 'crossOriginRedirect'
+      end
+
+      if body then
+        return nil, `{leaving} would carry the request body to another origin`, 'crossOriginRedirect'
+      end
+
+      for name in headers do
+        if not CrossOriginFields[name] then headers[name] = nil end
       end
     end
 

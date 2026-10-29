@@ -34,7 +34,9 @@ of failure. A 404 is a response; a host that will not talk is a failure.
   body (16 MiB unless given; more is `tooLarge`, whether the server declares the length, chunks
   it, or just keeps sending). `timeoutMs` bounds the whole request, redirects included (30
   seconds). `maxRedirects` is how many hops are followed (5; `0` returns the redirect as the
-  response). `tls` is a `@dream/tls` client config, for a trust store other than the platform's.
+  response). `crossOriginRedirects`: `follow` (the default) or `refuse`, what a redirect to
+  another origin may do; [Redirects and credentials](#redirects-and-credentials) has the rules.
+  `tls` is a `@dream/tls` client config, for a trust store other than the platform's.
 - **Returns:** `{ status, reason, headers, body, url, redirects }`. Header names are lower-cased
   and repeated fields joined with `, `. `body` is a `buffer`, empty after HEAD or a bodiless
   status. `url` is where the body came from and `redirects` every URL that answered with a
@@ -45,9 +47,10 @@ of failure. A 404 is a response; a host that will not talk is a failure.
   (a response that is not HTTP/1.x, or frames its body in a way that contradicts itself),
   `tooLarge`, `tooManyRedirects`, `closed` (the connection ended early), `cancelled` (the task
   making the request was cancelled), `limitReached` (its loop holds all the connections it
-  allows).
+  allows), `crossOriginRedirect` (a redirect would have carried the body to another origin, or
+  left the origin at all under `refuse`).
 - **Raises:** for a request that is wrong before anything is sent: an option it doesn't take
-  (`unknown jess.http.request option 'bodyy': expected method, headers, body, json, maxBytes, timeoutMs, maxRedirects, tls`),
+  (`unknown jess.http.request option 'bodyy': expected method, headers, body, json, maxBytes, timeoutMs, maxRedirects, crossOriginRedirects, tls`),
   a field the client writes itself (`Host`, `Content-Length`, `Transfer-Encoding`, `Connection`,
   `Upgrade`), a field name that isn't a token or a value with a line break in it, a method that
   isn't a token, and `body` with `json`.
@@ -88,9 +91,18 @@ that is `closed`.
 Every redirect hop is checked exactly as the first request was: the same scheme rules, the same
 byte and time bounds, the same resolution through the OS resolver. 307 and 308 repeat the request,
 method and body; 303, and 301 or 302 after a POST, go on as a `GET` without the body, as every
-client does. `Authorization`, `Proxy-Authorization` and `Cookie` go only to the origin (scheme,
-host and port) they were given for: a hop to anywhere else drops them, and they stay dropped for
-the rest of the chain. Nothing is retried; a caller that wants a retry policy writes one.
+client does. Nothing is retried; a caller that wants a retry policy writes one.
+
+A request is written for the origin (scheme, host and port) it was given, and what it carries
+stays there. A hop to another origin goes on with only the fields that carry nothing of the
+caller's (`Accept`, `Accept-Language`, `User-Agent`, `Cache-Control`, `Range`, `If-None-Match`,
+`If-Modified-Since`), and they stay that few for the rest of the chain, even back at the first
+origin: `Authorization`, `Cookie`, `X-API-Key` and every other field you set are gone. A hop that
+would carry the body to another origin (a 307 or 308 after a POST, say) isn't taken at all: the
+request fails with `crossOriginRedirect`, and the other origin hears nothing. A redirect from a
+download to a CDN still works, being a bodiless `GET`. An API client that wants no cross-origin
+hops of any kind says `crossOriginRedirects = 'refuse'`; one that means to send its fields
+somewhere else follows the redirect itself, with `maxRedirects = 0`, and decides.
 
 Secrets stay out of messages. A failure names the URL without its query, where some APIs take
 their keys, and a header field that is refused is refused by name, never by value.
