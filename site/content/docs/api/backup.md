@@ -29,9 +29,17 @@ Writes `data` to `path`, making the folders it goes in, after copying what was t
   file there or `backup` was `false`.
 - **Errors:** `jess.backup.write: <message>` when the backup or the write fails
   (`jess.backup.write: dream.fs.writeFile: /proc/nope/x.txt: No such file or directory (os error
-  2)`). A failed backup leaves the old file as it was, and no half-made backup behind; a failed
-  write leaves the old file whole, since the new one only replaces it once it's all on disk.
-  Permissions carry over from the file replaced.
+  2)`). A failed backup does not replace the destination; the module attempts to remove the
+  reserved backup file but cannot guarantee cleanup if removal also fails. The atomic write stages
+  the new bytes beside the destination and renames them into place after writing and syncing the
+  temporary file. Permissions carry over from the file replaced. A capability denial from
+  `@dream/fs` raises directly rather than being rewritten as a `jess.backup.write` error.
+
+The backup copy and the replacement are separate operations. They do not lock out another writer
+and do not form a transaction: concurrent changes to the destination can affect what the backup
+contains. The exclusive reservation prevents cooperating writers from choosing the same backup
+name; coordinate writers when the backup must correspond to a particular version. An atomic
+rename alone is not a guarantee of recovery after every power loss.
 
 ```luau
 --!strict

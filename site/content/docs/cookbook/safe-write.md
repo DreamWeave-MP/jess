@@ -25,4 +25,4 @@ jess run --capability filesystem.read --capability filesystem.write write.jsl
 
 On a fresh directory the output is `notes.txt.bak`. The new `notes.txt` contains `second`; the backup contains `first`. If the backup name is already taken, the next available numbered name is used. This is why the example belongs in scratch: repeating it changes files and creates more backups.
 
-The read and write grants are both required. A failed backup leaves the original in place; a failed replacement does too. The [backup reference](@/docs/api/backup.md) describes the return value, options, and failure behavior. It is not a general version-control system: decide how long your application keeps backups and how a user restores them.
+The read and write grants are both required. A failed backup does not replace the original; replacement stages new bytes before renaming them into place. The [backup reference](@/docs/api/backup.md) describes failures and the limits of this sequence when other writers or a power loss are involved. It is not a general version-control system: decide how long your application keeps backups and how a user restores them.
