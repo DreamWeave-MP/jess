@@ -10,6 +10,8 @@
 local bytes = require '@dream/bytes'
 local json = require '@jess/json'
 local net = require '@jess/net'
+local tcp = require '@dream/tcp'
+local tls = require '@dream/tls'
 
 type NetConnection = net.Connection
 
@@ -136,6 +138,84 @@ export type Client = {
   --- Closes every idle connection now, and every busy one as its request ends. Closing twice does
   --- nothing.
   close: (self: Client) -> (),
+  closed: boolean,
+}
+
+--- A request as `serve` hands it to the handler, its body read whole within `maxBodyBytes`.
+export type ServerRequest = {
+  method: string,
+  --- The request target as it came: a path and query, an absolute URL, or `*`.
+  target: string,
+  --- The target's path, `/` at least.
+  path: string,
+  --- What follows `?` in the target, without it; empty when nothing does.
+  query: string,
+  --- `1.1` or `1.0`.
+  version: string,
+  --- Field names lower-cased; repeated fields joined with `, `.
+  headers: Headers,
+  body: buffer,
+  --- The client's address and port as the socket saw them.
+  remoteAddress: string,
+  --- Whether it came over TLS.
+  secure: boolean,
+}
+
+--- What a handler answers with: a whole body (`body`, or a table sent as JSON with `json`), or a
+--- body written as it is made (`stream`, called in the connection's task with a `send` that writes
+--- one chunk and says whether it went).
+export type ServerResponse = {
+  --- 200 unless given; 200 to 599.
+  status: number?,
+  --- Fields beyond Date, Content-Length, Transfer-Encoding and Connection, which the server writes.
+  headers: Headers?,
+  body: (string | buffer)?,
+  json: unknown?,
+  stream: ((send: (data: string | buffer) -> boolean) -> ())?,
+}
+
+export type ServeOptions = {
+  --- Where to listen, `127.0.0.1:8080` or `[::1]:0`; port 0 takes a free one.
+  address: string,
+  --- Called with each request in its connection's task, where it may wait on anything a task can.
+  handler: (request: ServerRequest) -> ServerResponse,
+  --- A `@dream/tls` server config, for HTTPS.
+  tls: dream_tls_ServerConfig?,
+  --- Connections served at once; past it the server stops accepting until one ends. 256 unless
+  --- given.
+  maxConnections: number?,
+  --- The request line and header fields together. 64 KiB unless given; more is 431.
+  maxHeadBytes: number?,
+  --- A request body. 16 MiB unless given; more is 413, refused before it is read when the length
+  --- is declared.
+  maxBodyBytes: number?,
+  --- How long a connection may take to send a whole request head, waiting between requests
+  --- included; past it the connection is closed. 10 seconds unless given.
+  headTimeoutMs: number?,
+  --- How long a request's body may take once its head is in; past it, 408. 30 seconds unless given.
+  bodyTimeoutMs: number?,
+  --- Requests one connection may carry before the server closes it. 1000 unless given.
+  maxRequestsPerConnection: number?,
+  --- Called with what a handler raised, or why its response couldn't be sent, and the request.
+  --- Without it, a failure is raised from the connection's task, as any task's failure is.
+  onError: ((message: string, request: ServerRequest?) -> ())?,
+}
+
+export type ServerStats = {
+  --- Connections open now.
+  connections: number,
+  --- Requests handed to the handler since the server started.
+  requests: number,
+}
+
+export type Server = {
+  --- The address the server listens on, its port filled in.
+  address: string,
+  port: number,
+  stats: (self: Server) -> ServerStats,
+  --- Stops listening and closes every connection at once; a handler still running finds its
+  --- connection closed. Closing twice does nothing.
+  close: (self: Server) -> (),
   closed: boolean,
 }
 
@@ -1353,6 +1433,527 @@ local function upgrade(spec: UpgradeRequest): (Response?, NetConnection?, string
   return response, nil, `{describe(url)} answered {answer.status} instead of switching protocols`, 'upgrade'
 end
 
+local Reasons: { [number]: string } = {
+  [100] = 'Continue',
+  [200] = 'OK',
+  [201] = 'Created',
+  [202] = 'Accepted',
+  [204] = 'No Content',
+  [206] = 'Partial Content',
+  [301] = 'Moved Permanently',
+  [302] = 'Found',
+  [303] = 'See Other',
+  [304] = 'Not Modified',
+  [307] = 'Temporary Redirect',
+  [308] = 'Permanent Redirect',
+  [400] = 'Bad Request',
+  [401] = 'Unauthorized',
+  [403] = 'Forbidden',
+  [404] = 'Not Found',
+  [405] = 'Method Not Allowed',
+  [408] = 'Request Timeout',
+  [409] = 'Conflict',
+  [413] = 'Content Too Large',
+  [415] = 'Unsupported Media Type',
+  [417] = 'Expectation Failed',
+  [422] = 'Unprocessable Content',
+  [429] = 'Too Many Requests',
+  [431] = 'Request Header Fields Too Large',
+  [500] = 'Internal Server Error',
+  [501] = 'Not Implemented',
+  [502] = 'Bad Gateway',
+  [503] = 'Service Unavailable',
+  [505] = 'HTTP Version Not Supported',
+}
+
+--- Fields the server writes itself; a handler's value for one would contradict the framing.
+local ServerReserved: { [string]: boolean } = {
+  ['content-length'] = true,
+  ['transfer-encoding'] = true,
+  connection = true,
+  date = true,
+}
+
+local ServeOptionNames = {
+  'address',
+  'handler',
+  'tls',
+  'maxConnections',
+  'maxHeadBytes',
+  'maxBodyBytes',
+  'headTimeoutMs',
+  'bodyTimeoutMs',
+  'maxRequestsPerConnection',
+  'onError',
+}
+
+type RequestHead = { method: string, target: string, version: string, headers: Headers }
+
+--- `text` as a request head, or nil and the status that refuses it.
+local function parseRequestHead(text: string): (RequestHead?, number?)
+  local lines = string.split(text, '\r\n')
+  local method, target, version = string.match(lines[1], '^(%S+) (%S+) HTTP/(%d%.%d)$')
+  if not method or not string.match(method :: string, Token) then return nil, 400 end
+  if version ~= '1.1' and version ~= '1.0' then return nil, 505 end
+  if string.find(target :: string, '[%c\128-\255]') then return nil, 400 end
+
+  local headers: Headers = {}
+  for index = 2, #lines do
+    local line = lines[index]
+    if string.find(line, '^[ \t]') then return nil, 400 end
+
+    local name, value = string.match(line, "^([!#$%%&'*+.^_`|~%w-]+):[ \t]*(.-)[ \t]*$")
+    if not name or string.find(value :: string, '[%z\1-\8\10-\31\127]') then return nil, 400 end
+
+    local key = string.lower(name :: string)
+    if key == 'host' and headers.host then return nil, 400 end
+
+    headers[key] = if headers[key] then `{headers[key]}, {value}` else value :: string
+  end
+
+  -- An HTTP/1.1 request without Host is malformed, and one that names its own is how a client
+  -- reaches a virtual host; both are the RFC's rules.
+  if version == '1.1' and not headers.host then return nil, 400 end
+
+  return { method = method :: string, target = target :: string, version = version :: string, headers = headers }, nil
+end
+
+--- The path and query of a request target: origin-form, absolute-form, or `*` for OPTIONS.
+local function splitTarget(method: string, target: string): (string?, string?)
+  local path = target
+  if target == '*' then
+    if method ~= 'OPTIONS' then return nil, nil end
+
+    return '*', ''
+  end
+
+  if string.sub(target, 1, 1) ~= '/' then
+    local url = parseUrl(target)
+    if not url then return nil, nil end
+
+    path = url.target
+  end
+
+  local before, after = string.match(path, '^([^?]*)%??(.*)$')
+
+  return before, after
+end
+
+--- The status line and fields of a response; `length` is nil for a chunked body.
+local function responseHead(status: number, headers: Headers, length: number?, keep: boolean, bodiless: boolean): string
+  local lines = { `HTTP/1.1 {status} {Reasons[status] or ''}`, `date: {os.date('!%a, %d %b %Y %H:%M:%S GMT')}` }
+  local names: { string } = {}
+  for name in headers do
+    table.insert(names, name)
+  end
+
+  table.sort(names)
+  for _, name in names do
+    table.insert(lines, `{name}: {headers[name]}`)
+  end
+
+  if not bodiless then
+    table.insert(lines, if length then `content-length: {length}` else 'transfer-encoding: chunked')
+  end
+
+  if not keep then table.insert(lines, 'connection: close') end
+
+  return `{table.concat(lines, '\r\n')}\r\n\r\n`
+end
+
+--- A response with `status` and its reason as a plain-text body.
+local function plain(status: number): ServerResponse
+  return { status = status, headers = { ['content-type'] = 'text/plain; charset=utf-8' }, body = Reasons[status] or '' }
+end
+
+--- `response` checked: its status, fields and body, or why it can't be sent.
+local function checkResponse(response: unknown): (ServerResponse?, Headers?, (string | buffer)?, string?)
+  if type(response) ~= 'table' then return nil, nil, nil, 'a handler answers with a response table' end
+
+  local answer = response :: ServerResponse
+  local status = answer.status or 200
+  if type(status) ~= 'number' or status ~= math.floor(status) or status < 200 or status > 599 then
+    return nil, nil, nil, `a response status is a whole number from 200 to 599, not {status}`
+  end
+
+  local headers: Headers = {}
+  for name, value in answer.headers or {} do
+    if type(name) ~= 'string' or not string.match(name, Token) then
+      return nil, nil, nil, `'{name}' is not a header field name`
+    end
+
+    if type(value) ~= 'string' or string.find(value, '[\r\n%z]') then
+      return nil, nil, nil, `header '{name}' needs a string value without line breaks`
+    end
+
+    local key = string.lower(name)
+    if ServerReserved[key] then return nil, nil, nil, `'{name}' is written by the server, not the handler` end
+
+    headers[key] = value
+  end
+
+  local given = (if answer.body ~= nil then 1 else 0) + (if answer.json ~= nil then 1 else 0)
+    + (if answer.stream ~= nil then 1 else 0)
+  if given > 1 then return nil, nil, nil, 'a response has one of body, json and stream' end
+
+  local body = answer.body
+  if answer.json ~= nil then
+    body = json.encodeTable(answer.json)
+    if not headers['content-type'] then headers['content-type'] = 'application/json' end
+  end
+
+  return answer, headers, body, nil
+end
+
+type ServerState = {
+  public: Server,
+  options: ServeOptions,
+  listener: dream_tcp_Listener,
+  acceptor: net.Task?,
+  connections: { [NetConnection]: boolean },
+  open: number,
+  requests: number,
+  --- Notified when a connection ends, for an acceptor waiting for room.
+  room: net.Signal,
+  maxConnections: number,
+  maxHeadBytes: number,
+  maxBodyBytes: number,
+  headTimeoutMs: number,
+  bodyTimeoutMs: number,
+  maxRequests: number,
+}
+
+--- Writes `response` on `connection`; false when it couldn't be sent whole.
+local function respond(
+  connection: NetConnection,
+  status: number,
+  headers: Headers,
+  body: (string | buffer)?,
+  stream: ((send: (data: string | buffer) -> boolean) -> ())?,
+  keep: boolean,
+  headOnly: boolean,
+  deadline: number
+): (boolean, string?)
+  local bodiless = status == 204 or status == 304
+  local length = if stream then nil else bodyLength(body) or 0
+  local sent, problem = connection:send(responseHead(status, headers, length, keep, bodiless), deadline)
+  if not sent then return false, problem end
+
+  if headOnly or bodiless then return true, nil end
+
+  if not stream then
+    if not body or (bodyLength(body) or 0) == 0 then return true, nil end
+
+    local bodySent, bodyProblem = connection:send(body, deadline)
+
+    return bodySent, bodyProblem
+  end
+
+  local writer = stream :: (send: (data: string | buffer) -> boolean) -> ()
+  local failed: string?
+  writer(function(data: string | buffer): boolean
+    if failed then return false end
+
+    local size = bodyLength(data) or 0
+    if size == 0 then return true end
+
+    local ok, problemText = connection:send(`{string.format('%x', size)}\r\n`)
+    if ok then ok, problemText = connection:send(data) end
+    if ok then ok, problemText = connection:send('\r\n') end
+
+    if not ok then failed = problemText or 'the connection closed' end
+
+    return ok
+  end)
+
+  if failed then return false, failed end
+
+  local ended, endProblem = connection:send('0\r\n\r\n', deadline)
+
+  return ended, endProblem
+end
+
+--- Reports `message` to the server's `onError`, or, without one, keeps it for the task to raise.
+local function report(state: ServerState, message: string, request: ServerRequest?): string?
+  local onError = state.options.onError
+  if onError then
+    onError(message, request)
+    return nil
+  end
+
+  return message
+end
+
+local function serveConnection(state: ServerState, socket: dream_tcp_Stream)
+  local remote = socket.peerAddress
+  local config = state.options.tls
+  local secure: dream_tls_Stream?
+  if config then
+    local session = tls.server(socket, config, { handshakeTimeoutMs = math.floor(math.min(state.headTimeoutMs, 60000)) })
+    if not session then
+      socket:close()
+      return
+    end
+
+    local deadline = net.now() + state.headTimeoutMs
+    local live = session :: dream_tls_Stream
+    while true do
+      local done = live:handshake()
+      if done then break end
+
+      if done == nil or not net.wait(live, if live.wantsWrite then 'write' else 'read', deadline) then
+        live:close()
+        return
+      end
+    end
+
+    secure = live
+  end
+
+  local adopted = net.adopt(socket, { tls = secure })
+  if not adopted then
+    if secure then secure:close() else socket:close() end
+    return
+  end
+
+  local connection = adopted :: NetConnection
+  state.connections[connection] = true
+  local served, failure = 0, nil
+
+  while not state.public.closed do
+    local text, _, kind = connection:receiveUntil('\r\n\r\n', state.maxHeadBytes, net.now() + state.headTimeoutMs)
+    if not text then
+      if kind == 'limitReached' then
+        local answer = plain(431)
+        respond(connection, 431, answer.headers :: Headers, answer.body, nil, false, false, net.now() + 1000)
+      end
+
+      break
+    end
+
+    -- A server ignores empty lines before a request line (RFC 9112, 2.2).
+    local head = string.gsub(text :: string, '^[\r\n]+', '')
+    if head == '' then continue end
+
+    local parsed, refusal = parseRequestHead(head)
+    local path, query
+    if parsed then path, query = splitTarget(parsed.method, parsed.target) end
+
+    local status = refusal or (if parsed and not path then 400 else nil)
+    local fields = if parsed then parsed.headers else {}
+    local framing: 'none' | 'length' | 'chunked' | 'close', declared = 'none', 0
+    local encoding, length = fields['transfer-encoding'], fields['content-length']
+
+    -- Both, or a coding this server can't take apart, is how one request is smuggled inside
+    -- another: refused outright rather than guessed at.
+    if not status and encoding then
+      if length then
+        status = 400
+      elseif string.lower(encoding) ~= 'chunked' then
+        status = 501
+      else
+        framing = 'chunked'
+      end
+    elseif not status and length then
+      local counted = declaredLength(length)
+      if not counted then
+        status = 400
+      elseif counted > state.maxBodyBytes then
+        status = 413
+      else
+        framing, declared = 'length', counted
+      end
+    end
+
+    local expectation = string.lower(fields.expect or '')
+    if not status and expectation ~= '' and expectation ~= '100-continue' then status = 417 end
+
+    if status then
+      local answer = plain(status)
+      respond(connection, status, answer.headers :: Headers, answer.body, nil, false, false, net.now() + 1000)
+      break
+    end
+
+    local request = parsed :: RequestHead
+    if expectation == '100-continue' and framing ~= 'none' and request.version == '1.1' then
+      if not connection:send('HTTP/1.1 100 Continue\r\n\r\n', net.now() + state.bodyTimeoutMs) then break end
+    end
+
+    local body: Body = {
+      connection = connection,
+      framing = framing,
+      remaining = declared,
+      owesCrlf = false,
+      done = framing == 'none' or (framing == 'length' and declared == 0),
+      delivered = 0,
+      limit = state.maxBodyBytes,
+    }
+
+    local data, _, bodyKind = readAll(body, net.now() + state.bodyTimeoutMs)
+    if not data then
+      local refused = if bodyKind == 'tooLarge' then 413 elseif bodyKind == 'timeout' then 408 else 400
+      if bodyKind ~= 'closed' then
+        local answer = plain(refused)
+        respond(connection, refused, answer.headers :: Headers, answer.body, nil, false, false, net.now() + 1000)
+      end
+
+      break
+    end
+
+    served += 1
+    state.requests += 1
+    local closing = string.find(`,{string.lower(fields.connection or '')},`, ',%s*close%s*,') ~= nil
+    local keep = request.version == '1.1' and not closing and served < state.maxRequests and not state.public.closed
+
+    local incoming: ServerRequest = {
+      method = request.method,
+      target = request.target,
+      path = path :: string,
+      query = query or '',
+      version = request.version,
+      headers = fields,
+      body = data :: buffer,
+      remoteAddress = remote,
+      secure = secure ~= nil,
+    }
+
+    -- The handler is the application's code, and anything it raises is answered with a 500 and
+    -- reported, rather than ending the server.
+    local ran, result = pcall(state.options.handler, incoming)
+    local answer, headers, responseBody, problem
+    if ran then
+      answer, headers, responseBody, problem = checkResponse(result)
+    else
+      problem = tostring(result)
+    end
+
+    if not answer then
+      local fallback = plain(500)
+      respond(connection, 500, fallback.headers :: Headers, fallback.body, nil, false, false, net.now() + 1000)
+      failure = report(state, problem or 'the handler failed', incoming)
+      break
+    end
+
+    local reply = answer :: ServerResponse
+    local sent, sendProblem = respond(
+      connection,
+      reply.status or 200,
+      headers :: Headers,
+      responseBody,
+      reply.stream,
+      keep,
+      request.method == 'HEAD',
+      net.now() + state.bodyTimeoutMs
+    )
+
+    if not sent then
+      failure = report(state, `the response to {request.method} {path} wasn't sent: {sendProblem}`, incoming)
+      break
+    end
+
+    if not keep then break end
+  end
+
+  connection:close()
+  state.connections[connection] = nil
+  state.open -= 1
+  state.room:notify()
+  if failure then error(`{Name}.serve: {failure}`, 0) end
+end
+
+--- In a @jess/net task: listens on `options.address` and serves HTTP/1.1 there, each connection a
+--- task of its own on the running task's loop, until the server is closed. The server, or nil, why
+--- and `listen` when the address can't be listened on. Listening needs network.tcp.listen, and an
+--- address beyond loopback network.tcp.public as well.
+local function serve(options: ServeOptions): (Server?, string?, string?)
+  if type(options) ~= 'table' then error(`{Name}.serve: takes an options table with an address and a handler`, 0) end
+
+  for key in options :: { [string]: unknown } do
+    if not table.find(ServeOptionNames, key) then
+      error(`unknown {Name}.serve option '{key}': expected {table.concat(ServeOptionNames, ', ')}`, 0)
+    end
+  end
+
+  if not net.current() then error(`{Name}.serve: a server's connections are tasks, so it starts in a @jess/net task`, 0) end
+
+  if type(options.address) ~= 'string' then error(`{Name}.serve: the address is a string like '127.0.0.1:8080'`, 0) end
+  if type(options.handler) ~= 'function' then error(`{Name}.serve: the handler is a function`, 0) end
+
+  local maxConnections = whole(options.maxConnections or 256, 1, 16384, 'serve', 'maxConnections')
+  local listening, message, kind = tcp.listen(options.address, { maxStreams = maxConnections, noDelay = true })
+  if not listening then return nil, `could not listen on {options.address}: {message} ({kind})`, 'listen' end
+
+  local listener = listening :: dream_tcp_Listener
+  local port = tonumber(string.match(listener.localAddress, ':(%d+)$')) or 0
+  local state: ServerState
+  local public: Server = {
+    address = listener.localAddress,
+    port = port,
+    stats = function(_self: Server): ServerStats return { connections = state.open, requests = state.requests } end,
+    close = function(_self: Server)
+      if state.public.closed then return end
+
+      state.public.closed = true
+      -- The listener is the acceptor's to close as it stops: closing it under its wait would
+      -- drop a registration the wait still holds.
+      if state.acceptor then state.acceptor:cancel() end
+
+      for connection in state.connections do
+        connection:close()
+      end
+
+      state.room:notify()
+    end,
+    closed = false,
+  }
+
+  state = {
+    public = public,
+    options = options,
+    listener = listener,
+    acceptor = nil,
+    connections = {},
+    open = 0,
+    requests = 0,
+    room = net.signal(),
+    maxConnections = maxConnections,
+    maxHeadBytes = whole(options.maxHeadBytes or MaxHeadBytes, 64, 2 ^ 24, 'serve', 'maxHeadBytes'),
+    maxBodyBytes = whole(options.maxBodyBytes or DefaultMaxBytes, 0, 2 ^ 53, 'serve', 'maxBodyBytes'),
+    headTimeoutMs = duration(options.headTimeoutMs or 10000, 'serve', 'headTimeoutMs'),
+    bodyTimeoutMs = duration(options.bodyTimeoutMs or 30000, 'serve', 'bodyTimeoutMs'),
+    maxRequests = whole(options.maxRequestsPerConnection or 1000, 1, 2 ^ 31, 'serve', 'maxRequestsPerConnection'),
+  } :: ServerState
+
+  state.acceptor = net.spawn(function()
+    while not public.closed do
+      if state.open >= state.maxConnections then
+        state.room:wait()
+        continue
+      end
+
+      local socket, _, acceptKind = listener:accept()
+      if socket then
+        state.open += 1
+        local accepted = socket :: dream_tcp_Stream
+        net.spawn(function() serveConnection(state, accepted) end, `{Name} connection`)
+        continue
+      end
+
+      if acceptKind == 'wouldBlock' then
+        if not net.wait(listener, 'read') then break end
+
+        continue
+      end
+
+      if not net.sleep(10) then break end
+    end
+
+    listener:close()
+  end, `{Name} listener {public.address}`)
+
+  return public, nil, nil
+end
+
 --- The response's body decoded as JSON, or nil and why it isn't JSON.
 local function decodeJson(response: Response): (unknown, string?)
   -- `json.decode` throws on a document that is not JSON, and a server's body is not ours to trust.
@@ -1367,6 +1968,7 @@ return table.freeze {
   get = get,
   open = open,
   client = newClient,
+  serve = serve,
   upgrade = upgrade,
   json = decodeJson,
   parseUrl = parseUrl,

@@ -6,7 +6,7 @@ extra:
   kind: api
 ---
 
-{{ api_signature(value="require('@jess/http'): { request, get, open, client, upgrade, json, parseUrl, resolveReference }") }}
+{{ api_signature(value="require('@jess/http'): { request, get, open, client, serve, upgrade, json, parseUrl, resolveReference }") }}
 
 The client `jess workspace sync` fetches manifests and archives with, and the one an application
 calls its APIs with. `request` reads a whole response; `open` hands its body out as it arrives;
@@ -254,6 +254,85 @@ end)
 
 The response body decoded with [`@jess/json`](@/docs/api/json.md), or `nil` and why it isn't JSON.
 It decodes whatever came back, so check `status` first; an error page is rarely JSON.
+
+## serve
+
+{{ api_signature(value="http.serve(options: ServeOptions) -> (Server?, string?, string?)") }}
+
+In a `@jess/net` task: listens on `options.address` and serves HTTP/1.1 there until the server is
+closed. Every connection is a task of its own on the running task's loop, and the handler runs in
+it, so a handler can wait on whatever a task can (a request to another service, a sleep, a
+signal) without holding up any other connection, or the frame.
+
+- **Parameters:** `address`, `127.0.0.1:8080` or `[::1]:0` (port 0 takes a free one). `handler`,
+  called with each request, returning its response. `tls`, a `@dream/tls` server config, for
+  HTTPS. `maxConnections` (256): connections served at once; past it the server stops accepting
+  until one ends, so a flood waits in the operating system's backlog instead of in memory.
+  `maxHeadBytes` (64 KiB): more is 431. `maxBodyBytes` (16 MiB): more is 413. `headTimeoutMs` (10
+  seconds): how long a connection may take to send a whole request head, the wait between
+  requests on a kept connection included; past it the connection is dropped without an answer.
+  `bodyTimeoutMs` (30 seconds): how long the body may take after the head; past it, 408.
+  `maxRequestsPerConnection` (1000). `onError`, called with what a handler raised, or why a
+  response couldn't be sent, and the request.
+- **Returns:** a `Server`: `address` and `port` as bound, `stats` (`{ connections, requests }`),
+  `close` and `closed`; or `nil`, why, and `listen` when the address can't be listened on.
+- **Raises:** outside a task, for an option it doesn't take, and, from the runtime, without
+  `network.tcp.listen` (and `network.tcp.public` for an address beyond loopback).
+
+The handler gets `{ method, target, path, query, version, headers, body, remoteAddress, secure }`:
+field names lower-cased as the client's are, the body read whole within `maxBodyBytes` (by length
+or by chunks, `Expect: 100-continue` answered first). It answers with `{ status, headers, body }`,
+`json` instead of `body` for a table sent as JSON, or `stream`, a function called with a `send`
+that writes one chunk and says whether it went, for a body made as it goes: an event stream, a
+long download. The server writes `Date`, `Content-Length` or `Transfer-Encoding`, and
+`Connection`, and no body after `HEAD` or with a 204 or 304.
+
+A connection stays open for the next request under HTTP/1.1 unless the client says
+`Connection: close`; pipelined requests are answered in order. What could be read two ways, which
+is how one request is smuggled inside another, is refused and the connection closed: a request
+with both `Content-Length` and `Transfer-Encoding`, a transfer coding other than `chunked` (501),
+a `Content-Length` that disagrees with itself, a malformed request line, a field folded over two
+lines or holding a control character, an HTTP/1.1 request without exactly one `Host`, and any
+version but 1.0 and 1.1 (505). A body that declares more than `maxBodyBytes`, whole or a chunk at
+a time, is 413 before any of it is read.
+
+A handler that raises answers 500, and so does a response with a status outside 200 to 599, a
+field the server writes itself, or a field with a line break in it; the connection closes, the
+failure goes to `onError`, or without one is raised from the connection's task, and the server
+carries on serving everyone else. `server:close()` stops listening and closes every connection at
+once.
+
+```luau
+--!strict
+local bytes = require '@dream/bytes'
+local http = require '@jess/http'
+local net = require '@jess/net'
+
+local secret = 'shared webhook secret'
+
+net.run(function()
+  local server, problem = http.serve {
+    address = '127.0.0.1:8080',
+    handler = function(request: http.ServerRequest): http.ServerResponse
+      if request.method ~= 'POST' or request.path ~= '/hooks' then return { status = 404 } end
+
+      local signature = string.match(request.headers['x-signature-256'] or '', '^sha256=(%x+)$')
+      if not signature or not bytes.hmacVerify(request.body, secret, 'sha256', bytes.fromHex(signature)) then
+        return { status = 401, body = 'bad signature' }
+      end
+
+      print(`{request.headers['x-event'] or 'event'}: {buffer.len(request.body)} bytes`)
+      return { status = 204 }
+    end,
+  }
+
+  if not server then error(problem) end
+
+  print(`listening on {server.address}`)
+  net.sleep(60000)
+  server:close()
+end)
+```
 
 ## upgrade
 
