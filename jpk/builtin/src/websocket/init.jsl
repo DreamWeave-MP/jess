@@ -37,6 +37,9 @@ export type Options = {
   --- The largest message, fragments joined, that `receive` accepts. 16 MiB unless given; a larger
   --- one closes the connection with 1009.
   maxMessageBytes: number?,
+  --- The largest message `send` takes. 16 MiB unless given; a larger one is refused as `tooLarge`
+  --- before anything is framed.
+  maxSendBytes: number?,
   --- How long `close` waits for the peer's close frame. 5 seconds unless given.
   closeTimeoutMs: number?,
 }
@@ -71,6 +74,7 @@ export type Socket = {
 local Name = 'jess.websocket'
 local Guid = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
 local DefaultMaxMessageBytes = 16 * 1024 * 1024
+local DefaultMaxSendBytes = 16 * 1024 * 1024
 local DefaultTimeoutMs = 30000
 local DefaultCloseTimeoutMs = 5000
 --- How long sending a close frame for a protocol failure may take before the connection is
@@ -78,6 +82,26 @@ local DefaultCloseTimeoutMs = 5000
 local FailureSendMs = 1000
 
 local Opcodes = { continuation = 0, text = 1, binary = 2, close = 8, ping = 9, pong = 10 }
+
+--- `value` as a whole number from `low` to `high`, or an error naming the option.
+local function whole(value: number, low: number, high: number, name: string): number
+  if type(value) ~= 'number' or value ~= math.floor(value) or value < low or value > high then
+    error(`{Name}.connect: {name} is a whole number from {low} to {high}, not {value}`, 0)
+  end
+
+  return value
+end
+
+--- `value` as a finite span of milliseconds, above zero unless `zero` allows it.
+local function duration(value: number, name: string, zero: boolean): number
+  local low = value ~= value or value < 0 or (not zero and value == 0)
+  if type(value) ~= 'number' or low or value == math.huge then
+    error(`{Name}.connect: {name} is a finite number of milliseconds, not {value}`, 0)
+  end
+
+  return value
+end
+
 --- Header fields the handshake writes; a caller's value for one would break it.
 local HandshakeFields: { [string]: boolean } = {
   ['sec-websocket-key'] = true,
@@ -91,8 +115,13 @@ type SocketState = {
   public: Socket,
   connection: NetConnection,
   maxMessageBytes: number,
+  maxSendBytes: number,
   closeTimeoutMs: number,
   sentClose: boolean,
+  --- Whether a frame is being framed and sent; frames wait their turn before they are built, so
+  --- a socket holds one encoded frame at a time however many tasks send on it.
+  sending: boolean,
+  sendTurn: net.Signal,
   receiving: boolean,
   closed: net.Signal,
   --- The message being reassembled: its fragments so far, its kind, and its size. It lives here,
@@ -175,13 +204,36 @@ local function finish(state: SocketState, code: number?, reason: string?)
   socket.closeReason = socket.closeReason or reason
   state.connection:close()
   state.closed:notify()
+  state.sendTurn:notify()
+end
+
+--- Frames `payload` and sends it, once every frame before it has gone. Every frame this socket
+--- sends goes through here, control frames included.
+local function transmit(state: SocketState, opcode: number, payload: string | buffer, deadline: number?): (boolean, string?, ErrorKind?)
+  while state.sending do
+    local notified, reason = state.sendTurn:wait(deadline)
+    if not notified then
+      local kind: ErrorKind = if reason == 'timeout' or reason == 'cancelled' then reason else 'closed'
+      return false, `waiting to send ended: {reason}`, kind
+    end
+  end
+
+  if state.public.state == 'closed' then return false, 'the connection is closed', 'closed' end
+
+  state.sending = true
+  local sent, problem, failure = state.connection:send(encodeFrame(opcode, payload), deadline)
+  state.sending = false
+  state.sendTurn:notify()
+  if not sent then return false, problem, failure :: ErrorKind end
+
+  return true, nil, nil
 end
 
 --- Ends the connection for a protocol failure: tells the peer `code` if it can, then drops it.
 local function fail(state: SocketState, code: number, message: string, kind: ErrorKind): (nil, string, ErrorKind)
   if not state.sentClose and state.public.state ~= 'closed' then
     state.sentClose = true
-    state.connection:send(encodeFrame(Opcodes.close, closePayload(code, nil)), net.now() + FailureSendMs)
+    transmit(state, Opcodes.close, closePayload(code, nil), net.now() + FailureSendMs)
   end
 
   finish(state, code, nil)
@@ -256,7 +308,7 @@ local function closedByPeer(state: SocketState, payload: string): (nil, string, 
   if not state.sentClose then
     state.sentClose = true
     local echo = closePayload(if code == 1005 then nil else code, nil)
-    state.connection:send(encodeFrame(Opcodes.close, echo), net.now() + FailureSendMs)
+    transmit(state, Opcodes.close, echo, net.now() + FailureSendMs)
   end
 
   finish(state, code, reason)
@@ -285,7 +337,7 @@ local function receive(state: SocketState, deadline: number?): (Message?, string
 
     local opcode, payload = frame.opcode, frame.payload
     if opcode == Opcodes.ping then
-      if not state.sentClose then state.connection:send(encodeFrame(Opcodes.pong, payload), deadline) end
+      if not state.sentClose then transmit(state, Opcodes.pong, payload, deadline) end
 
       continue
     end
@@ -347,6 +399,11 @@ local function send(
 ): (boolean, string?, ErrorKind?)
   if state.public.state ~= 'open' then return false, 'the connection is closing or closed', 'closed' end
 
+  local length = if type(data) == 'string' then #data else buffer.len(data)
+  if length > state.maxSendBytes then
+    return false, `a message of {length} bytes is larger than the {state.maxSendBytes} a send takes`, 'tooLarge'
+  end
+
   local messageKind = kind or 'text'
   if messageKind ~= 'text' and messageKind ~= 'binary' then
     error(`{Name}.Socket:send: a message is 'text' or 'binary', not '{messageKind}'`, 0)
@@ -357,10 +414,8 @@ local function send(
   end
 
   local opcode = if messageKind == 'text' then Opcodes.text else Opcodes.binary
-  local sent, problem, failure = state.connection:send(encodeFrame(opcode, data), deadline)
-  if not sent then return false, problem, failure :: ErrorKind end
 
-  return true, nil, nil
+  return transmit(state, opcode, data, deadline)
 end
 
 local function ping(state: SocketState, payload: string?, deadline: number?): (boolean, string?, ErrorKind?)
@@ -369,10 +424,7 @@ local function ping(state: SocketState, payload: string?, deadline: number?): (b
   local data = payload or ''
   if #data > 125 then error(`{Name}.Socket:ping: a ping carries at most 125 bytes, not {#data}`, 0) end
 
-  local sent, problem, failure = state.connection:send(encodeFrame(Opcodes.ping, data), deadline)
-  if not sent then return false, problem, failure :: ErrorKind end
-
-  return true, nil, nil
+  return transmit(state, Opcodes.ping, data, deadline)
 end
 
 local function close(state: SocketState, code: number?, reason: string?)
@@ -390,7 +442,7 @@ local function close(state: SocketState, code: number?, reason: string?)
     state.sentClose = true
     socket.state = 'closing'
     socket.closeCode, socket.closeReason = closeCode, text
-    state.connection:send(encodeFrame(Opcodes.close, closePayload(closeCode, text)), deadline)
+    transmit(state, Opcodes.close, closePayload(closeCode, text), deadline)
   end
 
   -- Whoever is receiving reads the peer's close frame; with nobody receiving, this call does.
@@ -412,15 +464,20 @@ end
 local function connect(url: string, options: Options?): (Socket?, string?, ErrorKind?)
   local settings: Options = options or {}
   for key in settings :: { [string]: unknown } do
-    if not table.find({ 'headers', 'protocols', 'timeoutMs', 'tls', 'maxMessageBytes', 'closeTimeoutMs' }, key) then
+    if not table.find({ 'headers', 'protocols', 'timeoutMs', 'tls', 'maxMessageBytes', 'maxSendBytes', 'closeTimeoutMs' }, key) then
       error(
-        `unknown {Name}.connect option '{key}': expected headers, protocols, timeoutMs, tls, maxMessageBytes, closeTimeoutMs`,
+        `unknown {Name}.connect option '{key}': expected headers, protocols, timeoutMs, tls, maxMessageBytes, maxSendBytes, closeTimeoutMs`,
         0
       )
     end
   end
 
   if not net.current() then error(`{Name}.connect: a socket lives on a loop, so it opens in a @jess/net task`, 0) end
+
+  local maxMessageBytes = whole(settings.maxMessageBytes or DefaultMaxMessageBytes, 1, 2 ^ 31, 'maxMessageBytes')
+  local maxSendBytes = whole(settings.maxSendBytes or DefaultMaxSendBytes, 1, 2 ^ 31, 'maxSendBytes')
+  local closeTimeoutMs = duration(settings.closeTimeoutMs or DefaultCloseTimeoutMs, 'closeTimeoutMs', true)
+  local timeoutMs = duration(settings.timeoutMs or DefaultTimeoutMs, 'timeoutMs', false)
 
   local scheme, rest = string.match(url, '^(%a+)://(.*)$')
   local lowered = string.lower(scheme or '')
@@ -450,7 +507,7 @@ local function connect(url: string, options: Options?): (Socket?, string?, Error
     protocol = 'websocket',
     headers = headers,
     maxBytes = 65536,
-    timeoutMs = settings.timeoutMs or DefaultTimeoutMs,
+    timeoutMs = timeoutMs,
     tls = settings.tls,
   }
 
@@ -507,9 +564,12 @@ local function connect(url: string, options: Options?): (Socket?, string?, Error
   state = {
     public = public,
     connection = live,
-    maxMessageBytes = settings.maxMessageBytes or DefaultMaxMessageBytes,
-    closeTimeoutMs = settings.closeTimeoutMs or DefaultCloseTimeoutMs,
+    maxMessageBytes = maxMessageBytes,
+    maxSendBytes = maxSendBytes,
+    closeTimeoutMs = closeTimeoutMs,
     sentClose = false,
+    sending = false,
+    sendTurn = net.signal(),
     receiving = false,
     closed = net.signal(),
     fragments = {},

@@ -633,3 +633,74 @@ fn a_receive_that_times_out_between_fragments_leaves_the_message_for_the_next() 
         "the continuation was no protocol error"
     );
 }
+
+#[test]
+fn sends_are_bounded_and_concurrent_senders_never_interleave_frames() {
+    let server = WsServer::start();
+    let lines = run_task(
+        &network_runtime(),
+        &format!(
+            "
+            local socket = assert(websocket.connect({url:?}, {{ maxSendBytes = 200000 }}))
+            local sent, _, kind = socket:send(string.rep('x', 200001))
+            table.insert(out, `too large {{sent}} {{kind}} {{socket.state}}`)
+
+            local senders = {{}}
+            for index = 1, 20 do
+              table.insert(senders, loop:spawn(function()
+                assert(socket:send(string.rep(string.char(64 + index), 100000)))
+              end))
+            end
+            for _, sender in senders do
+              assert(sender:join(net.now() + 10000))
+            end
+
+            socket:close()
+            table.insert(out, `closed {{socket.closeCode}}`)
+            ",
+            url = server.url("/sink")
+        ),
+    );
+    assert_eq!(lines, ["too large false tooLarge open", "closed 1000"]);
+    assert_eq!(server.wait_until_idle(), 0);
+    let (unmasked, arrivals) = {
+        let seen = server.seen.lock().unwrap();
+        (seen.unmasked, seen.arrivals.clone())
+    };
+    assert_eq!(unmasked, 0);
+    let mut letters: Vec<char> = arrivals
+        .iter()
+        .map(|(_, text)| {
+            let first = text.chars().next().unwrap();
+            assert!(
+                text.len() == 100_000 && text.chars().all(|letter| letter == first),
+                "a frame was torn"
+            );
+            first
+        })
+        .collect();
+    letters.sort_unstable();
+    assert_eq!(letters, ('A'..='T').collect::<Vec<_>>(), "every message arrived once");
+}
+
+#[test]
+fn numbers_that_are_not_sizes_or_spans_of_time_raise_before_connecting() {
+    let server = WsServer::start();
+    let runtime = network_runtime();
+    for (options, expected) in [
+        ("{ maxMessageBytes = 0 }", "maxMessageBytes is a whole number from 1"),
+        ("{ maxSendBytes = 0 / 0 }", "maxSendBytes is a whole number"),
+        ("{ closeTimeoutMs = -5 }", "closeTimeoutMs is a finite number"),
+        ("{ timeoutMs = 0 }", "timeoutMs is a finite number"),
+    ] {
+        let script = format!(
+            "local net = require '@jess/net'
+            local _, problem = net.run(function() require('@jess/websocket').connect({url:?}, {options}) end)
+            return problem",
+            url = server.url("/echo")
+        );
+        let problem = runtime.eval::<String>(&script).unwrap();
+        assert!(problem.contains(expected), "{options}: {problem}");
+    }
+    assert_eq!(server.seen.lock().unwrap().accepted, 0, "nothing connected");
+}

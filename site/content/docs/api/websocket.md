@@ -34,13 +34,14 @@ certificate as `@jess/http` does.
   the handshake's own `Sec-WebSocket-*` fields aren't yours to set. `protocols`: subprotocols
   offered, in order of preference. `timeoutMs`: connecting and the handshake (30 seconds).
   `tls`: a `@dream/tls` client config. `maxMessageBytes`: the largest message `receive` accepts,
-  fragments joined (16 MiB). `closeTimeoutMs`: how long `close` waits for the peer's close frame
-  (5 seconds).
+  fragments joined (16 MiB). `maxSendBytes`: the largest message `send` takes (16 MiB).
+  `closeTimeoutMs`: how long `close` waits for the peer's close frame (5 seconds).
 - **Returns:** the socket, or `nil`, a message and the kind of failure: `@jess/http`'s kinds for
   the URL and the connection, and `handshake` for a server that refused the upgrade or answered it
   wrongly (a status other than 101, a wrong `Sec-WebSocket-Accept`, an extension or a subprotocol
   that wasn't offered).
-- **Raises:** outside a task, and for an option it doesn't take.
+- **Raises:** outside a task, for an option it doesn't take, and for a size that isn't a whole
+  number in range or a time that isn't finite, before anything connects.
 
 ```luau
 --!strict
@@ -97,8 +98,11 @@ A timeout or a cancelled task leaves the socket as it was: `receive` returns `ti
 Sends one message as one frame, `text` unless `kind` says `binary`. Any number of tasks may send
 on a socket, a heartbeat beside a reply, say; their frames never interleave, and a send waits until
 the connection has taken its frame, so a peer that stops reading slows its senders rather than
-filling memory. A socket that is closing or closed returns `false` and `closed`. Text that isn't
-UTF-8 raises: send other bytes as `binary`.
+filling memory. Each frame is framed and masked only when its turn comes, so a socket holds one
+encoded frame however many tasks are sending, and every frame the socket sends (pongs and closes
+included) takes the same turn. A message larger than `maxSendBytes` returns `false` and
+`tooLarge` without being framed, and the socket stays open. A socket that is closing or closed
+returns `false` and `closed`. Text that isn't UTF-8 raises: send other bytes as `binary`.
 
 ### Socket:ping
 
