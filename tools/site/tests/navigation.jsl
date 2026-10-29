@@ -63,6 +63,8 @@ title: 'Fixture Nested'
 template: docs/section.html
 page_template: docs/page.html
 weight: 5
+extra:
+  hide_from_sidebar: false
 ---
 
 Nested overview.
@@ -72,6 +74,23 @@ title: 'Fixture Nested Child'
 ---
 
 Nested child.
+]])
+  local hiddenSection = fs.join(section, 'fixture-hidden-section')
+  write(fs.join(hiddenSection, '_index.md'), [[---
+title: 'Fixture Hidden Overview'
+template: docs/section.html
+page_template: docs/page.html
+extra:
+  hide_from_sidebar: true
+---
+
+Hidden overview.
+]])
+  write(fs.join(hiddenSection, 'child.md'), [[---
+title: 'Fixture Hidden Overview Child'
+---
+
+Visible child.
 ]])
 
   local docs = fs.join(source, 'content', 'docs')
@@ -110,6 +129,9 @@ Unweighted.
   assert(string.find(page, 'Fixture Group', 1, true), 'missing group')
   assert(string.find(page, '>Fixture Nested Child</a>', 1, true), 'missing nested page')
   assert(string.find(page, 'docs-sidebar__overview', 1, true), 'missing overview link')
+  assert(string.find(page, 'href="/docs/getting-started/fixture-nested/"', 1, true), 'explicit false hid a section overview')
+  assert(not string.find(page, 'href="/docs/getting-started/fixture-hidden-section/"', 1, true), 'hidden section overview is visible')
+  assert(string.find(page, '>Fixture Hidden Overview Child</a>', 1, true), 'hidden overview hid its child')
   assert(string.find(page, '<details open>%s*<summary class="is%-ancestor">Getting Started</summary>'), 'active section is not open')
   assert(string.find(page, 'class="is-current" aria-current="page">Fixture Visible</a>', 1, true), 'missing current-page marker')
 
