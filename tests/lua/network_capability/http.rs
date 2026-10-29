@@ -17,20 +17,33 @@ use super::{run_task, tls_runtime};
 /// What the fixture answers to one path.
 #[derive(Clone)]
 pub(super) enum Answer {
-    /// A full response text, written as is.
+    /// A full response text, written as is, then the connection is closed.
     Raw(String),
+    /// A full response of any bytes, written as is, then the connection is closed.
+    Bytes(Vec<u8>),
     /// Accept, read the request, and never answer.
     Hang,
     /// The request as it arrived (head, then body), as the response body.
     Echo,
     /// A full response text, written after a pause.
     Slow(Duration, String),
+    /// A response written after a pause, leaving the connection open as `Kept` does.
+    SlowKept(Duration, String),
+    /// A response that leaves the connection open for the next request, as keep-alive does.
+    Kept(String),
+    /// A response that says nothing of closing, written, and then the connection closed anyway, as
+    /// a server does when a kept connection times out.
+    KeptThenClosed(String),
+    /// Pieces of one response written with a pause before each, then the connection is closed.
+    Trickle(Vec<(Duration, String)>),
 }
 
 pub(super) struct Server {
     port: u16,
     /// Connections accepted, whatever they asked for.
     accepted: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Requests read, over every connection.
+    requests: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Server {
@@ -38,19 +51,29 @@ impl Server {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let counted = std::sync::Arc::clone(&accepted);
+        let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (counted, asked) = (std::sync::Arc::clone(&accepted), std::sync::Arc::clone(&requests));
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let routes = routes.clone();
-                thread::spawn(move || answer(stream, &routes));
+                let asked = std::sync::Arc::clone(&asked);
+                thread::spawn(move || answer(stream, &routes, &asked));
             }
         });
-        Self { port, accepted }
+        Self {
+            port,
+            accepted,
+            requests,
+        }
     }
 
     fn accepted(&self) -> usize {
         self.accepted.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn requests(&self) -> usize {
+        self.requests.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub(super) fn url(&self, path: &str) -> String {
@@ -58,56 +81,96 @@ impl Server {
     }
 }
 
-fn answer(mut stream: TcpStream, routes: &[(&str, Answer)]) {
+/// Answers requests on `stream` until a route's answer ends the connection.
+fn answer(mut stream: TcpStream, routes: &[(&str, Answer)], asked: &std::sync::atomic::AtomicUsize) {
     let mut reader = BufReader::new(stream.try_clone().unwrap());
-    let mut head = String::new();
-    if reader.read_line(&mut head).is_err() {
-        return;
-    }
-    let path = head.split_whitespace().nth(1).unwrap_or("/").to_owned();
-    let path = path.split('?').next().unwrap_or("/").to_owned();
-    let mut length = 0;
     loop {
-        let mut line = String::new();
-        if reader.read_line(&mut line).is_err() || line.is_empty() {
-            break;
+        let mut head = String::new();
+        if reader.read_line(&mut head).is_err() || head.is_empty() {
+            return;
         }
-        head.push_str(&line);
-        if line == "\r\n" {
-            break;
+        asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let path = head.split_whitespace().nth(1).unwrap_or("/").to_owned();
+        let path = path.split('?').next().unwrap_or("/").to_owned();
+        let mut length = 0;
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).is_err() || line.is_empty() {
+                break;
+            }
+            head.push_str(&line);
+            if line == "\r\n" {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':')
+                && name.eq_ignore_ascii_case("content-length")
+            {
+                length = value.trim().parse().unwrap_or(0);
+            }
         }
-        if let Some((name, value)) = line.split_once(':')
-            && name.eq_ignore_ascii_case("content-length")
-        {
-            length = value.trim().parse().unwrap_or(0);
+        let mut body = vec![0; length];
+        if reader.read_exact(&mut body).is_err() {
+            return;
         }
-    }
-    let answer = routes
-        .iter()
-        .find(|(route, _)| *route == path)
-        .map_or_else(|| Answer::Raw(response(404, "not found", &[])), |(_, answer)| answer.clone());
-    match answer {
-        Answer::Raw(text) => {
-            drop(stream.write_all(text.as_bytes()));
-        }
-        Answer::Echo => {
-            let mut body = vec![0; length];
-            if reader.read_exact(&mut body).is_err() {
+        let answer = routes
+            .iter()
+            .find(|(route, _)| *route == path)
+            .map_or_else(|| Answer::Raw(response(404, "not found", &[])), |(_, answer)| answer.clone());
+        match answer {
+            Answer::Raw(text) => {
+                drop(stream.write_all(text.as_bytes()));
                 return;
             }
-            let echoed = format!("{head}{}", String::from_utf8_lossy(&body));
-            drop(stream.write_all(response(200, &echoed, &[]).as_bytes()));
-        }
-        Answer::Slow(pause, text) => {
-            thread::sleep(pause);
-            drop(stream.write_all(text.as_bytes()));
-        }
-        Answer::Hang => {
-            let mut sink = [0; 1];
-            drop(reader.read(&mut sink));
-            thread::sleep(Duration::from_secs(5));
+            Answer::Bytes(bytes) => {
+                drop(stream.write_all(&bytes));
+                return;
+            }
+            Answer::Echo => {
+                let echoed = format!("{head}{}", String::from_utf8_lossy(&body));
+                drop(stream.write_all(response(200, &echoed, &[]).as_bytes()));
+                return;
+            }
+            Answer::Slow(pause, text) => {
+                thread::sleep(pause);
+                drop(stream.write_all(text.as_bytes()));
+                return;
+            }
+            Answer::SlowKept(pause, text) => {
+                thread::sleep(pause);
+                if stream.write_all(text.as_bytes()).is_err() {
+                    return;
+                }
+            }
+            Answer::Kept(text) => {
+                if stream.write_all(text.as_bytes()).is_err() {
+                    return;
+                }
+            }
+            Answer::KeptThenClosed(text) => {
+                drop(stream.write_all(text.as_bytes()));
+                drop(stream.shutdown(std::net::Shutdown::Both));
+                return;
+            }
+            Answer::Trickle(pieces) => {
+                for (pause, piece) in pieces {
+                    thread::sleep(pause);
+                    if stream.write_all(piece.as_bytes()).is_err() {
+                        return;
+                    }
+                }
+                return;
+            }
+            Answer::Hang => {
+                thread::sleep(Duration::from_secs(5));
+                return;
+            }
         }
     }
+}
+
+/// A response that keeps its connection: framed by Content-Length, with no Connection field.
+fn kept(body: &str) -> String {
+    format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len())
 }
 
 pub(super) fn response(status: u16, body: &str, headers: &[(&str, &str)]) -> String {
@@ -781,4 +844,208 @@ fn numbers_that_are_not_counts_or_spans_of_time_raise_before_anything_is_sent() 
             .to_string();
         assert!(error.contains(expected), "{options}: {error}");
     }
+}
+
+#[test]
+fn a_stream_hands_out_the_body_as_it_arrives_and_bounds_it() {
+    let pause = Duration::from_millis(300);
+    let chunked = vec![
+        (
+            Duration::ZERO,
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n".to_owned(),
+        ),
+        (pause, "6\r\n world\r\n".to_owned()),
+        (pause, "0\r\n\r\n".to_owned()),
+    ];
+    let server = Server::start(vec![
+        ("/trickle", Answer::Trickle(chunked)),
+        ("/big", Answer::Raw(response(200, &"x".repeat(5000), &[]))),
+        (
+            "/stall",
+            Answer::Trickle(vec![
+                (Duration::ZERO, "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nhalf".to_owned()),
+                (Duration::from_secs(3), String::new()),
+            ]),
+        ),
+    ]);
+    let lines = run_task(
+        &runtime(),
+        &format!(
+            "
+            local started = net.now()
+            local stream = assert(http.open {{ url = {trickle:?} }})
+            table.insert(out, `head {{stream.status}} early {{net.now() - started < 250}}`)
+            local pieces = {{}}
+            while true do
+              local piece, problem = stream:read()
+              if not piece then assert(not problem, problem) break end
+              table.insert(pieces, `{{piece}}@{{math.floor((net.now() - started) / 250)}}`)
+            end
+            table.insert(out, table.concat(pieces, ' | '))
+            table.insert(out, `ended {{stream.ended}}`)
+
+            local big, _, kind = http.open {{ url = {big:?}, maxBytes = 1000 }}
+            table.insert(out, `big {{big == nil}} {{kind}}`)
+
+            local stalled = assert(http.open {{ url = {stall:?}, readTimeoutMs = 200 }})
+            table.insert(out, `first {{stalled:read()}}`)
+            local _, _, stallKind = stalled:read()
+            table.insert(out, `then {{stallKind}} ended {{stalled.ended}}`)
+            ",
+            trickle = server.url("/trickle"),
+            big = server.url("/big"),
+            stall = server.url("/stall"),
+        ),
+    );
+    assert_eq!(lines[0], "head 200 early true");
+    assert_eq!(lines[1], "hello@0 |  world@1", "pieces came as they arrived, not at the end");
+    assert_eq!(
+        lines[2..],
+        ["ended true", "big true tooLarge", "first half", "then timeout ended true"]
+    );
+}
+
+/// What the Luau expression `text` makes, compressed by jess's own `bytes.deflate` as a server would send it.
+fn compressed(runtime: &Runtime, text: &str, format: &str) -> Vec<u8> {
+    let hex = runtime
+        .eval::<String>(&format!(
+            "local bytes = require '@dream/bytes' return bytes.toHex(bytes.deflate({text}, {{ format = {format:?} }}))"
+        ))
+        .unwrap_or_else(|error| panic!("{error}"));
+    (0..hex.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).unwrap())
+        .collect()
+}
+
+fn encoded(body: &[u8], encoding: &str) -> Vec<u8> {
+    let mut bytes = format!(
+        "HTTP/1.1 200 OK\r\nContent-Encoding: {encoding}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    bytes.extend_from_slice(body);
+    bytes
+}
+
+#[test]
+fn compressed_bodies_are_asked_for_decoded_and_bounded() {
+    const FOX: &str = "string.rep('the quick brown fox ', 200)";
+
+    let runtime = runtime();
+    let text = "the quick brown fox ".repeat(200);
+    let server = Server::start(vec![
+        ("/gzip", Answer::Bytes(encoded(&compressed(&runtime, FOX, "gzip"), "gzip"))),
+        (
+            "/deflate",
+            Answer::Bytes(encoded(&compressed(&runtime, FOX, "zlib"), "deflate")),
+        ),
+        (
+            "/raw-deflate",
+            Answer::Bytes(encoded(&compressed(&runtime, FOX, "raw"), "deflate")),
+        ),
+        (
+            "/bomb",
+            Answer::Bytes(encoded(&compressed(&runtime, "string.rep('0', 1000000)", "gzip"), "gzip")),
+        ),
+        ("/broken", Answer::Bytes(encoded(b"not gzip at all", "gzip"))),
+        ("/echo", Answer::Echo),
+    ]);
+    for path in ["/gzip", "/deflate", "/raw-deflate"] {
+        let (status, body, kind, message, ..) = fetch(&runtime, &server.url(path), "{}");
+        assert_eq!((status, kind.as_str()), (Some(200.0), ""), "{path}: {message}");
+        assert_eq!(body, text, "{path}");
+    }
+    let magic = eval(
+        &runtime,
+        &format!(
+            "local response = assert(http.get({url:?}, {{ decompress = false }}))
+            return require('@dream/bytes').toHex(require('@dream/bytes').slice(response.body, 0, 2))",
+            url = server.url("/gzip")
+        ),
+    );
+    assert_eq!(magic, "1f8b", "decompress = false hands the bytes over as they came");
+    let (status, _, kind, message, ..) = fetch(&runtime, &server.url("/bomb"), "{ maxBytes = 100000 }");
+    assert_eq!((status, kind.as_str()), (None, "tooLarge"), "{message}");
+    let (status, _, kind, ..) = fetch(&runtime, &server.url("/broken"), "{}");
+    assert_eq!((status, kind.as_str()), (None, "protocol"));
+    let (_, asked, ..) = fetch(&runtime, &server.url("/echo"), "{}");
+    assert!(asked.contains("accept-encoding: gzip, deflate\r\n"), "{asked}");
+    let (_, plain, ..) = fetch(&runtime, &server.url("/echo"), "{ decompress = false }");
+    assert!(!plain.contains("accept-encoding"), "{plain}");
+}
+
+#[test]
+fn a_client_keeps_its_connections_and_bounds_them_per_origin() {
+    let server = Server::start(vec![
+        ("/kept", Answer::Kept(kept("again"))),
+        ("/slow-kept", Answer::SlowKept(Duration::from_millis(150), kept("slowly"))),
+        ("/closed-after", Answer::KeptThenClosed(kept("once"))),
+        ("/close", Answer::Raw(response(200, "closing", &[]))),
+    ]);
+    let lines = run_task(
+        &runtime(),
+        &format!(
+            "
+            local client = http.client {{ maxConnectionsPerOrigin = 2, idleTimeoutMs = 150 }}
+            for _ = 1, 5 do
+              local response = assert(client:request {{ url = {kept:?} }})
+              assert(buffer.tostring(response.body) == 'again')
+            end
+            local stats = client:stats()
+            table.insert(out, `sequential idle {{stats.idle}} busy {{stats.busy}}`)
+
+            local tasks = {{}}
+            for _ = 1, 8 do
+              table.insert(tasks, loop:spawn(function()
+                assert(client:request {{ url = {slow:?} }})
+              end))
+            end
+            for _, task in tasks do
+              assert(task:join(net.now() + 10000))
+            end
+            table.insert(out, `concurrent idle {{client:stats().idle}}`)
+
+            net.sleep(300)
+            assert(client:request {{ url = {kept:?} }})
+            table.insert(out, 'after idling')
+
+            assert(client:request {{ url = {closed:?} }})
+            assert(client:request {{ url = {closed:?} }})
+            assert(client:request {{ url = {close:?} }})
+            table.insert(out, `after closes idle {{client:stats().idle}}`)
+
+            local stream = assert(client:open {{ url = {kept:?} }})
+            while stream:read() do end
+            table.insert(out, `streamed idle {{client:stats().idle}}`)
+
+            client:close()
+            table.insert(out, `closed idle {{client:stats().idle}} busy {{client:stats().busy}}`)
+            local _, _, kind = client:request {{ url = {kept:?} }}
+            table.insert(out, `after close {{kind}}`)
+            ",
+            kept = server.url("/kept"),
+            slow = server.url("/slow-kept"),
+            closed = server.url("/closed-after"),
+            close = server.url("/close"),
+        ),
+    );
+    assert_eq!(
+        lines,
+        [
+            "sequential idle 1 busy 0",
+            "concurrent idle 2",
+            "after idling",
+            "after closes idle 0",
+            "streamed idle 1",
+            "closed idle 0 busy 0",
+            "after close closed",
+        ]
+    );
+    // One connection for the five in a row, kept; one more for the eight at once, which share the
+    // two; one after both idled past their time, which the first request the server closes after
+    // reuses; one for the second of those, since the server closed the first; one for the request
+    // after it, whose connection the server had closed too; one for the stream.
+    assert_eq!(server.accepted(), 6, "{} requests", server.requests());
+    assert_eq!(server.requests(), 5 + 8 + 1 + 3 + 1);
 }

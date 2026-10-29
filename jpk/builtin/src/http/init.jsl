@@ -7,6 +7,7 @@
 -- a loop of its own and returns when it is done. It is the client jess's own package distribution
 -- fetches with. It holds no authority of its own: resolving needs network.dns.resolve and
 -- connecting needs network.tcp.connect, both the runtime's to grant.
+local bytes = require '@dream/bytes'
 local json = require '@jess/json'
 local net = require '@jess/net'
 
@@ -53,6 +54,8 @@ export type Options = {
   --- that carry no credentials (Accept, User-Agent and the cache and range fields) and never with a
   --- body; `refuse` fails it as `crossOriginRedirect`.
   crossOriginRedirects: ('follow' | 'refuse')?,
+  --- Ask for gzip and deflate and decode them, within `maxBytes`. On unless false.
+  decompress: boolean?,
   --- TLS client settings; the platform's trust store unless given.
   tls: dream_tls_ClientConfig?,
 }
@@ -67,7 +70,73 @@ export type Request = {
   timeoutMs: number?,
   maxRedirects: number?,
   crossOriginRedirects: ('follow' | 'refuse')?,
+  decompress: boolean?,
   tls: dream_tls_ClientConfig?,
+}
+
+--- A request whose body is read as it arrives: `request`'s fields but `decompress`, with
+--- `maxBytes` bounding the whole body only when given, `timeoutMs` bounding the request until its
+--- head arrives, and `readTimeoutMs` (30 seconds) bounding each read that names no deadline.
+export type OpenRequest = {
+  url: string,
+  method: string?,
+  headers: Headers?,
+  body: (string | buffer)?,
+  json: unknown?,
+  maxBytes: number?,
+  timeoutMs: number?,
+  readTimeoutMs: number?,
+  maxRedirects: number?,
+  crossOriginRedirects: ('follow' | 'refuse')?,
+  tls: dream_tls_ClientConfig?,
+}
+
+--- A response whose body is still on the connection.
+export type Stream = {
+  status: number,
+  reason: string,
+  headers: Headers,
+  url: string,
+  redirects: { string },
+  --- True once `read` has returned the body's end, or the stream was closed.
+  ended: boolean,
+  --- The next piece of the body, as much as has arrived up to 64 KiB; nil and no message at its
+  --- end, or nil, a message and the kind when it can't be read.
+  read: (self: Stream, deadline: number?) -> (string?, string?, ErrorKind?),
+  --- Stops reading. The connection is closed, or, under a client, kept when the body was read to
+  --- its end. Closing twice does nothing.
+  close: (self: Stream) -> (),
+}
+
+export type ClientOptions = {
+  --- Connections open to one origin at once, idle or busy. 4 unless given; a request past it waits
+  --- for one to come back.
+  maxConnectionsPerOrigin: number?,
+  --- How long a connection may sit idle before it is closed instead of reused. 30 seconds unless
+  --- given.
+  idleTimeoutMs: number?,
+  --- TLS client settings for every connection the client makes.
+  tls: dream_tls_ClientConfig?,
+}
+
+export type ClientStats = {
+  --- Connections open and waiting for a request.
+  idle: number,
+  --- Connections carrying a request or a stream now.
+  busy: number,
+}
+
+--- Requests that keep their connections open for the next: `request`, `get` and `open` as the
+--- module has them, from tasks on one loop, without `tls` (the client's own settings serve).
+export type Client = {
+  request: (self: Client, request: Request) -> (Response?, string?, ErrorKind?),
+  get: (self: Client, url: string, options: Options?) -> (Response?, string?, ErrorKind?),
+  open: (self: Client, request: OpenRequest) -> (Stream?, string?, ErrorKind?),
+  stats: (self: Client) -> ClientStats,
+  --- Closes every idle connection now, and every busy one as its request ends. Closing twice does
+  --- nothing.
+  close: (self: Client) -> (),
+  closed: boolean,
 }
 
 export type UpgradeRequest = {
@@ -119,8 +188,26 @@ local OptionNames = {
   'timeoutMs',
   'maxRedirects',
   'crossOriginRedirects',
+  'decompress',
   'tls',
 }
+
+local OpenOptionNames = {
+  'method',
+  'headers',
+  'body',
+  'json',
+  'maxBytes',
+  'timeoutMs',
+  'readTimeoutMs',
+  'maxRedirects',
+  'crossOriginRedirects',
+  'tls',
+}
+
+--- What a client's requests take: everything but `tls`, which is the client's.
+local ClientOptionNames: { string } = [for name in OptionNames if name ~= 'tls' => name]
+local ClientOpenOptionNames: { string } = [for name in OpenOptionNames if name ~= 'tls' => name]
 
 --- Fields the client writes itself; a caller's value for one would contradict the framing.
 local Reserved: { [string]: boolean } = {
@@ -136,6 +223,7 @@ local Reserved: { [string]: boolean } = {
 --- that origin, and stays with it for the rest of the chain.
 local CrossOriginFields: { [string]: boolean } = {
   accept = true,
+  ['accept-encoding'] = true,
   ['accept-language'] = true,
   ['cache-control'] = true,
   ['if-modified-since'] = true,
@@ -296,7 +384,7 @@ local function netKind(kind: string?): ErrorKind
   return 'closed'
 end
 
-type Head = { status: number, reason: string, headers: Headers }
+type Head = { version: string, status: number, reason: string, headers: Headers }
 
 local function parseHead(text: string): (Head?, string?)
   local lines = string.split(text, '\r\n')
@@ -315,7 +403,7 @@ local function parseHead(text: string): (Head?, string?)
     headers[key] = if headers[key] then `{headers[key]}, {value}` else value :: string
   end
 
-  return { status = tonumber(status) :: number, reason = reason :: string, headers = headers }, nil
+  return { version = version :: string, status = tonumber(status) :: number, reason = reason :: string, headers = headers }, nil
 end
 
 --- A body under construction: the bytes, and how many of them are the body so far.
@@ -387,83 +475,6 @@ local function chunkSize(line: string): number?
   return tonumber(digits, 16)
 end
 
-local function readChunked(
-  connection: NetConnection,
-  maxBytes: number,
-  deadline: number
-): (buffer?, string?, ErrorKind?)
-  local sink: Sink = { data = buffer.create(0), length = 0 }
-  while true do
-    local line, problem, kind = connection:receiveUntil('\r\n', MaxChunkLine, deadline)
-    if not line then
-      if kind == 'limitReached' then return nil, 'a chunk size line is too long', 'protocol' end
-
-      return nil, `reading the body failed: {problem}`, netKind(kind)
-    end
-
-    local size = chunkSize(line)
-    if not size then return nil, 'a chunk size line is not a size and its extensions', 'protocol' end
-
-    if size == 0 then break end
-
-    if sink.length + size > maxBytes then
-      return nil, `the response body is larger than {maxBytes} bytes`, 'tooLarge'
-    end
-
-    reserve(sink, size)
-    local received, receiveProblem, receiveKind = connection:receiveInto(sink.data, sink.length, size, deadline)
-    if not received then return nil, `reading the body failed: {receiveProblem}`, netKind(receiveKind) end
-
-    sink.length += size
-    local ending, endProblem, endKind = connection:receive(2, deadline)
-    if not ending then return nil, `reading the body failed: {endProblem}`, netKind(endKind) end
-
-    if ending ~= '\r\n' then return nil, 'a chunk did not end with CRLF', 'protocol' end
-  end
-
-  -- Trailer fields, which nothing here reads, end at an empty line.
-  local trailers = 0
-  while true do
-    local line, problem, kind = connection:receiveUntil('\r\n', MaxHeadBytes, deadline)
-    if not line then return nil, `reading the trailer failed: {problem}`, netKind(kind) end
-
-    if line == '' then break end
-
-    trailers += #line
-    if trailers > MaxHeadBytes then return nil, `the trailer is longer than {MaxHeadBytes} bytes`, 'protocol' end
-  end
-
-  return finished(sink), nil, nil
-end
-
-local function readUntilClose(
-  connection: NetConnection,
-  maxBytes: number,
-  deadline: number
-): (buffer?, string?, ErrorKind?)
-  local sink: Sink = { data = buffer.create(0), length = 0 }
-  while true do
-    local piece, problem, kind = connection:receiveSome(ReadChunk, deadline)
-    if not piece then
-      if kind == 'closed' then return finished(sink), nil, nil end
-
-      if kind == 'truncated' then
-        return nil, 'the connection ended without TLS close_notify, so the body may be cut short', 'closed'
-      end
-
-      return nil, `reading the body failed: {problem}`, netKind(kind)
-    end
-
-    if sink.length + #piece > maxBytes then
-      return nil, `the response body is larger than {maxBytes} bytes`, 'tooLarge'
-    end
-
-    reserve(sink, #piece)
-    buffer.writestring(sink.data, sink.length, piece)
-    sink.length += #piece
-  end
-end
-
 --- The body's length from Content-Length, which may repeat but never disagree with itself.
 local function declaredLength(value: string): number?
   local length: number?
@@ -480,79 +491,220 @@ local function declaredLength(value: string): number?
   return length
 end
 
---- Reads one response off `connection`: the head, skipping interim 1xx answers, then the body as
---- its framing says, within `maxBytes` and `deadline`.
-local function receive(
+--- A response body on its connection: how it is framed, and how far reading it has got.
+type Body = {
   connection: NetConnection,
-  method: string,
-  maxBytes: number,
-  deadline: number
-): (Head?, buffer?, string?, ErrorKind?)
-  local head: Head
-  while true do
-    local text, problem, kind = connection:receiveUntil('\r\n\r\n', MaxHeadBytes, deadline)
-    if not text then
-      if kind == 'limitReached' then
-        return nil, nil, `the response head is longer than {MaxHeadBytes} bytes`, 'protocol'
-      end
+  --- `none` for a bodiless response, `length` for Content-Length, `chunked`, or `close` for a body
+  --- that runs until the connection ends.
+  framing: 'none' | 'length' | 'chunked' | 'close',
+  --- Bytes left: of the whole body for `length`, of the current chunk for `chunked`.
+  remaining: number,
+  --- Whether a chunk's data has all been read and the CRLF after it hasn't.
+  owesCrlf: boolean,
+  done: boolean,
+  --- Body bytes handed out so far, and the most there may be.
+  delivered: number,
+  limit: number,
+}
 
-      if kind == 'closed' then return nil, nil, 'the connection closed before the response head ended', 'closed' end
+local function bodyFailure(problem: string?, kind: string?): (nil, string, ErrorKind)
+  if kind == 'closed' then return nil, 'the connection closed before the body ended', 'closed' end
 
-      return nil, nil, `reading the response failed: {problem}`, netKind(kind)
-    end
-
-    local parsed, parseProblem = parseHead(text)
-    if not parsed then return nil, nil, parseProblem, 'protocol' end
-
-    head = parsed :: Head
-    if head.status < 100 or head.status >= 200 or head.status == 101 then break end
+  if kind == 'truncated' then
+    return nil, 'the connection ended without TLS close_notify, so the body may be cut short', 'closed'
   end
+
+  return nil, `reading the body failed: {problem}`, netKind(kind)
+end
+
+--- How `head`'s body is framed on `connection`, or nil and why it can't be read.
+local function bodyOf(connection: NetConnection, head: Head, method: string, limit: number): (Body?, string?, ErrorKind?)
+  local body: Body = {
+    connection = connection,
+    framing = 'none',
+    remaining = 0,
+    owesCrlf = false,
+    done = false,
+    delivered = 0,
+    limit = limit,
+  }
 
   local status = head.status
   if method == 'HEAD' or status == 101 or status == 204 or status == 304 then
-    return head, buffer.create(0), nil, nil
+    body.done = true
+    return body, nil, nil
   end
 
   local encoding = head.headers['transfer-encoding']
   if encoding then
     local codings = string.split(string.lower(encoding), ',')
     local last = string.match(codings[#codings], '^%s*(.-)%s*$')
-    local body, problem, kind
-    if last == 'chunked' then
-      body, problem, kind = readChunked(connection, maxBytes, deadline)
-    else
-      body, problem, kind = readUntilClose(connection, maxBytes, deadline)
-    end
-
-    if not body then return nil, nil, problem, kind end
-
-    return head, body, nil, nil
+    body.framing = if last == 'chunked' then 'chunked' else 'close'
+    return body, nil, nil
   end
 
   local declared = head.headers['content-length']
   if not declared then
-    local body, problem, kind = readUntilClose(connection, maxBytes, deadline)
-    if not body then return nil, nil, problem, kind end
-
-    return head, body, nil, nil
+    body.framing = 'close'
+    return body, nil, nil
   end
 
   local expected = declaredLength(declared)
-  if not expected then return nil, nil, 'Content-Length is not a length', 'protocol' end
+  if not expected then return nil, 'Content-Length is not a length', 'protocol' end
 
-  if expected > maxBytes then
-    return nil, nil, `the response body is {expected} bytes, more than the {maxBytes} allowed`, 'tooLarge'
+  if expected > limit then
+    return nil, `the response body is {expected} bytes, more than the {limit} allowed`, 'tooLarge'
   end
 
-  local body = buffer.create(expected)
-  local received, problem, kind = connection:receiveInto(body, 0, expected, deadline)
-  if not received then
-    if kind == 'closed' then return nil, nil, 'the connection closed before the body ended', 'closed' end
+  body.framing, body.remaining = 'length', expected
+  body.done = expected == 0
 
-    return nil, nil, `reading the body failed: {problem}`, netKind(kind)
+  return body, nil, nil
+end
+
+--- Reads the trailer fields after a chunked body, which nothing here keeps.
+local function skipTrailers(connection: NetConnection, deadline: number?): (boolean, string?, ErrorKind?)
+  local trailers = 0
+  while true do
+    local line, problem, kind = connection:receiveUntil('\r\n', MaxHeadBytes, deadline)
+    if not line then
+      local _, message, failure = bodyFailure(problem, kind)
+      return false, message, failure
+    end
+
+    if line == '' then return true, nil, nil end
+
+    trailers += #line
+    if trailers > MaxHeadBytes then return false, `the trailer is longer than {MaxHeadBytes} bytes`, 'protocol' end
+  end
+end
+
+--- The next piece of `body`, at most `maxPiece` bytes, or nil and no message at its end.
+local function nextPiece(body: Body, maxPiece: number, deadline: number?): (string?, string?, ErrorKind?)
+  if body.done then return nil, nil, nil end
+
+  local connection = body.connection
+  local piece, problem, kind
+  if body.framing == 'length' then
+    piece, problem, kind = connection:receiveSome(math.min(maxPiece, body.remaining), deadline)
+    if not piece then return bodyFailure(problem, kind) end
+
+    body.remaining -= #piece
+    body.done = body.remaining == 0
+  elseif body.framing == 'chunked' then
+    if body.remaining == 0 then
+      if body.owesCrlf then
+        local ending, endProblem, endKind = connection:receive(2, deadline)
+        if not ending then return bodyFailure(endProblem, endKind) end
+
+        if ending ~= '\r\n' then return nil, 'a chunk did not end with CRLF', 'protocol' end
+
+        body.owesCrlf = false
+      end
+
+      local line, lineProblem, lineKind = connection:receiveUntil('\r\n', MaxChunkLine, deadline)
+      if not line then
+        if lineKind == 'limitReached' then return nil, 'a chunk size line is too long', 'protocol' end
+
+        return bodyFailure(lineProblem, lineKind)
+      end
+
+      local size = chunkSize(line)
+      if not size then return nil, 'a chunk size line is not a size and its extensions', 'protocol' end
+
+      if size == 0 then
+        local skipped, trailerProblem, trailerKind = skipTrailers(connection, deadline)
+        if not skipped then return nil, trailerProblem, trailerKind end
+
+        body.done = true
+        return nil, nil, nil
+      end
+
+      body.remaining = size
+    end
+
+    piece, problem, kind = connection:receiveSome(math.min(maxPiece, body.remaining), deadline)
+    if not piece then return bodyFailure(problem, kind) end
+
+    body.remaining -= #piece
+    body.owesCrlf = body.remaining == 0
+  elseif body.framing == 'close' then
+    piece, problem, kind = connection:receiveSome(maxPiece, deadline)
+    if not piece then
+      if kind == 'closed' then
+        body.done = true
+        return nil, nil, nil
+      end
+
+      return bodyFailure(problem, kind)
+    end
+  else
+    body.done = true
+    return nil, nil, nil
   end
 
-  return head, body, nil, nil
+  local text = piece :: string
+  body.delivered += #text
+  if body.delivered > body.limit then
+    return nil, `the response body is larger than {body.limit} bytes`, 'tooLarge'
+  end
+
+  return text, nil, nil
+end
+
+--- The whole of `body`, within its limit.
+local function readAll(body: Body, deadline: number?): (buffer?, string?, ErrorKind?)
+  local sink: Sink = { data = buffer.create(0), length = 0 }
+  if body.framing == 'length' then reserve(sink, body.remaining) end
+
+  while true do
+    local piece, problem, kind = nextPiece(body, ReadChunk, deadline)
+    if not piece then
+      if problem then return nil, problem, kind end
+
+      return finished(sink), nil, nil
+    end
+
+    reserve(sink, #piece)
+    buffer.writestring(sink.data, sink.length, piece)
+    sink.length += #piece
+  end
+end
+
+--- Whether `connection` may carry another request once `body` is read: its end was framed, and
+--- neither side asked to close.
+local function reusable(head: Head, body: Body): boolean
+  if not body.done or body.framing == 'close' or head.version ~= '1.1' then return false end
+
+  local field = string.lower(head.headers.connection or '')
+
+  return not string.find(`,{field},`, ',%s*close%s*,')
+end
+
+--- `data` decoded by its Content-Encoding, within `limit`: gzip and deflate (zlib, or raw as some
+--- servers send it), anything else as it came.
+local function decode(data: buffer, encoding: string?, limit: number): (buffer?, string?, ErrorKind?)
+  local coding = string.lower(string.match(encoding or '', '^%s*(.-)%s*$') or '')
+  local formats: { string } = if coding == 'gzip' or coding == 'x-gzip'
+    then { 'gzip' }
+    elseif coding == 'deflate' then { 'zlib', 'raw' }
+    else {}
+  if #formats == 0 then return data, nil, nil end
+
+  local lastProblem = 'it does not decode'
+  for _, format in formats do
+    local options: dream_bytes_DecompressOptions = { format = format, maxSize = limit }
+    -- `bytes.inflate` throws on a stream that isn't one, and the body is the server's, not ours.
+    local inflated, result = pcall(bytes.inflate, data, options)
+    if inflated then return result :: buffer, nil, nil end
+
+    lastProblem = tostring(result)
+    if string.find(lastProblem, 'exceeds maxSize', 1, true) then
+      return nil, `the decoded response body is larger than {limit} bytes`, 'tooLarge'
+    end
+  end
+
+  return nil, `the {coding} response body does not decode: {lastProblem}`, 'protocol'
 end
 
 --- What a request will send, checked before anything touches the network.
@@ -563,8 +715,10 @@ type Plan = {
   body: (string | buffer)?,
   maxBytes: number,
   timeoutMs: number,
+  readTimeoutMs: number,
   maxRedirects: number,
   crossOriginRedirects: 'follow' | 'refuse',
+  decompress: boolean,
   tls: dream_tls_ClientConfig?,
 }
 
@@ -588,10 +742,10 @@ local function checkHeaders(headers: Headers?, what: string): Headers
   return checked
 end
 
-local function plan(url: string, options: Options, what: string): Plan
+local function plan(url: string, options: Options & OpenRequest, what: string, names: { string }): Plan
   for key in options :: { [string]: unknown } do
-    if key ~= 'url' and not table.find(OptionNames, key) then
-      error(`unknown {Name}.{what} option '{key}': expected {table.concat(OptionNames, ', ')}`, 0)
+    if key ~= 'url' and not table.find(names, key) then
+      error(`unknown {Name}.{what} option '{key}': expected {table.concat(names, ', ')}`, 0)
     end
   end
 
@@ -614,15 +768,24 @@ local function plan(url: string, options: Options, what: string): Plan
     error(`{Name}.{what}: crossOriginRedirects is 'follow' or 'refuse', not '{crossOrigin}'`, 0)
   end
 
+  -- `false` turns decoding off; nil leaves it on for a buffered request.
+  local decompress = options.decompress ~= false and table.find(names, 'decompress') ~= nil
+  if decompress and not headers['accept-encoding'] then headers['accept-encoding'] = 'gzip, deflate' end
+
+  local streamed = table.find(names, 'readTimeoutMs') ~= nil
+  local maxBytes = options.maxBytes or (if streamed then nil else DefaultMaxBytes)
+
   return {
     url = url,
     method = method,
     headers = headers,
     body = body,
-    maxBytes = whole(options.maxBytes or DefaultMaxBytes, 0, 2 ^ 53, what, 'maxBytes'),
+    maxBytes = if maxBytes then whole(maxBytes, 0, 2 ^ 53, what, 'maxBytes') else math.huge,
     timeoutMs = duration(options.timeoutMs or DefaultTimeoutMs, what, 'timeoutMs'),
+    readTimeoutMs = duration(options.readTimeoutMs or DefaultTimeoutMs, what, 'readTimeoutMs'),
     maxRedirects = whole(options.maxRedirects or DefaultMaxRedirects, 0, 20, what, 'maxRedirects'),
     crossOriginRedirects = crossOrigin,
+    decompress = decompress,
     tls = options.tls,
   }
 end
@@ -661,16 +824,19 @@ local function requestHead(url: Url, method: string, headers: Headers, length: n
   return `{table.concat(lines, '\r\n')}\r\n\r\n`
 end
 
---- Connects to `url` and sends one request on the connection.
-local function open(
-  url: Url,
-  method: string,
-  headers: Headers,
-  body: (string | buffer)?,
+--- Where a request gets its connection and where the connection goes after: a fresh one closed
+--- after each request, or a client's pool.
+type Transport = {
+  --- A connection to `url`'s origin, and whether it carried a request before.
+  acquire: (url: Url, deadline: number) -> (NetConnection?, boolean, string?, ErrorKind?),
+  --- Hands `connection` back: kept for the next request when `keep` says it may be, closed
+  --- otherwise.
+  release: (url: Url, connection: NetConnection, keep: boolean) -> (),
+  --- The Connection field requests on it carry.
   connectionField: string,
-  tlsConfig: dream_tls_ClientConfig?,
-  deadline: number
-): (NetConnection?, string?, ErrorKind?)
+}
+
+local function connectTo(url: Url, tlsConfig: dream_tls_ClientConfig?, deadline: number): (NetConnection?, string?, ErrorKind?)
   local connection, problem, kind = net.connect(url.host, url.port, {
     tls = url.scheme == 'https',
     tlsConfig = tlsConfig,
@@ -680,39 +846,122 @@ local function open(
 
   if not connection then return nil, problem, netKind(kind) end
 
-  local live = connection :: NetConnection
-  local head = requestHead(url, method, headers, bodyLength(body), connectionField)
-  local sent, sendProblem, sendKind = live:send(head, deadline)
-  if sent and body then sent, sendProblem, sendKind = live:send(body, deadline) end
-
-  if not sent then
-    live:close()
-    return nil, `sending the request failed: {sendProblem}`, netKind(sendKind)
-  end
-
-  return live, nil, nil
+  return connection, nil, nil
 end
 
---- One request without redirects: the head and body, or why not.
-local function once(
+--- A transport that opens a connection for each request and closes it after.
+local function oneShot(tlsConfig: dream_tls_ClientConfig?): Transport
+  return {
+    acquire = function(url: Url, deadline: number): (NetConnection?, boolean, string?, ErrorKind?)
+      local connection, problem, kind = connectTo(url, tlsConfig, deadline)
+
+      return connection, false, problem, kind
+    end,
+    release = function(_url: Url, connection: NetConnection, _keep: boolean) connection:close() end,
+    connectionField = 'close',
+  }
+end
+
+local function sendRequest(
+  connection: NetConnection,
+  url: Url,
+  method: string,
+  headers: Headers,
+  body: (string | buffer)?,
+  connectionField: string,
+  deadline: number
+): (boolean, string?, ErrorKind?)
+  local head = requestHead(url, method, headers, bodyLength(body), connectionField)
+  local sent, problem, kind = connection:send(head, deadline)
+  if sent and body then sent, problem, kind = connection:send(body, deadline) end
+
+  if not sent then return false, `sending the request failed: {problem}`, netKind(kind) end
+
+  return true, nil, nil
+end
+
+--- The response head on `connection`, past any interim 1xx answers.
+local function receiveHead(connection: NetConnection, deadline: number): (Head?, string?, ErrorKind?)
+  while true do
+    local text, problem, kind = connection:receiveUntil('\r\n\r\n', MaxHeadBytes, deadline)
+    if not text then
+      if kind == 'limitReached' then return nil, `the response head is longer than {MaxHeadBytes} bytes`, 'protocol' end
+      if kind == 'closed' then return nil, 'the connection closed before the response head ended', 'closed' end
+
+      return nil, `reading the response failed: {problem}`, netKind(kind)
+    end
+
+    local parsed, parseProblem = parseHead(text)
+    if not parsed then return nil, parseProblem, 'protocol' end
+
+    local head = parsed :: Head
+    if head.status < 100 or head.status >= 200 or head.status == 101 then return head, nil, nil end
+  end
+end
+
+local Idempotent: { [string]: boolean } =
+  { GET = true, HEAD = true, PUT = true, DELETE = true, OPTIONS = true, TRACE = true }
+
+--- One request on one hop: its head and its body on the connection, still to be read.
+local function exchange(
   url: Url,
   method: string,
   headers: Headers,
   body: (string | buffer)?,
   settings: Plan,
+  transport: Transport,
   deadline: number
-): (Head?, buffer?, string?, ErrorKind?)
-  local connection, problem, kind = open(url, method, headers, body, 'close', settings.tls, deadline)
-  if not connection then return nil, nil, problem, kind end
+): (Head?, Body?, string?, ErrorKind?)
+  -- A connection kept from an earlier request may have been closed by the server while it waited.
+  -- A request that met that before any answer arrived goes again once on a fresh connection, if
+  -- going again can't do anything twice.
+  for attempt = 1, 2 do
+    local connection, reused, problem, kind = transport.acquire(url, deadline)
+    if not connection then return nil, nil, problem, kind end
 
-  local live = connection :: NetConnection
-  local head, responseBody, receiveProblem, receiveKind = receive(live, method, settings.maxBytes, deadline)
-  live:close()
+    local live = connection :: NetConnection
+    local sent, sendProblem, sendKind = sendRequest(live, url, method, headers, body, transport.connectionField, deadline)
+    if not sent then
+      transport.release(url, live, false)
+      if reused and attempt == 1 then continue end
 
-  return head, responseBody, receiveProblem, receiveKind
+      return nil, nil, sendProblem, sendKind
+    end
+
+    local head, headProblem, headKind = receiveHead(live, deadline)
+    if not head then
+      transport.release(url, live, false)
+      if reused and attempt == 1 and headKind == 'closed' and Idempotent[method] then continue end
+
+      return nil, nil, headProblem, headKind
+    end
+
+    local framed, framingProblem, framingKind = bodyOf(live, head :: Head, method, settings.maxBytes)
+    if not framed then
+      transport.release(url, live, false)
+      return nil, nil, framingProblem, framingKind
+    end
+
+    return head, framed, nil, nil
+  end
+
+  return nil, nil, 'the connection closed before the response head ended', 'closed'
 end
 
-local function perform(settings: Plan): (Response?, string?, ErrorKind?)
+--- Reads a body nobody will see (a redirect's) so its connection can be kept, as far as it is
+--- small; anything larger costs the connection instead.
+local function discard(head: Head, body: Body, url: Url, transport: Transport, deadline: number)
+  for _ = 1, 16 do
+    local piece = nextPiece(body, ReadChunk, deadline)
+    if not piece then break end
+  end
+
+  transport.release(url, body.connection, reusable(head, body))
+end
+
+--- Follows `settings` through its redirects to the final response: its head and its body still on
+--- the connection, with the URL that answered and those that redirected.
+local function follow(settings: Plan, transport: Transport): (Head?, Body?, Url?, string, { string }, string?, ErrorKind?)
   local deadline = net.now() + settings.timeoutMs
   local redirects: { string } = {}
   local current, method, headers, body = settings.url, settings.method, table.clone(settings.headers), settings.body
@@ -721,11 +970,12 @@ local function perform(settings: Plan): (Response?, string?, ErrorKind?)
 
   while true do
     local parsed, problem, kind = parseUrl(current)
-    if not parsed then return nil, problem, kind end
+    if not parsed then return nil, nil, nil, current, redirects, problem, kind end
 
     local target = parsed :: Url
     if secureSoFar and target.scheme == 'http' then
-      return nil, `a redirect from https to {describe(target)} would downgrade the connection`, 'unsupportedScheme'
+      local message = `a redirect from https to {describe(target)} would downgrade the connection`
+      return nil, nil, nil, current, redirects, message, 'unsupportedScheme'
     end
 
     -- A request was written for one origin. Another gets none of its body, and none of its
@@ -733,11 +983,13 @@ local function perform(settings: Plan): (Response?, string?, ErrorKind?)
     if previous and origin(previous) ~= origin(target) then
       local leaving = `a redirect from {describe(previous)} to {describe(target)}`
       if settings.crossOriginRedirects == 'refuse' then
-        return nil, `{leaving} leaves the origin, and this request refuses that`, 'crossOriginRedirect'
+        local message = `{leaving} leaves the origin, and this request refuses that`
+        return nil, nil, nil, current, redirects, message, 'crossOriginRedirect'
       end
 
       if body then
-        return nil, `{leaving} would carry the request body to another origin`, 'crossOriginRedirect'
+        local message = `{leaving} would carry the request body to another origin`
+        return nil, nil, nil, current, redirects, message, 'crossOriginRedirect'
       end
 
       for name in headers do
@@ -748,14 +1000,20 @@ local function perform(settings: Plan): (Response?, string?, ErrorKind?)
     secureSoFar = secureSoFar or target.scheme == 'https'
     previous = target
 
-    local head, responseBody, failure, failureKind = once(target, method, headers, body, settings, deadline)
-    if not head then return nil, `{describe(target)}: {failure}`, failureKind end
+    local head, framed, failure, failureKind = exchange(target, method, headers, body, settings, transport, deadline)
+    if not head then
+      return nil, nil, nil, current, redirects, `{describe(target)}: {failure}`, failureKind
+    end
 
     local response = head :: Head
     local location = response.headers.location
     if Redirects[response.status] and location and #redirects < settings.maxRedirects then
+      discard(response, framed :: Body, target, transport, deadline)
       local next = resolveReference(current, location)
-      if not next then return nil, `{describe(target)}: a redirect does not resolve to a URL`, 'protocol' end
+      if not next then
+        local message = `{describe(target)}: a redirect does not resolve to a URL`
+        return nil, nil, nil, current, redirects, message, 'protocol'
+      end
 
       -- 303 always, and 301 and 302 after a POST as every client does, go on as a bodiless GET;
       -- 307 and 308 repeat the request as it was.
@@ -771,28 +1029,96 @@ local function perform(settings: Plan): (Response?, string?, ErrorKind?)
     end
 
     if Redirects[response.status] and location and settings.maxRedirects > 0 then
-      return nil, `{describe(target)}: more than {settings.maxRedirects} redirects`, 'tooManyRedirects'
+      transport.release(target, (framed :: Body).connection, false)
+      local message = `{describe(target)}: more than {settings.maxRedirects} redirects`
+      return nil, nil, nil, current, redirects, message, 'tooManyRedirects'
     end
 
-    return {
-      status = response.status,
-      reason = response.reason,
-      headers = response.headers,
-      body = responseBody :: buffer,
-      url = current,
-      redirects = redirects,
-    },
-      nil,
-      nil
+    return response, framed, target, current, redirects, nil, nil
   end
+end
+
+--- `settings` performed in full: the response with its body read and decoded.
+local function perform(settings: Plan, transport: Transport): (Response?, string?, ErrorKind?)
+  local head, framed, target, url, redirects, problem, kind = follow(settings, transport)
+  if not head then return nil, problem, kind end
+
+  local response, body = head :: Head, framed :: Body
+  local deadline = net.now() + settings.timeoutMs
+  local data, readProblem, readKind = readAll(body, deadline)
+  transport.release(target :: Url, body.connection, data ~= nil and reusable(response, body))
+  if not data then return nil, `{describe(target :: Url)}: {readProblem}`, readKind end
+
+  local decoded = data :: buffer
+  if settings.decompress then
+    local inflated, decodeProblem, decodeKind = decode(decoded, response.headers['content-encoding'], settings.maxBytes)
+    if not inflated then return nil, `{describe(target :: Url)}: {decodeProblem}`, decodeKind end
+
+    decoded = inflated :: buffer
+  end
+
+  return {
+    status = response.status,
+    reason = response.reason,
+    headers = response.headers,
+    body = decoded,
+    url = url,
+    redirects = redirects,
+  },
+    nil,
+    nil
+end
+
+--- `settings` followed to its final head, the body left to read.
+local function openStream(settings: Plan, transport: Transport): (Stream?, string?, ErrorKind?)
+  local head, framed, target, url, redirects, problem, kind = follow(settings, transport)
+  if not head then return nil, problem, kind end
+
+  local response, body, answered = head :: Head, framed :: Body, target :: Url
+  local released = false
+  local stream: Stream
+
+  local function release(keep: boolean)
+    if released then return end
+
+    released = true
+    stream.ended = true
+    transport.release(answered, body.connection, keep and reusable(response, body))
+  end
+
+  stream = {
+    status = response.status,
+    reason = response.reason,
+    headers = response.headers,
+    url = url,
+    redirects = redirects,
+    ended = false,
+    read = function(_self: Stream, deadline: number?): (string?, string?, ErrorKind?)
+      if released then return nil, nil, nil end
+
+      local piece, readProblem, readKind = nextPiece(body, ReadChunk, deadline or net.now() + settings.readTimeoutMs)
+      if piece then return piece, nil, nil end
+
+      release(readProblem == nil)
+      if readProblem then return nil, `{describe(answered)}: {readProblem}`, readKind end
+
+      return nil, nil, nil
+    end,
+    close = function(_self: Stream) release(body.done) end,
+  }
+
+  if body.done then release(true) end
+
+  return stream, nil, nil
 end
 
 --- `settings` performed in the running @jess/net task, or on a loop of its own outside one.
 local function dispatch(settings: Plan): (Response?, string?, ErrorKind?)
-  if net.current() then return perform(settings) end
+  local transport = oneShot(settings.tls)
+  if net.current() then return perform(settings, transport) end
 
   local response: Response?, message: string?, kind: ErrorKind?
-  local completed, problem = net.run(function() response, message, kind = perform(settings) end)
+  local completed, problem = net.run(function() response, message, kind = perform(settings, transport) end)
   if not completed then error(`{Name}: {problem}`, 0) end
 
   return response, message, kind
@@ -800,17 +1126,162 @@ end
 
 --- Performs `request`: the response, whatever its status, or nil, a message and the kind of
 --- failure. Redirects are followed up to `maxRedirects` times, each hop checked as the first
---- request was, never from https to http, and never carrying Authorization, Proxy-Authorization or
---- Cookie to another origin. Every body byte is bounded by `maxBytes` and the whole by `timeoutMs`.
+--- request was, never from https to http, and never carrying a body or the caller's fields to
+--- another origin. Every body byte is bounded by `maxBytes` and the whole by `timeoutMs`.
 local function request(spec: Request): (Response?, string?, ErrorKind?)
   if type(spec) ~= 'table' then error(`{Name}.request: takes a request table with a url`, 0) end
 
-  return dispatch(plan(spec.url, spec :: Options, 'request'))
+  return dispatch(plan(spec.url, spec :: Options & OpenRequest, 'request', OptionNames))
 end
 
 --- `request` for `url`, with the rest of the request in `options`.
 local function get(url: string, options: Options?): (Response?, string?, ErrorKind?)
-  return dispatch(plan(url, options or {}, 'get'))
+  return dispatch(plan(url, (options or {}) :: Options & OpenRequest, 'get', OptionNames))
+end
+
+--- In a @jess/net task: `request`, returning as soon as the final head has arrived, with the body
+--- left on the connection for the stream to read.
+local function open(spec: OpenRequest): (Stream?, string?, ErrorKind?)
+  if type(spec) ~= 'table' then error(`{Name}.open: takes a request table with a url`, 0) end
+
+  if not net.current() then error(`{Name}.open: a stream reads its connection, so it opens in a @jess/net task`, 0) end
+
+  local settings = plan(spec.url, spec :: Options & OpenRequest, 'open', OpenOptionNames)
+
+  return openStream(settings, oneShot(settings.tls))
+end
+
+--- One origin's connections in a client's pool.
+type Origin = {
+  idle: { { connection: NetConnection, since: number } },
+  busy: number,
+  --- Notified whenever a connection comes back or goes, for requests waiting for room.
+  turn: net.Signal,
+}
+
+local function newClient(options: ClientOptions?): Client
+  local settings: ClientOptions = options or {}
+  for key in settings :: { [string]: unknown } do
+    if not table.find({ 'maxConnectionsPerOrigin', 'idleTimeoutMs', 'tls' }, key) then
+      error(`unknown {Name}.client option '{key}': expected maxConnectionsPerOrigin, idleTimeoutMs, tls`, 0)
+    end
+  end
+
+  local perOrigin = whole(settings.maxConnectionsPerOrigin or 4, 1, 64, 'client', 'maxConnectionsPerOrigin')
+  local idleTimeoutMs = duration(settings.idleTimeoutMs or 30000, 'client', 'idleTimeoutMs')
+  local tlsConfig = settings.tls
+  local origins: { [string]: Origin } = {}
+  local client: Client
+
+  local function originOf(url: Url): Origin
+    local key = origin(url)
+    local found = origins[key]
+    if found then return found end
+
+    local created: Origin = { idle = {}, busy = 0, turn = net.signal() }
+    origins[key] = created
+
+    return created
+  end
+
+  local transport: Transport = {
+    acquire = function(url: Url, deadline: number): (NetConnection?, boolean, string?, ErrorKind?)
+      local pool = originOf(url)
+      while true do
+        if client.closed then return nil, false, 'the client is closed', 'closed' end
+
+        local current = net.now()
+        while #pool.idle > 0 do
+          local entry = table.remove(pool.idle) :: { connection: NetConnection, since: number }
+          if current - entry.since <= idleTimeoutMs and entry.connection:idle() then
+            pool.busy += 1
+            return entry.connection, true, nil, nil
+          end
+
+          entry.connection:close()
+        end
+
+        if pool.busy < perOrigin then
+          pool.busy += 1
+          local connection, problem, kind = connectTo(url, tlsConfig, deadline)
+          if connection then return connection, false, nil, nil end
+
+          pool.busy -= 1
+          pool.turn:notify()
+          return nil, false, problem, kind
+        end
+
+        local notified, reason = pool.turn:wait(deadline)
+        if not notified then
+          local kind: ErrorKind = if reason == 'cancelled' then 'cancelled' else 'timeout'
+          return nil, false, `every connection to {describe(url)} stayed busy`, kind
+        end
+      end
+    end,
+
+    release = function(url: Url, connection: NetConnection, keep: boolean)
+      local pool = originOf(url)
+      pool.busy -= 1
+      if keep and not client.closed and not connection.closed then
+        table.insert(pool.idle, { connection = connection, since = net.now() })
+      else
+        connection:close()
+      end
+
+      pool.turn:notify()
+    end,
+
+    connectionField = 'keep-alive',
+  }
+
+  local function prepared(spec: Options & OpenRequest, url: string, what: string, names: { string }): Plan
+    if spec.tls then error(`{Name}.Client:{what}: a client's requests use its own tls settings`, 0) end
+
+    if not net.current() then error(`{Name}.Client:{what}: a client's connections live on a loop; call it in a task`, 0) end
+
+    return plan(url, spec, `Client:{what}`, names)
+  end
+
+  client = {
+    request = function(_self: Client, spec: Request): (Response?, string?, ErrorKind?)
+      if type(spec) ~= 'table' then error(`{Name}.Client:request: takes a request table with a url`, 0) end
+
+      return perform(prepared(spec :: Options & OpenRequest, spec.url, 'request', ClientOptionNames), transport)
+    end,
+    get = function(_self: Client, url: string, spec: Options?): (Response?, string?, ErrorKind?)
+      return perform(prepared((spec or {}) :: Options & OpenRequest, url, 'get', ClientOptionNames), transport)
+    end,
+    open = function(_self: Client, spec: OpenRequest): (Stream?, string?, ErrorKind?)
+      if type(spec) ~= 'table' then error(`{Name}.Client:open: takes a request table with a url`, 0) end
+
+      return openStream(prepared(spec :: Options & OpenRequest, spec.url, 'open', ClientOpenOptionNames), transport)
+    end,
+    stats = function(_self: Client): ClientStats
+      local idle, busy = 0, 0
+      for _, pool in origins do
+        idle += #pool.idle
+        busy += pool.busy
+      end
+
+      return { idle = idle, busy = busy }
+    end,
+    close = function(_self: Client)
+      if client.closed then return end
+
+      client.closed = true
+      for _, pool in origins do
+        for _, entry in pool.idle do
+          entry.connection:close()
+        end
+
+        pool.idle = {}
+        pool.turn:notify()
+      end
+    end,
+    closed = false,
+  }
+
+  return client
 end
 
 --- In a @jess/net task: asks `url` to switch the connection to `protocol`. On 101, the response and
@@ -839,31 +1310,37 @@ local function upgrade(spec: UpgradeRequest): (Response?, NetConnection?, string
 
   local url = parsed :: Url
   local deadline = net.now() + timeoutMs
-  local connection, openProblem, openKind = open(url, 'GET', headers, nil, 'Upgrade', spec.tls, deadline)
-  if not connection then return nil, nil, `{describe(url)}: {openProblem}`, openKind end
+  local connection, connectProblem, connectKind = connectTo(url, spec.tls, deadline)
+  if not connection then return nil, nil, `{describe(url)}: {connectProblem}`, connectKind end
 
   local live = connection :: NetConnection
-  local head, body, receiveProblem, receiveKind = receive(live, 'GET', maxBytes, deadline)
+  local sent, sendProblem, sendKind = sendRequest(live, url, 'GET', headers, nil, 'Upgrade', deadline)
+  local head, headProblem, headKind
+  if sent then head, headProblem, headKind = receiveHead(live, deadline) end
+
   if not head then
     live:close()
-    return nil, nil, `{describe(url)}: {receiveProblem}`, receiveKind
+    return nil, nil, `{describe(url)}: {headProblem or sendProblem}`, headKind or sendKind
   end
 
+  local answer = head :: Head
   local response: Response = {
-    status = head.status,
-    reason = head.reason,
-    headers = head.headers,
-    body = body :: buffer,
+    status = answer.status,
+    reason = answer.reason,
+    headers = answer.headers,
+    body = buffer.create(0),
     url = spec.url,
     redirects = {},
   }
 
-  if head.status ~= 101 then
-    live:close()
-    return response, nil, `{describe(url)} answered {head.status} instead of switching protocols`, 'upgrade'
-  end
+  if answer.status == 101 then return response, live, nil, nil end
 
-  return response, live, nil, nil
+  local framed = bodyOf(live, answer, 'GET', maxBytes)
+  if framed then response.body = readAll(framed, deadline) or buffer.create(0) end
+
+  live:close()
+
+  return response, nil, `{describe(url)} answered {answer.status} instead of switching protocols`, 'upgrade'
 end
 
 --- The response's body decoded as JSON, or nil and why it isn't JSON.
@@ -878,6 +1355,8 @@ end
 return table.freeze {
   request = request,
   get = get,
+  open = open,
+  client = newClient,
   upgrade = upgrade,
   json = decodeJson,
   parseUrl = parseUrl,
