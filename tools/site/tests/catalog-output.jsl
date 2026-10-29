@@ -3,7 +3,7 @@ local fs = require '@dream/fs'
 local json = require '@jess/json'
 
 type Symbol = { name: string, signature: string, page: string, anchor: string }
-type Record = { url: string, title: string, body: string }
+type Record = { url: string, title: string, description: string, body: string }
 
 local output = arg[1]
 if not output then error('catalog output: expected a site output folder', 0) end
@@ -28,7 +28,7 @@ for _, symbol in catalog.symbols do
 
   local found = false
   for _, record in index do
-    if record.title == symbol.name and record.body == symbol.signature and
+    if record.title == symbol.name and record.description == symbol.signature and record.body == symbol.signature and
       (symbol.anchor == '' or string.sub(record.url, -#symbol.anchor) == symbol.anchor) then
       found = true
       break

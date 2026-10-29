@@ -801,7 +801,7 @@ local function publish(output: string, api: string)
     table.insert(records, {
       url = if symbol.anchor == '' then `{base}{symbol.page}` else `{base}{symbol.page}#{symbol.anchor}`,
       title = symbol.name,
-      description = symbol.module,
+      description = symbol.signature,
       body = symbol.signature,
     })
   end
