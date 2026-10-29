@@ -16,7 +16,7 @@ A release has the GPU and windows, and loads the machine's GPU API and window sy
 
 {{ api_signature(value="jess.gpu.device() -> GpuDevice") }}
 
-The runtime's device. The first call opens it, on whatever adapter the machine has: a hardware one if there is one, else a software one, which is what an offscreen render or a test on a machine without a GPU wants. Every later call is the same device.
+The runtime's device. The first call asks the backend for a low-power adapter and, if that fails, tries a fallback adapter. The backend and machine determine which adapter is available; a fallback may be a software adapter. Every later call is the same device.
 
 - **Capability:** `gpu.device`. A script you run holds it, as it holds the input devices in front of you; a package target declares it ([Capabilities](@/docs/reference/capabilities.md) has the rest). Without it: `jess.gpu.device: needs the 'gpu.device' capability, which this runtime does not grant`.
 - **Generations:** in an application, the device is the application's: the first generation to ask opens it, and every later one gets the same device, so a restart reloads code without opening the GPU again. Everything a generation made on it (buffers, textures, pipelines, draw sets, plans, windows) goes with that generation's runtime, and no handle of one generation can reach the next.
@@ -47,7 +47,7 @@ print(device.limits.textureSize, device.limits.workgroups)
 -- 8192  65535
 ```
 
-Those numbers are an integrated GPU's, reached through Vulkan. `kind` says what yours is, and `cpu` means a software adapter: everything works, slowly.
+Those numbers are one integrated GPU's, reached through Vulkan. `kind` says what yours is, and `cpu` means a software adapter. Available limits and supported operations depend on the adapter; check the destination rather than assuming that a software adapter supports every workload.
 
 ## Commits
 
