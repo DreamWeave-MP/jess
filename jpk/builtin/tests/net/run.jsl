@@ -20,12 +20,12 @@ suite.describe('@jess/net', function()
     local order: { string } = {}
 
     loop:spawn(function()
-      net.sleep(30)
+      net.sleep(200)
       table.insert(order, 'slow')
     end)
 
     loop:spawn(function()
-      net.sleep(5)
+      net.sleep(100)
       table.insert(order, 'quick')
     end)
 
