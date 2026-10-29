@@ -20,9 +20,11 @@ The uniform block `frequency` declares, as bytes, all zeros. `block:set(name, va
 
 `count` vertices of the program's per-vertex attributes, or instances of its per-instance ones. `vertices:set(index, name, value)` writes vertex `index` (from 1); `stride`, `count`, `bytes`, and `upload` are a block's.
 
-{{ api_signature(value="render.elements(layout: ShaderLayout, frequency, name: string, count: number) -> Elements") }}
+{{ api_signature(value="render.elements(layout: ShaderLayout, frequency: Frequency, name: string, count: number) -> Elements") }}
 
 `count` elements of the storage buffer `name`. `elements:set(index, value)` writes element `index`, from 1.
+
+`Frequency` is `'pass' | 'material' | 'draw'`. The selected group must declare the named storage buffer; its element layout and stride determine the allocation and writes. An unknown member, an invalid index, or a value that does not fit its layout raises an error.
 
 A value is what its type holds:
 
