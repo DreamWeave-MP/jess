@@ -1,0 +1,29 @@
+--!strict
+for _, name in {
+  'process.stdio',
+  'input.actions',
+  'input.observe',
+  'input.configure',
+  'gpu.device',
+  'gpu.window',
+  'audio.output',
+} do
+  assert(jess.granted(name), `missing default capability {name}`)
+end
+
+for _, name in {
+  'filesystem.read',
+  'filesystem.write',
+  'process.environment',
+  'process.spawn',
+  'network.dns.resolve',
+  'network.tcp.connect',
+  'network.tcp.listen',
+  'network.tcp.public',
+  'network.transport',
+  'worker.spawn',
+} do
+  assert(not jess.granted(name), `unexpected default capability {name}`)
+end
+
+print 'defaults confirmed'

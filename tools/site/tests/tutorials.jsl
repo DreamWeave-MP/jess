@@ -90,6 +90,12 @@ suite.it('checks and runs the Luau primer', function()
   test.expect(run { 'run', path }).toBe 'apples: 3\npears: 2\n'
 end)
 
+suite.it('checks the documented loose-script capability defaults', function()
+  local path = 'tests/fixtures/docs/capabilities.jsl'
+  run { 'check', path }
+  test.expect(run { 'run', path }).toBe 'defaults confirmed\n'
+end)
+
 suite.it('checks and runs the JSON report', function()
   local path = 'tests/fixtures/docs/json-report.jsl'
   run { 'check', path }
