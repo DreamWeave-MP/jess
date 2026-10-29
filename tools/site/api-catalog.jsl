@@ -488,6 +488,18 @@ local function localFunctionSignature(source: string, localName: string, symbolN
   error(`api catalog: cannot find source for {symbolName}`, 0)
 end
 
+local function checkModules(expected: { string }, actual: { [string]: string })
+  local missing: { [string]: boolean } = {}
+  for _, name in expected do missing[name] = true end
+
+  for name in actual do
+    if not missing[name] then error(`api catalog: new built-in module {name} needs a reference mapping`, 0) end
+    missing[name] = nil
+  end
+
+  for name in missing do error(`api catalog: obsolete built-in module mapping {name}`, 0) end
+end
+
 local function generate(root: string): string
   local scratch = fs.join(root, 'target')
   local made, makeProblem = fs.mkdir(scratch, { recursive = true })
@@ -615,15 +627,9 @@ local function generate(root: string): string
   local manifestText, manifestProblem = fs.readFileString(manifestPath)
   if not manifestText then error(`api catalog: cannot read {manifestPath}: {manifestProblem}`, 0) end
   local manifest = toml.decode(manifestText) :: { modules: { [string]: string } }
-  local sourceModules: { [string]: boolean } = {}
-  for _, item in typeSources do sourceModules[`@jess/{item.name}`] = true end
-
-  for name in manifest.modules do
-    if not sourceModules[name] then error(`api catalog: new built-in module {name} needs a reference mapping`, 0) end
-    sourceModules[name] = nil
-  end
-
-  for name in sourceModules do error(`api catalog: obsolete built-in module mapping {name}`, 0) end
+  local sourceModules: { string } = {}
+  for _, item in typeSources do table.insert(sourceModules, `@jess/{item.name}`) end
+  checkModules(sourceModules, manifest.modules)
 
   local members = { 'application', 'bench', 'context', 'events', 'interfaces', 'worker' }
   local modules: { string } = {}
@@ -806,4 +812,4 @@ local function publish(output: string, api: string)
   if not saved then error(`api catalog: cannot write catalog: {saveProblem}`, 0) end
 end
 
-return table.freeze { moduleSymbols = moduleSymbols, stubSymbols = stubSymbols, sourceSymbols = sourceSymbols, typeInventory = typeInventory, sourceTypes = sourceTypes, tableFunctions = tableFunctions, rootInventory = rootInventory, generate = generate, publish = publish }
+return table.freeze { moduleSymbols = moduleSymbols, stubSymbols = stubSymbols, sourceSymbols = sourceSymbols, typeInventory = typeInventory, sourceTypes = sourceTypes, tableFunctions = tableFunctions, rootInventory = rootInventory, checkModules = checkModules, generate = generate, publish = publish }
