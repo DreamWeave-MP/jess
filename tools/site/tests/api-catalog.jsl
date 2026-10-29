@@ -88,6 +88,21 @@ return table.freeze { Null = Null, array = array }]]
   test.expect(symbols[2].signature).toBe 'value.array(items: { string }) -> { string }'
 end)
 
+suite.it('indexes anonymous functions without inventing an inferred return type', function()
+  local source = [[return table.freeze { add = function(value: string) print(value) end }]]
+  local symbols = catalog.sourceSymbols(source, 'sample.add', 'sample', true)
+  test.expect(symbols[1].signature).toBe 'sample.add(value: string)'
+end)
+
+suite.it('indexes a native wrapper using the generated native signature', function()
+  local source = [[local Native = require '@jess'
+return table.freeze { runtime = Native.runtime }]]
+  local aliases = { ['Native.runtime'] = 'input.runtime(options: Options?) -> Runtime' }
+  local symbols = catalog.sourceSymbols(source, 'input.runtime', 'input', true, '@jess/input', aliases)
+  test.expect(symbols[1].signature).toBe 'input.runtime(options: Options?) -> Runtime'
+  test.expect(function() catalog.sourceSymbols(source, 'input.runtime', 'input', true, '@jess/input', {}) end).toThrow 'unsupported input export'
+end)
+
 suite.it('preserves an exported string literal', function()
   local source = [[return table.freeze { version = '1.2' }]]
   local symbols = catalog.sourceSymbols(source, '', 'yaml')

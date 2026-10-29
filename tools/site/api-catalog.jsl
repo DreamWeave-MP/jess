@@ -354,7 +354,7 @@ local function tableFunctions(source: string, documentation: string, prefix: str
   return symbols
 end
 
-local function sourceSymbols(source: string, documentation: string, member: string, grouped: boolean?, moduleName: string?): { Symbol }
+local function sourceSymbols(source: string, documentation: string, member: string, grouped: boolean?, moduleName: string?, aliases: { [string]: string }?): { Symbol }
   local parsed = luau.parse(source)
   if #parsed.errors > 0 then error(`api catalog: generated {member} source does not parse`, 0) end
   local exported: dream_luau_ExprTable?
@@ -380,9 +380,17 @@ local function sourceSymbols(source: string, documentation: string, member: stri
     local symbolName = `{member}.{name}`
     local signature: string?
     local localName: string?
+    local func: dream_luau_ExprFunction?
 
     if item.value.kind == 'ExprLocal' then
       localName = item.value['local'].name
+    elseif item.value.kind == 'ExprFunction' then
+      func = item.value
+    elseif item.value.kind == 'ExprIndexName' and aliases then
+      local owner = item.value.expr
+      if owner.kind ~= 'ExprLocal' then error(`api catalog: unsupported {member} export {name}`, 0) end
+      local key = `{owner['local'].name}.{item.value.index}`
+      signature = aliases[key]
     elseif item.value.kind == 'ExprConstantString' then
       local literal = item.value
       local first = parsed.lineStarts[literal.line] + literal.column - 1
@@ -394,15 +402,22 @@ local function sourceSymbols(source: string, documentation: string, member: stri
 
     for _, statement in parsed.root.body do
       if statement.kind ~= 'StatLocalFunction' or statement.name.name ~= localName then continue end
-      local args, result = statement.func.argLocation, statement.func.returnAnnotation
-      if not args or not result then error(`api catalog: {member} function {name} lacks an explicit signature`, 0) end
+      func = statement.func
+      break
+    end
+
+    if func then
+      local args, result = func.argLocation, func.returnAnnotation
+      if not args then error(`api catalog: {member} function {name} lacks arguments`, 0) end
 
       local first = parsed.lineStarts[args.line] + args.column - 1
       local last = parsed.lineStarts[args.endLine] + args.endColumn - 1
-      local returnFirst = parsed.lineStarts[result.line] + result.column - 1
-      local returnLast = parsed.lineStarts[result.endLine] + result.endColumn - 1
-      signature = `{symbolName}{string.sub(source, first, last)} -> {string.sub(source, returnFirst, returnLast)}`
-      break
+      signature = `{symbolName}{string.sub(source, first, last)}`
+      if result then
+        local returnFirst = parsed.lineStarts[result.line] + result.column - 1
+        local returnLast = parsed.lineStarts[result.endLine] + result.endColumn - 1
+        signature ..= ` -> {string.sub(source, returnFirst, returnLast)}`
+      end
     end
 
     if not signature and name ~= 'null' and not (member == 'value' and (name == 'Null' or name == 'None')) then
@@ -463,6 +478,8 @@ local function generate(root: string): string
     { name = 'http', path = 'http/init.jsl', grouped = false, moduleName = '@jess/http' },
     { name = 'analysis', path = 'analysis/init.jsl', grouped = true, moduleName = '@jess/analysis' },
     { name = 'value', path = 'data/value.jsl', grouped = true, moduleName = '@jess/data/value' },
+    { name = 'l10n', path = 'l10n/init.jsl', grouped = true, moduleName = '@jess/l10n' },
+    { name = 'input', path = 'input/init.jsl', grouped = true, moduleName = '@jess/input' },
   } do
     local source, message = fs.readFileString(fs.join(folder, 'jess', item.path))
     if not source then
@@ -586,7 +603,16 @@ local function generate(root: string): string
     if not documentation then error(`api catalog: cannot read {path}: {docProblem}`, 0) end
 
     table.insert(modules, item.moduleName or `@jess/{item.name}`)
-    for _, symbol in sourceSymbols(item.source, documentation, item.name, item.grouped, item.moduleName) do
+    local aliases: { [string]: string }? = nil
+    if item.name == 'input' then
+      aliases = {}
+      for _, symbol in globalInventory(definitions, 'input') do
+        local name = string.sub(symbol.name, #'jess.input.' + 1)
+        aliases[`Native.{name}`] = string.gsub(symbol.signature, '^jess%.input%.', 'input.')
+      end
+    end
+
+    for _, symbol in sourceSymbols(item.source, documentation, item.name, item.grouped, item.moduleName, aliases) do
       table.insert(symbols, symbol)
     end
   end

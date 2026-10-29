@@ -338,6 +338,6 @@ That is 600 frames of a window at the display's pace: Space pressed in it is `ju
 
 {{ api_signature(value="jess.input: { graph, formatVersion, control, runtime }") }}
 
-The native half `@jess/input` is written over: `graph(json)` compiles a document already encoded as JSON, `control(text)` returns a control's canonical `class:Name` or raises, `formatVersion` is the document format this jess reads and writes, and `runtime` is `input.runtime`. A script has no reason to call it directly; it is here so nothing about the boundary is hidden.
+The native half `@jess/input` is written over: `graph(json)` compiles a document already encoded as JSON, `control(text)` returns a control's canonical `class:Name` or raises, `formatVersion` is the document format this jess reads and writes, and `runtime` is `input.runtime`. The wrapper also exports that format as `input.formatVersion`. A script has no reason to call the native table directly; it is here so nothing about the boundary is hidden.
 
 Related: [Input Runtime](@/docs/contributing/input-runtime.md), the model behind all of this.
