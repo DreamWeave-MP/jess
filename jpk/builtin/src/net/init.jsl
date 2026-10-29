@@ -130,6 +130,10 @@ export type Connection = {
   ) -> (boolean, string?, ErrorKind?),
   --- Received bytes not yet taken.
   buffered: (self: Connection) -> number,
+  --- Whether the connection is open and quiet: nobody is receiving or sending on it, nothing is
+  --- held unread, and a read that does not wait finds nothing either. A pool asks before it reuses
+  --- one: a peer that closed it, or sent something nobody asked for, makes it false. Never waits.
+  idle: (self: Connection) -> boolean,
   --- Sends every byte of `data`, or fails. Sends from several tasks never interleave: each waits
   --- for the one before it, and a send waits, without holding memory of its own, until the socket
   --- takes the bytes.
@@ -715,6 +719,19 @@ local function send(state: ConnectionState, data: string | buffer, deadline: num
   return sent, problem, kind
 end
 
+--- See `Connection.idle`.
+local function isIdle(state: ConnectionState): boolean
+  if state.public.closed or state.reader or state.sender or state.tail > state.head then return false end
+
+  state.head, state.tail = 0, 0
+  local count, _, kind = state.readInto(state.inbox, 0)
+  if count == nil and kind == 'wouldBlock' then return true end
+
+  if count and count > 0 then state.tail = count end
+
+  return false
+end
+
 local function closeConnection(state: ConnectionState)
   if state.public.closed then return end
 
@@ -875,6 +892,7 @@ local function newConnection(
       return receiveInto(state, target, offset, count, deadline)
     end,
     buffered = function(_self: Connection): number return state.tail - state.head end,
+    idle = function(_self: Connection): boolean return isIdle(state) end,
     send = function(_self: Connection, data: string | buffer, deadline: number?): (boolean, string?, ErrorKind?)
       return send(state, data, deadline)
     end,

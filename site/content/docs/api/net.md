@@ -148,6 +148,9 @@ A connection buffers what it receives, so a protocol reads in its own units:
 - `receiveUntil(delimiter, maxBytes, deadline?)`: the bytes before `delimiter`, which is consumed. More than `maxBytes` without it is `limitReached`.
 - `receiveInto(target, offset, count, deadline?)`: exactly `count` bytes into a buffer, for bodies that shouldn't become strings.
 - `buffered()`: bytes received and not yet taken.
+- `idle()`: whether the connection is open and quiet: nobody receiving or sending on it, nothing
+  held unread, and nothing arriving on a read that doesn't wait. A pool asks before it reuses a
+  connection; a peer that closed it, or sent something nobody asked for, makes it `false`.
 
 Each returns `nil` (or `false`), a message and a kind when it can't: `closed` when the peer ended the stream, `truncated` when a TLS peer ended it without `close_notify`, `timeout`, `cancelled`. One task receives on a connection at a time; a second is a mistake and raises.
 
