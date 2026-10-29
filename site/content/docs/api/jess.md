@@ -144,7 +144,7 @@ Loads a module. Four kinds of name resolve, and nothing else does:
 - The exports of the packages activated for this run: a `--package` on `jess run`, the layers of the command target that is running, or an application's whole graph. `@greeter` resolves when a package exporting it is active, and to nothing otherwise.
 - A name starting with `./` or `../` is relative to the module calling `require`, as in Luau's require by string: jess tries `name.jsl`, then `name/init.jsl`. Inside a package, `@self/` is the package's own root. An `init` script stands for its folder, so its `./` starts beside the folder.
 
-Each module runs once, called with its name as `...`, and is cached: the same value comes back from every `require`, by whichever name. A package module's return value is frozen, so one package can't patch another's export for the whole plan.
+Each module runs once, called with its name as `...`, and is cached in that runtime: the same value comes back from every `require`, by whichever name. If a package module returns a table, Jess makes that top-level table read-only before caching it, so a caller cannot replace fields on the shared export. This is shallow: nested tables and buffers are not recursively frozen, and non-table return values are unchanged. A loose script's own relative modules are not frozen by this package rule. An API that shares nested mutable state must define who owns it.
 
 - **Errors:** `module not found: <name>`, with a reason for a name that looks like it should have worked: `module not found: @greeter: no package activated in this run exports it, and it isn't one of jess's own modules`, or `module not found: @jess/nope: @jess/ is jess's own namespace (...), never a file`.
 

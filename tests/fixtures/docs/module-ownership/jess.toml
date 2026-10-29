@@ -1,0 +1,19 @@
+manifest_version = 1
+
+[package]
+id = "com.example.ownership"
+version = "0.1.0"
+jess_api = "1"
+include = ["src"]
+default_target = "show"
+
+[modules]
+"@example/state" = "src/state.jsl"
+
+[[layer]]
+id = "example.state"
+exports = ["@example/state"]
+
+[targets.show]
+kind = "command"
+entry = "src/main.jsl"

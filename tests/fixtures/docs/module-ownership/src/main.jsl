@@ -1,0 +1,9 @@
+--!strict
+local state = require '@example/state'
+local same = require '@example/state'
+
+assert(rawequal(state, same))
+assert(table.isfrozen(state))
+assert(not table.isfrozen(state.nested))
+state.nested.count += 1
+print(same.nested.count)

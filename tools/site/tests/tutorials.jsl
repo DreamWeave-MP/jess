@@ -43,6 +43,7 @@ suite.it('keeps tutorial code and fixtures identical', function()
   documented('site/content/docs/getting-started/first-workspace.md', 'tests/fixtures/docs/counter/jess-workspace.toml', 'toml')
   documented('site/content/docs/getting-started/luau-basics.md', 'tests/fixtures/docs/luau-basics.jsl', 'luau')
   documented('site/content/docs/scripting/jsl-and-l3i.md', 'tests/fixtures/docs/jsl-dialect.jsl', 'luau')
+  documented('site/content/docs/getting-started/modules-and-layers.md', 'tests/fixtures/docs/module-ownership/src/main.jsl', 'luau')
   documented('site/content/docs/cookbook/json-report.md', 'tests/fixtures/docs/json-report.jsl', 'luau')
   documented('site/content/docs/cookbook/named-event.md', 'tests/fixtures/docs/named-event/src/counter.jsl', 'luau')
   documented('site/content/docs/cookbook/safe-write.md', 'tests/fixtures/docs/backup.jsl', 'luau')
@@ -94,6 +95,15 @@ suite.it('checks the documented loose-script capability defaults', function()
   local path = 'tests/fixtures/docs/capabilities.jsl'
   run { 'check', path }
   test.expect(run { 'run', path }).toBe 'defaults confirmed\n'
+end)
+
+suite.it('checks shallow module ownership in source and JPK', function()
+  local path = 'tests/fixtures/docs/module-ownership'
+  run { 'package', 'check', path }
+  test.expect(run { 'package', 'run', path }).toBe '2\n'
+  local packed = fs.join(makeScratch(), 'ownership.jpk')
+  run { 'pack', path, '--output', packed }
+  test.expect(run { 'package', 'run', packed }).toBe '2\n'
 end)
 
 suite.it('checks and runs the JSON report', function()
