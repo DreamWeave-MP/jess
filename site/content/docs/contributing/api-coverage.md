@@ -37,6 +37,20 @@ The [CLI reference](@/docs/cli/_index.md), [workspace reference](@/docs/cli/work
 
 The tutorial checks exercise a small set of complete paths. They do not replace the remaining API audit, browser and keyboard testing, or platform verification. For entries marked `checked`, the build verifies the generated signature and handwritten heading. Other entries are indexed without that signature check.
 
+## Executable coverage and restrictions
+
+The fixtures below are run or checked by `tools/site/tests/tutorials.jsl` unless another check is named. Paths are relative to the repository root. These examples cover representative paths, not every option or error in the corresponding reference.
+
+| Surface | Example and evidence | Requirements and limits |
+| --- | --- | --- |
+| Luau, JSL, and grants | `tests/fixtures/docs/luau-basics.jsl`, `jsl-dialect.jsl`, and `capabilities.jsl`; [first script](@/docs/scripting/intro.md) | Loose scripts run under the CLI; the grant fixture checks the default capability set. |
+| Package source and JPK | The generated first package and `tests/fixtures/docs/multi`; [first package](@/docs/getting-started/first-package.md), [two packages](@/docs/cookbook/multi-package.md) | Source tests run before packing; packed execution uses the embedded payload and resolved dependencies. |
+| Host lifecycle, events, and workers | `tests/fixtures/docs/headless`, `counter`, `named-event`, and `worker`; [headless](@/docs/cookbook/headless.md), [events](@/docs/cookbook/named-event.md), [worker](@/docs/cookbook/worker.md) | Workers need an application domain and `worker.spawn`; the headless case needs no display. |
+| HTTP and capability denial | `tests/fixtures/docs/http-get.jsl` with the loopback server in `tests/cli/docs.rs`; `http-denied.jsl` | A real request needs DNS and TCP grants. CI uses loopback; TLS trust stores and remote servers are environment dependent. |
+| Structured data and files | `tests/fixtures/docs/json-report.jsl`, `config.jsl`, and `backup.jsl` | File recipes run in scratch with filesystem grants. A backup is not a transaction across concurrent writers. |
+| Audio and window | `tests/fixtures/docs/offline-audio.jsl` and `window`; [audio](@/docs/cookbook/offline-audio.md), [window](@/docs/cookbook/window.md) | Offline mixing needs no output device. CI checks the window package without opening a device; rendering requires an available display, adapter, and build features. |
+| Workspace distribution | `tests/fixtures/docs/counter` and `multi` | The suite runs source, a `.jsw`, a standalone executable made from the test runtime, and an offline local dependency lock. Standalone formats and destination libraries remain platform dependent. |
+
 ## Writing and navigation review
 
 The reference pages generally put signatures and concrete behavior before examples, and the larger GPU, shader, and audio pages keep related operations together under a local table of contents. The getting-started landing page now separates a first script, application distribution, and larger application development; the cookbook links complete fixtures where it promises runnable programs. Guides link back to the reference for contracts rather than copying it wholesale.
