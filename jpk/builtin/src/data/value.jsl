@@ -45,7 +45,7 @@ end
 local function set(target: Map, key: string, value: Value): Map
   if target.values[key] == nil then table.insert(target.keys, key) end
 
-  target.values[key] = value
+  target.values[key] = if value == nil then None else value
   return target
 end
 

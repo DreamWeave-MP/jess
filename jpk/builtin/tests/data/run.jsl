@@ -19,6 +19,19 @@ type Nodes = { first: { folded: string, literal: string, flow: { unknown } }, se
 type Trailing = { quoted: string, single: string, flow: { number }, map: { a: number }, tagged: string, items: { unknown } }
 type Quotes = { ["Maren's House"]: string, plain: string, said: string, indexed: string, list: { string } }
 
+suite.describe('ordered values', function()
+  suite.it('keeps one key when nil is assigned and replaced', function()
+    local fields = values.map()
+    values.set(fields, 'name', nil)
+    expect(values.encode(fields, 'json')).toBe '{"name":null}'
+    values.set(fields, 'name', 'Jess')
+    values.set(fields, 'name', nil)
+    values.set(fields, 'name', 'Jess')
+    expect(fields.keys).toEqual { 'name' }
+    expect(values.encode(fields, 'json')).toBe '{"name":"Jess"}'
+  end)
+end)
+
 suite.describe('json', function()
   suite.it('decodes RFC 8259 values and UTF-16 escapes', function()
     local value = json.decode '{"text":"\\uD83D\\uDE03","values":[1,-2.5e2,true,false,null]}' :: Escapes
