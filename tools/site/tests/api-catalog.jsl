@@ -68,4 +68,16 @@ return table.freeze { write = write }]]
   test.expect(function() catalog.sourceSymbols(source, '', 'backup') end).toThrow 'missing documentation'
 end)
 
+suite.it('preserves an exported string literal', function()
+  local source = [[return table.freeze { version = '1.2' }]]
+  local symbols = catalog.sourceSymbols(source, '', 'yaml')
+  test.expect(symbols[1].signature).toBe "yaml.version = '1.2'"
+  test.expect(symbols[1].anchor).toBe ''
+end)
+
+suite.it('refuses an unsupported source export instead of omitting it', function()
+  local source = [[return table.freeze { decode = parser.decode }]]
+  test.expect(function() catalog.sourceSymbols(source, '## json.decode', 'json') end).toThrow 'unsupported json export'
+end)
+
 return suite
