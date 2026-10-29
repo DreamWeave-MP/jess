@@ -1,0 +1,54 @@
+--!strict
+local test = require '@jess/test'
+local catalog = require '../api-catalog'
+
+local Definitions = [[declare jess: {
+  application: {
+    exit: (status: number?) -> (),
+  },
+}]]
+local Documentation = [[## jess.application.exit
+
+jess.application.exit(status: number?) -> ()]]
+local suite = test.new()
+
+suite.it('extracts the documented signature', function()
+  local symbols = catalog.moduleSymbols(Definitions, Documentation, 'application')
+  test.expect(#symbols).toBe(1)
+  test.expect(symbols[1].signature).toBe 'jess.application.exit(status: number?) -> ()'
+  test.expect(symbols[1].anchor).toBe 'jess-application-exit'
+end)
+
+suite.it('refuses an undocumented new member', function()
+  local changed = string.gsub(Definitions, 'exit:', 'stop:')
+  test.expect(function() catalog.moduleSymbols(changed, Documentation, 'application') end).toThrow 'missing documentation'
+end)
+
+suite.it('refuses a changed signature', function()
+  local changed = string.gsub(Definitions, 'status: number%?', 'status: string')
+  test.expect(function() catalog.moduleSymbols(changed, Documentation, 'application') end).toThrow 'signature drift'
+end)
+
+suite.it('refuses an obsolete documented member', function()
+  local changed = Documentation .. '\n## jess.application.stop\n'
+  test.expect(function() catalog.moduleSymbols(Definitions, changed, 'application') end).toThrow 'obsolete documentation'
+end)
+
+suite.it('extracts function and value signatures from generated stubs', function()
+  local stub = [[local module: {
+  open: (path: string) -> number,
+  limit: number,
+} = (nil :: any)
+return module]]
+  local docs = [[### sample.open
+sample.open(path: string) -> number
+
+### sample.limit
+sample.limit: number]]
+  local symbols = catalog.stubSymbols(stub, docs, 'sample')
+  test.expect(#symbols).toBe(2)
+  test.expect(symbols[1].signature).toBe 'sample.limit: number'
+  test.expect(symbols[2].signature).toBe 'sample.open(path: string) -> number'
+end)
+
+return suite

@@ -5,7 +5,7 @@ id = "org.dreamweave.jess-site"
 version = "0.1.0"
 jess_api = "1"
 default_target = "build"
-include = ["build.jsl", "governance.jsl", "paths.jsl", "serve.jsl"]
+include = ["api-catalog.jsl", "build.jsl", "governance.jsl", "paths.jsl", "serve.jsl", "tests/navigation.jsl"]
 
 [dependencies]
 "org.dreamweave.site" = "0.1"
@@ -23,7 +23,7 @@ exports = []
 kind = "command"
 command = "jess-site-build"
 entry = "build.jsl"
-capabilities = ["filesystem.read", "filesystem.write"]
+capabilities = ["filesystem.read", "filesystem.write", "process.spawn"]
 
 # `jess package run --target serve tools/site --package-path jpk -- [host] [port]`: a dev build
 # served over HTTP, rebuilt when a source changes.
@@ -31,4 +31,10 @@ capabilities = ["filesystem.read", "filesystem.write"]
 kind = "command"
 command = "jess-site-serve"
 entry = "serve.jsl"
-capabilities = ["filesystem.read", "filesystem.write", "network.tcp.listen", "network.tcp.public"]
+capabilities = ["filesystem.read", "filesystem.write", "network.tcp.listen", "network.tcp.public", "process.spawn"]
+
+[targets.navigation]
+kind = "command"
+command = "jess-site-navigation-check"
+entry = "tests/navigation.jsl"
+capabilities = ["filesystem.read", "filesystem.write"]

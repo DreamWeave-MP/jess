@@ -1,0 +1,292 @@
+--!strict
+-- Extract a documented module from the same generated definitions used by the type checker.
+local luau = require '@dream/luau'
+local fs = require '@dream/fs'
+local process = require '@dream/process'
+local json = require '@jess/json'
+
+export type Symbol = {
+  name: string,
+  module: string,
+  signature: string,
+  page: string,
+  anchor: string,
+  checked: boolean,
+}
+
+type SearchRecord = { url: string, title: string, description: string, body: string }
+
+local function collect(
+  source: string,
+  lineStarts: { number },
+  module: dream_luau_TypeTable,
+  documentation: string,
+  prefix: string,
+  moduleName: string,
+  pageName: string
+): { Symbol }
+  local symbols: { Symbol } = {}
+
+  for _, property in module.props do
+    local kind = property.type
+    local first = lineStarts[kind.line] + kind.column - 1
+    local last = lineStarts[kind.endLine] + kind.endColumn - 1
+    local name = `{prefix}.{property.name}`
+    local typeText = string.sub(source, first, last)
+    local signature = if kind.kind == 'TypeFunction' then `{name}{typeText}` else `{name}: {typeText}`
+    local heading = `## {name}`
+
+    if not string.find(documentation, heading, 1, true) then
+      error(`api catalog: missing documentation for {name}`, 0)
+    end
+
+    if not string.find(documentation, signature, 1, true) then
+      error(`api catalog: signature drift for {name}: {signature}`, 0)
+    end
+
+    table.insert(symbols, {
+      name = name,
+      module = moduleName,
+      signature = signature,
+      page = `docs/api/{pageName}/`,
+      anchor = string.gsub(string.lower(name), '%.', '-'),
+      checked = true,
+    })
+  end
+
+  if #symbols == 0 then error(`api catalog: {prefix} has no members`, 0) end
+
+  local pattern = string.gsub(prefix, '%.', '%%.')
+  for name in string.gmatch('\n' .. documentation, `\n##+ {pattern}%.([%w_]+)`) do
+    local found = false
+
+    for _, symbol in symbols do
+      if symbol.name == `{prefix}.{name}` then found = true end
+    end
+
+    if not found then error(`api catalog: obsolete documentation for {prefix}.{name}`, 0) end
+  end
+
+  table.sort(symbols, function(left: Symbol, right: Symbol) return left.name < right.name end)
+  return symbols
+end
+
+local function moduleSymbols(definitions: string, documentation: string, member: string): { Symbol }
+  local parsed = luau.parse(definitions, { declarations = true })
+  if #parsed.errors > 0 then error('api catalog: generated definitions do not parse', 0) end
+
+  local root: dream_luau_TypeTable?
+  for _, statement in parsed.root.body do
+    if statement.kind ~= 'StatDeclareGlobal' or statement.name ~= 'jess' then continue end
+    if statement.type.kind ~= 'TypeTable' then error('api catalog: jess is not a table', 0) end
+    root = statement.type
+    break
+  end
+
+  if not root then error('api catalog: generated definitions have no jess global', 0) end
+
+  for _, property in root.props do
+    if property.name ~= member then continue end
+    if property.type.kind ~= 'TypeTable' then error(`api catalog: {member} is not a table`, 0) end
+    return collect(definitions, parsed.lineStarts, property.type, documentation, `jess.{member}`, `@jess/{member}`, member)
+  end
+
+  error(`api catalog: generated definitions have no jess.{member}`, 0)
+end
+
+local function stubSymbols(source: string, documentation: string, member: string): { Symbol }
+  local parsed = luau.parse(source)
+  if #parsed.errors > 0 then error(`api catalog: generated {member} stub does not parse`, 0) end
+
+  for _, statement in parsed.root.body do
+    if statement.kind ~= 'StatLocal' or #statement.vars ~= 1 or statement.vars[1].name ~= 'module' then continue end
+    local annotation = statement.vars[1].annotation
+    if not annotation or annotation.kind ~= 'TypeTable' then error(`api catalog: {member} stub is not a table`, 0) end
+    return collect(source, parsed.lineStarts, annotation, documentation, member, `@jess/{member}`, member)
+  end
+
+  error(`api catalog: generated {member} stub has no module`, 0)
+end
+
+local function externalStubSymbols(source: string, member: string): { Symbol }
+  local parsed = luau.parse(source)
+  if #parsed.errors > 0 then error(`api catalog: generated {member} stub does not parse`, 0) end
+
+  for _, statement in parsed.root.body do
+    if statement.kind ~= 'StatLocal' or #statement.vars ~= 1 or statement.vars[1].name ~= 'module' then continue end
+    local annotation = statement.vars[1].annotation
+    if not annotation or annotation.kind ~= 'TypeTable' then error(`api catalog: {member} stub is not a table`, 0) end
+
+    local symbols: { Symbol } = {}
+    for _, property in annotation.props do
+      local kind = property.type
+      local first = parsed.lineStarts[kind.line] + kind.column - 1
+      local last = parsed.lineStarts[kind.endLine] + kind.endColumn - 1
+      local name = `@dream/{member}.{property.name}`
+      local typeText = string.sub(source, first, last)
+      local signature = if kind.kind == 'TypeFunction' then `{name}{typeText}` else `{name}: {typeText}`
+      table.insert(symbols, {
+        name = name,
+        module = `@dream/{member}`,
+        signature = signature,
+        page = 'docs/api/l3i/',
+        anchor = '',
+        checked = false,
+      })
+    end
+
+    if #symbols == 0 then error(`api catalog: {member} stub has no members`, 0) end
+    return symbols
+  end
+
+  error(`api catalog: generated {member} stub has no module`, 0)
+end
+
+local function generate(root: string): string
+  local scratch = fs.join(root, 'target')
+  local made, makeProblem = fs.mkdir(scratch, { recursive = true })
+  if not made then error(`api catalog: cannot create {scratch}: {makeProblem}`, 0) end
+  local folder: string?
+
+  for _ = 1, 32 do
+    local candidate = fs.join(scratch, `site-api-{os.time()}-{math.random(1, 1000000000)}`)
+    if fs.mkdir(candidate) then
+      folder = candidate
+      break
+    end
+  end
+
+  if not folder then error('api catalog: cannot create a temporary directory', 0) end
+
+  local result, problem = process.run('jess', { 'luau-types', folder }, { stdout = 'null', stderr = 'capture' })
+  local definitions, readProblem = fs.readFileString(fs.join(folder, 'jess.d.jsl'))
+  local stubs: { { name: string, source: string } }, dreamStubs: { { name: string, source: string } } = {}, {}
+  local stubProblem: string?
+
+  for _, name in { 'jpk', 'log', 'package', 'test' } do
+    local source, message = fs.readFileString(fs.join(folder, 'jess', `{name}.jsl`))
+    if not source then
+      stubProblem = `cannot read {name} stub: {message}`
+      break
+    end
+
+    table.insert(stubs, { name = name, source = source })
+  end
+
+  if not stubProblem then
+    local dreamFolder = fs.join(folder, 'dream')
+    local files, walkProblem = fs.walk(dreamFolder, { include = 'files', sort = true })
+    if not files then stubProblem = `cannot list @dream stubs: {walkProblem}` end
+
+    for _, path in if files then files.paths else {} do
+      local name = string.match(path, '^([%w_%-]+)%.jsl$')
+      if not name then
+        stubProblem = `unsupported @dream stub path: {path}`
+        break
+      end
+
+      local source, message = fs.readFileString(fs.join(dreamFolder, path))
+      if not source then
+        stubProblem = `cannot read @dream/{name} stub: {message}`
+        break
+      end
+
+      table.insert(dreamStubs, { name = name, source = source })
+    end
+  end
+
+  local removed, removeProblem = fs.remove(folder, { recursive = true })
+
+  if not removed then error(`api catalog: cannot remove {folder}: {removeProblem}`, 0) end
+  if not result then error(`api catalog: cannot run jess luau-types: {problem}`, 0) end
+  if not result.success then error(`api catalog: jess luau-types failed: {result.stderr or ''}`, 0) end
+  if not definitions then error(`api catalog: cannot read definitions: {readProblem}`, 0) end
+  if stubProblem then error(`api catalog: {stubProblem}`, 0) end
+
+  local version = string.match(definitions, '^%-%- jess ([^ ]+) Luau types')
+  if version ~= jess.version then
+    error(`api catalog: jess on PATH generated types for {version}, but the site runs on {jess.version}`, 0)
+  end
+
+  local members = { 'application', 'bench', 'context', 'events', 'interfaces', 'worker' }
+  local modules: { string } = {}
+  local symbols: { Symbol } = {}
+
+  for _, member in members do
+    local path = fs.join(root, 'site', 'content', 'docs', 'api', `{member}.md`)
+    local documentation, docProblem = fs.readFileString(path)
+    if not documentation then error(`api catalog: cannot read {path}: {docProblem}`, 0) end
+
+    table.insert(modules, `@jess/{member}`)
+    for _, symbol in moduleSymbols(definitions, documentation, member) do
+      table.insert(symbols, symbol)
+    end
+  end
+
+  for _, stub in stubs do
+    local path = fs.join(root, 'site', 'content', 'docs', 'api', `{stub.name}.md`)
+    local documentation, docProblem = fs.readFileString(path)
+    if not documentation then error(`api catalog: cannot read {path}: {docProblem}`, 0) end
+
+    table.insert(modules, `@jess/{stub.name}`)
+    for _, symbol in stubSymbols(stub.source, documentation, stub.name) do
+      table.insert(symbols, symbol)
+    end
+  end
+
+  for _, stub in dreamStubs do
+    table.insert(modules, `@dream/{stub.name}`)
+    for _, symbol in externalStubSymbols(stub.source, stub.name) do
+      table.insert(symbols, symbol)
+    end
+  end
+
+  table.sort(modules)
+  table.sort(symbols, function(left: Symbol, right: Symbol) return left.name < right.name end)
+
+  return json.encodeTable({ schemaVersion = 1, modules = modules, symbols = symbols }, { indent = 2 }) .. '\n'
+end
+
+local function publish(output: string, api: string)
+  local catalog = json.decode(api) :: { symbols: { Symbol } }
+  local indexPath = fs.join(output, 'search_index.en.json')
+  local index, problem = fs.readFileString(indexPath)
+  if not index then error(`api catalog: cannot read search index: {problem}`, 0) end
+
+  local records = json.decode(index) :: { SearchRecord }
+  local suffix = 'docs/api/application/'
+  local base: string?
+
+  for _, record in records do
+    if string.sub(record.url, -#suffix) == suffix then
+      base = string.sub(record.url, 1, #record.url - #suffix)
+      break
+    end
+  end
+
+  if not base then error('api catalog: application reference is missing from the search index', 0) end
+
+  for _, symbol in catalog.symbols do
+    local pagePath = fs.join(output, symbol.page, 'index.html')
+    local page, pageProblem = fs.readFileString(pagePath)
+    if not page then error(`api catalog: cannot read {pagePath}: {pageProblem}`, 0) end
+
+    if symbol.anchor ~= '' and not string.find(page, `id="{symbol.anchor}"`, 1, true) then
+      error(`api catalog: missing anchor {symbol.anchor} in {pagePath}`, 0)
+    end
+
+    table.insert(records, {
+      url = if symbol.anchor == '' then `{base}{symbol.page}` else `{base}{symbol.page}#{symbol.anchor}`,
+      title = symbol.name,
+      description = symbol.module,
+      body = symbol.signature,
+    })
+  end
+
+  local written, writeProblem = fs.writeFile(indexPath, json.encodeTable(records))
+  if not written then error(`api catalog: cannot write search index: {writeProblem}`, 0) end
+  local saved, saveProblem = fs.writeFile(fs.join(output, 'api-catalog.json'), api)
+  if not saved then error(`api catalog: cannot write catalog: {saveProblem}`, 0) end
+end
+
+return table.freeze { moduleSymbols = moduleSymbols, stubSymbols = stubSymbols, generate = generate, publish = publish }

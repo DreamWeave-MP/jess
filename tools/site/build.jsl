@@ -4,6 +4,7 @@
 --
 --   jess package run --package-path jpk tools/site -- [output] [base url]
 local site = require '@dreamweave/site'
+local catalog = require './api-catalog'
 local governance = require './governance'
 local paths = require './paths'
 
@@ -15,7 +16,9 @@ if baseUrl and baseUrl ~= '' then options.baseUrl = baseUrl end
 
 governance.write(paths.root)
 
+local api = catalog.generate(paths.root)
 local report = site.build(paths.site, output, options)
+catalog.publish(output, api)
 
 print(
   string.format(

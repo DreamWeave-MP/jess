@@ -1,0 +1,41 @@
+--!strict
+local fs = require '@dream/fs'
+local json = require '@jess/json'
+
+type Symbol = { name: string, signature: string, page: string, anchor: string }
+type Record = { url: string, title: string, body: string }
+
+local output = arg[1]
+if not output then error('catalog output: expected a site output folder', 0) end
+
+local catalogText, problem = fs.readFileString(fs.join(output, 'api-catalog.json'))
+if not catalogText then error(`catalog output: {problem}`, 0) end
+local catalog = json.decode(catalogText) :: { schemaVersion: number, symbols: { Symbol } }
+assert(catalog.schemaVersion == 1 and #catalog.symbols > 0, 'empty or unknown catalog')
+
+local indexText, indexProblem = fs.readFileString(fs.join(output, 'search_index.en.json'))
+if not indexText then error(`catalog output: {indexProblem}`, 0) end
+local index = json.decode(indexText) :: { Record }
+
+for _, symbol in catalog.symbols do
+  local pagePath = fs.join(output, symbol.page, 'index.html')
+  local page, pageProblem = fs.readFileString(pagePath)
+  if not page then error(`catalog output: {pageProblem}`, 0) end
+
+  if symbol.anchor ~= '' then
+    assert(string.find(page, `id="{symbol.anchor}"`, 1, true), `missing anchor for {symbol.name}`)
+  end
+
+  local found = false
+  for _, record in index do
+    if record.title == symbol.name and record.body == symbol.signature and
+      (symbol.anchor == '' or string.sub(record.url, -#symbol.anchor) == symbol.anchor) then
+      found = true
+      break
+    end
+  end
+
+  assert(found, `missing search record for {symbol.name}`)
+end
+
+print(`checked {#catalog.symbols} catalog symbols`)

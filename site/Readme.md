@@ -9,11 +9,14 @@ jess workspace sync jpk/dreamweave-site                      # refresh the pinne
 jess workspace run --trusted jess-site-build -- target/site  # production build into target/site
 jess workspace run --trusted jess-site-serve                 # dev build + http://127.0.0.1:63333/ + watch
 jess workspace run --trusted jess-site-serve -- 0.0.0.0 8080
+jess workspace run --trusted jess-site-navigation-check      # verify sidebar and section navigation
 ```
 
 `tools/site` is a Package Source whose only contents are the `build` and `serve` targets. The generator renders Markdown through the Tera-shaped template layer, compiles Sass, copies static assets, and emits the search index and sitemap. There is deliberately no Zola, Node, or Python in the build path.
 
 `serve` is the local edit loop. It asks the same generator for a dev build into `target/site-dev` with a root-relative base URL, serves it over HTTP from one nonblocking loop on `@dream/tcp`, and watches content, templates, Sass, static files, data, and the config for changes. A failed rebuild prints why and leaves the last successful site in place.
+
+Both build and serve run `jess luau-types` to derive the experimental API catalog and need `process.spawn` in addition to their filesystem capabilities. Put the same jess executable used to run the target on `PATH`. The build checks that the generated version agrees with the running version, but two different builds of the same version can still differ; a version match does not prove binary identity. The catalog currently covers only the modules it names in its JSON, and the handwritten references remain the source of behavioral contracts.
 
 ## Layout
 

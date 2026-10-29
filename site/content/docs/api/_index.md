@@ -12,6 +12,8 @@ extra:
 
 This section is for looking things up, not for reading front to back; [Scripting](@/docs/scripting/_index.md) explains how the pieces fit. Most pages cover one module. Larger surfaces group related operations and types on one page.
 
+The experimental [machine-readable API catalog](../../api-catalog.json) lists generated top-level signatures for the `@dream/*` modules and for `@jess/application`, `@jess/bench`, `@jess/context`, `@jess/events`, `@jess/interfaces`, `@jess/jpk`, `@jess/log`, `@jess/package`, `@jess/test`, and `@jess/worker`. Entries marked `checked` are checked against Jess reference pages during the site build; L3i module entries link to its module map and do not assert that their behavior has been audited here. Other modules and userdata methods are not cataloged yet.
+
 Three kinds of module live here:
 
 - **The `jess` global and its members**: `jess.context`, `jess.worker`, `jess.events`, `jess.interfaces`, `jess.application`, `jess.shader`, `jess.gpu`, `jess.input`, `jess.audio`, `jess.bench`, and the values that belong to no module. Each member is also `require('@jess/<name>')`.

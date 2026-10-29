@@ -1,0 +1,162 @@
+--!strict
+-- Exercise the real templates and pinned generator against isolated content.
+local fs = require '@dream/fs'
+local site = require '@dreamweave/site'
+local paths = require '../paths'
+
+local function write(path: string, content: string)
+  local written, problem = fs.writeFile(path, content, { createParents = true })
+  if not written then error(`navigation test: cannot write {path}: {problem}`, 0) end
+end
+
+local function read(path: string): string
+  local content, problem = fs.readFileString(path)
+  if not content then error(`navigation test: cannot read {path}: {problem}`, 0) end
+  return content
+end
+
+local function verify(scratch: string)
+  local source = fs.join(scratch, 'site')
+  local output = fs.join(scratch, 'output')
+  local tree, problem = fs.walk(paths.site, { include = 'files', sort = true })
+  if not tree then error(`navigation test: cannot walk site: {problem}`, 0) end
+
+  for _, path in tree.paths do
+    if string.sub(path, 1, 7) == 'public/' then continue end
+
+    local destination = fs.join(source, path)
+    local parent = fs.parent(destination)
+    if not parent then error(`navigation test: no parent for {destination}`, 0) end
+
+    local made, makeProblem = fs.mkdir(parent, { recursive = true })
+    if not made then error(`navigation test: cannot create folder: {makeProblem}`, 0) end
+    local copied, copyProblem = fs.copy(fs.join(paths.site, path), destination)
+    if not copied then error(`navigation test: cannot copy {path}: {copyProblem}`, 0) end
+  end
+
+  local section = fs.join(source, 'content', 'docs', 'getting-started')
+  local indexPath = fs.join(section, '_index.md')
+  local index = string.gsub(read(indexPath), '  kind: guide', [=[  kind: guide
+  sidebar_groups:
+    - title: 'Fixture Group'
+      pages: ['fixture-visible', 'fixture-hidden']]=], 1)
+  write(indexPath, index)
+  write(fs.join(section, 'fixture-visible.md'), [[---
+title: 'Fixture Visible'
+extra:
+  hide_from_sidebar: false
+---
+
+Visible.
+]])
+  write(fs.join(section, 'fixture-hidden.md'), [[---
+title: 'Fixture Hidden'
+extra:
+  hide_from_sidebar: true
+---
+
+Hidden.
+]])
+  local nested = fs.join(section, 'fixture-nested')
+  write(fs.join(nested, '_index.md'), [[---
+title: 'Fixture Nested'
+template: docs/section.html
+page_template: docs/page.html
+weight: 5
+---
+
+Nested overview.
+]])
+  write(fs.join(nested, 'child.md'), [[---
+title: 'Fixture Nested Child'
+---
+
+Nested child.
+]])
+
+  local docs = fs.join(source, 'content', 'docs')
+  write(fs.join(docs, 'fixture-alpha', '_index.md'), [[---
+title: 'Fixture Alpha'
+template: docs/section.html
+page_template: docs/page.html
+weight: 50
+---
+
+Alpha.
+]])
+  write(fs.join(docs, 'fixture-beta', '_index.md'), [[---
+title: 'Fixture Beta'
+template: docs/section.html
+page_template: docs/page.html
+weight: 50
+---
+
+Beta.
+]])
+  write(fs.join(docs, 'fixture-unweighted', '_index.md'), [[---
+title: 'Fixture Unweighted'
+template: docs/section.html
+page_template: docs/page.html
+---
+
+Unweighted.
+]])
+
+  site.build(source, output, { baseUrl = '/' })
+  local page = read(fs.join(output, 'docs', 'getting-started', 'fixture-visible', 'index.html'))
+  assert(string.find(page, '>Fixture Visible</a>', 1, true), 'explicit false is missing')
+  assert(not string.find(page, '>Fixture Hidden</a>', 1, true), 'hidden page is visible')
+  assert(string.find(page, '>Your First Package</a>', 1, true), 'missing metadata hid a page')
+  assert(string.find(page, 'Fixture Group', 1, true), 'missing group')
+  assert(string.find(page, '>Fixture Nested Child</a>', 1, true), 'missing nested page')
+  assert(string.find(page, 'docs-sidebar__overview', 1, true), 'missing overview link')
+  assert(string.find(page, '<details open>%s*<summary class="is%-ancestor">Getting Started</summary>'), 'active section is not open')
+  assert(string.find(page, 'class="is-current" aria-current="page">Fixture Visible</a>', 1, true), 'missing current-page marker')
+
+  local child = read(fs.join(output, 'docs', 'getting-started', 'fixture-nested', 'child', 'index.html'))
+  assert(string.find(child, '<details open>%s*<summary class="is%-ancestor">Fixture Nested</summary>'), 'nested section is not open')
+  assert(string.find(child, 'class="is-current" aria-current="page">Fixture Nested Child</a>', 1, true), 'nested current page is missing')
+
+  local root = read(fs.join(output, 'docs', 'index.html'))
+  local gettingStarted = string.find(root, '<summary>Getting Started</summary>', 1, true)
+  local scripting = string.find(root, '<summary>Scripting</summary>', 1, true)
+  local reference = string.find(root, '<summary>Reference</summary>', 1, true)
+  if not gettingStarted or not scripting or not reference then error('navigation test: missing sections', 0) end
+  assert(gettingStarted < scripting and scripting < reference, 'sections are not in weight order')
+
+  local alphaNav = string.find(root, '<summary>Fixture Alpha</summary>', 1, true)
+  local betaNav = string.find(root, '<summary>Fixture Beta</summary>', 1, true)
+  local alphaCard = string.find(root, '<strong>Fixture Alpha</strong>', 1, true)
+  local betaCard = string.find(root, '<strong>Fixture Beta</strong>', 1, true)
+  local unweighted = string.find(root, '<summary>Fixture Unweighted</summary>', 1, true)
+  if not alphaNav or not betaNav or not alphaCard or not betaCard or not unweighted then
+    error('navigation test: missing equal-weight or unweighted section', 0)
+  end
+
+  assert((alphaNav < betaNav) == (alphaCard < betaCard), 'equal-weight sections disagree between sidebar and cards')
+  assert(unweighted < gettingStarted, 'an omitted weight should use the generator default of zero')
+
+  site.build(source, output, { baseUrl = '/' })
+  assert(read(fs.join(output, 'docs', 'index.html')) == root, 'navigation changed between identical builds')
+end
+
+local target = fs.join(paths.root, 'target')
+local made, makeProblem = fs.mkdir(target, { recursive = true })
+if not made then error(`navigation test: cannot create {target}: {makeProblem}`, 0) end
+local scratch: string?
+for _ = 1, 32 do
+  local candidate = fs.join(paths.root, 'target', `nav-test-{os.time()}-{math.random(1, 1000000000)}`)
+  if fs.mkdir(candidate) then
+    scratch = candidate
+    break
+  end
+end
+
+if not scratch then error('navigation test: cannot create scratch folder', 0) end
+
+-- The generator and assertions raise when a fixture fails; always remove the isolated copy.
+local passed, problem = pcall(verify, scratch)
+local removed, removeProblem = fs.remove(scratch, { recursive = true })
+if not removed then error(`navigation test: cannot remove {scratch}: {removeProblem}`, 0) end
+if not passed then error(`navigation test: {problem}`, 0) end
+print 'navigation checks passed'

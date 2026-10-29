@@ -15,6 +15,7 @@ index.html, and 404.html for what isn't there. Nothing here is meant to face the
 ]]
 
 local fs = require '@dream/fs'
+local catalog = require './api-catalog'
 local governance = require './governance'
 local paths = require './paths'
 local site = require '@dreamweave/site'
@@ -114,9 +115,14 @@ local function build(): boolean
   local staging = `{Output}.next`
   removeTree(staging)
 
-  -- The generator raises on a broken template, page, or stylesheet. The server outlives that
-  -- and keeps serving the last build while the mistake is fixed.
-  local built, result = pcall(site.build, paths.site, staging, { baseUrl = '/' })
+  -- Catalog generation and the site generator raise on invalid input; keep the last good build.
+  local built, result = pcall(function()
+    local api = catalog.generate(paths.root)
+    local report = site.build(paths.site, staging, { baseUrl = '/' })
+    catalog.publish(staging, api)
+    return report
+  end)
+
   if not built then
     print(`[jess] build failed: {result}`)
     removeTree(staging)

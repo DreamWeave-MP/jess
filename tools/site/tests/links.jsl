@@ -1,0 +1,70 @@
+--!strict
+-- Validate links in a built site without making network requests.
+local fs = require '@dream/fs'
+local http = require '@jess/http'
+local json = require '@jess/json'
+
+type Record = { url: string }
+
+local output = arg[1]
+if not output then error('links: expected a site output folder', 0) end
+
+local indexText, problem = fs.readFileString(fs.join(output, 'search_index.en.json'))
+if not indexText then error(`links: cannot read search index: {problem}`, 0) end
+
+local index = json.decode(indexText) :: { Record }
+local Suffix = 'docs/api/application/'
+local base: string?
+
+for _, record in index do
+  if string.sub(record.url, -#Suffix) == Suffix then
+    base = string.sub(record.url, 1, #record.url - #Suffix)
+    break
+  end
+end
+
+if not base then error('links: cannot find the site base URL', 0) end
+if string.sub(base, 1, 1) == '/' then base = 'https://docs.invalid' .. base end
+
+local tree, walkProblem = fs.walk(output, { include = 'files', sort = true })
+if not tree then error(`links: cannot walk {output}: {walkProblem}`, 0) end
+local failures = 0
+
+local function decode(text: string): string
+  local result = string.gsub(text, '%%(%x%x)', function(hex: string) return string.char(tonumber(hex, 16) :: number) end)
+  return result
+end
+
+for _, path in tree.paths do
+  if string.sub(path, -5) ~= '.html' then continue end
+
+  local content, readProblem = fs.readFileString(fs.join(output, path))
+  if not content then error(`links: cannot read {path}: {readProblem}`, 0) end
+
+  for raw in string.gmatch(content, 'href="([^"]+)"') do
+    local href = string.gsub(raw, '&amp;', '&')
+    if string.match(href, '^mailto:') or string.match(href, '^javascript:') then continue end
+
+    local resolved = http.resolveReference(base .. path, href)
+    if not resolved or string.sub(resolved, 1, #base) ~= base then continue end
+
+    local relative = string.sub(resolved, #base + 1)
+    local target, anchor = string.match(relative, '^([^#]*)#?(.*)$')
+    if not target or not anchor then error(`links: cannot parse {resolved}`, 0) end
+    target = string.match(target, '^[^?]*') or target
+    target = decode(target)
+    anchor = decode(anchor)
+    if target == '' then target = 'index.html' end
+    if string.sub(target, -1) == '/' then target ..= 'index.html' end
+
+    local destination = fs.join(output, target)
+    local contents = fs.readFileString(destination)
+    if not contents or (anchor ~= '' and not string.find(contents, `id="{anchor}"`, 1, true)) then
+      print(`{path}: {href}`)
+      failures += 1
+    end
+  end
+end
+
+if failures > 0 then error(`links: {failures} broken internal links`, 0) end
+print 'internal links and anchors passed'
