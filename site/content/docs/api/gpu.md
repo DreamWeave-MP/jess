@@ -68,7 +68,7 @@ A device makes three kinds of resource. Each lives as long as a script holds it,
 
 {{ api_signature(value="device:buffer(size: number, usage: GpuBufferUsage | { GpuBufferUsage }) -> GpuBuffer") }}
 
-`size` bytes, zeroed, a multiple of 4 up to `limits.bufferSize`. `usage` names what the buffer is for, one name or a list: `vertex`, `index`, `uniform`, `storage`, or `indirect` (the counts of an indirect draw). A buffer can always be written and read back; `{}` makes one for nothing else.
+`size` bytes, zeroed, a multiple of 4 from 4 through `limits.bufferSize`. Zero, an unaligned size, or a size over the device limit raises an error. `usage` names what the buffer is for, one name or a list: `vertex`, `index`, `uniform`, `storage`, or `indirect` (the counts of an indirect draw). A buffer can always be written and read back; `{}` makes one for nothing else.
 
 ### GpuDevice:texture
 
@@ -105,10 +105,10 @@ A name the table doesn't take is an error listing the ones it does, so `layer = 
 | `size` | `number` | Its size in bytes. |
 | `usage` | `{ GpuBufferUsage }` | What it is for, in the order `vertex`, `index`, `uniform`, `storage`, `indirect`. |
 | `write` | `(self, offset: number, bytes: buffer \| string, from: number?, length: number?) -> ()` | Copies `bytes` (or `length` of them from `from`) into the buffer at `offset`, at the next [commit](#commits). |
-| `read` | `(self, offset: number?, length: number?) -> buffer` | Waits for everything submitted so far, and returns `length` bytes from `offset` (by default, all of it) as a new `buffer`. |
+| `read` | `(self, offset: number?, length: number?) -> buffer` | Waits for submitted work, and returns `length` bytes from `offset` as a new `buffer`. The offset defaults to zero and the length to the remainder. |
 | `readLater` | `(self, offset: number?, length: number?) -> GpuRead` | The same bytes, without waiting: a [read](#gpuread) the GPU fills once it has done everything submitted before it. |
 
-Offsets and lengths are multiples of 4, and a range past the end is an error. `tostring(gpuBuffer)` is `GpuBuffer(16 bytes, vertex, storage)`.
+GPU offsets and transferred lengths are multiples of 4, and a range past the end is an error. The source `from` offset for `write` is zero-based, defaults to zero, and can be unaligned as long as the resulting transferred length is aligned; its `length` defaults to the remaining source bytes. `tostring(gpuBuffer)` is `GpuBuffer(16 bytes, vertex, storage)`.
 
 ```luau
 --!strict
