@@ -8,15 +8,15 @@ extra:
 
 {{ api_signature(value="jess [--format <FORMAT>] [COMMAND]") }}
 
-With no command, `jess` prints its help: the commands, and two to start with. No command reads a configuration file of its own: every file a command works on is named by its path, and jess keeps no state between runs.
+With no command, `jess` prints its help: the commands, and two to start with. A loose script has no automatic application configuration. Workspace commands discover `jess-workspace.toml` and use its lock and package cache; install and uninstall keep records under the install root.
 
-These work on every command and can go anywhere on the command line: `jess --format json package inspect greeter` and `jess package inspect greeter --format json` are the same.
+These work on every command: `jess --format json package inspect greeter` and `jess package inspect greeter --format json` are the same. Put Jess options before arguments intended for a script or target. Once `jess run` or `jess package run` starts collecting trailing arguments, later options belong to that script or target; `--` also separates arguments passed through to it.
 
 | Option | Value | Default | Does |
 | --- | --- | --- | --- |
 | `--format <FORMAT>` | `yaml`, `json`, `toml` | `yaml` | The output document's format. JSON is compact, one line. |
 | `-h`, `--help` | | | Help for the command it follows. `jess <command> --help` is the long form, with every value explained; `-h` is the summary. |
-| `-V`, `--version` | | | Print `jess <version>`. A subcommand prints its own name, `jess-package 0.1.0`. A build without cross-language LTO says so after the version, and the benchmark harness refuses it. |
+| `-V`, `--version` | | | Print `jess <version>`. A subcommand prints its own name, such as `jess-package 0.3.0`. A build without cross-language LTO says so after the version, and the benchmark harness refuses it. |
 
 ## Output
 
@@ -35,4 +35,4 @@ Errors print to stderr as `error: <message>`; diagnostics an application reports
 
 ## Environment
 
-Two variables for [`jess workspace sync`](@/docs/cli/workspace.md#jess-workspace-sync) and [`jess install`](@/docs/cli/install.md): `JESS_OFFLINE=1` asks no publisher, as `--offline` does, and `JESS_REGISTRY_URL` names the package index, as `--index` does. `JESS_INSTALL_ROOT` names the install root for `jess install` and `jess uninstall`, as `--root` does; without it, they use `.jess` in your home folder, which is where they read `HOME` (`USERPROFILE` on Windows). `jess install` also reads `PATH`, only to warn when what it installs isn't on it. Nothing else in jess reads the environment on its own behalf; a script reads it through `@dream/process`, and only when granted `process.environment`.
+Two variables for [`jess workspace sync`](@/docs/cli/workspace.md#jess-workspace-sync) and [`jess install`](@/docs/cli/install.md): `JESS_OFFLINE=1` asks no publisher, as `--offline` does, and `JESS_REGISTRY_URL` names the package index, as `--index` does. `JESS_INSTALL_ROOT` names the install root for `jess install` and `jess uninstall`, as `--root` does; without it, they use `.jess` in your home folder, which is where they read `HOME` (`USERPROFILE` on Windows). `jess install` also reads `PATH` to warn when what it installs isn't on it. A script reads environment variables through `@dream/process`, and only when granted `process.environment`.

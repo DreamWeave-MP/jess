@@ -48,4 +48,12 @@ for _, command in Commands do
   end
 end
 
+local forwarded, forwardProblem = process.run('jess', {
+  'run', 'tests/fixtures/docs/arguments.jsl', 'hello', '--format', 'json',
+}, { stdout = 'capture', stderr = 'capture' })
+
+if not forwarded or not forwarded.success then error(`CLI reference: argument test failed: {forwardProblem}`, 0) end
+
+assert(forwarded.stdout == 'hello\t--format\tjson\n', 'trailing options did not reach the script')
+
 print 'CLI help options are documented'
