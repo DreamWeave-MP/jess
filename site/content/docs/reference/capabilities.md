@@ -14,8 +14,8 @@ There are seventeen names. Jess knows all of them up front, so a misspelled gran
 
 | Capability | Gates | Asked for by |
 | --- | --- | --- |
-| `filesystem.read` | Every read of the disk: file contents, sizes, listings, canonical paths. | [`@dream/fs`](@/docs/api/l3i.md) |
-| `filesystem.write` | Every change to the disk: writing, creating, removing, renaming. | `@dream/fs`, and [`@jess/backup`](@/docs/api/backup.md) through it |
+| `filesystem.read` | Filesystem service reads: file contents, sizes, listings, and canonical paths. | [`@dream/fs`](@/docs/api/l3i.md), and package inspection through [`@jess/package`](@/docs/api/package.md) |
+| `filesystem.write` | Filesystem service writes, creation, removal, and renaming. | `@dream/fs`, [`@jess/backup`](@/docs/api/backup.md), and package packing through [`@jess/package`](@/docs/api/package.md) |
 | `process.environment` | Reading environment variables. | `@dream/process`'s `env` |
 | `process.spawn` | Running a child process. | `@dream/process`'s `run` |
 | `process.stdio` | Writing to the host's standard streams. `print` doesn't need it; it is jess's own. | `@dream/process`'s `write` |
@@ -33,6 +33,8 @@ There are seventeen names. Jess knows all of them up front, so a misspelled gran
 | `worker.spawn` | Spawning an isolated Luau worker beside a script domain. | [`jess.worker.spawn`](@/docs/api/worker.md) |
 
 The native modules are L3i's, and L3i owns the check for each; jess decides what is granted. [The @dream modules](@/docs/api/l3i.md) says which module is which.
+
+These gates apply to the exposed operations, not every file the host itself opens. For example, resolving and loading a loose script's relative `require` reads its source without granting that script general filesystem access. Capabilities are not an operating-system sandbox; see [Deployment and Operations](@/docs/reference/deployment.md#running-and-stopping).
 
 ## Who holds what
 
