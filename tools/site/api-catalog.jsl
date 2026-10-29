@@ -258,6 +258,35 @@ local function typeInventory(definitions: string): { Symbol }
   return symbols
 end
 
+local function sourceTypes(source: string, moduleName: string, page: string): { Symbol }
+  local parsed = luau.parse(source)
+  if #parsed.errors > 0 then error(`api catalog: generated {moduleName} source does not parse`, 0) end
+  local symbols: { Symbol } = {}
+
+  for _, statement in parsed.root.body do
+    if statement.kind ~= 'StatTypeAlias' or not statement.exported then continue end
+    local name = `{moduleName}.{statement.name}`
+    local first = parsed.lineStarts[statement.line] + statement.column - 1
+    local last = parsed.lineStarts[statement.endLine] + statement.endColumn - 1
+    table.insert(symbols, {
+      name = name,
+      module = moduleName,
+      signature = string.sub(source, first, last),
+      page = page,
+      anchor = '',
+      checked = false,
+    })
+
+    if statement.type.kind == 'TypeTable' and #statement.type.props > 0 then
+      for _, symbol in inventory(source, parsed.lineStarts, statement.type, name, moduleName, page) do
+        table.insert(symbols, symbol)
+      end
+    end
+  end
+
+  return symbols
+end
+
 local function sourceSymbols(source: string, documentation: string, member: string): { Symbol }
   local parsed = luau.parse(source)
   if #parsed.errors > 0 then error(`api catalog: generated {member} source does not parse`, 0) end
@@ -350,6 +379,7 @@ local function generate(root: string): string
   local result, problem = process.run('jess', { 'luau-types', folder }, { stdout = 'null', stderr = 'capture' })
   local definitions, readProblem = fs.readFileString(fs.join(folder, 'jess.d.jsl'))
   local sources: { { name: string, source: string } } = {}
+  local typeSources: { { name: string, page: string, source: string } } = {}
   local sourceProblem: string?
 
   for _, item in {
@@ -365,6 +395,32 @@ local function generate(root: string): string
     end
 
     table.insert(sources, { name = item.name, source = source })
+  end
+
+  if not sourceProblem then
+    for _, item in {
+      { name = 'style', path = 'style/init.jsl', page = 'style' },
+      { name = 'analysis', path = 'analysis/init.jsl', page = 'analysis' },
+      { name = 'json', path = 'data/json.jsl', page = 'json' },
+      { name = 'yaml', path = 'data/yaml.jsl', page = 'yaml' },
+      { name = 'data/toml', path = 'data/toml.jsl', page = 'toml' },
+      { name = 'data/value', path = 'data/value.jsl', page = 'value' },
+      { name = 'l10n', path = 'l10n/init.jsl', page = 'l10n' },
+      { name = 'input', path = 'input/init.jsl', page = 'input' },
+      { name = 'audio', path = 'audio/init.jsl', page = 'audio' },
+      { name = 'backup', path = 'backup/init.jsl', page = 'backup' },
+      { name = 'http', path = 'http/init.jsl', page = 'http' },
+      { name = 'render', path = 'render/init.jsl', page = 'render' },
+      { name = 'render/camera', path = 'render/camera.jsl', page = 'render' },
+    } do
+      local source, message = fs.readFileString(fs.join(folder, 'jess', item.path))
+      if not source then
+        sourceProblem = `cannot read {item.name} module source: {message}`
+        break
+      end
+
+      table.insert(typeSources, { name = item.name, page = item.page, source = source })
+    end
   end
   local stubs: { { name: string, source: string } }, dreamStubs: { { name: string, source: string } } = {}, {}
   local stubProblem: string?
@@ -470,6 +526,16 @@ local function generate(root: string): string
     table.insert(symbols, symbol)
   end
 
+  for _, item in typeSources do
+    local moduleName = `@jess/{item.name}`
+    local exportedTypes = sourceTypes(item.source, moduleName, `docs/api/{item.page}/`)
+    if #exportedTypes > 0 and not table.find(modules, moduleName) then table.insert(modules, moduleName) end
+
+    for _, symbol in exportedTypes do
+      table.insert(symbols, symbol)
+    end
+  end
+
   table.sort(modules)
   table.sort(symbols, function(left: Symbol, right: Symbol) return left.name < right.name end)
 
@@ -518,4 +584,4 @@ local function publish(output: string, api: string)
   if not saved then error(`api catalog: cannot write catalog: {saveProblem}`, 0) end
 end
 
-return table.freeze { moduleSymbols = moduleSymbols, stubSymbols = stubSymbols, sourceSymbols = sourceSymbols, typeInventory = typeInventory, generate = generate, publish = publish }
+return table.freeze { moduleSymbols = moduleSymbols, stubSymbols = stubSymbols, sourceSymbols = sourceSymbols, typeInventory = typeInventory, sourceTypes = sourceTypes, generate = generate, publish = publish }

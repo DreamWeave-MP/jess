@@ -95,4 +95,15 @@ end]]
   test.expect(symbols[4].checked).toBe(false)
 end)
 
+suite.it('indexes exported source types under their package-qualified names', function()
+  local source = [[type Private = string
+export type Options = { limit: number? }
+export type Value = string | number]]
+  local symbols = catalog.sourceTypes(source, '@jess/example', 'docs/api/example/')
+  test.expect(#symbols).toBe(3)
+  test.expect(symbols[1].name).toBe '@jess/example.Options'
+  test.expect(symbols[2].signature).toBe '@jess/example.Options.limit: number?'
+  test.expect(symbols[3].signature).toBe 'export type Value = string | number'
+end)
+
 return suite
