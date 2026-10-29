@@ -163,7 +163,8 @@ export type ServerRequest = {
 
 --- What a handler answers with: a whole body (`body`, or a table sent as JSON with `json`), or a
 --- body written as it is made (`stream`, called in the connection's task with a `send` that writes
---- one chunk and says whether it went).
+--- one piece and says whether it went: a chunk to an HTTP/1.1 client, and to an HTTP/1.0 one bytes
+--- the closing connection ends).
 export type ServerResponse = {
   --- 200 unless given; 200 to 599.
   status: number?,
@@ -192,12 +193,18 @@ export type ServeOptions = {
   --- How long a connection may take to send a whole request head, waiting between requests
   --- included; past it the connection is closed. 10 seconds unless given.
   headTimeoutMs: number?,
-  --- How long a request's body may take once its head is in; past it, 408. 30 seconds unless given.
+  --- How long a request's body may take once its head is in, past it 408, and how long a whole
+  --- response's head and body may take to send. 30 seconds unless given.
   bodyTimeoutMs: number?,
+  --- How long each write of a streamed response may wait for the client to take it; past it the
+  --- connection is closed and `send` says false. A stream itself may run as long as it likes.
+  --- 30 seconds unless given.
+  writeTimeoutMs: number?,
   --- Requests one connection may carry before the server closes it. 1000 unless given.
   maxRequestsPerConnection: number?,
-  --- Called with what a handler raised, or why its response couldn't be sent, and the request.
-  --- Without it, a failure is raised from the connection's task, as any task's failure is.
+  --- Called with what a handler, its response's encoding or its stream raised, or why its
+  --- response couldn't be sent, and the request, once the connection is closed and its place
+  --- given back. Without it, a failure is raised from the connection's task, as any task's is.
   onError: ((message: string, request: ServerRequest?) -> ())?,
 }
 
@@ -213,8 +220,8 @@ export type Server = {
   address: string,
   port: number,
   stats: (self: Server) -> ServerStats,
-  --- Stops listening and closes every connection at once; a handler still running finds its
-  --- connection closed. Closing twice does nothing.
+  --- Stops listening and closes every connection at once, before it returns, so the address is
+  --- free again; a handler still running finds its connection closed. Closing twice does nothing.
   close: (self: Server) -> (),
   closed: boolean,
 }
@@ -1483,6 +1490,7 @@ local ServeOptionNames = {
   'maxBodyBytes',
   'headTimeoutMs',
   'bodyTimeoutMs',
+  'writeTimeoutMs',
   'maxRequestsPerConnection',
   'onError',
 }
@@ -1539,8 +1547,12 @@ local function splitTarget(method: string, target: string): (string?, string?)
   return before, after
 end
 
---- The status line and fields of a response; `length` is nil for a chunked body.
-local function responseHead(status: number, headers: Headers, length: number?, keep: boolean, bodiless: boolean): string
+--- How a response body is framed: by its length, in chunks, or by closing the connection after
+--- it, which is how an HTTP/1.0 client takes a body nobody knew the length of.
+type Framing = 'length' | 'chunked' | 'close'
+
+--- The status line and fields of a response.
+local function responseHead(status: number, headers: Headers, length: number, framing: Framing, keep: boolean): string
   local lines = { `HTTP/1.1 {status} {Reasons[status] or ''}`, `date: {os.date('!%a, %d %b %Y %H:%M:%S GMT')}` }
   local names: { string } = {}
   for name in headers do
@@ -1552,18 +1564,15 @@ local function responseHead(status: number, headers: Headers, length: number?, k
     table.insert(lines, `{name}: {headers[name]}`)
   end
 
-  if not bodiless then
-    table.insert(lines, if length then `content-length: {length}` else 'transfer-encoding: chunked')
+  -- A 204 or 304 has no body and says nothing about one.
+  if status ~= 204 and status ~= 304 then
+    if framing == 'length' then table.insert(lines, `content-length: {length}`) end
+    if framing == 'chunked' then table.insert(lines, 'transfer-encoding: chunked') end
   end
 
   if not keep then table.insert(lines, 'connection: close') end
 
   return `{table.concat(lines, '\r\n')}\r\n\r\n`
-end
-
---- A response with `status` and its reason as a plain-text body.
-local function plain(status: number): ServerResponse
-  return { status = status, headers = { ['content-type'] = 'text/plain; charset=utf-8' }, body = Reasons[status] or '' }
 end
 
 --- `response` checked: its status, fields and body, or why it can't be sent.
@@ -1605,12 +1614,24 @@ local function checkResponse(response: unknown): (ServerResponse?, Headers?, (st
   return answer, headers, body, nil
 end
 
+--- One accepted connection, from the socket the listener gave to the Connection made over it. The
+--- server owns it until its task frees it, whichever way the task ends.
+type Slot = {
+  socket: dream_tcp_Stream,
+  secure: dream_tls_Stream?,
+  connection: NetConnection?,
+  --- The request being served, for a failure's report.
+  request: ServerRequest?,
+  closed: boolean,
+}
+
 type ServerState = {
   public: Server,
   options: ServeOptions,
   listener: dream_tcp_Listener,
+  listening: boolean,
   acceptor: net.Task?,
-  connections: { [NetConnection]: boolean },
+  slots: { [Slot]: boolean },
   open: number,
   requests: number,
   --- Notified when a connection ends, for an acceptor waiting for room.
@@ -1620,36 +1641,48 @@ type ServerState = {
   maxBodyBytes: number,
   headTimeoutMs: number,
   bodyTimeoutMs: number,
+  writeTimeoutMs: number,
   maxRequests: number,
 }
 
---- Writes `response` on `connection`; false when it couldn't be sent whole.
-local function respond(
-  connection: NetConnection,
+--- A response on its way out: how it is framed, and how long its writes may take.
+type Reply = {
   status: number,
   headers: Headers,
   body: (string | buffer)?,
   stream: ((send: (data: string | buffer) -> boolean) -> ())?,
   keep: boolean,
   headOnly: boolean,
-  deadline: number
-): (boolean, string?)
-  local bodiless = status == 204 or status == 304
-  local length = if stream then nil else bodyLength(body) or 0
-  local sent, problem = connection:send(responseHead(status, headers, length, keep, bodiless), deadline)
+  --- How long the head and a whole body may take, together.
+  deadline: number,
+  --- How long each write of a stream may take.
+  writeTimeoutMs: number,
+  --- Whether the client reads chunks: HTTP/1.1. An HTTP/1.0 stream ends when the connection does.
+  chunked: boolean,
+}
+
+--- Writes `reply` on `connection`; false when it couldn't be sent whole. A stream's writer is the
+--- application's code, and what it raises goes on up.
+local function respond(connection: NetConnection, reply: Reply): (boolean, string?)
+  local bodiless = reply.headOnly or reply.status == 204 or reply.status == 304
+  local framing: Framing = if not reply.stream then 'length' elseif reply.chunked then 'chunked' else 'close'
+  local length = bodyLength(reply.body) or 0
+  local head = responseHead(reply.status, reply.headers, length, framing, reply.keep)
+  local sent, problem = connection:send(head, reply.deadline)
   if not sent then return false, problem end
 
-  if headOnly or bodiless then return true, nil end
+  if bodiless then return true, nil end
 
-  if not stream then
-    if not body or (bodyLength(body) or 0) == 0 then return true, nil end
+  if not reply.stream then
+    if length == 0 then return true, nil end
 
-    local bodySent, bodyProblem = connection:send(body, deadline)
+    local bodySent, bodyProblem = connection:send(reply.body :: string | buffer, reply.deadline)
 
     return bodySent, bodyProblem
   end
 
-  local writer = stream :: (send: (data: string | buffer) -> boolean) -> ()
+  local writer = reply.stream :: (send: (data: string | buffer) -> boolean) -> ()
+  local chunked = framing == 'chunked'
   local failed: string?
   writer(function(data: string | buffer): boolean
     if failed then return false end
@@ -1657,9 +1690,13 @@ local function respond(
     local size = bodyLength(data) or 0
     if size == 0 then return true end
 
-    local ok, problemText = connection:send(`{string.format('%x', size)}\r\n`)
-    if ok then ok, problemText = connection:send(data) end
-    if ok then ok, problemText = connection:send('\r\n') end
+    -- Each write has a deadline of its own: a stream may run as long as it has something to send,
+    -- but a client that stops taking it doesn't hold the task and its connection forever.
+    local deadline = net.now() + reply.writeTimeoutMs
+    local ok, problemText = true, nil
+    if chunked then ok, problemText = connection:send(`{string.format('%x', size)}\r\n`, deadline) end
+    if ok then ok, problemText = connection:send(data, deadline) end
+    if ok and chunked then ok, problemText = connection:send('\r\n', deadline) end
 
     if not ok then failed = problemText or 'the connection closed' end
 
@@ -1668,67 +1705,108 @@ local function respond(
 
   if failed then return false, failed end
 
-  local ended, endProblem = connection:send('0\r\n\r\n', deadline)
+  -- Without chunks, closing the connection is what ends the body.
+  if not chunked then return true, nil end
+
+  local ended, endProblem = connection:send('0\r\n\r\n', net.now() + reply.writeTimeoutMs)
 
   return ended, endProblem
 end
 
---- Reports `message` to the server's `onError`, or, without one, keeps it for the task to raise.
-local function report(state: ServerState, message: string, request: ServerRequest?): string?
-  local onError = state.options.onError
-  if onError then
-    onError(message, request)
-    return nil
-  end
-
-  return message
+--- Answers with `status` and its reason as a plain-text body, and closes: what a request the
+--- server won't serve gets.
+local function refuse(connection: NetConnection, status: number)
+  respond(connection, {
+    status = status,
+    headers = { ['content-type'] = 'text/plain; charset=utf-8' },
+    body = Reasons[status] or '',
+    keep = false,
+    headOnly = false,
+    deadline = net.now() + 1000,
+    writeTimeoutMs = 1000,
+    chunked = false,
+  })
 end
 
-local function serveConnection(state: ServerState, socket: dream_tcp_Stream)
-  local remote = socket.peerAddress
+--- Closes whatever `slot` holds now. A handshake may be waiting on the session or the socket, so
+--- the handle is released first, and the wait wakes rather than outlives it.
+local function closeSlot(slot: Slot)
+  if slot.closed then return end
+
+  slot.closed = true
+  if slot.connection then
+    slot.connection:close()
+  elseif slot.secure then
+    net.release(slot.secure)
+    slot.secure:close()
+  else
+    net.release(slot.socket)
+    slot.socket:close()
+  end
+end
+
+--- Closes `slot` and gives its place back to the acceptor. Freeing twice does nothing.
+local function freeSlot(state: ServerState, slot: Slot)
+  closeSlot(slot)
+  if not state.slots[slot] then return end
+
+  state.slots[slot] = nil
+  state.open -= 1
+  state.room:notify()
+end
+
+--- Stops listening, at once, whether the acceptor has started, waits on the listener, or is done.
+local function stopListening(state: ServerState)
+  if not state.listening then return end
+
+  state.listening = false
+  net.release(state.listener)
+  state.listener:close()
+end
+
+--- Runs the TLS handshake on `slot` when the server has a config; false when it failed, timed
+--- out, or the server closed under it.
+local function handshake(state: ServerState, slot: Slot): boolean
   local config = state.options.tls
-  local secure: dream_tls_Stream?
-  if config then
-    local session = tls.server(socket, config, { handshakeTimeoutMs = math.floor(math.min(state.headTimeoutMs, 60000)) })
-    if not session then
-      socket:close()
-      return
-    end
+  if not config then return true end
 
-    local deadline = net.now() + state.headTimeoutMs
-    local live = session :: dream_tls_Stream
-    while true do
-      local done = live:handshake()
-      if done then break end
+  local session = tls.server(slot.socket, config, { handshakeTimeoutMs = math.floor(math.min(state.headTimeoutMs, 60000)) })
+  if not session then return false end
 
-      if done == nil or not net.wait(live, if live.wantsWrite then 'write' else 'read', deadline) then
-        live:close()
-        return
-      end
-    end
+  local live = session :: dream_tls_Stream
+  slot.secure = live
+  local deadline = net.now() + state.headTimeoutMs
+  while true do
+    local done = live:handshake()
+    if done then return true end
 
-    secure = live
+    if done == nil or not net.wait(live, if live.wantsWrite then 'write' else 'read', deadline) then return false end
   end
+end
 
-  local adopted = net.adopt(socket, { tls = secure })
-  if not adopted then
-    if secure then secure:close() else socket:close() end
-    return
-  end
+--- The handler's response to `request`, checked. The handler is the application's code, and so is
+--- a `json` body's encoding: either may raise.
+local function answer(state: ServerState, request: ServerRequest): (ServerResponse?, Headers?, (string | buffer)?, string?)
+  return checkResponse(state.options.handler(request))
+end
+
+--- Serves the requests `slot` carries until the client, a limit or the server ends it; a failure to
+--- report, or nil.
+local function session(state: ServerState, slot: Slot): string?
+  if not handshake(state, slot) then return nil end
+
+  local adopted = net.adopt(slot.socket, { tls = slot.secure })
+  if not adopted then return nil end
 
   local connection = adopted :: NetConnection
-  state.connections[connection] = true
-  local served, failure = 0, nil
-
+  slot.connection = connection
+  local remote, served = slot.socket.peerAddress, 0
   while not state.public.closed do
     local text, _, kind = connection:receiveUntil('\r\n\r\n', state.maxHeadBytes, net.now() + state.headTimeoutMs)
     if not text then
-      if kind == 'limitReached' then
-        local answer = plain(431)
-        respond(connection, 431, answer.headers :: Headers, answer.body, nil, false, false, net.now() + 1000)
-      end
+      if kind == 'limitReached' then refuse(connection, 431) end
 
-      break
+      return nil
     end
 
     -- A server ignores empty lines before a request line (RFC 9112, 2.2).
@@ -1769,14 +1847,13 @@ local function serveConnection(state: ServerState, socket: dream_tcp_Stream)
     if not status and expectation ~= '' and expectation ~= '100-continue' then status = 417 end
 
     if status then
-      local answer = plain(status)
-      respond(connection, status, answer.headers :: Headers, answer.body, nil, false, false, net.now() + 1000)
-      break
+      refuse(connection, status)
+      return nil
     end
 
     local request = parsed :: RequestHead
     if expectation == '100-continue' and framing ~= 'none' and request.version == '1.1' then
-      if not connection:send('HTTP/1.1 100 Continue\r\n\r\n', net.now() + state.bodyTimeoutMs) then break end
+      if not connection:send('HTTP/1.1 100 Continue\r\n\r\n', net.now() + state.bodyTimeoutMs) then return nil end
     end
 
     local body: Body = {
@@ -1791,13 +1868,11 @@ local function serveConnection(state: ServerState, socket: dream_tcp_Stream)
 
     local data, _, bodyKind = readAll(body, net.now() + state.bodyTimeoutMs)
     if not data then
-      local refused = if bodyKind == 'tooLarge' then 413 elseif bodyKind == 'timeout' then 408 else 400
       if bodyKind ~= 'closed' then
-        local answer = plain(refused)
-        respond(connection, refused, answer.headers :: Headers, answer.body, nil, false, false, net.now() + 1000)
+        refuse(connection, if bodyKind == 'tooLarge' then 413 elseif bodyKind == 'timeout' then 408 else 400)
       end
 
-      break
+      return nil
     end
 
     served += 1
@@ -1814,51 +1889,60 @@ local function serveConnection(state: ServerState, socket: dream_tcp_Stream)
       headers = fields,
       body = data :: buffer,
       remoteAddress = remote,
-      secure = secure ~= nil,
+      secure = slot.secure ~= nil,
     }
 
-    -- The handler is the application's code, and anything it raises is answered with a 500 and
-    -- reported, rather than ending the server.
-    local ran, result = pcall(state.options.handler, incoming)
-    local answer, headers, responseBody, problem
-    if ran then
-      answer, headers, responseBody, problem = checkResponse(result)
-    else
-      problem = tostring(result)
+    slot.request = incoming
+    -- The handler and its response's encoding are the application's code: what they raise is
+    -- answered with a 500 and reported, rather than ending the connection unanswered.
+    local ran, reply, headers, responseBody, problem = pcall(answer, state, incoming)
+    if not ran then
+      refuse(connection, 500)
+      return tostring(reply)
     end
 
-    if not answer then
-      local fallback = plain(500)
-      respond(connection, 500, fallback.headers :: Headers, fallback.body, nil, false, false, net.now() + 1000)
-      failure = report(state, problem or 'the handler failed', incoming)
-      break
+    if not reply then
+      refuse(connection, 500)
+      return problem or 'the handler failed'
     end
 
-    local reply = answer :: ServerResponse
-    local sent, sendProblem = respond(
-      connection,
-      reply.status or 200,
-      headers :: Headers,
-      responseBody,
-      reply.stream,
-      keep,
-      request.method == 'HEAD',
-      net.now() + state.bodyTimeoutMs
-    )
+    local response = reply :: ServerResponse
+    local sent, sendProblem = respond(connection, {
+      status = response.status or 200,
+      headers = headers :: Headers,
+      body = responseBody,
+      stream = response.stream,
+      keep = keep,
+      headOnly = request.method == 'HEAD',
+      deadline = net.now() + state.bodyTimeoutMs,
+      writeTimeoutMs = state.writeTimeoutMs,
+      chunked = request.version == '1.1',
+    })
 
-    if not sent then
-      failure = report(state, `the response to {request.method} {path} wasn't sent: {sendProblem}`, incoming)
-      break
-    end
+    -- A response cut off because the server closed is the close working, not a failure.
+    if not sent and state.public.closed then return nil end
+    if not sent then return `the response to {request.method} {path} wasn't sent: {sendProblem}` end
 
-    if not keep then break end
+    if not keep then return nil end
   end
 
-  connection:close()
-  state.connections[connection] = nil
-  state.open -= 1
-  state.room:notify()
-  if failure then error(`{Name}.serve: {failure}`, 0) end
+  return nil
+end
+
+--- A connection's task: serves `slot`, then frees it whichever way that ended (a refused
+--- handshake, a client gone, a stream's writer that raised) before anything is reported.
+local function serveConnection(state: ServerState, slot: Slot)
+  -- The session runs a response's stream writer, the application's code, which may raise.
+  local ran, result = pcall(session, state, slot)
+  freeSlot(state, slot)
+
+  local failure = if ran then result else tostring(result)
+  if not failure then return end
+
+  local onError = state.options.onError
+  if not onError then error(`{Name}.serve: {failure}`, 0) end
+
+  onError(failure, slot.request)
 end
 
 --- In a @jess/net task: listens on `options.address` and serves HTTP/1.1 there, each connection a
@@ -1878,8 +1962,17 @@ local function serve(options: ServeOptions): (Server?, string?, string?)
 
   if type(options.address) ~= 'string' then error(`{Name}.serve: the address is a string like '127.0.0.1:8080'`, 0) end
   if type(options.handler) ~= 'function' then error(`{Name}.serve: the handler is a function`, 0) end
+  if options.onError ~= nil and type(options.onError) ~= 'function' then error(`{Name}.serve: onError is a function`, 0) end
 
+  -- Every option is checked before the address is listened on, so a bad one leaves no socket open.
   local maxConnections = whole(options.maxConnections or 256, 1, 16384, 'serve', 'maxConnections')
+  local maxHeadBytes = whole(options.maxHeadBytes or MaxHeadBytes, 64, 2 ^ 24, 'serve', 'maxHeadBytes')
+  local maxBodyBytes = whole(options.maxBodyBytes or DefaultMaxBytes, 0, 2 ^ 53, 'serve', 'maxBodyBytes')
+  local headTimeoutMs = duration(options.headTimeoutMs or 10000, 'serve', 'headTimeoutMs')
+  local bodyTimeoutMs = duration(options.bodyTimeoutMs or 30000, 'serve', 'bodyTimeoutMs')
+  local writeTimeoutMs = duration(options.writeTimeoutMs or 30000, 'serve', 'writeTimeoutMs')
+  local maxRequests = whole(options.maxRequestsPerConnection or 1000, 1, 2 ^ 31, 'serve', 'maxRequestsPerConnection')
+
   local listening, message, kind = tcp.listen(options.address, { maxStreams = maxConnections, noDelay = true })
   if not listening then return nil, `could not listen on {options.address}: {message} ({kind})`, 'listen' end
 
@@ -1894,15 +1987,12 @@ local function serve(options: ServeOptions): (Server?, string?, string?)
       if state.public.closed then return end
 
       state.public.closed = true
-      -- The listener is the acceptor's to close as it stops: closing it under its wait would
-      -- drop a registration the wait still holds.
+      stopListening(state)
       if state.acceptor then state.acceptor:cancel() end
 
-      for connection in state.connections do
-        connection:close()
+      for slot in state.slots do
+        freeSlot(state, slot)
       end
-
-      state.room:notify()
     end,
     closed = false,
   }
@@ -1911,31 +2001,43 @@ local function serve(options: ServeOptions): (Server?, string?, string?)
     public = public,
     options = options,
     listener = listener,
+    listening = true,
     acceptor = nil,
-    connections = {},
+    slots = {},
     open = 0,
     requests = 0,
     room = net.signal(),
     maxConnections = maxConnections,
-    maxHeadBytes = whole(options.maxHeadBytes or MaxHeadBytes, 64, 2 ^ 24, 'serve', 'maxHeadBytes'),
-    maxBodyBytes = whole(options.maxBodyBytes or DefaultMaxBytes, 0, 2 ^ 53, 'serve', 'maxBodyBytes'),
-    headTimeoutMs = duration(options.headTimeoutMs or 10000, 'serve', 'headTimeoutMs'),
-    bodyTimeoutMs = duration(options.bodyTimeoutMs or 30000, 'serve', 'bodyTimeoutMs'),
-    maxRequests = whole(options.maxRequestsPerConnection or 1000, 1, 2 ^ 31, 'serve', 'maxRequestsPerConnection'),
+    maxHeadBytes = maxHeadBytes,
+    maxBodyBytes = maxBodyBytes,
+    headTimeoutMs = headTimeoutMs,
+    bodyTimeoutMs = bodyTimeoutMs,
+    writeTimeoutMs = writeTimeoutMs,
+    maxRequests = maxRequests,
   } :: ServerState
 
   state.acceptor = net.spawn(function()
     while not public.closed do
       if state.open >= state.maxConnections then
-        state.room:wait()
+        local _, reason = state.room:wait()
+        if reason == 'cancelled' then break end
+
         continue
       end
 
       local socket, _, acceptKind = listener:accept()
       if socket then
+        local slot: Slot = { socket = socket :: dream_tcp_Stream, closed = false }
+        state.slots[slot] = true
         state.open += 1
-        local accepted = socket :: dream_tcp_Stream
-        net.spawn(function() serveConnection(state, accepted) end, `{Name} connection`)
+        -- net.spawn raises when the loop already runs as many tasks as it allows: the connection
+        -- is closed then, rather than counted with nobody to serve it.
+        local spawned = pcall(net.spawn, function() serveConnection(state, slot) end, `{Name} connection`)
+        if spawned then continue end
+
+        freeSlot(state, slot)
+        if not net.sleep(10) then break end
+
         continue
       end
 
@@ -1948,7 +2050,7 @@ local function serve(options: ServeOptions): (Server?, string?, string?)
       if not net.sleep(10) then break end
     end
 
-    listener:close()
+    stopListening(state)
   end, `{Name} listener {public.address}`)
 
   return public, nil, nil

@@ -271,21 +271,27 @@ signal) without holding up any other connection, or the frame.
   `maxHeadBytes` (64 KiB): more is 431. `maxBodyBytes` (16 MiB): more is 413. `headTimeoutMs` (10
   seconds): how long a connection may take to send a whole request head, the wait between
   requests on a kept connection included; past it the connection is dropped without an answer.
-  `bodyTimeoutMs` (30 seconds): how long the body may take after the head; past it, 408.
-  `maxRequestsPerConnection` (1000). `onError`, called with what a handler raised, or why a
+  `bodyTimeoutMs` (30 seconds): how long the body may take after the head, past it 408, and how
+  long a whole response may take to send. `writeTimeoutMs` (30 seconds): how long each write of a
+  streamed response may wait for the client to take it; the stream itself may run as long as it
+  likes. `maxRequestsPerConnection` (1000). `onError`, called with what a handler raised, or why a
   response couldn't be sent, and the request.
 - **Returns:** a `Server`: `address` and `port` as bound, `stats` (`{ connections, requests }`),
   `close` and `closed`; or `nil`, why, and `listen` when the address can't be listened on.
-- **Raises:** outside a task, for an option it doesn't take, and, from the runtime, without
-  `network.tcp.listen` (and `network.tcp.public` for an address beyond loopback).
+- **Raises:** outside a task, for an option it doesn't take or a value out of range (all checked
+  before anything listens), and, from the runtime, without `network.tcp.listen` (and
+  `network.tcp.public` for an address beyond loopback).
 
 The handler gets `{ method, target, path, query, version, headers, body, remoteAddress, secure }`:
 field names lower-cased as the client's are, the body read whole within `maxBodyBytes` (by length
 or by chunks, `Expect: 100-continue` answered first). It answers with `{ status, headers, body }`,
 `json` instead of `body` for a table sent as JSON, or `stream`, a function called with a `send`
-that writes one chunk and says whether it went, for a body made as it goes: an event stream, a
-long download. The server writes `Date`, `Content-Length` or `Transfer-Encoding`, and
-`Connection`, and no body after `HEAD` or with a 204 or 304.
+that writes one piece and says whether it went, for a body made as it goes: an event stream, a
+long download. An HTTP/1.1 client gets the pieces as chunks; an HTTP/1.0 one, which doesn't read
+chunks, gets the bytes as they are, and the connection's close ends the body. `send` says `false`
+once a write has waited `writeTimeoutMs` on a client that stopped reading, and the connection is
+closed. The server writes `Date`, `Content-Length` or `Transfer-Encoding`, and `Connection`, and
+no body after `HEAD` or with a 204 or 304.
 
 A connection stays open for the next request under HTTP/1.1 unless the client says
 `Connection: close`; pipelined requests are answered in order. What could be read two ways, which
@@ -296,11 +302,17 @@ lines or holding a control character, an HTTP/1.1 request without exactly one `H
 version but 1.0 and 1.1 (505). A body that declares more than `maxBodyBytes`, whole or a chunk at
 a time, is 413 before any of it is read.
 
-A handler that raises answers 500, and so does a response with a status outside 200 to 599, a
-field the server writes itself, or a field with a line break in it; the connection closes, the
+A handler that raises answers 500, and so does a `json` body that can't be encoded, a response
+with a status outside 200 to 599, a field the server writes itself, or a field with a line break
+in it. A `stream` that raises has already sent its head, so its connection just closes, the body
+unfinished. Either way the connection closes and its place goes back to the server first, then the
 failure goes to `onError`, or without one is raised from the connection's task, and the server
-carries on serving everyone else. `server:close()` stops listening and closes every connection at
-once.
+carries on serving everyone else. A TLS handshake that fails or times out gives its place back the
+same way.
+
+`server:close()` stops listening and closes every connection, handshakes under way included,
+before it returns, so the address can be listened on again at once, whether the server has
+accepted anything yet or not.
 
 ```luau
 --!strict

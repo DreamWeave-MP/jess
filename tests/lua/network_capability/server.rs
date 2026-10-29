@@ -24,6 +24,16 @@ local function handle(request: http.ServerRequest): http.ServerResponse
   if request.path == '/json' then return { json = { ok = true } } end
   if request.path == '/fail' then error('boom', 0) end
   if request.path == '/bad-header' then return { headers = { ['X-Bad'] = 'a\r\nInjected: 1' }, body = 'no' } end
+  if request.path == '/bad-json' then return { json = { value = 0 / 0 } } end
+
+  if request.path == '/stream-fail' then
+    return {
+      stream = function(send: (data: string | buffer) -> boolean)
+        send('part')
+        error('stream broke', 0)
+      end,
+    }
+  end
 
   if request.path == '/echo' then
     local kind = request.headers['content-type'] or ''
@@ -323,6 +333,221 @@ fn a_handler_that_raises_or_answers_wrongly_is_a_500_and_the_server_carries_on()
 }
 
 #[test]
+fn a_response_that_fails_to_encode_or_a_stream_that_raises_gives_its_connection_back() {
+    let server = Served::start();
+    let answer = exchange(&server, "GET /bad-json HTTP/1.1\r\nHost: t\r\n\r\n");
+    assert!(answer.starts_with("HTTP/1.1 500"), "{answer}");
+
+    // More failed streams than the server has places: each one's place must come back.
+    for _ in 0..6 {
+        let answer = exchange(&server, "GET /stream-fail HTTP/1.1\r\nHost: t\r\n\r\n");
+        assert!(answer.contains("4\r\npart\r\n"), "{answer}");
+        assert!(
+            !answer.ends_with("0\r\n\r\n"),
+            "a stream that raised isn't ended as if whole: {answer}"
+        );
+    }
+    assert!(exchange(&server, "GET /hello HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n").ends_with("hi"));
+    let reported = server.finish();
+    assert!(reported.contains("NaN or infinite"), "{reported}");
+    assert_eq!(reported.matches("stream broke").count(), 6, "{reported}");
+}
+
+#[test]
+fn a_raising_on_error_still_gives_the_connection_back_and_fails_only_its_task() {
+    let runtime = tls_runtime();
+    let text = runtime
+        .eval::<String>(
+            "
+            local http = require '@jess/http'
+            local net = require '@jess/net'
+            local lines: { string } = {}
+            local failures: { string } = {}
+            local loop = net.loop { onError = function(_task, message) table.insert(failures, message) end }
+            local task = loop:spawn(function()
+              local server = assert(http.serve {
+                address = '127.0.0.1:0',
+                maxConnections = 1,
+                handler = function(request)
+                  if request.path == '/fail' then error('handler broke', 0) end
+                  return { body = 'fine' }
+                end,
+                onError = function(message) error(`onError broke on {message}`, 0) end,
+              })
+              for _ = 1, 3 do
+                local response = assert(http.request { url = `http://127.0.0.1:{server.port}/fail` })
+                table.insert(lines, tostring(response.status))
+              end
+              local response = assert(http.request { url = `http://127.0.0.1:{server.port}/fine`, timeoutMs = 3000 })
+              table.insert(lines, buffer.tostring(response.body))
+              server:close()
+            end)
+            loop:run(10000)
+            loop:close()
+            table.insert(lines, `{task.status} {#failures} {failures[1]}`)
+            return table.concat(lines, '\\n')
+            ",
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        text.lines().collect::<Vec<_>>(),
+        ["500", "500", "500", "fine", "done 3 onError broke on handler broke"]
+    );
+}
+
+#[test]
+fn failed_and_abandoned_tls_handshakes_give_their_places_back() {
+    let lines = run_task(
+        &tls_runtime(),
+        "
+        local tls = require '@dream/tls'
+        local config = assert(tls.serverConfig { certChain = SERVER_CERT, privateKey = SERVER_KEY })
+        local server = assert(http.serve {
+          address = '127.0.0.1:0',
+          tls = config,
+          maxConnections = 2,
+          headTimeoutMs = 300,
+          handler = function() return { body = 'fine' } end,
+        })
+
+        -- More refused handshakes than the server has places.
+        for _ = 1, 6 do
+          local raw = assert(net.connect('127.0.0.1', server.port))
+          assert(raw:send('this is not a TLS client hello\\r\\n\\r\\n'))
+          while raw:receiveSome(4096, net.now() + 3000) do end
+          raw:close()
+        end
+
+        -- And one that says nothing until its handshake times out.
+        local silent = assert(net.connect('127.0.0.1', server.port))
+        while silent:receiveSome(4096, net.now() + 3000) do end
+        silent:close()
+        table.insert(out, `after failures {server:stats().connections}`)
+
+        local trusted = assert(tls.clientConfig { roots = CA, platform = false })
+        local response = assert(http.request { url = `https://localhost:{server.port}/`, tls = trusted, timeoutMs = 3000 })
+        table.insert(out, buffer.tostring(response.body))
+
+        -- A handshake still waiting when the server closes is closed with it.
+        local pending = assert(net.connect('127.0.0.1', server.port))
+        net.sleep(50)
+        table.insert(out, `pending {server:stats().connections}`)
+        server:close()
+        table.insert(out, `closed {server:stats().connections}`)
+        table.insert(out, `pending ended {pending:receiveSome(10, net.now() + 2000) == nil}`)
+        pending:close()
+        ",
+    );
+    assert_eq!(
+        lines,
+        ["after failures 0", "fine", "pending 1", "closed 0", "pending ended true"]
+    );
+}
+
+#[test]
+fn a_closed_server_frees_its_address_at_once_before_during_and_after_accepting() {
+    let lines = run_task(
+        &tls_runtime(),
+        "
+        local function handle() return { body = 'ok' } end
+        local first = assert(http.serve { address = '127.0.0.1:0', handler = handle })
+        local port = first.port
+        -- Before its acceptor has run at all.
+        first:close()
+
+        local second = assert(http.serve { address = `127.0.0.1:{port}`, handler = handle })
+        net.sleep(30)
+        -- While its acceptor waits on the listener.
+        second:close()
+
+        local third = assert(http.serve { address = `127.0.0.1:{port}`, handler = handle })
+        local response = assert(http.request { url = `http://127.0.0.1:{port}/` })
+        table.insert(out, buffer.tostring(response.body))
+        third:close()
+        net.sleep(30)
+        -- Once its acceptor has finished, closing again does nothing.
+        third:close()
+        local refused = net.connect('127.0.0.1', port, { deadline = net.now() + 1000 })
+        table.insert(out, `refused {refused == nil}`)
+        ",
+    );
+    assert_eq!(lines, ["ok", "refused true"]);
+}
+
+#[test]
+fn a_streamed_write_the_client_never_takes_ends_at_the_write_timeout() {
+    let lines = run_task(
+        &tls_runtime(),
+        "
+        local reports: { string } = {}
+        local ended = net.signal()
+        local outcome = ''
+        local server = assert(http.serve {
+          address = '127.0.0.1:0',
+          writeTimeoutMs = 200,
+          handler = function()
+            return {
+              stream = function(send)
+                -- More than any platform buffers for a client that reads nothing.
+                local chunk = string.rep('x', 4 * 1024 * 1024)
+                local count = 0
+                while count < 64 and send(chunk) do
+                  count += 1
+                end
+                outcome = `stopped {count < 64}`
+                ended:notify()
+              end,
+            }
+          end,
+          onError = function(message) table.insert(reports, message) end,
+        })
+
+        local raw = assert(net.connect('127.0.0.1', server.port))
+        assert(raw:send('GET /forever HTTP/1.1\\r\\nHost: t\\r\\n\\r\\n'))
+        table.insert(out, `notified {ended:wait(net.now() + 15000)}`)
+        net.sleep(20)
+        table.insert(out, outcome)
+        local timedOut = string.find(reports[1] or '', 'longer than the time allowed', 1, true) ~= nil
+        table.insert(out, `reported {#reports} {timedOut}`)
+        table.insert(out, `connections {server:stats().connections}`)
+        raw:close()
+        server:close()
+        ",
+    );
+    assert_eq!(lines, ["notified true", "stopped true", "reported 1 true", "connections 0"]);
+}
+
+#[test]
+fn bad_options_are_refused_before_anything_listens() {
+    for option in [
+        "maxHeadBytes = -1",
+        "writeTimeoutMs = 0 / 0",
+        "bodyTimeoutMs = math.huge",
+        "onError = 'no'",
+    ] {
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let runtime = tls_runtime();
+        let problem = runtime
+            .eval::<String>(&format!(
+                "local http = require '@jess/http'
+                local net = require '@jess/net'
+                local _, problem = net.run(function()
+                  http.serve {{ address = '127.0.0.1:{port}', handler = function() return {{}} end, {option} }}
+                end)
+                return problem"
+            ))
+            .unwrap_or_else(|error| panic!("{error}"));
+        let name = option.split(' ').next().unwrap();
+        assert!(problem.contains(name), "{option}: {problem}");
+        assert!(
+            TcpListener::bind(("127.0.0.1", port)).is_ok(),
+            "{option} left the port listened on"
+        );
+        drop(runtime);
+    }
+}
+
+#[test]
 fn a_streamed_response_goes_out_chunk_by_chunk_as_it_is_made() {
     let server = Served::start();
     let mut stream = server.connect();
@@ -351,6 +576,12 @@ fn a_streamed_response_goes_out_chunk_by_chunk_as_it_is_made() {
         "the first chunk waited for the rest"
     );
     assert!(started.elapsed() >= Duration::from_millis(290));
+
+    // An HTTP/1.0 client doesn't read chunks: its stream is the bytes, ended by the close.
+    let old = exchange(&server, "GET /stream HTTP/1.0\r\n\r\n");
+    assert!(!old.contains("transfer-encoding"), "{old}");
+    assert!(old.contains("connection: close\r\n"), "{old}");
+    assert!(old.ends_with("\r\n\r\none two three"), "{old}");
     drop(server.finish());
 }
 
