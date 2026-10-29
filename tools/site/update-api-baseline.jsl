@@ -12,5 +12,6 @@ local written, problem = fs.writeFile(path, json.encodeTable(fingerprints, { ind
   atomic = true,
   createParents = true,
 })
+
 if not written then error(`api catalog: cannot write {path}: {problem}`, 0) end
 print(`updated {path}`)
