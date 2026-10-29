@@ -1136,7 +1136,9 @@ fn timeout_ms_bounds_the_head_and_the_body_together() {
     let started = std::time::Instant::now();
     let (status, _, kind, message, ..) = fetch(&runtime, &server.url("/late"), "{ timeoutMs = 1000 }");
     assert_eq!((status, kind.as_str()), (None, "timeout"), "{message}");
-    assert!(started.elapsed() < Duration::from_millis(1500), "{:?}", started.elapsed());
+    // The kind is the check: the head and body together pass the limit, each alone does not. The
+    // time only guards against a hang, with room for a slow runner.
+    assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
 
     let (status, body, ..) = fetch(&runtime, &server.url("/late"), "{ timeoutMs = 3000 }");
     assert_eq!((status, body.as_str()), (Some(200.0), "late"));

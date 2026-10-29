@@ -221,7 +221,7 @@ fn open(path: &str, stream: &mut TcpStream) -> bool {
             frame(0x80, b"world", false),
         ],
         "/no-read" => {
-            thread::sleep(Duration::from_secs(3));
+            thread::sleep(Duration::from_secs(10));
             return false;
         }
         "/fragment-pause" => {
@@ -718,8 +718,15 @@ fn a_send_that_fails_part_way_ends_the_socket() {
         &network_runtime(),
         &format!(
             "
-            local socket = assert(websocket.connect({url:?}, {{ maxSendBytes = 16 * 1024 * 1024 }}))
-            local sent, _, kind = socket:send(string.rep('x', 16 * 1024 * 1024), 'binary', net.now() + 300)
+            -- The peer reads nothing, so sends fill what the operating system will buffer, however much
+            -- that is, until one can't finish by its deadline with part of its frame gone out.
+            local socket = assert(websocket.connect({url:?}))
+            local payload = string.rep('x', 4 * 1024 * 1024)
+            local sent, kind
+            for _ = 1, 64 do
+              sent, _, kind = socket:send(payload, 'binary', net.now() + 300)
+              if not sent then break end
+            end
             table.insert(out, `sent {{sent}} {{kind}} {{socket.state}} {{socket.closeCode}}`)
             local again, _, againKind = socket:send('after')
             table.insert(out, `again {{again}} {{againKind}}`)

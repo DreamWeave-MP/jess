@@ -358,7 +358,7 @@ fn a_streamed_response_goes_out_chunk_by_chunk_as_it_is_made() {
 fn slow_handlers_on_separate_connections_run_at_once_and_connections_are_bounded() {
     let server = Served::start();
     let started = Instant::now();
-    let slow: Vec<_> = (0..2)
+    let slow: Vec<_> = (0..3)
         .map(|_| {
             let mut stream = server.connect();
             stream
@@ -370,17 +370,28 @@ fn slow_handlers_on_separate_connections_run_at_once_and_connections_are_bounded
     for mut stream in slow {
         assert!(read_all(&mut stream).ends_with("slow"));
     }
-    assert!(started.elapsed() < Duration::from_millis(550), "{:?}", started.elapsed());
+    // Three 300 ms handlers one after another would take 900 ms; together they take about 300.
+    assert!(started.elapsed() < Duration::from_millis(850), "{:?}", started.elapsed());
 
-    let idle: Vec<TcpStream> = (0..4).map(|_| server.connect()).collect();
+    // Four connections that send nothing hold every place; a fifth is not answered until one of them
+    // goes, well before their head timeout would free one.
+    let mut idle: Vec<TcpStream> = (0..4).map(|_| server.connect()).collect();
     thread::sleep(Duration::from_millis(50));
-    let started = Instant::now();
-    let answer = exchange(&server, "GET /hello HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n");
-    assert!(answer.ends_with("hi"));
+    let mut fifth = server.connect();
+    fifth
+        .write_all(b"GET /hello HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n")
+        .unwrap();
+    fifth.set_read_timeout(Some(Duration::from_millis(150))).unwrap();
+    let mut early = [0u8; 1];
     assert!(
-        started.elapsed() >= Duration::from_millis(250),
-        "the fifth waited for a place: {:?}",
-        started.elapsed()
+        fifth.read(&mut early).is_err(),
+        "the fifth was answered while every place was held"
+    );
+    drop(idle.remove(0).shutdown(Shutdown::Both));
+    fifth.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    assert!(
+        read_all(&mut fifth).ends_with("hi"),
+        "a place came free and the fifth was served"
     );
     for stream in idle {
         drop(stream.shutdown(Shutdown::Both));
