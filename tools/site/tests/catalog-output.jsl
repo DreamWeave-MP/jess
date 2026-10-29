@@ -1,8 +1,9 @@
 --!strict
 local fs = require '@dream/fs'
 local json = require '@jess/json'
+local generator = require '../api-catalog'
 
-type Symbol = { name: string, signature: string, page: string, anchor: string }
+type Symbol = { name: string, signature: string, page: string, anchor: string, checked: boolean }
 type Record = { url: string, title: string, description: string, body: string }
 
 local output = arg[1]
@@ -10,14 +11,20 @@ if not output then error('catalog output: expected a site output folder', 0) end
 
 local catalogText, problem = fs.readFileString(fs.join(output, 'api-catalog.json'))
 if not catalogText then error(`catalog output: {problem}`, 0) end
-local catalog = json.decode(catalogText) :: { schemaVersion: number, symbols: { Symbol } }
+local catalog = json.decode(catalogText) :: { schemaVersion: number, symbolIndex: string, anchorEncoding: string, symbols: { Symbol } }
 assert(catalog.schemaVersion == 1 and #catalog.symbols > 0, 'empty or unknown catalog')
+assert(catalog.symbolIndex == 'docs/api/symbols/' and catalog.anchorEncoding == 'utf8-hex', 'unknown symbol index')
 
 local indexText, indexProblem = fs.readFileString(fs.join(output, 'search_index.en.json'))
 if not indexText then error(`catalog output: {indexProblem}`, 0) end
 local index = json.decode(indexText) :: { Record }
+local symbolsPage, symbolsProblem = fs.readFileString(fs.join(output, 'docs', 'api', 'symbols', 'index.html'))
+if not symbolsPage then error(`catalog output: {symbolsProblem}`, 0) end
+assert(not string.find(symbolsPage, 'api-symbols-placeholder', 1, true), 'symbol page was not generated')
 
 for _, symbol in catalog.symbols do
+  local generatedAnchor = generator.symbolAnchor(symbol.name)
+  assert(string.find(symbolsPage, `id="{generatedAnchor}"`, 1, true), `missing generated symbol {symbol.name}`)
   local pagePath = fs.join(output, symbol.page, 'index.html')
   local page, pageProblem = fs.readFileString(pagePath)
   if not page then error(`catalog output: {pageProblem}`, 0) end
@@ -27,9 +34,10 @@ for _, symbol in catalog.symbols do
   end
 
   local found = false
+  local targetAnchor = if symbol.checked and symbol.anchor ~= '' then symbol.anchor else generatedAnchor
   for _, record in index do
     if record.title == symbol.name and record.description == symbol.signature and record.body == symbol.signature and
-      (symbol.anchor == '' or string.sub(record.url, -#symbol.anchor) == symbol.anchor) then
+      string.sub(record.url, -#targetAnchor) == targetAnchor then
       found = true
       break
     end

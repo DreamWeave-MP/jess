@@ -73,8 +73,11 @@ jobs:
       - name: Check the API catalog
         run: |
           jess check tools/site/api-catalog.jsl
+          jess check tools/site/update-api-baseline.jsl
           jess check tools/site/tests/api-catalog.jsl
           jess test tools/site/tests/api-catalog.jsl
+          jess check tools/site/tests/catalog-drift.jsl
+          jess run --capability filesystem.read --capability filesystem.write --capability process.spawn tools/site/tests/catalog-drift.jsl
 
       - name: Check CLI reference options
         run: |

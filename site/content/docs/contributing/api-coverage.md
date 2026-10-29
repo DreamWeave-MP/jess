@@ -35,7 +35,7 @@ This is a review map, not a promise that every listed function has been checked.
 
 The [CLI reference](@/docs/cli/_index.md), [workspace reference](@/docs/cli/workspace.md), and [capabilities](@/docs/reference/capabilities.md) map to `src/cli/`, `src/main.rs`, `src/lua/stdlib/workspace.jsl`, and `tests/cli/`. A complete parser-to-reference audit, including exit statuses, flag placement, install behavior, and platform-specific standalone artifacts, remains open.
 
-The tutorial checks exercise a small set of complete paths. They do not replace the remaining API audit, browser and keyboard testing, or platform verification. For entries marked `checked`, the build verifies the generated signature and handwritten heading. Other entries are indexed without that signature check.
+The tutorial checks exercise a small set of complete paths. They do not replace the remaining API audit, browser and keyboard testing, or platform verification. For entries marked `checked`, the build verifies the generated signature and handwritten heading. For the catalog as a whole, the build also compares per-module fingerprints to a recorded baseline so a generated signature change requires review. A matching fingerprint does not establish the accuracy or completeness of behavioral prose.
 
 A WebKit visual review covered the first application page at 1440 and 390 CSS pixels and the GPU reference at 390 pixels. The pages and navigation rendered at those widths; this is not a complete keyboard, assistive technology, browser, or platform audit.
 

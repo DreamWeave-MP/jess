@@ -34,6 +34,18 @@ suite.it('detects added, removed, and moved built-in modules', function()
   test.expect(function() catalog.checkModules(expected, { ['@jess/a'] = 'src/new.jsl' }) end).toThrow 'moved to'
 end)
 
+suite.it('detects signature drift without depending on symbol order', function()
+  local first = { name = 'x.a', module = '@jess/x', signature = 'x.a() -> ()', page = 'docs/api/x/', anchor = '', checked = false }
+  local second = { name = 'x.b', module = '@jess/x', signature = 'x.b: number', page = 'docs/api/x/', anchor = '', checked = false }
+  local baseline = catalog.fingerprints { first, second }
+  catalog.checkFingerprints(baseline, catalog.fingerprints { second, first })
+  local changed = table.clone(second)
+  changed.signature = 'x.b: string'
+  test.expect(function() catalog.checkFingerprints(baseline, catalog.fingerprints { first, changed }) end).toThrow 'surface for @jess/x changed'
+  test.expect(function() catalog.checkFingerprints(baseline, {}) end).toThrow 'surface for @jess/x changed'
+  test.expect(function() catalog.checkFingerprints({}, baseline) end).toThrow 'surface for @jess/x changed'
+end)
+
 suite.it('refuses an undocumented new member', function()
   local changed = string.gsub(Definitions, 'exit:', 'stop:')
   test.expect(function() catalog.moduleSymbols(changed, Documentation, 'application') end).toThrow 'missing documentation'
@@ -183,6 +195,20 @@ return table.freeze(camera)]]
   test.expect(function() catalog.tableFunctions(source, '', 'camera', '@jess/render/camera') end).toThrow 'missing documentation'
   local changed = string.gsub(source, 'return table.freeze', 'camera.extra = true\nreturn table.freeze')
   test.expect(function() catalog.tableFunctions(changed, 'camera.write', 'camera', '@jess/render/camera') end).toThrow 'unsupported camera.extra'
+end)
+
+suite.it('renders stable escaped symbol references without JavaScript', function()
+  local symbol = {
+    name = 'x.y', module = '@jess/x', signature = 'x.y(value: string) -> string & number',
+    page = 'docs/api/x/', anchor = 'x-y', checked = false,
+  }
+  test.expect(catalog.symbolAnchor 'x.y').toBe 'symbol-782e79'
+  test.expect(catalog.symbolAnchor 'café').toBe 'symbol-636166c3a9'
+  local rendered = catalog.renderSymbols({ symbol }, '/')
+  test.expect(string.find(rendered, 'id="symbol-782e79"', 1, true) ~= nil).toBe(true)
+  test.expect(string.find(rendered, 'href="/docs/api/x/#x-y"', 1, true) ~= nil).toBe(true)
+  test.expect(string.find(rendered, 'string &amp; number', 1, true) ~= nil).toBe(true)
+  test.expect(function() catalog.renderSymbols({ symbol, symbol }, '/') end).toThrow 'duplicate symbol'
 end)
 
 return suite

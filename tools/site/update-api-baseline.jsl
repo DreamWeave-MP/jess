@@ -1,0 +1,16 @@
+--!strict
+-- Run after reviewing generated API changes and their handwritten references.
+local fs = require '@dream/fs'
+local json = require '@jess/json'
+local catalog = require './api-catalog'
+local paths = require './paths'
+
+local generated = json.decode(catalog.generate(paths.root, true)) :: { symbols: { catalog.Symbol } }
+local fingerprints = catalog.fingerprints(generated.symbols)
+local path = fs.join(paths.site, 'data', 'api-signatures.json')
+local written, problem = fs.writeFile(path, json.encodeTable(fingerprints, { indent = 2 }) .. '\n', {
+  atomic = true,
+  createParents = true,
+})
+if not written then error(`api catalog: cannot write {path}: {problem}`, 0) end
+print(`updated {path}`)

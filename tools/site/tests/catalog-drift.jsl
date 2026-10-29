@@ -1,0 +1,49 @@
+--!strict
+-- Exercise the build's drift check against an isolated copy of the reference inputs.
+local fs = require '@dream/fs'
+local json = require '@jess/json'
+local catalog = require '../api-catalog'
+
+local targetMade, targetProblem = fs.mkdir('target', { recursive = true })
+assert(targetMade, targetProblem)
+local root = `target/catalog-drift-{os.time()}-{math.random(1, 1000000000)}`
+local made, makeProblem = fs.mkdir(root)
+if not made then error(`catalog drift: cannot create scratch directory: {makeProblem}`, 0) end
+
+local function copy(source: string, destination: string)
+  local parent = assert(fs.parent(destination))
+  local created, createProblem = fs.mkdir(parent, { recursive = true })
+  assert(created, createProblem)
+  local copied, copyProblem = fs.copy(source, destination)
+  assert(copied, copyProblem)
+end
+
+local function verify()
+  local files, walkProblem = fs.walk('site/content/docs/api', { include = 'files', sort = true })
+  assert(files, walkProblem)
+  for _, path in files.paths do
+    copy(fs.join('site/content/docs/api', path), fs.join(root, 'site/content/docs/api', path))
+  end
+
+  copy('jpk/builtin/jess.toml', fs.join(root, 'jpk/builtin/jess.toml'))
+  local baselineText, readProblem = fs.readFileString 'site/data/api-signatures.json'
+  assert(baselineText, readProblem)
+  local baseline = json.decode(baselineText) :: { [string]: string }
+  baseline['@jess/http'] = string.rep('0', 64)
+  local destination = fs.join(root, 'site/data/api-signatures.json')
+  local created, createProblem = fs.mkdir(assert(fs.parent(destination)), { recursive = true })
+  assert(created, createProblem)
+  local written, writeProblem = fs.writeFile(destination, json.encodeTable(baseline))
+  assert(written, writeProblem)
+
+  -- Generation raises when the generated signature fingerprint differs from the reviewed baseline.
+  local ok, problem = pcall(catalog.generate, root, nil)
+  assert(not ok and string.find(tostring(problem), 'surface for @jess/http changed', 1, true), tostring(problem))
+end
+
+-- Generation and assertions can raise; remove only this test's isolated directory either way.
+local ok, problem = pcall(verify)
+local removed, removeProblem = fs.remove(root, { recursive = true })
+if not removed then error(`catalog drift: cannot remove scratch directory: {removeProblem}`, 0) end
+if not ok then error(tostring(problem), 0) end
+print 'catalog drift was detected'

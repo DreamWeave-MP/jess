@@ -12,11 +12,19 @@ jess workspace run --trusted jess-site-serve -- 0.0.0.0 8080
 jess workspace run --trusted jess-site-navigation-check      # verify sidebar and section navigation
 ```
 
-`tools/site` is a Package Source whose only contents are the `build` and `serve` targets. The generator renders Markdown through the Tera-shaped template layer, compiles Sass, copies static assets, and emits the search index and sitemap. There is deliberately no Zola, Node, or Python in the build path.
+`tools/site` is a Package Source with build, serve, and navigation-check targets. The generator renders Markdown through the Tera-shaped template layer, compiles Sass, copies static assets, and emits the search index and sitemap. There is deliberately no Zola, Node, or Python in the build path.
 
 `serve` is the local edit loop. It asks the same generator for a dev build into `target/site-dev` with a root-relative base URL, serves it over HTTP from one nonblocking loop on `@dream/tcp`, and watches content, templates, Sass, static files, data, and the config for changes. A failed rebuild prints why and leaves the last successful site in place.
 
-Both build and serve run `jess luau-types` to derive the experimental API catalog and need `process.spawn` in addition to their filesystem capabilities. Put the same jess executable used to run the target on `PATH`. The build checks that the generated version agrees with the running version, but two different builds of the same version can still differ; a version match does not prove binary identity. The catalog currently covers only the modules it names in its JSON, and the handwritten references remain the source of behavioral contracts.
+Both build and serve run `jess luau-types` to derive the API catalog and need `process.spawn` in addition to their filesystem capabilities. The build checks the generated version, writes `api-catalog.json`, creates the browsable symbol index, and adds signatures to search. The handwritten references remain the source of behavioral contracts; the catalog marks entries whose signatures and headings the build checks against them.
+
+`site/data/api-signatures.json` holds one fingerprint per catalog module. A changed, added, or removed generated signature stops the build so its reference can be reviewed. After reviewing the generated surface and updating the relevant handwritten documentation, refresh the fingerprints with:
+
+```sh
+jess run --capability filesystem.read --capability filesystem.write --capability process.spawn tools/site/update-api-baseline.jsl
+```
+
+The fingerprints detect changes; updating them does not prove behavior has been audited. They contain hashes rather than copies of source or generated declarations.
 
 The tutorial test suite uses `JESS_DOCS_RUNTIME` as the runtime for its standalone-executable case. From the root, set it to the same executable as `jess` on `PATH` and run `jess test` on `tools/site/tests/tutorials.jsl` with `process.spawn`, `process.environment`, `filesystem.read`, and `filesystem.write` granted. The docs workflow does this and tests the HTTP recipe against loopback.
 

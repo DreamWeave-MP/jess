@@ -44,7 +44,7 @@
 
   // A code block goes in a frame that holds its copy button, so the button stays in the corner
   // while the code scrolls sideways under it.
-  for (const code of document.querySelectorAll('pre > code')) {
+  for (const code of document.querySelectorAll('pre:not([data-no-copy]) > code')) {
     const block = code.parentElement;
     const frame = document.createElement('div');
     frame.className = 'dw-code';
