@@ -18,6 +18,8 @@ jess workspace run --trusted jess-site-navigation-check      # verify sidebar an
 
 Both build and serve run `jess luau-types` to derive the experimental API catalog and need `process.spawn` in addition to their filesystem capabilities. Put the same jess executable used to run the target on `PATH`. The build checks that the generated version agrees with the running version, but two different builds of the same version can still differ; a version match does not prove binary identity. The catalog currently covers only the modules it names in its JSON, and the handwritten references remain the source of behavioral contracts.
 
+The tutorial test suite uses `JESS_DOCS_RUNTIME` as the runtime for its standalone-executable case. From the root, set it to the same executable as `jess` on `PATH` and run `jess test` on `tools/site/tests/tutorials.jsl` with `process.spawn`, `process.environment`, `filesystem.read`, and `filesystem.write` granted. The docs workflow does this and tests the HTTP recipe against loopback.
+
 ## Layout
 
 - `content/_index.md` supplies searchable homepage metadata; `templates/index.html` owns the full landing-page composition.

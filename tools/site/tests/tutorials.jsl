@@ -59,6 +59,10 @@ suite.it('keeps tutorial code and fixtures identical', function()
   documented(multiPage, 'tests/fixtures/docs/multi/words/src/init.jsl', 'luau')
   documented(multiPage, 'tests/fixtures/docs/multi/tool/jess.toml', 'toml')
   documented(multiPage, 'tests/fixtures/docs/multi/tool/src/main.jsl', 'luau')
+  local windowPage = 'site/content/docs/cookbook/window.md'
+  documented(windowPage, 'tests/fixtures/docs/window/jess.toml', 'toml')
+  documented(windowPage, 'tests/fixtures/docs/window/src/main.jsl', 'luau')
+  documented(windowPage, 'tests/fixtures/docs/window/src/view.jsl', 'luau')
 end)
 
 local function makeScratch(): string
@@ -124,6 +128,10 @@ suite.it('checks and runs the worker application', function()
   test.expect(output).toBe 'entry\nqueued\nresult: 42\n'
 end)
 
+suite.it('checks the window application without opening a device', function()
+  run { 'package', 'check', 'tests/fixtures/docs/window' }
+end)
+
 suite.it('creates and tests the first package from source and JPK', function()
   local folder = fs.join(makeScratch(), 'greeter')
   run { 'init', folder, '--package', 'com.example.greeter', '--editor', 'none' }
@@ -171,6 +179,20 @@ suite.it('packs and runs the counter workspace', function()
   test.expect(result).toBe 'entry\nstartup\nstopped after 3 frames\n'
 end)
 
+suite.it('packs and runs a standalone counter', function()
+  local runtime = process.env 'JESS_DOCS_RUNTIME'
+  if not runtime or runtime == '' then error('tutorial: set JESS_DOCS_RUNTIME to the jess executable', 0) end
+
+  local name = if process.platform() == 'windows' then 'counter.exe' else 'counter'
+  local output = fs.join(makeScratch(), name)
+  run { 'workspace', '--workspace', 'tests/fixtures/docs/counter', 'pack', '--runtime', runtime, '--output', output }
+  local result, problem = process.run(output, {}, { stdout = 'capture', stderr = 'capture' })
+  if not result then error(`tutorial: cannot run standalone executable: {problem}`, 0) end
+  if not result.success then error(`tutorial: standalone failed: {result.stderr or ''}`, 0) end
+  local printed = string.gsub(result.stdout or '', '\r\n', '\n')
+  test.expect(printed).toBe 'entry\nstartup\nstopped after 3 frames\n'
+end)
+
 suite.it('runs and packs two workspace packages', function()
   local root = 'tests/fixtures/docs/multi'
   local words = fs.join(root, 'words')
@@ -182,6 +204,31 @@ suite.it('runs and packs two workspace packages', function()
   local output = fs.join(makeScratch(), 'example.jsw')
   run { 'workspace', '--workspace', root, 'pack', '--output', output }
   test.expect(run { output }).toBe 'Hello, world.\n'
+end)
+
+suite.it('pins a local external package and runs offline', function()
+  local source = 'tests/fixtures/docs/multi'
+  local folder = makeScratch()
+  local files, walkProblem = fs.walk(source, { include = 'files', sort = true })
+  if not files then error(`tutorial: cannot read workspace fixture: {walkProblem}`, 0) end
+
+  for _, path in files.paths do
+    local destination = fs.join(folder, path)
+    local parent = fs.parent(destination)
+    if not parent then error(`tutorial: no parent for {destination}`, 0) end
+    local made, makeProblem = fs.mkdir(parent, { recursive = true })
+    if not made then error(`tutorial: cannot create folder: {makeProblem}`, 0) end
+    local copied, copyProblem = fs.copy(fs.join(source, path), destination)
+    if not copied then error(`tutorial: cannot copy {path}: {copyProblem}`, 0) end
+  end
+
+  local workspace = 'manifest_version = 1\n\n[workspace]\nmembers = ["tool"]\n'
+  local written, writeProblem = fs.writeFile(fs.join(folder, 'jess-workspace.toml'), workspace)
+  if not written then error(`tutorial: cannot write workspace: {writeProblem}`, 0) end
+  run { 'workspace', '--workspace', folder, 'sync', fs.join(folder, 'words') }
+  local locked = run { 'workspace', '--workspace', folder, 'sync', '--locked', '--offline' }
+  test.expect(locked).toContain 'lock: unchanged'
+  test.expect(run { 'workspace', '--workspace', folder, 'run', 'com.example.tool:greet' }).toBe 'Hello, world.\n'
 end)
 
 return suite

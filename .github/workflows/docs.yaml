@@ -79,7 +79,7 @@ jobs:
       - name: Check the tutorials
         run: |
           jess check tools/site/tests/tutorials.jsl
-          jess test --capability process.spawn --capability filesystem.read --capability filesystem.write tools/site/tests/tutorials.jsl
+          JESS_DOCS_RUNTIME="$(command -v jess)" jess test --capability process.spawn --capability process.environment --capability filesystem.read --capability filesystem.write tools/site/tests/tutorials.jsl
           . tools/dev/no-lto.sh
           cargo test --locked --test integration cli::docs::
 

@@ -1,0 +1,37 @@
+--!strict
+local application = require '@jess/application'
+local shader = require '@jess/shader'
+local device = jess.gpu.device()
+local window = jess.gpu.window(device, { title = 'Jess example', width = 320, height = 200 })
+local format = assert(window.format)
+
+local fill = shader.program {
+  vertex = function(input)
+    local index = input.builtin.vertexIndex
+    local horizontal = shader.float(shader.bitAnd(shader.shiftLeft(index, shader.uint(1)), shader.uint(2)))
+    local vertical = shader.float(shader.bitAnd(index, shader.uint(2)))
+    return { position = shader.vec4(shader.vec2(horizontal, vertical) * 2 - 1, 0, 1) }
+  end,
+  fragment = function() return shader.vec4(0.1, 0.2, 0.4, 1) end,
+}
+
+local plan = device:plan {
+  viewport = { width = window.width, height = window.height },
+  targets = { { name = 'screen', format = format, imported = true } },
+  passes = {
+    { name = 'fill', kind = 'fullscreen', pipeline = device:pipeline(fill, { colors = { format } }), colors = { 'screen' } },
+  },
+}
+window:show(plan, 'screen')
+
+return {
+  on = {
+    event = {
+      ['jess.window'] = function()
+        for _, event in window:events() do
+          if event.kind == 'closed' then application.exit(0) end
+        end
+      end,
+    },
+  },
+}

@@ -1,0 +1,2 @@
+--!strict
+print 'close the window to stop'

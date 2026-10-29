@@ -20,3 +20,4 @@ These recipes start with a job and point to the reference for its full contract.
 - [Write and read configuration](@/docs/cookbook/configuration.md): preserve the previous file and validate decoded data.
 - [Mix audio offline](@/docs/cookbook/offline-audio.md): render sample frames without an audio device.
 - [Compose two packages](@/docs/cookbook/multi-package.md): run a command over a library and pack both into a workspace.
+- [Open a window](@/docs/cookbook/window.md): present a static pass and handle its close event.

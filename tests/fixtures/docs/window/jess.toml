@@ -1,0 +1,16 @@
+manifest_version = 1
+
+[package]
+id = "com.example.window"
+version = "0.1.0"
+jess_api = "1"
+include = ["src"]
+default_target = "window"
+
+[managed.view]
+module = "src/view.jsl"
+
+[targets.window]
+kind = "application"
+entry = "src/main.jsl"
+capabilities = ["gpu.device", "gpu.window"]

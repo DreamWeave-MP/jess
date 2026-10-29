@@ -105,3 +105,17 @@ jess ../example.jsw
 ```
 
 The packed workspace prints the same greeting. It contains both packages and runs offline with Jess. Editing either source afterwards requires a new packed artifact. Both members here are local and there are no external dependencies to lock; [workspace sync](@/docs/cli/workspace.md#jess-workspace-sync) explains pinning dependencies once you add them. The fixture is `tests/fixtures/docs/multi`; the documentation checks type-check, pack, and run it.
+
+## Pin the library instead
+
+To see the external-dependency path without a network, change the workspace file to `members = ["tool"]`. Leave the `words` source folder where it is and, from `example`, offer it to sync:
+
+```sh
+jess workspace sync words
+jess workspace sync --locked --offline
+jess workspace run com.example.tool:greet
+```
+
+The first command packs the offered source into the workspace's `.jess/packages` and writes `jess.lock` with the selected version and digest. The second checks the existing lock and kept package without consulting a publisher; the command still prints the greeting. Commit the workspace file and lock for a real project. The kept package is regenerable and is not a workspace member. The tool's own dependency declaration did not change.
+
+Publishers and indexes provide another way to supply external packages; they need network access during sync. [Workspace sync](@/docs/cli/workspace.md#jess-workspace-sync) specifies those sources and their integrity checks.
