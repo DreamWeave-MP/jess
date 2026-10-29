@@ -10,15 +10,22 @@ extra:
   kind: guide
 ---
 
-Four steps, each one short. Nothing here writes outside the folder you point it at.
+Start with a script, then make an application you can distribute. Each journey builds on the one before it; the [API](@/docs/api/_index.md) and [CLI](@/docs/cli/_index.md) references are there when you need a precise contract.
 
-1. [Install](@/docs/getting-started/install.md) the binary.
-2. Write [your first script](@/docs/scripting/intro.md): `jess init`, one file, `jess run`. New to the language? Read [Enough Luau to Start](@/docs/getting-started/luau-basics.md) alongside it.
-3. Build [your first package](@/docs/getting-started/first-package.md): a manifest, a module, a test, a command target, packed and run.
-4. [Set up your editor](@/docs/getting-started/editor-setup.md) with the types, in VS Code, Neovim, Zed, or Helix.
+## First experience
 
-Before diving further, read [The Jess Mental Model](@/docs/getting-started/mental-model.md) for the distinctions between packages, layers, targets, capabilities, and domains. Then [Scripting](@/docs/scripting/_index.md) explains how the pieces fit, and the [API](@/docs/api/_index.md) and [CLI](@/docs/cli/_index.md) references are for looking things up.
+1. [Install Jess](@/docs/getting-started/install.md) and check its version.
+2. Write and check [your first script](@/docs/scripting/intro.md). If Luau is new, read [Enough Luau to Start](@/docs/getting-started/luau-basics.md) alongside it.
+3. Learn what Jess adds in [JSL and L3i](@/docs/scripting/jsl-and-l3i.md), and [set up your editor](@/docs/getting-started/editor-setup.md) with the generated types.
+4. Read [The Jess Mental Model](@/docs/getting-started/mental-model.md) and [Capabilities and Trust](@/docs/getting-started/authority.md) before granting code access to your machine.
 
-Once you have a package, build [your first application](@/docs/getting-started/first-application.md) and take it [from workspace to distribution](@/docs/getting-started/first-workspace.md). Learn how to [read another package](@/docs/getting-started/reading-a-package.md), [check and test your work](@/docs/getting-started/testing.md), and [decide what to grant](@/docs/getting-started/authority.md). [Choose Your Next Project](@/docs/getting-started/next-steps.md) points from there to commands, libraries, applications, workspaces, and distribution.
+## Build and distribute
 
-For the concepts that tend to get tangled, read [Modules, Layers, and Dependencies](@/docs/getting-started/modules-and-layers.md) and [Application Lifecycle and State](@/docs/getting-started/application-lifecycle.md). When something goes wrong, start with [Debugging Jess Code](@/docs/getting-started/debugging.md).
+1. Make [your first package](@/docs/getting-started/first-package.md), including a module, a test, a command target, and a JPK.
+2. Build [your first application](@/docs/getting-started/first-application.md) and learn [its lifecycle and state](@/docs/getting-started/application-lifecycle.md).
+3. Take it [from workspace to distribution](@/docs/getting-started/first-workspace.md), then use [the two-package recipe](@/docs/cookbook/multi-package.md) to resolve and lock a dependency offline.
+4. Use [Checking and Testing](@/docs/getting-started/testing.md) and [Deployment and Operations](@/docs/reference/deployment.md) to verify and run the result on its destination.
+
+## Go deeper
+
+[Building a Larger Application](@/docs/scripting/learning-path.md) follows state ownership, events, workers, I/O, graphics, audio, and profiling. [Modules, Layers, and Dependencies](@/docs/getting-started/modules-and-layers.md) explains composition; [Read Another Package](@/docs/getting-started/reading-a-package.md) shows how to inspect one. The [cookbook](@/docs/cookbook/_index.md) has complete small jobs, and [Debugging Jess Code](@/docs/getting-started/debugging.md) starts from common failures. [Choose Your Next Project](@/docs/getting-started/next-steps.md) points to further routes.
