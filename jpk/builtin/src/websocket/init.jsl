@@ -95,6 +95,12 @@ type SocketState = {
   sentClose: boolean,
   receiving: boolean,
   closed: net.Signal,
+  --- The message being reassembled: its fragments so far, its kind, and its size. It lives here,
+  --- not in a `receive` call, so a receive that times out between fragments leaves the next
+  --- receive to carry on with the same message.
+  fragments: { string },
+  fragmentKind: MessageKind?,
+  fragmentBytes: number,
 }
 
 type Frame = { fin: boolean, opcode: number, payload: string }
@@ -265,9 +271,6 @@ local function receive(state: SocketState, deadline: number?): (Message?, string
   if state.receiving then error(`{Name}.Socket:receive: another task is already receiving on this socket`, 0) end
 
   state.receiving = true
-  local fragments: { string } = {}
-  local fragmentKind: MessageKind?
-  local fragmentBytes = 0
 
   while true do
     local frame, problem, kind, code = readFrame(state, deadline)
@@ -298,29 +301,30 @@ local function receive(state: SocketState, deadline: number?): (Message?, string
     end
 
     if opcode == Opcodes.continuation then
-      if not fragmentKind then
+      if not state.fragmentKind then
         state.receiving = false
         return fail(state, 1002, 'a continuation frame continues nothing', 'protocol')
       end
-    elseif fragmentKind then
+    elseif state.fragmentKind then
       state.receiving = false
       return fail(state, 1002, 'a new message began inside a fragmented one', 'protocol')
     else
-      fragmentKind = if opcode == Opcodes.text then 'text' else 'binary'
+      state.fragmentKind = if opcode == Opcodes.text then 'text' else 'binary'
     end
 
-    fragmentBytes += #payload
-    if fragmentBytes > state.maxMessageBytes then
+    state.fragmentBytes += #payload
+    if state.fragmentBytes > state.maxMessageBytes then
       state.receiving = false
       return fail(state, 1009, `a message is larger than the {state.maxMessageBytes} bytes allowed`, 'tooLarge')
     end
 
-    table.insert(fragments, payload)
+    table.insert(state.fragments, payload)
     if not frame.fin then continue end
 
+    local fragments = state.fragments
     local data = if #fragments == 1 then fragments[1] else table.concat(fragments)
-    local messageKind = fragmentKind :: MessageKind
-    fragments, fragmentKind, fragmentBytes = {}, nil, 0
+    local messageKind = state.fragmentKind :: MessageKind
+    state.fragments, state.fragmentKind, state.fragmentBytes = {}, nil, 0
 
     -- A message that arrives once this side has started closing is past what it asked for.
     if state.sentClose then continue end
@@ -508,6 +512,8 @@ local function connect(url: string, options: Options?): (Socket?, string?, Error
     sentClose = false,
     receiving = false,
     closed = net.signal(),
+    fragments = {},
+    fragmentBytes = 0,
   } :: SocketState
 
   return public, nil, nil

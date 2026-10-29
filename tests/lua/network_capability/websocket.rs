@@ -220,6 +220,13 @@ fn open(path: &str, stream: &mut TcpStream) -> bool {
             frame(0x00, b"lo ", false),
             frame(0x80, b"world", false),
         ],
+        "/fragment-pause" => {
+            if stream.write_all(&frame(0x01, b"hel", false)).is_err() {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(400));
+            vec![frame(0x80, b"lo", false)]
+        }
         "/split" => {
             let whole = frame(0x81, b"helloworld", false);
             if stream.write_all(&whole[..7]).is_err() {
@@ -598,4 +605,31 @@ fn a_receive_that_times_out_part_way_through_a_frame_leaves_it_whole_for_the_nex
     );
     assert_eq!(lines, ["true timeout open", "helloworld"]);
     assert_eq!(server.wait_until_idle(), 0);
+}
+
+#[test]
+fn a_receive_that_times_out_between_fragments_leaves_the_message_for_the_next() {
+    let server = WsServer::start();
+    let lines = run_task(
+        &network_runtime(),
+        &format!(
+            "
+            local socket = assert(websocket.connect({url:?}))
+            local early, _, kind = socket:receive(net.now() + 100)
+            table.insert(out, `{{early == nil}} {{kind}} {{socket.state}}`)
+            local message = assert(socket:receive(net.now() + 5000))
+            table.insert(out, `{{message.kind}} {{message.data}}`)
+            socket:close()
+            table.insert(out, `{{socket.closeCode}}`)
+            ",
+            url = server.url("/fragment-pause")
+        ),
+    );
+    assert_eq!(lines, ["true timeout open", "text hello", "1000"]);
+    assert_eq!(server.wait_until_idle(), 0);
+    assert_eq!(
+        server.seen.lock().unwrap().closes,
+        [(1000, String::new())],
+        "the continuation was no protocol error"
+    );
 }
