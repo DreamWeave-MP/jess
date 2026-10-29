@@ -126,4 +126,17 @@ export type Value = string | number]]
   test.expect(symbols[3].signature).toBe 'export type Value = string | number'
 end)
 
+suite.it('indexes functions defined on a returned frozen module table', function()
+  local source = [[local camera = {}
+function camera.write(value: string) print(value) end
+return table.freeze(camera)]]
+  local symbols = catalog.tableFunctions(source, 'camera.write', 'camera', '@jess/render/camera')
+  test.expect(#symbols).toBe(1)
+  test.expect(symbols[1].signature).toBe 'camera.write(value: string)'
+  test.expect(symbols[1].anchor).toBe 'the-camera'
+  test.expect(function() catalog.tableFunctions(source, '', 'camera', '@jess/render/camera') end).toThrow 'missing documentation'
+  local changed = string.gsub(source, 'return table.freeze', 'camera.extra = true\nreturn table.freeze')
+  test.expect(function() catalog.tableFunctions(changed, 'camera.write', 'camera', '@jess/render/camera') end).toThrow 'unsupported camera.extra'
+end)
+
 return suite

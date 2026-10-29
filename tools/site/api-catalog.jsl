@@ -287,6 +287,73 @@ local function sourceTypes(source: string, moduleName: string, page: string): { 
   return symbols
 end
 
+local function tableFunctions(source: string, documentation: string, prefix: string, moduleName: string): { Symbol }
+  local parsed = luau.parse(source)
+  if #parsed.errors > 0 then error(`api catalog: generated {moduleName} source does not parse`, 0) end
+  local symbols: { Symbol } = {}
+  local frozen = false
+
+  for _, statement in parsed.root.body do
+    if statement.kind == 'StatAssign' then
+      for _, target in statement.vars do
+        if target.kind ~= 'ExprIndexName' then continue end
+        local owner = target.expr
+        if owner.kind ~= 'ExprLocal' or owner['local'].name ~= prefix then continue end
+        local name = `{prefix}.{target.index}`
+        if prefix ~= 'camera' or target.index ~= 'block' then error(`api catalog: unsupported {name} assignment`, 0) end
+        if not string.find(documentation, name, 1, true) then error(`api catalog: missing documentation for {name}`, 0) end
+
+        table.insert(symbols, {
+          name = name,
+          module = moduleName,
+          signature = name,
+          page = 'docs/api/render/',
+          anchor = 'the-camera',
+          checked = false,
+        })
+      end
+    end
+
+    if statement.kind == 'StatReturn' then
+      local call = statement.list[1]
+      if call and call.kind == 'ExprCall' and call.func.kind == 'ExprIndexName' and call.func.index == 'freeze' and
+        call.func.expr.kind == 'ExprGlobal' and call.func.expr.name == 'table' then
+        local value = call.args[1]
+        frozen = value ~= nil and value.kind == 'ExprLocal' and value['local'].name == prefix
+      end
+    end
+
+    if statement.kind ~= 'StatFunction' or statement.name.kind ~= 'ExprIndexName' then continue end
+    local owner = statement.name.expr
+    if owner.kind ~= 'ExprLocal' or owner['local'].name ~= prefix then continue end
+    local name = `{prefix}.{statement.name.index}`
+    if not string.find(documentation, name, 1, true) then error(`api catalog: missing documentation for {name}`, 0) end
+    local args = statement.func.argLocation
+    if not args then error(`api catalog: missing arguments for {name}`, 0) end
+    local first = parsed.lineStarts[args.line] + args.column - 1
+    local last = parsed.lineStarts[args.endLine] + args.endColumn - 1
+    local signature = `{name}{string.sub(source, first, last)}`
+    local result = statement.func.returnAnnotation
+    if result then
+      local resultFirst = parsed.lineStarts[result.line] + result.column - 1
+      local resultLast = parsed.lineStarts[result.endLine] + result.endColumn - 1
+      signature ..= ` -> {string.sub(source, resultFirst, resultLast)}`
+    end
+
+    table.insert(symbols, {
+      name = name,
+      module = moduleName,
+      signature = signature,
+      page = 'docs/api/render/',
+      anchor = if prefix == 'render' then 'writers' else 'the-camera',
+      checked = false,
+    })
+  end
+
+  if not frozen or #symbols == 0 then error(`api catalog: unsupported {moduleName} export`, 0) end
+  return symbols
+end
+
 local function sourceSymbols(source: string, documentation: string, member: string, grouped: boolean?, moduleName: string?): { Symbol }
   local parsed = luau.parse(source)
   if #parsed.errors > 0 then error(`api catalog: generated {member} source does not parse`, 0) end
@@ -543,6 +610,16 @@ local function generate(root: string): string
     for _, symbol in exportedTypes do
       table.insert(symbols, symbol)
     end
+
+    if item.name == 'render' or item.name == 'render/camera' then
+      local path = fs.join(root, 'site', 'content', 'docs', 'api', 'render.md')
+      local documentation, docProblem = fs.readFileString(path)
+      if not documentation then error(`api catalog: cannot read {path}: {docProblem}`, 0) end
+      local prefix = if item.name == 'render' then 'render' else 'camera'
+      for _, symbol in tableFunctions(item.source, documentation, prefix, moduleName) do
+        table.insert(symbols, symbol)
+      end
+    end
   end
 
   table.sort(modules)
@@ -593,4 +670,4 @@ local function publish(output: string, api: string)
   if not saved then error(`api catalog: cannot write catalog: {saveProblem}`, 0) end
 end
 
-return table.freeze { moduleSymbols = moduleSymbols, stubSymbols = stubSymbols, sourceSymbols = sourceSymbols, typeInventory = typeInventory, sourceTypes = sourceTypes, generate = generate, publish = publish }
+return table.freeze { moduleSymbols = moduleSymbols, stubSymbols = stubSymbols, sourceSymbols = sourceSymbols, typeInventory = typeInventory, sourceTypes = sourceTypes, tableFunctions = tableFunctions, generate = generate, publish = publish }
