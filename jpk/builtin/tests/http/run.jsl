@@ -50,6 +50,18 @@ suite.describe('@jess/http', function()
     expect(http.resolveReference(base, 'dir/')).toBe 'https://example.org/packages/dir/'
   end)
 
+  suite.it('resolves a query, a fragment or nothing against the base path, as RFC 3986 does', function()
+    local base = 'https://example.org/api/items?page=1#top'
+    expect(http.resolveReference(base, '?page=2')).toBe 'https://example.org/api/items?page=2'
+    expect(http.resolveReference(base, '#bottom')).toBe 'https://example.org/api/items?page=1#bottom'
+    expect(http.resolveReference(base, '')).toBe 'https://example.org/api/items?page=1'
+    expect(http.resolveReference('https://example.org', '?q=1')).toBe 'https://example.org?q=1'
+
+    local url = http.parseUrl(http.resolveReference('https://example.org', '?q=1') :: string)
+    assert(url)
+    expect(url.target).toBe '/?q=1'
+  end)
+
   suite.it('refuses a URL that would write its own lines into the request', function()
     for _, url in
       {

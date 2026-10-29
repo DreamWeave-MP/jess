@@ -196,18 +196,23 @@ local function parseUrl(url: string): (Url?, string?, ErrorKind?)
     nil
 end
 
---- `reference` against `base` as a browser resolves a Location header: absolute as is,
---- `//host/path` under the base's scheme, `/path` on the base's host, and anything else appended
---- to the base's directory, with `.` and `..` folded.
+--- `reference` against `base` as RFC 3986 resolves a Location header: absolute as is,
+--- `//host/path` under the base's scheme, `/path` on the base's host, `?query` on the base's
+--- path, an empty reference or `#fragment` as the base itself, and anything else appended to the
+--- base's directory, with `.` and `..` folded.
 local function resolveReference(base: string, reference: string): string?
   if string.match(reference, '^%a[%w+.-]*://') then return reference end
 
-  local scheme, authority, basePath = string.match(base, '^(%a[%w+.-]*)://([^/?#]*)([^?#]*)')
+  local scheme, authority, basePath, baseQuery = string.match(base, '^(%a[%w+.-]*)://([^/?#]*)([^?#]*)([^#]*)')
   if not scheme then return nil end
 
   if string.sub(reference, 1, 2) == '//' then return `{scheme}:{reference}` end
 
   local origin = `{scheme}://{authority}`
+  local first = string.sub(reference, 1, 1)
+  if reference == '' or first == '#' then return `{origin}{basePath}{baseQuery}{reference}` end
+  if first == '?' then return `{origin}{basePath}{reference}` end
+
   local path = reference
   if string.sub(reference, 1, 1) ~= '/' then
     local directory = string.match(basePath :: string, '^(.*/)') or '/'
