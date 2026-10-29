@@ -91,6 +91,8 @@ The reference pages generally put signatures and concrete behavior before exampl
 
 The audit found absolute claims that contradicted the implementation, especially around default grants, returned errors, scheduling, and recovery. The findings below record corrections and their sources. Some older reference snippets are fragments or depend on a host, a device, or data that the snippet does not create; they are not covered by the tutorial fixture gate. Some generated signatures remain unchecked against the prose, and platform behavior needs testing on the destination. Treat the catalog as a discovery aid and its `checked` field as a signature-check status, not proof that every behavioral claim has been reviewed.
 
+No native-kernel or built-in implementation defect was reproduced during these documentation checks. The uncovered behavioral and platform audits listed here remain work, not evidence that the implementation has no defects.
+
 ## Findings from this pass
 
 | Classification | Surface | Evidence and action |
