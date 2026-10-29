@@ -1,0 +1,16 @@
+manifest_version = 1
+
+[package]
+id = "com.example.worker"
+version = "0.1.0"
+jess_api = "1"
+include = ["src"]
+default_target = "worker"
+
+[managed.main]
+module = "src/worker.jsl"
+
+[targets.worker]
+kind = "application"
+entry = "src/main.jsl"
+capabilities = ["worker.spawn"]

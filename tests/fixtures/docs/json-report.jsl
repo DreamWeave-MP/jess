@@ -1,0 +1,10 @@
+--!strict
+local json = require '@jess/json'
+local value = require '@jess/data/value'
+
+local report = value.struct {
+  { 'name', 'counter' },
+  { 'samples', value.array { 2, 3 } },
+}
+
+print(json.encode(report))

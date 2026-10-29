@@ -1,0 +1,6 @@
+--!strict
+local backup = require '@jess/backup'
+
+backup.write('notes.txt', 'first\n')
+local result = backup.write('notes.txt', 'second\n')
+print(result.backup)

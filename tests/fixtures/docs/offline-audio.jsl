@@ -1,0 +1,13 @@
+--!strict
+local audio = require '@jess/audio'
+local samples = buffer.create(4 * 4)
+
+for frame = 0, 3 do
+  buffer.writef32(samples, frame * 4, 0.25)
+end
+
+local sound = audio.pcm(samples, { format = 'f32', channels = 1, rate = 48000 })
+local context = audio.offline { channels = 1, rate = 48000 }
+context:play(sound)
+local mixed = context:render(4)
+print(buffer.len(mixed), context:now())

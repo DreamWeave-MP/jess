@@ -1,0 +1,15 @@
+--!strict
+type Entry = { name: string, count: number }
+
+local function describe(entry: Entry): string
+  return `{entry.name}: {entry.count}`
+end
+
+local Entries: { Entry } = {
+  { name = 'apples', count = 3 },
+  { name = 'pears', count = 2 },
+}
+
+for _, entry in Entries do
+  print(describe(entry))
+end

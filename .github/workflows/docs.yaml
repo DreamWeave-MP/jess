@@ -11,6 +11,8 @@ on:
     paths:
       - "site/**"
       - "tools/site/**"
+      - "tests/fixtures/docs/**"
+      - "tests/cli/docs.rs"
       - "jess.lock"
       - "jess-workspace.toml"
       - "jpk/builtin/**"
@@ -23,6 +25,8 @@ on:
     paths:
       - "site/**"
       - "tools/site/**"
+      - "tests/fixtures/docs/**"
+      - "tests/cli/docs.rs"
       - "jess.lock"
       - "jess-workspace.toml"
       - "jpk/builtin/**"
@@ -66,8 +70,31 @@ jobs:
       - name: Restore the pinned site generator
         run: jess workspace sync --locked
 
+      - name: Check the API catalog
+        run: |
+          jess check tools/site/api-catalog.jsl
+          jess check tools/site/tests/api-catalog.jsl
+          jess test tools/site/tests/api-catalog.jsl
+
+      - name: Check the tutorials
+        run: |
+          jess check tools/site/tests/tutorials.jsl
+          jess test --capability process.spawn --capability filesystem.read --capability filesystem.write tools/site/tests/tutorials.jsl
+          . tools/dev/no-lto.sh
+          cargo test --locked --test integration cli::docs::
+
       - name: Build the site
         run: jess workspace run --trusted jess-site-build -- site/public
+
+      - name: Verify catalog output
+        run: |
+          jess check tools/site/tests/catalog-output.jsl
+          jess run --capability filesystem.read tools/site/tests/catalog-output.jsl site/public
+          jess check tools/site/tests/links.jsl
+          jess run --capability filesystem.read tools/site/tests/links.jsl site/public
+
+      - name: Check documentation navigation
+        run: jess workspace run --trusted jess-site-navigation-check
 
       - uses: actions/upload-pages-artifact@v5.0.0
         if: github.event_name != 'pull_request'

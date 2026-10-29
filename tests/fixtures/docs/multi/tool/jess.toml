@@ -1,0 +1,15 @@
+manifest_version = 1
+
+[package]
+id = "com.example.tool"
+version = "0.1.0"
+jess_api = "1"
+include = ["src"]
+default_target = "greet"
+
+[dependencies]
+"com.example.words" = "0.1"
+
+[targets.greet]
+kind = "command"
+entry = "src/main.jsl"

@@ -5,6 +5,7 @@ mod application;
 mod capabilities;
 mod check;
 mod common;
+mod docs;
 mod fast_path;
 mod init;
 mod install;

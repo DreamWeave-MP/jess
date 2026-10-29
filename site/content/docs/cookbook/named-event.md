@@ -39,6 +39,8 @@ queued
 hello
 ```
 
+The matching source is `tests/fixtures/docs/named-event` in the Jess repository; the documentation checks run it.
+
 `emit` queues the event and returns; it does not call the handler inside `startup`. The host drains the queue after the frame, and the `ready` handler receives the payload and requests exit. Another managed module in the same domain can declare its own `ready` handler too.
 
 The payload is copied across the event boundary and must contain transferable values. A handler cannot use it as a shared mutable table. Events emitted while a queue is being drained wait for the next drain, so do not assume an event emitted by a handler runs recursively. A plain `jess run` script has no domain event queue; this example needs the application target.

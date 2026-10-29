@@ -1,0 +1,17 @@
+--!strict
+local application = require '@jess/application'
+local frames = 0
+
+return {
+  on = {
+    host = {
+      startup = function() print 'startup' end,
+      update = function()
+        frames += 1
+
+        if frames == 3 then application.exit(0) end
+      end,
+      shutdown = function() print(`stopped after {frames} frames`) end,
+    },
+  },
+}

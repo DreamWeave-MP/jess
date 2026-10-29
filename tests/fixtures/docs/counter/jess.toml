@@ -1,0 +1,15 @@
+manifest_version = 1
+
+[package]
+id = "com.example.counter"
+version = "0.1.0"
+jess_api = "1"
+include = ["src"]
+default_target = "counter"
+
+[managed.counter]
+module = "src/counter.jsl"
+
+[targets.counter]
+kind = "application"
+entry = "src/main.jsl"

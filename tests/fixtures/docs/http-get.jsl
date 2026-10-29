@@ -1,0 +1,10 @@
+--!strict
+local http = require '@jess/http'
+local url = ...
+if type(url) ~= 'string' then error('expected a URL', 0) end
+
+local response, message, kind = http.get(url, { maxBytes = 4096, timeoutMs = 5000 })
+if not response then error(`{kind}: {message}`, 0) end
+if response.status ~= 200 then error(`HTTP {response.status}`, 0) end
+
+print(buffer.tostring(response.body))

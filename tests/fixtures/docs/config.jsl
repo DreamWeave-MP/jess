@@ -1,0 +1,15 @@
+--!strict
+local fs = require '@dream/fs'
+local json = require '@jess/json'
+local backup = require '@jess/backup'
+
+local text = json.encodeTable({ mode = 'quiet', retries = 3 }, { indent = 2 }) .. '\n'
+local written = backup.write('settings.json', text)
+local stored, problem = fs.readFileString(written.path)
+if not stored then error(`cannot read settings: {problem}`, 0) end
+
+local decoded = json.decode(stored)
+if type(decoded) ~= 'table' then error('settings must be an object', 0) end
+if type(decoded.mode) ~= 'string' then error('settings.mode must be a string', 0) end
+
+print(`mode: {decoded.mode}`)

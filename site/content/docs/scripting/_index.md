@@ -19,3 +19,7 @@ Luau runs under jess in three shapes:
 - **An application target**: packages loaded into one script domain, driven by frames until it says it is done.
 
 Start with [Your First Script](@/docs/scripting/intro.md), then [Packages](@/docs/scripting/packages.md), which is where almost everything else lives. [Applications](@/docs/scripting/applications.md) is for things that keep running. The rest you can read when you need it.
+
+[JSL, Luau, and L3i](@/docs/scripting/jsl-and-l3i.md) distinguishes the language, dialect, native primitives, and Jess APIs before you start importing modules.
+
+[Building a Larger Application](@/docs/scripting/learning-path.md) orders the next topics: composition, communication, authority, I/O, input, presentation, testing, and distribution.

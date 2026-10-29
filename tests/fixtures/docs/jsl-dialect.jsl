@@ -1,0 +1,5 @@
+--!strict
+local Values = { 1, 2, 3, 4 }
+local doubled = [for item in Values if item > 2 => item * 2]
+
+print(table.concat(doubled, ', '))

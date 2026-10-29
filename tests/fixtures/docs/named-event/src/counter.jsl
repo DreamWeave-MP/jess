@@ -1,0 +1,20 @@
+--!strict
+local application = require '@jess/application'
+local events = require '@jess/events'
+
+return {
+  on = {
+    host = {
+      startup = function()
+        events.emit('ready', { message = 'hello' })
+        print 'queued'
+      end,
+    },
+    event = {
+      ready = function(payload: { message: string })
+        print(payload.message)
+        application.exit(0)
+      end,
+    },
+  },
+}

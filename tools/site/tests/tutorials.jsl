@@ -1,0 +1,187 @@
+--!strict
+-- Run from the repository root with jess on PATH, the same executable used by the docs build.
+local test = require '@jess/test'
+local process = require '@dream/process'
+local fs = require '@dream/fs'
+
+local suite = test.new()
+local scratch: string?
+
+suite.afterEach(function()
+  if not scratch then return end
+
+  local removed, problem = fs.remove(scratch, { recursive = true })
+  if not removed then error(`tutorial: cannot remove {scratch}: {problem}`, 0) end
+  scratch = nil
+end)
+
+local function run(arguments: { string }, cwd: string?): string
+  local result, problem = process.run('jess', arguments, { stdout = 'capture', stderr = 'capture', cwd = cwd })
+  if not result then error(`tutorial: cannot run jess: {problem}`, 0) end
+  if not result.success then error(`tutorial: jess failed: {result.stderr or ''}`, 0) end
+  local output = string.gsub(result.stdout or '', '\r\n', '\n')
+  return output
+end
+
+local function documented(page: string, source: string, language: string)
+  local markdown, pageProblem = fs.readFileString(page)
+  if not markdown then error(`tutorial: cannot read {page}: {pageProblem}`, 0) end
+  local code, sourceProblem = fs.readFileString(source)
+  if not code then error(`tutorial: cannot read {source}: {sourceProblem}`, 0) end
+
+  local normalizedPage = string.gsub(markdown, '\r\n', '\n')
+  local normalizedCode = string.gsub(code, '\r\n', '\n')
+  local found = string.find(normalizedPage, '```' .. language .. '\n' .. normalizedCode .. '```', 1, true)
+  test.expect(found).toBeTruthy()
+end
+
+suite.it('keeps tutorial code and fixtures identical', function()
+  local first = 'site/content/docs/getting-started/first-application.md'
+  documented(first, 'tests/fixtures/docs/counter/jess.toml', 'toml')
+  documented(first, 'tests/fixtures/docs/counter/src/main.jsl', 'luau')
+  documented(first, 'tests/fixtures/docs/counter/src/counter.jsl', 'luau')
+  documented('site/content/docs/getting-started/first-workspace.md', 'tests/fixtures/docs/counter/jess-workspace.toml', 'toml')
+  documented('site/content/docs/getting-started/luau-basics.md', 'tests/fixtures/docs/luau-basics.jsl', 'luau')
+  documented('site/content/docs/scripting/jsl-and-l3i.md', 'tests/fixtures/docs/jsl-dialect.jsl', 'luau')
+  documented('site/content/docs/cookbook/json-report.md', 'tests/fixtures/docs/json-report.jsl', 'luau')
+  documented('site/content/docs/cookbook/named-event.md', 'tests/fixtures/docs/named-event/src/counter.jsl', 'luau')
+  documented('site/content/docs/cookbook/safe-write.md', 'tests/fixtures/docs/backup.jsl', 'luau')
+  documented('site/content/docs/cookbook/http-get.md', 'tests/fixtures/docs/http-get.jsl', 'luau')
+  documented('site/content/docs/cookbook/configuration.md', 'tests/fixtures/docs/config.jsl', 'luau')
+  documented('site/content/docs/cookbook/offline-audio.md', 'tests/fixtures/docs/offline-audio.jsl', 'luau')
+  local workerPage = 'site/content/docs/cookbook/worker.md'
+  documented(workerPage, 'tests/fixtures/docs/worker/jess.toml', 'toml')
+  documented(workerPage, 'tests/fixtures/docs/worker/src/main.jsl', 'luau')
+  documented(workerPage, 'tests/fixtures/docs/worker/src/worker.jsl', 'luau')
+  local multiPage = 'site/content/docs/cookbook/multi-package.md'
+  documented(multiPage, 'tests/fixtures/docs/multi/jess-workspace.toml', 'toml')
+  documented(multiPage, 'tests/fixtures/docs/multi/words/jess.toml', 'toml')
+  documented(multiPage, 'tests/fixtures/docs/multi/words/src/init.jsl', 'luau')
+  documented(multiPage, 'tests/fixtures/docs/multi/tool/jess.toml', 'toml')
+  documented(multiPage, 'tests/fixtures/docs/multi/tool/src/main.jsl', 'luau')
+end)
+
+local function makeScratch(): string
+  local made, problem = fs.mkdir('target', { recursive = true })
+  if not made then error(`tutorial: cannot create target: {problem}`, 0) end
+
+  for _ = 1, 32 do
+    local candidate = `target/docs-tutorial-{os.time()}-{math.random(1, 1000000000)}`
+    if fs.mkdir(candidate) then
+      scratch = candidate
+      return candidate
+    end
+  end
+
+  error('tutorial: cannot create scratch folder', 0)
+end
+
+suite.it('checks and runs the Luau primer', function()
+  local path = 'tests/fixtures/docs/luau-basics.jsl'
+  run { 'check', path }
+  test.expect(run { 'run', path }).toBe 'apples: 3\npears: 2\n'
+end)
+
+suite.it('checks and runs the JSON report', function()
+  local path = 'tests/fixtures/docs/json-report.jsl'
+  run { 'check', path }
+  test.expect(run { 'run', path }).toBe '{"name":"counter","samples":[2,3]}\n'
+end)
+
+suite.it('checks the HTTP client', function()
+  run { 'check', 'tests/fixtures/docs/http-get.jsl' }
+end)
+
+suite.it('checks and runs the dialect example', function()
+  local path = 'tests/fixtures/docs/jsl-dialect.jsl'
+  run { 'check', path }
+  test.expect(run { 'run', path }).toBe '6, 8\n'
+end)
+
+suite.it('mixes audio without a device', function()
+  local path = 'tests/fixtures/docs/offline-audio.jsl'
+  run { 'check', path }
+  test.expect(run { 'run', path }).toBe '16\t4\n'
+end)
+
+suite.it('checks and runs the counter application', function()
+  local path = 'tests/fixtures/docs/counter'
+  run { 'package', 'check', path }
+  test.expect(run { 'package', 'run', path }).toBe 'entry\nstartup\nstopped after 3 frames\n'
+  test.expect(run { 'package', 'run', path, '--frames', '2' }).toBe 'entry\nstartup\nstopped after 2 frames\n'
+end)
+
+suite.it('checks and runs the named event application', function()
+  local path = 'tests/fixtures/docs/named-event'
+  run { 'package', 'check', path }
+  test.expect(run { 'package', 'run', path }).toBe 'entry\nqueued\nhello\n'
+end)
+
+suite.it('checks and runs the worker application', function()
+  local path = 'tests/fixtures/docs/worker'
+  run { 'package', 'check', path }
+  local output = run { 'package', 'run', '--capability', 'worker.spawn', path, '--frames', '300' }
+  test.expect(output).toBe 'entry\nqueued\nresult: 42\n'
+end)
+
+suite.it('creates and tests the first package from source and JPK', function()
+  local folder = fs.join(makeScratch(), 'greeter')
+  run { 'init', folder, '--package', 'com.example.greeter', '--editor', 'none' }
+  run { 'package', 'check', folder }
+  local report = run { 'package', 'test', folder }
+  test.expect(report).toContain 'kind: source'
+  test.expect(report).toContain 'kind: jpk'
+  test.expect(report).toContain 'failed: 0'
+end)
+
+suite.it('backs up an existing file before replacing it', function()
+  local folder = makeScratch()
+  local source, problem = fs.readFileString('tests/fixtures/docs/backup.jsl')
+  if not source then error(`tutorial: cannot read backup example: {problem}`, 0) end
+  local written, writeProblem = fs.writeFile(fs.join(folder, 'write.jsl'), source)
+  if not written then error(`tutorial: cannot write backup example: {writeProblem}`, 0) end
+
+  local output = run({ 'run', '--capability', 'filesystem.read', '--capability', 'filesystem.write', 'write.jsl' }, folder)
+  test.expect(output).toBe 'notes.txt.bak\n'
+  local old = fs.readFileString(fs.join(folder, 'notes.txt.bak'))
+  local current = fs.readFileString(fs.join(folder, 'notes.txt'))
+  test.expect(old).toBe 'first\n'
+  test.expect(current).toBe 'second\n'
+end)
+
+suite.it('writes and reads configuration in scratch', function()
+  local folder = makeScratch()
+  local source, problem = fs.readFileString('tests/fixtures/docs/config.jsl')
+  if not source then error(`tutorial: cannot read configuration example: {problem}`, 0) end
+  local written, writeProblem = fs.writeFile(fs.join(folder, 'config.jsl'), source)
+  if not written then error(`tutorial: cannot write configuration example: {writeProblem}`, 0) end
+
+  local arguments = { 'run', '--capability', 'filesystem.read', '--capability', 'filesystem.write', 'config.jsl' }
+  test.expect(run(arguments, folder)).toBe 'mode: quiet\n'
+  test.expect(run(arguments, folder)).toBe 'mode: quiet\n'
+  local backup = fs.readFileString(fs.join(folder, 'settings.json.bak'))
+  test.expect(backup).toContain '"mode": "quiet"'
+end)
+
+suite.it('packs and runs the counter workspace', function()
+  local folder = 'tests/fixtures/docs/counter'
+  local output = fs.join(makeScratch(), 'counter.jsw')
+  run { 'workspace', '--workspace', folder, 'pack', '--output', output }
+  local result = run { output }
+  test.expect(result).toBe 'entry\nstartup\nstopped after 3 frames\n'
+end)
+
+suite.it('runs and packs two workspace packages', function()
+  local root = 'tests/fixtures/docs/multi'
+  local words = fs.join(root, 'words')
+  local tool = fs.join(root, 'tool')
+  run { 'package', 'check', words }
+  run { 'package', 'check', '--package', words, tool }
+  test.expect(run { 'workspace', '--workspace', root, 'run', 'com.example.tool:greet' }).toBe 'Hello, world.\n'
+
+  local output = fs.join(makeScratch(), 'example.jsw')
+  run { 'workspace', '--workspace', root, 'pack', '--output', output }
+  test.expect(run { output }).toBe 'Hello, world.\n'
+end)
+
+return suite

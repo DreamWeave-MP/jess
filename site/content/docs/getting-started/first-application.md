@@ -81,6 +81,8 @@ startup
 stopped after 3 frames
 ```
 
+The matching source is kept at `tests/fixtures/docs/counter` in the Jess repository and exercised by the documentation checks.
+
 Jess loads the managed module, runs the target entry, calls startup, and advances frames. The third update requests exit with status zero; shutdown runs as the application stops. The entry is not the frame loop, and returning from it does not stop the application.
 
 Try changing the count, then run it again. For a bounded diagnostic run, `jess package run counter --frames 2` stops after two frames even though this module requested exit on its third. The `--frames` option is for application targets, not command targets.

@@ -1,0 +1,4 @@
+--!strict
+local words = require '@words'
+
+print(words.greeting 'world')

@@ -1,0 +1,27 @@
+--!strict
+local application = require '@jess/application'
+local workers = require '@jess/worker'
+local worker: Worker?
+
+return {
+  on = {
+    host = {
+      startup = function()
+        worker = workers.spawn { source = 'return function(value) return value * 2 end' }
+        worker:send(21)
+        print 'queued'
+      end,
+      update = function()
+        if not worker then return end
+
+        local reply = worker:receive()
+        if reply == nil then return end
+        if type(reply) ~= 'number' then error('unexpected reply', 0) end
+
+        print(`result: {reply}`)
+        worker:close()
+        application.exit(0)
+      end,
+    },
+  },
+}

@@ -16,12 +16,12 @@ local function describe(entry: Entry): string
   return `{entry.name}: {entry.count}`
 end
 
-local entries: { Entry } = {
+local Entries: { Entry } = {
   { name = 'apples', count = 3 },
   { name = 'pears', count = 2 },
 }
 
-for _, entry in entries do
+for _, entry in Entries do
   print(describe(entry))
 end
 ```
@@ -39,7 +39,7 @@ pears: 2
 
 `local function describe` defines a function visible in this file. Its parameter and return annotations describe what it accepts and returns. The backtick string interpolates the expressions in braces.
 
-`entries` is a table used as a list, with two entry tables in it. Luau lists conventionally start at index 1. The loop visits each entry; `_` is the index we do not use. `print` writes the resulting strings.
+`Entries` is a table used as a list, with two entry tables in it. Luau lists conventionally start at index 1. The loop visits each entry; `_` is the index we do not use. `print` writes the resulting strings.
 
 ## What to learn next
 
