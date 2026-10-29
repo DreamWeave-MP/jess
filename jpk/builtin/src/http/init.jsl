@@ -620,6 +620,11 @@ local function nextPiece(body: Body, maxPiece: number, deadline: number?): (stri
         return nil, nil, nil
       end
 
+      -- A chunk that declares more than the limit leaves is refused before any of it is read.
+      if body.delivered + size > body.limit then
+        return nil, `the body is larger than {body.limit} bytes`, 'tooLarge'
+      end
+
       body.remaining = size
     end
 
