@@ -287,7 +287,7 @@ local function sourceTypes(source: string, moduleName: string, page: string): { 
   return symbols
 end
 
-local function sourceSymbols(source: string, documentation: string, member: string): { Symbol }
+local function sourceSymbols(source: string, documentation: string, member: string, grouped: boolean?): { Symbol }
   local parsed = luau.parse(source)
   if #parsed.errors > 0 then error(`api catalog: generated {member} source does not parse`, 0) end
   local exported: dream_luau_ExprTable?
@@ -341,8 +341,13 @@ local function sourceSymbols(source: string, documentation: string, member: stri
     if not signature and name ~= 'null' then error(`api catalog: unsupported {member} export {name}`, 0) end
     local stableSignature = signature or symbolName
 
-    local anchor = if name == 'null' or name == 'version' then '' else string.lower(`{member}-{name}`)
-    if anchor ~= '' and not string.find(documentation, `## {symbolName}`, 1, true) then
+    local heading = string.find(documentation, `## {symbolName}`, 1, true)
+    local anchor = if grouped or name == 'null' or name == 'version' then '' else string.lower(`{member}-{name}`)
+    if anchor ~= '' and not heading then
+      error(`api catalog: missing documentation for {symbolName}`, 0)
+    end
+
+    if grouped and not string.find(documentation, symbolName, 1, true) then
       error(`api catalog: missing documentation for {symbolName}`, 0)
     end
 
@@ -378,15 +383,16 @@ local function generate(root: string): string
 
   local result, problem = process.run('jess', { 'luau-types', folder }, { stdout = 'null', stderr = 'capture' })
   local definitions, readProblem = fs.readFileString(fs.join(folder, 'jess.d.jsl'))
-  local sources: { { name: string, source: string } } = {}
+  local sources: { { name: string, source: string, grouped: boolean? } } = {}
   local typeSources: { { name: string, page: string, source: string } } = {}
   local sourceProblem: string?
 
   for _, item in {
-    { name = 'json', path = 'data/json.jsl' },
-    { name = 'yaml', path = 'data/yaml.jsl' },
-    { name = 'backup', path = 'backup/init.jsl' },
-    { name = 'http', path = 'http/init.jsl' },
+    { name = 'json', path = 'data/json.jsl', grouped = false },
+    { name = 'yaml', path = 'data/yaml.jsl', grouped = false },
+    { name = 'backup', path = 'backup/init.jsl', grouped = false },
+    { name = 'http', path = 'http/init.jsl', grouped = false },
+    { name = 'analysis', path = 'analysis/init.jsl', grouped = true },
   } do
     local source, message = fs.readFileString(fs.join(folder, 'jess', item.path))
     if not source then
@@ -394,7 +400,7 @@ local function generate(root: string): string
       break
     end
 
-    table.insert(sources, { name = item.name, source = source })
+    table.insert(sources, { name = item.name, source = source, grouped = item.grouped })
   end
 
   if not sourceProblem then
@@ -510,7 +516,7 @@ local function generate(root: string): string
     if not documentation then error(`api catalog: cannot read {path}: {docProblem}`, 0) end
 
     table.insert(modules, `@jess/{item.name}`)
-    for _, symbol in sourceSymbols(item.source, documentation, item.name) do
+    for _, symbol in sourceSymbols(item.source, documentation, item.name, item.grouped) do
       table.insert(symbols, symbol)
     end
   end

@@ -68,6 +68,16 @@ return table.freeze { write = write }]]
   test.expect(function() catalog.sourceSymbols(source, '', 'backup') end).toThrow 'missing documentation'
 end)
 
+suite.it('indexes grouped source documentation without inventing an anchor', function()
+  local source = [[local function first(): string return 'first' end
+local function second(): string return 'second' end
+return table.freeze { first = first, second = second }]]
+  local symbols = catalog.sourceSymbols(source, '## sample.first, sample.second', 'sample', true)
+  test.expect(#symbols).toBe(2)
+  test.expect(symbols[2].anchor).toBe ''
+  test.expect(function() catalog.sourceSymbols(source, 'sample.first', 'sample', true) end).toThrow 'missing documentation'
+end)
+
 suite.it('preserves an exported string literal', function()
   local source = [[return table.freeze { version = '1.2' }]]
   local symbols = catalog.sourceSymbols(source, '', 'yaml')
