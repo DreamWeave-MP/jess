@@ -52,7 +52,7 @@ Grouped by what they belong to, each with the page that explains it properly.
 
 ## Authority
 
-**Capability.** A named permission, such as `filesystem.read`, denied by default and checked by the function that would use it. Seventeen exist. [Capabilities](@/docs/reference/capabilities.md).
+**Capability.** A named permission, such as `filesystem.read`, checked by the function that would use it. Seventeen exist; the CLI grants some by default and others explicitly. [Capabilities](@/docs/reference/capabilities.md).
 
 **Grant.** The set of capabilities a runtime, domain, context, or worker holds. Made by the operator (`--capability`, `--trusted`) or the host, never by a package.
 

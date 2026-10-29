@@ -12,11 +12,11 @@ extra:
 
 {% usage_note(title="Conventions") %}
 - Functions, methods, table fields, and report codes are camelCase. Types are PascalCase.
-- Failures raise errors. Uncaught, one stops the script with its message and a stack traceback. An outcome isn't a failure: a test suite with failing cases comes back as a report with a `failed` count, because finding that out was the job.
+- An uncaught error stops the script with its message and a stack traceback. Individual APIs also return failures as values: for example, filesystem operations can return an error message and kind, and a test suite returns a report with a `failed` count. Check each API's contract.
 - Option tables, the last argument most functions take, reject keys they don't take. The error names the key and lists the ones the function does take (`unknown worker.spawn option 'sources': expected capabilities, name, shareServices, or source`), so a typo fails instead of quietly doing the default.
 - Lists you get back are ordinary 1-based arrays. A list that must keep its positions holds `jess.null` where it has no value.
 - Raw bytes are `buffer`s.
-- What a script may touch is a capability. Nothing optional is granted unless the operator asked; [`jess.granted`](#jess-granted) says what you hold, and [Capabilities](@/docs/reference/capabilities.md) lists the names.
+- What a script may touch is a capability. The CLI admits some terminal, input, GPU, and audio capabilities by default, while others require an explicit grant; targets still declare what they need. [`jess.granted`](#jess-granted) says what you hold, and [Capabilities](@/docs/reference/capabilities.md) specifies the defaults and names.
 {% end %}
 
 ## Module map
@@ -139,7 +139,7 @@ What a measurement needs from the host: whether this jess was built with the ver
 
 Loads a module. Four kinds of name resolve, and nothing else does:
 
-- `jess`, the global table, and `@jess/<name>` for each of its members (`require('@jess/shader')` is `jess.shader`), for the built-in modules (`@jess/log`, `@jess/test`, `@jess/jpk`, `@jess/package`), and for the built-in package's exports (`@jess/style`, `@jess/json`, ...). The namespace is closed: no file and no other package can take a `@jess/` name.
+- `jess`, the global table; native module aliases such as `@jess/shader`; the built-in modules (`@jess/log`, `@jess/test`, `@jess/jpk`, `@jess/package`); and the built-in package's exports (`@jess/style`, `@jess/json`, ...). As noted in the module map, the input and audio package modules wrap the native tables. The namespace is closed: no file and no other package can take a `@jess/` name.
 - `@dream/<name>`, the [L3i modules](@/docs/api/l3i.md): `@dream/fs`, `@dream/bytes`, `@dream/process`, and the rest.
 - The exports of the packages activated for this run: a `--package` on `jess run`, the layers of the command target that is running, or an application's whole graph. `@greeter` resolves when a package exporting it is active, and to nothing otherwise.
 - A name starting with `./` or `../` is relative to the module calling `require`, as in Luau's require by string: jess tries `name.jsl`, then `name/init.jsl`. Inside a package, `@self/` is the package's own root. An `init` script stands for its folder, so its `./` starts beside the folder.

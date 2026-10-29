@@ -16,7 +16,7 @@ Layer entrypoints also declare what they need. Exports do not grant themselves a
 
 ## The invocation matters
 
-`jess run` starts a script with capabilities denied unless granted. The program form, such as `jess script.jsl`, runs a script as a trusted program with every capability. That distinction matters when copying an example: check which command you are running, not just which file it names. [Your First Script](@/docs/scripting/intro.md#capabilities) demonstrates a refusal and a named grant.
+`jess run` starts a script with the default terminal and device capabilities; other capabilities need a grant. The program form, such as `jess script.jsl`, runs a script as a trusted program with every capability. That distinction matters when copying an example: check which command you are running, not just which file it names. [Your First Script](@/docs/scripting/intro.md#capabilities) demonstrates a refusal and a named grant.
 
 Tests and command targets are not application domains. A function that needs a ScriptDomain, such as spawning a worker, needs an application target or an embedding host even if the capability you wanted has been granted. Authority and lifecycle are separate questions.
 

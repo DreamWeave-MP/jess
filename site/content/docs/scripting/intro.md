@@ -98,10 +98,10 @@ $ ./greet.jsl
 Hello, dave.
 ```
 
-Luau has no notion of a shebang; jess blanks that line before compiling and keeps the line numbers after it. The shebang hands jess `jess ./greet.jsl`, and a `.jsl` path where a command would go runs the script as a program: trusted, with every capability, which is why the environment read above needed no flag. You made it executable and ran it, the same call you make for any program. `jess run greet.jsl` is the cautious spelling of the same thing, denied by default, for a script you are reading rather than trusting; [Capabilities](#capabilities) below covers that side.
+Luau has no notion of a shebang; jess blanks that line before compiling and keeps the line numbers after it. The shebang hands jess `jess ./greet.jsl`, and a `.jsl` path where a command would go runs the script as a program: trusted, with every capability, which is why the environment read above needed no flag. You made it executable and ran it, the same call you make for any program. `jess run greet.jsl` grants the terminal and device defaults rather than every capability; [Capabilities](#capabilities) below covers the distinction.
 
 {% usage_note(title="The program form is for scripts you trust") %}
-`jess script.jsl`, `./script.jsl`, and a file dropped onto `jess.exe` all run with every capability: files, your environment, processes, and the network, as your account. That is the right default for a program you wrote or chose to install, and the wrong one for a `.jsl` you just downloaded. For a script you haven't read, `jess run script.jsl` runs it denied by default and tells you exactly what it reaches for; `jess check script.jsl` reads it without running anything.
+`jess script.jsl`, `./script.jsl`, and a file dropped onto `jess.exe` all run with every capability: files, your environment, processes, and the network, as your account. That is the right default for a program you wrote or chose to install, and the wrong one for a `.jsl` you just downloaded. `jess run script.jsl` grants the terminal and device defaults and reports a denied capability when code reaches for one; `jess check script.jsl` reads it without running anything. Capabilities are not an OS sandbox.
 {% end %}
 
 ### On Windows
