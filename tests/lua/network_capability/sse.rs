@@ -108,3 +108,19 @@ fn an_option_it_does_not_take_raises() {
         .to_string();
     assert!(error.contains("unknown jess.sse.open option 'retries'"), "{error}");
 }
+
+#[test]
+fn a_refused_stream_names_its_url_without_the_query() {
+    let server = Server::start(vec![("/feed", Answer::Raw(response(401, "expired", &[])))]);
+    let lines = run(&format!(
+        "
+        local events, problem, kind = sse.open {{ url = {url:?} }}
+        table.insert(out, `{{events == nil}} {{kind}}`)
+        table.insert(out, problem :: string)
+        ",
+        url = server.url("/feed?token=SECRET")
+    ));
+    assert_eq!(lines[0], "true notEventStream");
+    assert!(lines[1].contains("401") && lines[1].contains("/feed"), "{}", lines[1]);
+    assert!(!lines[1].contains("SECRET") && !lines[1].contains("token"), "{}", lines[1]);
+}

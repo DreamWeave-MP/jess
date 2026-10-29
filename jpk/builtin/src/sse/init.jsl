@@ -194,7 +194,9 @@ local function open(options: Options): (EventStream?, string?, ErrorKind?)
   if stream.status ~= 200 or string.match(contentType, '^%s*([^;%s]*)') ~= 'text/event-stream' then
     stream:close()
     local named = if contentType == '' then 'no Content-Type' else `Content-Type {contentType}`
-    return nil, `{stream.url} answered {stream.status} with {named}, not an event stream`, 'notEventStream'
+    -- The URL up to its query, which is where some services put a token.
+    local where = string.match(stream.url, '^[^?#]*') or ''
+    return nil, `{where} answered {stream.status} with {named}, not an event stream`, 'notEventStream'
   end
 
   local parser: Parser = {
