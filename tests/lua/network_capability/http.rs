@@ -658,3 +658,103 @@ fn a_url_with_a_line_break_fails_before_anything_connects() {
         "nothing connected"
     );
 }
+
+fn chunked(size_line: &str) -> String {
+    format!("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{size_line}\r\nhello\r\n0\r\n\r\n")
+}
+
+#[test]
+fn a_chunk_size_line_is_a_size_and_well_formed_extensions_or_nothing() {
+    let accepted = [
+        "5",
+        "5;name",
+        "5;name=value",
+        "5 ; a = b ;c",
+        "5;q=\"quoted \\\" ; text\"",
+        "05",
+    ];
+    let refused = [
+        "5 garbage",
+        "5;",
+        "5;name=",
+        "5;=value",
+        "+5",
+        "0x5",
+        " 5",
+        "5 ",
+        "5;q=\"open",
+        "5;bad name",
+    ];
+    let routes: Vec<(&'static str, Answer)> = accepted
+        .iter()
+        .chain(refused.iter())
+        .enumerate()
+        .map(|(index, line)| {
+            let path: &'static str = Box::leak(format!("/chunk/{index}").into_boxed_str());
+            (path, Answer::Raw(chunked(line)))
+        })
+        .collect();
+    let server = Server::start(routes);
+    let runtime = runtime();
+    for (index, line) in accepted.iter().enumerate() {
+        let (status, body, kind, message, ..) = fetch(&runtime, &server.url(&format!("/chunk/{index}")), "{}");
+        assert_eq!((status, body.as_str()), (Some(200.0), "hello"), "{line:?}: {kind} {message}");
+    }
+    for (offset, line) in refused.iter().enumerate() {
+        let index = accepted.len() + offset;
+        let (status, _, kind, ..) = fetch(&runtime, &server.url(&format!("/chunk/{index}")), "{}");
+        assert_eq!((status, kind.as_str()), (None, "protocol"), "{line:?}");
+    }
+}
+
+/// Mutated chunked responses, from a fixed seed so a failure reproduces: whatever arrives, the
+/// client answers with a response or a named failure, never an error raised out of the request,
+/// and within its time bound.
+#[test]
+fn mangled_chunked_responses_come_back_as_responses_or_named_failures() {
+    const ALPHABET: &[u8] = b"0123456789abcdefABCDEF;= \t\"\\\r\nxZ:";
+    let base = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4;ext=\"v\"\r\nwiki\r\n5\r\npedia\r\n0\r\nTrailer: t\r\n\r\n";
+    let mut seed: u64 = 0x2026_1028;
+    let mut next = move |limit: usize| {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        usize::try_from(seed >> 33).unwrap() % limit
+    };
+    let mut routes: Vec<(&'static str, Answer)> = Vec::new();
+    for index in 0..150 {
+        let mut bytes = base.as_bytes().to_vec();
+        let head = base.find("\r\n\r\n").unwrap() + 4;
+        for _ in 0..=next(3) {
+            let at = head + next(bytes.len() - head);
+            let byte = ALPHABET[next(ALPHABET.len())];
+            match next(3) {
+                0 => bytes[at] = byte,
+                1 => bytes.insert(at, byte),
+                _ => {
+                    bytes.remove(at);
+                }
+            }
+        }
+        let path: &'static str = Box::leak(format!("/mangled/{index}").into_boxed_str());
+        routes.push((path, Answer::Raw(String::from_utf8(bytes).unwrap())));
+    }
+    let server = Server::start(routes);
+    let runtime = runtime();
+    let started = std::time::Instant::now();
+    let mut outcomes = std::collections::BTreeMap::<String, usize>::new();
+    for index in 0..150 {
+        let (status, _, kind, ..) = fetch(&runtime, &server.url(&format!("/mangled/{index}")), "{ timeoutMs = 2000 }");
+        let outcome = if status.is_some() { "response".to_owned() } else { kind };
+        assert!(
+            ["response", "protocol", "closed", "tooLarge", "timeout"].contains(&outcome.as_str()),
+            "{index}: {outcome}"
+        );
+        *outcomes.entry(outcome).or_default() += 1;
+    }
+    assert!(
+        outcomes.contains_key("protocol"),
+        "the mutations reach the framing: {outcomes:?}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(60), "{:?}", started.elapsed());
+}

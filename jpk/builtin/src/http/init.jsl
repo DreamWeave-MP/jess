@@ -326,6 +326,49 @@ local function finished(sink: Sink): buffer
   return body
 end
 
+--- The size a chunk size line declares, or nil when the line is anything but RFC 9112's
+--- `chunk-size *( BWS ";" BWS name [ BWS "=" BWS ( token / quoted-string ) ] )`, a size of at
+--- most twelve hex digits. Extensions are checked and ignored.
+local function chunkSize(line: string): number?
+  local digits, rest = string.match(line, '^(%x+)(.*)$')
+  if not digits or #digits > 12 then return nil end
+
+  local remaining = rest :: string
+  while remaining ~= '' do
+    local afterName = string.match(remaining, "^[ \t]*;[ \t]*[!#$%%&'*+.^_`|~%w-]+(.*)$")
+    if not afterName then return nil end
+
+    remaining = afterName :: string
+    local afterEquals = string.match(remaining, '^[ \t]*=[ \t]*(.*)$')
+    if not afterEquals then continue end
+
+    remaining = afterEquals :: string
+    local afterToken = string.match(remaining, "^[!#$%%&'*+.^_`|~%w-]+(.*)$")
+    if afterToken then
+      remaining = afterToken :: string
+      continue
+    end
+
+    if string.sub(remaining, 1, 1) ~= '"' then return nil end
+
+    -- A quoted string: any byte but a quote or a backslash, or a backslash and the byte it escapes.
+    local at = 2
+    while true do
+      local byte = string.sub(remaining, at, at)
+      if byte == '' then return nil end
+
+      if byte == '"' then break end
+      if byte ~= '\t' and string.find(byte, '%c') then return nil end
+
+      at += if byte == '\\' then 2 else 1
+    end
+
+    remaining = string.sub(remaining, at + 1)
+  end
+
+  return tonumber(digits, 16)
+end
+
 local function readChunked(
   connection: NetConnection,
   maxBytes: number,
@@ -340,10 +383,9 @@ local function readChunked(
       return nil, `reading the body failed: {problem}`, netKind(kind)
     end
 
-    local sizeText = string.match(line, '^%s*(%x+)%s*;?')
-    if not sizeText or #sizeText > 12 then return nil, 'a chunk size is not hexadecimal', 'protocol' end
+    local size = chunkSize(line)
+    if not size then return nil, 'a chunk size line is not a size and its extensions', 'protocol' end
 
-    local size = tonumber(sizeText, 16) :: number
     if size == 0 then break end
 
     if sink.length + size > maxBytes then
