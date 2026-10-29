@@ -22,7 +22,7 @@ print(table.concat(doubled, ', '))
 
 `jess check select.jsl` checks it; `jess run select.jsl` prints `6, 8`. The comprehension builds a dense list from the accepted elements. It is syntax handled by L3i's frontend, not a global function named `for` or a Roblox API. The matching fixture is `tests/fixtures/docs/jsl-dialect.jsl` in the Jess repository.
 
-The [L3i dialect reference](https://DreamWeave-MP.github.io/l3i/docs/dialect/) explains the syntax, lowering, restrictions, and error cases. It describes L3i's published documentation; use the definitions and checks from the Jess version you actually run to verify version-specific behavior.
+The L3i dialect reference specifies [comprehensions, generators, reducers, and sinks](https://DreamWeave-MP.github.io/l3i/docs/dialect/#comprehensions), [slices](https://DreamWeave-MP.github.io/l3i/docs/dialect/#slices), and [record patterns](https://DreamWeave-MP.github.io/l3i/docs/dialect/#record-patterns), including their lowering, restrictions, and error cases. It describes L3i's published documentation; use the definitions and checks from the Jess version you actually run to verify version-specific behavior.
 
 ## The APIs
 
