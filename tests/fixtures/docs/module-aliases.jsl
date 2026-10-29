@@ -1,0 +1,4 @@
+--!strict
+print(require('@jess/input') == jess.input)
+print(require('@jess/audio') == jess.audio)
+print(require('@jess/application') == jess.application)

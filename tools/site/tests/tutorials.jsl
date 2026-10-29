@@ -102,6 +102,12 @@ suite.it('checks and runs the dialect example', function()
   test.expect(run { 'run', path }).toBe '6, 8\n'
 end)
 
+suite.it('distinguishes package wrappers from native tables', function()
+  local path = 'tests/fixtures/docs/module-aliases.jsl'
+  run { 'check', path }
+  test.expect(run { 'run', path }).toBe 'false\nfalse\ntrue\n'
+end)
+
 suite.it('mixes audio without a device', function()
   local path = 'tests/fixtures/docs/offline-audio.jsl'
   run { 'check', path }
