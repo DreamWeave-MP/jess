@@ -591,3 +591,25 @@ fn https_is_verified_against_the_roots_it_is_given() {
     assert!(lines[2].starts_with("platform trust tls"), "{lines:?}");
     assert_eq!(lines[3], "wrong name true tls");
 }
+
+#[test]
+fn a_url_with_a_line_break_fails_before_anything_connects() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let runtime = runtime();
+    for url in [
+        format!("http://127.0.0.1:{port}/a\r\nX-Injected: yes"),
+        format!("http://127.0.0.1:{port}/a b HTTP/1.1"),
+        format!("http://127.0.0.1:{port}\r\n/"),
+    ] {
+        let (status, _, kind, message, ..) = fetch(&runtime, &url, "{}");
+        assert_eq!((status, kind.as_str()), (None, "invalidUrl"), "{message}");
+        assert!(!message.contains('\n'), "{message}");
+    }
+    assert_eq!(
+        listener.accept().map(|_| ()).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock,
+        "nothing connected"
+    );
+}

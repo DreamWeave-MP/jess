@@ -49,6 +49,63 @@ suite.describe('@jess/http', function()
     expect(http.resolveReference(base, '../up/./file.jpk?y=2')).toBe 'https://example.org/up/file.jpk?y=2'
     expect(http.resolveReference(base, 'dir/')).toBe 'https://example.org/packages/dir/'
   end)
+
+  suite.it('refuses a URL that would write its own lines into the request', function()
+    for _, url in
+      {
+        'http://example.org/a\r\nX-Injected: yes',
+        'http://example.org/a b',
+        'http://example.org/a\tb',
+        'http://example.org/\0',
+        'http://exa\nmple.org/',
+        'http://example.org:80\r\n/',
+        'http://example.org/caf\195\169',
+        'http://[::1\r\n]/',
+        'http://exa%mple.org/',
+        'http://example.org\\@other.org/',
+      }
+    do
+      local parsed, message, kind = http.parseUrl(url)
+      expect(parsed).toBeNil()
+      expect(kind == 'invalidUrl' or kind == 'credentialsInUrl').toBe(true)
+      expect((string.find(message :: string, '\n', 1, true))).toBeNil()
+    end
+
+    local _, secret = http.parseUrl 'not a url?token=SECRET'
+    expect((string.find(secret :: string, 'SECRET', 1, true))).toBeNil()
+
+    local named = http.parseUrl 'https://bücher.example/'
+    assert(named)
+    expect(named.host).toBe 'bücher.example'
+  end)
+
+  suite.it('never accepts a URL whose host or target could break the request line', function()
+    -- A fixed linear congruential sequence, so a failure reproduces.
+    local seed = 20261028
+    local function nextByte(): number
+      seed = (seed * 1103515245 + 12345) % 2147483648
+      return seed % 256
+    end
+
+    local alphabet = { 'a', '/', '?', '#', ':', '@', '[', ']', '%', ' ', '\r', '\n', '\t', '\0', '.', '-', '\128', '\255', '1' }
+    local accepted = 0
+    for _ = 1, 4000 do
+      local pieces: { string } = {}
+      for _ = 1, 1 + nextByte() % 24 do
+        table.insert(pieces, alphabet[1 + nextByte() % #alphabet])
+      end
+
+      local url = http.parseUrl(`http://{table.concat(pieces)}`)
+      if not url then continue end
+
+      accepted += 1
+      expect((string.find(url.target, '[%c \128-\255]'))).toBeNil()
+      expect((string.find(url.host, '[%c /?#@]'))).toBeNil()
+      expect(string.sub(url.target, 1, 1)).toBe '/'
+    end
+
+    expect(accepted > 0).toBe(true)
+  end)
 end)
 
 return suite

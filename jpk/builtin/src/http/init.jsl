@@ -124,10 +124,22 @@ local Credentials: { [string]: boolean } = {
 
 local Redirects: { [number]: boolean } = { [301] = true, [302] = true, [303] = true, [307] = true, [308] = true }
 
+--- `url` as a message may name it: up to its query, which is where some APIs put their keys.
+local function unqueried(url: string): string return string.match(url, '^[^?#]*') or '' end
+
 --- `url` taken apart, or nil and why. Only http and https, no user name or password, no fragment.
+--- A space, a control character, or a byte past ASCII outside the host is refused rather than
+--- encoded: the target goes on the request line as it is, and a line break there would be a
+--- header the caller never wrote.
 local function parseUrl(url: string): (Url?, string?, ErrorKind?)
+  if type(url) ~= 'string' then return nil, 'a URL is a string', 'invalidUrl' end
+
+  if string.find(url, '[%c ]') then
+    return nil, 'the URL holds a space or a control character; percent-encode it', 'invalidUrl'
+  end
+
   local scheme, rest = string.match(url, '^(%a[%w+.-]*)://(.*)$')
-  if not scheme or not rest then return nil, `'{url}' is not an absolute URL`, 'invalidUrl' end
+  if not scheme or not rest then return nil, `'{unqueried(url)}' is not an absolute URL`, 'invalidUrl' end
 
   local lowered = string.lower(scheme :: string)
   if lowered ~= 'http' and lowered ~= 'https' then
@@ -139,21 +151,24 @@ local function parseUrl(url: string): (Url?, string?, ErrorKind?)
   if hash then text = string.sub(text, 1, hash - 1) end
 
   local authority, target = string.match(text, '^([^/?]*)(.*)$')
-  if not authority or authority == '' then return nil, `'{url}' has no host`, 'invalidUrl' end
+  local named = unqueried(url)
+  if not authority or authority == '' then return nil, `'{named}' has no host`, 'invalidUrl' end
 
   if string.find(authority :: string, '@', 1, true) then
     return nil, 'the URL carries a user name or password', 'credentialsInUrl'
   end
 
   local host, port: string?
-  local bracketed, afterBracket = string.match(authority :: string, '^%[([^%]]+)%](.*)$')
+  local bracketed, afterBracket = string.match(authority :: string, '^%[([%x:.]+)%](.*)$')
   if bracketed then
     host = `[{bracketed}]`
     port = string.match(afterBracket :: string, '^:(%d+)$')
-    if afterBracket ~= '' and not port then return nil, `'{url}' has a malformed port`, 'invalidUrl' end
+    if afterBracket ~= '' and not port then return nil, `'{named}' has a malformed port`, 'invalidUrl' end
   else
-    local name, portText = string.match(authority :: string, '^([^:]+):?(%d*)$')
-    if not name then return nil, `'{url}' has a malformed host`, 'invalidUrl' end
+    -- Letters, digits, dots, hyphens and underscores, or the bytes of a name past ASCII, which
+    -- the resolver maps to its A-labels.
+    local name, portText = string.match(authority :: string, '^([%w._\128-\255-]+):?(%d*)$')
+    if not name then return nil, `'{named}' has a malformed host`, 'invalidUrl' end
 
     host = name :: string
     if portText ~= '' then port = portText end
@@ -161,7 +176,11 @@ local function parseUrl(url: string): (Url?, string?, ErrorKind?)
 
   local portNumber = if port then tonumber(port) else if lowered == 'https' then 443 else 80
   if not portNumber or portNumber < 1 or portNumber > 65535 then
-    return nil, `'{url}' has a port outside 1 to 65535`, 'invalidUrl'
+    return nil, `'{named}' has a port outside 1 to 65535`, 'invalidUrl'
+  end
+
+  if string.find(target :: string, '[\128-\255]') then
+    return nil, `'{named}' has a path or query past ASCII; percent-encode it`, 'invalidUrl'
   end
 
   local path = target :: string
