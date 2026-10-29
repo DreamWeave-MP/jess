@@ -6,7 +6,7 @@ extra:
   kind: guide
 ---
 
-This workspace has a library package, `words`, and a command package, `tool`. The command declares the library as a dependency; the workspace makes both sources available while you develop them. No network or additional packages are needed.
+This workspace has a library package, `words`, and a command package, `tool`. The command declares the library as a dependency; the workspace makes both sources available while you develop them. The target declares no capabilities, and the example needs no network or additional packages. Packing writes the artifact you name; run it in a directory where that output is appropriate.
 
 Create this layout:
 
