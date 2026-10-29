@@ -110,6 +110,30 @@ fn an_option_it_does_not_take_raises() {
 }
 
 #[test]
+fn a_byte_order_mark_split_across_reads_is_still_dropped() {
+    let pause = Duration::from_millis(60);
+    let server = Server::start(vec![(
+        "/bom",
+        Answer::TrickleBytes(vec![
+            (Duration::ZERO, HEAD.as_bytes().to_vec()),
+            (pause, vec![0xEF]),
+            (pause, vec![0xBB]),
+            (pause, vec![0xBF]),
+            (pause, b"data: after the mark\n\n".to_vec()),
+        ]),
+    )]);
+    let lines = run(&format!(
+        "
+        local events = assert(sse.open {{ url = {url:?} }})
+        local event = events:next(net.now() + 5000)
+        table.insert(out, if event then event.data else 'no event')
+        ",
+        url = server.url("/bom")
+    ));
+    assert_eq!(lines, ["after the mark"]);
+}
+
+#[test]
 fn a_refused_stream_names_its_url_without_the_query() {
     let server = Server::start(vec![("/feed", Answer::Raw(response(401, "expired", &[])))]);
     let lines = run(&format!(
