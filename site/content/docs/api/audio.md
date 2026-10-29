@@ -10,13 +10,13 @@ extra:
 
 `@jess/audio` is audio for scripts: the built-in package's Luau over `jess.audio`, the native half. The native side owns samples, voices, the sample clock, and the mix. What a file's bytes are and which frame a second lands on are Luau's, so WAV reading and writing and the time helpers live here. MP3, Ogg Vorbis, and Ogg Opus need codecs, which are [`@dream/audio`](@/docs/api/l3i.md)'s; this module loads them whole or streams them.
 
-The engine never calls into Luau. A script sends it commands, each with an optional `at`, an output frame, and the engine carries each one out on exactly that frame, wherever it falls in the block it is mixing. An offline context is rendered by the script, on demand, into a buffer: the same engine a device runs, which makes an offline render the test of a live one.
+The engine never calls into Luau. A script sends it commands, each with an optional `at`, an output frame. A command that reaches the engine before its scheduled frame is carried out on that frame, wherever it falls in the block being mixed; one that arrives late runs on the next frame and is counted as late. An offline context is rendered by the script, on demand, into a buffer: the same engine a device runs, which makes an offline render useful for testing a live mix.
 
 Things to know before the signatures:
 
 - **Time is frames.** The clock counts output frames rendered, and moves only when the engine renders. Converting seconds is your choice, rounding included; [`frames`](#time) rounds to nearest.
 - **One `Pcm`, many voices.** A `Pcm` is decoded audio, immutable, shared by every voice that plays it; playing it a hundred times copies nothing.
-- **A stamp is a promise.** Two voices stamped for the same frame start on the same sample. A command without one runs on the next frame rendered, which is wherever the engine happens to be: stamp anything that has to line up.
+- **Schedule ahead.** Two voices stamped for the same future frame start on the same sample if both commands reach the engine in time. A command without a stamp runs on the next frame rendered, which is wherever the engine happens to be; use a shared future frame for work that has to line up.
 - **Ended is final.** Once a voice runs out or is stopped, its handle names nothing: `stop` and `set` on it do nothing and return `false`.
 
 ## PCM
@@ -47,7 +47,7 @@ A stream of `channels` (2) at `rate` (48000) frames per second holding `seconds`
 {{ api_signature(value="stream:stats() -> { written: number, read: number, room: number, missed: number, late: number, finished: boolean }") }}
 {{ api_signature(value="stream:handle() -> JessHandle") }}
 
-`channels` and `rate` are what the stream was made with; a feed's are its file's. `write` takes interleaved 32-bit floats and writes as many whole frames as there is room for, returning how many; given `frames`, it takes only that many from the start of the buffer, so a block that came back part full needs no copy. `wait` waits until there is room for `frames`, or `timeout` seconds pass; it sleeps exactly as long as playing at the stream's rate takes to make the room, so it is for a worker feeding a device, and in an offline context (where room comes only from rendering) it waits out its timeout. `finish` says the writer is done: the voice plays what is left and ends. A stream has one writer at a time and one voice: playing it again is an error.
+`channels` and `rate` are what the stream was made with; a feed's are its file's. `write` takes interleaved 32-bit floats and writes as many whole frames as there is room for, returning how many; given `frames`, it takes only that many from the start of the buffer, so a block that came back part full needs no copy. `wait` blocks until there is room for `frames`, or `timeout` seconds pass; without a timeout it can wait indefinitely. A request larger than the ring's capacity waits for the capacity instead. The wait estimates when playback will make room and checks again after sleeping; scheduling and playback can change how long it takes. It is for a worker feeding a device: in an offline context, room comes only from rendering, so a wait with no other renderer can run out its timeout. `finish` says the writer is done: the voice plays what is left and ends. A stream has one writer at a time and one voice: playing it again is an error.
 
 A stream plays once, from wherever its writer is: no `offset`, no `loop`, and a `rate` of at most 4. It is resampled to the context's rate like any source.
 
