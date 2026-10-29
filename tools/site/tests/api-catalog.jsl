@@ -26,10 +26,12 @@ suite.it('indexes the generated global itself', function()
   test.expect(symbols[2].signature).toBe 'jess.granted(name: string) -> boolean'
 end)
 
-suite.it('detects added and removed built-in modules', function()
-  catalog.checkModules({ '@jess/a' }, { ['@jess/a'] = 'src/a.jsl' })
-  test.expect(function() catalog.checkModules({ '@jess/a' }, { ['@jess/b'] = 'src/b.jsl' }) end).toThrow 'new built-in module'
-  test.expect(function() catalog.checkModules({ '@jess/a' }, {}) end).toThrow 'obsolete built-in module'
+suite.it('detects added, removed, and moved built-in modules', function()
+  local expected = { ['@jess/a'] = 'src/a.jsl' }
+  catalog.checkModules(expected, { ['@jess/a'] = 'src/a.jsl' })
+  test.expect(function() catalog.checkModules(expected, { ['@jess/b'] = 'src/b.jsl' }) end).toThrow 'new built-in module'
+  test.expect(function() catalog.checkModules(expected, {}) end).toThrow 'obsolete built-in module'
+  test.expect(function() catalog.checkModules(expected, { ['@jess/a'] = 'src/new.jsl' }) end).toThrow 'moved to'
 end)
 
 suite.it('refuses an undocumented new member', function()

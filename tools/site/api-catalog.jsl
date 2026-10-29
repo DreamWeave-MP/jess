@@ -488,12 +488,12 @@ local function localFunctionSignature(source: string, localName: string, symbolN
   error(`api catalog: cannot find source for {symbolName}`, 0)
 end
 
-local function checkModules(expected: { string }, actual: { [string]: string })
-  local missing: { [string]: boolean } = {}
-  for _, name in expected do missing[name] = true end
+local function checkModules(expected: { [string]: string }, actual: { [string]: string })
+  local missing = table.clone(expected)
 
-  for name in actual do
+  for name, path in actual do
     if not missing[name] then error(`api catalog: new built-in module {name} needs a reference mapping`, 0) end
+    if missing[name] ~= path then error(`api catalog: {name} moved to {path}; update its reference mapping`, 0) end
     missing[name] = nil
   end
 
@@ -519,7 +519,7 @@ local function generate(root: string): string
   local result, problem = process.run('jess', { 'luau-types', folder }, { stdout = 'null', stderr = 'capture' })
   local definitions, readProblem = fs.readFileString(fs.join(folder, 'jess.d.jsl'))
   local sources: { { name: string, source: string, grouped: boolean?, moduleName: string? } } = {}
-  local typeSources: { { name: string, page: string, source: string } } = {}
+  local typeSources: { { name: string, page: string, path: string, source: string } } = {}
   local sourceProblem: string?
 
   for _, item in {
@@ -571,7 +571,7 @@ local function generate(root: string): string
         break
       end
 
-      table.insert(typeSources, { name = item.name, page = item.page, source = source })
+      table.insert(typeSources, { name = item.name, page = item.page, path = item.path, source = source })
     end
   end
   local stubs: { { name: string, source: string } }, dreamStubs: { { name: string, source: string } } = {}, {}
@@ -627,8 +627,8 @@ local function generate(root: string): string
   local manifestText, manifestProblem = fs.readFileString(manifestPath)
   if not manifestText then error(`api catalog: cannot read {manifestPath}: {manifestProblem}`, 0) end
   local manifest = toml.decode(manifestText) :: { modules: { [string]: string } }
-  local sourceModules: { string } = {}
-  for _, item in typeSources do table.insert(sourceModules, `@jess/{item.name}`) end
+  local sourceModules: { [string]: string } = {}
+  for _, item in typeSources do sourceModules[`@jess/{item.name}`] = `src/{item.path}` end
   checkModules(sourceModules, manifest.modules)
 
   local members = { 'application', 'bench', 'context', 'events', 'interfaces', 'worker' }
