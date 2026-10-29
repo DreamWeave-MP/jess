@@ -10,7 +10,7 @@ Some operations reach outside the Luau runtime: reading files, changing them, in
 
 ## A declaration is a request
 
-A package target declares the capabilities it needs in `jess.toml`. The person or host running it grants them. If a required grant is missing, the target is refused before its code runs. `--capability` grants a named capability; `--trusted` grants what the target declares. Inspect the package before deciding what to grant.
+A package target declares the capabilities it needs in `jess.toml`. The person or host running it decides the grant. The CLI automatically admits the terminal, input, GPU, window, and audio capabilities listed under [Who holds what](@/docs/reference/capabilities.md#who-holds-what) when the target declares them; other required capabilities need an explicit grant. If one is missing, the target is refused before its code runs. `--capability` grants a named capability; `--trusted` grants what the target declares. Inspect the package before deciding what to grant.
 
 Layer entrypoints also declare what they need. Exports do not grant themselves authority: a library function runs with the authority of the code calling it. A package source is not entitled to more than its packed form.
 

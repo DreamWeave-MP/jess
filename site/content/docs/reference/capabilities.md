@@ -6,7 +6,7 @@ extra:
   kind: reference
 ---
 
-Nothing optional is granted unless the operator asks. Files, the environment, child processes, the network, input devices, the GPU, sound, and workers are named capabilities, denied by default and checked at the native seam, by the function that would do the thing. The check is not advisory: a function that needs a capability its caller doesn't hold raises, names itself, and names the capability.
+Files, the environment, child processes, the network, input devices, the GPU, sound, and workers are named capabilities, checked at the native seam by the function that would do the thing. The invocation determines the initial grant: scripts and targets have different rules, described below. A function that needs a capability its caller doesn't hold raises, names itself, and names the capability.
 
 There are seventeen names. Jess knows all of them up front, so a misspelled grant is an error rather than a grant of nothing.
 
@@ -46,7 +46,7 @@ error: dream.fs.readFileString: needs the 'filesystem.read' capability, which th
 $ jess run --capability filesystem.read read.jsl
 ```
 
-**A command target holds exactly what it declares, and nothing by default.** Not even the terminal: a target with `capabilities = []` can `print`, because `print` is jess's, but `jess.granted('process.stdio')` is `false` inside it. The manifest's `capabilities` list is a request, not a grant. `jess package run` admits each name with `--capability`, or all of them with `--trusted`, and a declared name that isn't granted stops the run before anything is activated:
+**A target holds exactly what it declares.** A target with `capabilities = []` can `print`, because `print` is jess's, but `jess.granted('process.stdio')` is `false` inside it. The manifest's `capabilities` list is a request, not a grant. The seven capabilities granted to a loose script above are admitted automatically when the target declares them; the other declared capabilities need `--capability` or `--trusted`. A required name that is not admitted stops the run before anything is activated:
 
 ```text
 $ jess package run greeter

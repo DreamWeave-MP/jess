@@ -30,7 +30,7 @@ An exported module is inert: requiring it does not activate its layer. Layer ent
 
 ## Declaring authority does not grant it
 
-A target declares its capabilities in the manifest. The caller grants them when running it; a package cannot give itself permission. For example, the first package's command declares `process.environment`, and the tutorial passes `--capability process.environment` to run it. If a grant is missing, inspect what the target asks for before granting it. [Capabilities](@/docs/reference/capabilities.md) lists the names and their effects.
+A target declares its capabilities in the manifest. The caller controls the grant; a package cannot give itself permission. The CLI admits some device and terminal capabilities automatically when declared, while others need an explicit grant. For example, the first package's command declares `process.environment`, and the tutorial passes `--capability process.environment` to run it. [Capabilities](@/docs/reference/capabilities.md) lists the names and grant rules.
 
 ## A domain owns running state
 
