@@ -108,6 +108,37 @@ local function stubSymbols(source: string, documentation: string, member: string
   error(`api catalog: generated {member} stub has no module`, 0)
 end
 
+local function inventory(
+  source: string,
+  lineStarts: { number },
+  module: dream_luau_TypeTable,
+  prefix: string,
+  moduleName: string,
+  page: string
+): { Symbol }
+  local symbols: { Symbol } = {}
+
+  for _, property in module.props do
+    local kind = property.type
+    local first = lineStarts[kind.line] + kind.column - 1
+    local last = lineStarts[kind.endLine] + kind.endColumn - 1
+    local name = `{prefix}.{property.name}`
+    local typeText = string.sub(source, first, last)
+    local signature = if kind.kind == 'TypeFunction' then `{name}{typeText}` else `{name}: {typeText}`
+    table.insert(symbols, {
+      name = name,
+      module = moduleName,
+      signature = signature,
+      page = page,
+      anchor = '',
+      checked = false,
+    })
+  end
+
+  if #symbols == 0 then error(`api catalog: {moduleName} has no members`, 0) end
+  return symbols
+end
+
 local function externalStubSymbols(source: string, member: string): { Symbol }
   local parsed = luau.parse(source)
   if #parsed.errors > 0 then error(`api catalog: generated {member} stub does not parse`, 0) end
@@ -117,29 +148,40 @@ local function externalStubSymbols(source: string, member: string): { Symbol }
     local annotation = statement.vars[1].annotation
     if not annotation or annotation.kind ~= 'TypeTable' then error(`api catalog: {member} stub is not a table`, 0) end
 
-    local symbols: { Symbol } = {}
-    for _, property in annotation.props do
-      local kind = property.type
-      local first = parsed.lineStarts[kind.line] + kind.column - 1
-      local last = parsed.lineStarts[kind.endLine] + kind.endColumn - 1
-      local name = `@dream/{member}.{property.name}`
-      local typeText = string.sub(source, first, last)
-      local signature = if kind.kind == 'TypeFunction' then `{name}{typeText}` else `{name}: {typeText}`
-      table.insert(symbols, {
-        name = name,
-        module = `@dream/{member}`,
-        signature = signature,
-        page = 'docs/api/l3i/',
-        anchor = '',
-        checked = false,
-      })
-    end
-
-    if #symbols == 0 then error(`api catalog: {member} stub has no members`, 0) end
-    return symbols
+    return inventory(source, parsed.lineStarts, annotation, `@dream/{member}`, `@dream/{member}`, 'docs/api/l3i/')
   end
 
   error(`api catalog: generated {member} stub has no module`, 0)
+end
+
+local function globalInventory(definitions: string, member: string): { Symbol }
+  local parsed = luau.parse(definitions, { declarations = true })
+  if #parsed.errors > 0 then error('api catalog: generated definitions do not parse', 0) end
+
+  for _, statement in parsed.root.body do
+    if statement.kind ~= 'StatDeclareGlobal' or statement.name ~= 'jess' then continue end
+    if statement.type.kind ~= 'TypeTable' then error('api catalog: jess is not a table', 0) end
+
+    for _, property in statement.type.props do
+      if property.name ~= member then continue end
+
+      if property.type.kind == 'TypeReference' then
+        local aliasName = property.type.name
+        for _, alias in parsed.root.body do
+          if alias.kind ~= 'StatTypeAlias' or alias.name ~= aliasName then continue end
+          if alias.type.kind ~= 'TypeTable' then error(`api catalog: {aliasName} is not a table`, 0) end
+          return inventory(definitions, parsed.lineStarts, alias.type, `jess.{member}`, `jess.{member}`, `docs/api/{member}/`)
+        end
+
+        error(`api catalog: no definition for {aliasName}`, 0)
+      end
+
+      if property.type.kind ~= 'TypeTable' then error(`api catalog: {member} is not a table`, 0) end
+      return inventory(definitions, parsed.lineStarts, property.type, `jess.{member}`, `jess.{member}`, `docs/api/{member}/`)
+    end
+  end
+
+  error(`api catalog: generated definitions have no jess.{member}`, 0)
 end
 
 local function generate(root: string): string
@@ -237,6 +279,13 @@ local function generate(root: string): string
   for _, stub in dreamStubs do
     table.insert(modules, `@dream/{stub.name}`)
     for _, symbol in externalStubSymbols(stub.source, stub.name) do
+      table.insert(symbols, symbol)
+    end
+  end
+
+  for _, member in { 'audio', 'gpu', 'input', 'shader' } do
+    table.insert(modules, `jess.{member}`)
+    for _, symbol in globalInventory(definitions, member) do
       table.insert(symbols, symbol)
     end
   end
