@@ -1,6 +1,6 @@
 ---
 title: 'Luau API Reference'
-description: 'Lookup-first reference for every module, type, and function in the jess Luau API.'
+description: 'Lookup reference for Jess Luau modules, types, and runtime services.'
 template: docs/section.html
 page_template: docs/page.html
 sort_by: weight
