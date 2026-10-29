@@ -24,6 +24,7 @@ tests = [
   "tests/http/run.jsl",
   "tests/net/run.jsl",
   "tests/render/run.jsl",
+  "tests/sse/run.jsl",
 ]
 
 [modules]
@@ -42,6 +43,7 @@ tests = [
 "@jess/websocket" = "src/websocket/init.jsl"
 "@jess/render" = "src/render/init.jsl"
 "@jess/render/camera" = "src/render/camera.jsl"
+"@jess/sse" = "src/sse/init.jsl"
 
 [[layer]]
 id = "jess.style"
@@ -69,7 +71,7 @@ exports = ["@jess/backup"]
 
 [[layer]]
 id = "jess.http"
-exports = ["@jess/http"]
+exports = ["@jess/http", "@jess/sse"]
 
 [[layer]]
 id = "jess.net"

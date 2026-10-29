@@ -48,6 +48,7 @@ extra:
 | `@jess/backup` | Overwrite a file, keeping what was there as `.bak` | [@jess/backup](@/docs/api/backup.md) |
 | `@jess/http` | HTTP/1.1 requests and responses, any method and body, without stopping the loop they run on | [@jess/http](@/docs/api/http.md) |
 | `@jess/net` | Tasks on a loop that wait on sockets, lookups, timers and each other, and buffered connections | [@jess/net](@/docs/api/net.md) |
+| `@jess/sse` | Server-Sent Events read from an HTTP stream | [@jess/sse](@/docs/api/sse.md) |
 | `@jess/websocket` | WebSocket client connections, `ws://` and `wss://` | [@jess/websocket](@/docs/api/websocket.md) |
 | `@dream/fs` | Files and folders | [Files](@/docs/api/fs.md) |
 | `bytes.regex` | Regular expressions | [Regular expressions](@/docs/api/regex.md) |

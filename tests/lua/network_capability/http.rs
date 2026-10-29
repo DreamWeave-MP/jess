@@ -44,6 +44,8 @@ pub(super) struct Server {
     accepted: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// Requests read, over every connection.
     requests: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// The head of every request read, in the order they arrived.
+    heads: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl Server {
@@ -52,28 +54,38 @@ impl Server {
         let port = listener.local_addr().unwrap().port();
         let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let (counted, asked) = (std::sync::Arc::clone(&accepted), std::sync::Arc::clone(&requests));
+        let heads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (counted, asked, recorded) = (
+            std::sync::Arc::clone(&accepted),
+            std::sync::Arc::clone(&requests),
+            std::sync::Arc::clone(&heads),
+        );
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let routes = routes.clone();
-                let asked = std::sync::Arc::clone(&asked);
-                thread::spawn(move || answer(stream, &routes, &asked));
+                let (asked, recorded) = (std::sync::Arc::clone(&asked), std::sync::Arc::clone(&recorded));
+                thread::spawn(move || answer(stream, &routes, &asked, &recorded));
             }
         });
         Self {
             port,
             accepted,
             requests,
+            heads,
         }
     }
 
-    fn accepted(&self) -> usize {
+    pub(super) fn accepted(&self) -> usize {
         self.accepted.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    fn requests(&self) -> usize {
+    pub(super) fn requests(&self) -> usize {
         self.requests.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub(super) fn heads(&self) -> Vec<String> {
+        self.heads.lock().unwrap().clone()
     }
 
     pub(super) fn url(&self, path: &str) -> String {
@@ -82,7 +94,12 @@ impl Server {
 }
 
 /// Answers requests on `stream` until a route's answer ends the connection.
-fn answer(mut stream: TcpStream, routes: &[(&str, Answer)], asked: &std::sync::atomic::AtomicUsize) {
+fn answer(
+    mut stream: TcpStream,
+    routes: &[(&str, Answer)],
+    asked: &std::sync::atomic::AtomicUsize,
+    heads: &std::sync::Mutex<Vec<String>>,
+) {
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     loop {
         let mut head = String::new();
@@ -112,6 +129,7 @@ fn answer(mut stream: TcpStream, routes: &[(&str, Answer)], asked: &std::sync::a
         if reader.read_exact(&mut body).is_err() {
             return;
         }
+        heads.lock().unwrap().push(head.clone());
         let answer = routes
             .iter()
             .find(|(route, _)| *route == path)

@@ -3,6 +3,7 @@ use jess::lua::l3i::Runtime;
 
 mod application;
 mod http;
+mod sse;
 mod websocket;
 
 fn runtime(capabilities: &[String]) -> Runtime {

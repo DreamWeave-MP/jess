@@ -121,6 +121,7 @@ fn the_types_cover_exactly_the_kernel_s_modules() {
             "@jess/render",
             "@jess/render/camera",
             "@jess/shader",
+            "@jess/sse",
             "@jess/style",
             "@jess/test",
             "@jess/websocket",
