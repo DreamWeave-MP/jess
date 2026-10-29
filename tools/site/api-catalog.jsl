@@ -411,6 +411,8 @@ local function sourceSymbols(source: string, documentation: string, member: stri
       break
     end
 
+    if localName and not func and aliases then signature = aliases[localName] end
+
     if func then
       local args, result = func.argLocation, func.returnAnnotation
       if not args then error(`api catalog: {member} function {name} lacks arguments`, 0) end
@@ -454,6 +456,24 @@ local function sourceSymbols(source: string, documentation: string, member: stri
   return symbols
 end
 
+local function localFunctionSignature(source: string, localName: string, symbolName: string): string
+  local parsed = luau.parse(source)
+  if #parsed.errors > 0 then error(`api catalog: source for {symbolName} does not parse`, 0) end
+
+  for _, statement in parsed.root.body do
+    if statement.kind ~= 'StatLocalFunction' or statement.name.name ~= localName then continue end
+    local args, result = statement.func.argLocation, statement.func.returnAnnotation
+    if not args or not result then error(`api catalog: {symbolName} lacks an explicit signature`, 0) end
+    local first = parsed.lineStarts[args.line] + args.column - 1
+    local last = parsed.lineStarts[args.endLine] + args.endColumn - 1
+    local resultFirst = parsed.lineStarts[result.line] + result.column - 1
+    local resultLast = parsed.lineStarts[result.endLine] + result.endColumn - 1
+    return `{symbolName}{string.sub(source, first, last)} -> {string.sub(source, resultFirst, resultLast)}`
+  end
+
+  error(`api catalog: cannot find source for {symbolName}`, 0)
+end
+
 local function generate(root: string): string
   local scratch = fs.join(root, 'target')
   local made, makeProblem = fs.mkdir(scratch, { recursive = true })
@@ -486,6 +506,7 @@ local function generate(root: string): string
     { name = 'l10n', path = 'l10n/init.jsl', grouped = true, moduleName = '@jess/l10n' },
     { name = 'input', path = 'input/init.jsl', grouped = true, moduleName = '@jess/input' },
     { name = 'audio', path = 'audio/init.jsl', grouped = true, moduleName = '@jess/audio' },
+    { name = 'style', path = 'style/init.jsl', grouped = true, moduleName = '@jess/style' },
   } do
     local source, message = fs.readFileString(fs.join(folder, 'jess', item.path))
     if not source then
@@ -495,6 +516,9 @@ local function generate(root: string): string
 
     table.insert(sources, { name = item.name, source = source, grouped = item.grouped, moduleName = item.moduleName })
   end
+
+  local styleCheck, styleCheckProblem = fs.readFileString(fs.join(folder, 'jess', 'style', 'check.jsl'))
+  if not styleCheck then sourceProblem = `cannot read style checker source: {styleCheckProblem}` end
 
   if not sourceProblem then
     for _, item in {
@@ -627,6 +651,28 @@ local function generate(root: string): string
             local name = string.sub(symbol.name, #prefix + 1)
             aliases[`Decoders.{name}`] = `audio.{string.sub(symbol.signature, #prefix + 1)}`
           end
+        end
+      end
+    end
+
+    if item.name == 'style' then
+      if not styleCheck then error('api catalog: missing style checker source', 0) end
+
+      aliases = {
+        analysis = 'style.analysis',
+        check = localFunctionSignature(styleCheck, 'check', 'style.check'),
+        ['rules.Rules'] = 'style.rules',
+      }
+
+      for _, other in sources do
+        if other.name ~= 'analysis' then continue end
+        local path = fs.join(root, 'site', 'content', 'docs', 'api', 'analysis.md')
+        local analysisDocumentation, analysisProblem = fs.readFileString(path)
+        if not analysisDocumentation then error(`api catalog: cannot read {path}: {analysisProblem}`, 0) end
+
+        for _, symbol in sourceSymbols(other.source, analysisDocumentation, 'analysis', true) do
+          if symbol.name ~= 'analysis.analyze' and symbol.name ~= 'analysis.workspace' then continue end
+          aliases[symbol.name] = `style.{string.sub(symbol.signature, #'analysis.' + 1)}`
         end
       end
     end

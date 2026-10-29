@@ -111,6 +111,14 @@ return { pcm = Native.pcm }]]
   test.expect(symbols[1].signature).toBe 'audio.pcm(data: buffer) -> Pcm'
 end)
 
+suite.it('indexes a re-exported function using its defining source signature', function()
+  local source = [[local check = require '@self/check'
+return table.freeze { check = check }]]
+  local aliases = { check = 'style.check(text: string) -> string' }
+  local symbols = catalog.sourceSymbols(source, 'style.check', 'style', true, '@jess/style', aliases)
+  test.expect(symbols[1].signature).toBe 'style.check(text: string) -> string'
+end)
+
 suite.it('preserves an exported string literal', function()
   local source = [[return table.freeze { version = '1.2' }]]
   local symbols = catalog.sourceSymbols(source, '', 'yaml')
