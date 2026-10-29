@@ -1945,6 +1945,46 @@ local function serveConnection(state: ServerState, slot: Slot)
   onError(failure, slot.request)
 end
 
+--- The acceptor's task: accepts connections, each a task of its own, while the server is open and
+--- has room, and closes the listener as it stops.
+local function acceptConnections(state: ServerState)
+  local listener = state.listener
+  while not state.public.closed do
+    if state.open >= state.maxConnections then
+      local _, reason = state.room:wait()
+      if reason == 'cancelled' then break end
+
+      continue
+    end
+
+    local socket, _, acceptKind = listener:accept()
+    if socket then
+      local slot: Slot = { socket = socket :: dream_tcp_Stream, closed = false }
+      state.slots[slot] = true
+      state.open += 1
+      -- net.spawn raises when the loop already runs as many tasks as it allows: the connection
+      -- is closed then, rather than counted with nobody to serve it.
+      local spawned = pcall(net.spawn, function() serveConnection(state, slot) end, `{Name} connection`)
+      if spawned then continue end
+
+      freeSlot(state, slot)
+      if not net.sleep(10) then break end
+
+      continue
+    end
+
+    if acceptKind == 'wouldBlock' then
+      if not net.wait(listener, 'read') then break end
+
+      continue
+    end
+
+    if not net.sleep(10) then break end
+  end
+
+  stopListening(state)
+end
+
 --- In a @jess/net task: listens on `options.address` and serves HTTP/1.1 there, each connection a
 --- task of its own on the running task's loop, until the server is closed. The server, or nil, why
 --- and `listen` when the address can't be listened on. Listening needs network.tcp.listen, and an
@@ -2016,42 +2056,15 @@ local function serve(options: ServeOptions): (Server?, string?, string?)
     maxRequests = maxRequests,
   } :: ServerState
 
-  state.acceptor = net.spawn(function()
-    while not public.closed do
-      if state.open >= state.maxConnections then
-        local _, reason = state.room:wait()
-        if reason == 'cancelled' then break end
-
-        continue
-      end
-
-      local socket, _, acceptKind = listener:accept()
-      if socket then
-        local slot: Slot = { socket = socket :: dream_tcp_Stream, closed = false }
-        state.slots[slot] = true
-        state.open += 1
-        -- net.spawn raises when the loop already runs as many tasks as it allows: the connection
-        -- is closed then, rather than counted with nobody to serve it.
-        local spawned = pcall(net.spawn, function() serveConnection(state, slot) end, `{Name} connection`)
-        if spawned then continue end
-
-        freeSlot(state, slot)
-        if not net.sleep(10) then break end
-
-        continue
-      end
-
-      if acceptKind == 'wouldBlock' then
-        if not net.wait(listener, 'read') then break end
-
-        continue
-      end
-
-      if not net.sleep(10) then break end
-    end
-
+  -- net.spawn raises when the loop already runs as many tasks as it allows: the listener is closed
+  -- then, so the address is free again, and the error goes on up.
+  local spawned, acceptor = pcall(net.spawn, function() acceptConnections(state) end, `{Name} listener {public.address}`)
+  if not spawned then
     stopListening(state)
-  end, `{Name} listener {public.address}`)
+    error(acceptor, 0)
+  end
+
+  state.acceptor = acceptor
 
   return public, nil, nil
 end

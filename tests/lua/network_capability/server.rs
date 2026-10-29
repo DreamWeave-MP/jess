@@ -735,6 +735,31 @@ fn net_release_wakes_a_task_waiting_on_a_listener_so_it_can_be_closed_at_once() 
 }
 
 #[test]
+fn a_server_whose_acceptor_cannot_start_closes_its_listener() {
+    let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let runtime = tls_runtime();
+    let failure = runtime
+        .eval::<String>(&format!(
+            "local http = require '@jess/http'
+            local net = require '@jess/net'
+            local failures: {{ string }} = {{}}
+            local loop = net.loop {{ maxTasks = 1, onError = function(_task, message) table.insert(failures, message) end }}
+            loop:spawn(function()
+              http.serve {{ address = '127.0.0.1:{port}', handler = function() return {{}} end }}
+            end)
+            loop:run(2000)
+            loop:close()
+            return failures[1] or ''"
+        ))
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert!(failure.contains("the most it allows"), "{failure}");
+    assert!(
+        TcpListener::bind(("127.0.0.1", port)).is_ok(),
+        "the listener outlived the server that couldn't start"
+    );
+}
+
+#[test]
 fn a_handle_is_waited_on_from_one_loop_at_a_time() {
     let text = tls_runtime()
         .eval::<String>(
