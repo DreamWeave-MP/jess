@@ -138,7 +138,7 @@ print(positions, buffer.readf32(back, 0), buffer.readstring(back, 4, 4), buffer.
 | `read` | `(self, level: number?, layer: number?) -> buffer` | Waits for everything submitted so far, and returns that level of that layer the way `write` takes it. |
 | `readLater` | `(self, level: number?, layer: number?) -> GpuRead` | Commits pending changes and submits a copy without waiting for GPU completion: a [read](#gpuread). |
 
-The bytes are exactly the level's: width × height × the format's texel size. A pass writes a depth texture; a script can't, and `depth24Plus`, whose layout is the backend's, can't be read back either. `tostring(texture)` is `GpuTexture(2×2 rgba8Unorm, 2dArray)`.
+The bytes are exactly the selected mip level's width × height × depth × the format's texel size. Depth is one for a 2D texture, array layer, or cube face; a 3D level includes all of its slices and uses `layer = 0`. Rows are tightly packed, with slices in order. Invalid levels, layers, sizes, or multisampled transfers raise. A pass writes a depth texture; a script can't, and `depth24Plus`, whose layout is the backend's, can't be read back either. `tostring(texture)` is `GpuTexture(2×2 rgba8Unorm, 2dArray)`.
 
 ```luau
 --!strict
