@@ -31,6 +31,28 @@ Jess's own installer keeps commands and install records under its install root; 
 
 For a long-running target, a supervisor such as systemd can start the executable with an explicit working directory, user, environment, and restart policy. Those choices belong to the deployment: a relative application path resolves from the working directory, and a process receives the operating-system permissions of its account. A Jess capability is an authority gate inside Jess, not an OS sandbox or a substitute for filesystem permissions and process isolation.
 
+For example, a system service for a standalone headless application might use the following unit after an administrator has installed the executable, created the service account and data directory, and chosen suitable permissions:
+
+```ini
+[Unit]
+Description=Example Jess application
+After=network.target
+
+[Service]
+Type=simple
+User=example
+WorkingDirectory=/var/lib/example
+ExecStart=/opt/example/bin/example-app
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+
+[Install]
+WantedBy=multi-user.target
+```
+
+This is a unit file, not a complete installation procedure. Use the application's actual paths and account, ensure it has the capabilities and OS permissions it needs, and choose limits and restart behavior for its workload. `network.target` orders startup; it does not guarantee that a remote service is reachable. Keep credentials out of the unit file and command line. Test shutdown and recovery before enabling automatic restart.
+
 On Unix, the first `SIGINT` or `SIGTERM` requests that an application stop and run its shutdown handlers; an inherited ignored signal remains ignored, and a second signal terminates immediately. On Windows, the first Ctrl+C or Ctrl+Break requests shutdown and a second is passed on. When the application loop observes an interrupt, it returns status 130 after teardown. Other platforms use their default process behavior. These are application-target behaviors; a command target runs to completion. [Applications](@/docs/scripting/applications.md#running-and-stopping) and [jess application](@/docs/api/application.md) cover the lifecycle and exit status.
 
 Jess writes application diagnostics to stderr. Structured logs from [`@jess/log`](@/docs/api/log.md) have a host-owned sink; the command-line host writes JSON records to stderr. Capture both output streams, preserve exit status, and configure the supervisor's retention and restart limits for the workload. A restart is not data recovery: an application must define what state is durable and how interrupted work resumes.
