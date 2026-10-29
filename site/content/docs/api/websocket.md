@@ -101,7 +101,7 @@ the connection has taken its frame, so a peer that stops reading slows its sende
 filling memory. Each frame is framed and masked only when its turn comes, so a socket holds one
 encoded frame however many tasks are sending, and every frame the socket sends (pongs and closes
 included) takes the same turn. A message larger than `maxSendBytes` returns `false` and
-`tooLarge` without being framed, and the socket stays open. A socket that is closing or closed
+`tooLarge` without being framed, and the socket stays open. A send that fails once its frame has started out (a deadline that passed while the peer wasn't reading, a reset) may have left part of the frame on the wire, so it closes the socket with `closeCode` 1006; one that never got its turn sent nothing and leaves the socket as it was. A socket that is closing or closed
 returns `false` and `closed`. Text that isn't UTF-8 raises: send other bytes as `binary`.
 
 ### Socket:ping

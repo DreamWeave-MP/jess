@@ -224,7 +224,13 @@ local function transmit(state: SocketState, opcode: number, payload: string | bu
   local sent, problem, failure = state.connection:send(encodeFrame(opcode, payload), deadline)
   state.sending = false
   state.sendTurn:notify()
-  if not sent then return false, problem, failure :: ErrorKind end
+
+  -- A send that failed may have left part of its frame on the wire, and every frame after it would
+  -- be read from the middle of this one: the connection is past saving.
+  if not sent then
+    finish(state, 1006, nil)
+    return false, problem, failure :: ErrorKind
+  end
 
   return true, nil, nil
 end

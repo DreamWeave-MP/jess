@@ -220,6 +220,10 @@ fn open(path: &str, stream: &mut TcpStream) -> bool {
             frame(0x00, b"lo ", false),
             frame(0x80, b"world", false),
         ],
+        "/no-read" => {
+            thread::sleep(Duration::from_secs(3));
+            return false;
+        }
         "/fragment-pause" => {
             if stream.write_all(&frame(0x01, b"hel", false)).is_err() {
                 return false;
@@ -703,4 +707,25 @@ fn numbers_that_are_not_sizes_or_spans_of_time_raise_before_connecting() {
         assert!(problem.contains(expected), "{options}: {problem}");
     }
     assert_eq!(server.seen.lock().unwrap().accepted, 0, "nothing connected");
+}
+
+/// A send that fails part way leaves a frame half on the wire; nothing sent after it could be
+/// read, so the socket is done.
+#[test]
+fn a_send_that_fails_part_way_ends_the_socket() {
+    let server = WsServer::start();
+    let lines = run_task(
+        &network_runtime(),
+        &format!(
+            "
+            local socket = assert(websocket.connect({url:?}, {{ maxSendBytes = 16 * 1024 * 1024 }}))
+            local sent, _, kind = socket:send(string.rep('x', 16 * 1024 * 1024), 'binary', net.now() + 300)
+            table.insert(out, `sent {{sent}} {{kind}} {{socket.state}} {{socket.closeCode}}`)
+            local again, _, againKind = socket:send('after')
+            table.insert(out, `again {{again}} {{againKind}}`)
+            ",
+            url = server.url("/no-read")
+        ),
+    );
+    assert_eq!(lines, ["sent false timeout closed 1006", "again false closed"]);
 }
