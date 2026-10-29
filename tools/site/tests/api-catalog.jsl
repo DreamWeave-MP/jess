@@ -51,4 +51,21 @@ sample.limit: number]]
   test.expect(symbols[2].signature).toBe 'sample.open(path: string) -> number'
 end)
 
+suite.it('reads explicitly typed JSON exports from generated source', function()
+  local source = [[local Null = nil
+local function decode(text: string): unknown return text end
+return table.freeze { decode = decode, null = Null }]]
+  local symbols = catalog.sourceSymbols(source, '## json.decode', 'json')
+  test.expect(#symbols).toBe(2)
+  test.expect(symbols[1].signature).toBe 'json.decode(text: string) -> unknown'
+  test.expect(symbols[2].signature).toBe 'json.null'
+  test.expect(symbols[1].checked).toBe(false)
+end)
+
+suite.it('refuses an undocumented source export', function()
+  local source = [[local function write(data: string): string return data end
+return table.freeze { write = write }]]
+  test.expect(function() catalog.sourceSymbols(source, '', 'backup') end).toThrow 'missing documentation'
+end)
+
 return suite

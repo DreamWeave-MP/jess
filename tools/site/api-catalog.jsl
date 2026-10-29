@@ -184,6 +184,79 @@ local function globalInventory(definitions: string, member: string): { Symbol }
   error(`api catalog: generated definitions have no jess.{member}`, 0)
 end
 
+local function sourceSymbols(source: string, documentation: string, member: string): { Symbol }
+  local parsed = luau.parse(source)
+  if #parsed.errors > 0 then error(`api catalog: generated {member} source does not parse`, 0) end
+  local exported: dream_luau_ExprTable?
+
+  for _, statement in parsed.root.body do
+    if statement.kind ~= 'StatReturn' then continue end
+    local call = statement.list[1]
+    if not call or call.kind ~= 'ExprCall' or call.func.kind ~= 'ExprIndexName' or call.func.index ~= 'freeze' then continue end
+    if call.func.expr.kind ~= 'ExprGlobal' or call.func.expr.name ~= 'table' then continue end
+    local value = call.args[1]
+    if value and value.kind == 'ExprTable' then exported = value end
+  end
+
+  if not exported then error(`api catalog: {member} module has no frozen export table`, 0) end
+  local symbols: { Symbol } = {}
+
+  for _, item in exported.items do
+    if not item.key or item.key.kind ~= 'ExprConstantString' then
+      error(`api catalog: unsupported {member} export`, 0)
+    end
+
+    local name = item.key.value
+    local symbolName = `{member}.{name}`
+    local signature: string?
+    local localName: string?
+
+    if item.value.kind == 'ExprLocal' then
+      localName = item.value['local'].name
+    elseif item.value.kind == 'ExprConstantString' then
+      local literal = item.value
+      local first = parsed.lineStarts[literal.line] + literal.column - 1
+      local last = parsed.lineStarts[literal.endLine] + literal.endColumn - 1
+      signature = `{symbolName} = {string.sub(source, first, last)}`
+    else
+      error(`api catalog: unsupported {member} export {name}`, 0)
+    end
+
+    for _, statement in parsed.root.body do
+      if statement.kind ~= 'StatLocalFunction' or statement.name.name ~= localName then continue end
+      local args, result = statement.func.argLocation, statement.func.returnAnnotation
+      if not args or not result then error(`api catalog: {member} function {name} lacks an explicit signature`, 0) end
+
+      local first = parsed.lineStarts[args.line] + args.column - 1
+      local last = parsed.lineStarts[args.endLine] + args.endColumn - 1
+      local returnFirst = parsed.lineStarts[result.line] + result.column - 1
+      local returnLast = parsed.lineStarts[result.endLine] + result.endColumn - 1
+      signature = `{symbolName}{string.sub(source, first, last)} -> {string.sub(source, returnFirst, returnLast)}`
+      break
+    end
+
+    if not signature and name ~= 'null' then error(`api catalog: unsupported {member} export {name}`, 0) end
+    local stableSignature = signature or symbolName
+
+    local anchor = if name == 'null' or name == 'version' then '' else string.lower(`{member}-{name}`)
+    if anchor ~= '' and not string.find(documentation, `## {symbolName}`, 1, true) then
+      error(`api catalog: missing documentation for {symbolName}`, 0)
+    end
+
+    table.insert(symbols, {
+      name = symbolName,
+      module = `@jess/{member}`,
+      signature = stableSignature,
+      page = `docs/api/{member}/`,
+      anchor = anchor,
+      checked = false,
+    })
+  end
+
+  if #symbols == 0 then error(`api catalog: {member} module has no exports`, 0) end
+  return symbols
+end
+
 local function generate(root: string): string
   local scratch = fs.join(root, 'target')
   local made, makeProblem = fs.mkdir(scratch, { recursive = true })
@@ -202,6 +275,23 @@ local function generate(root: string): string
 
   local result, problem = process.run('jess', { 'luau-types', folder }, { stdout = 'null', stderr = 'capture' })
   local definitions, readProblem = fs.readFileString(fs.join(folder, 'jess.d.jsl'))
+  local sources: { { name: string, source: string } } = {}
+  local sourceProblem: string?
+
+  for _, item in {
+    { name = 'json', path = 'data/json.jsl' },
+    { name = 'yaml', path = 'data/yaml.jsl' },
+    { name = 'backup', path = 'backup/init.jsl' },
+    { name = 'http', path = 'http/init.jsl' },
+  } do
+    local source, message = fs.readFileString(fs.join(folder, 'jess', item.path))
+    if not source then
+      sourceProblem = `cannot read {item.name} module source: {message}`
+      break
+    end
+
+    table.insert(sources, { name = item.name, source = source })
+  end
   local stubs: { { name: string, source: string } }, dreamStubs: { { name: string, source: string } } = {}, {}
   local stubProblem: string?
 
@@ -243,6 +333,7 @@ local function generate(root: string): string
   if not result then error(`api catalog: cannot run jess luau-types: {problem}`, 0) end
   if not result.success then error(`api catalog: jess luau-types failed: {result.stderr or ''}`, 0) end
   if not definitions then error(`api catalog: cannot read definitions: {readProblem}`, 0) end
+  if sourceProblem then error(`api catalog: {sourceProblem}`, 0) end
   if stubProblem then error(`api catalog: {stubProblem}`, 0) end
 
   local version = string.match(definitions, '^%-%- jess ([^ ]+) Luau types')
@@ -279,6 +370,17 @@ local function generate(root: string): string
   for _, stub in dreamStubs do
     table.insert(modules, `@dream/{stub.name}`)
     for _, symbol in externalStubSymbols(stub.source, stub.name) do
+      table.insert(symbols, symbol)
+    end
+  end
+
+  for _, item in sources do
+    local path = fs.join(root, 'site', 'content', 'docs', 'api', `{item.name}.md`)
+    local documentation, docProblem = fs.readFileString(path)
+    if not documentation then error(`api catalog: cannot read {path}: {docProblem}`, 0) end
+
+    table.insert(modules, `@jess/{item.name}`)
+    for _, symbol in sourceSymbols(item.source, documentation, item.name) do
       table.insert(symbols, symbol)
     end
   end
@@ -338,4 +440,4 @@ local function publish(output: string, api: string)
   if not saved then error(`api catalog: cannot write catalog: {saveProblem}`, 0) end
 end
 
-return table.freeze { moduleSymbols = moduleSymbols, stubSymbols = stubSymbols, generate = generate, publish = publish }
+return table.freeze { moduleSymbols = moduleSymbols, stubSymbols = stubSymbols, sourceSymbols = sourceSymbols, generate = generate, publish = publish }

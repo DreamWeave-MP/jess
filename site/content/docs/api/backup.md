@@ -17,6 +17,8 @@ It needs `filesystem.read` and `filesystem.write`.
 
 ## write
 
+### backup.write
+
 {{ api_signature(value="backup.write(path: string, data: string | buffer, options: { backup: boolean? }?) -> { path: string, backup: string? }") }}
 
 Writes `data` to `path`, making the folders it goes in, after copying what was there aside.

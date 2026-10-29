@@ -17,6 +17,8 @@ that fetches declares both; `jess run` takes them with `--capability`.
 
 ## get
 
+### http.get
+
 {{ api_signature(value="http.get(url: string, options: Options?) -> (Response?, string?, ErrorKind?)") }}
 
 Fetches `url` and answers the response, whatever its status, or `nil`, a message and the kind of
@@ -59,6 +61,8 @@ a retry policy writes one.
 
 ## parseUrl
 
+### http.parseUrl
+
 {{ api_signature(value="http.parseUrl(url: string) -> (Url?, string?, ErrorKind?)") }}
 
 `url` taken apart as `get` reads it: `{ scheme, host, port, target }`, with the scheme and host
@@ -66,6 +70,8 @@ lower-cased, the default port filled in, the fragment dropped, and `target` the 
 they go on the request line. The same refusals as `get`, without a request.
 
 ## resolveReference
+
+### http.resolveReference
 
 {{ api_signature(value="http.resolveReference(base: string, reference: string) -> string?") }}
 
