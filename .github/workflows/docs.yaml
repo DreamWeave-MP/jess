@@ -76,6 +76,11 @@ jobs:
           jess check tools/site/tests/api-catalog.jsl
           jess test tools/site/tests/api-catalog.jsl
 
+      - name: Check CLI reference options
+        run: |
+          jess check tools/site/tests/cli-reference.jsl
+          jess run --capability process.spawn --capability filesystem.read tools/site/tests/cli-reference.jsl
+
       - name: Check the tutorials
         run: |
           jess check tools/site/tests/tutorials.jsl

@@ -1,0 +1,51 @@
+--!strict
+-- Compare the shipped parser's help with the reference, without executing package code.
+local fs = require '@dream/fs'
+local process = require '@dream/process'
+
+local Commands = {
+  { args = { 'run' }, page = 'run' },
+  { args = { 'test' }, page = 'test' },
+  { args = { 'check' }, page = 'check' },
+  { args = { 'pack' }, page = 'package' },
+  { args = { 'package' }, page = 'package' },
+  { args = { 'package', 'inspect' }, page = 'package' },
+  { args = { 'package', 'graph' }, page = 'package' },
+  { args = { 'package', 'test' }, page = 'package' },
+  { args = { 'package', 'check' }, page = 'package' },
+  { args = { 'package', 'run' }, page = 'package' },
+  { args = { 'workspace' }, page = 'workspace' },
+  { args = { 'workspace', 'info' }, page = 'workspace' },
+  { args = { 'workspace', 'targets' }, page = 'workspace' },
+  { args = { 'workspace', 'graph' }, page = 'workspace' },
+  { args = { 'workspace', 'run' }, page = 'workspace' },
+  { args = { 'workspace', 'sync' }, page = 'workspace' },
+  { args = { 'workspace', 'test' }, page = 'workspace' },
+  { args = { 'workspace', 'pack' }, page = 'workspace' },
+  { args = { 'install' }, page = 'install' },
+  { args = { 'uninstall' }, page = 'install' },
+  { args = { 'init' }, page = 'utility-commands' },
+  { args = { 'luau-types' }, page = 'utility-commands' },
+  { args = { 'completions' }, page = 'utility-commands' },
+  { args = { 'man' }, page = 'utility-commands' },
+}
+
+for _, command in Commands do
+  local args = table.clone(command.args)
+  table.insert(args, '--help')
+  local result, problem = process.run('jess', args, { stdout = 'capture', stderr = 'capture' })
+  if not result or not result.success then error(`CLI reference: help failed for {table.concat(args, ' ')}: {problem}`, 0) end
+  local path = `site/content/docs/cli/{command.page}.md`
+  local documentation, readProblem = fs.readFileString(path)
+  if not documentation then error(`CLI reference: cannot read {path}: {readProblem}`, 0) end
+
+  for option in string.gmatch(result.stdout or '', '%-%-[%l][%l%-]+') do
+    if option == '--help' or option == '--version' or option == '--format' then continue end
+
+    if not string.find(documentation, option, 1, true) then
+      error(`CLI reference: {table.concat(command.args, ' ')} {option} is missing from {path}`, 0)
+    end
+  end
+end
+
+print 'CLI help options are documented'
