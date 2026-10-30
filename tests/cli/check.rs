@@ -72,6 +72,36 @@ fn check_passes_a_clean_script_and_reports_errors_in_it_and_the_files_it_require
 }
 
 #[test]
+fn checking_a_script_and_its_module_together_works_in_either_order() {
+    let root = temp_dir_path("check-script-and-module");
+    drop(fs::remove_dir_all(&root));
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("main.jsl"),
+        "--!strict\nlocal helper = require './helper'\nprint(helper.value)\n",
+    )
+    .unwrap();
+    fs::write(root.join("helper.jsl"), "--!strict\nreturn { value = 42 }\n").unwrap();
+    let main = root.join("main.jsl").display().to_string();
+    let helper = root.join("helper.jsl").display().to_string();
+    for scripts in [[main.as_str(), helper.as_str()], [helper.as_str(), main.as_str()]] {
+        let (passed, report, stderr) = check(&scripts);
+        assert!(passed, "{stderr} {report}");
+        assert_eq!(report["files"].as_u64(), Some(2));
+        assert_eq!(report["errors"].as_array().map(Vec::len), Some(0));
+    }
+    fs::write(
+        root.join("helper.jsl"),
+        "--!strict\nlocal value: number = 'bad'\nreturn { value = value }\n",
+    )
+    .unwrap();
+    let (passed, report, _) = check(&[&helper, &main]);
+    assert!(!passed);
+    assert_eq!(report["errors"].as_array().map(Vec::len), Some(1), "{report}");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn check_types_a_named_package_s_exports() {
     let root = temp_dir_path("check-package");
     drop(fs::remove_dir_all(&root));

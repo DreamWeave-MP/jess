@@ -285,7 +285,7 @@ pub struct ScriptCheckReport {
 /// Where a loose script's modules come from: the scripts themselves and the files their relative
 /// requires reach, by path; the types folder; and the packages mounted for the check.
 struct ScriptSources {
-    runtime: Runtime,
+    runtime: Rc<Runtime>,
     types: crate::lua::types::Types,
     /// The scripts given, by the path they were given as, `/`-separated.
     scripts: BTreeSet<String>,
@@ -442,25 +442,28 @@ pub fn check_scripts(
         .iter()
         .map(|script| script.to_string_lossy().replace('\\', "/"))
         .collect::<Vec<_>>();
-    let files = Rc::new(RefCell::new(BTreeSet::new()));
-    let analysis = Analysis::new(
-        ScriptSources {
-            runtime,
-            types,
-            scripts: names.iter().cloned().collect(),
-            files: Rc::clone(&files),
-            read: RefCell::new(HashMap::new()),
-        },
-        AnalysisOptions {
-            definitions: vec![Definitions {
-                name: "@jess".to_owned(),
-                source: definitions,
-            }],
-            ..AnalysisOptions::default()
-        },
-    )?;
+    let runtime = Rc::new(runtime);
     let mut errors = BTreeSet::new();
     for name in &names {
+        // A file explicitly checked as a script may also be required by another script. Give
+        // each entry its own analysis so a cached script cannot masquerade as that module.
+        let files = Rc::new(RefCell::new(BTreeSet::new()));
+        let analysis = Analysis::new(
+            ScriptSources {
+                runtime: Rc::clone(&runtime),
+                types: types.clone(),
+                scripts: BTreeSet::from([name.clone()]),
+                files: Rc::clone(&files),
+                read: RefCell::new(HashMap::new()),
+            },
+            AnalysisOptions {
+                definitions: vec![Definitions {
+                    name: "@jess".to_owned(),
+                    source: definitions.clone(),
+                }],
+                ..AnalysisOptions::default()
+            },
+        )?;
         for diagnostic in analysis.check(name, false).errors() {
             let reported = names.contains(&diagnostic.module) || files.borrow().contains(&diagnostic.module);
             if !reported {
