@@ -10,6 +10,10 @@ extra:
 
 Also `require('@jess/interfaces')`. An interface is a plain Luau table an [application's](@/docs/scripting/applications.md#interfaces) managed module returns as its `interface`, under the id its manifest gives it. When several provide one id, the last in load order wins, after its `on.host.interfaceOverride` kept what it wanted of the one before. What you get here is that effective table, frozen, in this domain's VM: no proxy, no copy. Interfaces exist once every managed module has loaded, in the application's entry and its handlers. A worker, another domain, `jess run`, and a command target have none.
 
+The freeze is shallow. A consumer cannot add or replace fields on the interface table, but a nested mutable table remains shared with its provider and other consumers. A provider may use that for shared state; consumers should rely on the interface's own contract, rather than assuming nested values are private copies.
+
+The loader calls `interfaceOverride(previous)` only when an earlier provider of the same id exists. `previous` is already frozen at the top level; the new provider's table is frozen after the callback returns. The callback can retain earlier functions in the new interface, but the loader does not merge the tables automatically. If the callback raises, application composition fails.
+
 ## jess.interfaces.get
 
 {{ api_signature(value="jess.interfaces.get(id: string) -> any") }}

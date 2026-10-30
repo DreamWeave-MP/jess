@@ -16,6 +16,8 @@ Also `require('@jess/context')`. This is the script side of a [ScriptDomain](@/d
 
 Binds one handler per phase to the context the host declared as `name`. A later `bind` for the same phase replaces the earlier handler; other phases keep theirs.
 
+The table is validated before any handlers are installed: a bad key, a non-function value, an unknown context, or a phase the context does not schedule leaves the existing bindings in place. Binding is available while the domain is created, loading, ready, or running; it fails once the domain is stopping or stopped. Binding records the caller location for later diagnostics.
+
 `handlers` is keyed by phase name. Each handler gets the phase's payload: seconds for `update`, `fixedUpdate`, and `lateUpdate`; the event for `event`; whatever the host passed for `input`, `renderPrepare`, `message`, `timer`, and `onDemand`; nothing for `load`, `startup`, and `shutdown`.
 
 | Phase | When |
