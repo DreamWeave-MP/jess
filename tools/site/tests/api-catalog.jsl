@@ -280,4 +280,13 @@ suite.it('checks native signatures against the reference', function()
   end).toThrow 'signature drift'
 end)
 
+suite.it('checks a native signature documented through its wrapper', function()
+  local symbol = {
+    name = 'jess.audio.pcm', module = 'jess.audio', signature = 'jess.audio.pcm(data: buffer) -> AudioPcm',
+    page = 'docs/api/audio/', anchor = '', checked = false,
+  }
+  catalog.checkNativeSignatures({ symbol }, 'audio.pcm(data: buffer) -> AudioPcm', true)
+  test.expect(symbol.checked).toBe(true)
+end)
+
 return suite

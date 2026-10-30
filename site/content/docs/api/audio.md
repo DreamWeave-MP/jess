@@ -10,6 +10,8 @@ extra:
 
 `@jess/audio` is audio for scripts: the built-in package's Luau over `jess.audio`, the native half. The native side owns samples, voices, the sample clock, and the mix. What a file's bytes are and which frame a second lands on are Luau's, so WAV reading and writing and the time helpers live here. MP3, Ogg Vorbis, and Ogg Opus need codecs, which are [`@dream/audio`](@/docs/api/l3i.md)'s; this module loads them whole or streams them.
 
+The package re-exports the native `pcm`, `stream`, `offline`, `output`, `processors`, and `feed` functions with the same signatures; the two module tables themselves are distinct.
+
 The module exports `Pcm`, `Wav`, `WavOptions`, `Tempo`, and `TempoOptions` for these signatures; for example, `Pcm` aliases the native `AudioPcm` type. With the module bound as `audio`, name the exported type `audio.Pcm` in a script.
 
 The engine never calls into Luau. A script sends it commands, each with an optional `at`, an output frame. A command that reaches the engine before its scheduled frame is carried out on that frame, wherever it falls in the block being mixed; one that arrives late runs on the next frame and is counted as late. An offline context is rendered by the script, on demand, into a buffer: the same engine a device runs, which makes an offline render useful for testing a live mix.

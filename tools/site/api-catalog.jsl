@@ -186,9 +186,10 @@ local function globalInventory(definitions: string, member: string): { Symbol }
   error(`api catalog: generated definitions have no jess.{member}`, 0)
 end
 
-local function checkNativeSignatures(symbols: { Symbol }, documentation: string)
+local function checkNativeSignatures(symbols: { Symbol }, documentation: string, throughWrapper: boolean?)
   for _, symbol in symbols do
-    if not string.find(documentation, symbol.signature, 1, true) then
+    local signature = if throughWrapper then string.sub(symbol.signature, #'jess.' + 1) else symbol.signature
+    if not string.find(documentation, signature, 1, true) then
       error(`api catalog: signature drift for {symbol.name}: {symbol.signature}`, 0)
     end
 
@@ -818,11 +819,11 @@ local function generate(root: string, updateBaseline: boolean?): string
   for _, member in { 'audio', 'gpu', 'input', 'shader' } do
     table.insert(modules, `jess.{member}`)
     local native = globalInventory(definitions, member)
-    if member == 'gpu' or member == 'input' then
+    if member == 'gpu' or member == 'input' or member == 'audio' then
       local documentation, problem = fs.readFileString(fs.join(root, 'site', 'content', 'docs', 'api', `{member}.md`))
       if not documentation then error(`api catalog: cannot read {member} reference: {problem}`, 0) end
 
-      checkNativeSignatures(native, documentation)
+      checkNativeSignatures(native, documentation, member == 'audio')
     end
 
     for _, symbol in native do
