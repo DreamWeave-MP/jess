@@ -18,6 +18,8 @@ Asks the host to stop after the current frame, with `status` (0 without one) as 
 
 - **Errors:** `application.exit: the status is an integer from 0 to 255, not <status>`; `application.exit: needs an application host; jess run, jess test, and command targets end when their script returns`; in a worker, `application.exit is for the domain's own code; a worker asks the domain in a message`.
 
+This managed module requests shutdown after 600 updates. It needs a manifest that declares it in an application target; it is not a standalone `jess run` script. The [headless recipe](@/docs/cookbook/headless.md) supplies a complete runnable package.
+
 ```luau
 --!strict
 local application = require('@jess/application')
@@ -30,7 +32,7 @@ local function update(deltaSeconds: number)
   if frames == 600 then application.exit(0) end
 end
 
-update(1 / 60)
+return { on = { host = { update = update } } }
 ```
 
 Related: [Applications](@/docs/scripting/applications.md), [jess package run](@/docs/cli/package.md#jess-package-run).
