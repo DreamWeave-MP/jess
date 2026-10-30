@@ -112,6 +112,9 @@ return table.freeze { first = first, second = second }]]
   test.expect(function()
     catalog.sourceSymbols(source, `## sample.first\n{signatures}`, 'sample', true, nil, nil, true)
   end).toThrow 'missing heading'
+  test.expect(function()
+    catalog.sourceSymbols(source, `## sample.first, sample.secondly\n{signatures}`, 'sample', true, nil, nil, true)
+  end).toThrow 'missing heading'
 end)
 
 suite.it('checks an exported function whose signature comes from another generated file', function()

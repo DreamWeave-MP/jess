@@ -456,7 +456,10 @@ local function sourceSymbols(source: string, documentation: string, member: stri
     if verifyFunctions and isFunction and grouped then
       local hasHeading = false
       for line in string.gmatch('\n' .. documentation, '\n##[^\n]*') do
-        if string.find(line, symbolName, 1, true) then hasHeading = true end
+        local _, last = string.find(line, symbolName, 1, true)
+        if last and not string.match(string.sub(line, last + 1, last + 1), '[%w_]') then
+          hasHeading = true
+        end
       end
 
       if not hasHeading then error(`api catalog: missing heading for {symbolName}`, 0) end
