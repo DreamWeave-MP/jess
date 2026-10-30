@@ -16,9 +16,11 @@ A JSON `null` decodes to [`jess.null`](@/docs/api/jess.md#jess-null), which `jso
 
 ## json.decode
 
-{{ api_signature(value="json.decode(text: string, options: { maxDepth: number? }?) -> unknown") }}
+{{ api_signature(value="json.decode(text: string, options: Options?) -> Value") }}
 
 Parses one JSON text and returns its value.
+
+`Options` is `{ maxDepth: number? }`; the exported `Value` type is `unknown`.
 
 - **Parameters:** `text`, the whole document as UTF-8 (a leading byte-order mark is skipped, as the RFC allows a parser to). `options.maxDepth`: how deep arrays and objects may nest, 512 by default.
 - **Returns:** the value. Objects are tables with string keys, arrays are tables from 1, strings are strings, numbers are finite floating-point numbers, `true` and `false` are booleans, and `null` is `jess.null`. A repeated key keeps the last value. A number outside the finite floating-point range is rejected rather than converted to infinity.
@@ -43,9 +45,11 @@ com.example.greeter	1.0.0	2	true
 
 ## json.encode
 
-{{ api_signature(value="json.encode(value: Value) -> string") }}
+{{ api_signature(value="json.encode(value: Values.Value) -> string") }}
 
 Writes a value built with [`@jess/data/value`](@/docs/api/value.md) as compact JSON on one line, the way `serde_json` writes it: keys in the order the map was given them, a forced float as `1.0`, an absent field as `null`, a variant as a one-key object.
+
+`Values.Value` is the value module's exported `Value` type; in a script that binds it as `value`, spell the type `value.Value`.
 
 - **Parameters:** `value`, from `value.struct`, `value.map`, `value.array`, `value.variant`, `value.float`, or a scalar.
 - **Returns:** the document, with no trailing newline.
@@ -71,9 +75,11 @@ print(json.encode(record))
 
 ## json.encodeTable
 
-{{ api_signature(value="json.encodeTable(value: unknown, options: { indent: number?, latin1: boolean? }?) -> string") }}
+{{ api_signature(value="json.encodeTable(value: unknown, options: TableOptions?) -> string") }}
 
 Writes a plain Luau table as JSON, for tools that write what people read and diff. The rules are fixed so the output is too: a table whose keys are exactly 1 to some *n* is an array; a table with string keys is an object, its keys sorted; an empty table is `[]`; `nil` and `jess.null` are `null`; a field that is `nil` is absent.
+
+`TableOptions` is `{ indent: number?, latin1: boolean? }`.
 
 - **Parameters:** `value`, a string, number, boolean, `jess.null`, or table of those. `options.indent`: spaces per level, over several lines; without it, one line. `options.latin1`: escape every byte outside printable ASCII as the Latin-1 code point it is, for a reader that can't take UTF-8.
 - **Returns:** the document, with no trailing newline.

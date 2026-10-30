@@ -8,7 +8,7 @@ extra:
 
 This is a review map, not a promise that every listed function has been checked. The generated type definitions are the inventory for the runtime the checker sees; implementations and tests establish behavior that a type cannot express. Run `jess luau-types` for the installed version. The [machine-readable catalog](@/docs/api/_index.md) names the modules whose top-level signatures the site currently checks automatically and includes generated type and native handle declarations without claiming their behavior has been audited.
 
-For the build reviewed here, the catalog contains 2,496 symbol records; 30 have `checked = true`, meaning their generated signature and a handwritten heading are checked together. The other records remain searchable and are covered by the per-module drift fingerprints, but their signatures are not individually matched to the prose. Counts vary with the runtime and enabled features; neither status proves a behavioral audit.
+For the build reviewed here, the catalog contains 2,496 symbol records; 33 have `checked = true`, meaning their generated signature and a handwritten heading are checked together. The other records remain searchable and are covered by the per-module drift fingerprints, but their signatures are not individually matched to the prose. Counts vary with the runtime and enabled features; neither status proves a behavioral audit.
 
 ## Native runtime services
 
@@ -27,7 +27,7 @@ For the build reviewed here, the catalog contains 2,496 symbol records; 30 have 
 | --- | --- | --- | --- |
 | Logging and tests | [log](@/docs/api/log.md), [test](@/docs/api/test.md) | `src/lua/stdlib/`, `tests/lua/stdlib.rs` | Top-level signatures checked by the catalog; audit all expectations, captures, and errors. |
 | JPK and package resolution | [JPK](@/docs/api/jpk.md), [package](@/docs/api/package.md), [manifest](@/docs/reference/manifest.md) | `src/lua/stdlib/jpk.jsl`, `src/lua/stdlib/package.jsl`, `tests/lua/package/` | Top-level signatures checked by the catalog; verify budgets, version rules, activation, and provider parity. |
-| JSON, YAML, TOML, and values | [JSON](@/docs/api/json.md), [YAML](@/docs/api/yaml.md), [TOML](@/docs/api/toml.md), [values](@/docs/api/value.md) | `jpk/builtin/src/data/`, `jpk/builtin/tests/` | References exist; audit loss, null, ordering, and error behavior. |
+| JSON, YAML, TOML, and values | [JSON](@/docs/api/json.md), [YAML](@/docs/api/yaml.md), [TOML](@/docs/api/toml.md), [values](@/docs/api/value.md) | `jpk/builtin/src/data/`, `jpk/builtin/tests/` | JSON's three functions are matched to generated signatures; audit remaining loss, null, ordering, and error behavior across codecs. |
 | Localization | [localization](@/docs/api/l10n.md) | `jpk/builtin/src/l10n/`, `jpk/builtin/tests/` | Reference exists; audit providers and invalidation. |
 | Analysis and style | [analysis](@/docs/api/analysis.md), [style](@/docs/api/style.md) | `jpk/builtin/src/analysis/`, `jpk/builtin/src/style/`, `tests/lua/luau_style.rs` | References exist; audit every returned fact and checker option. |
 | Backup, HTTP, rendering helpers | [backup](@/docs/api/backup.md), [HTTP](@/docs/api/http.md), [render](@/docs/api/render.md) | `jpk/builtin/src/backup/`, `http/`, `render/`, `jpk/builtin/tests/` | References exist; audit failure, ownership, and limits. |

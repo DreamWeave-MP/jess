@@ -89,6 +89,17 @@ return table.freeze { decode = decode, null = Null }]]
   test.expect(symbols[1].checked).toBe(false)
 end)
 
+suite.it('checks generated source signatures against their reference', function()
+  local source = [[local function decode(text: string): unknown return text end
+return table.freeze { decode = decode }]]
+  local documentation = '## json.decode\njson.decode(text: string) -> unknown'
+  local symbols = catalog.sourceSymbols(source, documentation, 'json', false, '@jess/json', nil, true)
+  test.expect(symbols[1].checked).toBe(true)
+  test.expect(function()
+    catalog.sourceSymbols(source, '## json.decode\njson.decode(text: number) -> unknown', 'json', false, '@jess/json', nil, true)
+  end).toThrow 'signature drift'
+end)
+
 suite.it('refuses an undocumented source export', function()
   local source = [[local function write(data: string): string return data end
 return table.freeze { write = write }]]
