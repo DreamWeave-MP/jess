@@ -83,7 +83,7 @@ Reads one file and analyzes it, with `source.path` set to the path with its sepa
 
 {{ api_signature(value="analysis.files(paths: { string }, options: WorkspaceOptions?) -> { string }; analysis.workspace(paths: { string }, options: WorkspaceOptions?) -> Workspace") }}
 
-`files` walks the paths given, folders recursively, and returns every Luau source under them, sorted. Folders whose names start with `.` are skipped, as are `target` and `node_modules`; `options.skipDirectories` adds names, and `options.extensions` replaces the extensions it collects. A path that doesn't exist is an error, not an empty result: finding no files would read as finding nothing wrong.
+`files` walks the paths given, folders recursively, and returns matching source paths sorted. It collects `.jsl` and `.lua` by default; `options.extensions` replaces that list, with extensions including their leading dot and compared without case. Entries whose names start with `.` are skipped while walking a directory, as are `target`, `node_modules`, and the additional names in `options.skipDirectories`. An explicitly supplied root is considered even if its name starts with a dot. Duplicate path strings are removed, but different spellings of the same file are not canonicalized. Returned paths retain their filesystem spelling. A path that doesn't exist is an error, not an empty result: finding no files would read as finding nothing wrong. This operation needs `filesystem.read`.
 
 `workspace` reads and analyzes every file `files` finds, then pairs each module's requires with the file they name. Needs `filesystem.read`.
 
@@ -120,7 +120,7 @@ The calls whose `target` is exactly `target` (`'print'`, `'@jess/log.new'`), or 
 
 {{ api_signature(value="analysis.resolve(source: Source, expr: Expr, depth: number?) -> Expr; analysis.tableField(expr: Expr, name: string) -> Expr?; analysis.resolvedTableField(source: Source, expr: Expr, name: string) -> Expr?") }}
 
-`resolve` follows a local back through the expressions it was given, up to `depth` steps (16 by default) and never around a cycle, and through groups and type assertions, to the expression that made it. `tableField` is the value of a `name = value` entry in a table constructor; `resolvedTableField` resolves the expression first, so a table built into a local and returned later still answers. A tool that reads a module's returned table uses these to find the `run` in `return table.freeze { run = run }`.
+`resolve` follows a local back through the expressions it was given, up to `depth` steps (16 by default) and never around a cycle, and through groups, type assertions, and instantiations, to the expression that made it. `tableField` is the value of a `name = value` entry in a table constructor; `resolvedTableField` resolves the expression first, so a table built into a local and returned later still answers. These functions do not unwrap calls: for `return table.freeze { run = run }`, the caller must first inspect the call and pass its table argument to `tableField`.
 
 ## analysis.qualifiedPath, analysis.literalString, analysis.line, analysis.normalizePath
 
