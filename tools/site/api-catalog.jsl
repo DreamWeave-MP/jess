@@ -771,7 +771,11 @@ local function generate(root: string, updateBaseline: boolean?): string
       end
     end
 
-    for _, symbol in sourceSymbols(item.source, documentation, item.name, item.grouped, item.moduleName, aliases, item.name == 'json') do
+    local verifyFunctions = item.name == 'json'
+      or item.name == 'yaml'
+      or item.name == 'backup'
+      or item.name == 'http'
+    for _, symbol in sourceSymbols(item.source, documentation, item.name, item.grouped, item.moduleName, aliases, verifyFunctions) do
       table.insert(symbols, symbol)
     end
   end

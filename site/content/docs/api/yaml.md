@@ -16,9 +16,11 @@ A YAML null (`~`, `null`, or nothing) decodes to [`jess.null`](@/docs/api/jess.m
 
 ## yaml.decode
 
-{{ api_signature(value="yaml.decode(text: string, options: { maxDepth: number? }?) -> unknown") }}
+{{ api_signature(value="yaml.decode(text: string, options: Options?) -> Value") }}
 
 Parses a text holding one document and returns its value. `yaml.version` is the spec version the loader follows, `'1.2.2'`.
+
+`Options` is `{ maxDepth: number? }`; the exported `Value` type is `unknown`.
 
 - **Parameters:** `text`, the whole document as UTF-8. `options.maxDepth`: how deep collections may nest, 512 by default; it must be a positive integer.
 - **Returns:** the document's value, or `jess.null` for a text with no document in it. Mappings are tables, sequences are tables from 1, and scalars resolve by the Core schema: see the table below.
@@ -63,7 +65,7 @@ tool	tool	!flag	enabled
 
 ## yaml.decodeAll
 
-{{ api_signature(value="yaml.decodeAll(text: string, options: { maxDepth: number? }?) -> { unknown }") }}
+{{ api_signature(value="yaml.decodeAll(text: string, options: Options?) -> { Value }") }}
 
 Parses a text holding any number of documents, separated by `---`, and returns their values in order. A text with none gives an empty table. It takes the same depth option and reports the same parsing errors as `decode`.
 
@@ -81,7 +83,9 @@ print(#documents, (documents[1] :: { id: string }).id, (documents[2] :: { id: st
 
 ## yaml.encode
 
-{{ api_signature(value="yaml.encode(value: Value) -> string") }}
+{{ api_signature(value="yaml.encode(value: Values.Value) -> string") }}
+
+`Values.Value` is the exported `Value` type of [`@jess/data/value`](@/docs/api/value.md).
 
 Writes a value built with [`@jess/data/value`](@/docs/api/value.md) as one document in block style, as `serde_yaml` writes it: plain scalars where a reader would take them back as what they were, quoted where it wouldn't (a string that looks like a number, a boolean, or a null stays a string), sequences one item per line, keys in the order the map was given them, a variant as a `!tag` on its value, an absent field as `null`.
 

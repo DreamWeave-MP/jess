@@ -19,9 +19,11 @@ It needs `filesystem.read` and `filesystem.write`.
 
 ### backup.write
 
-{{ api_signature(value="backup.write(path: string, data: string | buffer, options: { backup: boolean? }?) -> { path: string, backup: string? }") }}
+{{ api_signature(value="backup.write(path: string, data: string | buffer, options: Options?) -> Written") }}
 
 Writes `data` to `path`, making the folders it goes in, after copying what was there aside.
+
+`Options` is `{ backup: boolean? }`; `Written` is `{ path: string, backup: string? }`.
 
 - **Parameters:** `options.backup = false` writes without keeping a backup, for a tool whose user
   turned them off. On by default.
