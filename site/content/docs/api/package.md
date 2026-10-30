@@ -28,7 +28,7 @@ Opens the package at `location`: a Package Source folder (the folder holding `je
 | `files` | The payload, in canonical order: `jess.toml` first, then every other path bytewise. |
 | `read(path)` | A payload file's bytes, or nil for a path that isn't in the payload. |
 
-Opening checks the whole package before it returns. A Package Source must not hold symlinks, files that are neither file nor folder, or two paths that differ only in case (`Name.jsl` and `name.jsl` are one file on Windows and a fresh bug everywhere else). A JPK must hold nothing outside its manifest's `include`. Every module the manifest exports must be in the payload, and a Package Source must hold every test its manifest names.
+Opening checks the whole package before it returns. A Package Source's included payload must not contain symlinks, files that are neither file nor folder, or two paths that differ only in case (`Name.jsl` and `name.jsl` are one file on Windows and a fresh bug everywhere else). Files outside the payload are not part of that check. A JPK must hold nothing outside its manifest's `include`. Every module the manifest exports must be in the payload, and a Package Source must hold every test its manifest names.
 
 The symlink check includes the manifest and every component of an included root. It is a package validation rule, not an operating-system sandbox: concurrent filesystem changes can occur between validation and a read.
 
