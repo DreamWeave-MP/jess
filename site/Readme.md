@@ -22,6 +22,8 @@ Changes to declarations appear in the generated reference on the next build; no 
 
 Migrated reference pages keep their frontmatter and public paths in `content/docs/api/`; their prose is in an `@api-document` block in the corresponding JSL source. The first line names the page slug and its generated module, for example `@api-document jpk @jess/jpk`. The build combines that prose with signatures from the current declarations. A missing source document fails the build. Keep behavior and examples in source comments and avoid copying signatures into those comments.
 
+To place a generated declaration beside its explanation, use `{{ api_symbol(value="jess_runtime_Worker.send") }}` in the source document. The value is the catalog's symbol name, not a copied signature. References to removed symbols fail the build so an obsolete explanation cannot silently remain in the reference.
+
 The tutorial test suite uses `JESS_DOCS_RUNTIME` as the runtime for its standalone-executable case. From the root, set it to the same executable as `jess` on `PATH` and run `jess test` on `tools/site/tests/tutorials.jsl` with `process.spawn`, `process.environment`, `filesystem.read`, and `filesystem.write` granted. The docs workflow does this and tests the HTTP recipe against loopback.
 
 ## Layout

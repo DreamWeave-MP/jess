@@ -1809,3 +1809,1996 @@ if achievements then achievements.unlock('first-death') end
 Related: [Applications](@/docs/scripting/applications.md#overrides), [jess.events](@/docs/api/events.md).
 
 ]========]
+
+--[========[
+@api-document worker jess.worker
+
+
+
+Also `require('@jess/worker')`. A worker is a second Luau state the [ScriptDomain](@/docs/contributing/script-domains.md) owns, with its own globals, its own modules, and its own garbage collector, able to run while the domain's own code does. It exchanges messages with the domain; the spawner can also explicitly share domain services. Under `jess run` there is no domain, so `spawn` errors with `worker.spawn: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and command targets run scripts outside one`.
+
+## jess.worker.spawn
+
+{{ api_symbol(value="jess.worker.spawn") }}
+
+Spawns a worker and returns its handle. Needs the `worker.spawn` capability.
+
+- `source`: the worker module's Luau source. It is a chunk that returns the message handler, `function(message) ... return reply end`; the handler is called once per message, and the value it returns is the reply (`nil` is no reply).
+- `name`: for diagnostics and profiles; by default, where `spawn` was called.
+- `capabilities`: the names the worker holds, a subset of the calling context's. By default it inherits them all.
+- `shareServices`: `true` gives the worker the domain's services (under a host, its live input). Off by default: a worker exists to run apart from the domain's state, and its capabilities still say what it may do with what it sees.
+
+The worker's runtime comes from the same plan as the domain's, so a worker has the whole jess API and the same package exports, with state of its own.
+
+- **Errors:** `unknown worker.spawn option '<key>': expected capabilities, name, shareServices, or source`; `worker.spawn needs source, the worker module's Luau source`; `capability 'worker.spawn' denied to <domain> ...`; `<domain> cannot delegate capabilities it does not hold: <names>`; inside a worker, `worker.spawn is for a domain's own code`.
+
+```luau
+--!strict
+local worker = require('@jess/worker')
+
+local summer = worker.spawn {
+  name = 'summer',
+  capabilities = {},
+  source = [[
+    return function(message)
+      local total = 0
+
+      for _, value in message.values do
+        total += value
+      end
+
+      return { total = total }
+    end
+  ]],
+}
+
+summer:send { values = { 1, 2, 3 } }
+local reply = summer:receive(20)
+print(reply.total)
+summer:join()
+```
+
+A worker whose module does not load, does not return a function, or raises in its handler reports a structured failure to the host, attributed to the domain and worker, and (by default) stops; the domain is untouched. A worker's handler runs inside the budget the host gave it.
+
+A non-`nil` value returned by the handler is sent through the bounded reply channel after the handler finishes. That send can wait for the domain to receive replies when the channel is full. Drain replies while the worker runs, or call `join`, which drains and retains them as it waits. This differs from an explicit `jess.worker.send`, which refuses a full queue instead of waiting.
+
+## Worker
+
+{{ api_symbol(value="Worker") }}
+
+The handle belongs to its domain and cannot itself cross a worker boundary. It does not keep the domain alive; operations fail if the domain is gone. On a domain restart or teardown, shutdown handlers run first, then the host closes and joins the generation's workers before releasing its owned resources. Do not retain a worker handle as state for the next generation.
+
+### Worker:send
+
+{{ api_symbol(value="jess_runtime_Worker.send") }}
+
+Copies and queues a message for the worker's handler. Messages arrive in order. At most 1,024 wait for the handler at once: a domain that sends faster than its worker handles is told so, instead of queueing without bound. Queue insertion does not wait for room, but copying a large message takes time and memory. The worker message queue is bounded by count, not by a fixed total payload-byte budget.
+
+Only transferable values cross: `nil`, booleans, numbers, integers, strings, vectors, buffers, resource handles, and tables of those with string or number keys, nested at most 32 deep. Other userdata, functions, and threads cannot cross. Anything else is an error naming where it was, and nothing is sent.
+
+**Known defect:** a table key containing bytes that are not valid UTF-8 is changed when the message is reconstructed. Different keys can become the same key and lose an entry. This affects nested table keys too; string values and buffers are separate from this defect.
+
+- **Errors:** `message.<path>: a <type> can't cross a worker or event boundary`; `the worker is stopped; it takes no more messages`; `the worker's queue is full: 1024 messages wait for its handler; receive its replies, or send fewer`.
+
+```luau
+--!strict
+local worker = require('@jess/worker')
+
+local echo = worker.spawn { source = 'return function(message) return message end' }
+echo:send { name = 'ada', bytes = buffer.fromstring('abc'), at = vector.create(1, 2, 3) }
+local reply = echo:receive(20)
+print(reply.name, buffer.tostring(reply.bytes), reply.at)
+```
+
+Tables and buffers arrive as fresh, mutable values: changing them does not change the sender's copy. Shared table identity is not preserved, and a cycle exceeds the nesting limit. A resource handle instead names the same native resource; the resource's own access and lifetime rules still apply.
+
+### Worker:receive
+
+{{ api_symbol(value="jess_runtime_Worker.receive") }}
+
+The worker's next reply, waiting up to `timeoutSeconds` for one; without a timeout it does not wait. A timeout must be finite and nonnegative. The wait never outlasts the execution time limit of the code that waits: when the limit runs out first, the call is stopped with the limit's error, as a loop would be. `nil` when there is none in that time, or when the worker has ended with nothing left to say. A failure the worker reported comes back as an error, once.
+
+- **Errors:** the worker's failure, as `<domain> <generation> <worker> (<module>) failed at <stage>: <message>`.
+
+### Worker:close
+
+{{ api_symbol(value="jess_runtime_Worker.close") }}
+
+Asks the worker to stop after the messages already queued for it.
+
+### Worker:join
+
+{{ api_symbol(value="jess_runtime_Worker.join") }}
+
+Closes the worker and waits for it to end, up to `timeoutSeconds` (without a timeout, as long as it takes), and never past the execution time limit of the code that waits, then returns its final state: `stopped` or `failed`. A timeout must be finite and nonnegative. `join` drains replies while it waits and retains them for later `receive` calls; account for that memory when a worker produces many or large replies.
+
+- **Errors:** `<worker> did not answer in time`.
+
+## jess.worker.send
+
+{{ api_symbol(value="jess.worker.send") }}
+
+From inside a worker: sends a message to the domain, besides what the handler returns. For progress, or for more than one reply per message. Queue insertion does not wait: at most 1,024 messages wait for the domain to receive them, and a send past that fails. Copying the message itself still takes time and memory. If the domain has stopped listening, this explicit send is dropped without an error.
+
+- **Errors:** in a domain's own code, `worker.send is for a worker's own code; a domain sends through the handle worker.spawn returned`; `jess.worker.send: the domain's queue is full: 1024 messages wait for it to receive them; send fewer, or reply less often`.
+
+```luau
+--!strict
+local worker = require('@jess/worker')
+
+return function(count: number)
+  for index = 1, count do
+    worker.send { progress = index }
+  end
+
+  return 'done'
+end
+```
+
+Related: [jess.context](@/docs/api/context.md), [Script Domains](@/docs/contributing/script-domains.md), and [@jess/audio](@/docs/api/audio.md#streams), whose streams a worker writes from a handle while the domain plays them.
+
+]========]
+
+--[========[
+@api-document gpu jess.gpu
+
+
+
+`jess.gpu` is the GPU, as the kernel reaches it: an adapter, and the device opened on it. It says what the hardware is and does what it's told with bytes, images, and [shader programs](@/docs/api/shader.md), and has no opinion about what any of it means. What drawing means (cameras, materials, techniques) is [`@jess/render`](@/docs/api/render.md)'s, in Luau, over this. `require('@jess/gpu')` is the same table.
+
+A release has the GPU and windows, and loads the machine's GPU API and window system when a script first asks for them, so a machine without either still runs jess. A jess built without the `gpu` feature (`--no-default-features`) still has `jess.gpu`, and says so when asked for a device: `jess.gpu.device: this jess has no GPU: it was built without the gpu feature`. [GPU](@/docs/contributing/gpu.md) is how it works inside, and [Troubleshooting](@/docs/reference/troubleshooting.md#gpus-windows-and-sound) has what to do when a machine has no GPU or no display.
+
+## jess.gpu.device
+
+{{ api_symbol(value="jess.gpu.device") }}
+
+The runtime's device. The first call asks the backend for a low-power adapter and, if that fails, tries a fallback adapter. The backend and machine determine which adapter is available; a fallback may be a software adapter. Every later call is the same device.
+
+- **Capability:** `gpu.device`. A script you run holds it, as it holds the input devices in front of you; a package target declares it ([Capabilities](@/docs/reference/capabilities.md) has the rest). Without it: `jess.gpu.device: needs the 'gpu.device' capability, which this runtime does not grant`.
+- **Generations:** in an application, the device is the application's: the first generation to ask opens it, and every later one gets the same device, so a restart reloads code without opening the GPU again. Everything a generation made on it (buffers, textures, pipelines, draw sets, plans, windows) goes with that generation's runtime, and no handle of one generation can reach the next.
+- **Errors:** `jess.gpu.device: no GPU adapter, not even a software one`, and an adapter that opens no device, `jess.gpu.device: the GPU adapter opened no device: …` with the driver's reason.
+
+## GpuDevice
+
+| Field | Type | Holds |
+| --- | --- | --- |
+| `name` | `string` | The adapter's name, as its driver gives it. |
+| `backend` | `string` | The API wgpu reaches it through: `vulkan`, `metal`, `dx12`, or `gl`. |
+| `kind` | `string` | `discrete`, `integrated`, `virtual`, `cpu` (a software adapter), or `other`. |
+| `limits` | `{ textureSize, textureLayers, bufferSize, workgroups }` | The widest or tallest 2D texture, the most layers an array texture has, the largest buffer in bytes, and the most workgroups a dispatch has on one axis. |
+| `pipelines` | `{ compiled, reused }` | How many pipelines the device compiled, and how many times `GpuDevice:pipeline` gave back one it already had. |
+| `timestamps` | `boolean` | Whether the device times passes, which `GpuPlan:timings` reports. |
+| `live` | `{ buffers, textures, samplers, bindGroups, pipelines }` | How many of each the device has alive: made, and not yet let go of. A count that only grows is a leak. |
+| `made` | `{ buffers, textures, samplers, bindGroups, pipelines }` | How many of each the device ever made, let go of or not. A count that grows every frame of a scene that doesn't change is churn: a run of a plan makes nothing the run before it made. |
+| `sets` | `GpuDrawSets` | The device's own [draw sets](#draw-sets), which a draw set joins unless told otherwise and a run draws from unless given others. |
+
+`tostring(device)` is `GpuDevice(name, backend)`.
+
+```luau
+--!strict
+local device = jess.gpu.device()
+print(device.backend, device.kind)
+print(device.limits.textureSize, device.limits.workgroups)
+-- vulkan  integrated
+-- 8192  65535
+```
+
+Those numbers are one integrated GPU's, reached through Vulkan. `kind` says what yours is, and `cpu` means a software adapter. Available limits and supported operations depend on the adapter; check the destination rather than assuming that a software adapter supports every workload.
+
+## Commits
+
+What a script changes about what the GPU draws (a buffer or texture it writes, a draw set's counts, whether it is visible, which collection holds it, which passes a plan leaves out, what a copy pass copies) waits for the device's next commit, and the commit applies all of it at once. Whatever draws a frame on its own, a window, draws a commit's changes whole or none of them, never half a frame.
+
+A commit happens at the end of every frame under an application's host, at `jess.gpu.pump()`, at `device:commit()`, and before anything that uses the GPU and waits for it (`plan:run`, `device:render`, `device:dispatch`, a read), so a script always sees its own changes when it asks the GPU for something. What reads a draw set or a plan back (`set.count`, `set.added`, `sets:has`, `plan:enabled`) says what the last commit left. Mistakes are refused when the change is asked for, not at the commit. A commit is whole in what a frame sees, but it isn't a transaction: a change the GPU itself refuses at the commit is reported, the changes after it still apply, and nothing before it is rolled back.
+
+| Member | Type | Does |
+| --- | --- | --- |
+| `commit()` | `() -> boolean` | Applies everything changed since the last commit, saying whether there was anything. |
+| `room` | `{ changes, bytes }` | How much more fits before the next commit: 65 536 changes carrying 256 MiB of data a frame. A change that doesn't fit is refused, naming what waits; commit, or change less. |
+
+## Resources
+
+A device makes three kinds of resource. Each lives as long as a script holds it, and belongs to its runtime's device; nothing about one means anything to the GPU until a pipeline reads it.
+
+### GpuDevice:buffer
+
+{{ api_symbol(value="GpuDevice.buffer") }}
+
+`size` bytes, zeroed, a multiple of 4 from 4 through `limits.bufferSize`. Zero, an unaligned size, or a size over the device limit raises an error. `usage` names what the buffer is for, one name or a list: `vertex`, `index`, `uniform`, `storage`, or `indirect` (the counts of an indirect draw). A buffer can always be written and read back; `{}` makes one for nothing else.
+
+### GpuDevice:texture
+
+{{ api_symbol(value="GpuDevice.texture") }}
+
+| Field | Type | Holds |
+| --- | --- | --- |
+| `width`, `height` | `number` | Its size in texels. |
+| `format` | `GpuTextureFormat` | Every texel's format: `rgba8Unorm`, `rgba8UnormSrgb`, `bgra8Unorm`, `bgra8UnormSrgb`, `rgba16Float`, `r8Unorm`, `rg8Unorm`, `r16Float`, `rg16Float`, `r32Float`, `rg32Float`, `rgba32Float`, `r32Uint`, `rgba8Uint`, `rgba32Uint`, `r32Sint`, `rgba32Sint`, `depth24Plus`, or `depth32Float`. |
+| `usage` | `GpuTextureUsage \| { GpuTextureUsage }` | `sampled` (shaders read it), `target` (passes draw into it), or both. |
+| `shape` | `GpuTextureShape?` | `2d` (the default), `2dArray`, `cube` (six square faces, +x, -x, +y, -y, +z, -z), or `3d`. |
+| `layers` | `number?` | A `2dArray`'s layers. |
+| `depth` | `number?` | A `3d` texture's slices. |
+| `mips` | `number?` | How many mip levels, the first full size and each after it half the last; 1 by default. |
+| `samples` | `number?` | Samples a texel: 1 (the default), or 4 for a multisampled `2d` `target` of one level, which a pass draws into and [resolves](#gpudevice-render). Nothing samples, writes, or reads one back; only formats the device multisamples take 4. |
+
+A name the table doesn't take is an error listing the ones it does, so `layer = 2` doesn't quietly make a one-layer texture.
+
+### GpuDevice:sampler
+
+{{ api_symbol(value="GpuDevice.sampler") }}
+
+| Field | Type | Holds |
+| --- | --- | --- |
+| `filter` | `('nearest' \| 'linear')?` | How it reads between texels; `nearest` by default. |
+| `mipmapFilter` | `('nearest' \| 'linear')?` | How it reads between mip levels; `nearest` by default. |
+| `address` | `('clamp' \| 'repeat' \| 'mirror')?` | What it reads past an edge, on every axis: the edge texel (the default), the texture tiled, or the texture mirrored. |
+| `compare` | `GpuCompare?` | Makes a comparison sampler, which compares a reference with what it reads: `never`, `less`, `equal`, `lessEqual`, `greater`, `notEqual`, `greaterEqual`, or `always`. It reads depth textures, for shadows. |
+
+## GpuBuffer
+
+| Member | Type | Does |
+| --- | --- | --- |
+| `size` | `number` | Its size in bytes. |
+| `usage` | `{ GpuBufferUsage }` | What it is for, in the order `vertex`, `index`, `uniform`, `storage`, `indirect`. |
+| `write` | `(self, offset: number, bytes: buffer \| string, from: number?, length: number?) -> ()` | Copies `bytes` (or `length` of them from `from`) into the buffer at `offset`, at the next [commit](#commits). |
+| `read` | `(self, offset: number?, length: number?) -> buffer` | Commits pending changes and returns `length` bytes from `offset` as a new `buffer`, waiting for submitted work when the length is nonzero. The offset defaults to zero and the length to the remainder. |
+| `readLater` | `(self, offset: number?, length: number?) -> GpuRead` | Commits pending changes and submits a copy without waiting for GPU completion; the [read](#gpuread) supplies the bytes when ready. |
+
+Offsets and lengths are whole numbers from 0 through 4,294,967,295. GPU offsets and transferred lengths must also be multiples of 4, and a range past the end is an error. The source `from` offset for `write` is zero-based, defaults to zero, and can be unaligned as long as the resulting transferred length is aligned; its `length` defaults to the remaining source bytes, capped at 4,294,967,295. `read` and `readLater` apply the same cap to their default length. An unaligned default is rejected, so specify an aligned length when the remaining range exceeds that cap. `tostring(gpuBuffer)` is `GpuBuffer(16 bytes, vertex, storage)`.
+
+```luau
+--!strict
+local device = jess.gpu.device()
+local positions = device:buffer(16, { 'vertex', 'storage' })
+local bytes = buffer.create(16)
+buffer.writef32(bytes, 0, 1.5)
+buffer.writef32(bytes, 12, -2)
+positions:write(0, bytes)
+positions:write(4, 'abcdefgh', 2, 4)
+
+local back = positions:read()
+print(positions, buffer.readf32(back, 0), buffer.readstring(back, 4, 4), buffer.readf32(back, 12))
+-- GpuBuffer(16 bytes, vertex, storage)  1.5  cdef  -2
+```
+
+## GpuTexture
+
+| Member | Type | Does |
+| --- | --- | --- |
+| `width`, `height` | `number` | Its size in texels. |
+| `format` | `GpuTextureFormat` | Its texels' format. |
+| `shape` | `GpuTextureShape` | `2d`, `2dArray`, `cube`, or `3d`. |
+| `layers` | `number` | How many 2D layers it has: an array's layers, a cube's 6, 1 otherwise. |
+| `mips` | `number` | How many mip levels. |
+| `write` | `(self, bytes: buffer \| string, level: number?, layer: number?) -> ()` | Replaces every texel of mip `level` of `layer` (every slice, for a `3d` texture), rows packed tightly, top row first, at the next [commit](#commits). Both default to 0. |
+| `read` | `(self, level: number?, layer: number?) -> buffer` | Waits for everything submitted so far, and returns that level of that layer the way `write` takes it. |
+| `readLater` | `(self, level: number?, layer: number?) -> GpuRead` | Commits pending changes and submits a copy without waiting for GPU completion: a [read](#gpuread). |
+
+The bytes are exactly the selected mip level's width × height × depth × the format's texel size. Depth is one for a 2D texture, array layer, or cube face; a 3D level includes all of its slices and uses `layer = 0`. Rows are tightly packed, with slices in order. Invalid levels, layers, sizes, or multisampled transfers raise. A pass writes a depth texture; a script can't, and `depth24Plus`, whose layout is the backend's, can't be read back either. `tostring(texture)` is `GpuTexture(2×2 rgba8Unorm, 2dArray)`.
+
+```luau
+--!strict
+local device = jess.gpu.device()
+local atlas = device:texture({
+  width = 2,
+  height = 2,
+  format = 'rgba8Unorm',
+  usage = 'sampled',
+  shape = '2dArray',
+  layers = 4,
+  mips = 2,
+})
+atlas:write(string.rep('\255\0\0\255', 4), 0, 3)
+atlas:write('\0\0\255\255', 1, 3)
+
+local level = atlas:read(1, 3)
+print(atlas, atlas.layers, atlas.mips, buffer.len(level), buffer.readu8(level, 2))
+-- GpuTexture(2×2 rgba8Unorm, 2dArray)  4  2  4  255
+```
+
+## GpuRead
+
+Bytes on their way back from the GPU, from `readLater`. They are what the submitted copy saw, so a script that wants a frame's picking id can ask after the run and poll for it later without waiting for GPU completion. Completion time depends on the device and workload.
+
+| Member | Type | Does |
+| --- | --- | --- |
+| `poll()` | `() -> buffer?` | The bytes, once the GPU has copied them; `nil` until then. It polls the device without waiting for GPU completion and copies the mapped bytes when ready. Device or mapping failures raise. |
+| `wait()` | `() -> buffer` | The bytes, waiting for submitted GPU work if needed. Device or mapping failures raise. |
+| `ready` | `boolean` | Whether the last `poll` or `wait` found them. |
+
+Once there, the same bytes come back every time. `tostring(read)` is `GpuRead(waiting)` or `GpuRead(ready)`.
+
+## GpuSampler
+
+A sampler has nothing to read: it is what a draw binds beside a texture. `tostring(sampler)` is `GpuSampler(linear)`, or `GpuSampler(nearest, comparing)` for a comparison sampler.
+
+## Pipelines
+
+### GpuDevice:pipeline
+
+{{ api_symbol(value="GpuDevice.pipeline") }}
+
+A [shader program](@/docs/api/shader.md), lowered, validated by the backend, and made ready to run. A compute program takes no state. A vertex and fragment program takes the fixed-function state everything else about drawing needs:
+
+| Field | Type | Holds |
+| --- | --- | --- |
+| `colors` | `{ GpuTextureFormat \| { format, blend } }` | A color target per fragment output, by location, each of a format the output fits. `blend` is `replace` (the default), `alpha`, `premultiplied`, or `additive`; an integer target only replaces. |
+| `depth` | `(GpuTextureFormat \| { format, compare, write })?` | The depth target it tests against. A format's name alone tests `less` and writes; `compare` is a `GpuCompare` and `write` a boolean. |
+| `topology` | `string?` | `triangles` (the default), `triangleStrip`, `lines`, `lineStrip`, or `points`. |
+| `cull` | `string?` | Which triangles it throws away: `none` (the default), `front`, or `back`. |
+| `clockwise` | `boolean?` | Whether a triangle running clockwise faces the camera; by default a counter-clockwise one does. |
+| `multisampled` | `boolean?` | Whether it draws into targets of 4 samples a texel; single-sample ones by default. A pass's targets and its pipelines agree on it. |
+
+The program's own layout decides everything else: its bind groups, its vertex buffers' strides and attributes. A pipeline can't disagree with its program.
+
+The device compiles a pipeline once. Asking again for a program that lowers to the same shader, with the same state, gives back the pipeline it already has, for as long as anything holds it; `device.pipelines` counts how often it compiled and how often it reused one. Writing a material's buffer changes what a pipeline draws, not the pipeline, so it compiles nothing.
+
+## GpuPipeline
+
+| Member | Type | Does |
+| --- | --- | --- |
+| `kind` | `'render' \| 'compute'` | Whether it draws or computes. |
+| `bind` | `(self, frequency, bindings) -> GpuBindGroup` | What one frequency binds for it. |
+
+`tostring(pipeline)` is `GpuPipeline(render, 1 color target, depth)`, or `GpuPipeline(compute 64×1×1)`.
+
+### GpuPipeline:bind
+
+{{ api_symbol(value="GpuPipeline.bind") }}
+
+`bindings` are keyed by binding number, the numbers [program.layout](@/docs/api/shader.md#layout) reports: the uniform block at 0, if the frequency has members, then each texture, sampler, and storage buffer. Every declaration is bound exactly once, with a resource of its kind: a uniform buffer at least the block's size, a texture of the declared shape and sample kind, a comparison sampler where one is declared, a storage buffer. A number the program doesn't bind is an error listing the ones it does: `the program binds nothing at material binding 5: it binds 0 (the uniform block), 1 (the texture diffuse), 2 (diffuse's sampler)`.
+
+Names belong to whatever builds on this: the kernel takes numbers, so a Luau library can bind a material by its declarations' names without the kernel deciding what a name means.
+
+## GpuBindGroup
+
+What one frequency binds. It binds for every pipeline whose program lays that frequency out the same way (a uniform block of the same size, and the same kinds of texture, sampler, and storage buffer at the same binding numbers), whichever pipeline it was made for, so one camera block serves every program that declares it alike. `frequency` is `pass`, `material`, or `draw`, and `tostring(group)` is `GpuBindGroup(material)`.
+
+## Passes
+
+### GpuDevice:render
+
+{{ api_symbol(value="GpuDevice.render") }}
+
+Draws `draws`, in order, into `colors` (by location) and `depth`, and submits the pass. A target is a texture made with the `target` usage, and keeps what it holds, or a table:
+
+| Field | Type | Holds |
+| --- | --- | --- |
+| `texture` | `GpuTexture` | The texture drawn into. |
+| `clear` | `({ number } \| number)?` | What it is cleared to first: four channels (whole numbers for an integer format), or a depth from 0 to 1. Without one, the pass draws over what's there. |
+| `level`, `layer` | `number?` | The mip level, and the array layer or cube face, drawn into; 0 by default. |
+| `store` | `boolean?` | `false` throws away what the pass drew. |
+| `resolve` | `(GpuTexture \| { texture, level, layer })?` | Where a multisampled color target's samples average into when the pass ends: level 0 of layer 0 of a single-sample `target` texture of its format, or the level and layer named, of its size. The samples themselves can then go unstored. |
+
+A draw is a table:
+
+| Field | Type | Holds |
+| --- | --- | --- |
+| `pipeline` | `GpuPipeline` | A render pipeline whose targets are the pass's. |
+| `count` | `number` | How many vertices, or with `indices`, how many indices. |
+| `instanceCount` | `number?` | How many instances; 1 by default. |
+| `pass`, `material`, `draw` | `GpuBindGroup?` | A bind group for each frequency its program binds anything for, laid out as its program lays that frequency out. |
+| `vertices`, `instances` | `GpuBuffer?` | The per-vertex and per-instance attributes, if the program has any, in vertex buffers holding every one drawn. |
+| `indices`, `indexFormat` | `GpuBuffer?`, `('u16' \| 'u32')?` | An index buffer, and how wide its indices are (`u32` by default). |
+| `indirect`, `indirectOffset` | `GpuBuffer?`, `number?` | Where the counts come from instead of `count` and `instanceCount`: an `indirect` buffer holding, from `indirectOffset` (0 by default, a multiple of 4), four `u32`s (vertex count, instance count, first vertex, first instance) or, for an indexed draw, five (index count, instance count, first index, base vertex, first instance). Whatever the GPU wrote there is drawn, a compute pass's count of what it kept, say; nothing checks it against the buffers, and the GPU keeps a draw past their ends inside them. |
+
+Everything is checked before anything is submitted, and each mistake names its draw: `draw 0 is invalid: its program binds a material group, and the draw gives none`. A pass reads its draws one at a time, so a pass of ten thousand draws holds no more of the Luau stack than a pass of one.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+local program = shader.program {
+  attributes = { position = shader.vec2 },
+  material = { tint = shader.vec4 },
+  vertex = function(input)
+    return { position = shader.vec4(input.attributes.position, 0, 1) }
+  end,
+  fragment = function(input) return input.material.tint end,
+}
+
+local device = jess.gpu.device()
+local pipeline = device:pipeline(program, { colors = { 'rgba8Unorm' } })
+
+local tint = device:buffer(program.layout.material.size or 0, 'uniform')
+local orange = buffer.create(16)
+for index, channel in { 1, 0.5, 0, 1 } do
+  buffer.writef32(orange, (index - 1) * 4, channel)
+end
+tint:write(0, orange)
+
+-- One triangle that covers the whole target.
+local corners = buffer.create(24)
+for index, value in { -1, -1, 3, -1, -1, 3 } do
+  buffer.writef32(corners, (index - 1) * 4, value)
+end
+local vertices = device:buffer(24, 'vertex')
+vertices:write(0, corners)
+
+local image = device:texture({ width = 2, height = 2, format = 'rgba8Unorm', usage = 'target' })
+device:render({
+  colors = { { texture = image, clear = { 0, 0, 0, 1 } } },
+  draws = {
+    {
+      pipeline = pipeline,
+      material = pipeline:bind('material', { [0] = tint }),
+      vertices = vertices,
+      count = 3,
+    },
+  },
+})
+
+local pixels = image:read()
+print(pipeline, buffer.readu8(pixels, 0), buffer.readu8(pixels, 1), buffer.readu8(pixels, 2))
+-- GpuPipeline(render, 1 color target)  255  128  0
+```
+
+### GpuDevice:dispatch
+
+{{ api_symbol(value="GpuDevice.dispatch") }}
+
+Runs a compute pipeline over `workgroups` workgroups (a count, or one to three of them, one per axis, the rest 1), each of the program's workgroup size, with a bind group for each frequency its program binds, and submits it. A buffer read afterwards waits for it.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+local double = shader.compute {
+  workgroupSize = { 64 },
+  pass = { values = shader.storage(shader.float, 'readWrite') },
+  compute = function(input)
+    local index, values = input.builtin.globalInvocationId.x, input.pass.values
+    shader.when(shader.less(index, shader.arrayLength(values)), function()
+      shader.write(values, index, values[index] * 2)
+    end)
+  end,
+}
+
+local device = jess.gpu.device()
+local pipeline = device:pipeline(double)
+local values = device:buffer(16, 'storage')
+values:write(0, buffer.fromstring(string.pack('<ffff', 1, 2, 3, 4)))
+
+device:dispatch({
+  pipeline = pipeline,
+  pass = pipeline:bind('pass', { [0] = values }),
+  workgroups = 1,
+})
+print(string.unpack('<ffff', buffer.tostring(values:read())))
+-- 2  4  6  8  17
+```
+
+The last number is `string.unpack`'s: where it stopped reading.
+
+## Draw sets
+
+### GpuDevice:drawSet
+
+{{ api_symbol(value="GpuDevice.drawSet") }}
+
+Keeps a draw in a collection of draw sets, the device's own (`device.sets`) unless `sets` names another: a render pipeline, its `material` and `draw` bind groups, its `vertices`, `instances`, and `indices` (with `indexFormat`), `count` and `instanceCount` (or the `indirect` buffer the GPU writes them into), and the `tags` passes choose it by. The fields are a draw's, as `GpuDevice:render` takes them, without `pass`: a draw set is drawn with the pass group of whichever pass takes it, so one camera block serves every set a pass draws. It is checked when it is made, the way a pass checks a draw, and drawn from the next frame on by every draw pass whose tags it carries, until it is removed.
+
+## GpuDrawSet
+
+| Member | Type | Holds |
+| --- | --- | --- |
+| `count` | `number` | How many vertices, or indices, it draws. Setting it checks it fits the buffers. |
+| `instanceCount` | `number` | How many instances; at least 1, and no more than its instance buffer holds. |
+| `visible` | `boolean` | Whether passes draw it. |
+| `tags` | `{ string }` | What the passes that take it look for. |
+| `added` | `boolean` | Whether it is in the collection it was made into. |
+| `add()`, `remove()` | `() -> ()`, `() -> boolean` | Puts it back in that collection, or takes it out, saying whether it was there. Both are harmless twice. |
+
+Changing a set changes nothing else: what it draws is read again at every frame, so nothing is rebuilt.
+
+### GpuDevice:drawSets
+
+{{ api_symbol(value="GpuDevice.drawSets") }}
+
+A collection of its own: the draw sets of one scene, say, which a run draws from when it is given them (`plan:run(imports, sets)`, `window:show(plan, target, imports, sets)`) instead of the device's. A set can be in any number of collections. A plan remembers which sets carry its draw passes' tags, for each collection, until something is added to or removed from it; showing and hiding a set, or changing its counts, needs no choosing again.
+
+| Member | Type | Does |
+| --- | --- | --- |
+| `count` | `number` | How many sets it holds. |
+| `add(set)` | `(GpuDrawSet) -> ()` | Adds a set, last; adding it again does nothing. |
+| `remove(set)` | `(GpuDrawSet) -> boolean` | Takes a set out, saying whether it was there. |
+| `has(set)` | `(GpuDrawSet) -> boolean` | Whether it holds a set. |
+
+`tostring(sets)` is `GpuDrawSets(3 sets)`.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+local program = shader.program {
+  attributes = { position = shader.vec2 },
+  pass = { tint = shader.vec4 },
+  vertex = function(input)
+    return { position = shader.vec4(input.attributes.position, 0, 1) }
+  end,
+  fragment = function(input) return input.pass.tint end,
+}
+
+local device = jess.gpu.device()
+local pipeline = device:pipeline(program, { colors = { 'rgba8Unorm' } })
+local quad = device:drawSet {
+  pipeline = pipeline,
+  vertices = device:buffer(48, 'vertex'),
+  count = 6,
+  tags = { 'opaque' },
+}
+
+device:commit()
+quad.count = 3
+quad.visible = false
+print(quad.count, quad:remove())
+device:commit()
+print(quad, quad.added)
+-- 6  true
+-- GpuDrawSet(3 vertices, opaque, hidden)  false
+```
+
+## Plans
+
+### GpuDevice:plan
+
+{{ api_symbol(value="GpuDevice.plan") }}
+
+Compiles a [render graph](@/docs/contributing/render-graph.md) for the device: the targets and buffers a frame uses, the passes that use them, and what each pass does. Passes are ordered by what they read and write, not by where they are in the list; passes whose work nothing sees are culled; transient targets and buffers whose lifetimes don't overlap share memory. Planning allocates them and makes every bind group it can, so a frame does nothing but record.
+
+| Field | Type | Holds |
+| --- | --- | --- |
+| `name` | `string?` | The plan's name, `plan` by default, and every pass's owner unless the pass names one. |
+| `viewport` | `{ width, height }` | The pixels relative targets are sized against. |
+| `targets` | `{ GpuPlanTarget }?` | `{ name, format, scale \| width and height, mips, layers, samples, imported, kept }`: a color or depth target the viewport's size times `scale` (1 by default), or a fixed size, of `mips` levels and `layers` layers (1 of each by default) and `samples` samples a texel (1, or 4 for a multisampled target of one level and one layer). An `imported` one is given to each run, a window's backbuffer, say; a `kept` one is the plan's from run to run (below). |
+| `buffers` | `{ GpuPlanBuffer }?` | `{ name, size \| image and scale, imported, kept }`: `size` bytes, a multiple of 4, or room for all of an `image` target of that format at the viewport's size times `scale` (1 by default), each row padded as a copy lays it out, so a copy of a whole target fits it at any viewport. |
+| `passes` | `{ GpuPlanPass }` | What runs: below. |
+
+Every pass has a `name` and a `kind`, and may name an `owner`: whoever declared it, a package or a subsystem, for profilers and graph inspectors to attribute it to. It is the plan's `name` unless the pass says otherwise, and never empty. What a pass reads and writes depends on the kind:
+
+| Kind | Does | Fields |
+| --- | --- | --- |
+| `draw` | Draws the device's visible draw sets carrying any of `tags`, in the order they were made, each with `pass` as its pass group. | `tags`, `pass`, `pipeline` (the one whose layout a `pass` of bindings is made for), `colors`, `depth`, `depthTest`, `reads` |
+| `fullscreen` | Draws three vertices of `pipeline`: one triangle over its targets. | `pipeline`, `pass`, `material`, `draw`, `colors`, `depth`, `depthTest`, `reads` |
+| `compute` | Dispatches `pipeline` over `workgroups` (1 by default). | `pipeline`, `pass`, `material`, `draw`, `storage`, `workgroups`, `reads` |
+| `copy` | Copies `from` into `to`; `load` keeps what the copy doesn't cover. | `from`, `to`, `size`, `load` |
+
+- `colors` and `depth` are the targets drawn into: a name, or `{ target, clear, load, store, level, layer, resolve }`, cleared first, loaded from what it held, or neither, and stored unless `store` is `false`. A write draws into level 0 of layer 0 unless it names another. The first pass to write a target can't load it: nothing is there yet. A multisampled color target's samples average into its `resolve` when the pass ends, a target's name or `{ target, level, layer }`, single-sample, of its format, and the same size.
+- `depthTest` names a depth target the pass tests against without writing it, or `{ target, level, layer }` for one level of one layer. A draw set whose pipeline writes depth isn't drawn in such a pass: the run refuses it.
+- `reads` names what the pass reads: targets as textures, and buffers its shaders read as storage or its draws take vertices, instances, or indirect counts from. A draw set's buffers aren't the graph's, so a draw pass names the imported buffers its sets draw from here, and the passes that write them run first. A target read by name is read whole, bound as a `texture2dArray` where it has layers; `{ target, level, layer }` reads one level of one layer, bound as a `texture2d`. A multisampled target is only drawn into and resolved, never read.
+- Each level of each layer is a target of its own as far as order goes: a pass that reads level 0 and draws into level 1 of the same target is a step of a mip chain, not a conflict, and a read of a whole target waits for the last writer of every level of every layer, all of which some pass has to write.
+- `storage` names the buffers a compute pass writes: a name, or `{ buffer, clear, load, store }`, where `clear = true` zeroes it first, at every run.
+- A group (`pass`, `material`, `draw`) is a `GpuBindGroup`, or bindings by binding number, as `GpuPipeline:bind` takes them, where a binding can also be a target's or a buffer's name. A texture binding names a target the pass `reads`; a storage binding names a buffer the pass reads, for a `'read'` declaration, or writes in `storage`, for a `'readWrite'` one.
+- A `kept` target or buffer is the plan's own, and it shares no memory. It holds what the last run left (zeros before the first, and after a resize), so a pass can load it, as a frame's history, say. It counts as something the plan produces, like an imported one, and the script reads it with `plan:read` and `plan:readLater`, sized as the plan's viewport makes it: a readback of the whole frame without a buffer to manage.
+- A copy's `from` and `to` are names, `{ target, level, layer, column, row }` for a level of a layer of a target from a texel, or `{ buffer, offset }` for a buffer from a byte, a multiple of 4. It copies everything from where `from` starts, or `size`: `{ width, height }` texels, or a number of bytes between buffers. A depth target is copied a whole level of a layer at a time.
+- A copy between a target and a buffer lays out each row padded to a multiple of 256 bytes, the way the GPU copies, and the buffer has to hold every row from its offset.
+- A relative target with more than one level never resolves smaller than its levels need: half the viewport with 5 levels is at least 16 pixels each way, so at a 10×600 viewport it is 16×300. A pass draws into relative targets of one scale and one number of levels together, which stay one size at every viewport.
+
+Mistakes in the description name the pass: `GpuDevice:plan: pass present uses nowhere, which the plan has no target or buffer called`, `pass "q" both reads and writes "output"`.
+
+## GpuPlan
+
+| Member | Type | Holds |
+| --- | --- | --- |
+| `name` | `string` | The plan's name. |
+| `order` | `{ string }` | The passes that run, in the order they run. |
+| `viewport` | `{ width, height }` | What its relative targets are sized for. |
+| `allocations` | `number` | How many textures and buffers it made for its own targets and buffers: one for each group sharing memory. |
+| `run(imports, sets)` | `({ [string]: GpuTexture \| GpuBuffer }?, GpuDrawSets?) -> ()` | Runs every pass it records once, in one submission, with a texture or buffer for each imported target or buffer by name (a texture of its format and size at the viewport, a buffer of its size), its draw passes drawing from `sets`, or the device's own. |
+| `setEnabled(passes, enabled)` | `(string \| { string }, boolean) -> ()` | Leaves passes out of the runs after it, or puts them back, together. A pass left out does nothing, so whatever it stores keeps what it held: a pass still recorded can't read or load it (`pass present uses what pass overlay stores: leave both out, or neither`), and a culled pass is refused, since it never runs. |
+| `enabled(pass)` | `(string) -> boolean` | Whether runs record a pass. |
+| `read(name, level, layer)` | `(string, number?, number?) -> buffer` | What a kept buffer, or `level` of `layer` of a kept target, holds once the GPU has finished the runs before the call, the way `GpuBuffer:read` and `GpuTexture:read` read them. |
+| `readLater(name, level, layer)` | `(string, number?, number?) -> GpuRead` | The same, [without waiting](#gpuread). |
+| `bytes(buffer)` | `(string) -> number` | How many bytes a buffer holds at the plan's viewport: what an imported one sized by it must be given. |
+| `extent(target)` | `(string) -> { width, height }` | How big level 0 of a target is at the plan's viewport. |
+| `setRegion(pass, region)` | `(string, GpuCopyRegion) -> ()` | Changes what a copy pass copies from the next run on: `{ from, to, size }`, where `from` and `to` are `{ column, row }` in a target or `{ offset }` in a buffer, of the level and layer the pass names. It is checked now, and resolved again at each size the plan is resized to. |
+| `resized(width, height)` | `(number, number) -> GpuPlan` | The same plan for another viewport, its targets made again at the new size. It shares the passes left out and the regions with the plan it was resized from, both ways, as the plan a window shows does. |
+| `dump()` | `() -> string` | The compiled graph: the passes in order, where each was declared (the `device:plan` call: a pass is a table, with no place of its own), what each reads and writes, what was culled, every target's lifetime, and what shares memory. |
+| `timings()` | `() -> { { pass, ms } }?` | How long each pass of the last run took on the GPU, in milliseconds, in the order they ran; a copy pass has no `ms`. `nil` on a device without `timestamps`. Asking waits for that run to finish, so ask once in a while, not every frame. |
+
+`tostring(plan)` is `GpuPlan(name, 4 of 5 passes, 640×480)`.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+local device = jess.gpu.device()
+local flat = shader.program {
+  attributes = { position = shader.vec2 },
+  pass = { tint = shader.vec4 },
+  vertex = function(input)
+    return { position = shader.vec4(input.attributes.position, 0, 1) }
+  end,
+  fragment = function(input) return input.pass.tint end,
+}
+local pipeline = device:pipeline(flat, { colors = { 'rgba8Unorm' } })
+
+local corners = buffer.create(24)
+for index, value in { -1, -1, 3, -1, -1, 3 } do
+  buffer.writef32(corners, (index - 1) * 4, value)
+end
+local vertices = device:buffer(24, 'vertex')
+vertices:write(0, corners)
+device:drawSet { pipeline = pipeline, vertices = vertices, count = 3, tags = { 'scene' } }
+
+local orange = device:buffer(16, 'uniform')
+orange:write(0, buffer.fromstring(string.pack('<ffff', 1, 0.5, 0, 1)))
+
+local plan = device:plan {
+  name = 'tiny',
+  viewport = { width = 4, height = 4 },
+  targets = { { name = 'screen', format = 'rgba8Unorm', imported = true } },
+  buffers = { { name = 'pixels', size = 256 * 4, imported = true } },
+  passes = {
+    {
+      name = 'scene',
+      kind = 'draw',
+      tags = { 'scene' },
+      pass = pipeline:bind('pass', { [0] = orange }),
+      colors = { { target = 'screen', clear = { 0, 0, 0, 1 } } },
+    },
+    { name = 'readBack', kind = 'copy', from = 'screen', to = 'pixels' },
+  },
+}
+
+local screen = device:texture { width = 4, height = 4, format = 'rgba8Unorm', usage = 'target' }
+local pixels = device:buffer(256 * 4, {})
+plan:run { screen = screen, pixels = pixels }
+print(plan, table.concat(plan.order, ', '))
+print(string.unpack('BBBB', buffer.tostring(pixels:read(0, 4))))
+-- GpuPlan(tiny, 2 of 2 passes, 4×4)  scene, readBack
+-- 255  128  0  255  5
+```
+
+The last number is `string.unpack`'s, again. A run draws the draw sets as they are when it runs: change one, and the next run draws it changed, with nothing planned again.
+
+A mip chain lives in one target: each pass reads one level and draws the next, and a copy takes a corner of the last level.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+local device = jess.gpu.device()
+local function covering(input: ShaderInput): { [string]: ShaderExpr }
+  local index = input.builtin.vertexIndex
+  local across = shader.bitAnd(shader.shiftLeft(index, shader.uint(1)), shader.uint(2))
+  local down = shader.bitAnd(index, shader.uint(2))
+  local corner = shader.vec2(shader.float(across), shader.float(down))
+  return { position = shader.vec4(corner * 2 - 1, 0, 1) }
+end
+
+local fill = device:pipeline(shader.program {
+  vertex = covering,
+  fragment = function() return shader.vec4(1, 0.5, 0, 1) end,
+}, { colors = { 'rgba8Unorm' } })
+
+local halve = device:pipeline(shader.program {
+  material = { above = shader.texture2d },
+  vertex = covering,
+  fragment = function(input)
+    local at = shader.vec2u(input.builtin.position.xy * 2)
+    return shader.load(input.material.above, at, 0) * 0.5
+  end,
+}, { colors = { 'rgba8Unorm' } })
+
+local plan = device:plan {
+  name = 'chain',
+  viewport = { width = 1, height = 1 },
+  targets = { { name = 'chain', format = 'rgba8Unorm', width = 8, height = 8, mips = 3 } },
+  buffers = { { name = 'pixels', size = 256 * 2, imported = true } },
+  passes = {
+    { name = 'fill', kind = 'fullscreen', pipeline = fill, colors = { 'chain' } },
+    {
+      name = 'down',
+      kind = 'fullscreen',
+      pipeline = halve,
+      material = { [0] = 'chain', [1] = device:sampler() },
+      reads = { { target = 'chain', level = 0 } },
+      colors = { { target = 'chain', level = 1 } },
+    },
+    {
+      name = 'corner',
+      kind = 'copy',
+      from = { target = 'chain', level = 1, column = 2, row = 2 },
+      to = 'pixels',
+      size = { width = 2, height = 2 },
+    },
+  },
+}
+
+local pixels = device:buffer(256 * 2, {})
+plan:run { pixels = pixels }
+print(string.unpack('BBBB', buffer.tostring(pixels:read(0, 4))))
+-- 128  64  0  128  5
+```
+
+## Windows
+
+{{ api_symbol(value="jess.gpu.window") }}
+
+Opens a native window with a surface on `device`. The window is what a person sees an application in; which windows an application has, what they show, and when they close are the application's to decide, from Luau, with what follows. [A window](@/docs/scripting/applications.md#a-window) in the applications guide puts all of it together: a package whose application draws a triangle from a vertex buffer into a window, turns it every frame, and answers the window's resizes and its close.
+
+| Field | Type | Holds |
+| --- | --- | --- |
+| `title` | `string?` | Its title; `jess` by default. |
+| `width`, `height` | `number?` | Its inner size in physical pixels; 800 by 600 by default. The window system may give it another. |
+| `resizable` | `boolean?` | Whether the person can resize it; `true` by default. |
+| `vsync` | `boolean?` | Whether presenting waits for the display's refresh, one image a refresh; `true` by default. |
+| `format` | `GpuTextureFormat?` | The format its surface draws in; by default the first of `bgra8Unorm`, `rgba8Unorm`, `bgra8UnormSrgb`, and `rgba8UnormSrgb` it offers. |
+| `key` | `string?` | What the application calls it, to keep it: a window opened with a key stays open when every handle to it is gone, still showing what it showed, and opening the key again hands it back instead of opening another. |
+| `closes` | `boolean?` | Whether the person asking it to close (its close button, say) closes it; `true` by default. With `false`, the request is only an event, and the application decides: asks to save, say, then calls `close`. |
+
+- **Capability:** `gpu.window`. A script you run holds it, as it holds the GPU; a package target declares it.
+- **Errors:** `jess.gpu.window: no window system: …` on a machine without a display (over SSH, say, or in a container), which a later call tries again, as the display may have come back; `windows belong to the thread that opened the first one`, since a process has one window system loop; on macOS, `jess.gpu.window: on macOS, windows open on the process's main thread`, so a worker can't open one there; and a jess built without the `window` feature says so: `jess.gpu.window: this jess has no windows: it was built without the window feature`.
+
+{{ api_symbol(value="jess.gpu.pump") }}
+
+Handles what the window system reported since the last call (sizes, closes, keys, the pointer), [commits](#commits) what the script changed, and waits for every window to draw it, a quarter of a second at most, so a script's own loop goes at the display's pace. An application's host does the same every frame, around the frame, without the waiting, and its scripts never call it; a script that opens a window itself calls it once a frame.
+
+## GpuWindow
+
+| Member | Type | Holds |
+| --- | --- | --- |
+| `title` | `string` | Its title. |
+| `number` | `number` | Its own number, no other window's in the process: its keyboard and pointer are the input devices whose `backend` is `window:<number>`. |
+| `key` | `string?` | The key it is kept by, if it was opened with one. |
+| `frames` | `number` | How many frames it has presented: one for each commit, plan shown, and resize there was something new to draw for. |
+| `width`, `height` | `number` | Its inner size in physical pixels, which its surface and the plan it shows are sized to. |
+| `scale` | `number` | How many physical pixels a logical one is on its display. |
+| `format` | `GpuTextureFormat?` | What its images are; `nil` once it's closed. |
+| `open` | `boolean` | Whether it's open: neither closed by the person nor by `close`. |
+| `show(plan, target, imports?, sets?)` | `(GpuPlan, string, { [string]: GpuTexture \| GpuBuffer }?, GpuDrawSets?) -> ()` | Draws `plan` into it from the next [commit](#commits) on, its image as the plan's imported target `target`, which must have the window's format, with `imports` for the plan's other imported targets and buffers, drawing from `sets` or the device's own. The plan goes with the window: resized with it, so `plan` itself runs, reads back, and reports its size at the window's size from then on, and what it keeps is what the window drew. A plan is shown in one window at a time; showing it in another is refused (`the plan is shown in another window, whose size it takes`), and `plan:resized` makes one of its own. |
+| `hide()`, `close()` | `() -> ()` | Stops drawing from the next commit on, or closes it now. |
+| `resize(width, height)` | `(number, number) -> ()` | Asks the window system for that inner size in physical pixels. It may give another, or none (a tiling window manager, say); what it gives arrives as a `resized` event, and the shown plan goes with it. |
+| `events()` | `() -> { GpuWindowEvent }` | What happened to it since the last call, oldest first, the last 256 at most (a run of pointer moves is the last of them): `{ kind = 'resized', width, height }`, `{ kind = 'scaled', scale }`, `{ kind = 'focused', focused }`, `{ kind = 'closeRequested' }`, and `{ kind = 'closed' }`, and what the person did in it, below. A shown plan is resized already when its `resized` is read; this is for what the application does about it (a camera's aspect, say). |
+| `textInput(enabled, area?)` | `(boolean, GpuTextArea?) -> ()` | Asks for text, or stops. While it asks, an input method (the one that writes Japanese, say) may compose for it, showing its candidates beside `area`, `{ x, y, width, height }` in physical pixels from the top left: where the text goes. Keys type `text` whether it asks or not. |
+
+Under an application's host, a window something happened to is announced: the host posts the [named event](@/docs/scripting/applications.md#named-events) [`jess.window`](@/docs/api/events.md#jess-window), `{ title, key }`, once until its events are read, and a handler of it (`on.event['jess.window']`) reads them with `events()`. Nothing runs while nothing happens to a window, and the handler runs in the frame the news came in. A script that drives its own frames reads `events()` when it likes.
+
+A window kept by a key outlives the code that opened it. When an application restarts with new code (its `restart`, a reload), its kept windows stay open through the load, each showing the last frame the old code drew, and the new code's `jess.gpu.window(device, { key = 'main' })` gets its window back, size, place, and all, with the title it asks for. Once the new code has loaded, the kept windows it didn't open again close; if it failed to load, none do, so the next load can take them back. A window the new code reclaims on another device has its surface made again on that one, and shows nothing until the new code gives it a plan. If that device can't present to it, opening it fails and the window stays as it was, on its old device, showing what it showed.
+
+`tostring(window)` is `GpuWindow(title, 800×600)`. Windows draw on a thread of their own, the presenter, never in Luau: when a commit changed something on a window's device, or it was shown a plan or resized, the presenter takes its next image, runs the plan into it with the draw sets as the commit left them, and presents it. A scene that doesn't change needs no new draw. The presenter sees a commit's changes together. An application host does not wait for presentation on each frame; a standalone script's `pump` can wait as described above. A draw that fails presents nothing and isn't counted in `frames`: the presenter tries the window again until it draws, giving it a new surface if its own was lost (the display changed, the driver restarted), and the failure is reported once, by the next `jess.gpu.pump` (`jess.gpu.pump: window Viewer: …`) or, under an application's host, in its log.
+
+What the person does in a window reaches a script two ways, for two kinds of code.
+
+Among the window's `events()`, in the order it happened, which is what a text field, an editor, or anything else about one window reads:
+
+| Event | Fields | Says |
+| --- | --- | --- |
+| `key` | `key`, `pressed`, `repeated` | A key pressed, held (`repeated`, the system's repeat while it is down), or released while the window has the keyboard, named by position (`KeyW`, `Backspace`, `ArrowLeft`), as bindings name them. |
+| `text` | `text` | Text typed: by a key, with the layout and dead keys applied (`é`), or by an input method finishing a composition. Backspace, return, tab, and escape are keys, not text. |
+| `preedit` | `text`, `from?`, `to?` | An input method's composition so far, to show where the text goes until it becomes `text`; empty when it is abandoned or done. `text:sub(from, to)` is what its cursor selects, empty for a caret. |
+| `inputMethod` | `enabled` | An input method started or stopped composing for the window, which happens only while it asks for text (`textInput`). |
+| `pointerEntered`, `pointerLeft` | | The pointer came over the window, or left it. |
+| `pointerMoved` | `x`, `y` | Where the pointer is now, in physical pixels from the window's top left. |
+| `pointerButton` | `button`, `pressed` | `Primary`, `Secondary`, `Middle`, `Back`, or `Forward`, pressed or released over the window. |
+| `wheel` | `x`, `y` | The wheel turned over the window, in lines, `y` positive away from the person. |
+| `modifiers` | `shift`, `control`, `alt`, `meta` | Which modifiers are held, on either side, whenever that changes. |
+
+Through [`@jess/input`](@/docs/api/input.md#windows), as devices, which is what bindings read: under the host of an application target that declares `gpu.window`, each window has a keyboard and a pointer of its own, which connect at its first input, disconnect when it closes, and say `backend = 'window:<number>'` in `runtime:devices()`. Keys, pointer buttons, position, motion, and the wheel are named as every jess backend names them (`key:KeyW`, `pointerButton:Primary`, `pointerAxis:DeltaX`). A binding to a control on any device, which is what a game binds, sees every window; one to a device sees one window. A window's pointer is at its place in that window, and at 0, 0 once the pointer leaves, so a binding to any pointer's position follows the window the pointer is over. The mouse's own motion goes to the pointer of the window that has the keyboard. The application is focused while any of its windows has the keyboard. A script you run takes the same from `jess.input.runtime { windows = true }`, its own headless runtime, which polls its windows at every `tick`.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+local device = jess.gpu.device()
+local window = jess.gpu.window(device, { title = 'green', width = 320, height = 240 })
+
+local green = shader.program {
+  vertex = function(input)
+    local index = input.builtin.vertexIndex
+    local corner = shader.vec2(
+      shader.float(shader.bitAnd(shader.shiftLeft(index, shader.uint(1)), shader.uint(2))),
+      shader.float(shader.bitAnd(index, shader.uint(2)))
+    )
+
+    return { position = shader.vec4(corner * 2 - 1, 0, 1) }
+  end,
+  fragment = function() return shader.vec4(0, 1, 0, 1) end,
+}
+
+local format = assert(window.format)
+local plan = device:plan {
+  viewport = { width = window.width, height = window.height },
+  targets = { { name = 'screen', format = format, imported = true } },
+  passes = {
+    {
+      name = 'fill',
+      kind = 'fullscreen',
+      pipeline = device:pipeline(green, { colors = { format } }),
+      colors = { 'screen' },
+    },
+  },
+}
+
+window:show(plan, 'screen')
+for _ = 1, 120 do
+  jess.gpu.pump()
+end
+print(window, window.open)
+window:close()
+-- GpuWindow(green, 320×240)  true
+```
+
+]========]
+
+--[========[
+@api-document shader jess.shader
+
+
+
+A shader, written in Luau. `require("@jess/shader")` is the same table as `jess.shader`, and a shader module is an ordinary Luau module that runs once and returns a `ShaderProgram`.
+
+The vertex and fragment functions you hand `shader.program` don't run on the GPU, and they don't run per frame. Each runs exactly once, while `shader.program` does, to write the program down: `shader.dot(normal, light)` computes nothing, it appends one typed `dot` expression and hands back a value naming it. What comes out is a validated program in jess's own [shader IR](@/docs/contributing/shader-ir.md), which [`device:pipeline`](@/docs/api/gpu.md#gpudevice-pipeline) lowers to whatever the backend wants and compiles once. You never write WGSL, and you never see a binding index.
+
+A program declares everything it reads. Nothing is built in: no camera, no model matrix, no time. A program that wants a camera declares one, and so does every other program that wants one, which is what a shared module of declarations is for.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+local Camera = shader.struct('Camera', {
+  projection = shader.mat4,
+  view = shader.mat4,
+})
+
+local program = shader.program {
+  attributes = {
+    position = shader.vec3,
+    normal = shader.vec3,
+    uv = shader.vec2,
+  },
+
+  pass = {
+    camera = Camera,
+    lightDirection = shader.vec3,
+  },
+
+  material = {
+    tint = shader.vec4,
+    diffuse = shader.texture2d,
+  },
+
+  draw = {
+    model = shader.mat4,
+  },
+
+  vertex = function(input)
+    local camera, vertex = input.pass.camera, input.attributes
+    local world = input.draw.model * shader.vec4(vertex.position, 1)
+
+    return {
+      position = camera.projection * camera.view * world,
+      normal = vertex.normal,
+      uv = vertex.uv,
+    }
+  end,
+
+  fragment = function(input)
+    local albedo = shader.sample(input.material.diffuse, input.uv)
+    local facing =
+      shader.dot(shader.normalize(input.normal), shader.normalize(input.pass.lightDirection))
+
+    return albedo * shader.max(facing, 0) * input.material.tint
+  end,
+}
+
+print(program) -- ShaderProgram(3 attributes, 4 uniforms, 1 texture, 2 varyings)
+
+return program
+```
+
+{% usage_note(title="What this is, today") %}
+- This is the authoring half. A program draws once [`device:pipeline`](@/docs/api/gpu.md#gpudevice-pipeline) makes a pipeline of it, and computes once [`device:dispatch`](@/docs/api/gpu.md#gpudevice-dispatch) runs one; what drawing means beyond that (cameras, blocks filled by name) is [`@jess/render`](@/docs/api/render.md)'s.
+- The expression set is the one real materials need, and no more: arithmetic, WGSL's functions, comparisons and `select`, construction and conversion, swizzles, texture reads, and [statements](#statements): vars, `when`, bounded loops, and `discard`. A compute program is [shader.compute](#shader-compute).
+{% end %}
+
+## shader.program
+
+{{ api_symbol(value="jess.shader.program") }}
+
+Builds and validates a program.
+
+- **Parameters:** `spec`, a table:
+  - `attributes`: names to [types](#types). What each vertex has, read from its vertex buffer: see [Attributes](#attributes).
+  - `instance`: names to types. What each instance has, read from the instance buffer.
+  - `pass`, `material`, `draw`: names to types. What each pass, material, and draw binds: values, structs, and arrays, textures, and samplers. See [Bindings](#bindings).
+  - `vertex`: a function taking the vertex [input](#shaderinput). It returns a table: `position`, the clip-space `Vec4f`, and any other named values, which become the fragment stage's inputs.
+  - `fragment`: a function taking the fragment input. It returns the color, or a table of named outputs, one per color target: `{ color = lit, id = input.draw.id }`. Each is a `Float`, `Int`, or `UInt`, or a vector of one, as the target behind it holds; a `Vec4f` for an ordinary color target. One value is the output `color`.
+- **Returns:** the [ShaderProgram](#shaderprogram).
+- **Order:** attributes are declared sorted by name, then instance attributes, then what the pass, the material, and the draw bind, each sorted by name; `vertex` runs; what it returned is passed along, sorted by name; `fragment` runs, and its outputs take color locations sorted by name; the whole program is validated. A Luau table has no order, so jess doesn't pretend yours does: the same module always builds the same program.
+- **Names:** every declaration lives under its own name (`input.attributes.uv`, `input.material.tint`), so names only clash within one table. A vertex output can't be named `attributes`, `instance`, `pass`, `material`, or `draw`, because the fragment input couldn't tell it apart from the namespace.
+- **Errors:** see [Errors](#errors). Also `unknown jess.shader.program option '<key>': expected attributes, draw, fragment, instance, material, pass, or vertex`, `shader.program needs a vertex function, not nil`, `material.<name> must be a shader type such as shader.vec4, not <kind>`, `attributes.<name> must be a value type such as shader.vec3, not Texture2D`, `the vertex function's table has no position`, `the fragment function returned <kind>: expected a shader value, the color, or a table of named outputs`, and, when the program finishes, `fragment output 0 is Mat4f: expected a Float, Int, or UInt, or a vector of one`.
+
+`shader.program` validates the program and leaves it as you wrote it. It doesn't fold constants: that rewrites the program, and rewriting is the consumer's decision.
+
+## shader.compute
+
+{{ api_symbol(value="jess.shader.compute") }}
+
+Builds and validates a compute program: one function, run once per invocation of a dispatch, which draws nothing. It reads what the pass, the material, and the draw bind, and writes what it computes to [storage buffers](#shader-storage).
+
+- **Parameters:** `spec`, a table:
+  - `workgroupSize`: how many invocations run together, sharing a core: a number, `{ 64 }`, or up to three, `{ 8, 8 }`, the rest 1. WebGPU allows each at least 1, `x` and `y` at most 256, `z` at most 64, and at most 256 invocations in all.
+  - `pass`, `material`, `draw`: names to types, as in [shader.program](#shader-program).
+  - `compute`: a function taking the compute [input](#shaderinput). It returns nothing.
+- **Input:** `input.pass`, `input.material`, `input.draw`, and `input.builtin`, whose [values](#built-in-values) say which invocation this is. There are no attributes and no varyings: `a compute program has no attributes: it reads storage buffers`.
+- **Errors:** `shader.compute needs a workgroupSize of one to three whole numbers, such as { 64 } or { 8, 8 }, not nil`; `the compute function returned number: it returns nothing, and writes what it computes to storage buffers`; and, when the program finishes, a workgroup outside the limits, or a derivative, which only the fragment stage has: `sample is used in the compute stage, which has no derivatives to pick a mip level with: sample at a level with sampleLevel`.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+local integrate = shader.compute {
+  workgroupSize = { 64 },
+  pass = {
+    positions = shader.storage(shader.vec4, 'readWrite'),
+    step = shader.float,
+    velocities = shader.storage(shader.vec4),
+  },
+
+  compute = function(input)
+    local index = input.builtin.globalInvocationId.x
+    local pass = input.pass
+    shader.when(shader.less(index, shader.arrayLength(pass.positions)), function()
+      local moved = pass.positions[index] + pass.velocities[index] * pass.step
+      shader.write(pass.positions, index, moved)
+    end)
+  end,
+}
+
+print(integrate, table.concat(integrate.workgroupSize :: { number }, ' '))
+-- ShaderProgram(compute 64×1×1, 1 uniform, 0 textures, 2 storage buffers)  64 1 1
+```
+
+## ShaderInput
+
+What `vertex` and `fragment` are called with. Every name is one of these, and a name it doesn't have is an error listing the ones it does:
+
+| Names | In | Type |
+| --- | --- | --- |
+| `attributes` | `vertex` | Your `attributes`, by name: `input.attributes.position`. |
+| `instance` | `vertex` | Your `instance` attributes, by name: `input.instance.transform`. |
+| `pass`, `material`, `draw` | both | What each binds, by name: `input.material.tint`. See [Bindings](#bindings). |
+| `builtin` | both | What the pipeline gives the stage: `input.builtin.vertexIndex`. See [Built-in values](#built-in-values). |
+| What `vertex` returned, except `position` | `fragment` | The type of the value returned. |
+
+The fragment function has no attributes: `input.attributes` there fails with `the attributes are only readable in the vertex function; return what the fragment function needs from them, to pass it as a varying`, which is also the fix.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+shader.program {
+  attributes = { position = shader.vec3 },
+  pass = { time = shader.float },
+  material = { fogDensity = shader.float },
+  draw = { model = shader.mat4 },
+  vertex = function(input)
+    local position = input.attributes.position
+    print(position, input.draw.model, input.material.fogDensity)
+
+    return { position = input.draw.model * shader.vec4(position, 1), depth = position.z }
+  end,
+
+  fragment = function(input)
+    print(input.depth, input.pass.time, input)
+
+    return shader.vec4(input.depth * input.material.fogDensity)
+  end,
+}
+-- ShaderExpr(Vec3f)  ShaderExpr(Mat4f)  ShaderExpr(Float)
+-- ShaderExpr(Float)  ShaderExpr(Float)  ShaderInput(fragment)
+```
+
+### Built-in values
+
+`input.builtin` holds what the pipeline gives a stage rather than what a buffer does. Each is read in the stage that has it; reading one in the other fails at once, `builtin vertexIndex is only readable in the vertex function`.
+
+| Name | In | Type | What |
+| --- | --- | --- | --- |
+| `vertexIndex` | `vertex` | `UInt` | The vertex's index in the draw; with an index buffer, the index it read. |
+| `instanceIndex` | `vertex` | `UInt` | The instance's index in the draw. |
+| `position` | `fragment` | `Vec4f` | Where the fragment is: `x` and `y` in pixels from the target's top left, at the pixel's centre, `z` its depth, and `w` one over the clip position's `w`. |
+| `frontFacing` | `fragment` | `Bool` | Whether the fragment belongs to a triangle facing the camera. |
+| `globalInvocationId` | `compute` | `Vec3u` | The invocation among every one of the dispatch: its workgroup's position times the workgroup size, plus its own within it. |
+| `localInvocationId`, `localInvocationIndex` | `compute` | `Vec3u`, `UInt` | The invocation within its workgroup, and the same as one number, `x` fastest. |
+| `workgroupId`, `numWorkgroups` | `compute` | `Vec3u` | The workgroup among the dispatch's, and how many the dispatch has. |
+
+A program with no attributes at all can still draw: three vertices and `vertexIndex` make a triangle that covers the target, the usual start of a full-screen pass.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+shader.program {
+  vertex = function(input)
+    local index = input.builtin.vertexIndex
+    local corner = shader.vec2(
+      shader.float(shader.bitAnd(shader.shiftLeft(index, shader.uint(1)), shader.uint(2))),
+      shader.float(shader.bitAnd(index, shader.uint(2)))
+    )
+    print(input.builtin, index, corner)
+
+    return { position = shader.vec4(corner * 2 - 1, 0, 1) }
+  end,
+
+  fragment = function(input)
+    local pixel = input.builtin.position
+    local stripe = shader.step(0.5, shader.fract(pixel.x / 8))
+    print(pixel, input.builtin.frontFacing)
+
+    return shader.select(input.builtin.frontFacing, shader.vec4(stripe), shader.vec4(0, 0, 0, 1))
+  end,
+}
+-- ShaderBuiltins(vertex)  ShaderExpr(UInt)  ShaderExpr(Vec2f)
+-- ShaderExpr(Vec4f)  ShaderExpr(Bool)
+```
+
+## Attributes
+
+`attributes` are what each vertex has: its position, its normal, its texture coordinates, whatever the mesh carries. `instance` attributes are what each instance has, for drawing one mesh many times in one go: a transform, a tint, an index into something. Both are declared by name and [type](#types), and both are read in the vertex function only, from `input.attributes` and `input.instance`.
+
+- **Types:** `float`, `int`, `uint`, their vectors, and `mat3` and `mat4`. A matrix takes one vertex location per column on the way in, and you read it whole.
+- **Layout:** jess packs each rate's attributes into one buffer record, in declaration order (sorted by name), with no padding, and reports where every one is. Whatever fills the vertex and instance buffers writes them from that, so nobody counts bytes by hand.
+- **Limit:** the attributes of both rates take at most 16 locations together.
+- **Errors:** `the attributes have no "normals": they have normal, position`; `the instance attributes have no "transform": the program declares none`; and, when the program finishes, `the attributes take 20 locations: at most 16`.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+local grass = shader.program {
+  attributes = { position = shader.vec3 },
+  instance = { transform = shader.mat4, tint = shader.vec4 },
+  pass = { viewProjection = shader.mat4 },
+  vertex = function(input)
+    local placed = input.instance.transform * shader.vec4(input.attributes.position, 1)
+    print(input.attributes, input.instance.transform)
+
+    return { position = input.pass.viewProjection * placed, tint = input.instance.tint }
+  end,
+
+  fragment = function(input) return input.tint end,
+}
+
+for _, attribute in grass.instance do
+  print(attribute.name, attribute.type)
+end
+-- ShaderAttributes(attributes)  ShaderExpr(Mat4f)
+-- tint  Vec4f
+-- transform  Mat4f
+```
+
+## Bindings
+
+Everything else a program reads is bound by one of three frequencies, which say how often it changes and so who supplies it:
+
+| Frequency | Bound | For |
+| --- | --- | --- |
+| `pass` | Once per pass | What every draw in it shares: a camera, a light list, a shadow map, the previous pass's output. |
+| `material` | With the material | What every draw of one material shares: a tint, a texture, a roughness. |
+| `draw` | Per draw | What one draw has alone: its transform, its own lookup table. |
+
+Each frequency's table names what it binds:
+
+- **Values, structs, and arrays** are its uniform block's members. A value is `shader.vec4` and the rest; a struct is a type from [shader.struct](#shader-struct); an array is a type from [shader.array](#shader-array). Change one, and nothing recompiles: it's data.
+- **`shader.texture2d`**, **`shader.texture2dArray`**, **`shader.textureCube`**, and **`shader.texture3d`** are textures, each declared with a sampler of the same name, which [sample](#shader-sample) uses. **`shader.texture2di`** and **`shader.texture2du`** are textures of integers, with no sampler, which [load](#levels-texels-and-sizes) reads. The depth textures, **`shader.depthTexture2d`** and the rest, come with a comparison sampler, for [sampleCompare](#depth-comparison).
+- **[shader.storage](#shader-storage)** is a storage buffer: as many elements as the buffer bound holds, read, or read and written.
+- **`shader.sampler`** and **`shader.comparisonSampler`** are samplers of their own, for the texture functions that take a sampler after the texture.
+
+Reading goes one step at a time. `input.pass.camera` is the camera; `.view` is its view matrix, a value. An array is indexed from 0 by a number or by a shader value, `#` is its length, and an element is a value or a struct to go on into: `input.pass.lights[i].color`. A step that reaches a value reads it; a texture or sampler is a handle for `sample`. Until then it's a `ShaderPlace`, which isn't a value: `input.pass.camera + 1` fails with `+: expected a shader value, not Camera, a struct: read one of its fields`.
+
+Where it all lives is jess's decision, never yours. Each frequency is one bind group, its uniform block first and its textures, samplers, and storage buffers after it, and every member is laid out by its alignment, largest first, so nothing pads what follows it. The layout is reported with the lowered program and as [program.layout](#layout), so whatever writes the buffers writes them from that. One rule of the layout shows: in a uniform block, an array's elements must be a multiple of 16 bytes apart, so a `shader.array(shader.float, 4)` there fails when the program finishes, with `uniform material.weights is an array of elements 4 bytes apart`. Use `shader.vec4` elements, or a struct.
+
+- **Errors:** `the material has no "tnit": it has diffuse, tint`; `Light has no field "colour": it has color, direction`; `Light[4] has no element 4: its elements are 0 to 3`; `Light[4] is indexed by a number or a shader value, not string`; `Camera has no length: only an array does`.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+local Light = shader.struct('Light', { color = shader.vec3, direction = shader.vec3 })
+
+shader.program {
+  attributes = { position = shader.vec3, normal = shader.vec3 },
+  pass = { lights = shader.array(Light, 4), viewProjection = shader.mat4 },
+  vertex = function(input)
+    local position = shader.vec4(input.attributes.position, 1)
+
+    return { position = input.pass.viewProjection * position, normal = input.attributes.normal }
+  end,
+
+  fragment = function(input)
+    local lights = input.pass.lights
+    print(lights, #lights, lights[0], lights[0].color)
+
+    local light = lights[0]
+    local facing = shader.max(shader.dot(shader.normalize(input.normal), light.direction), 0)
+
+    return shader.vec4(light.color * facing, 1)
+  end,
+}
+-- ShaderPlace(Light[4])  4  ShaderPlace(Light)  ShaderExpr(Vec3f)
+```
+
+### shader.struct
+
+{{ api_symbol(value="jess.shader.struct") }}
+
+A struct type: named fields of values, structs, and arrays. The name is what errors and reflection call it. A struct is a type, not a declaration: a program declares it where it's used, so one module can hold the structs a dozen programs share.
+
+- **Errors:** `shader.struct takes a name and a table of fields, not number`; `Bad.tex is a Texture2D: textures and samplers are bound, not held in a struct or array`.
+
+### shader.array
+
+{{ api_symbol(value="jess.shader.array") }}
+
+An array type: `length` values or structs, at least one. An array holds no arrays: put one in a struct to nest it.
+
+- **Errors:** `shader.array's length must be a whole number of at least 1, not 0`; `shader.array's element is an array: an array holds values or structs, not arrays`.
+
+### shader.storage
+
+{{ api_symbol(value="jess.shader.storage") }}
+{{ api_symbol(value="jess.shader.arrayLength") }}
+{{ api_symbol(value="jess.shader.write") }}
+
+A storage buffer: as many `element`s, values or structs, as the buffer bound to it holds. A uniform block is small and fixed; a storage buffer is however long the data is, a particle per element or a light per element, and the stages may write it.
+
+- **Access:** `'read'`, the default, `'readWrite'`, or `'atomic'` (below). The vertex function only reads buffers declared `'read'`, which is WGSL's rule: `storage buffer "sums" is readWrite and used in the vertex function, which may only read storage buffers declared to be read`.
+- **Reading:** index it from 0, by a number or a shader value, and go on into the element: `input.material.particles[i].position`. There's no range to check while the program is built; WGSL keeps a read past the end inside the buffer.
+- **Length:** `shader.arrayLength(buffer)` is a `UInt` value of how many elements are bound. Luau's `#` gives a number, which the length isn't until the GPU runs.
+- **Writing:** `shader.write(place, key, value)` writes `value` at `place[key]` in a `readWrite` buffer, where `place[key]` is a value: `shader.write(input.pass.counts, i, n)`, `shader.write(particles[i], 'position', p)`. A write is a statement, run where the call is.
+- **Layout:** each element is laid out like a struct, and the layout reports the stride between them, so whatever fills the buffer writes from that.
+- **Atomics:** a buffer declared `'atomic'` holds `shader.int`s or `shader.uint`s that every invocation updates at once. Reading, writing, and `shader.atomicAdd`, `atomicSubtract`, `atomicMin`, `atomicMax`, `atomicAnd`, `atomicOr`, `atomicXor`, and `atomicExchange` are each one atomic operation, and the updates give back what the element held before, so `local slot = shader.atomicAdd(input.pass.counts, 0, 1)` hands every invocation its own slot. Updating anything else is refused: `storage buffer "kept" is updated atomically, but it isn't atomic: declare it shader.storage(shader.uint, 'atomic')`. Another pass reads the same buffer as `shader.storage(shader.uint)`.
+
+{{ api_symbol(value="jess.shader.atomicAdd") }}
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+-- Every even invocation keeps its index, in the slot counts[0] hands it: a compaction.
+local compact = shader.compute {
+  workgroupSize = 64,
+  pass = {
+    counts = shader.storage(shader.uint, 'atomic'),
+    kept = shader.storage(shader.uint, 'readWrite'),
+  },
+  compute = function(input)
+    local index = input.builtin.globalInvocationId.x
+    shader.when(shader.equal(index % shader.uint(2), shader.uint(0)), function()
+      local slot = shader.atomicAdd(input.pass.counts, 0, shader.uint(1))
+      shader.write(input.pass.kept, slot, index)
+    end)
+  end,
+}
+
+for _, binding in compact.layout.pass.bindings do
+  print(binding.name, binding.access)
+end
+-- counts  atomic
+-- kept  readWrite
+```
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+local Particle = shader.struct('Particle', { position = shader.vec4, size = shader.float })
+
+shader.program {
+  attributes = { corner = shader.vec2 },
+  pass = { coverage = shader.storage(shader.uint, 'readWrite') },
+  material = { particles = shader.storage(Particle) },
+  vertex = function(input)
+    local particle = input.material.particles[input.builtin.instanceIndex]
+    local offset = shader.vec4(input.attributes.corner * particle.size, 0, 0)
+    print(input.material.particles, particle, particle.size)
+
+    return { position = particle.position + offset }
+  end,
+
+  fragment = function(input)
+    local coverage = input.pass.coverage
+    local slot = shader.uint(input.builtin.position.x)
+    shader.when(shader.less(slot, shader.arrayLength(coverage)), function()
+      shader.write(coverage, slot, coverage[slot] + shader.uint(1))
+    end)
+
+    return shader.vec4(1)
+  end,
+}
+-- ShaderPlace(Particle[])  ShaderPlace(Particle)  ShaderExpr(Float)
+```
+
+## ShaderExpr
+
+A symbolic value in the program under construction: an expression, its type, and the program it belongs to. It isn't a number and it isn't a GPU value; there's nothing in it to read.
+
+- **Operators:** `+`, `-`, `*`, `/`, and `%`, between two values of one numeric type, or a vector and a scalar of its kind (a `Vec3f` and a `Float`, a `Vec2u` and a `UInt`). `%` is what's left of truncated division, so it has the sign of its left side: `-7 % 3` is `-1`, where Luau's own `%` gives `2`. Unary `-` negates a `Float`, an `Int`, or a vector of either; there's no negating a `UInt` or a matrix. `+` and `-` also take two matrices of one size; `*` also takes a matrix and a `Float`, a matrix and a vector of its size, or two matrices of one size. `projection * view * model * position` multiplies left to right, as Luau evaluates it.
+- **Numbers:** a Luau number where a value goes is a `Float` constant, on either side: `2 * color`, `shader.max(facing, 0)`. Integers are spelled `shader.int(3)` and `shader.uint(3)`, so `2 * cell` is a `Float` times whatever `cell` is, and fails for an integer vector. A Luau `true` or `false` is a `Bool` constant.
+- **Swizzles:** `.x`, `.xy`, `.zyx`, `.wzyx`: one to four of `x`, `y`, `z`, and `w`, giving a scalar or a vector of the same kind. They're the only names a value has.
+- **`==`:** whether two handles name the same expression. Reading `input.material.tint` twice gives equal values.
+- **`tostring`:** `ShaderExpr(Vec4f)`.
+- **Lifetime:** a value belongs to one `shader.program` call. Used after that call returns, it fails with `this shader program is finished: its values belong to a shader.program call that has returned`; used inside another program, with `expression <n> belongs to another shader program`.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+shader.program {
+  attributes = { position = shader.vec3 },
+  material = { tint = shader.vec4 },
+  vertex = function(input) return { position = shader.vec4(input.attributes.position, 1) } end,
+  fragment = function(input)
+    local tint = input.material.tint
+    print(tint.xyz, tint.w, tint.zyx.xy)
+    print(2 * tint, tint / 2, 1 - tint.w)
+    print(tint == input.material.tint, tint == tint.xyzw)
+
+    return shader.vec4(tint.xyz * 0.5, tint.w)
+  end,
+}
+-- ShaderExpr(Vec3f)  ShaderExpr(Float)  ShaderExpr(Vec2f)
+-- ShaderExpr(Vec4f)  ShaderExpr(Vec4f)  ShaderExpr(Float)
+-- true  false
+```
+
+## Types
+
+{{ api_symbol(value="jess.shader.float") }}
+
+A `ShaderType` is what attributes and bindings declare, and `tostring` gives its name as errors spell it.
+
+| Member | Type | Declares |
+| --- | --- | --- |
+| `shader.float`, `shader.int`, `shader.uint` | `Float`, `Int`, `UInt` | An attribute, a uniform member, a field, or an element. |
+| `shader.vec2`, `shader.vec3`, `shader.vec4` | `Vec2f`, `Vec3f`, `Vec4f` | The same. |
+| `shader.vec2i`, `shader.vec3i`, `shader.vec4i` | `Vec2i`, `Vec3i`, `Vec4i` | The same: signed integers. |
+| `shader.vec2u`, `shader.vec3u`, `shader.vec4u` | `Vec2u`, `Vec3u`, `Vec4u` | The same: unsigned integers. |
+| `shader.mat3`, `shader.mat4` | `Mat3f`, `Mat4f` | The same. Column-major. |
+| `shader.texture2d` | `Texture2D` | A texture and its sampler, in `pass`, `material`, or `draw`. |
+| `shader.texture2dArray` | `Texture2DArray` | The same: layers of 2D textures of one size. |
+| `shader.textureCube` | `TextureCube` | The same: six square faces, an environment or a sky. |
+| `shader.texture3d` | `Texture3D` | The same: a volume. |
+| `shader.texture2di`, `shader.texture2du` | `Texture2Di`, `Texture2Du` | A 2D texture of signed or unsigned integers, read with [load](#levels-texels-and-sizes), declared with no sampler. |
+| `shader.depthTexture2d`, `shader.depthTexture2dArray`, `shader.depthTextureCube` | `DepthTexture2D`, `DepthTexture2DArray`, `DepthTextureCube` | A texture of depths and its comparison sampler, for [sampleCompare](#depth-comparison). |
+| `shader.sampler` | `Sampler` | A sampler of its own, for [sample](#shader-sample)'s three-argument form. |
+| `shader.comparisonSampler` | `ComparisonSampler` | A comparison sampler of its own, for [sampleCompare](#depth-comparison). |
+| [shader.struct](#shader-struct)`(...)` | its name | A uniform member, a field, or an element. |
+| [shader.array](#shader-array)`(...)` | `Element[length]` | A uniform member or a field. |
+| [shader.storage](#shader-storage)`(...)` | `Element[]`, `Element[] readWrite` | A storage buffer, in `pass`, `material`, or `draw`. |
+
+The value types are also constructors, inside a stage function:
+
+{{ api_symbol(value="jess.shader.vec4") }}
+
+- `shader.vec2`, `shader.vec3`, `shader.vec4` take floats and smaller vectors whose sizes add up to theirs (`shader.vec4(position, 1)`, `shader.vec4(uv, 0, 1)`), or one `Float` to repeat (`shader.vec3(0.5)`). The integer vectors take integers the same way, and a number among them is that vector's integer: `shader.vec3i(1, -2, 3)`, `shader.vec2u(shader.uint(1))`. A number that isn't whole, or is out of range, fails: `shader.vec3i: 1.5 is not an Int: expected a whole number from -2147483648 to 2147483647`.
+- `shader.float(0.25)` is a `Float` constant, for when a bare number has nothing beside it to make it one, and `shader.int(-3)` and `shader.uint(7)` are the integer constants.
+- One value of another scalar converts, keeping its size: `shader.float(index)` is a `UInt` index as a `Float`, `shader.vec3(cell)` a `Vec3u` as a `Vec3f`, and `shader.vec3i(cell)` the same cell signed. A float converts to an integer by truncating toward zero. A conversion never changes the size: `shader.float(tint)` fails with `Float(Vec4f) is invalid: expected a scalar or vector of the same size`; take a component first.
+- `shader.mat3` and `shader.mat4` take their columns: `shader.mat3(right, up, forward)`, three `Vec3f`s. Anything else fails: `Mat4f(Float) is invalid: expected four Vec4f columns`.
+- A texture, a sampler, a struct, or an array can't be constructed: `Camera can't be constructed: it is declared, and read from the input`.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+print(shader.vec4, shader.mat3, shader.texture2d) -- Vec4f  Mat3f  Texture2D
+print(shader.struct('Fog', { density = shader.float }), shader.array(shader.vec4, 8))
+-- Fog  Vec4f[8]
+
+shader.program {
+  attributes = { cell = shader.vec3u, position = shader.vec3, uv = shader.vec2 },
+  vertex = function(input)
+    local vertex = input.attributes
+    print(shader.vec4(vertex.position, 1), shader.vec4(vertex.uv, 0, 1), shader.vec3(0.5))
+    print(shader.vec3i(1, -2, 3), shader.uint(7), shader.vec2u(shader.uint(1)).yx)
+    print(shader.vec3(vertex.cell), shader.float(vertex.cell.x))
+    print(shader.mat3(vertex.position, shader.vec3(0, 1, 0), shader.vec3(0, 0, 1)))
+
+    return { position = shader.vec4(vertex.position, 1) }
+  end,
+
+  fragment = function() return shader.vec4(shader.float(0.25)) end,
+}
+-- ShaderExpr(Vec4f)  ShaderExpr(Vec4f)  ShaderExpr(Vec3f)
+-- ShaderExpr(Vec3i)  ShaderExpr(UInt)  ShaderExpr(Vec2u)
+-- ShaderExpr(Vec3f)  ShaderExpr(Float)
+-- ShaderExpr(Mat3f)
+```
+
+## Functions
+
+Each takes shader values or numbers and returns a new value. They're only usable inside a stage function: `shader.dot is only usable inside shader.program's vertex or fragment function`. The names are WGSL's, and so is what each computes.
+
+| Function | Takes | Gives |
+| --- | --- | --- |
+| `shader.min(a, b)`, `shader.max(a, b)` | Two values of one numeric type, or a vector and a scalar of its kind. | The smaller or larger, per component. |
+| `shader.clamp(value, low, high)` | A value and two bounds of its type, or a vector and two scalars of its kind. | `value` kept within `low..high`, per component. |
+| `shader.abs(value)` | An `Int`, `UInt`, `Float`, or a vector of one. | The absolute value, per component. |
+| `shader.sign(value)` | An `Int`, `Float`, or a vector of one. | -1, 0, or 1, per component. |
+| `shader.floor`, `ceil`, `round`, `trunc` | A `Float` or float vector. | Each component rounded down, up, to the nearest integer (a half to the even one), or toward zero. |
+| `shader.fract(value)` | A `Float` or float vector. | `value - floor(value)`. |
+| `shader.sqrt`, `inverseSqrt`, `exp`, `exp2`, `log`, `log2` | A `Float` or float vector. | The root, one over it, `e` or 2 to the power, or the natural or base-2 logarithm, per component. |
+| `shader.pow(base, exponent)` | Two `Float`s or float vectors of one type, or a float vector and a `Float`. | `base` to the power `exponent`, per component. |
+| `shader.sin`, `cos`, `tan`, `asin`, `acos`, `atan` | A `Float` or float vector, in radians. | The function, per component; the inverses give radians. |
+| `shader.atan2(y, x)` | As `pow`. | The angle of the point `(x, y)`, from -π to π. |
+| `shader.radians(degrees)`, `shader.degrees(radians)` | A `Float` or float vector. | The angle in the other unit. |
+| `shader.saturate(value)` | A `Float` or float vector. | `clamp(value, 0, 1)`. |
+| `shader.step(edge, value)` | As `pow`. | 0 where `value < edge`, else 1, per component. |
+| `shader.smoothstep(low, high, value)` | A `Float` or float vector, and two edges of its type or `Float`s. | 0 at `low`, 1 at `high`, and a smooth curve between. |
+| `shader.mix(start, finish, amount)` | Two `Float`s or vectors of one type, and an amount of that type or `Float`. | `start + (finish - start) * amount`. |
+| `shader.dot(a, b)` | Two vectors of one type. | Their component: a `Float`, `Int`, or `UInt`. |
+| `shader.cross(a, b)` | Two `Vec3f`. | A `Vec3f`. |
+| `shader.length(value)` | A `Float` or a vector. | A `Float`. |
+| `shader.distance(a, b)` | Two `Float`s or float vectors of one type. | `length(a - b)`. |
+| `shader.normalize(value)` | A float vector. | The vector at length 1. |
+| `shader.reflect(incident, normal)` | Two float vectors of one type; `normal` at length 1. | `incident` reflected about the plane `normal` faces out of. |
+| `shader.refract(incident, normal, eta)` | Two float vectors of one type, and a `Float`. | `incident` bent through that plane at the ratio of refractive indices `eta`, or zero where it reflects entirely. |
+| `shader.transpose(matrix)` | A matrix. | Its rows as its columns. |
+| `shader.determinant(matrix)` | A matrix. | A `Float`. |
+| `shader.dpdx`, `dpdy`, `fwidth` | A `Float` or float vector. Fragment stage only. | How fast the value changes from one pixel to the next across the screen, down it, or the sum of both as absolute values. |
+
+A `Float` beside a vector in `pow`, `atan2`, `step`, and `smoothstep` counts for every component: `shader.step(0.5, color.xyz)`. A derivative in the vertex stage fails when the program finishes: `dpdx is used in the vertex stage: derivatives are taken in the fragment stage`.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+shader.program {
+  attributes = { position = shader.vec3, normal = shader.vec3 },
+  material = {
+    warm = shader.vec3,
+    cool = shader.vec3,
+    lightDirection = shader.vec3,
+  },
+
+  vertex = function(input)
+    local vertex = input.attributes
+
+    return { position = shader.vec4(vertex.position, 1), normal = vertex.normal }
+  end,
+
+  fragment = function(input)
+    local material = input.material
+    local normal = shader.normalize(input.normal)
+    local facing = shader.dot(normal, material.lightDirection)
+    local shade = shader.mix(material.cool, material.warm, shader.clamp(facing, 0, 1))
+    print(facing, shade, shader.length(input.normal), shader.cross(normal, material.lightDirection))
+    print(shader.min(shade, 0.8), shader.max(material.warm, material.cool))
+    print(shader.smoothstep(0.2, 0.8, facing), shader.step(0.5, shade), shader.fwidth(facing))
+
+    return shader.vec4(shade, 1)
+  end,
+}
+-- ShaderExpr(Float)  ShaderExpr(Vec3f)  ShaderExpr(Float)  ShaderExpr(Vec3f)
+-- ShaderExpr(Vec3f)  ShaderExpr(Vec3f)
+-- ShaderExpr(Float)  ShaderExpr(Vec3f)  ShaderExpr(Float)
+```
+
+### Comparisons and choice
+
+Luau's `==` and `<` answer a Luau boolean, so a shader compares with functions, each giving a `Bool`, and chooses with `select`.
+
+| Function | Takes | Gives |
+| --- | --- | --- |
+| `shader.equal(a, b)`, `shader.notEqual(a, b)` | Two scalars of one type, `Bool` included. | Whether they're equal, or differ. |
+| `shader.less(a, b)`, `shader.lessEqual(a, b)`, `shader.greater(a, b)`, `shader.greaterEqual(a, b)` | Two `Int`s, `UInt`s, or `Float`s of one type. | `a < b`, `a <= b`, `a > b`, `a >= b`. |
+| `shader.logicalAnd(a, b)`, `shader.logicalOr(a, b)` | Two `Bool`s. | Whether both hold, or either does. |
+| `shader.logicalNot(value)` | A `Bool`. | Whether it doesn't hold. |
+| `shader.select(condition, accept, reject)` | A `Bool`, then two scalars or vectors of one type. | `accept` where `condition` holds, else `reject`. |
+
+`select` isn't a branch: both choices are computed, and one is kept. It's the right thing for picking a value, and cheap, since a GPU would run both sides of a short branch anyway.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+shader.program {
+  attributes = { position = shader.vec3, height = shader.float },
+  material = { snowLine = shader.float, snow = shader.vec4, rock = shader.vec4 },
+  vertex = function(input)
+    local vertex = input.attributes
+
+    return { position = shader.vec4(vertex.position, 1), height = vertex.height }
+  end,
+
+  fragment = function(input)
+    local material = input.material
+    local snowy = shader.greaterEqual(input.height, material.snowLine)
+    print(snowy, shader.logicalAnd(snowy, true), shader.logicalNot(snowy))
+
+    return shader.select(snowy, material.snow, material.rock)
+  end,
+}
+-- ShaderExpr(Bool)  ShaderExpr(Bool)  ShaderExpr(Bool)
+```
+
+### Bits
+
+The bitwise operators work on `Int` and `UInt` values and their vectors, both sides of one type. Luau has no bitwise operators of its own to borrow, so they're functions.
+
+| Function | Takes | Gives |
+| --- | --- | --- |
+| `shader.bitAnd(a, b)`, `shader.bitOr(a, b)`, `shader.bitXor(a, b)` | Two `Int` or `UInt` values of one type. | And, or, and exclusive or, bit by bit. |
+| `shader.bitNot(value)` | An `Int` or `UInt` value. | Every bit flipped. |
+| `shader.shiftLeft(value, amount)`, `shader.shiftRight(value, amount)` | An `Int` or `UInt` value, and a `UInt` amount, or a `UInt` vector of the value's size. | The value shifted; right shifts of an `Int` keep its sign. |
+
+A constant amount of 32 or more fails where it's written, with `a shift by 40 is too far: shift by less than 32`.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+shader.program {
+  attributes = { position = shader.vec3, packed = shader.uint },
+  vertex = function(input)
+    local packed = input.attributes.packed
+    local low = shader.bitAnd(packed, shader.uint(0xff))
+    local high = shader.shiftRight(packed, shader.uint(8))
+    print(low, high, shader.bitNot(low), -input.attributes.position)
+
+    return { position = shader.vec4(input.attributes.position, 1) }
+  end,
+
+  fragment = function() return shader.vec4(1) end,
+}
+-- ShaderExpr(UInt)  ShaderExpr(UInt)  ShaderExpr(UInt)  ShaderExpr(Vec3f)
+```
+
+### shader.sample
+
+{{ api_symbol(value="jess.shader.sample") }}
+{{ api_symbol(value="jess.shader.sample") }}
+
+Reads a texture to a `Vec4f`, at the coordinates its kind takes:
+
+| Texture | Coordinates |
+| --- | --- |
+| `texture2d` | `Vec2f`, from 0 to 1 across it. |
+| `texture2dArray` | `Vec2f`, and then the layer: an `Int` or `UInt`, or a number, which is a `UInt`. |
+| `textureCube` | `Vec3f`, a direction from the cube's centre; it needn't be of length 1. |
+| `texture3d` | `Vec3f`, from 0 to 1 through it. |
+
+Without a sampler, it's the one declared with the texture. With one, it's whatever sampler you pass: one a frequency binds on its own. A sampler is a handle, so jess tells it from coordinates by what it is, not by how many arguments there are.
+
+- **Errors:** `shader.sample: expected a texture, such as input.material.diffuse, not a Vec4f value`; `shader.sample: expected a sampler, not a Vec4f value`; coordinates or a layer the texture doesn't take, `sample(TextureCube, Sampler, Vec2f) is invalid: expected sample(TextureCube, Sampler, Vec3f)`; and, when the program finishes, `sample is used in the vertex stage, which has no derivatives to pick a mip level with: sample at a level with sampleLevel`, which is also the fix.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+local program = shader.program {
+  attributes = { position = shader.vec3, uv = shader.vec2 },
+  material = { diffuse = shader.texture2d, pixelated = shader.sampler },
+  vertex = function(input)
+    return { position = shader.vec4(input.attributes.position, 1), uv = input.attributes.uv }
+  end,
+
+  fragment = function(input)
+    local material = input.material
+    print(material.diffuse, material.pixelated)
+
+    local smooth = shader.sample(material.diffuse, input.uv)
+    local blocky = shader.sample(material.diffuse, material.pixelated, input.uv)
+
+    return shader.mix(smooth, blocky, 0.5)
+  end,
+}
+
+for _, binding in program.material do
+  print(binding.name, binding.type)
+end
+-- ShaderTexture(Texture2D)  ShaderSampler(Sampler)
+-- diffuse  Texture2D
+-- pixelated  Sampler
+```
+
+A sky and a layer of decals, each sampled the way its kind is:
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+shader.program {
+  attributes = { position = shader.vec3 },
+  material = { sky = shader.textureCube, decals = shader.texture2dArray },
+  draw = { decal = shader.uint },
+  vertex = function(input)
+    local position = input.attributes.position
+
+    return { position = shader.vec4(position, 1), direction = position }
+  end,
+
+  fragment = function(input)
+    local material = input.material
+    local sky = shader.sample(material.sky, input.direction)
+    local decal = shader.sample(material.decals, input.direction.xy, input.draw.decal)
+    print(material.sky, sky, shader.sample(material.decals, input.direction.xy, 3))
+
+    return shader.mix(sky, decal, decal.w)
+  end,
+}
+-- ShaderTexture(TextureCube)  ShaderExpr(Vec4f)  ShaderExpr(Vec4f)
+```
+
+### Levels, texels, and sizes
+
+{{ api_symbol(value="jess.shader.sampleLevel") }}
+{{ api_symbol(value="jess.shader.sampleBias") }}
+{{ api_symbol(value="jess.shader.load") }}
+{{ api_symbol(value="jess.shader.dimensions") }}
+{{ api_symbol(value="jess.shader.levels") }}
+{{ api_symbol(value="jess.shader.layers") }}
+
+`sample` picks a mip level from how fast its coordinates change across the screen, which only the fragment stage knows. The rest pick otherwise, or read without a sampler at all:
+
+| Function | Reads | Stage |
+| --- | --- | --- |
+| `shader.sampleLevel` | As `sample`, at the `Float` mip level given last: 0 is the largest, 1 half its size. | Either. |
+| `shader.sampleBias` | As `sample`, at the level it would pick, moved by the `Float` bias given last: -1 is sharper. | Fragment. |
+| `shader.load` | One texel, without a sampler or filtering: at integer coordinates (a `Vec2i` or `Vec2u`, a `Vec3i` or `Vec3u` in a 3D texture), in a layer for an array texture, in the `Int` or `UInt` level given last. A `Vec4f`, or a `Vec4i` or `Vec4u` from an integer texture. Not a cube: a cube is only sampled. | Either. |
+| `shader.dimensions` | The size in texels, a `Vec2u` (a `Vec3u` for a 3D texture), of the level given, or of the largest. | Either. |
+| `shader.levels`, `shader.layers` | How many mip levels a texture has, and how many layers an array texture has: `UInt`s. | Either. |
+
+The integer textures, `shader.texture2di` and `shader.texture2du`, hold signed and unsigned integers that no sampler can filter, so they're declared without one, and `load` is how they're read: `shader.sample: a Texture2Du isn't sampled: read its texels with shader.load`. A number given as a layer or a load's level is a `UInt`; as a bias or a sample's level, a `Float`.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+shader.program {
+  attributes = { uv = shader.vec2 },
+  material = { height = shader.texture2d, ids = shader.texture2du },
+  vertex = function(input)
+    local uv = input.attributes.uv
+    local height = shader.sampleLevel(input.material.height, uv, 0).x
+
+    return { position = shader.vec4(uv, height, 1), uv = uv }
+  end,
+
+  fragment = function(input)
+    local material = input.material
+    local size = shader.dimensions(material.ids)
+    local id = shader.load(material.ids, shader.vec2u(input.uv * shader.vec2(size)), 0)
+    local sharp = shader.sampleBias(material.height, input.uv, -1)
+    print(size, id, shader.levels(material.height), sharp)
+
+    return shader.vec4(shader.float(id.x) / 255)
+  end,
+}
+-- ShaderExpr(Vec2u)  ShaderExpr(Vec4u)  ShaderExpr(UInt)  ShaderExpr(Vec4f)
+```
+
+### Depth comparison
+
+{{ api_symbol(value="jess.shader.sampleCompare") }}
+{{ api_symbol(value="jess.shader.sampleCompareLevel") }}
+
+A shadow map is a depth texture: how far the light saw, per texel. Shading a point asks whether it's farther than that, which is a comparison the sampler makes, texel by texel, before it filters. `sampleCompare` takes a depth texture, its coordinates (and layer), and the `Float` depth to compare, and gives a `Float` from 0, where every texel it read is nearer the light than the point, to 1, where none is: the point's share of light. `sampleCompareLevel` compares in mip level 0, which the vertex stage can do too.
+
+The depth textures, `shader.depthTexture2d`, `shader.depthTexture2dArray` (cascades), and `shader.depthTextureCube` (a point light's six directions), are declared with a comparison sampler of the same name; `shader.comparisonSampler` declares one of its own. `load` reads a depth texture's texel as a `Float`, and `sample` refuses one: `sample(DepthTexture2D, ComparisonSampler, Vec2f) is invalid: expected a float texture: a DepthTexture2D is compared with sampleCompare, or read with load`.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+shader.program {
+  attributes = { position = shader.vec3 },
+  pass = { lightViewProjection = shader.mat4, shadow = shader.depthTexture2d },
+  vertex = function(input)
+    local position = shader.vec4(input.attributes.position, 1)
+    local light = input.pass.lightViewProjection * position
+
+    return { position = position, light = light.xyz / light.w }
+  end,
+
+  fragment = function(input)
+    local uv = input.light.xy * shader.vec2(0.5, -0.5) + 0.5
+    local lit = shader.sampleCompare(input.pass.shadow, uv, input.light.z - 0.005)
+    print(input.pass.shadow, lit)
+
+    return shader.vec4(shader.vec3(shader.mix(0.2, 1, lit)), 1)
+  end,
+}
+-- ShaderTexture(DepthTexture2D)  ShaderExpr(Float)
+```
+
+## Statements
+
+{{ api_symbol(value="jess.shader.var") }}
+{{ api_symbol(value="jess.shader.when") }}
+{{ api_symbol(value="jess.shader.loop") }}
+{{ api_symbol(value="jess.shader.discard") }}
+
+Everything above computes a value. These four do something instead, in the stage function that calls them, and in the order it calls them:
+
+- **`shader.var(initial)`** is a value the function keeps and changes: a `ShaderVar` of `initial`'s type. `.value` reads it as of where you read it, and `:set(value)` stores into it from there on. A Luau `local` is a name for one value; a `ShaderVar` is a place a value can change in.
+- **`shader.when(condition, accept, reject)`** runs `accept` where the `Bool` condition holds and `reject`, if there is one, where it doesn't. A Luau `if` decides once, while the program is built; `shader.when` decides per vertex or fragment, on the GPU.
+- **`shader.loop(count, body)`** runs `body` `count` times, giving it the index from 0. The count is an `Int` or `UInt` (a number is a `UInt`), fixed before the first pass, and nothing can change the index, so a loop always ends. A Luau `for` unrolls at build time, which is the right tool when the count is known then; `shader.loop` is for a count the GPU reads, such as how many lights a pass binds.
+- **`shader.discard()`** throws the fragment away: it writes nothing. Fragment function only.
+
+Every value is computed where the call that made it ran, which has consequences jess checks:
+
+- A value made inside `accept`, `reject`, or `body` exists only inside it. Reading it after fails when the program finishes, with `a value computed inside a shader.when or shader.loop is read after it: keep it in a shader.var declared before`.
+- A value made in the vertex function isn't one the fragment function can read, and neither is a var: `a shader.var of the vertex function is used in the fragment function`. Return it from the vertex function, and it arrives as a varying.
+- Fragments are shaded in small groups that share their neighbours' values to take derivatives, and `sample`, `sampleBias`, `sampleCompare`, `dpdx`, `dpdy`, and `fwidth` all take one. Where a `shader.when` or `shader.loop` is decided by something that varies per fragment, some of the group may not be there to ask, so jess refuses a derivative inside one: `sample is used where fragments may take different paths, ...: sample before the shader.when or shader.loop, or sample at a level with sampleLevel`. Something every fragment agrees on, a uniform or a constant, decides a path they all take, and anything goes inside.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+local Light = shader.struct('Light', { color = shader.vec4, position = shader.vec4 })
+
+shader.program {
+  attributes = { normal = shader.vec3, position = shader.vec3, uv = shader.vec2 },
+  pass = { lightCount = shader.uint, lights = shader.array(Light, 8) },
+  material = { cutoff = shader.float, diffuse = shader.texture2d },
+  vertex = function(input)
+    local vertex = input.attributes
+
+    return {
+      position = shader.vec4(vertex.position, 1),
+      normal = vertex.normal,
+      uv = vertex.uv,
+      world = vertex.position,
+    }
+  end,
+
+  fragment = function(input)
+    local albedo = shader.sample(input.material.diffuse, input.uv)
+    shader.when(shader.less(albedo.w, input.material.cutoff), shader.discard)
+
+    local light = shader.var(shader.vec3(0))
+    shader.loop(input.pass.lightCount, function(index)
+      local source = input.pass.lights[index]
+      local toward = shader.normalize(source.position.xyz - input.world)
+      local facing = shader.max(shader.dot(shader.normalize(input.normal), toward), 0)
+      light:set(light.value + source.color.xyz * facing)
+    end)
+    print(light, light.value)
+
+    return shader.vec4(albedo.xyz * light.value, albedo.w)
+  end,
+}
+-- ShaderVar(Vec3f)  ShaderExpr(Vec3f)
+```
+
+## ShaderProgram
+
+What `shader.program` and `shader.compute` return and a shader module hands back: finished, validated, and read-only.
+
+| Field | Type | Holds |
+| --- | --- | --- |
+| `attributes` | `{ { name: string, type: string } }` | The per-vertex attributes, sorted by name. |
+| `instance` | `{ { name: string, type: string } }` | The per-instance attributes, sorted by name. |
+| `pass`, `material`, `draw` | `{ { name: string, type: string } }` | What each frequency binds, sorted by name: `Vec4f`, `Camera`, `Light[4]`, `Texture2D`, `Sampler`. A texture's own sampler is part of the texture. |
+| `varyings` | `{ { name: string, type: string } }` | What `vertex` passes to `fragment`, sorted by name. |
+| `outputs` | `{ { name: string, type: string } }` | The fragment outputs, by color location: `color` alone for a fragment function that returned one value. |
+| `workgroupSize` | `{ number }?` | A compute program's workgroup size, `{ x, y, z }`; `nil` for a vertex and fragment program. |
+| `layout` | `ShaderLayout` | Where everything lives: see [layout](#layout). |
+
+`tostring(program)` counts them, both kinds of attribute together and the uniform members of every frequency together: `ShaderProgram(3 attributes, 4 uniforms, 1 texture, 2 varyings)`. A compute program says so, with its workgroup and its storage buffers: `ShaderProgram(compute 64×1×1, 1 uniform, 0 textures, 2 storage buffers)`.
+
+### layout
+
+`program.layout` is where everything the program declares lives, worked out by jess, so whatever fills a buffer writes it from this and never decides an offset itself:
+
+- **`pass`, `material`, `draw`:** each frequency's bind `group`; its uniform block's `size` and `members`, each with its `offset`, `size`, `type`, and, for an array, `stride`; and its other `bindings`, each texture, sampler, and storage buffer with its `binding` and `kind` (a storage buffer with its `element`, `access`, and `stride`).
+- **`structs`:** each struct's `size`, `align`, and `fields`, laid out as its members are.
+- **`attributes`, `instance`:** each vertex buffer's `stride`, and each attribute's `offset`, `location`, and `locations`: a matrix takes one per column.
+
+Members and fields are listed in declaration order, which is sorted by name; their offsets say where they really are, largest alignment first.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+local Light = shader.struct('Light', { color = shader.vec3, direction = shader.vec3 })
+
+local program = shader.program {
+  attributes = { normal = shader.vec3, position = shader.vec3 },
+  pass = { exposure = shader.float, lights = shader.array(Light, 4) },
+  vertex = function(input)
+    local vertex = input.attributes
+
+    return { position = shader.vec4(vertex.position, 1), normal = vertex.normal }
+  end,
+
+  fragment = function(input) return shader.vec4(input.normal * input.pass.exposure, 1) end,
+}
+
+local layout = program.layout
+for _, member in layout.pass.members :: { ShaderMemberLayout } do
+  print(member.name, member.offset, member.size, member.stride)
+end
+print(layout.pass.size, layout.attributes.stride, layout.structs[1].fields[2].offset)
+-- exposure  128  4  nil
+-- lights  0  128  32
+-- 144  24  16
+```
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+local program = shader.program {
+  attributes = { position = shader.vec3, color = shader.vec4 },
+  material = { tint = shader.vec4 },
+  vertex = function(input)
+    local vertex = input.attributes
+
+    return { position = shader.vec4(vertex.position, 1), color = vertex.color }
+  end,
+  fragment = function(input) return input.color * input.material.tint end,
+}
+
+for _, binding in program.material do
+  print(binding.name, binding.type) -- tint  Vec4f
+end
+
+for _, varying in program.varyings do
+  print(varying.name, varying.type) -- color  Vec4f
+end
+
+print(#program.pass, program)
+-- 0  ShaderProgram(2 attributes, 1 uniform, 0 textures, 1 varying)
+```
+
+## Errors
+
+A mistake in an operation fails at the call that made it, in shader terms, with the types involved and the line it's written on. A mistake only the whole program shows (a position that isn't a `Vec4f`, a texture sampled in the vertex stage) is reported when `shader.program` finishes, every problem on its own line, each where its value was written.
+
+This is `shaders/errors.jsl`:
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+-- The dot product is wrong on purpose; pcall hands back the message.
+print(pcall(function()
+  return shader.program {
+    attributes = { position = shader.vec3, normal = shader.vec3 },
+    material = { tint = shader.vec4 },
+    vertex = function(input)
+      local vertex = input.attributes
+
+      return { position = shader.vec4(vertex.position, 1), normal = vertex.normal }
+    end,
+
+    fragment = function(input)
+      return shader.vec4(shader.dot(input.normal, input.material.tint))
+    end,
+  }
+end))
+
+-- Two mistakes only the whole program shows: both are listed.
+print(pcall(function()
+  return shader.program {
+    attributes = { position = shader.vec3 },
+    pass = { view = shader.mat4 },
+    vertex = function(input) return { position = input.attributes.position } end,
+    fragment = function(input) return input.pass.view end,
+  }
+end))
+```
+
+And this is `jess run shaders/errors.jsl`:
+
+```text
+false	shaders/errors.jsl:16 (shaders/errors.jsl): dot(Vec3f, Vec4f) is invalid: expected two vectors of the same type
+false	shaders/errors.jsl: the shader program is invalid
+shaders/errors.jsl:26 (shaders/errors.jsl): the vertex position is Vec3f: expected Vec4f
+shaders/errors.jsl:27 (shaders/errors.jsl): fragment output 0 is Mat4f: expected a Float, Int, or UInt, or a vector of one
+```
+
+Each location is `file:line`, then the module that called `shader.program` in parentheses, which differs when a helper module builds part of the program. There's no column: Luau doesn't record one, and jess doesn't make one up. The line is that of the nearest Luau function on the call stack, so a call through `pcall` still points at your source.
+
+Nothing here is a WGSL error. If the backend ever rejects what jess generated, that's jess's bug, not yours.
+
+## Types under `--!strict`
+
+`require("@jess/shader")` is typed as `ShaderModule` (its stub in the folder `jess luau-types` writes is `return jess.shader`), so a shader module type-checks with no annotations: `input` is a `ShaderInput`, every name on it a `ShaderExpr`, and a misspelled function or a value used as a plain number is an error in your editor before it's one at run time. What the checker can't see is a value's shader type, or whether a name a binding has is a value, a struct, an array, or a texture: to Luau they're all `ShaderExpr`, indexable and measurable, and the difference is reported when the module runs, at the line.
+
+## Loading a shader module
+
+A shader module is loaded under a contract: run it, and it must return a `ShaderProgram`. From Rust that's `jess::lua::scripts::load_module::<LuaShaderProgram>(&runtime, path)`, which runs the file and gives back the program to fold and lower. A module that returns anything else fails with the module and what came back:
+
+```text
+render/materials/water.jsl: expected the module to return a jess.shader.Program, but it returned a number
+```
+
+`nil`, a string, a table, and another kind of userdata are all named the same way. The contract isn't shader-specific: it's how jess will load anything a module is supposed to *be*.
+
+Related: [jess.gpu](@/docs/api/gpu.md), [@jess/render](@/docs/api/render.md), [Shader IR](@/docs/contributing/shader-ir.md), [require](@/docs/api/jess.md#require).
+
+]========]
+
+--[========[
+@api-document jess @jess
+
+
+
+`jess` is the global table every script gets, however it was started: `jess run`, `jess test`, a command target, or a managed module in an application. It holds one table per native module, plus the few values that belong to no module and had to live somewhere. `require('jess')` is the same table.
+
+{% usage_note(title="Conventions") %}
+- Functions, methods, table fields, and report codes are camelCase. Types are PascalCase.
+- An uncaught error stops the script with its message and a stack traceback. Individual APIs also return failures as values: for example, filesystem operations can return an error message and kind, and a test suite returns a report with a `failed` count. Check each API's contract.
+- Option tables, the last argument most functions take, reject keys they don't take. The error names the key and lists the ones the function does take (`unknown worker.spawn option 'sources': expected capabilities, name, shareServices, or source`), so a typo fails instead of quietly doing the default.
+- Lists you get back are ordinary 1-based arrays. A list that must keep its positions holds `jess.null` where it has no value.
+- Raw bytes are `buffer`s.
+- What a script may touch is a capability. The CLI admits some terminal, input, GPU, and audio capabilities by default, while others require an explicit grant; targets still declare what they need. [`jess.granted`](#jess-granted) says what you hold, and [Capabilities](@/docs/reference/capabilities.md) specifies the defaults and names.
+{% end %}
+
+## Module map
+
+| Member | What it's for | Page |
+| --- | --- | --- |
+| `jess.context` | Handlers for the phases a ScriptDomain schedules | [jess.context](@/docs/api/context.md) |
+| `jess.worker` | Isolated Luau workers and their messages | [jess.worker](@/docs/api/worker.md) |
+| `jess.events` | Named application events, queued for the next drain | [jess.events](@/docs/api/events.md) |
+| `jess.interfaces` | The tables an application's packages provide, by id, in one domain | [jess.interfaces](@/docs/api/interfaces.md) |
+| `jess.application` | Ask the host running an application to stop | [jess.application](@/docs/api/application.md) |
+| `jess.shader` | Typed shader programs from Luau modules | [jess.shader](@/docs/api/shader.md) |
+| `jess.input` | The native half of `@jess/input`: compiling binding documents, and the runtime | [@jess/input](@/docs/api/input.md) |
+| `jess.audio` | The native half of `@jess/audio`: PCM, streams, feeds, and contexts that mix voices through a graph of buses and processors on a sample clock, offline or on a device | [@jess/audio](@/docs/api/audio.md) |
+| `jess.gpu` | The GPU: the device jess opens on it | [jess.gpu](@/docs/api/gpu.md) |
+| `jess.bench` | What a measurement needs from the host | [jess.bench](@/docs/api/bench.md) |
+| `@jess/log` | Structured logging with one sink the host owns | [@jess/log](@/docs/api/log.md) |
+| `@jess/test` | Test suites, expectations, and reports | [@jess/test](@/docs/api/test.md) |
+| `@jess/jpk` | The JPK container, read under budgets and written canonically | [@jess/jpk](@/docs/api/jpk.md) |
+| `@jess/package` | Manifests, digests, packing, and resolution into a plan | [@jess/package](@/docs/api/package.md) |
+| `@jess/style` | The Luau style checker | [@jess/style](@/docs/api/style.md) |
+| `@jess/analysis` | Luau parsing and analysis the checker is built on | [@jess/analysis](@/docs/api/analysis.md) |
+| `@jess/json`, `@jess/yaml` | JSON and YAML documents as tables, and back | [@jess/json](@/docs/api/json.md), [@jess/yaml](@/docs/api/yaml.md) |
+| `@jess/data/toml` | TOML documents as tables, and back | [@jess/data/toml](@/docs/api/toml.md) |
+| `@jess/data/value` | The one value model the codecs share | [@jess/data/value](@/docs/api/value.md) |
+| `@jess/l10n` | Localized text from message bundles | [@jess/l10n](@/docs/api/l10n.md) |
+| `@jess/input` | Action graphs, labels, conflicts, intents, and the input runtime | [@jess/input](@/docs/api/input.md) |
+| `@jess/audio` | Voices on a sample clock through a graph of buses and processors, streams and feeds, voices in space, tempo maps, offline renders, WAV, and compressed files | [@jess/audio](@/docs/api/audio.md) |
+| `@jess/render`, `@jess/render/camera` | Writers for shader layouts and a standard camera | [@jess/render](@/docs/api/render.md) |
+| `@jess/backup` | Overwrite a file, keeping what was there as `.bak` | [@jess/backup](@/docs/api/backup.md) |
+| `@jess/http` | HTTP/1.1 requests and responses over the transport the runtime exposes | [@jess/http](@/docs/api/http.md) |
+| `@dream/fs` | Files and folders | [Files](@/docs/api/fs.md) |
+| `bytes.regex` | Regular expressions | [Regular expressions](@/docs/api/regex.md) |
+| `@dream/*` | Everything native underneath: bytes, processes, the network, text | [The @dream modules](@/docs/api/l3i.md) |
+
+Most `jess` members in the first part of the table are also available through `require('@jess/<name>')`. The exceptions are input and audio: `@jess/input` and `@jess/audio` are built-in package modules that wrap `jess.input` and `jess.audio`, not the same tables. The next four are [built-in modules](@/docs/scripting/built-in-modules.md), Luau that ships inside the binary. The `@jess/` names after those are the exports of the built-in package, which every runtime carries. The `@dream/` names are [L3i](https://DreamWeave-MP.github.io/l3i/)'s native primitives.
+
+## jess.version
+
+{{ api_symbol(value="jess.version") }}
+
+The version of jess that's running, such as `"0.1.0"`.
+
+It's the same version `jess --version` prints and the one written at the top of `jess luau-types` output. Check it when a script depends on a feature added in a later release.
+
+```luau
+--!strict
+print(`running under jess {jess.version}`)
+```
+
+## jess.null
+
+{{ api_symbol(value="jess.null") }}
+
+The value that fills an empty slot in an array, where `nil` would end the array early.
+
+Luau arrays can't hold `nil` in the middle: `{ a, nil, b }` has length 1 or 3 depending on how it was built, and `ipairs` stops at the gap. jess uses `jess.null` wherever a list keeps its positions, and it is the one null in the runtime: the built-in codecs read and write it, so a `null` decoded from JSON is the value any jess API takes.
+
+- **Type:** `JessNull`, an opaque userdata. `typeof(jess.null)` is `"userdata"`.
+- **One null:** `require('@jess/json').null`, `require('@jess/yaml').null`, and `@jess/data/value`'s `Null` are `jess.null`.
+- **Comparing:** `value == jess.null` works, and the types spell a slot that may be empty as `number | JessNull`.
+
+```luau
+--!strict
+local json = require '@jess/json'
+
+local items = json.decode '[1, null, 3]' :: { number | JessNull }
+print(#items, items[2] == jess.null, json.null == jess.null) -- 3  true  true
+```
+
+Related: [@jess/json](@/docs/api/json.md), [@jess/data/value](@/docs/api/value.md).
+
+## jess.granted
+
+{{ api_symbol(value="jess.granted") }}
+
+Whether the running code holds `capability`: `'process.environment'`, `'network.transport'`, `'filesystem.read'`, and so on. Outside a ScriptDomain the answer is the runtime's grant, what `--capability`, `--trusted`, or a target's declared capabilities gave it; under a domain it is the broker's, for the context or worker asking. Asking is not a denial, so nothing is reported for a `false`.
+
+Ask before reaching for something optional instead of calling it and catching the refusal:
+
+```luau
+--!strict
+local process = require '@dream/process'
+
+if jess.granted 'process.environment' then
+  print(`home is {process.env 'HOME' or 'unset'}`)
+else
+  print('run with --capability process.environment to read the environment')
+end
+```
+
+- **Errors:** `jess.granted: unknown capability '<name>'; a jess runtime can be granted filesystem.read, filesystem.write, ...` for a name no jess runtime can hold, so a misspelling isn't quietly `false`. The list in the message is [every capability there is](@/docs/reference/capabilities.md).
+
+## jess.payload
+
+{{ api_symbol(value="jess.payload") }}
+
+The calling module's own package payload: `files`, every path in canonical order (`jess.toml` first, then the rest bytewise), and `read`, one file's bytes or `nil` for a path the payload lacks. It is how a package ships things that aren't Luau, templates, stylesheets, fonts, and hands them to whoever depends on it: the package exports a module that returns what `jess.payload()` gave it, and a dependent requires that module. Nothing reads another package's payload uninvited, and the same code answers the same from a Package Source and from the JPK packed from it.
+
+- **Returns:** a fresh table each call. `read` answers from the package's provider, the folder or the archive, so it needs no capability of its own.
+- **Errors:** `jess.payload: <chunk> is a script, not a package's module, so it has no payload` outside a package.
+
+```luau
+--!strict
+-- src/init.jsl of a theme package: its templates and stylesheets, for a site generator to read.
+local payload = jess.payload()
+
+return table.freeze { files = payload.files, read = payload.read }
+```
+
+## jess.bench
+
+{{ api_symbol(value="jess.bench.verified") }}
+
+{{ api_symbol(value="jess.bench.collect") }}
+
+What a measurement needs from the host: whether this jess was built with the verified toolchain, as releases are, and a full garbage collection, so one batch's garbage isn't collected inside the next one's timing. A harness refuses to post a number from an unverified build, because it would be measuring a slower Luau. [jess.bench](@/docs/api/bench.md) has the details.
+
+## require
+
+
+
+Loads a module. Four kinds of name resolve, and nothing else does:
+
+- `jess`, the global table; native module aliases such as `@jess/shader`; the built-in modules (`@jess/log`, `@jess/test`, `@jess/jpk`, `@jess/package`); and the built-in package's exports (`@jess/style`, `@jess/json`, ...). As noted in the module map, the input and audio package modules wrap the native tables. The namespace is closed: no file and no other package can take a `@jess/` name.
+- `@dream/<name>`, the [L3i modules](@/docs/api/l3i.md): `@dream/fs`, `@dream/bytes`, `@dream/process`, and the rest.
+- The exports of the packages activated for this run: a `--package` on `jess run`, the layers of the command target that is running, or an application's whole graph. `@greeter` resolves when a package exporting it is active, and to nothing otherwise.
+- A name starting with `./` or `../` is relative to the module calling `require`, as in Luau's require by string: jess tries `name.jsl`, then `name/init.jsl`. Inside a package, `@self/` is the package's own root. An `init` script stands for its folder, so its `./` starts beside the folder.
+
+Each module runs once, called with its name as `...`, and is cached in that runtime: the same value comes back from every `require`, by whichever name. If a package module returns a table, Jess makes that top-level table read-only before caching it, so a caller cannot replace fields on the shared export. This is shallow: nested tables and buffers are not recursively frozen, and non-table return values are unchanged. A loose script's own relative modules are not frozen by this package rule. An API that shares nested mutable state must define who owns it.
+
+- **Errors:** `module not found: <name>`, with a reason for a name that looks like it should have worked: `module not found: @greeter: no package activated in this run exports it, and it isn't one of jess's own modules`, or `module not found: @jess/nope: @jess/ is jess's own namespace (...), never a file`.
+
+```luau
+--!strict
+type Words = { farewell: (name: string) -> string }
+
+local jessAgain = require 'jess'
+local words: Words = require './words' -- words.jsl, or words/init.jsl, beside this file
+
+print(words.farewell 'world', jessAgain == jess)
+```
+
+`require` is typed `(name: string) -> any` for a relative name: a module's type is whatever you annotate the result with, as with `words: Words` above. The `@jess/` and `@dream/` names are typed by the stubs `jess luau-types` writes, so `local log = require '@jess/log'` needs no annotation under `--!strict`.
+
+Related: [Built-in Modules](@/docs/scripting/built-in-modules.md), [Packages](@/docs/scripting/packages.md#modules-and-require).
+
+## Globals set by the runner
+
+`jess run script.jsl a b` also sets these:
+
+| Global | Value |
+| --- | --- |
+| `...` | The script's arguments as strings: `"a", "b"`. |
+| `arg` | The same arguments as a table, with the script path at `arg[0]`: `{ [0] = "script.jsl", "a", "b" }`. |
+| `print` | Luau's `print`, writing through jess's own stdout so `\n` stays `\n` on Windows and lines come out in order. |
+
+A command target's entry gets the arguments after `--` the same way, with the module's package-qualified name at `arg[0]` (`com.example.greeter@1.0.0/tools/greet.jsl`). A test module under `jess test` gets no arguments; it returns a suite, and the runner calls that. There are no other globals: Luau's own libraries, `jess`, `arg`, `require`, and `print`.
+
+```luau
+-- jess run args.jsl a b
+local first, second = ...
+print(first, second) -- a  b
+print(#arg, arg[0]) -- 2  args.jsl
+```
+
+Both are typed: `...` as the script's varargs, and `arg` as `{ [number]: string }`.
+
+## Type definitions
+
+`jess luau-types types` writes the types for everything on these pages, `jess.d.jsl`, and a file for every module `require` resolves by name: a stub for each native one, `types/jess/log.jsl`, `types/dream/fs.jsl`, and the built-in package's modules themselves, `types/jess/data/json.jsl` and the rest, since a Luau module's type is its source. `jess init` does it for you, along with a strict `.jessrc` aliasing the names and your editor's luau-lsp settings. Start scripts with `--!strict`: the types were written for the checker, and the checker catches the typo before jess has to. [Editor Setup](@/docs/getting-started/editor-setup.md) covers the editors.
+
+]========]

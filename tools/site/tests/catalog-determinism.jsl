@@ -1,0 +1,36 @@
+--!strict
+-- Generate the complete catalog twice from the same runtime and source tree.
+local catalog = require '../generated-reference'
+local fs = require '@dream/fs'
+local json = require '@jess/json'
+local first = catalog.generate '.'
+local second = catalog.generate '.'
+assert(first == second, 'API catalog changes between identical builds')
+print('API catalog is deterministic')
+
+local root = `target/reference-fixture-{os.time()}-{math.random(1, 1000000000)}`
+local page = fs.join(root, 'site', 'content', 'docs', 'api', 'sample.md')
+local marker = '<!-- Generated from the API documentation in Jess source. -->'
+local written, writeProblem = fs.writeFile(page, marker, { createParents = true })
+if not written then error(`fixture: {writeProblem}`, 0) end
+local function reference(signature: string): string
+  local input = json.encodeTable({
+    schemaVersion = 2,
+    modules = { '@jess/example' },
+    symbols = { { name = '@jess/example.read', module = '@jess/example', signature = signature, description = '', source = 'sample.jsl' } },
+    documents = { { slug = 'sample', module = '@jess/example', source = 'sample.jsl', body = '{{ api_symbol(value="@jess/example.read") }}' } },
+  })
+  local staging = catalog.prepare(root, input)
+  local content, problem = fs.readFileString(fs.join(staging, 'content', 'docs', 'api', 'sample.md'))
+  catalog.cleanup(staging)
+  if not content then error(`fixture: {problem}`, 0) end
+  return content
+end
+
+local before = reference('@jess/example.read(value: string) -> string')
+local after = reference('@jess/example.read(value: number) -> number')
+assert(string.find(before, 'read(value: string)', 1, true), 'original declaration missing')
+assert(string.find(after, 'read(value: number)', 1, true), 'changed declaration missing')
+local removed, problem = fs.remove(root, { recursive = true })
+if not removed then error(`fixture: {problem}`, 0) end
+print('source declaration changes update the reference')

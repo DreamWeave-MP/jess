@@ -31,4 +31,25 @@ return table.freeze { read = read }]]
   test.expect(string.find(page, '&lt;data&gt; &amp;', 1, true) ~= nil).toBe(true)
 end)
 
+suite.it('extracts methods of an exported metatable type', function()
+  local source = [[type Data = { name: string }
+local Methods = {}
+-- Format a message.
+function Methods.format(self: unknown, value: string): string return value end
+local Metatable = table.freeze(Methods)
+export type Bundle = typeof(setmetatable({} :: Data, Metatable))
+return table.freeze {}]]
+  local symbols = catalog.packageModule(source, '@jess/example', 'example.jsl')
+  local found, field = false, false
+  for _, symbol in symbols do
+    if symbol.name == '@jess/example.Bundle.name' then field = true end
+    if symbol.name ~= '@jess/example.Bundle.format' then continue end
+    found = true
+    test.expect(symbol.signature).toBe '@jess/example.Bundle.format(self: unknown, value: string) -> string'
+    test.expect(symbol.description).toBe 'Format a message.'
+  end
+  test.expect(found).toBe(true)
+  test.expect(field).toBe(true)
+end)
+
 return suite

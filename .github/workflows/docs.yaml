@@ -75,6 +75,8 @@ jobs:
           jess check tools/site/generated-reference.jsl
           jess check tools/site/tests/api-catalog.jsl
           jess test tools/site/tests/api-catalog.jsl
+          jess check tools/site/tests/catalog-determinism.jsl
+          jess run --capability filesystem.read --capability filesystem.write --capability process.spawn tools/site/tests/catalog-determinism.jsl
 
       - name: Check CLI reference options
         run: |

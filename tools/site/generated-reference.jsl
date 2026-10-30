@@ -162,12 +162,23 @@ local function packageModule(source: string, module: string, path: string): { Sy
   local parsed = luau.parse(source)
   if #parsed.errors > 0 then error(`API reference: {path} does not parse`, 0) end
   local functions: { [string]: { func: dream_luau_ExprFunction, line: number } } = {}
+  local frozen: { [string]: string } = {}
+  local aliases: { [string]: dream_luau_Type } = {}
   local result: { Symbol } = {}
   local returned: dream_luau_ExprTable?
   local returnedName: string?
   for _, statement in parsed.root.body do
     if statement.kind == 'StatLocalFunction' then
       functions[statement.name.name] = { func = statement.func, line = statement.line }
+    elseif statement.kind == 'StatTypeAlias' then
+      aliases[statement.name] = statement.type
+    elseif statement.kind == 'StatLocal' then
+      for index, variable in statement.vars do
+        local value = statement.values[index]
+        if not value or value.kind ~= 'ExprCall' or value.func.kind ~= 'ExprIndexName' or value.func.index ~= 'freeze' then continue end
+        local argument = value.args[1]
+        if argument and argument.kind == 'ExprLocal' then frozen[variable.name] = argument['local'].name end
+      end
     elseif statement.kind == 'StatReturn' then
       local value = statement.list[1]
       if value and value.kind == 'ExprCall' and value.func.kind == 'ExprIndexName' and value.func.index == 'freeze' then value = value.args[1] end
@@ -221,6 +232,24 @@ local function packageModule(source: string, module: string, path: string): { Sy
     local name = `{module}.{statement.name}`
     table.insert(result, { name = name, module = module, signature = excerpt(source, parsed.lineStarts, statement), description = description(source, statement.line), source = path })
     if statement.type.kind == 'TypeTable' then append(result, tableMembers(source, parsed.lineStarts, statement.type, name, module, path)) end
+    if statement.type.kind ~= 'TypeTypeof' then continue end
+    local expression = statement.type.expr
+    if expression.kind ~= 'ExprCall' or expression.func.kind ~= 'ExprGlobal' or expression.func.name ~= 'setmetatable' then continue end
+    local instance = expression.args[1]
+    if instance and instance.kind == 'ExprTypeAssertion' and instance.annotation.kind == 'TypeReference' then
+      local shape = aliases[instance.annotation.name]
+      if shape and shape.kind == 'TypeTable' then append(result, tableMembers(source, parsed.lineStarts, shape, name, module, path)) end
+    end
+    local metatable = expression.args[2]
+    if not metatable or metatable.kind ~= 'ExprLocal' then continue end
+    local ownerName = frozen[metatable['local'].name] or metatable['local'].name
+    for _, method in parsed.root.body do
+      if method.kind ~= 'StatFunction' or method.name.kind ~= 'ExprIndexName' then continue end
+      local owner = method.name.expr
+      if owner.kind ~= 'ExprLocal' or owner['local'].name ~= ownerName then continue end
+      local methodName = `{name}.{method.name.index}`
+      table.insert(result, { name = methodName, module = module, signature = functionSignature(source, parsed.lineStarts, methodName, method.func), description = description(source, method.line), source = path })
+    end
   end
   return result
 end
@@ -411,6 +440,9 @@ local function prepare(root: string, api: string): string
   end
 
   local seen: { [string]: boolean } = {}
+  local symbolsByName: { [string]: Symbol } = {}
+  for _, symbol in catalog.symbols do symbolsByName[symbol.name] = symbol end
+
   for _, document in catalog.documents do
     if seen[document.slug] then error(`API reference: duplicate document {document.slug}`, 0) end
     seen[document.slug] = true
@@ -420,6 +452,13 @@ local function prepare(root: string, api: string): string
     local first, last = string.find(content, marker, 1, true)
     if not first or not last then error(`API reference: missing source marker in {path}`, 0) end
     local body = document.body
+    local referenced: { [string]: boolean } = {}
+    body = string.gsub(body, '{{ api_symbol%(value="([^"]+)"%) }}', function(name: string): string
+      local symbol = symbolsByName[name]
+      if not symbol then error(`API reference: {document.source} references missing symbol {name}`, 0) end
+      referenced[name] = true
+      return `\x60\x60\x60text\n{symbol.signature}\n\x60\x60\x60`
+    end)
     local declarations = { '\n\n## Other generated declarations\n' }
     local unplaced = 0
     local shortName = if string.sub(document.module, 1, 5) == 'jess.'
@@ -427,6 +466,7 @@ local function prepare(root: string, api: string): string
       else string.match(document.module, '([^/]+)$') or document.module
     for _, symbol in catalog.symbols do
       if symbol.module ~= document.module then continue end
+      if referenced[symbol.name] then continue end
       local suffix = string.sub(symbol.name, #document.module + 1)
       local headingEnd: number?
       for _, level in { '##', '###', '####' } do
@@ -482,6 +522,12 @@ end
 
 local function renderModule(module: string, symbols: { Symbol }): string
   local out = { '<h2>Declarations</h2>', '<p>Generated from the declarations and documentation in this Jess build.</p>' }
+  table.insert(out, '<details><summary>Symbols in this module</summary><ul>')
+  for _, symbol in symbols do
+    if symbol.module ~= module then continue end
+    table.insert(out, `<li><a href="#{anchor(symbol.name)}">{html(symbol.name)}</a></li>`)
+  end
+  table.insert(out, '</ul></details>')
   for _, symbol in symbols do
     if symbol.module ~= module then continue end
     table.insert(out, `<section id="{anchor(symbol.name)}"><h2>{html(symbol.name)}</h2><pre data-no-copy><code>{html(symbol.signature)}</code></pre>`)
