@@ -14,7 +14,9 @@ extra:
 
 ## analysis.analyze
 
-{{ api_signature(value="analysis.analyze(source: string, options: { declarations: boolean?, path: string? }?) -> Source") }}
+{{ api_signature(value="analysis.analyze(source: string, options: ParseOptions?) -> Source") }}
+
+`ParseOptions` is `{ declarations: boolean?, path: string? }`.
 
 Parses one chunk and walks it once, collecting the facts below. A chunk that doesn't parse still gives a `Source`, with what could be read and the parse errors beside it; when the text is a declaration file (`declare` statements) and `declarations` isn't given, the module parses it a second time with declarations on and keeps that result if it is clean.
 
@@ -112,7 +114,7 @@ error: dream.fs.exists: needs the 'filesystem.read' capability, which this runti
 
 ## analysis.callsTo, analysis.callsInModule
 
-{{ api_signature(value="analysis.callsTo(source: Source, target: string) -> { CallFact }; analysis.callsInModule(source: Source, module: string) -> { CallFact }") }}
+{{ api_signature(value="analysis.callsTo(source: Source, target: string) -> { CallFact }; analysis.callsInModule(source: Source, moduleName: string) -> { CallFact }") }}
 
 The calls whose `target` is exactly `target` (`'print'`, `'@jess/log.new'`), or whose callee is any member of the module required as `module`.
 
