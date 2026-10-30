@@ -87,6 +87,8 @@ Writes a value in one of the three formats. The codecs' own `encode` functions c
 
 Non-finite floats are written as `null` in JSON, `.nan` or `.inf` (with a minus sign for negative infinity) in YAML, and `nan` or `inf` in TOML. TOML requires a map or variant at the document root; other root kinds raise an unsupported-type error.
 
+Encoding visits nested values recursively and does not detect cycles. Do not place an array, map, or variant inside itself: cyclic values eventually exhaust the Luau stack.
+
 - **Errors:** `data: unknown format '<name>' (expected json, yaml, or toml)`, plus whatever the format refuses: a null in TOML (`toml: unsupported unit type`), a `None` inside a TOML array (`toml: unsupported None value`), a bare table anywhere.
 
 ```luau
