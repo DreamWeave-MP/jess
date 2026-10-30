@@ -14,7 +14,7 @@ extra:
 Under a script domain every runtime method checks a capability: `input.actions` for `action`, `stats`, `now`, and `tick`; `input.observe` for `devices`; `input.configure` for everything that changes the runtime (`install`, `uninstall`, `restoreDefaults`, `setActive`, `pushLayer`, `popLayer`, `connect`, `disconnect`, `press`, `release`, `axis`, `focus`, `advance`). A context without the grant gets `capability 'input.actions' denied to domain#1 gen#1 context#2`. Everything else is data and checks nothing: the builders, compiling, labels, presentation, conflicts, and the router. Outside any domain the runtime's own grant decides: `jess run`, `jess test`, and a package's tests hold all three, a package target holds the ones it declares, and a runtime made without one refuses with `jess.input: needs the 'input.configure' capability, which this runtime does not grant`.
 {% end %}
 
-Three things to know before the signatures:
+Four things to know before the signatures:
 
 - **Nothing here means anything.** Action names (`move`, `editor.save`) are yours; the module reserves none.
 - **Durations are seconds** in every function and milliseconds in the document (`withinMs`, `durationMs`), which is what the native crate stores.
