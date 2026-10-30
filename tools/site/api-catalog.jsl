@@ -818,9 +818,9 @@ local function generate(root: string, updateBaseline: boolean?): string
   for _, member in { 'audio', 'gpu', 'input', 'shader' } do
     table.insert(modules, `jess.{member}`)
     local native = globalInventory(definitions, member)
-    if member == 'gpu' then
-      local documentation, problem = fs.readFileString(fs.join(root, 'site', 'content', 'docs', 'api', 'gpu.md'))
-      if not documentation then error(`api catalog: cannot read GPU reference: {problem}`, 0) end
+    if member == 'gpu' or member == 'input' then
+      local documentation, problem = fs.readFileString(fs.join(root, 'site', 'content', 'docs', 'api', `{member}.md`))
+      if not documentation then error(`api catalog: cannot read {member} reference: {problem}`, 0) end
 
       checkNativeSignatures(native, documentation)
     end
