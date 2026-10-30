@@ -128,6 +128,8 @@ requested by:
 
 Besides the packages handed over, a request may offer `candidates`, packages read only as far as their manifests and opened only when a layer or a dependency needs one, never in place of a package handed over and never chosen between. A candidate is opened with `package.open` by its location, or by `request.open` when the request names one: a resolution whose candidates aren't files of their own, such as a packed workspace's, names what opens them, and the rules are the same either way. `request.pins` holds packages with given ids to given digests.
 
+`request.roots` selects package ids and their dependencies even when no requested layer belongs to them. `request.dev` names selected package ids whose development dependencies should also be resolved; listing an id in `dev` does not itself select it. Development dependencies are for the host's tests and do not grant the package's own modules permission to require them. An id in `roots` that cannot be offered or opened is an error.
+
 The plan is `{ requested, layers, packages, modules, entrypoints, capabilities }`:
 
 - `layers`, every resolved layer, each after the layers it requires, with its provider package and version, its exports, and its entrypoints;
