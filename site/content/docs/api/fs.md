@@ -26,12 +26,15 @@ local manifest = assert(fs.readFileString 'jess.toml')
 assert(fs.writeFile('target/manifest.copy.toml', manifest, { atomic = true, createParents = true }))
 ```
 
-Three things to know before reaching for it:
+Four things to know before reaching for it:
 
 - `list(path)` is sorted by name, and `walk(root, options)` covers a whole tree.
 - `writeFile` writes what it's told and keeps nothing. A tool that overwrites someone's file
   should keep what was there, which is [`@jess/backup`](@/docs/api/backup.md).
 - `stat(path)` has `size`, `modifiedSeconds`, and `modifiedNanoseconds`; there is no separate
   `size` or `modified` call.
+- `lock(path)` takes the operating system's lock on a file and never waits: a lock held elsewhere
+  answers `wouldBlock`. It ends with its holder, however the holder ends, so it is how an
+  application makes sure only one copy of itself writes its state.
 
 The whole module, with the rest of L3i's primitives, is on [L3i's site](@/docs/api/l3i.md).
