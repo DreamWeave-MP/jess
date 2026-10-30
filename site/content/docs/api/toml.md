@@ -17,9 +17,12 @@ is yours.
 
 ## decode
 
-{{ api_signature(value="toml.decode(text: string, options: { positions: boolean? }?) -> (toml.Table, toml.Layout)") }}
+### toml.decode
+
+{{ api_signature(value="toml.decode(text: string, options: Options?) -> (Table, Layout)") }}
 
 Parses a TOML document, returning its tables and a layout table for what Luau tables forget.
+`Options` is `{ positions: boolean? }`; `Table` and `Layout` are exported types of this module.
 
 - **Parameters:** `text`, the whole document, as UTF-8. `options.positions`: also record where
   each key sits in the text.
@@ -66,12 +69,15 @@ print(top.floats.ratio, top.floats.count, top.datetimes.when) -- true  nil  true
 
 ## encode
 
-{{ api_signature(value="toml.encode(value: Value) -> string") }}
+### toml.encode
+
+{{ api_signature(value="toml.encode(value: Values.Value) -> string") }}
 
 Writes a value built with `@jess/data/value` (its `map`, `struct`, `array` and `float`) as a TOML
 document, laid out the way Rust's `toml` crate pretty-prints one: values before tables, a table's
 keys in the order the map was given them. An absent field (`None`) is left out of a table, and
 raises inside a list, where TOML has nothing to write for it.
+`Values.Value` is the exported `Value` type of `@jess/data/value`.
 
 The document root must be a map or variant, and TOML cannot represent `jess.null`. The [value model](@/docs/api/value.md#value-encode) documents these errors, mutable builders, non-finite numbers, and cyclic input.
 

@@ -446,12 +446,14 @@ local function sourceSymbols(source: string, documentation: string, member: stri
       error(`api catalog: unsupported {member} export {name}`, 0)
     end
     local stableSignature = signature or symbolName
+    local isFunction = func ~= nil
+      or (signature ~= nil and string.find(signature, '(', 1, true) ~= nil)
 
-    if verifyFunctions and func and not string.find(documentation, stableSignature, 1, true) then
+    if verifyFunctions and isFunction and not string.find(documentation, stableSignature, 1, true) then
       error(`api catalog: signature drift for {symbolName}: {stableSignature}`, 0)
     end
 
-    if verifyFunctions and func and grouped then
+    if verifyFunctions and isFunction and grouped then
       local hasHeading = false
       for line in string.gmatch('\n' .. documentation, '\n##[^\n]*') do
         if string.find(line, symbolName, 1, true) then hasHeading = true end
@@ -476,7 +478,7 @@ local function sourceSymbols(source: string, documentation: string, member: stri
       signature = stableSignature,
       page = `docs/api/{member}/`,
       anchor = anchor,
-      checked = verifyFunctions == true and func ~= nil,
+      checked = verifyFunctions == true and isFunction,
     })
   end
 
@@ -785,6 +787,7 @@ local function generate(root: string, updateBaseline: boolean?): string
       or item.name == 'backup'
       or item.name == 'http'
       or item.name == 'value'
+      or item.name == 'toml'
     for _, symbol in sourceSymbols(item.source, documentation, item.name, item.grouped, item.moduleName, aliases, verifyFunctions) do
       table.insert(symbols, symbol)
     end

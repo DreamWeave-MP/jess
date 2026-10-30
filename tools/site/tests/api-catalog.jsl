@@ -114,6 +114,18 @@ return table.freeze { first = first, second = second }]]
   end).toThrow 'missing heading'
 end)
 
+suite.it('checks an exported function whose signature comes from another generated file', function()
+  local source = [[local Decode = require './decoder'
+return table.freeze { decode = Decode.decode }]]
+  local signature = 'toml.decode(text: string) -> Value'
+  local aliases = { ['Decode.decode'] = signature }
+  local symbols = catalog.sourceSymbols(source, `## toml.decode\n{signature}`, 'toml', true, nil, aliases, true)
+  test.expect(symbols[1].checked).toBe(true)
+  test.expect(function()
+    catalog.sourceSymbols(source, '## toml.decode\ntoml.decode(text: number) -> Value', 'toml', true, nil, aliases, true)
+  end).toThrow 'signature drift'
+end)
+
 suite.it('refuses an undocumented source export', function()
   local source = [[local function write(data: string): string return data end
 return table.freeze { write = write }]]
