@@ -112,9 +112,21 @@ return table.freeze { first = first, second = second }]]
   test.expect(function()
     catalog.sourceSymbols(source, `## sample.first\n{signatures}`, 'sample', true, nil, nil, true)
   end).toThrow 'missing heading'
+
   test.expect(function()
     catalog.sourceSymbols(source, `## sample.first, sample.secondly\n{signatures}`, 'sample', true, nil, nil, true)
   end).toThrow 'missing heading'
+end)
+
+suite.it('checks a signature documented within a larger section', function()
+  local source = [[local function key(name: string): string return name end
+return table.freeze { key = key }]]
+  local symbols = catalog.sourceSymbols(source, '## Nodes\ninput.key(name: string) -> string', 'input', true, nil, nil, true, true)
+  test.expect(symbols[1].checked).toBe(true)
+  test.expect(symbols[1].anchor).toBe ''
+  test.expect(function()
+    catalog.sourceSymbols(source, '## Nodes\ninput.key(name: number) -> string', 'input', true, nil, nil, true, true)
+  end).toThrow 'signature drift'
 end)
 
 suite.it('checks an exported function whose signature comes from another generated file', function()

@@ -138,7 +138,7 @@ Reads a saved document and compiles it.
 
 - **Errors:** a document of another format version, an unknown node type or field (``unknown variant `doubleTap` ``), a value of the wrong type, each with the line and column; then everything `graph` refuses. Nothing unrecognized is skipped.
 
-{{ api_signature(value="input.document(graph: InputGraph) -> Document") }}
+{{ api_signature(value="input.document(compiled: InputGraph) -> Document") }}
 
 A compiled graph's document, with everything `graph` fills in filled in: the table to hand to `bindings`, `presentations`, and `conflicts`, or to edit and compile again.
 

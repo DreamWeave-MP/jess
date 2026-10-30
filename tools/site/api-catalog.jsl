@@ -373,7 +373,7 @@ local function tableFunctions(source: string, documentation: string, prefix: str
   return symbols
 end
 
-local function sourceSymbols(source: string, documentation: string, member: string, grouped: boolean?, moduleName: string?, aliases: { [string]: string }?, verifyFunctions: boolean?): { Symbol }
+local function sourceSymbols(source: string, documentation: string, member: string, grouped: boolean?, moduleName: string?, aliases: { [string]: string }?, verifyFunctions: boolean?, sectionOnly: boolean?): { Symbol }
   local parsed = luau.parse(source)
   if #parsed.errors > 0 then error(`api catalog: generated {member} source does not parse`, 0) end
   local exported: dream_luau_ExprTable?
@@ -457,7 +457,7 @@ local function sourceSymbols(source: string, documentation: string, member: stri
       error(`api catalog: signature drift for {symbolName}: {stableSignature}`, 0)
     end
 
-    if verifyFunctions and isFunction and grouped then
+    if verifyFunctions and isFunction and grouped and not sectionOnly then
       local hasHeading = false
       for line in string.gmatch('\n' .. documentation, '\n##[^\n]*') do
         local _, last = string.find(line, symbolName, 1, true)
@@ -798,7 +798,8 @@ local function generate(root: string, updateBaseline: boolean?): string
       or item.name == 'analysis'
       or item.name == 'style'
       or item.name == 'l10n'
-    for _, symbol in sourceSymbols(item.source, documentation, item.name, item.grouped, item.moduleName, aliases, verifyFunctions) do
+      or item.name == 'input'
+    for _, symbol in sourceSymbols(item.source, documentation, item.name, item.grouped, item.moduleName, aliases, verifyFunctions, item.name == 'input') do
       table.insert(symbols, symbol)
     end
   end
