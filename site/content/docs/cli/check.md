@@ -25,6 +25,8 @@ Plus the [global options](@/docs/cli/global-options.md). The report is one docum
 
 Every file is checked in strict mode, as the `.jessrc` from `jess init` sets, and a `--!nonstrict` or `--!nocheck` directive at the top of a file still wins for that file.
 
+You can name a script and a file it requires in the same invocation. Each named entry is analyzed independently, with its required files treated as modules; duplicate diagnostics are reported once. The `files` count remains the number of paths given, not the number of files reached through `require`.
+
 ## Examples
 
 A clean script:
