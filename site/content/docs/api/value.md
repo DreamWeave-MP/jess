@@ -81,7 +81,7 @@ array	map	variant
 
 ## value.encode
 
-{{ api_signature(value="value.encode(value: Value, format: 'json' | 'yaml' | 'toml') -> string") }}
+{{ api_signature(value="value.encode(value: Value, format: string) -> string") }}
 
 Writes a value in one of the three formats. The codecs' own `encode` functions call this with their format; it's here for code that picks the format at run time.
 

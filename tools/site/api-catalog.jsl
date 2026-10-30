@@ -451,6 +451,15 @@ local function sourceSymbols(source: string, documentation: string, member: stri
       error(`api catalog: signature drift for {symbolName}: {stableSignature}`, 0)
     end
 
+    if verifyFunctions and func and grouped then
+      local hasHeading = false
+      for line in string.gmatch('\n' .. documentation, '\n##[^\n]*') do
+        if string.find(line, symbolName, 1, true) then hasHeading = true end
+      end
+
+      if not hasHeading then error(`api catalog: missing heading for {symbolName}`, 0) end
+    end
+
     local heading = string.find(documentation, `## {symbolName}`, 1, true)
     local anchor = if grouped or name == 'null' or name == 'version' then '' else string.lower(`{member}-{name}`)
     if anchor ~= '' and not heading then
@@ -775,6 +784,7 @@ local function generate(root: string, updateBaseline: boolean?): string
       or item.name == 'yaml'
       or item.name == 'backup'
       or item.name == 'http'
+      or item.name == 'value'
     for _, symbol in sourceSymbols(item.source, documentation, item.name, item.grouped, item.moduleName, aliases, verifyFunctions) do
       table.insert(symbols, symbol)
     end

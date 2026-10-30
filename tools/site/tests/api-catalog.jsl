@@ -100,6 +100,20 @@ return table.freeze { decode = decode }]]
   end).toThrow 'signature drift'
 end)
 
+suite.it('checks each generated function in a grouped heading', function()
+  local source = [[local function first(): string return 'first' end
+local function second(): string return 'second' end
+return table.freeze { first = first, second = second }]]
+  local signatures = 'sample.first() -> string; sample.second() -> string'
+  local documentation = `## sample.first, sample.second\n{signatures}`
+  local symbols = catalog.sourceSymbols(source, documentation, 'sample', true, nil, nil, true)
+  test.expect(symbols[1].checked).toBe(true)
+  test.expect(symbols[2].checked).toBe(true)
+  test.expect(function()
+    catalog.sourceSymbols(source, `## sample.first\n{signatures}`, 'sample', true, nil, nil, true)
+  end).toThrow 'missing heading'
+end)
+
 suite.it('refuses an undocumented source export', function()
   local source = [[local function write(data: string): string return data end
 return table.freeze { write = write }]]
