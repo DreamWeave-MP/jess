@@ -48,6 +48,16 @@ suite.describe('@jess/http', function()
     expect(http.resolveReference(base, 'sibling.json')).toBe 'https://example.org/packages/sibling.json'
     expect(http.resolveReference(base, '../up/./file.jpk?y=2')).toBe 'https://example.org/up/file.jpk?y=2'
     expect(http.resolveReference(base, 'dir/')).toBe 'https://example.org/packages/dir/'
+    expect(http.resolveReference(base, 'a//b')).toBe 'https://example.org/packages/a//b'
+    expect(http.resolveReference(base, 'file.')).toBe 'https://example.org/packages/file.'
+    expect(http.resolveReference(base, '../..')).toBe 'https://example.org/'
+  end)
+
+  suite.it('preserves the path for empty, query-only, and fragment-only references', function()
+    local base = 'https://example.org/packages/feed.json?x=1#old'
+    expect(http.resolveReference(base, '')).toBe 'https://example.org/packages/feed.json?x=1'
+    expect(http.resolveReference(base, '?y=2')).toBe 'https://example.org/packages/feed.json?y=2'
+    expect(http.resolveReference(base, '#new')).toBe 'https://example.org/packages/feed.json?x=1#new'
   end)
 end)
 

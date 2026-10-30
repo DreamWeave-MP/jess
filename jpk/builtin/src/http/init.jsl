@@ -137,28 +137,37 @@ local function resolveReference(base: string, reference: string): string?
   if string.sub(reference, 1, 2) == '//' then return `{scheme}:{reference}` end
 
   local origin = `{scheme}://{authority}`
+  local first = string.sub(reference, 1, 1)
+  if reference == '' or first == '#' then
+    local withoutFragment = string.match(base, '^[^#]*') :: string
+    return withoutFragment .. reference
+  end
+
+  if first == '?' then return `{origin}{basePath}{reference}` end
+
   local path = reference
-  if string.sub(reference, 1, 1) ~= '/' then
+  if first ~= '/' then
     local directory = string.match(basePath :: string, '^(.*/)') or '/'
     path = `{directory}{reference}`
   end
 
   local pathOnly, suffix = string.match(path, '^([^?#]*)(.*)$')
   local segments: { string } = {}
-  for segment in string.gmatch(pathOnly :: string, '[^/]*') do
+  local parts = string.split(pathOnly :: string, '/')
+  for index, segment in parts do
+    if index == 1 and segment == '' then continue end
+
     if segment == '..' then
       table.remove(segments)
-    elseif segment ~= '.' and segment ~= '' then
+      if index == #parts then table.insert(segments, '') end
+    elseif segment == '.' then
+      if index == #parts then table.insert(segments, '') end
+    else
       table.insert(segments, segment)
     end
   end
 
-  local plainPath = pathOnly :: string
-  local trailing = #plainPath == 0 or string.find(plainPath, '[/.]$') ~= nil
-  local joined = `/{table.concat(segments, '/')}`
-  local folded = if trailing and joined ~= '/' then `{joined}/` else joined
-
-  return `{origin}{folded}{suffix}`
+  return `{origin}/{table.concat(segments, '/')}{suffix}`
 end
 
 --- A connected stream, plain or TLS, with the one way of waiting on it.
