@@ -33,6 +33,8 @@ The text the writers produce is byte for byte what a Rust program's serializer w
 
 `array` marks a table as a list and returns it. `map` makes an empty ordered map, `{ keys, values }`, and `set` adds a key to it, keeping the first position a key was given, so setting a key again changes its value and not its place. `struct` makes a map from `{ key, value }` pairs in order, the way a struct serializes its fields; a pair whose value is `nil` becomes `None`, an absent field.
 
+These builders do not make copies: `array` marks the supplied table, and `set` mutates and returns the supplied map. Changing an array, a map, or a nested value before encoding changes the output. A `nil` passed to `set` becomes `None`, just as in a `struct` field; replacing it later keeps the key's original position.
+
 ```luau
 --!strict
 local value = require '@jess/data/value'
@@ -83,6 +85,8 @@ array	map	variant
 
 Writes a value in one of the three formats. The codecs' own `encode` functions call this with their format; it's here for code that picks the format at run time.
 
+Non-finite floats are written as `null` in JSON, `.nan` or `.inf` (with a minus sign for negative infinity) in YAML, and `nan` or `inf` in TOML. TOML requires a map or variant at the document root; other root kinds raise an unsupported-type error.
+
 - **Errors:** `data: unknown format '<name>' (expected json, yaml, or toml)`, plus whatever the format refuses: a null in TOML (`toml: unsupported unit type`), a `None` inside a TOML array (`toml: unsupported None value`), a bare table anywhere.
 
 ```luau
@@ -128,7 +132,7 @@ The same record, three documents: `note` is `null` twice and absent once, and th
 
 {{ api_signature(value="value.shortest(value: number, plus: boolean) -> string; value.display(value: number) -> string") }}
 
-The two float spellings the writers use, for code that wants to match them. `shortest` is the shortest round-tripping decimal in Ryū's layout, fixed notation for decimal exponents from -5 to 15 and scientific past them, with `plus` writing the `+` on a positive exponent as `serde_json` does. `display` is Rust's `Display` for a float: never an exponent.
+The two float spellings the writers use, for code that wants to match them. `shortest` takes a finite number and returns the shortest round-tripping decimal in Ryū's layout, fixed notation for decimal exponents from -5 to 15 and scientific past them, with `plus` writing the `+` on a positive exponent as `serde_json` does. `display` is Rust's `Display` for a float: never an exponent; it also handles NaN and infinities.
 
 ```luau
 --!strict

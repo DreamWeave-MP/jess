@@ -69,6 +69,8 @@ Copies and queues a message for the worker's handler. Messages arrive in order. 
 
 Only transferable values cross: `nil`, booleans, numbers, integers, strings, vectors, buffers, resource handles, and tables of those with string or number keys, nested at most 32 deep. Other userdata, functions, and threads cannot cross. Anything else is an error naming where it was, and nothing is sent.
 
+**Known defect:** a table key containing bytes that are not valid UTF-8 is changed when the message is reconstructed. Different keys can become the same key and lose an entry. This affects nested table keys too; string values and buffers are separate from this defect.
+
 - **Errors:** `message.<path>: a <type> can't cross a worker or event boundary`; `the worker is stopped; it takes no more messages`; `the worker's queue is full: 1024 messages wait for its handler; receive its replies, or send fewer`.
 
 ```luau

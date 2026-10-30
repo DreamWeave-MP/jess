@@ -30,7 +30,7 @@ state.nested.count += 1
 print(same.nested.count)
 ```
 
-This is a shared-state example, not a recommendation that every export share state. The complete package is `tests/fixtures/docs/module-ownership` in the Jess repository. The documentation tests check it and run both its source and a packed JPK; each prints `2`.
+This is a shared-state example, not a recommendation that every export share state. The complete package is `tests/fixtures/docs/module-ownership` in the Jess repository and declares no capabilities. The documentation tests check it and run both its source and a packed JPK; each prints `2`.
 
 ## Dependency is not activation
 
