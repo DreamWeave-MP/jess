@@ -79,6 +79,8 @@ they go on the request line. The same refusals as `get`, without a request.
 
 {{ api_signature(value="http.resolveReference(base: string, reference: string) -> string?") }}
 
-A `Location` header against the URL it came from, the way a browser resolves it: an absolute URL
-as is, `//host/path` under the base's scheme, `/path` on the base's host, anything else against
-the base's directory with `.` and `..` folded. `nil` when `base` is not an absolute URL.
+A `Location` header against the URL it came from: an absolute URL with `://` is returned as is,
+`//host/path` uses the base's scheme, and `/path` uses its authority. A relative path is resolved
+against the base's directory with `.` and `..` folded; query-only and fragment-only references keep
+the base path. `nil` means a relative reference had no absolute base. This helper implements these
+rules; it is not a general-purpose browser URL parser.
