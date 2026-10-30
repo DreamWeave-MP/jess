@@ -32,7 +32,7 @@ It is not a general ZIP library, and it says so. A general ZIP library is a swam
 
 A JPK packed on Windows and one packed on Linux from the same files are the same file. `jess pack` is this writer; the [package digest](@/docs/api/package.md#the-content-digest) doesn't depend on it, but reproducible artifacts are nice to have anyway.
 
-The Zstandard encoder is ruzstd's, through `@dream/bytes`' `zstdCompress`, at the one level it implements, roughly zstd's level 1. That buys decompression speed over ratio, which is the right trade for something read far more often than it's written. Any Zstandard reader opens the result: Python's `zipfile`, for one, reads a packed JPK and checks every CRC.
+The Zstandard encoder is ruzstd's, through `@dream/bytes`' `zstdCompress`, at the one level it implements, roughly zstd's level 1. That buys decompression speed over ratio, which is the right trade for something read far more often than it's written. Another ZIP reader needs support for method 93 to read the Zstandard entries; support depends on the reader and its version.
 
 ## jpk.open
 
@@ -66,7 +66,7 @@ The archive is `{ entries, find, read, source }`:
 
 - `entries` is every file entry, in central-directory order, each `{ path, method, compressedSize, size, crc32, offset }`. `method` is `'stored'`, `'deflate'`, or `'zstd'`.
 - `find(path)` is the entry with that path, or nil.
-- `read(entry | path)` unpacks one entry. Its size and CRC-32 are checked: a corrupt entry is an error (`jpk: 'a.bin' fails its CRC-32`), never wrong bytes.
+- `read(entry | path)` unpacks one entry and checks its size and CRC-32. An entry that fails either check is an error (`jpk: 'a.bin' fails its CRC-32`). CRC-32 detects many accidental errors; it is not a cryptographic integrity check and cannot detect every possible change.
 - `source(entry | path)` is a stored entry's bytes as a source of their own, `{ size, read }`, read in place from the archive's. Nothing is copied or checked up front, so whoever reads them checks them; an archive stored inside another opens this way, and checks its own entries as it reads them. An entry that isn't stored is an error.
 
 ### Budgets
