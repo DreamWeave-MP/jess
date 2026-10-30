@@ -234,6 +234,9 @@ pub(crate) fn host_table(runtime: &Runtime, read: bool, write: bool) -> l3i::Res
             .map(|metadata| metadata.len())
     })?;
     let is_dir = runtime.bind_function("jess.package.isDir", |path: Text| Path::new(&path.0).is_dir())?;
+    let is_symlink = runtime.bind_function("jess.package.isSymlink", |path: Text| {
+        std::fs::symlink_metadata(&path.0).is_ok_and(|metadata| metadata.file_type().is_symlink())
+    })?;
     let list_dir = runtime.bind_function("jess.package.listDir", |call: &Call<'_>, root: Text| {
         let mut entries = children(Path::new(&root.0))?;
         entries.sort_by(|a, b| a.0.cmp(&b.0));
@@ -275,6 +278,7 @@ pub(crate) fn host_table(runtime: &Runtime, read: bool, write: bool) -> l3i::Res
         ("readAt", read_at, Some((read, l3i::fs::READ_CAPABILITY))),
         ("fileSize", file_size, Some((read, l3i::fs::READ_CAPABILITY))),
         ("isDir", is_dir, Some((read, l3i::fs::READ_CAPABILITY))),
+        ("isSymlink", is_symlink, Some((read, l3i::fs::READ_CAPABILITY))),
         ("replace", replace, Some((write, l3i::fs::WRITE_CAPABILITY))),
         ("decodeToml", decode_toml, None),
         ("builtin", builtin, None),

@@ -11,6 +11,7 @@ export type Host = {
   read readAt: (path: string, offset: number, length: number) -> buffer,
   read fileSize: (path: string) -> number?,
   read isDir: (path: string) -> boolean,
+  read isSymlink: (path: string) -> boolean,
   read replace: (path: string, data: buffer) -> (),
   --- What is directly inside `root`, sorted by name; a link is what it points to.
   read listDir: (root: string) -> { { name: string, kind: string } },
@@ -202,6 +203,15 @@ local function codecs(): Bytes
 end
 
 local function fail(message: string): never error(`package: {message}`, 0) end
+
+--- A payload path cannot traverse a link, including one at the included root itself.
+local function rejectSourceSymlinks(location: string, path: string)
+  local current = location
+  for part in string.gmatch(path, '[^/]+') do
+    current ..= '/' .. part
+    if host.isSymlink(current) then fail(`'{location}': '{path}' is a symlink, which a package can't hold`) end
+  end
+end
 
 --- Whether `text` is at least two lowercase ASCII words joined by dots: package, layer, and
 --- capability ids alike.
@@ -886,6 +896,7 @@ end
 --- when one is given: the manifest as packed at another version, which stands in for the file on
 --- disk everywhere, the digest included.
 local function openSource(location: string, revisedManifest: buffer?): Package
+  rejectSourceSymlinks(location, Manifest)
   local text = revisedManifest or host.readFile(`{location}/{Manifest}`)
 
   if not text then fail(`'{location}' has no {Manifest}`) end
@@ -895,6 +906,7 @@ local function openSource(location: string, revisedManifest: buffer?): Package
   local paths = { Manifest }
 
   for _, root in manifest.include do
+    rejectSourceSymlinks(location, root)
     local full = `{location}/{root}`
 
     if host.isDir(full) then
@@ -1062,6 +1074,7 @@ local function peek(location: string): Offer
   local text: buffer?
 
   if source then
+    rejectSourceSymlinks(place, Manifest)
     text = host.readFile(`{place}/{Manifest}`)
   else
     local archive = container.open(fileSource(place))

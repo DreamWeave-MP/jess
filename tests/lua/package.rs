@@ -519,6 +519,54 @@ fn a_package_source_holds_no_links_and_no_case_twins() {
     assert!(problem.contains("differ only in case"), "{problem}");
 }
 
+#[cfg(unix)]
+#[test]
+fn a_package_source_rejects_symlinks_in_include_roots_and_the_manifest() {
+    let temp = tempfile::tempdir().unwrap();
+    let runtime = common::runtime();
+    let manifest = "manifest_version = 1\n[package]\nid = \"org.example.links\"\nversion = \"1.0.0\"\njess_api = \"1\"\ninclude = [\"src/nested\"]\n";
+    let source = temp.path().join("source");
+    let external = temp.path().join("external");
+    write(&source, &[("jess.toml", manifest)]);
+    write(&external, &[("nested/a.jsl", "return 1\n")]);
+    std::os::unix::fs::symlink(&external, source.join("src")).unwrap();
+    let problem = package::inspect(&runtime, &source.display().to_string())
+        .unwrap_err()
+        .to_string();
+    assert!(problem.contains("symlink"), "{problem}");
+    let output = temp.path().join("linked.jpk");
+    let problem = package::pack(&runtime, &source.display().to_string(), &output.display().to_string())
+        .unwrap_err()
+        .to_string();
+    assert!(problem.contains("symlink"), "{problem}");
+    assert!(!output.exists());
+
+    let direct = temp.path().join("direct");
+    let file_manifest = manifest.replace("src/nested", "asset.jsl");
+    write(&direct, &[("jess.toml", &file_manifest)]);
+    std::os::unix::fs::symlink(external.join("nested/a.jsl"), direct.join("asset.jsl")).unwrap();
+    let problem = package::inspect(&runtime, &direct.display().to_string())
+        .unwrap_err()
+        .to_string();
+    assert!(problem.contains("symlink"), "{problem}");
+
+    let linked_manifest = temp.path().join("linked-manifest");
+    std::fs::create_dir_all(&linked_manifest).unwrap();
+    std::os::unix::fs::symlink(source.join("jess.toml"), linked_manifest.join("jess.toml")).unwrap();
+    let problem = package::inspect(&runtime, &linked_manifest.display().to_string())
+        .unwrap_err()
+        .to_string();
+    assert!(problem.contains("symlink"), "{problem}");
+    let script =
+        jess::lua::runtime_with_capabilities(jess::lua::Options::default(), &["filesystem.read".to_owned()]).unwrap();
+    common::set_global(&script, "linkedSource", linked_manifest.display().to_string().as_str());
+    let problem = script
+        .exec("return require('@jess/package').peek(linkedSource)")
+        .unwrap_err()
+        .to_string();
+    assert!(problem.contains("symlink"), "{problem}");
+}
+
 /// A script's `@jess/package` opens and packs only what the runtime's policy lets it read and
 /// write. The host's own package operations are the host acting, and need no grant.
 #[test]
