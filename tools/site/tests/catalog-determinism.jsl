@@ -32,6 +32,18 @@ local before = reference('@jess/example.read(value: string) -> string')
 local after = reference('@jess/example.read(value: number) -> number')
 assert(string.find(before, 'read(value: string)', 1, true), 'original declaration missing')
 assert(string.find(after, 'read(value: number)', 1, true), 'changed declaration missing')
+local broken = json.encodeTable({
+  schemaVersion = 2,
+  modules = { '@jess/example' },
+  symbols = {},
+  documents = { { slug = 'sample', module = '@jess/example', source = 'sample.jsl', body = '{{ api_symbol(value="@jess/example.removed") }}' } },
+})
+-- Preparation raises when a source document names a removed symbol.
+local ok, failure = pcall(catalog.prepare, root, broken)
+assert(not ok and string.find(tostring(failure), 'references missing symbol', 1, true), 'missing symbol was not reported')
+local leftovers, listProblem = fs.list(fs.join(root, 'target'))
+if not leftovers then error(`fixture: {listProblem}`, 0) end
+assert(#leftovers == 0, 'failed preparation left a temporary site behind')
 local removed, problem = fs.remove(root, { recursive = true })
 if not removed then error(`fixture: {problem}`, 0) end
 print('source declaration changes update the reference')

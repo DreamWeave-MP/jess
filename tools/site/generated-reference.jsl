@@ -355,10 +355,7 @@ local function modulePath(name: string): string
   return 'docs/api/generated/' .. anchor(name) .. '/'
 end
 
-local function generate(root: string): string
-  local scratch = fs.join(root, 'target', `reference-types-{os.time()}-{math.random(1, 1000000000)}`)
-  local made, problem = fs.mkdir(scratch, { recursive = true })
-  if not made then error(`API reference: cannot make scratch folder: {problem}`, 0) end
+local function generateContents(root: string, scratch: string): string
   local result, failure = process.run('jess', { 'luau-types', scratch }, { stdout = 'null', stderr = 'capture' })
   if not result or not result.success then error(`API reference: jess luau-types failed: {failure or (result and result.stderr)}`, 0) end
   local definitionText = read(fs.join(scratch, 'jess.d.jsl'))
@@ -423,8 +420,6 @@ local function generate(root: string): string
 
   resolveExports(symbols, scratch, manifest.modules)
 
-  local removed, removeProblem = fs.remove(scratch, { recursive = true })
-  if not removed then error(`API reference: cannot remove scratch folder: {removeProblem}`, 0) end
   local names = {}
   for name in modules do table.insert(names, name) end
   table.sort(names)
@@ -445,12 +440,24 @@ local function generate(root: string): string
   return json.encodeTable({ schemaVersion = 2, modules = names, symbols = symbols, documents = documentation }, { indent = 2 }) .. '\n'
 end
 
+local function generate(root: string): string
+  local scratch = fs.join(root, 'target', `reference-types-{os.time()}-{math.random(1, 1000000000)}`)
+  local made, problem = fs.mkdir(scratch, { recursive = true })
+  if not made then error(`API reference: cannot make scratch folder: {problem}`, 0) end
+
+  -- Generation raises if the executable, declarations, manifest, or source cannot be read.
+  local ok, result = pcall(generateContents, root, scratch)
+  local removed, removeProblem = fs.remove(scratch, { recursive = true })
+  if not removed then error(`API reference: cannot remove scratch folder: {removeProblem}`, 0) end
+  if not ok then error(result, 0) end
+  return result :: string
+end
+
 -- Build from a temporary copy so source comments can supply reference prose without modifying
 -- the checked-in site or making generated signatures another maintained source of truth.
-local function prepare(root: string, api: string): string
+local function prepareContents(root: string, api: string, staging: string)
   local catalog = json.decode(api) :: Catalog
   local source = fs.join(root, 'site')
-  local staging = fs.join(root, 'target', `reference-site-{os.time()}-{math.random(1, 1000000000)}`)
   local tree, problem = fs.walk(source, { include = 'files', sort = true })
   if not tree then error(`API reference: cannot inspect site: {problem}`, 0) end
 
@@ -520,6 +527,19 @@ local function prepare(root: string, api: string): string
     if string.find(content, '<!-- Generated from the API documentation in Jess source. -->', 1, true) then
       error(`API reference: no source documentation for {page}`, 0)
     end
+  end
+end
+
+local function prepare(root: string, api: string): string
+  local staging = fs.join(root, 'target', `reference-site-{os.time()}-{math.random(1, 1000000000)}`)
+  -- Source preparation raises on invalid documents and filesystem failures.
+  local ok, problem = pcall(prepareContents, root, api, staging)
+  if not ok then
+    if fs.exists(staging) then
+      local removed, removeProblem = fs.remove(staging, { recursive = true })
+      if not removed then error(`API reference: cannot clean {staging}: {removeProblem}; original error: {problem}`, 0) end
+    end
+    error(problem, 0)
   end
   return staging
 end
