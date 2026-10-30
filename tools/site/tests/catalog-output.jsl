@@ -3,7 +3,7 @@ local fs = require '@dream/fs'
 local json = require '@jess/json'
 local generator = require '../generated-reference'
 
-type Symbol = { name: string, module: string, signature: string, description: string }
+type Symbol = { name: string, module: string, signature: string, description: string, url: string, reference: string? }
 type Record = { url: string, title: string, description: string, body: string }
 
 local function read(path: string): string
@@ -32,6 +32,7 @@ for _, symbol in catalog.symbols do
   assert(not names[symbol.name], `duplicate symbol {symbol.name}`)
   names[symbol.name] = true
   local target = generator.anchor(symbol.name)
+  assert(symbol.url == `{generator.modulePath(symbol.module)}#{target}`, `bad catalog URL for {symbol.name}`)
   assert(string.find(pages[symbol.module], `id="{target}"`, 1, true), `missing generated symbol {symbol.name}`)
   local record = records[symbol.name]
   assert(record and record.description == symbol.signature and string.sub(record.url, -#target) == target,
@@ -41,10 +42,14 @@ end
 local jpk = read(fs.join(output, 'docs', 'api', 'jpk', 'index.html'))
 assert(string.find(jpk, 'The canonical writer', 1, true), 'source documentation is missing from JPK reference')
 assert(string.find(jpk, '@jess/jpk.open(source:', 1, true), 'generated JPK signature is missing')
+local markdown = read(fs.join(output, 'docs', 'api', 'jpk', 'index.md'))
+assert(string.find(markdown, '@jess/jpk.open(source:', 1, true), 'generated JPK Markdown is missing')
 local packagePage = read(fs.join(output, 'docs', 'api', 'package', 'index.html'))
 assert(string.find(packagePage, '@jess/package.open(location:', 1, true), 'generated package signature is missing')
 local worker = read(fs.join(output, 'docs', 'api', 'worker', 'index.html'))
 assert(string.find(worker, 'function send(self, message:', 1, true), 'generated worker method is missing')
 local log = read(fs.join(output, 'docs', 'api', 'log', 'index.html'))
 assert(string.find(log, 'export type JessLogger', 1, true), 'generated logger type is missing')
+local jpkSymbols = pages['@jess/jpk']
+assert(string.find(jpkSymbols, '/docs/api/jpk/', 1, true), 'generated JPK symbols do not link to their contracts')
 print(`checked {#catalog.symbols} generated symbols`)

@@ -19,7 +19,11 @@ governance.write(paths.root)
 local api = catalog.generate(paths.root)
 local source = catalog.prepare(paths.root, api)
 -- The site generator raises on invalid input; always remove the temporary source tree.
-local built, result = pcall(site.build, source, output, options)
+local built, result = pcall(function()
+  local report = site.build(source, output, options)
+  catalog.publishSource(output, source, api)
+  return report
+end)
 catalog.cleanup(source)
 if not built then error(result, 0) end
 local report = result :: { pages: number?, sections: number?, search: number? }

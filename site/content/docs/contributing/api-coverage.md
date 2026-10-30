@@ -8,7 +8,7 @@ extra:
 
 This is a review map, not a promise that every listed function has been checked. The generated type definitions are the inventory for the runtime the checker sees; implementations and tests establish behavior that a type cannot express. Run `jess luau-types` for the installed version. The [machine-readable catalog](@/docs/api/_index.md) includes generated declarations without claiming their behavior has been audited.
 
-The reference generates signatures from declarations rather than comparing them to a handwritten baseline. Counts vary with the runtime and enabled features; generated signatures do not prove a behavioral audit. Migration of the existing reference prose to source documentation remains in progress.
+The reference generates signatures from declarations rather than comparing them to a handwritten baseline. Counts vary with the runtime and enabled features; generated signatures do not prove a behavioral audit. Behavioral explanations and examples live in source documentation; this table records where their verification remains incomplete.
 
 ## Native runtime services
 

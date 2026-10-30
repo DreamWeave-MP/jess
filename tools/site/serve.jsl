@@ -136,7 +136,11 @@ local function build(): boolean
     local api = catalog.generate(paths.root)
     local source = catalog.prepare(paths.root, api)
     -- The site generator raises on invalid input; always remove the temporary source tree.
-    local builtSite, report = pcall(site.build, source, staging, { baseUrl = '/' })
+    local builtSite, report = pcall(function()
+      local built = site.build(source, staging, { baseUrl = '/' })
+      catalog.publishSource(staging, source, api)
+      return built
+    end)
     catalog.cleanup(source)
     if not builtSite then error(report, 0) end
     catalog.publish(staging, api)

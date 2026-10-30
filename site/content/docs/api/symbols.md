@@ -11,4 +11,8 @@ This reference is generated from the declarations and source documentation in th
 
 The signatures describe the runtime used for this documentation build. Generate types with your own Jess installation when working against a different version.
 
+Each JSON symbol records its name, module, signature, source, and site-relative `url`. When a source document provides behavioral guidance, `reference` gives its site-relative path. The descriptions and source paths describe the generated declarations; consult the reference and implementation for behavioral details that types cannot express.
+
+Each generated reference page is also published as `index.md` beside its HTML page. Tools can read those files without rendering HTML or running JavaScript.
+
 For a direct link to a symbol, the anchor is `symbol-` followed by the lowercase hexadecimal UTF-8 bytes of its catalog `name`.

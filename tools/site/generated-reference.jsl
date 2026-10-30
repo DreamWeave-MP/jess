@@ -12,6 +12,8 @@ export type Symbol = {
   signature: string,
   description: string,
   source: string,
+  url: string?,
+  reference: string?,
 }
 
 type Document = { slug: string, module: string, body: string, source: string }
@@ -342,6 +344,16 @@ local function resolveExports(symbols: { Symbol }, scratch: string, manifest: { 
   for _, symbol in symbols do resolve(symbol, {}) end
 end
 
+local function anchor(name: string): string
+  local bytes = {}
+  for index = 1, #name do table.insert(bytes, string.format('%02x', string.byte(name, index))) end
+  return 'symbol-' .. table.concat(bytes)
+end
+
+local function modulePath(name: string): string
+  return 'docs/api/generated/' .. anchor(name) .. '/'
+end
+
 local function generate(root: string): string
   local scratch = fs.join(root, 'target', `reference-types-{os.time()}-{math.random(1, 1000000000)}`)
   local made, problem = fs.mkdir(scratch, { recursive = true })
@@ -416,6 +428,17 @@ local function generate(root: string): string
   for name in modules do table.insert(names, name) end
   table.sort(names)
   table.sort(symbols, function(left: Symbol, right: Symbol): boolean return left.name < right.name end)
+  local references: { [string]: string } = {}
+  for _, document in documentation do
+    local path = `docs/api/{document.slug}/`
+    references[document.module] = path
+    for name in string.gmatch(document.body, '{{ api_symbol%(value="([^"]+)"%) }}') do references[name] = path end
+  end
+
+  for _, symbol in symbols do
+    symbol.url = `{modulePath(symbol.module)}#{anchor(symbol.name)}`
+    symbol.reference = references[symbol.name] or references[symbol.module]
+  end
   return json.encodeTable({ schemaVersion = 2, modules = names, symbols = symbols, documents = documentation }, { indent = 2 }) .. '\n'
 end
 
@@ -503,6 +526,15 @@ local function cleanup(path: string)
   if not removed then error(`API reference: cannot remove {path}: {problem}`, 0) end
 end
 
+-- Keep the generated reference readable to tools that do not consume the HTML site.
+local function publishSource(output: string, source: string, api: string)
+  local catalog = json.decode(api) :: Catalog
+  for _, document in catalog.documents do
+    local page = fs.join(source, 'content', 'docs', 'api', document.slug .. '.md')
+    write(fs.join(output, 'docs', 'api', document.slug, 'index.md'), read(page))
+  end
+end
+
 local function html(text: string): string
   local escaped = string.gsub(text, '&', '&amp;')
   escaped = string.gsub(escaped, '<', '&lt;')
@@ -510,17 +542,7 @@ local function html(text: string): string
   return (string.gsub(escaped, '"', '&quot;'))
 end
 
-local function anchor(name: string): string
-  local bytes = {}
-  for index = 1, #name do table.insert(bytes, string.format('%02x', string.byte(name, index))) end
-  return 'symbol-' .. table.concat(bytes)
-end
-
-local function modulePath(name: string): string
-  return 'docs/api/generated/' .. anchor(name) .. '/'
-end
-
-local function renderModule(module: string, symbols: { Symbol }): string
+local function renderModule(module: string, symbols: { Symbol }, related: { [string]: string }?): string
   local out = { '<h2>Declarations</h2>', '<p>Generated from the declarations and documentation in this Jess build.</p>' }
   table.insert(out, '<details><summary>Symbols in this module</summary><ul>')
   for _, symbol in symbols do
@@ -532,6 +554,8 @@ local function renderModule(module: string, symbols: { Symbol }): string
     if symbol.module ~= module then continue end
     table.insert(out, `<section id="{anchor(symbol.name)}"><h2>{html(symbol.name)}</h2><pre data-no-copy><code>{html(symbol.signature)}</code></pre>`)
     if symbol.description ~= '' then table.insert(out, `<p>{html(symbol.description)}</p>`) end
+    local reference = related and (related[symbol.name] or related[module])
+    if reference then table.insert(out, `<p><a href="{html(reference)}">Behavior and examples</a></p>`) end
     table.insert(out, `<p><small>Source: <code>{html(symbol.source)}</code></small></p></section>`)
   end
   return table.concat(out, '\n')
@@ -554,11 +578,15 @@ local function publish(output: string, api: string)
   local first, last = string.find(shell, placeholder, 1, true)
   if not first or not last then error('API reference: missing symbol placeholder', 0) end
   local before, after = string.sub(shell, 1, first - 1), string.sub(shell, last + 1)
+  local related: { [string]: string } = {}
+  for _, symbol in catalog.symbols do
+    if symbol.reference then related[symbol.name] = base .. symbol.reference end
+  end
   local index = { '<h2>Generated modules</h2><ul>' }
   for _, module in catalog.modules do
     local path = modulePath(module)
     table.insert(index, `<li><a href="{html(base .. path)}">{html(module)}</a></li>`)
-    local modulePage = before .. renderModule(module, catalog.symbols) .. after
+    local modulePage = before .. renderModule(module, catalog.symbols, related) .. after
     modulePage = string.gsub(modulePage, '<h1>Generated API Symbols</h1>', function()
       return `<h1>{html(module)}</h1>`
     end)
@@ -581,4 +609,4 @@ local function publish(output: string, api: string)
   write(fs.join(output, 'api-catalog.json'), api)
 end
 
-return table.freeze { generate = generate, prepare = prepare, cleanup = cleanup, publish = publish, description = description, packageModule = packageModule, renderModule = renderModule, anchor = anchor, modulePath = modulePath }
+return table.freeze { generate = generate, prepare = prepare, cleanup = cleanup, publishSource = publishSource, publish = publish, description = description, packageModule = packageModule, renderModule = renderModule, anchor = anchor, modulePath = modulePath }

@@ -10,9 +10,10 @@ print('API catalog is deterministic')
 
 local root = `target/reference-fixture-{os.time()}-{math.random(1, 1000000000)}`
 local page = fs.join(root, 'site', 'content', 'docs', 'api', 'sample.md')
-local marker = '<!-- Generated from the API documentation in Jess source. -->'
-local written, writeProblem = fs.writeFile(page, marker, { createParents = true })
+local Marker = '<!-- Generated from the API documentation in Jess source. -->'
+local written, writeProblem = fs.writeFile(page, Marker, { createParents = true })
 if not written then error(`fixture: {writeProblem}`, 0) end
+
 local function reference(signature: string): string
   local input = json.encodeTable({
     schemaVersion = 2,

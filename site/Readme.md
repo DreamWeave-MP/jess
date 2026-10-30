@@ -16,7 +16,7 @@ jess workspace run --trusted jess-site-navigation-check      # verify sidebar an
 
 `serve` is the local edit loop. It asks the same generator for a dev build into `target/site-dev` with a root-relative base URL, serves it over HTTP from one nonblocking loop on `@dream/tcp`, and watches site and API source files for changes. A failed rebuild prints why and leaves the last successful site in place.
 
-Both build and serve run `jess luau-types` to derive the API catalog and need `process.spawn` in addition to their filesystem capabilities. The build writes `api-catalog.json`, creates browsable module and symbol pages, and adds signatures to search. Source comments supply generated descriptions. Existing reference pages are being migrated to source-owned documentation.
+Both build and serve run `jess luau-types` to derive the API catalog and need `process.spawn` in addition to their filesystem capabilities. The build writes `api-catalog.json`, creates browsable module and symbol pages, publishes generated reference Markdown beside the HTML, and adds signatures to search. Source comments supply the reference descriptions, contracts, and examples.
 
 Changes to declarations appear in the generated reference on the next build; no signature baseline needs updating.
 

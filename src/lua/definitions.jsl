@@ -3802,3 +3802,111 @@ Both are typed: `...` as the script's varargs, and `arg` as `{ [number]: string 
 `jess luau-types types` writes the types for everything on these pages, `jess.d.jsl`, and a file for every module `require` resolves by name: a stub for each native one, `types/jess/log.jsl`, `types/dream/fs.jsl`, and the built-in package's modules themselves, `types/jess/data/json.jsl` and the rest, since a Luau module's type is its source. `jess init` does it for you, along with a strict `.jessrc` aliasing the names and your editor's luau-lsp settings. Start scripts with `--!strict`: the types were written for the checker, and the checker catches the typo before jess has to. [Editor Setup](@/docs/getting-started/editor-setup.md) covers the editors.
 
 ]========]
+
+--[========[
+@api-document l3i @dream
+
+Jess runs Luau on [L3i](https://DreamWeave-MP.github.io/l3i/), which supplies the `@dream/*` native primitives. Jess also exposes its own native runtime services, including domains, input, graphics, and audio, alongside Luau modules and packages. The [module map](@/docs/api/jess.md#module-map) shows those services.
+
+L3i documents them, on its [built-in extensions](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/) page, and this page won't repeat it. What jess adds is the capability gate: a module's functions that reach outside the VM check a named capability at the native seam, and a runtime that wasn't granted it refuses, naming the function and the capability. The default grant depends on how code is run; [Capabilities](@/docs/reference/capabilities.md#who-holds-what) lists the script and target rules.
+
+```text
+$ jess run read.jsl
+error: dream.fs.readFileString: needs the 'filesystem.read' capability, which this runtime does not grant
+
+$ jess run env.jsl
+error: dream.process.env: needs the 'process.environment' capability, which this runtime does not grant
+```
+
+[`jess.granted`](@/docs/api/jess.md#jess-granted) asks before reaching; [Capabilities](@/docs/reference/capabilities.md) lists every name, what grants it, and what asks for it.
+
+| Module | What it is | Capability |
+| --- | --- | --- |
+| [`@dream/audio`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-audio) | Decoders for MP3, Ogg Vorbis and Ogg Opus into float frames; what [`@jess/audio`](@/docs/api/audio.md) loads and streams compressed files with | none |
+| [`@dream/bytes`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-bytes) | Buffer search and slicing, digests, Deflate, Zstandard and LZMA, text encodings, varints, and [regular expressions](@/docs/api/regex.md) as `bytes.regex` | none |
+| [`@dream/data`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-data) | Whole-buffer arithmetic: sums, extrema, sorting, gathering, scattering, and partitioning over typed buffers | none |
+| [`@dream/dns`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-dns) | Name resolution | `network.dns.resolve` |
+| [`@dream/fs`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-fs) | [Files and folders](@/docs/api/fs.md): read, write, list, paths | `filesystem.read` for every read, `filesystem.write` for every change to the disk |
+| [`@dream/intern`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-intern) | String interning, one table of unique strings | none |
+| [`@dream/intl`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-intl) | Locales, plural rules, number and date formatting; what [`@jess/l10n`](@/docs/api/l10n.md) is built on | none |
+| [`@dream/luau`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-luau) | Luau's own parser, as data; what [`@jess/analysis`](@/docs/api/analysis.md) and [`@jess/style`](@/docs/api/style.md) are built on | none |
+| [`@dream/process`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-process) | The environment, the standard streams, and child processes | `process.environment` for `env`, `process.stdio` for `write`, `process.spawn` for `run` |
+| [`@dream/tcp`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-tcp) | Streams, listeners, and a poller | `network.tcp.connect` to connect out; `network.tcp.listen` to listen on loopback, plus `network.tcp.public` to bind a wildcard or non-loopback address |
+| [`@dream/tls`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-tls) | TLS sessions over a connected TCP stream | none of its own: making the stream took `network.tcp.connect` or `network.tcp.listen` |
+| [`@dream/udp`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-udp) | An authenticated datagram transport, client and server | `network.transport` |
+
+`jess luau-types` writes a stub for each under `types/dream/`, and the `.jessrc` that `jess init` writes aliases `@dream/` to them, so `local fs = require '@dream/fs'` is fully typed under `--!strict` without an annotation. The stubs describe the L3i the jess you have was built against; regenerate them when you upgrade.
+
+Two things are jess's, not L3i's, and have pages here: [`@dream/fs`](@/docs/api/fs.md) is where [`@jess/backup`](@/docs/api/backup.md) comes in, and the [`require`](@/docs/api/jess.md#require) that resolves these names is jess's.
+
+Related: [Capabilities](@/docs/reference/capabilities.md), [`jess run --capability`](@/docs/cli/run.md#capabilities).
+
+]========]
+
+--[========[
+@api-document fs @dream/fs
+
+Scripts read and write files with
+[`@dream/fs`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-fs), L3i's file
+module, which every jess runtime has. jess has no file API of its own, on purpose: one module, one
+error style, one idea of list order. What jess adds is the gate in front of it. Reading needs
+`filesystem.read` and changing the disk `filesystem.write`
+([`jess run --capability`](@/docs/cli/run.md#capabilities), or the capabilities a target
+declares); joining and taking paths apart needs neither. The
+[Files recipes](@/docs/scripting/files-toml-regex.md#files) use it.
+
+An ordinary `@dream/fs` operation failure answers `nil`, a message naming the path, and a kind:
+wrap the call in `assert` where a failure should stop the script. A denied capability raises before
+the operation; see [Capabilities](@/docs/reference/capabilities.md).
+
+```luau
+--!strict
+local fs = require '@dream/fs'
+
+local manifest = assert(fs.readFileString 'jess.toml')
+assert(fs.writeFile('target/manifest.copy.toml', manifest, { atomic = true, createParents = true }))
+```
+
+Three things to know before reaching for it:
+
+- `list(path)` sorts names by their bytes. `walk(root, options)` covers a whole tree, but does not sort by default; request `sort = true` when traversal order matters.
+- `writeFile` writes what it's told and keeps nothing. A tool that overwrites someone's file
+  should keep what was there, which is [`@jess/backup`](@/docs/api/backup.md).
+- `stat(path)` has `size`, `modifiedSeconds`, and `modifiedNanoseconds`; there is no separate
+  `size` or `modified` call.
+
+The whole module, with the rest of L3i's primitives, is on [L3i's site](@/docs/api/l3i.md).
+
+]========]
+
+--[========[
+@api-document regex @dream/bytes
+
+Scripts compile regexes with `bytes.regex(pattern, options)`, from L3i's
+[`@dream/bytes`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#regular-expressions-bytes-regex):
+Rust's `regex` crate, matched over bytes, in linear time whatever the pattern. jess has no regex
+binding of its own. The
+[Regular expressions recipes](@/docs/scripting/files-toml-regex.md#regular-expressions) use it.
+
+The one thing to carry in your head is positions. `string.find` counts from 1 with the end
+included; `bytes.regex` counts from 0 with the end excluded, as `buffer` offsets do. A whole
+match of `'light_blue_64'` is `1, 13` to `string.find` and `0, 13` to `regex:find`, and
+`string.sub(text, start + 1, finish)` is the matched text.
+
+```luau
+--!strict
+local bytes = require '@dream/bytes'
+
+local version = bytes.regex '^(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)$'
+local captures = version:captures '1.2.1'
+if not captures then error 'not a version' end
+
+print(captures.major, captures.minor, captures.patch) -- 1  2  1
+```
+
+What it has: `isMatch`, `find`, `match`, `captures`, `matches`, `replace`, `replaceAll`, and
+`split`, with `$1` and `${name}` in replacements and a function in their place; `pattern()` and
+`tostring(regex)`; `bytes.regexEscape(text)` for a literal; `unicode = false` in the options for
+byte-wise classes. The full reference is on [L3i's site](@/docs/api/l3i.md).
+
+]========]
