@@ -14,6 +14,7 @@ export type Symbol = {
   source: string,
   url: string?,
   reference: string?,
+  valueExpression: boolean?,
 }
 
 type Document = { slug: string, module: string, body: string, source: string }
@@ -437,7 +438,9 @@ local function generate(root: string): string
 
   for _, symbol in symbols do
     symbol.url = `{modulePath(symbol.module)}#{anchor(symbol.name)}`
-    symbol.reference = references[symbol.name] or references[symbol.module]
+    local native = string.match(symbol.module, '^@jess/([%w_]+)$')
+    symbol.reference = references[symbol.name] or references[symbol.module] or (native and references[`jess.{native}`])
+    symbol.valueExpression = string.sub(symbol.signature, 1, #symbol.name + 3) == `{symbol.name} = `
   end
   return json.encodeTable({ schemaVersion = 2, modules = names, symbols = symbols, documents = documentation }, { indent = 2 }) .. '\n'
 end
@@ -553,6 +556,7 @@ local function renderModule(module: string, symbols: { Symbol }, related: { [str
   for _, symbol in symbols do
     if symbol.module ~= module then continue end
     table.insert(out, `<section id="{anchor(symbol.name)}"><h2>{html(symbol.name)}</h2><pre data-no-copy><code>{html(symbol.signature)}</code></pre>`)
+    if symbol.valueExpression then table.insert(out, '<p>The inferred type of this exported value is not expanded here.</p>') end
     if symbol.description ~= '' then table.insert(out, `<p>{html(symbol.description)}</p>`) end
     local reference = related and (related[symbol.name] or related[module])
     if reference then table.insert(out, `<p><a href="{html(reference)}">Behavior and examples</a></p>`) end

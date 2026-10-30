@@ -3880,13 +3880,17 @@ The whole module, with the rest of L3i's primitives, is on [L3i's site](@/docs/a
 ]========]
 
 --[========[
-@api-document regex @dream/bytes
+@api-document regex @dream/regex
 
 Scripts compile regexes with `bytes.regex(pattern, options)`, from L3i's
 [`@dream/bytes`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#regular-expressions-bytes-regex):
 Rust's `regex` crate, matched over bytes, in linear time whatever the pattern. jess has no regex
 binding of its own. The
 [Regular expressions recipes](@/docs/scripting/files-toml-regex.md#regular-expressions) use it.
+
+{{ api_symbol(value="@dream/bytes.regex") }}
+
+{{ api_symbol(value="@dream/bytes.regexEscape") }}
 
 The one thing to carry in your head is positions. `string.find` counts from 1 with the end
 included; `bytes.regex` counts from 0 with the end excluded, as `buffer` offsets do. A whole

@@ -3,7 +3,7 @@ local fs = require '@dream/fs'
 local json = require '@jess/json'
 local generator = require '../generated-reference'
 
-type Symbol = { name: string, module: string, signature: string, description: string, url: string, reference: string? }
+type Symbol = { name: string, module: string, signature: string, description: string, url: string, reference: string?, valueExpression: boolean }
 type Record = { url: string, title: string, description: string, body: string }
 
 local function read(path: string): string
@@ -33,6 +33,8 @@ for _, symbol in catalog.symbols do
   names[symbol.name] = true
   local target = generator.anchor(symbol.name)
   assert(symbol.url == `{generator.modulePath(symbol.module)}#{target}`, `bad catalog URL for {symbol.name}`)
+  assert(symbol.valueExpression == (string.sub(symbol.signature, 1, #symbol.name + 3) == `{symbol.name} = `),
+    `bad value classification for {symbol.name}`)
   assert(string.find(pages[symbol.module], `id="{target}"`, 1, true), `missing generated symbol {symbol.name}`)
   local record = records[symbol.name]
   assert(record and record.description == symbol.signature and string.sub(record.url, -#target) == target,
