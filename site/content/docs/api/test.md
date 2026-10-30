@@ -82,10 +82,10 @@ An assertion on `actual`. Each check raises with what it saw and what it wanted,
 | Check | Passes when |
 | --- | --- |
 | `toBe(expected)` | `rawequal(actual, expected)`. |
-| `toEqual(expected)` | Deep equality: same keys, values compared the same way, cycles handled. Tables only compare with tables; anything else is `rawequal`. |
+| `toEqual(expected)` | Deep equality: keys match by Luau table lookup and values compare recursively; cycles are handled. Tables only compare with tables; anything else is `rawequal`. Shared-reference identity is not required to match. |
 | `toBeTruthy()`, `toBeFalsy()`, `toBeNil()` | What they say. |
 | `toContain(item)` | `actual` is a string containing the literal string `item`, or a table with a value that `toEqual`s it. |
-| `toBeCloseTo(expected, tolerance?)` | `actual` is a number within `tolerance` (default `1e-9`) of `expected`, for floating-point results that needn't be exact. |
+| `toBeCloseTo(expected, tolerance?)` | `actual` is a number whose absolute difference from `expected` is at most `tolerance` (default `1e-9`). This is an absolute tolerance, not a relative one. |
 | `toThrow(contains?)` | `actual` is a function that raises, and its message contains `contains` when given. The one place a test catches an error on purpose. |
 
 ## Running
