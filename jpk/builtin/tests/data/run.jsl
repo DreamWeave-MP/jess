@@ -60,6 +60,11 @@ suite.describe('json', function()
       expect(function() json.decode(source) end).toThrow 'json:'
     end
   end)
+
+  suite.it('rejects numbers outside the finite number range', function()
+    expect(function() json.decode '1e999' end).toThrow 'number cannot be represented'
+    expect(function() json.decode '-1e999' end).toThrow 'number cannot be represented'
+  end)
 end)
 
 suite.describe('toml', function()

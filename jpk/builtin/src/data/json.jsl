@@ -166,7 +166,7 @@ local function parseNumber(): number
   end
 
   local number = tonumber(string.sub(source, start, at - 1))
-  if not number then fail('number cannot be represented') end
+  if not number or math.abs(number) == math.huge then fail('number cannot be represented') end
 
   return number :: number
 end
