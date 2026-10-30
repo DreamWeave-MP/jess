@@ -73,6 +73,8 @@ document, laid out the way Rust's `toml` crate pretty-prints one: values before 
 keys in the order the map was given them. An absent field (`None`) is left out of a table, and
 raises inside a list, where TOML has nothing to write for it.
 
+The document root must be a map or variant, and TOML cannot represent `jess.null`. The [value model](@/docs/api/value.md#value-encode) documents these errors, mutable builders, non-finite numbers, and cyclic input.
+
 ## Type mapping
 
 | TOML | Luau |
