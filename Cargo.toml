@@ -52,7 +52,7 @@ window = ["gpu", "dep:winit"]
 clap = { version = "^4.5", features = ["derive", "env", "wrap_help"] }
 clap_complete = "^4.5"
 clap_mangen = "^0.3"
-l3i = { version = "2.5.0", features = ["analysis", "audio", "jit", "bytes-text", "bytes-codecs", "bytes-crypto", "bytes-digests", "bytes-regex", "data", "dns", "fs", "intern", "intl", "process", "syntax", "tcp", "tls"] }
+l3i = { version = "2.6.0", features = ["analysis", "audio", "jit", "bytes-text", "bytes-codecs", "bytes-crypto", "bytes-digests", "bytes-regex", "data", "dns", "fs", "intern", "intl", "process", "syntax", "tcp", "tls"] }
 # Blocks on wgpu's adapter and device requests and readback, which are futures.
 pollster = { version = "1.0.1", optional = true }
 serde = { version = "^1.0", features = ["derive"] }
@@ -83,7 +83,7 @@ cc = { version = "^1.2", optional = true }
 
 
 [dev-dependencies]
-l3i = { version = "2.5.0", features = ["analysis"] }
+l3i = { version = "2.6.0", features = ["analysis"] }
 naga = { version = "30.0.1", features = ["wgsl-in"] }
 serde-saphyr = "^2.0"
 toml = { version = "^1.1", features = ["preserve_order"] }
