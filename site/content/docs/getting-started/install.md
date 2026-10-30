@@ -77,16 +77,18 @@ cargo install jess
 
 That builds the `jess` binary into `~/.cargo/bin`, which rustup already put on your `PATH`, and takes a few minutes, since it compiles Luau from source. Run exactly as above it will stop with a message from [L3i](https://DreamWeave-MP.github.io/l3i/docs/building/)'s build script, the runtime underneath jess, which refuses to build without the toolchain it is measured on rather than quietly hand you a slower binary. You have two choices.
 
-**The verified build**, the one the release archives are: clang and lld on the same LLVM major as your `rustc` (`rustc -vV` and `clang --version` show the majors; on Debian and Ubuntu that's `clang-N lld-N` for rustc's LLVM N, on Fedora `clang lld`, on macOS LLVM's own release rather than Apple's clang), with the flags L3i checks for:
+**The verified build**, the one the release archives are: clang and lld on the same LLVM major as your `rustc` (`rustc -vV` and `clang --version` show the majors; on Debian and Ubuntu that's `clang-N lld-N` for rustc's LLVM N, on Fedora `clang lld`, on macOS LLVM's own release rather than Apple's clang). On Linux, use the flags L3i checks for:
 
 ```sh
 CC=clang CXX=clang++ RUSTFLAGS='-Clinker-plugin-lto -Clinker=clang -Clink-arg=-fuse-ld=lld' cargo install jess
 ```
 
-**The unverified build**, with whatever C++ compiler your platform has and no cross-language LTO:
+On macOS, use `CC=clang CXX=clang++ RUSTFLAGS='-Clinker=clang -Clink-arg=-fuse-ld=lld' cargo install jess`: Apple's linker interface does not accept the Linux plugin-LTO flag. Windows uses clang-cl and lld-link; see [L3i's toolchain instructions](https://DreamWeave-MP.github.io/l3i/docs/building/#the-toolchain-rule) for the target-specific settings.
+
+**The unverified build**, on Linux or macOS using clang without cross-language LTO:
 
 ```sh
-L3I_UNVERIFIED_TOOLCHAIN=1 cargo install jess
+CC=clang CXX=clang++ L3I_UNVERIFIED_TOOLCHAIN=1 cargo install jess
 ```
 
 It works, and it says what it is: `jess --version` prints `(unverified toolchain, no cross-language LTO: not for measuring)`, and `jess.bench` refuses to post a number from it. For a binary to measure with, take the archive. Upgrade later by running the same command again.
@@ -99,7 +101,7 @@ cd jess
 cargo build --release
 ```
 
-The binary lands at `target/release/jess`. `cargo run -- <command>` runs a debug build without installing anything. [Building and Testing](@/docs/contributing/building-and-testing.md) has the rest.
+Install the clang and lld toolchain first; the checkout configures their linker flags. The binary lands at `target/release/jess`. `cargo run -- <command>` runs a debug build without installing anything. [Building and Testing](@/docs/contributing/building-and-testing.md) has the rest.
 
 ## What it needs at run time
 
