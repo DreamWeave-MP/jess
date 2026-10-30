@@ -16,7 +16,7 @@ Nothing here runs package code. Opening reads `jess.toml` and the payload's byte
 
 {{ api_signature(value="package.open(location: string) -> JessPackage") }}
 
-Opens the package at `location`: a Package Source folder (the folder holding `jess.toml`), or a `.jpk` file. Either way the result is the same shape:
+Opens the package at `location`: a Package Source folder (the folder holding `jess.toml`), or a `.jpk` file. It needs `filesystem.read`. Either way the result is the same shape:
 
 | Field | Is |
 | --- | --- |
@@ -55,7 +55,7 @@ tests/run.jsl
 
 {{ api_signature(value="package.openJpk(source: JessJpkSource, label: string) -> JessPackage") }}
 
-Opens a JPK that isn't a file of its own: one in memory, or stored inside another archive, from `source`, `{ size, read }`, the same [source](@/docs/api/jpk.md#jpk-open) `@jess/jpk` reads. It is the same package as the file would be, with the same digest and the same checks, `label` standing in for where it came from in `location` and in every message. A packed workspace opens its packages this way, in place.
+Opens a JPK that isn't a file of its own: one in memory, or stored inside another archive, from `source`, `{ size, read }`, the same [source](@/docs/api/jpk.md#jpk-open) `@jess/jpk` reads. It is the same package as the file would be, with the same digest and the same checks, `label` standing in for where it came from in `location` and in every message. Reading an in-memory source does not itself need a filesystem grant; a source callback that reads a file needs the authority for that read. A packed workspace opens its packages this way, in place.
 
 ```luau
 --!strict
@@ -96,7 +96,7 @@ Reads package offers directly inside `folder`, in name order: directories contai
 
 {{ api_signature(value="package.pack(source: string, output: string, options: { version: string? }?) -> JessPackResult") }}
 
-Packs the Package Source at `source` into the [canonical JPK](@/docs/api/jpk.md#the-canonical-writer) at `output`, written through a temporary file and a rename. Returns `{ path, version, digest, files, size }`. Only the payload goes in: `jess.toml` and what `include` names, which holds the tests the manifest names. Benchmarks, `.git`, and an editor's or a merge tool's leftovers (`*.bak*`, `*~`, `*.orig`) stay home. [`jess pack`](@/docs/cli/package.md#jess-pack) is this function.
+Packs the Package Source at `source` into the [canonical JPK](@/docs/api/jpk.md#the-canonical-writer) at `output`, written through a temporary file and a rename. It needs `filesystem.read` and `filesystem.write`. Returns `{ path, version, digest, files, size }`. Only the payload goes in: `jess.toml` and what `include` names, which holds the tests the manifest names. Benchmarks, `.git`, and an editor's or a merge tool's leftovers (`*.bak*`, `*~`, `*.orig`) stay home. [`jess pack`](@/docs/cli/package.md#jess-pack) is this function.
 
 With `options.version`, the payload is packed at that version: the one `version` line of `jess.toml`'s `[package]` table is revised, every other byte stays, and the manifest, the id, the digest, and the files all read as revised. That is how a development build is made: the same files as the source, at `1.2.1-dev.57`, with a digest of its own, because its manifest differs. The source on disk is untouched.
 
@@ -158,7 +158,7 @@ Whether `version` meets `requirement`. Requirements are Cargo's caret ranges and
 
 ## The content digest
 
-A package's identity is its id and version. Its content is the digest: BLAKE3 over the files, framed so no two different packages can hash the same.
+A package's identity is its id and version. Its content is the digest: BLAKE3 over the files, with lengths and paths framing the input so different file boundaries cannot be confused. As with any fixed-size cryptographic digest, collisions are possible.
 
 1. The domain tag `jess-package-digest-v1` and a NUL byte.
 2. For every payload file in canonical order (`jess.toml` first, then the rest bytewise): the path's length as a little-endian u64, the path, the file's size as a little-endian u64, and the file's own BLAKE3.
