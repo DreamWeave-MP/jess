@@ -302,7 +302,7 @@ local function sourceTypes(source: string, moduleName: string, page: string): { 
   return symbols
 end
 
-local function tableFunctions(source: string, documentation: string, prefix: string, moduleName: string): { Symbol }
+local function tableFunctions(source: string, documentation: string, prefix: string, moduleName: string, verifyFunctions: boolean?): { Symbol }
   local parsed = luau.parse(source)
   if #parsed.errors > 0 then error(`api catalog: generated {moduleName} source does not parse`, 0) end
   local symbols: { Symbol } = {}
@@ -355,13 +355,17 @@ local function tableFunctions(source: string, documentation: string, prefix: str
       signature ..= ` -> {string.sub(source, resultFirst, resultLast)}`
     end
 
+    if verifyFunctions and not string.find(documentation, signature, 1, true) then
+      error(`api catalog: signature drift for {name}: {signature}`, 0)
+    end
+
     table.insert(symbols, {
       name = name,
       module = moduleName,
       signature = signature,
       page = 'docs/api/render/',
       anchor = if prefix == 'render' then 'writers' else 'the-camera',
-      checked = false,
+      checked = verifyFunctions == true,
     })
   end
 
@@ -824,7 +828,7 @@ local function generate(root: string, updateBaseline: boolean?): string
       local documentation, docProblem = fs.readFileString(path)
       if not documentation then error(`api catalog: cannot read {path}: {docProblem}`, 0) end
       local prefix = if item.name == 'render' then 'render' else 'camera'
-      for _, symbol in tableFunctions(item.source, documentation, prefix, moduleName) do
+      for _, symbol in tableFunctions(item.source, documentation, prefix, moduleName, true) do
         table.insert(symbols, symbol)
       end
     end

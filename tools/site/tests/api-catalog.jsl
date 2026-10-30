@@ -232,6 +232,11 @@ return table.freeze(camera)]]
   test.expect(#symbols).toBe(1)
   test.expect(symbols[1].signature).toBe 'camera.write(value: string)'
   test.expect(symbols[1].anchor).toBe 'the-camera'
+  local checked = catalog.tableFunctions(source, 'camera.write(value: string)', 'camera', '@jess/render/camera', true)
+  test.expect(checked[1].checked).toBe(true)
+  test.expect(function()
+    catalog.tableFunctions(source, 'camera.write(value: number)', 'camera', '@jess/render/camera', true)
+  end).toThrow 'signature drift'
   test.expect(function() catalog.tableFunctions(source, '', 'camera', '@jess/render/camera') end).toThrow 'missing documentation'
   local changed = string.gsub(source, 'return table.freeze', 'camera.extra = true\nreturn table.freeze')
   test.expect(function() catalog.tableFunctions(changed, 'camera.write', 'camera', '@jess/render/camera') end).toThrow 'unsupported camera.extra'

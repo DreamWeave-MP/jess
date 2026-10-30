@@ -12,7 +12,7 @@ extra:
 
 ## Writers
 
-{{ api_signature(value="render.block(layout: ShaderLayout, frequency: 'pass' | 'material' | 'draw') -> Block") }}
+{{ api_signature(value="render.block(layout: ShaderLayout, frequency: Frequency) -> Block") }}
 
 The uniform block `frequency` declares, as bytes, all zeros. `block:set(name, value)` writes a member where the layout puts it, and `block:upload(gpuBuffer, offset?)` writes the bytes to a buffer. `block.bytes` and `block.size` are the bytes and their length.
 
@@ -43,6 +43,26 @@ A mistake names the member: `@jess/render: pass.cell is 2 numbers, not 1`, `@jes
 {{ api_signature(value="require('@jess/render/camera'): { block, with, identity, multiply, perspective, orthographic, lookAt, write, transform }") }}
 
 The standard camera is a convention a program opts into, not something the kernel knows. Its world is right-handed, a camera looks down its own -Z, and clip-space depth runs from 0 at the near plane to 1 at the far one, which is what every backend jess draws through expects. A matrix is 16 numbers, column by column.
+
+The generated signatures use the camera module's `Matrix` type and the render module's `Block`:
+
+```text
+camera.identity() -> Matrix
+camera.lookAt(eye: vector, target: vector, up: vector) -> Matrix
+camera.multiply(after: Matrix, before: Matrix) -> Matrix
+camera.orthographic(
+  left: number,
+  right: number,
+  bottom: number,
+  top: number,
+  near: number,
+  far: number
+) -> Matrix
+camera.perspective(fovY: number, aspect: number, near: number, far: number) -> Matrix
+camera.transform(matrix: Matrix, point: vector) -> vector
+camera.with(extra: { [string]: ShaderType }) -> { [string]: ShaderType }
+camera.write(block: render.Block, view: Matrix, projection: Matrix, position: vector)
+```
 
 | Member | Does |
 | --- | --- |
