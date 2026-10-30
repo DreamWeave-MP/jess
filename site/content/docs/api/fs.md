@@ -29,7 +29,7 @@ assert(fs.writeFile('target/manifest.copy.toml', manifest, { atomic = true, crea
 
 Three things to know before reaching for it:
 
-- `list(path)` is sorted by name, and `walk(root, options)` covers a whole tree.
+- `list(path)` sorts names by their bytes. `walk(root, options)` covers a whole tree, but does not sort by default; request `sort = true` when traversal order matters.
 - `writeFile` writes what it's told and keeps nothing. A tool that overwrites someone's file
   should keep what was there, which is [`@jess/backup`](@/docs/api/backup.md).
 - `stat(path)` has `size`, `modifiedSeconds`, and `modifiedNanoseconds`; there is no separate
