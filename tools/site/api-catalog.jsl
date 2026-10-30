@@ -789,6 +789,7 @@ local function generate(root: string, updateBaseline: boolean?): string
       or item.name == 'value'
       or item.name == 'toml'
       or item.name == 'analysis'
+      or item.name == 'style'
     for _, symbol in sourceSymbols(item.source, documentation, item.name, item.grouped, item.moduleName, aliases, verifyFunctions) do
       table.insert(symbols, symbol)
     end

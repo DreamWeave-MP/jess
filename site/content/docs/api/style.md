@@ -34,9 +34,9 @@ It parses with [`@dream/luau`](@/docs/api/l3i.md), so a file that doesn't parse 
 
 ### style.check
 
-{{ api_signature(value="style.check(source: string, options: Options?) -> { Finding }") }}
+{{ api_signature(value="style.check(text: string, given: Options?) -> { Finding }") }}
 
-Every finding in `source`, sorted by position.
+Every finding in `text`, sorted by position; `given` supplies the options below.
 
 | Finding field | Is |
 | --- | --- |
@@ -59,12 +59,14 @@ Every finding in `source`, sorted by position.
 {{ api_signature(value="style.checkFile(path: string, options: Options?) -> { Finding }") }}
 
 `style.check` on a file. A `.md` file is checked one ```` ```luau ```` block at a time, as a fragment, with each finding's lines counted from the top of the page.
+This operation needs `filesystem.read`.
 
 ### style.files
 
 {{ api_signature(value="style.files(paths: { string }) -> { string }") }}
 
-The `.jsl` and `.lua` files under each path, sorted. A path that's a file is kept whatever its extension; folders named `target` and dot-folders are skipped.
+The `.jsl` and `.lua` files under each directory, sorted. A path that is not a directory is kept whatever its extension, including a nonexistent path; a later `checkFile` then reports a read failure. Folders named `target` and dot-folders are skipped while walking.
+Discovering or reading files needs `filesystem.read`; `run` and `checkPackage` use the same filesystem operations.
 
 ### style.run
 
@@ -101,9 +103,9 @@ One finding on one line: `path:line:column: severity[rule]: message`, or without
 
 ### style.markdownBlocks
 
-{{ api_signature(value="style.markdownBlocks(text: string) -> { { line: number, source: string } }") }}
+{{ api_signature(value="style.markdownBlocks(text: string) -> { Block }") }}
 
-A Markdown page's ```` ```luau ```` blocks, each with the line its opening fence is on.
+A Markdown page's ```` ```luau ```` blocks, each with the line its opening fence is on. `Block` is `{ line: number, source: string }`.
 
 ### style.rules
 
@@ -112,5 +114,7 @@ A Markdown page's ```` ```luau ```` blocks, each with the line its opening fence
 Every rule by id, frozen. [Luau Style](@/docs/contributing/luau-style.md#the-checker) has the table.
 
 ### style.analysis, style.analyze, style.workspace
+
+{{ api_signature(value="style.analyze(source: string, options: ParseOptions?) -> Source; style.workspace(paths: { string }, options: WorkspaceOptions?) -> Workspace") }}
 
 The same values as [`@jess/analysis`](@/docs/api/analysis.md) exports, re-exported so a style tool that also wants the dependency analysis needs one `require`.
