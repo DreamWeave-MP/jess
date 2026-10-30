@@ -8,6 +8,8 @@ extra:
 
 This is a review map, not a promise that every listed function has been checked. The generated type definitions are the inventory for the runtime the checker sees; implementations and tests establish behavior that a type cannot express. Run `jess luau-types` for the installed version. The [machine-readable catalog](@/docs/api/_index.md) names the modules whose top-level signatures the site currently checks automatically and includes generated type and native handle declarations without claiming their behavior has been audited.
 
+For the build reviewed here, the catalog contains 2,496 symbol records; 30 have `checked = true`, meaning their generated signature and a handwritten heading are checked together. The other records remain searchable and are covered by the per-module drift fingerprints, but their signatures are not individually matched to the prose. Counts vary with the runtime and enabled features; neither status proves a behavioral audit.
+
 ## Native runtime services
 
 | Surface | Canonical reference | Source and tests to review | Current status |
