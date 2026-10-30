@@ -21,8 +21,8 @@ A JSON `null` decodes to [`jess.null`](@/docs/api/jess.md#jess-null), which `jso
 Parses one JSON text and returns its value.
 
 - **Parameters:** `text`, the whole document as UTF-8 (a leading byte-order mark is skipped, as the RFC allows a parser to). `options.maxDepth`: how deep arrays and objects may nest, 512 by default.
-- **Returns:** the value. Objects are tables with string keys, arrays are tables from 1, strings are strings, numbers are numbers, `true` and `false` are booleans, and `null` is `jess.null`. A repeated key keeps the last value.
-- **Errors:** `json: <what's wrong> at line <n>, column <n>` for anything the grammar doesn't allow (`json: trailing comma in array at line 1, column 7`), a text that isn't valid UTF-8, or nesting past `maxDepth` (`json: nesting exceeds maxDepth (1) at line 1, column 3`). `json: maxDepth must be a positive integer` for an option that isn't one.
+- **Returns:** the value. Objects are tables with string keys, arrays are tables from 1, strings are strings, numbers are finite floating-point numbers, `true` and `false` are booleans, and `null` is `jess.null`. A repeated key keeps the last value. A number outside the finite floating-point range is rejected rather than converted to infinity.
+- **Errors:** `json: <what's wrong> at line <n>, column <n>` for anything the grammar doesn't allow (`json: trailing comma in array at line 1, column 7`), a text that isn't valid UTF-8, a number that cannot be represented as finite (`json: number cannot be represented`), or nesting past `maxDepth` (`json: nesting exceeds maxDepth (1) at line 1, column 3`). `json: maxDepth must be a positive integer` for an option that isn't one.
 
 The result is `unknown`: it is someone else's document. In `--!strict` code, cast it to the shape your program expects and check with `typeof` whatever you can't afford to be wrong about.
 
@@ -103,7 +103,7 @@ print(json.encodeTable({ id = 'com.example.greeter', targets = { 'greet', 'versi
 | JSON | Luau |
 | --- | --- |
 | String | `string`, with escapes decoded, `\uXXXX` pairs included |
-| Number | `number`. JSON has one number type and so does the decoder: an integer past 2^53 is read as the nearest float. |
+| Number | `number`. JSON has one number type and so does the decoder: an integer past 2^53 is read as the nearest float, and a magnitude too large for a finite float is an error. |
 | `true`, `false` | `boolean` |
 | `null` | `jess.null` |
 | Array | A table from 1, with `jess.null` where the array had `null`, so positions hold |
