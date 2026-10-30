@@ -20,8 +20,8 @@ There are seventeen names. Jess knows all of them up front, so a misspelled gran
 | `process.spawn` | Running a child process. | `@dream/process`'s `run` |
 | `process.stdio` | Writing to the host's standard streams. `print` doesn't need it; it is jess's own. | `@dream/process`'s `write` |
 | `network.dns.resolve` | Resolving names to addresses. | `@dream/dns` |
-| `network.tcp.connect` | Outbound TCP connections to any address. A TLS session rides on a connected stream, so `@dream/tls` needs nothing of its own, and neither does [`@jess/http`](@/docs/api/http.md) beyond the transport it is given. | `@dream/tcp`'s `connect` |
-| `network.tcp.listen` | Listening on a loopback address. | `@dream/tcp`'s `listen` |
+| `network.tcp.connect` | Outbound TCP connections to any address. A TLS session rides on a connected stream, so `@dream/tls` needs nothing of its own, and neither do [`@jess/net`](@/docs/api/net.md), [`@jess/http`](@/docs/api/http.md) or [`@jess/websocket`](@/docs/api/websocket.md): they connect with this and resolve with `network.dns.resolve`, and hold nothing more. | `@dream/tcp`'s `connect` |
+| `network.tcp.listen` | Listening on a loopback address, which [`http.serve`](@/docs/api/http.md#serve) does and needs nothing more for. | `@dream/tcp`'s `listen` |
 | `network.tcp.public` | With `network.tcp.listen`, binding a wildcard or non-loopback address. | `@dream/tcp`'s `listen` |
 | `network.transport` | Creating UDP transports, client or server. | `@dream/udp` |
 | `input.configure` | Configuring the input runtime: compiling and installing action graphs, bindings, sets, and layers. | [`jess.input`](@/docs/api/input.md) |

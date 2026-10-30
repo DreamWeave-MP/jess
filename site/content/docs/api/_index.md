@@ -20,7 +20,7 @@ Three kinds of module live here:
 
 - **The `jess` global and its members**: `jess.context`, `jess.worker`, `jess.events`, `jess.interfaces`, `jess.application`, `jess.shader`, `jess.gpu`, `jess.input`, `jess.audio`, `jess.bench`, and the values that belong to no module. Most are also available through `require('@jess/<name>')`. `@jess/input` and `@jess/audio` are built-in package modules wrapping the corresponding native tables, not those same tables.
 - **The built-in modules**, Luau that ships inside the binary: `@jess/log`, `@jess/test`, `@jess/jpk`, `@jess/package`.
-- **The built-in package's exports**: `@jess/style`, `@jess/analysis`, `@jess/json`, `@jess/yaml`, `@jess/data/toml`, `@jess/data/value`, `@jess/l10n`, `@jess/input`, `@jess/audio`, `@jess/render`, `@jess/render/camera`, `@jess/backup`, `@jess/http`.
+- **The built-in package's exports**: `@jess/style`, `@jess/analysis`, `@jess/json`, `@jess/yaml`, `@jess/data/toml`, `@jess/data/value`, `@jess/l10n`, `@jess/input`, `@jess/audio`, `@jess/render`, `@jess/render/camera`, `@jess/backup`, `@jess/http`, `@jess/sse`, `@jess/net`, `@jess/websocket`.
 
 The native primitives under all of it, files, bytes, processes, the network, and text, are [L3i's `@dream/*` modules](@/docs/api/l3i.md), documented on L3i's own site.
 

@@ -1,0 +1,16 @@
+--!strict
+-- @jess/sse's checks before anything is sent. The event stream itself runs against a loopback
+-- server in jess's own test suite, where sockets can be granted.
+local sse = require '@jess/sse'
+local test = require '@jess/test'
+local expect = test.expect
+local suite = test.new()
+
+suite.describe('@jess/sse', function()
+  suite.it('refuses a size that is not one before anything is sent', function()
+    expect(function() sse.open { url = 'http://127.0.0.1:1/', maxEventBytes = 0 } end).toThrow 'maxEventBytes is a whole number'
+    expect(function() sse.open { url = 'http://127.0.0.1:1/', maxEventBytes = 0 / 0 } end).toThrow 'maxEventBytes'
+  end)
+end)
+
+return suite
