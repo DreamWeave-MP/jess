@@ -708,7 +708,21 @@ local function generate(root: string, updateBaseline: boolean?): string
   local symbols: { Symbol } = {}
 
   table.insert(modules, '@jess')
-  for _, symbol in rootInventory(definitions) do
+  local rootSymbols = rootInventory(definitions)
+  local rootReference, rootProblem = fs.readFileString(fs.join(root, 'site', 'content', 'docs', 'api', 'jess.md'))
+  if not rootReference then error(`api catalog: cannot read jess reference: {rootProblem}`, 0) end
+
+  local rootMembers: { Symbol } = {}
+  for _, symbol in rootSymbols do
+    if table.find({ 'jess.version', 'jess.null', 'jess.granted', 'jess.payload' }, symbol.name) then
+      table.insert(rootMembers, symbol)
+    end
+  end
+
+  if #rootMembers ~= 4 then error('api catalog: jess global members changed', 0) end
+
+  checkNativeSignatures(rootMembers, rootReference)
+  for _, symbol in rootSymbols do
     table.insert(symbols, symbol)
   end
 

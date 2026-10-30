@@ -8,13 +8,13 @@ extra:
 
 This is a review map, not a promise that every listed function has been checked. The generated type definitions are the inventory for the runtime the checker sees; implementations and tests establish behavior that a type cannot express. Run `jess luau-types` for the installed version. The [machine-readable catalog](@/docs/api/_index.md) names the modules whose top-level signatures the site currently checks automatically and includes generated type and native handle declarations without claiming their behavior has been audited.
 
-For the build reviewed here, the catalog contains 2,496 symbol records; 156 have `checked = true`, meaning their generated signature is checked against the handwritten reference. The other records remain searchable and are covered by the per-module drift fingerprints, but their signatures are not individually matched to the prose. Counts vary with the runtime and enabled features; neither status proves a behavioral audit.
+For the build reviewed here, the catalog contains 2,496 symbol records; 160 have `checked = true`, meaning their generated signature is checked against the handwritten reference. The other records remain searchable and are covered by the per-module drift fingerprints, but their signatures are not individually matched to the prose. Counts vary with the runtime and enabled features; neither status proves a behavioral audit.
 
 ## Native runtime services
 
 | Surface | Canonical reference | Source and tests to review | Current status |
 | --- | --- | --- | --- |
-| Global values and `require` | [jess](@/docs/api/jess.md) | `src/lua/definitions.jsl`, `src/lua/plan.rs`, `tests/lua/contracts.rs` | Reference exists; full signature and behavior audit remains. |
+| Global values and `require` | [jess](@/docs/api/jess.md) | `src/lua/definitions.jsl`, `src/lua/plan.rs`, `tests/lua/contracts.rs` | Scalar and function signatures are checked; complete behavioral audit remains. |
 | Contexts, workers, events, interfaces, application | [context](@/docs/api/context.md), [worker](@/docs/api/worker.md), [events](@/docs/api/events.md), [interfaces](@/docs/api/interfaces.md), [application](@/docs/api/application.md) | `src/lua/definitions.jsl`, `src/runtime/`, `tests/lua/package/application.rs` | Top-level signatures checked by the catalog; worker methods, transfer rules, queues, lifecycle, and error contracts need a complete source audit. |
 | Input | [input](@/docs/api/input.md) | `src/input/`, `src/lua/definitions.jsl`, `jpk/builtin/src/input/`, `tests/input/` | Package and native module functions are matched to generated signatures; handle method behavior needs a symbol-by-symbol audit. |
 | Audio | [audio](@/docs/api/audio.md) | `src/lua/audio.rs`, `src/audio/`, `src/lua/definitions.jsl`, `jpk/builtin/src/audio/`, `tests/lua/audio_*` | Package and native module functions are matched to generated signatures; scheduling, resources, platform behavior, and handle methods still need systematic verification. |
