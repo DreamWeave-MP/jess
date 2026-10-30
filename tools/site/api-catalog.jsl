@@ -186,6 +186,16 @@ local function globalInventory(definitions: string, member: string): { Symbol }
   error(`api catalog: generated definitions have no jess.{member}`, 0)
 end
 
+local function checkNativeSignatures(symbols: { Symbol }, documentation: string)
+  for _, symbol in symbols do
+    if not string.find(documentation, symbol.signature, 1, true) then
+      error(`api catalog: signature drift for {symbol.name}: {symbol.signature}`, 0)
+    end
+
+    symbol.checked = true
+  end
+end
+
 local function rootInventory(definitions: string): { Symbol }
   local parsed = luau.parse(definitions, { declarations = true })
   if #parsed.errors > 0 then error('api catalog: generated definitions do not parse', 0) end
@@ -807,7 +817,15 @@ local function generate(root: string, updateBaseline: boolean?): string
 
   for _, member in { 'audio', 'gpu', 'input', 'shader' } do
     table.insert(modules, `jess.{member}`)
-    for _, symbol in globalInventory(definitions, member) do
+    local native = globalInventory(definitions, member)
+    if member == 'gpu' then
+      local documentation, problem = fs.readFileString(fs.join(root, 'site', 'content', 'docs', 'api', 'gpu.md'))
+      if not documentation then error(`api catalog: cannot read GPU reference: {problem}`, 0) end
+
+      checkNativeSignatures(native, documentation)
+    end
+
+    for _, symbol in native do
       table.insert(symbols, symbol)
     end
   end
@@ -962,4 +980,4 @@ local function publish(output: string, api: string)
   if not saved then error(`api catalog: cannot write catalog: {saveProblem}`, 0) end
 end
 
-return table.freeze { moduleSymbols = moduleSymbols, stubSymbols = stubSymbols, sourceSymbols = sourceSymbols, typeInventory = typeInventory, sourceTypes = sourceTypes, tableFunctions = tableFunctions, rootInventory = rootInventory, checkModules = checkModules, fingerprints = fingerprints, checkFingerprints = checkFingerprints, symbolAnchor = symbolAnchor, renderSymbols = renderSymbols, generate = generate, publish = publish }
+return table.freeze { moduleSymbols = moduleSymbols, stubSymbols = stubSymbols, sourceSymbols = sourceSymbols, typeInventory = typeInventory, sourceTypes = sourceTypes, tableFunctions = tableFunctions, rootInventory = rootInventory, checkNativeSignatures = checkNativeSignatures, checkModules = checkModules, fingerprints = fingerprints, checkFingerprints = checkFingerprints, symbolAnchor = symbolAnchor, renderSymbols = renderSymbols, generate = generate, publish = publish }

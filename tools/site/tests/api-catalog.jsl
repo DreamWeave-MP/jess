@@ -268,4 +268,16 @@ suite.it('renders stable escaped symbol references without JavaScript', function
   test.expect(function() catalog.renderSymbols({ symbol, symbol }, '/') end).toThrow 'duplicate symbol'
 end)
 
+suite.it('checks native signatures against the reference', function()
+  local symbol = {
+    name = 'jess.gpu.device', module = 'jess.gpu', signature = 'jess.gpu.device() -> GpuDevice',
+    page = 'docs/api/gpu/', anchor = '', checked = false,
+  }
+  catalog.checkNativeSignatures({ symbol }, 'jess.gpu.device() -> GpuDevice')
+  test.expect(symbol.checked).toBe(true)
+  test.expect(function()
+    catalog.checkNativeSignatures({ symbol }, 'jess.gpu.device() -> Other')
+  end).toThrow 'signature drift'
+end)
+
 return suite
