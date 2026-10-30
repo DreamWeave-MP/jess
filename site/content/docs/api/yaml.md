@@ -20,9 +20,9 @@ A YAML null (`~`, `null`, or nothing) decodes to [`jess.null`](@/docs/api/jess.m
 
 Parses a text holding one document and returns its value. `yaml.version` is the spec version the loader follows, `'1.2.2'`.
 
-- **Parameters:** `text`, the whole document as UTF-8. `options.maxDepth`: how deep collections may nest.
+- **Parameters:** `text`, the whole document as UTF-8. `options.maxDepth`: how deep collections may nest, 512 by default; it must be a positive integer.
 - **Returns:** the document's value, or `jess.null` for a text with no document in it. Mappings are tables, sequences are tables from 1, and scalars resolve by the Core schema: see the table below.
-- **Errors:** `YAML: <what's wrong> at line <n>, column <n>` for a text the grammar refuses (`YAML: expected ',' or ']' in flow sequence at line 1, column 9`), an undefined tag handle, an invalid `!!int` or `!!bool` scalar, an integer outside the signed 64-bit range, or nesting past `maxDepth` (`YAML: maximum nesting depth exceeded at line 1, column 4`). `YAML: expected one document, got <n>; use decodeAll` for a text with document markers between several.
+- **Errors:** `YAML: <what's wrong> at line <n>, column <n>` for a text the grammar refuses (`YAML: expected ',' or ']' in flow sequence at line 1, column 9`), a duplicate mapping key, a NaN mapping key, an undefined tag handle, an invalid `!!int` or `!!bool` scalar, an integer outside the signed 64-bit range, or nesting past `maxDepth` (`YAML: maximum nesting depth exceeded at line 1, column 4`). An invalid depth raises `YAML: maxDepth must be a positive integer`. `YAML: expected one document, got <n>; use decodeAll` means the text contains several documents.
 
 The result is `unknown`. Cast it to the shape your program expects in `--!strict` code, and check what you can't count on.
 
@@ -65,7 +65,7 @@ tool	tool	!flag	enabled
 
 {{ api_signature(value="yaml.decodeAll(text: string, options: { maxDepth: number? }?) -> { unknown }") }}
 
-Parses a text holding any number of documents, separated by `---`, and returns their values in order. A text with none gives an empty table.
+Parses a text holding any number of documents, separated by `---`, and returns their values in order. A text with none gives an empty table. It takes the same depth option and reports the same parsing errors as `decode`.
 
 ```luau
 --!strict
