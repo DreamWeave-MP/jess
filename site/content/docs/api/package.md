@@ -20,7 +20,7 @@ Opens the package at `location`: a Package Source folder (the folder holding `je
 
 | Field | Is |
 | --- | --- |
-| `manifest` | The checked [manifest](@/docs/scripting/packages.md#the-manifest), as a table: `id`, `version`, `jessApi`, `include`, `tests`, `dependencies`, `modules`, `layers`. |
+| `manifest` | The checked [manifest](@/docs/scripting/packages.md#the-manifest): `manifestVersion`, `id`, `version`, `jessApi`, `defaultTarget`, `include`, `tests`, `dependencies`, `devDependencies`, `modules`, `layers`, `managed`, and `targets`. |
 | `id`, `version` | The manifest's. |
 | `digest` | The [content digest](#the-content-digest), hex. |
 | `kind` | `'source'` or `'jpk'`. Ordinary code has no business branching on it. |
@@ -29,6 +29,8 @@ Opens the package at `location`: a Package Source folder (the folder holding `je
 | `read(path)` | A payload file's bytes, or nil for a path that isn't in the payload. |
 
 Opening checks the whole package before it returns. A Package Source must not hold symlinks, files that are neither file nor folder, or two paths that differ only in case (`Name.jsl` and `name.jsl` are one file on Windows and a fresh bug everywhere else). A JPK must hold nothing outside its manifest's `include`. Every module the manifest exports must be in the payload, and a Package Source must hold every test its manifest names.
+
+The returned package, its file list, and its manifest are frozen. `read` returns a buffer for a named payload file and checks its content against the digest recorded at open; if the file disappears or changes, it raises an error asking the caller to open the package again. For a source package, the manifest bytes are retained from the opening read rather than reread from disk. An absent payload path returns `nil`.
 
 ```luau
 --!strict
