@@ -1545,3 +1545,267 @@ declare jess: {
     pump: () -> (),
   },
 }
+
+--[========[
+@api-document application jess.application
+
+
+Also `require('@jess/application')`. What an [application's](@/docs/scripting/applications.md#running-and-stopping) code asks of the host running it. A script under `jess run` or a command target ends when it returns, so there is nothing to ask, and `exit` errors.
+
+## jess.application.exit
+
+
+Asks the host to stop after the current frame, with `status` (0 without one) as the process's exit status. It returns; the frame finishes, then the `shutdown` handlers run and the application is torn down. A later call in the same frame replaces the status. A restart forgets the request.
+
+- **Errors:** `application.exit: the status is an integer from 0 to 255, not <status>`; `application.exit: needs an application host; jess run, jess test, and command targets end when their script returns`; in a worker, `application.exit is for the domain's own code; a worker asks the domain in a message`.
+
+This managed module requests shutdown after 600 updates. It needs a manifest that declares it in an application target; it is not a standalone `jess run` script. The [headless recipe](@/docs/cookbook/headless.md) supplies a complete runnable package.
+
+```luau
+--!strict
+local application = require('@jess/application')
+
+local frames = 0
+
+local function update(deltaSeconds: number)
+  frames += 1
+
+  if frames == 600 then application.exit(0) end
+end
+
+return { on = { host = { update = update } } }
+```
+
+Related: [Applications](@/docs/scripting/applications.md), [jess package run](@/docs/cli/package.md#jess-package-run).
+
+]========]
+
+--[========[
+@api-document bench jess.bench
+
+
+Also `require('@jess/bench')`. Two things a benchmark needs that nothing else in Luau gives it, and nothing more: the harness, the batches, and the statistics are a package's business.
+
+A number means something only on the build releases ship. jess is built with L3i's verified toolchain, cross-language link-time optimization included, and a development build (`tools/dev/no-lto.sh`, or the MSRV check) runs Luau slower than a release does. A harness that can't tell which build it is on will publish a number from the wrong one, so `verified` says, and `jess --version` marks an unverified build too.
+
+## jess.bench.verified
+
+
+Whether this jess was built with the verified toolchain. A harness refuses to produce a number when it isn't; a time from an unverified build measures a slower Luau, and the honest thing to do with it is nothing.
+
+## jess.bench.collect
+
+
+Runs a full garbage collection, so one batch's garbage isn't collected inside the next one's timing. Call it between batches, not inside one.
+
+```luau
+--!strict
+local bench = require '@jess/bench'
+
+if not bench.verified then
+  error('this jess was built without the verified toolchain; its numbers measure a slower Luau', 0)
+end
+
+local numbers = table.create(100000, 1)
+
+local function sum(): number
+  local total = 0
+  for _, number in numbers do
+    total += number
+  end
+
+  return total
+end
+
+bench.collect()
+local started = os.clock()
+for _ = 1, 50 do
+  sum()
+end
+
+print(`{(os.clock() - started) * 1000 / 50} ms per sum`)
+```
+
+On a development build, which is what the example was run on:
+
+```text
+error: this jess was built without the verified toolchain; its numbers measure a slower Luau
+```
+
+That is the example working. `os.clock` is a wall clock; a bench checks its answer before and after timing, so a path that stops doing the work fails instead of posting a time, and it reports a median of several batches, never one run. [Benchmarks](@/docs/contributing/benchmarks.md) covers the harness jess's own measurements go through.
+
+Related: [Performance](@/docs/scripting/performance.md).
+
+]========]
+
+--[========[
+@api-document context jess.context
+
+
+Also `require('@jess/context')`. This is the script side of a [ScriptDomain](@/docs/contributing/script-domains.md): a host that embeds jess declares contexts, each with the phases it may run in, and a script binds its handlers to them. Under `jess run` there is no domain, so `bind` errors with `context.bind: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and command targets run scripts outside one`; the examples here are a domain's main script.
+
+## jess.context.bind
+
+
+Binds one handler per phase to the context the host declared as `name`. A later `bind` for the same phase replaces the earlier handler; other phases keep theirs.
+
+The table is validated before any handlers are installed: a bad key, a non-function value, an unknown context, or a phase the context does not schedule leaves the existing bindings in place. Binding is available while the domain is created, loading, ready, or running; it fails once the domain is stopping or stopped. Binding records the caller location for later diagnostics.
+
+`handlers` is keyed by phase name. Each handler gets the phase's payload: seconds for `update`, `fixedUpdate`, and `lateUpdate`; the event for `event`; whatever the host passed for `input`, `renderPrepare`, `message`, `timer`, and `onDemand`; nothing for `load`, `startup`, and `shutdown`.
+
+| Phase | When |
+| --- | --- |
+| `load` | Once, after the domain's code has loaded. |
+| `startup` | Once, when the domain starts. |
+| `fixedUpdate` | Zero or more fixed steps per advance, bounded by the host's catch-up limit. |
+| `update`, `lateUpdate` | Once per advance. |
+| `input`, `renderPrepare`, `message`, `timer`, `onDemand` | When the host or a layer above asks. |
+| `event` | When an event queued for the context is delivered. |
+| `shutdown` | Once, when the domain stops or restarts. |
+
+Binding never widens authority. The host's declaration says which phases a context has and which capabilities it holds; a script can only fill in the handlers.
+
+- **Errors:** `<domain> has no context '<name>'`; `<context> does not schedule the <phase> phase`; `'<key>' is not a scheduler phase`; `context.bind: the <phase> handler is a function, not <type>`.
+
+```luau
+--!strict
+local context = require('@jess/context')
+
+local ticks = 0
+
+context.bind('game', {
+  startup = function()
+    print('starting')
+  end,
+
+  update = function(deltaSeconds: number)
+    ticks += 1
+  end,
+
+  event = function(payload)
+    print(`event {payload.kind}`)
+  end,
+
+  shutdown = function()
+    print(`stopping after {ticks} ticks`)
+  end,
+})
+```
+
+A handler that raises is reported to the host with the domain, generation, context, and phase it ran in, and where it was bound; the phase goes on to the next context, and the domain keeps running.
+
+An [application target](@/docs/scripting/applications.md) needs none of this by hand: each of its managed modules returns its handlers in `on.host`, and the loader declares a context for it, `<package>/<managed id>`, and binds them. `bind` still works on those contexts, under the same rules. The `event` phase here takes raw events a host posted to a context; a managed module's `on.event` handlers take [named events](@/docs/api/events.md), and the two never reach each other.
+
+Related: [jess.worker](@/docs/api/worker.md), [Script Domains](@/docs/contributing/script-domains.md).
+
+]========]
+
+--[========[
+@api-document events jess.events
+
+
+Also `require('@jess/events')`. Named events are how a domain's code tells the rest of the domain something happened, and, when a host routes them, how one domain tells another. Their handlers are the `on.event` tables of an [application's](@/docs/scripting/applications.md) managed modules. Only a domain's own code emits: under `jess run`, a command target, or in a worker there is no queue to emit into, and `emit` errors.
+
+## jess.events.emit
+
+
+Queues the event `name` with `payload` and returns. No handler runs inside `emit`. At the domain's next event drain, the end of the current frame, every handler bound to `name` gets the payload, in context order; events are delivered in the order they were emitted, and one emitted during a drain waits for the next. A handler that raises is reported with its context and event name, and the rest still run. An event nothing handles is counted as unhandled and dropped.
+
+`payload` must be transferable: nil, booleans, numbers, integers, strings, vectors, buffers, resource handles, and tables of those with string or number keys, nested at most 32 deep. Other userdata, functions, and threads cannot cross. It is copied out of the emitting code when you emit, so changing your table afterwards changes nothing. Every handler of the event then gets the same table, built once and frozen all the way down: read it, and copy what you want to keep changing. Freezing doesn't reach into a buffer, so a payload that holds one is built for each handler instead, frozen the same way, with buffers of its own: what one handler writes into a buffer, the next never reads. If the host routed `name` to another domain, a copy is posted there too, stamped with that domain's generation.
+
+**Known defect:** a table key containing bytes that are not valid UTF-8 is changed when the payload is reconstructed. Different keys can become the same key and lose an entry. This affects nested table keys too; string values and buffers are separate from this defect.
+
+A name that is also a host callback is still just an event: `emit('update')` reaches `on.event.update` handlers, never `on.host.update`.
+
+The queue is bounded. By default a domain holds at most 65,536 waiting events and 64 MiB of payload, where payload means the storage every value takes, not only its strings and buffers (a list of a million empty tables is not free) and each queued event's name, and one drain delivers at most 4,096 of them, leaving the rest, in order, for the next frame. An event that doesn't fit isn't queued, quietly or otherwise: `emit` raises, the refusal is reported as a diagnostic, and nothing is routed. A payload is read no further than the limit, so a vast table is refused part way in rather than copied and then measured. A handler that answers each event with two more fills the queue and then fails, instead of eating the machine.
+
+- **Errors:** `events.emit: an event needs a name`; `events.emit: an event name is at most 256 bytes, and this one is <length>`; `events.emit: '<name>' wasn't queued: <domain>'s event queue is full: 65536 events are waiting, the most it holds` (or holds at most so many bytes of payload); `payload.<path>: a function can't cross a worker or event boundary` (or a thread, a userdata, a table nested more than 32 deep), also reported as a diagnostic; outside a domain, `events.emit: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and command targets run scripts outside one`; in a worker, `events.emit is for a domain's own code; a worker handles messages and answers them`.
+
+```luau
+--!strict
+local events = require('@jess/events')
+
+local deaths = 0
+
+local function died(player: string)
+  deaths += 1
+  events.emit('playerDied', { player = player, deaths = deaths })
+end
+
+died('ada')
+```
+
+## jess.window
+
+One named event is the host's own. Under an application's host, a [window](@/docs/api/gpu.md#windows) something happened to (a resize, a close, a key, the pointer) is announced as `jess.window`, with the payload `{ title: string, key: string? }`: the window's title, and the key it was opened with, if any. The news itself isn't in the payload; it waits in the window, and the handler reads it with `window:events()`. A managed module that keeps its window:
+
+```luau
+--!strict
+local window = jess.gpu.window(jess.gpu.device(), { title = 'editor', key = 'main' })
+
+return {
+  on = {
+    event = {
+      ['jess.window'] = function(payload: { title: string, key: string? })
+        if payload.key ~= window.key then return end
+
+        for _, event in window:events() do
+          print(event.kind)
+        end
+      end,
+    },
+  },
+}
+```
+
+A window is announced once until its events are read, at most once a frame, in the frame its news came in, so nothing runs while nothing happens. A handler that leaves a window's news unread hears nothing more of that window until something reads it. Only the host posts the event: a script that runs its own frames with `jess.gpu.pump` reads `events()` when it likes, and nothing is announced to it.
+
+The name isn't reserved. `emit('jess.window', { title = 'not a window' })` is queued and delivered like any other event, to the same handlers. A handler treats the payload as a reason to look, as the one above does, never as the news itself: a window nothing happened to has no events to read.
+
+Related: [Applications](@/docs/scripting/applications.md#named-events), [jess.interfaces](@/docs/api/interfaces.md), [jess.context](@/docs/api/context.md).
+
+]========]
+
+--[========[
+@api-document interfaces jess.interfaces
+
+
+Also `require('@jess/interfaces')`. An interface is a plain Luau table an [application's](@/docs/scripting/applications.md#interfaces) managed module returns as its `interface`, under the id its manifest gives it. When several provide one id, the last in load order wins, after its `on.host.interfaceOverride` kept what it wanted of the one before. What you get here is that effective table, frozen, in this domain's VM: no proxy, no copy. Interfaces exist once every managed module has loaded, in the application's entry and its handlers. A worker, another domain, `jess run`, and a command target have none.
+
+The freeze is shallow. A consumer cannot add or replace fields on the interface table, but a nested mutable table remains shared with its provider and other consumers. A provider may use that for shared state; consumers should rely on the interface's own contract, rather than assuming nested values are private copies.
+
+The loader calls `interfaceOverride(previous)` only when an earlier provider of the same id exists. `previous` is already frozen at the top level; the new provider's table is frozen after the callback returns. The callback can retain earlier functions in the new interface, but the loader does not merge the tables automatically. If the callback raises, application composition fails.
+
+## jess.interfaces.get
+
+
+The effective implementation of `id`.
+
+- **Errors:** `interfaces.get: no package in this domain implements '<id>' (asked at <chunk>:<line>); it has <ids>`; while managed modules are still loading, `interfaces.get: interfaces are composed once every managed module has loaded; look '<id>' up in a handler or in the application's entry`; in a domain no application loaded, `interfaces.get: this domain has no interfaces; an application target composes them from its packages' [managed] modules`; in a worker, `interfaces.get: interfaces are the domain's own code's; a worker has none, so send it what it needs in a message`; outside a domain, `interfaces.get: needs a ScriptDomain`.
+
+```luau
+--!strict
+type Inventory = {
+  getArmorType: (item: string) -> string,
+  getWeight: (item: string) -> number,
+}
+
+local inventory: Inventory = require('@jess/interfaces').get('game.inventory')
+print(`{inventory.getArmorType('cuirass')} cuirass, {inventory.getWeight('cuirass')} pounds`)
+```
+
+## jess.interfaces.tryGet
+
+
+The same, or `nil` when no package provides `id`: for an interface that is optional. The other errors are `get`'s; an application that isn't composed yet is a mistake, not an absence.
+
+```luau
+--!strict
+local achievements = require('@jess/interfaces').tryGet('game.achievements')
+
+if achievements then achievements.unlock('first-death') end
+```
+
+Related: [Applications](@/docs/scripting/applications.md#overrides), [jess.events](@/docs/api/events.md).
+
+]========]

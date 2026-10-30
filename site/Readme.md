@@ -14,13 +14,13 @@ jess workspace run --trusted jess-site-navigation-check      # verify sidebar an
 
 `tools/site` is a Package Source with build, serve, and navigation-check targets. The generator renders Markdown through the Tera-shaped template layer, compiles Sass, copies static assets, and emits the search index and sitemap. There is deliberately no Zola, Node, or Python in the build path.
 
-`serve` is the local edit loop. It asks the same generator for a dev build into `target/site-dev` with a root-relative base URL, serves it over HTTP from one nonblocking loop on `@dream/tcp`, and watches content, templates, Sass, static files, data, and the config for changes. A failed rebuild prints why and leaves the last successful site in place.
+`serve` is the local edit loop. It asks the same generator for a dev build into `target/site-dev` with a root-relative base URL, serves it over HTTP from one nonblocking loop on `@dream/tcp`, and watches site and API source files for changes. A failed rebuild prints why and leaves the last successful site in place.
 
 Both build and serve run `jess luau-types` to derive the API catalog and need `process.spawn` in addition to their filesystem capabilities. The build writes `api-catalog.json`, creates browsable module and symbol pages, and adds signatures to search. Source comments supply generated descriptions. Existing reference pages are being migrated to source-owned documentation.
 
 Changes to declarations appear in the generated reference on the next build; no signature baseline needs updating.
 
-The fingerprints detect changes; updating them does not prove behavior has been audited. They contain hashes rather than copies of source or generated declarations.
+Migrated reference pages keep their frontmatter and public paths in `content/docs/api/`; their prose is in an `@api-document` block in the corresponding JSL source. The first line names the page slug and its generated module, for example `@api-document jpk @jess/jpk`. The build combines that prose with signatures from the current declarations. A missing source document fails the build. Keep behavior and examples in source comments and avoid copying signatures into those comments.
 
 The tutorial test suite uses `JESS_DOCS_RUNTIME` as the runtime for its standalone-executable case. From the root, set it to the same executable as `jess` on `PATH` and run `jess test` on `tools/site/tests/tutorials.jsl` with `process.spawn`, `process.environment`, `filesystem.read`, and `filesystem.write` granted. The docs workflow does this and tests the HTTP recipe against loopback.
 
@@ -39,9 +39,9 @@ Link between pages with source paths such as `[Packages](@/docs/scripting/packag
 
 API docs get a recursive project sidebar, a current-page table of contents, breadcrumbs, responsive three-column layout, search, and copy buttons for fenced code blocks. Guide pages should be task-first; reference pages should be lookup-first.
 
-Use `{{ api_signature(value="module.function(argument)") }}` for a highlighted API signature. Use `{% usage_note(title="Compatibility") %}This behavior is optional.{% end %}` for a bordered note.
+CLI references use `{{ api_signature(value="command arguments") }}` for highlighted command syntax. API signatures come from declarations. Use `{% usage_note(title="Compatibility") %}This behavior is optional.{% end %}` for a bordered note.
 
-Every ```` ```luau ```` block on the site is checked by `@jess/style` in the `lua_luau_style` test. Examples are run against the real binary before they are written down.
+Every ```` ```luau ```` block in site Markdown and source API documents is checked by `@jess/style` in the `lua::luau_style` tests. Examples are run against the real binary before they are written down.
 
 ## What the site does not mention
 

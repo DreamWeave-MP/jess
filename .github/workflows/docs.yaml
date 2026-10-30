@@ -88,6 +88,7 @@ jobs:
           JESS_DOCS_RUNTIME="$(command -v jess)" jess test --capability process.spawn --capability process.environment --capability filesystem.read --capability filesystem.write tools/site/tests/tutorials.jsl
           . tools/dev/no-lto.sh
           cargo test --locked --test integration cli::docs::
+          cargo test --locked --test integration lua::luau_style::source_api_documentation_blocks_follow_the_style
 
       - name: Build the site
         run: jess workspace run --trusted jess-site-build -- site/public

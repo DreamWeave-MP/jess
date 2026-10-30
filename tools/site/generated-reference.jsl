@@ -422,12 +422,17 @@ local function prepare(root: string, api: string): string
     local body = document.body
     local declarations = { '\n\n## Other generated declarations\n' }
     local unplaced = 0
-    local shortName = string.match(document.module, '([^/]+)$') or document.module
+    local shortName = if string.sub(document.module, 1, 5) == 'jess.'
+      then document.module
+      else string.match(document.module, '([^/]+)$') or document.module
     for _, symbol in catalog.symbols do
       if symbol.module ~= document.module then continue end
       local suffix = string.sub(symbol.name, #document.module + 1)
-      local heading = `## {shortName}{suffix}\n`
-      local _, headingEnd = string.find(body, heading, 1, true)
+      local headingEnd: number?
+      for _, level in { '##', '###', '####' } do
+        local _, lastHeading = string.find(body, `{level} {shortName}{suffix}\n`, 1, true)
+        if lastHeading then headingEnd = lastHeading break end
+      end
       local declaration = `\n\x60\x60\x60text\n{symbol.signature}\n\x60\x60\x60\n`
       if headingEnd then
         body = string.sub(body, 1, headingEnd) .. declaration .. string.sub(body, headingEnd + 1)
@@ -438,6 +443,17 @@ local function prepare(root: string, api: string): string
     end
     local remainder = if unplaced > 0 then table.concat(declarations) else ''
     write(path, string.sub(content, 1, first - 1) .. body .. remainder .. string.sub(content, last + 1))
+  end
+
+  local pages, pageProblem = fs.walk(fs.join(staging, 'content', 'docs', 'api'), { include = 'files', sort = true })
+  if not pages then error(`API reference: cannot inspect reference pages: {pageProblem}`, 0) end
+
+  for _, page in pages.paths do
+    if not string.find(page, '%.md$') then continue end
+    local content = read(fs.join(staging, 'content', 'docs', 'api', page))
+    if string.find(content, '<!-- Generated from the API documentation in Jess source. -->', 1, true) then
+      error(`API reference: no source documentation for {page}`, 0)
+    end
   end
   return staging
 end

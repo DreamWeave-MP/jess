@@ -109,6 +109,30 @@ fn site_luau_blocks_follow_the_style() {
     assert!(findings.is_empty(), "{}", findings.join("\n"));
 }
 
+#[test]
+fn source_api_documentation_blocks_follow_the_style() {
+    let runtime = checker();
+    let mut findings = Vec::new();
+    for path in files(&["src/lua", "jpk/builtin/src"], &["jsl"]) {
+        let source = std::fs::read_to_string(repo_root().join(&path)).unwrap();
+        for document in source.split("--[========[\n@api-document ").skip(1) {
+            let Some((_, body)) = document.split_once('\n') else {
+                continue;
+            };
+            let Some((body, _)) = body.split_once("\n]========]") else {
+                continue;
+            };
+            common::set_global(&runtime, "source", body);
+            common::set_global(&runtime, "name", path.as_str());
+            let found: String = runtime.eval(
+                "local lines = {}\nfor _, block in style.markdownBlocks(source) do\n  for _, finding in style.check(block.source, { fragment = true }) do\n    finding.line += block.line\n    table.insert(lines, style.format(finding, name))\n  end\nend\nreturn table.concat(lines, '\\n')",
+            ).unwrap_or_else(|error| panic!("{path}: {error}"));
+            findings.extend(found.lines().map(str::to_owned));
+        }
+    }
+    assert!(findings.is_empty(), "{}", findings.join("\n"));
+}
+
 /// `jess luau-types`' output: the hand-written definitions plus generated library declarations.
 #[test]
 fn the_generated_definitions_follow_the_style() {

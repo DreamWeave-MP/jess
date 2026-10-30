@@ -6,33 +6,4 @@ extra:
   kind: api
 ---
 
-{{ api_signature(value="jess.application: { exit }") }}
-
-Also `require('@jess/application')`. What an [application's](@/docs/scripting/applications.md#running-and-stopping) code asks of the host running it. A script under `jess run` or a command target ends when it returns, so there is nothing to ask, and `exit` errors.
-
-## jess.application.exit
-
-{{ api_signature(value="jess.application.exit(status: number?) -> ()") }}
-
-Asks the host to stop after the current frame, with `status` (0 without one) as the process's exit status. It returns; the frame finishes, then the `shutdown` handlers run and the application is torn down. A later call in the same frame replaces the status. A restart forgets the request.
-
-- **Errors:** `application.exit: the status is an integer from 0 to 255, not <status>`; `application.exit: needs an application host; jess run, jess test, and command targets end when their script returns`; in a worker, `application.exit is for the domain's own code; a worker asks the domain in a message`.
-
-This managed module requests shutdown after 600 updates. It needs a manifest that declares it in an application target; it is not a standalone `jess run` script. The [headless recipe](@/docs/cookbook/headless.md) supplies a complete runnable package.
-
-```luau
---!strict
-local application = require('@jess/application')
-
-local frames = 0
-
-local function update(deltaSeconds: number)
-  frames += 1
-
-  if frames == 600 then application.exit(0) end
-end
-
-return { on = { host = { update = update } } }
-```
-
-Related: [Applications](@/docs/scripting/applications.md), [jess package run](@/docs/cli/package.md#jess-package-run).
+<!-- Generated from the API documentation in Jess source. -->
