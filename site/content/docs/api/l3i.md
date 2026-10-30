@@ -25,7 +25,7 @@ error: dream.process.env: needs the 'process.environment' capability, which this
 | Module | What it is | Capability |
 | --- | --- | --- |
 | [`@dream/audio`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-audio) | Decoders for MP3, Ogg Vorbis and Ogg Opus into float frames; what [`@jess/audio`](@/docs/api/audio.md) loads and streams compressed files with | none |
-| [`@dream/bytes`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-bytes) | Buffer search and slicing, digests, secure random bytes and HMAC, Deflate, Zstandard and LZMA, text encodings, varints, and [regular expressions](@/docs/api/regex.md) as `bytes.regex` | none |
+| [`@dream/bytes`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-bytes) | Buffer search and slicing, digests, secure random bytes, HMAC, RSA and ECDSA signatures (RS256, ES256) for signed tokens, Deflate, Zstandard and LZMA, text encodings, varints, and [regular expressions](@/docs/api/regex.md) as `bytes.regex` | none |
 | [`@dream/data`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-data) | Whole-buffer arithmetic: sums, extrema, sorting, gathering, scattering, and partitioning over typed buffers | none |
 | [`@dream/dns`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-dns) | Name resolution | `network.dns.resolve` |
 | [`@dream/fs`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-fs) | [Files and folders](@/docs/api/fs.md): read, write, list, paths | `filesystem.read` for every read, `filesystem.write` for every change to the disk |
