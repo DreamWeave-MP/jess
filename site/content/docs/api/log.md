@@ -31,6 +31,8 @@ logger.child({ step = 'sass' }).warn 'brand.sass has no tokens'
 
 A logger for `target`, carrying `fields` in every record it writes. The table is copied and frozen; changing it afterwards changes nothing.
 
+- **Errors:** a non-string target raises `a logger target must be a string`. Field keys must be strings; field values must be strings, booleans, or finite numbers. Invalid fields raise when the logger is made, a child is made, or a record is written.
+
 ### JessLogger.debug, info, warn, error
 
 {{ api_signature(value="logger.info(message: string, fields: JessLogFields?) -> ()") }}
@@ -67,7 +69,7 @@ These module functions log with the target `jess`, for a script that doesn't wan
 
 {{ api_signature(value="log.capture(body: () -> ()) -> { JessLogRecord }") }}
 
-Runs `body` and returns what was logged while it ran, on this thread, as frozen records: the sink never sees them. Captures nest, and an outer capture holds what inner ones did. An error in `body` is raised again unchanged, once the capture is closed. `@jess/test` runs every case inside one, which is how a case's `logs` get into its result.
+Runs `body` and returns what was logged by the same Luau coroutine while it ran: the sink never sees those records. A different coroutine has its own capture stack, even when it runs on the same OS thread. Captures nest within a coroutine, and an outer capture holds what inner ones did. The returned array is mutable, but its records and their fields are frozen. An error in `body` is raised again unchanged, once the capture is closed. `@jess/test` runs every case inside one, which is how a case's `logs` get into its result.
 
 ```luau
 --!strict
