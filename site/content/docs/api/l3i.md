@@ -8,7 +8,7 @@ extra:
 
 {{ api_signature(value="require('@dream/audio' | '@dream/bytes' | '@dream/data' | '@dream/dns' | '@dream/fs' | '@dream/intern' | '@dream/intl' | '@dream/luau' | '@dream/process' | '@dream/tcp' | '@dream/tls' | '@dream/udp')") }}
 
-Jess runs Luau on [L3i](https://DreamWeave-MP.github.io/l3i/), and L3i brings the modules that touch the operating system: the `@dream/*` names. They are the whole native floor under a script. Everything jess adds on top is Luau, and everything below them is L3i's.
+Jess runs Luau on [L3i](https://DreamWeave-MP.github.io/l3i/), which supplies the `@dream/*` native primitives. Jess also exposes its own native runtime services, including domains, input, graphics, and audio, alongside Luau modules and packages. The [module map](@/docs/api/jess.md#module-map) shows those services.
 
 L3i documents them, on its [built-in extensions](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/) page, and this page won't repeat it. What jess adds is the capability gate: a module's functions that reach outside the VM check a named capability at the native seam, and a runtime that wasn't granted it refuses, naming the function and the capability. Nothing is denied quietly, and nothing is granted by default except your terminal, and the input devices and the GPU in front of you.
 

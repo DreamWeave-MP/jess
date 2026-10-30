@@ -6,7 +6,7 @@ extra:
   kind: api
 ---
 
-{{ api_signature(value="jess: { version, null, granted, payload, bench, shader, context, worker, events, interfaces, application, input, audio }") }}
+{{ api_signature(value="jess: { version, null, granted, payload, bench, shader, context, worker, events, interfaces, application, input, audio, gpu }") }}
 
 `jess` is the global table every script gets, however it was started: `jess run`, `jess test`, a command target, or a managed module in an application. It holds one table per native module, plus the few values that belong to no module and had to live somewhere. `require('jess')` is the same table.
 
@@ -45,6 +45,7 @@ extra:
 | `@jess/l10n` | Localized text from message bundles | [@jess/l10n](@/docs/api/l10n.md) |
 | `@jess/input` | Action graphs, labels, conflicts, intents, and the input runtime | [@jess/input](@/docs/api/input.md) |
 | `@jess/audio` | Voices on a sample clock through a graph of buses and processors, streams and feeds, voices in space, tempo maps, offline renders, WAV, and compressed files | [@jess/audio](@/docs/api/audio.md) |
+| `@jess/render`, `@jess/render/camera` | Writers for shader layouts and a standard camera | [@jess/render](@/docs/api/render.md) |
 | `@jess/backup` | Overwrite a file, keeping what was there as `.bak` | [@jess/backup](@/docs/api/backup.md) |
 | `@jess/http` | HTTP/1.1 requests and responses, any method and body, without stopping the loop they run on | [@jess/http](@/docs/api/http.md) |
 | `@jess/net` | Tasks on a loop that wait on sockets, lookups, timers and each other, and buffered connections | [@jess/net](@/docs/api/net.md) |
@@ -54,7 +55,7 @@ extra:
 | `bytes.regex` | Regular expressions | [Regular expressions](@/docs/api/regex.md) |
 | `@dream/*` | Everything native underneath: bytes, processes, the network, text | [The @dream modules](@/docs/api/l3i.md) |
 
-The first eight are members of `jess` and `require('@jess/<name>')` alike. The next four are [built-in modules](@/docs/scripting/built-in-modules.md), Luau that ships inside the binary. The `@jess/` names after those are the exports of the built-in package, which every runtime carries. The `@dream/` names are [L3i](https://DreamWeave-MP.github.io/l3i/)'s, the native primitives jess runs on.
+The `jess` members in the first part of the table are also available through `require('@jess/<name>')`. The next four are [built-in modules](@/docs/scripting/built-in-modules.md), Luau that ships inside the binary. The `@jess/` names after those are the exports of the built-in package, which every runtime carries. The `@dream/` names are [L3i](https://DreamWeave-MP.github.io/l3i/)'s native primitives.
 
 ## jess.version
 

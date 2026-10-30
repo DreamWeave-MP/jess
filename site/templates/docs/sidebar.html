@@ -4,7 +4,7 @@
     {% set section_open = section_current or section_ancestor %}
     {% set_global has_overview_page = false %}
     {% for child_page in nav_section.pages %}
-        {% if child_page.slug == "overview" and child_page.extra.hide_from_sidebar | default(value=false) == false %}
+        {% if child_page.slug == "overview" and not child_page.extra.hide_from_sidebar %}
             {% set_global has_overview_page = true %}
         {% endif %}
     {% endfor %}
@@ -14,7 +14,7 @@
     {% else %}
         <details{% if section_open %} open{% endif %}>
             <summary{% if section_current %} class="is-current"{% elif section_ancestor %} class="is-ancestor"{% endif %}>{{ nav_section.title }}</summary>
-            {% if nav_section.content and not has_overview_page and nav_section.extra.hide_from_sidebar | default(value=false) == false %}
+            {% if nav_section.content and not has_overview_page and not nav_section.extra.hide_from_sidebar %}
             <a class="docs-sidebar__overview{% if section_current %} is-current{% endif %}" href="{{ nav_section.permalink | safe }}"{% if section_current %} aria-current="page"{% endif %}>Overview</a>
             {% endif %}
             {{ docs_sidebar::entries(pages=nav_section.pages, groups=nav_section.extra.sidebar_groups | default(value=false), subsections=nav_section.subsections, current_url=current_url, active_paths=active_paths) }}
@@ -27,7 +27,7 @@
     {% if groups %}
     {% set_global has_unclassified = false %}
     {% for child_page in pages %}
-        {% if child_page.extra.hide_from_sidebar | default(value=false) == false %}
+        {% if not child_page.extra.hide_from_sidebar %}
             {% set_global is_classified = false %}
             {% for group in groups %}
                 {% if child_page.slug in group.pages %}
@@ -51,7 +51,7 @@
                 <summary class="docs-sidebar__group-label">{{ group.title }}</summary>
                 <ul>
                 {% for child_page in pages %}
-                    {% if child_page.slug in group.pages and child_page.extra.hide_from_sidebar | default(value=false) == false %}
+                    {% if child_page.slug in group.pages and not child_page.extra.hide_from_sidebar %}
                         <li>
                             <a href="{{ child_page.permalink | safe }}"{% if child_page.permalink == current_url %} class="is-current" aria-current="page"{% endif %}>{{ child_page.title }}</a>
                         </li>
@@ -65,7 +65,7 @@
         <li class="docs-sidebar__group">
             {% set_global unclassified_open = false %}
             {% for child_page in pages %}
-                {% if child_page.extra.hide_from_sidebar | default(value=false) == false %}
+                {% if not child_page.extra.hide_from_sidebar %}
                     {% set_global is_classified = false %}
                     {% for group in groups %}
                         {% if child_page.slug in group.pages %}
@@ -81,7 +81,7 @@
                 <summary class="docs-sidebar__group-label">Other</summary>
                 <ul>
                 {% for child_page in pages %}
-                    {% if child_page.extra.hide_from_sidebar | default(value=false) == false %}
+                    {% if not child_page.extra.hide_from_sidebar %}
                         {% set_global is_classified = false %}
                         {% for group in groups %}
                             {% if child_page.slug in group.pages %}
@@ -101,15 +101,19 @@
     {% endif %}
     {% else %}
     {% for child_page in pages %}
-        {% if child_page.extra.hide_from_sidebar | default(value=false) == false %}
+        {% if not child_page.extra.hide_from_sidebar %}
             <li>
                 <a href="{{ child_page.permalink | safe }}"{% if child_page.permalink == current_url %} class="is-current" aria-current="page"{% endif %}>{{ child_page.title }}</a>
             </li>
         {% endif %}
     {% endfor %}
     {% endif %}
+    {% set_global sidebar_subsections = [] %}
     {% for subsection_path in subsections %}
         {% set subsection = get_section(path=subsection_path) %}
+        {% set_global sidebar_subsections = sidebar_subsections | concat(with=[subsection]) %}
+    {% endfor %}
+    {% for subsection in sidebar_subsections | sort(attribute="weight") %}
         <li class="docs-sidebar__section">
             {{ docs_sidebar::render(nav_section=subsection, current_url=current_url, active_paths=active_paths) }}
         </li>
