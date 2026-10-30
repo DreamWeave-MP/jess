@@ -10,6 +10,8 @@ extra:
 
 `@jess/audio` is audio for scripts: the built-in package's Luau over `jess.audio`, the native half. The native side owns samples, voices, the sample clock, and the mix. What a file's bytes are and which frame a second lands on are Luau's, so WAV reading and writing and the time helpers live here. MP3, Ogg Vorbis, and Ogg Opus need codecs, which are [`@dream/audio`](@/docs/api/l3i.md)'s; this module loads them whole or streams them.
 
+The module exports `Pcm`, `Wav`, `WavOptions`, `Tempo`, and `TempoOptions` for these signatures; for example, `Pcm` aliases the native `AudioPcm` type. With the module bound as `audio`, name the exported type `audio.Pcm` in a script.
+
 The engine never calls into Luau. A script sends it commands, each with an optional `at`, an output frame. A command that reaches the engine before its scheduled frame is carried out on that frame, wherever it falls in the block being mixed; one that arrives late runs on the next frame and is counted as late. An offline context is rendered by the script, on demand, into a buffer: the same engine a device runs, which makes an offline render useful for testing a live mix.
 
 Things to know before the signatures:
@@ -33,8 +35,7 @@ PCM from interleaved bytes: `channels` samples per frame (1 to 8), each stored a
 
 A stream is audio written while it plays: a bounded ring of interleaved frames that one writer fills while one voice plays it. Luau generating a sound, a worker decoding a file, anything that has audio a little at a time writes it, learns how much fit, and keeps ahead of the engine. The engine never waits for it and never calls it: when the ring runs dry the voice plays silence, counts the frames as `missed`, and carries on with whatever comes next. A stream a [feed](#compressed-files) writes keeps time instead: what the feed was late with is let go when it comes, not played late, and `late` counts the silence a [seek](#voices) played before the feed got there.
 
-{{ api_signature(value="audio.stream(options: { channels: number?, rate: number?, seconds: number? }) -> AudioStream") }}
-{{ api_signature(value="audio.stream(handle: JessHandle) -> AudioStream") }}
+{{ api_signature(value="audio.stream(options: { channels: number?, rate: number?, seconds: number? } | JessHandle) -> AudioStream") }}
 
 A stream of `channels` (2) at `rate` (48000) frames per second holding `seconds` (1, at most 60) of audio. Given a handle from `stream:handle()`, the same stream, wherever the handle was sent: a [worker](@/docs/api/worker.md) opens the stream the main script plays, and writes it.
 
@@ -124,7 +125,9 @@ It prints `48000` once the last block is in: the first quarter second fit at onc
 
 ## Contexts
 
-{{ api_signature(value="audio.offline(options: { rate: number?, channels: number?, voices: number?, nodes: number?, connections: number?, commands: number?, speedOfSound: number?, handedness: ('right' | 'left')?, physical: number? }?) -> AudioContext") }}
+{{ api_signature(value="audio.offline(options: AudioContextOptions?) -> AudioContext") }}
+
+`AudioContextOptions` is `{ rate: number?, channels: number?, voices: number?, nodes: number?, connections: number?, commands: number?, speedOfSound: number?, handedness: ('right' | 'left')?, physical: number? }`.
 
 A context the script renders. Defaults: 48000 frames per second, 2 channels, 256 voices, 256 nodes (buses and processors, the master included), 1024 connections between them, and room for 4096 commands waiting for their frame. `speedOfSound` (343) and `handedness` (`right`) describe the world's space; see [Space](#space).
 
@@ -567,11 +570,13 @@ end
 ## Time
 
 {{ api_signature(value="audio.frames(seconds: number, rate: number) -> number") }}
-{{ api_signature(value="audio.seconds(frames: number, rate: number) -> number") }}
+{{ api_signature(value="audio.seconds(count: number, rate: number) -> number") }}
 
 Seconds to the nearest frame (halves round up), and frames back to seconds.
 
-{{ api_signature(value="audio.tempo(options: { rate: number, bpm: number, beatsPerBar: number?, start: number?, changes: { { beat: number, bpm: number } }? }) -> Tempo") }}
+{{ api_signature(value="audio.tempo(options: TempoOptions) -> Tempo") }}
+
+`TempoOptions` is `{ rate: number, bpm: number, beatsPerBar: number?, start: number?, changes: { { beat: number, bpm: number } }? }`.
 
 A tempo map: beats (from 0) to frames and back, at `rate` frames per second, `bpm` beats a minute from frame `start` (0), `beatsPerBar` (4) to a bar, and later tempos from the beats `changes` names. The engine knows nothing about music; this is how a score turns "the next bar" into the frame to stamp.
 
@@ -623,11 +628,13 @@ end)
 
 Reads a WAV file's chunks: `{ format, channels, rate, frames, data, loopStart, loopEnd }`. `data` is the `data` chunk's bytes as the file has them. The format comes from the `fmt ` chunk, integer PCM or float, plain or extensible; the sample size is the container's, so 20-bit audio in 24-bit containers reads as `s24`. `loopStart` and `loopEnd` are a `smpl` chunk's first loop, the end exclusive the way `play` takes it.
 
-{{ api_signature(value="audio.loadWav(data: buffer | string) -> (AudioPcm, Wav)") }}
+{{ api_signature(value="audio.loadWav(data: buffer | string) -> (Pcm, Wav)") }}
 
 `readWav`, then `pcm` over its samples. A `data` chunk that stops partway through a frame plays its whole frames.
 
-{{ api_signature(value="audio.writeWav(samples: buffer, options: { channels: number, rate: number, format: ('s16' | 's24' | 'f32')? }) -> buffer") }}
+{{ api_signature(value="audio.writeWav(samples: buffer, options: WavOptions) -> buffer") }}
+
+`WavOptions` is `{ channels: number, rate: number, format: ('s16' | 's24' | 'f32')? }`.
 
 Interleaved 32-bit floats as a WAV file, `f32` unless `format` asks for integers. Integers round to nearest and clip at full scale, and the scale is the one `pcm` reads with, so a 16-bit file read, played at its own rate, rendered, and written back as `s16` is the same bytes.
 
@@ -649,11 +656,13 @@ It prints `s16 2 48000 4800 19244`, the samples and a 44-byte header, then `4800
 
 ## Compressed files
 
-{{ api_signature(value="audio.load(data: buffer | string) -> AudioPcm") }}
+{{ api_signature(value="audio.load(data: buffer | string) -> Pcm") }}
 
 A WAV, MP3, Ogg Vorbis, or Ogg Opus file, whole, as PCM at the file's own rate: what a footstep or a door wants. The encoder's delay and padding are trimmed, so the PCM is as long as what was encoded, and a loop cut in an encoder loops without a gap. Opus always decodes at 48000 frames per second, whatever rate it was made from.
 
-{{ api_signature(value="audio.decoder(data: buffer | string, options: { format: ('mp3' | 'vorbis' | 'opus')? }?) -> Decoder") }}
+{{ api_signature(value="audio.decoder(data: buffer | string, options: dream_audio_DecoderOptions?) -> dream_audio_Decoder") }}
+
+`dream_audio_DecoderOptions` is `{ format: ('mp3' | 'vorbis' | 'opus')? }`; `audio.Decoder` aliases `dream_audio_Decoder`.
 
 A decoder over a copy of the bytes, the format detected unless named: `decoder:format()`, `rate()`, `channels()`, `frames()` (nil if the file doesn't say), `position()`, `read(target, offset?, frames?)` into a buffer as interleaved 32-bit floats, and `seek(frame)`. It is [`@dream/audio`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-audio)'s, which says how each format's length and seeks are worked out: MP3 and Vorbis seek exactly, Opus to within a millionth of full scale.
 

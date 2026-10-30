@@ -799,7 +799,8 @@ local function generate(root: string, updateBaseline: boolean?): string
       or item.name == 'style'
       or item.name == 'l10n'
       or item.name == 'input'
-    for _, symbol in sourceSymbols(item.source, documentation, item.name, item.grouped, item.moduleName, aliases, verifyFunctions, item.name == 'input') do
+      or item.name == 'audio'
+    for _, symbol in sourceSymbols(item.source, documentation, item.name, item.grouped, item.moduleName, aliases, verifyFunctions, item.name == 'input' or item.name == 'audio') do
       table.insert(symbols, symbol)
     end
   end
