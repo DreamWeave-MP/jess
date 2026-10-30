@@ -79,6 +79,8 @@ Writes a plain Luau table as JSON, for tools that write what people read and dif
 - **Returns:** the document, with no trailing newline.
 - **Errors:** `json: a number that is NaN or infinite has no JSON`; `json: a <type> has no JSON` for a function, buffer, or other value JSON can't hold; `json: a table needs string keys or dense array indexes` for a table with a hole in its array part, since a hole makes it an object and an object needs string keys.
 
+`latin1` interprets each input byte as a Latin-1 code point; it does not decode UTF-8 first. For example, UTF-8 `é` becomes `\u00c3\u00a9`, not `\u00e9`. Without that option the writer leaves non-ASCII bytes as supplied, so the caller must provide valid UTF-8 if the output is to be a UTF-8 JSON text. The writer recursively visits tables without cycle detection; cyclic input eventually fails with a stack error.
+
 ```luau
 --!strict
 local json = require '@jess/json'
