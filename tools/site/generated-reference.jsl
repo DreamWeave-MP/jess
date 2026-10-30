@@ -1,0 +1,522 @@
+--!strict
+-- Public reference from the types the running Jess gives its type checker.
+local fs = require '@dream/fs'
+local json = require '@jess/json'
+local luau = require '@dream/luau'
+local process = require '@dream/process'
+local toml = require '@jess/data/toml'
+
+export type Symbol = {
+  name: string,
+  module: string,
+  signature: string,
+  description: string,
+  source: string,
+}
+
+type Document = { slug: string, module: string, body: string, source: string }
+type Catalog = { schemaVersion: number, modules: { string }, symbols: { Symbol }, documents: { Document } }
+type SearchRecord = { url: string, title: string, description: string, body: string }
+
+local function read(path: string): string
+  local text, problem = fs.readFileString(path)
+  if not text then error(`API reference: cannot read {path}: {problem}`, 0) end
+  return text
+end
+
+local function write(path: string, text: string)
+  local ok, problem = fs.writeFile(path, text, { createParents = true })
+  if not ok then error(`API reference: cannot write {path}: {problem}`, 0) end
+end
+
+-- Source locations are one-based lines and byte columns. Documentation is the contiguous
+-- comment immediately preceding a declaration, not prose from a separate reference page.
+local function description(source: string, line: number): string
+  local lines = string.split(source, '\n')
+  local parts = {}
+  local index = line - 1
+  while index > 0 do
+    local content = string.match(lines[index], '^%s*%-%-%-?%s?(.*)$')
+    if not content or string.sub(content, 1, 1) == '!' then break end
+    table.insert(parts, 1, content)
+    index -= 1
+  end
+  return table.concat(parts, '\n')
+end
+
+local function excerpt(source: string, starts: { number }, span: dream_luau_Span): string
+  local first = starts[span.line] + span.column - 1
+  local last = starts[span.endLine] + span.endColumn - 1
+  return string.sub(source, first, last)
+end
+
+local function functionSignature(source: string, starts: { number }, name: string, func: dream_luau_ExprFunction): string
+  local args = func.argLocation
+  if not args then error(`API reference: {name} has no argument location`, 0) end
+  local signature = name .. excerpt(source, starts, args)
+  if func.returnAnnotation then signature ..= ' -> ' .. excerpt(source, starts, func.returnAnnotation) end
+  return signature
+end
+
+local function tableMembers(source: string, starts: { number }, tableType: dream_luau_TypeTable, prefix: string, module: string, path: string): { Symbol }
+  local result: { Symbol } = {}
+  for _, property in tableType.props do
+    local value = excerpt(source, starts, property.type)
+    local name = `{prefix}.{property.name}`
+    table.insert(result, {
+      name = name,
+      module = module,
+      signature = if property.type.kind == 'TypeFunction' then name .. value else `{name}: {value}`,
+      description = description(source, property.line),
+      source = path,
+    })
+  end
+  return result
+end
+
+local function append(target: { Symbol }, values: { Symbol })
+  for _, value in values do table.insert(target, value) end
+end
+
+local function documents(source: string, path: string): { Document }
+  local result: { Document } = {}
+  local marker = '--[========[\n@api-document '
+  local at = 1
+  while true do
+    local first, last = string.find(source, marker, at, true)
+    if not first or not last then break end
+    local headerEnd = string.find(source, '\n', last + 1, true)
+    if not headerEnd then error(`API reference: incomplete documentation header in {path}`, 0) end
+    local slug, module = string.match(string.sub(source, last + 1, headerEnd - 1), '^(%S+) (%S+)$')
+    if not slug or not module then error(`API reference: invalid documentation header in {path}`, 0) end
+    local finish, close = string.find(source, '\n]========]', headerEnd + 1, true)
+    if not finish or not close then error(`API reference: unclosed documentation in {path}`, 0) end
+    table.insert(result, { slug = slug, module = module, body = string.sub(source, headerEnd + 1, finish - 1), source = path })
+    at = close + 1
+  end
+  return result
+end
+
+local function definitions(source: string): ({ Symbol }, { [string]: { Symbol } })
+  local parsed = luau.parse(source, { declarations = true })
+  if #parsed.errors > 0 then error('API reference: generated definitions do not parse', 0) end
+  local result: { Symbol } = {}
+  local globals: { [string]: { Symbol } } = {}
+  local aliases: { [string]: dream_luau_Type } = {}
+  for _, statement in parsed.root.body do
+    if statement.kind == 'StatTypeAlias' then aliases[statement.name] = statement.type end
+  end
+
+  for _, statement in parsed.root.body do
+    if statement.kind == 'StatDeclareGlobal' and statement.name == 'jess' then
+      if statement.type.kind ~= 'TypeTable' then error('API reference: jess is not a table', 0) end
+
+      for _, property in statement.type.props do
+        local name = `jess.{property.name}`
+        local propertyType = property.type
+        if propertyType.kind == 'TypeReference' then propertyType = aliases[propertyType.name] or propertyType end
+
+        if propertyType.kind == 'TypeTable' then
+          local members = tableMembers(source, parsed.lineStarts, propertyType, name, name, 'jess.d.jsl')
+          globals[name] = members
+          append(result, members)
+        else
+          local one = tableMembers(source, parsed.lineStarts, { kind = 'TypeTable', line = 0, column = 0, endLine = 0, endColumn = 0, props = { property }, indexer = nil, isExact = false }, 'jess', '@jess', 'jess.d.jsl')
+          append(result, one)
+        end
+      end
+    elseif statement.kind == 'StatTypeAlias' and statement.exported then
+      local name = statement.name
+      table.insert(result, { name = name, module = '@jess/types', signature = excerpt(source, parsed.lineStarts, statement), description = description(source, statement.line), source = 'jess.d.jsl' })
+      if statement.type.kind == 'TypeTable' then
+        append(result, tableMembers(source, parsed.lineStarts, statement.type, name, '@jess/types', 'jess.d.jsl'))
+      end
+    elseif statement.kind == 'StatDeclareExternType' then
+      local name = statement.name
+      table.insert(result, { name = name, module = '@jess/types', signature = excerpt(source, parsed.lineStarts, statement), description = description(source, statement.line), source = 'jess.d.jsl' })
+      for _, property in statement.props do
+        table.insert(result, { name = `{name}.{property.name}`, module = '@jess/types', signature = excerpt(source, parsed.lineStarts, property), description = description(source, property.line), source = 'jess.d.jsl' })
+      end
+    end
+  end
+  return result, globals
+end
+
+local function stub(source: string, name: string, path: string): { Symbol }
+  local parsed = luau.parse(source)
+  if #parsed.errors > 0 then error(`API reference: {path} does not parse`, 0) end
+
+  for _, statement in parsed.root.body do
+    if statement.kind ~= 'StatLocal' or #statement.vars ~= 1 or statement.vars[1].name ~= 'module' then continue end
+    local annotation = statement.vars[1].annotation
+    if annotation and annotation.kind == 'TypeTable' then
+      return tableMembers(source, parsed.lineStarts, annotation, name, name, path)
+    end
+  end
+  error(`API reference: {path} has no module declaration`, 0)
+end
+
+-- Built-in exports are discovered from their manifest; the copied source is the checker's own
+-- input. Preserve unannotated exports as declarations without inventing an inferred type.
+local function packageModule(source: string, module: string, path: string): { Symbol }
+  local parsed = luau.parse(source)
+  if #parsed.errors > 0 then error(`API reference: {path} does not parse`, 0) end
+  local functions: { [string]: { func: dream_luau_ExprFunction, line: number } } = {}
+  local result: { Symbol } = {}
+  local returned: dream_luau_ExprTable?
+  local returnedName: string?
+  for _, statement in parsed.root.body do
+    if statement.kind == 'StatLocalFunction' then
+      functions[statement.name.name] = { func = statement.func, line = statement.line }
+    elseif statement.kind == 'StatReturn' then
+      local value = statement.list[1]
+      if value and value.kind == 'ExprCall' and value.func.kind == 'ExprIndexName' and value.func.index == 'freeze' then value = value.args[1] end
+      if value and value.kind == 'ExprTable' then returned = value end
+      if value and value.kind == 'ExprLocal' then returnedName = value['local'].name end
+    end
+  end
+
+  if returned then
+    for _, item in returned.items do
+      if not item.key or item.key.kind ~= 'ExprConstantString' then error(`API reference: unsupported export in {path}`, 0) end
+      local name = `{module}.{item.key.value}`
+      local found = if item.value.kind == 'ExprLocal' then functions[item.value['local'].name] else nil
+      local func = if found then found.func elseif item.value.kind == 'ExprFunction' then item.value else nil
+      local signature = if func then functionSignature(source, parsed.lineStarts, name, func) else `{name} = {excerpt(source, parsed.lineStarts, item.value)}`
+      table.insert(result, { name = name, module = module, signature = signature, description = description(source, if found then found.line else item.line), source = path })
+    end
+  elseif returnedName then
+    local returnedFunction = functions[returnedName]
+    if returnedFunction then
+      table.insert(result, { name = module, module = module, signature = functionSignature(source, parsed.lineStarts, module, returnedFunction.func), description = description(source, returnedFunction.line), source = path })
+    end
+
+    for _, statement in parsed.root.body do
+      if statement.kind ~= 'StatFunction' or statement.name.kind ~= 'ExprIndexName' then continue end
+      local owner = statement.name.expr
+      if owner.kind ~= 'ExprLocal' or owner['local'].name ~= returnedName then continue end
+      local name = `{module}.{statement.name.index}`
+      table.insert(result, { name = name, module = module, signature = functionSignature(source, parsed.lineStarts, name, statement.func), description = description(source, statement.line), source = path })
+    end
+
+    for _, statement in parsed.root.body do
+      if statement.kind ~= 'StatAssign' then continue end
+
+      for index, target in statement.vars do
+        if target.kind ~= 'ExprIndexName' then continue end
+        local owner = target.expr
+        if owner.kind ~= 'ExprLocal' or owner['local'].name ~= returnedName then continue end
+        local value = statement.values[index]
+        if not value then continue end
+        local name = `{module}.{target.index}`
+        table.insert(result, { name = name, module = module, signature = `{name} = {excerpt(source, parsed.lineStarts, value)}`, description = description(source, statement.line), source = path })
+      end
+    end
+  else
+    error(`API reference: cannot find exports in {path}`, 0)
+  end
+
+  for _, statement in parsed.root.body do
+    if statement.kind ~= 'StatTypeAlias' or not statement.exported then continue end
+    local name = `{module}.{statement.name}`
+    table.insert(result, { name = name, module = module, signature = excerpt(source, parsed.lineStarts, statement), description = description(source, statement.line), source = path })
+    if statement.type.kind == 'TypeTable' then append(result, tableMembers(source, parsed.lineStarts, statement.type, name, module, path)) end
+  end
+  return result
+end
+
+-- Resolve a re-export through the imports in the copied source, instead of maintaining a second
+-- list of where particular modules get their functions. A type-less value stays a declaration.
+local function imports(source: string): { [string]: string }
+  local parsed = luau.parse(source)
+  local found: { [string]: string } = {}
+  for _, statement in parsed.root.body do
+    if statement.kind ~= 'StatLocal' then continue end
+
+    for index, variable in statement.vars do
+      local value = statement.values[index]
+      if not value then continue end
+
+      if value.kind == 'ExprCall' and value.func.kind == 'ExprGlobal' and value.func.name == 'require' then
+        local argument = value.args[1]
+        if argument and argument.kind == 'ExprConstantString' then found[variable.name] = argument.value end
+      elseif value.kind == 'ExprIndexName' and value.expr.kind == 'ExprGlobal' and value.expr.name == 'jess' then
+        found[variable.name] = `jess.{value.index}`
+      end
+    end
+  end
+  return found
+end
+
+local function resolveExports(symbols: { Symbol }, scratch: string, manifest: { [string]: string })
+  local byName: { [string]: Symbol } = {}
+  local files: { [string]: string } = {}
+  local imported: { [string]: { [string]: string } } = {}
+  for _, symbol in symbols do byName[symbol.name] = symbol end
+
+  for name, path in manifest do
+    local relative = string.match(path, '^src/(.+)$')
+    if relative then files[name] = `jess/{relative}` end
+  end
+
+  local function load(module: string): string?
+    local path = files[module]
+    if not path then return nil end
+    local source = read(fs.join(scratch, path))
+    imported[module] = imports(source)
+    return source
+  end
+
+  local function targetModule(owner: string, module: string): string?
+    local path = files[module]
+    if not path then return nil end
+    if string.sub(owner, 1, 1) == '@' and string.sub(owner, 1, 6) ~= '@self/' then return owner end
+    if string.sub(owner, 1, 5) == 'jess.' then return owner end
+    local name = if string.sub(owner, 1, 6) == '@self/' then string.sub(owner, 7) else owner
+    if string.sub(name, 1, 1) ~= '.' and string.sub(owner, 1, 6) ~= '@self/' then return nil end
+    local folder = fs.parent(path) or ''
+    local base = fs.join(folder, name)
+    local relative: string?
+    if fs.isFile(fs.join(scratch, base .. '.jsl')) then relative = base .. '.jsl'
+    elseif fs.isFile(fs.join(scratch, base, 'init.jsl')) then relative = fs.join(base, 'init.jsl') end
+
+    if not relative then return nil end
+    local internal = `@source/{relative}`
+    if not files[internal] then
+      files[internal] = relative
+      for _, symbol in packageModule(read(fs.join(scratch, relative)), internal, relative) do byName[symbol.name] = symbol end
+    end
+    return internal
+  end
+
+  local function resolve(symbol: Symbol, seen: { [string]: boolean })
+    if seen[symbol.name] then return end
+    seen[symbol.name] = true
+    local expression = string.match(symbol.signature, ' = (.+)$')
+    if not expression then return end
+    local owner, member = string.match(expression, '^([%w_]+)%.([%w_]+)$')
+    if not owner then owner = string.match(expression, '^([%w_]+)$') end
+    if not owner then return end
+    if not imported[symbol.module] then load(symbol.module) end
+    local target = imported[symbol.module] and imported[symbol.module][owner :: string]
+    if not target then return end
+    local module = targetModule(target, symbol.module)
+    if not module then return end
+    local targetName = if member then `{module}.{member}` else module
+    local referred = byName[targetName]
+    if not referred then return end
+    resolve(referred, seen)
+    symbol.signature = symbol.name .. string.sub(referred.signature, #referred.name + 1)
+    if symbol.description == '' then symbol.description = referred.description end
+  end
+
+  for _, symbol in symbols do resolve(symbol, {}) end
+end
+
+local function generate(root: string): string
+  local scratch = fs.join(root, 'target', `reference-types-{os.time()}-{math.random(1, 1000000000)}`)
+  local made, problem = fs.mkdir(scratch, { recursive = true })
+  if not made then error(`API reference: cannot make scratch folder: {problem}`, 0) end
+  local result, failure = process.run('jess', { 'luau-types', scratch }, { stdout = 'null', stderr = 'capture' })
+  if not result or not result.success then error(`API reference: jess luau-types failed: {failure or (result and result.stderr)}`, 0) end
+  local definitionText = read(fs.join(scratch, 'jess.d.jsl'))
+  local symbols, globals = definitions(definitionText)
+  local documentation = documents(definitionText, 'jess.d.jsl')
+  local stdlib = fs.join(root, 'src', 'lua', 'stdlib')
+  local sources, sourceProblem = fs.walk(stdlib, { include = 'files', sort = true })
+  if not sources then error(`API reference: cannot inspect standard library: {sourceProblem}`, 0) end
+
+  for _, path in sources.paths do
+    if not string.find(path, '%.jsl$') then continue end
+
+    for _, document in documents(read(fs.join(stdlib, path)), `src/lua/stdlib/{path}`) do
+      table.insert(documentation, document)
+    end
+  end
+  local manifest = toml.decode(read(fs.join(root, 'jpk', 'builtin', 'jess.toml'))) :: { modules: { [string]: string } }
+  local modules: { [string]: boolean } = { ['@jess'] = true, ['@jess/types'] = true }
+  for name in globals do modules[name] = true end
+
+  local walked, walkProblem = fs.walk(scratch, { include = 'files', sort = true })
+  if not walked then error(`API reference: cannot inspect generated types: {walkProblem}`, 0) end
+
+  for _, relative in walked.paths do
+    if not string.find(relative, '%.jsl$') or relative == 'jess.d.jsl' then continue end
+    local source = read(fs.join(scratch, relative))
+    for _, document in documents(source, relative) do table.insert(documentation, document) end
+    local name = string.match(source, '%-%- l3i stub for (@[^ ]+)')
+    if name then
+      modules[name] = true
+      append(symbols, stub(source, name, relative))
+      continue
+    end
+
+    local alias = string.match(source, "%-%- jess's stub for (@[^:]+): the runtime module is `([^`]+)`")
+    if alias then
+      local target = string.match(source, 'the runtime module is `([^`]+)`')
+      local members = if target then globals[target] else nil
+      if members then
+        modules[alias] = true
+        for _, member in members do
+          local suffix = string.sub(member.name, #(target :: string) + 1)
+          table.insert(symbols, {
+            name = alias .. suffix,
+            module = alias,
+            signature = alias .. string.sub(member.signature, #(target :: string) + 1),
+            description = member.description,
+            source = member.source,
+          })
+        end
+      end
+    end
+  end
+
+  for name, sourcePath in manifest.modules do
+    local payload = string.match(sourcePath, '^src/(.+)$')
+    if not payload then error(`API reference: {name} has an unsupported source path {sourcePath}`, 0) end
+    local generated = `jess/{payload}`
+    modules[name] = true
+    append(symbols, packageModule(read(fs.join(scratch, generated)), name, generated))
+  end
+
+  resolveExports(symbols, scratch, manifest.modules)
+
+  local removed, removeProblem = fs.remove(scratch, { recursive = true })
+  if not removed then error(`API reference: cannot remove scratch folder: {removeProblem}`, 0) end
+  local names = {}
+  for name in modules do table.insert(names, name) end
+  table.sort(names)
+  table.sort(symbols, function(left: Symbol, right: Symbol): boolean return left.name < right.name end)
+  return json.encodeTable({ schemaVersion = 2, modules = names, symbols = symbols, documents = documentation }, { indent = 2 }) .. '\n'
+end
+
+-- Build from a temporary copy so source comments can supply reference prose without modifying
+-- the checked-in site or making generated signatures another maintained source of truth.
+local function prepare(root: string, api: string): string
+  local catalog = json.decode(api) :: Catalog
+  local source = fs.join(root, 'site')
+  local staging = fs.join(root, 'target', `reference-site-{os.time()}-{math.random(1, 1000000000)}`)
+  local tree, problem = fs.walk(source, { include = 'files', sort = true })
+  if not tree then error(`API reference: cannot inspect site: {problem}`, 0) end
+
+  for _, path in tree.paths do
+    if string.sub(path, 1, 7) == 'public/' then continue end
+    local destination = fs.join(staging, path)
+    local parent = fs.parent(destination)
+    if not parent then error(`API reference: no parent for {destination}`, 0) end
+    local made, makeProblem = fs.mkdir(parent, { recursive = true })
+    if not made then error(`API reference: cannot create {parent}: {makeProblem}`, 0) end
+    local copied, copyProblem = fs.copy(fs.join(source, path), destination)
+    if not copied then error(`API reference: cannot copy {path}: {copyProblem}`, 0) end
+  end
+
+  local seen: { [string]: boolean } = {}
+  for _, document in catalog.documents do
+    if seen[document.slug] then error(`API reference: duplicate document {document.slug}`, 0) end
+    seen[document.slug] = true
+    local path = fs.join(staging, 'content', 'docs', 'api', document.slug .. '.md')
+    local content = read(path)
+    local marker = '<!-- Generated from the API documentation in Jess source. -->'
+    local first, last = string.find(content, marker, 1, true)
+    if not first or not last then error(`API reference: missing source marker in {path}`, 0) end
+    local body = document.body
+    local declarations = { '\n\n## Other generated declarations\n' }
+    local unplaced = 0
+    local shortName = string.match(document.module, '([^/]+)$') or document.module
+    for _, symbol in catalog.symbols do
+      if symbol.module ~= document.module then continue end
+      local suffix = string.sub(symbol.name, #document.module + 1)
+      local heading = `## {shortName}{suffix}\n`
+      local _, headingEnd = string.find(body, heading, 1, true)
+      local declaration = `\n\x60\x60\x60text\n{symbol.signature}\n\x60\x60\x60\n`
+      if headingEnd then
+        body = string.sub(body, 1, headingEnd) .. declaration .. string.sub(body, headingEnd + 1)
+      else
+        unplaced += 1
+        table.insert(declarations, `\n### Declaration: {symbol.name}\n{declaration}`)
+      end
+    end
+    local remainder = if unplaced > 0 then table.concat(declarations) else ''
+    write(path, string.sub(content, 1, first - 1) .. body .. remainder .. string.sub(content, last + 1))
+  end
+  return staging
+end
+
+local function cleanup(path: string)
+  local removed, problem = fs.remove(path, { recursive = true })
+  if not removed then error(`API reference: cannot remove {path}: {problem}`, 0) end
+end
+
+local function html(text: string): string
+  local escaped = string.gsub(text, '&', '&amp;')
+  escaped = string.gsub(escaped, '<', '&lt;')
+  escaped = string.gsub(escaped, '>', '&gt;')
+  return (string.gsub(escaped, '"', '&quot;'))
+end
+
+local function anchor(name: string): string
+  local bytes = {}
+  for index = 1, #name do table.insert(bytes, string.format('%02x', string.byte(name, index))) end
+  return 'symbol-' .. table.concat(bytes)
+end
+
+local function modulePath(name: string): string
+  return 'docs/api/generated/' .. anchor(name) .. '/'
+end
+
+local function renderModule(module: string, symbols: { Symbol }): string
+  local out = { '<h2>Declarations</h2>', '<p>Generated from the declarations and documentation in this Jess build.</p>' }
+  for _, symbol in symbols do
+    if symbol.module ~= module then continue end
+    table.insert(out, `<section id="{anchor(symbol.name)}"><h2>{html(symbol.name)}</h2><pre data-no-copy><code>{html(symbol.signature)}</code></pre>`)
+    if symbol.description ~= '' then table.insert(out, `<p>{html(symbol.description)}</p>`) end
+    table.insert(out, `<p><small>Source: <code>{html(symbol.source)}</code></small></p></section>`)
+  end
+  return table.concat(out, '\n')
+end
+
+local function publish(output: string, api: string)
+  local catalog = json.decode(api) :: Catalog
+  local indexPath = fs.join(output, 'search_index.en.json')
+  local records = json.decode(read(indexPath)) :: { SearchRecord }
+  local suffix = 'docs/api/symbols/'
+  local base: string?
+  for _, record in records do
+    if string.sub(record.url, -#suffix) == suffix then base = string.sub(record.url, 1, #record.url - #suffix) break end
+  end
+
+  if not base then error('API reference: symbol page missing from search', 0) end
+  local indexPathHtml = fs.join(output, suffix, 'index.html')
+  local shell = read(indexPathHtml)
+  local placeholder = '<div id="api-symbols-placeholder"></div>'
+  local first, last = string.find(shell, placeholder, 1, true)
+  if not first or not last then error('API reference: missing symbol placeholder', 0) end
+  local before, after = string.sub(shell, 1, first - 1), string.sub(shell, last + 1)
+  local index = { '<h2>Generated modules</h2><ul>' }
+  for _, module in catalog.modules do
+    local path = modulePath(module)
+    table.insert(index, `<li><a href="{html(base .. path)}">{html(module)}</a></li>`)
+    local modulePage = before .. renderModule(module, catalog.symbols) .. after
+    modulePage = string.gsub(modulePage, '<h1>Generated API Symbols</h1>', function()
+      return `<h1>{html(module)}</h1>`
+    end)
+
+    modulePage = string.gsub(modulePage, 'Generated API Symbols · jess', function()
+      return `{html(module)} · jess`
+    end)
+
+    modulePage = string.gsub(modulePage, 'href="%.%./%.%./%.%./api%-catalog%.json"', function()
+      return `href="{html(base .. 'api-catalog.json')}"`
+    end)
+    write(fs.join(output, path, 'index.html'), modulePage)
+  end
+  table.insert(index, '</ul>')
+  write(indexPathHtml, before .. table.concat(index, '\n') .. after)
+  for _, symbol in catalog.symbols do
+    table.insert(records, { url = `{base}{modulePath(symbol.module)}#{anchor(symbol.name)}`, title = symbol.name, description = symbol.signature, body = `{symbol.signature}\n{symbol.description}` })
+  end
+  write(indexPath, json.encodeTable(records))
+  write(fs.join(output, 'api-catalog.json'), api)
+end
+
+return table.freeze { generate = generate, prepare = prepare, cleanup = cleanup, publish = publish, description = description, packageModule = packageModule, renderModule = renderModule, anchor = anchor, modulePath = modulePath }

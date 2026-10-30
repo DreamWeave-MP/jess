@@ -15,7 +15,7 @@ index.html, and 404.html for what isn't there. Nothing here is meant to face the
 ]]
 
 local fs = require '@dream/fs'
-local catalog = require './api-catalog'
+local catalog = require './generated-reference'
 local governance = require './governance'
 local paths = require './paths'
 local site = require '@dreamweave/site'
@@ -31,6 +31,7 @@ if not Port then error(`serve: the port must be a number, not "{arg[2]}"`, 0) en
 governance.write(paths.root)
 
 local WatchedFolders = { 'content', 'templates', 'sass', 'static', 'data' }
+local WatchedSourceFolders = { 'src/lua', 'jpk/builtin', 'tools/site' }
 local WatchedFiles = { 'config.toml' }
 local PollSeconds = 0.35
 local HeaderLimit = 64 * 1024
@@ -99,6 +100,21 @@ local function snapshot(): string
     end
   end
 
+  for _, folder in WatchedSourceFolders do
+    local walk = fs.walk(
+      fs.join(paths.root, folder),
+      { include = 'files', metadata = true, sort = true, skipErrors = true }
+    )
+    if not walk then continue end
+    local sizes, seconds, nanoseconds = walk.sizes, walk.modifiedSeconds, walk.modifiedNanoseconds
+    for index, path in walk.paths do
+      local size = if sizes then sizes[index] else 0
+      local second = if seconds then seconds[index] else 0
+      local nanosecond = if nanoseconds then nanoseconds[index] else 0
+      table.insert(rows, `{folder}/{path}\t{size}\t{second}.{nanosecond}`)
+    end
+  end
+
   return table.concat(rows, '\n')
 end
 
@@ -118,7 +134,11 @@ local function build(): boolean
   -- Catalog generation and the site generator raise on invalid input; keep the last good build.
   local built, result = pcall(function()
     local api = catalog.generate(paths.root)
-    local report = site.build(paths.site, staging, { baseUrl = '/' })
+    local source = catalog.prepare(paths.root, api)
+    -- The site generator raises on invalid input; always remove the temporary source tree.
+    local builtSite, report = pcall(site.build, source, staging, { baseUrl = '/' })
+    catalog.cleanup(source)
+    if not builtSite then error(report, 0) end
     catalog.publish(staging, api)
     return report
   end)

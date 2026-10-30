@@ -16,13 +16,9 @@ jess workspace run --trusted jess-site-navigation-check      # verify sidebar an
 
 `serve` is the local edit loop. It asks the same generator for a dev build into `target/site-dev` with a root-relative base URL, serves it over HTTP from one nonblocking loop on `@dream/tcp`, and watches content, templates, Sass, static files, data, and the config for changes. A failed rebuild prints why and leaves the last successful site in place.
 
-Both build and serve run `jess luau-types` to derive the API catalog and need `process.spawn` in addition to their filesystem capabilities. The build checks the generated version, writes `api-catalog.json`, creates the browsable symbol index, and adds signatures to search. The handwritten references remain the source of behavioral contracts; the catalog marks entries whose signatures and headings the build checks against them.
+Both build and serve run `jess luau-types` to derive the API catalog and need `process.spawn` in addition to their filesystem capabilities. The build writes `api-catalog.json`, creates browsable module and symbol pages, and adds signatures to search. Source comments supply generated descriptions. Existing reference pages are being migrated to source-owned documentation.
 
-`site/data/api-signatures.json` holds one fingerprint per catalog module. A changed, added, or removed generated signature stops the build so its reference can be reviewed. After reviewing the generated surface and updating the relevant handwritten documentation, refresh the fingerprints with:
-
-```sh
-jess run --capability filesystem.read --capability filesystem.write --capability process.spawn tools/site/update-api-baseline.jsl
-```
+Changes to declarations appear in the generated reference on the next build; no signature baseline needs updating.
 
 The fingerprints detect changes; updating them does not prove behavior has been audited. They contain hashes rather than copies of source or generated declarations.
 

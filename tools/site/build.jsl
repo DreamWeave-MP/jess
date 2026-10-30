@@ -4,7 +4,7 @@
 --
 --   jess package run --package-path jpk tools/site -- [output] [base url]
 local site = require '@dreamweave/site'
-local catalog = require './api-catalog'
+local catalog = require './generated-reference'
 local governance = require './governance'
 local paths = require './paths'
 
@@ -17,7 +17,12 @@ if baseUrl and baseUrl ~= '' then options.baseUrl = baseUrl end
 governance.write(paths.root)
 
 local api = catalog.generate(paths.root)
-local report = site.build(paths.site, output, options)
+local source = catalog.prepare(paths.root, api)
+-- The site generator raises on invalid input; always remove the temporary source tree.
+local built, result = pcall(site.build, source, output, options)
+catalog.cleanup(source)
+if not built then error(result, 0) end
+local report = result :: { pages: number?, sections: number?, search: number? }
 catalog.publish(output, api)
 
 print(
