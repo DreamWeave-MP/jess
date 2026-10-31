@@ -20,7 +20,9 @@ Both build and serve run `jess luau-types` to derive the API catalog and need `p
 
 Changes to declarations appear in the generated reference on the next build; no signature baseline needs updating.
 
-Migrated reference pages keep their frontmatter and public paths in `content/docs/api/`; their prose is in an `@api-document` block in the corresponding JSL source. The first line names the page slug and its generated module, for example `@api-document jpk @jess/jpk`. The build combines that prose with signatures from the current declarations. A missing source document fails the build. Keep behavior and examples in source comments and avoid copying signatures into those comments.
+Reference pages keep their frontmatter and public paths in `content/docs/api/`; their prose is in an `@api-document` block in the corresponding JSL source. The first line names the page slug and its generated module, for example `@api-document jpk @jess/jpk`. The build combines that prose with signatures from the current declarations. A missing source document fails the build. Keep behavior and examples in source comments and avoid copying signatures into those comments.
+
+The catalog verification rejects reference prose in the API page scaffolds and copied `api_signature` shortcodes in source documents. New exports are discovered from the generated types and package manifest; they do not need a manually maintained page list.
 
 To place a generated declaration beside its explanation, use `{{ api_symbol(value="jess_runtime_Worker.send") }}` in the source document. The value is the catalog's symbol name, not a copied signature. References to removed symbols fail the build so an obsolete explanation cannot silently remain in the reference.
 

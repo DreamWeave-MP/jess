@@ -479,6 +479,9 @@ local function prepareContents(root: string, api: string, staging: string)
   for _, document in catalog.documents do
     if seen[document.slug] then error(`API reference: duplicate document {document.slug}`, 0) end
     seen[document.slug] = true
+    if string.find(document.body, '{{ api_signature', 1, true) then
+      error(`API reference: {document.source} contains a copied signature; reference the generated symbol instead`, 0)
+    end
     local path = fs.join(staging, 'content', 'docs', 'api', document.slug .. '.md')
     local content = read(path)
     local marker = '<!-- Generated from the API documentation in Jess source. -->'
