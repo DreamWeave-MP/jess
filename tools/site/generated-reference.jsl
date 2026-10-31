@@ -136,7 +136,7 @@ local function definitions(source: string): ({ Symbol }, { [string]: { Symbol } 
       end
     elseif statement.kind == 'StatDeclareExternType' then
       local name = statement.name
-      table.insert(result, { name = name, module = '@jess/types', signature = excerpt(source, parsed.lineStarts, statement), description = description(source, statement.line), source = 'jess.d.jsl' })
+      table.insert(result, { name = name, module = '@jess/types', signature = 'declare extern type ' .. excerpt(source, parsed.lineStarts, statement), description = description(source, statement.line), source = 'jess.d.jsl' })
       for _, property in statement.props do
         table.insert(result, { name = `{name}.{property.name}`, module = '@jess/types', signature = excerpt(source, parsed.lineStarts, property), description = description(source, property.line), source = 'jess.d.jsl' })
       end

@@ -64,4 +64,7 @@ local netPage = read(fs.join(output, 'docs', 'api', 'net', 'index.html'))
 local netAnchor = generator.anchor('@jess/net.loop')
 assert(string.find(netPage, `<span id="{netAnchor}"></span>\n<pre><code`, 1, true),
   'the network symbol reference must lead directly to a rendered signature')
+local gpuPage = read(fs.join(output, 'docs', 'api', 'gpu', 'index.html'))
+assert(string.find(gpuPage, 'declare extern type GpuDevice with', 1, true),
+  'the generated GPU handle declaration is missing its declaration prefix')
 print(`checked {#catalog.symbols} generated symbols`)
