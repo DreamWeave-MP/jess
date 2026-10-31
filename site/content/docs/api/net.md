@@ -1,6 +1,6 @@
 ---
 title: '@jess/net'
-description: 'Tasks on a loop that wait on sockets, name lookups, timers and each other without stopping anything else, and buffered connections, plain or TLS.'
+description: 'Cooperative tasks, readiness waits, timers, and buffered plain or TLS connections on an event loop.'
 weight: 161
 extra:
   kind: api

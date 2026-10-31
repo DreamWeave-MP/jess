@@ -1,6 +1,6 @@
 ---
 title: '@jess/http'
-description: 'HTTP/1.1 requests over HTTP or HTTPS: any method, header fields and body, bounded in bytes and time, redirects followed under the same rules as the first request, without stopping the loop they run on.'
+description: 'HTTP/1.1 clients and servers: requests, streaming bodies, connection pooling, limits, redirects, and task-loop waits.'
 weight: 160
 extra:
   kind: api

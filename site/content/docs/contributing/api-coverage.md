@@ -84,7 +84,7 @@ The tutorial checks exercise a small set of complete paths. They do not replace 
 - Window, GPU, and audio output depend on build features and the destination's display, adapter, driver, or audio device. Offline audio is covered without a device; that does not establish hardware behavior.
 - Worker and event payloads have a known non-UTF-8 table-key corruption defect. The [worker reference](@/docs/api/worker.md) states the affected boundary; fixing it requires a byte-key setter in the underlying binding, not a documentation workaround.
 
-A WebKit visual review covered the first application page at 1440 and 390 CSS pixels and the GPU reference at 390 pixels. The pages and navigation rendered at those widths; this is not a complete keyboard, assistive technology, browser, or platform audit.
+A WebKit visual review covered the first application page at 1440 and 390 CSS pixels, the GPU reference at 390 pixels, and the generated network reference at 1440 and 390 pixels. The pages and navigation rendered at those widths; this is not a complete keyboard, assistive technology, browser, or platform audit.
 
 ## Executable coverage and restrictions
 

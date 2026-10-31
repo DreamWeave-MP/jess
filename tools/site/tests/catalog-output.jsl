@@ -58,5 +58,6 @@ for _, module in { 'net', 'http', 'websocket', 'sse' } do
   local page = read(fs.join(output, 'docs', 'api', module, 'index.md'))
   assert(string.find(page, `@jess/{module}.`, 1, true), `generated {module} reference is missing declarations`)
   assert(not string.find(page, 'api_symbol', 1, true), `unexpanded {module} symbol reference`)
+  assert(not string.find(page, '### Declaration:', 1, true), `generated declarations clutter the {module} table of contents`)
 end
 print(`checked {#catalog.symbols} generated symbols`)

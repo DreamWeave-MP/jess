@@ -31,7 +31,7 @@ if not Port then error(`serve: the port must be a number, not "{arg[2]}"`, 0) en
 governance.write(paths.root)
 
 local WatchedFolders = { 'content', 'templates', 'sass', 'static', 'data' }
-local WatchedSourceFolders = { 'src/lua', 'jpk/builtin', 'tools/site' }
+local WatchedSourceFolders = { 'src/lua', 'jpk/builtin' }
 local WatchedFiles = { 'config.toml' }
 local PollSeconds = 0.35
 local HeaderLimit = 64 * 1024

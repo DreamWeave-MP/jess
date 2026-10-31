@@ -511,7 +511,7 @@ local function prepareContents(root: string, api: string, staging: string)
         body = string.sub(body, 1, headingEnd) .. declaration .. string.sub(body, headingEnd + 1)
       else
         unplaced += 1
-        table.insert(declarations, `\n### Declaration: {symbol.name}\n{declaration}`)
+        table.insert(declarations, `\n**{symbol.name}**\n{declaration}`)
       end
     end
     local remainder = if unplaced > 0 then table.concat(declarations) else ''
