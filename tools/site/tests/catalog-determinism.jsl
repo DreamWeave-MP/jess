@@ -8,6 +8,16 @@ local second = catalog.generate '.'
 assert(first == second, 'API catalog changes between identical builds')
 print('API catalog is deterministic')
 
+local extracted = json.decode(first) :: { documents: { { slug: string, body: string } } }
+local hasGpu = false
+for _, document in extracted.documents do
+  if document.slug ~= 'gpu' then continue end
+  hasGpu = true
+  assert(not string.find(document.body, '| Field | Type |', 1, true), 'GPU fields must use generated types')
+  assert(not string.find(document.body, '| Member | Type |', 1, true), 'GPU members must use generated types')
+end
+assert(hasGpu, 'GPU source documentation is missing')
+
 local pages, walkProblem = fs.walk('site/content/docs/api', { include = 'files', sort = true })
 if not pages then error(`API reference: {walkProblem}`, 0) end
 
