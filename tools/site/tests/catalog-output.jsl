@@ -54,4 +54,9 @@ local log = read(fs.join(output, 'docs', 'api', 'log', 'index.html'))
 assert(string.find(log, 'export type JessLogger', 1, true), 'generated logger type is missing')
 local jpkSymbols = pages['@jess/jpk']
 assert(string.find(jpkSymbols, '/docs/api/jpk/', 1, true), 'generated JPK symbols do not link to their contracts')
+for _, module in { 'net', 'http', 'websocket', 'sse' } do
+  local page = read(fs.join(output, 'docs', 'api', module, 'index.md'))
+  assert(string.find(page, `@jess/{module}.`, 1, true), `generated {module} reference is missing declarations`)
+  assert(not string.find(page, 'api_symbol', 1, true), `unexpanded {module} symbol reference`)
+end
 print(`checked {#catalog.symbols} generated symbols`)

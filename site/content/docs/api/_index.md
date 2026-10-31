@@ -33,7 +33,7 @@ The native primitives under all of it, files, bytes, processes, the network, and
 | Packages and containers | [package](@/docs/api/package.md), [JPK](@/docs/api/jpk.md) |
 | Tests, logging, and analysis | [test](@/docs/api/test.md), [log](@/docs/api/log.md), [analysis](@/docs/api/analysis.md), [style](@/docs/api/style.md) |
 | Structured data and localization | [JSON](@/docs/api/json.md), [YAML](@/docs/api/yaml.md), [TOML](@/docs/api/toml.md), [values](@/docs/api/value.md), [localization](@/docs/api/l10n.md) |
-| Files, network, and text | [files](@/docs/api/fs.md), [HTTP](@/docs/api/http.md), [regular expressions](@/docs/api/regex.md), [backup](@/docs/api/backup.md), [L3i](@/docs/api/l3i.md) |
+| Files, network, and text | [files](@/docs/api/fs.md), [network loop](@/docs/api/net.md), [HTTP](@/docs/api/http.md), [WebSocket](@/docs/api/websocket.md), [event streams](@/docs/api/sse.md), [regular expressions](@/docs/api/regex.md), [backup](@/docs/api/backup.md), [L3i](@/docs/api/l3i.md) |
 | Input, rendering, and audio | [input](@/docs/api/input.md), [render](@/docs/api/render.md), [GPU](@/docs/api/gpu.md), [shader](@/docs/api/shader.md), [audio](@/docs/api/audio.md) |
 | Measurement | [bench](@/docs/api/bench.md) |
 

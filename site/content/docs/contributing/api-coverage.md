@@ -30,7 +30,8 @@ The reference generates signatures from declarations rather than comparing them 
 | JSON, YAML, TOML, and values | [JSON](@/docs/api/json.md), [YAML](@/docs/api/yaml.md), [TOML](@/docs/api/toml.md), [values](@/docs/api/value.md) | `jpk/builtin/src/data/`, `jpk/builtin/tests/` | Audit remaining loss, null, ordering, and error behavior across codecs. |
 | Localization | [localization](@/docs/api/l10n.md) | `jpk/builtin/src/l10n/`, `jpk/builtin/tests/` | Audit the remaining provider and bundle methods. |
 | Analysis and style | [analysis](@/docs/api/analysis.md), [style](@/docs/api/style.md) | `jpk/builtin/src/analysis/`, `jpk/builtin/src/style/`, `tests/lua/luau_style.rs` | Audit every returned fact and checker option. |
-| Backup, HTTP, rendering helpers | [backup](@/docs/api/backup.md), [HTTP](@/docs/api/http.md), [render](@/docs/api/render.md) | `jpk/builtin/src/backup/`, `http/`, `render/`, `jpk/builtin/tests/` | Audit remaining failure, ownership, and limits. |
+| Backup and rendering helpers | [backup](@/docs/api/backup.md), [render](@/docs/api/render.md) | `jpk/builtin/src/backup/`, `render/`, `jpk/builtin/tests/` | Audit remaining failure, ownership, and limits. |
+| Network loop, HTTP, WebSocket, event streams | [net](@/docs/api/net.md), [HTTP](@/docs/api/http.md), [WebSocket](@/docs/api/websocket.md), [SSE](@/docs/api/sse.md) | `jpk/builtin/src/net/`, `http/`, `websocket/`, `sse/`; `tests/lua/network_capability/` | Source documentation covers scheduling, limits, cancellation, and errors; verify remaining contracts and platform behavior. |
 | L3i primitives | [@dream modules](@/docs/api/l3i.md) | The L3i definitions emitted by `jess luau-types`; L3i's reference | Stub signatures are generated. Jess documents its gates and integration; L3i owns the primitive contracts. |
 
 ### Built-in package export map
@@ -50,6 +51,9 @@ The manifest is `jpk/builtin/jess.toml`; `jess luau-types` copies these sources 
 | `@jess/audio` | `src/audio/` and `src/lua/audio.rs` | [audio](@/docs/api/audio.md) | `audio/`, `tests/lua/audio_*`; [offline audio](@/docs/cookbook/offline-audio.md) needs no device, while output depends on `audio-device` and the host. |
 | `@jess/backup` | `src/backup/` | [backup](@/docs/api/backup.md) | `backup/`; [configuration](@/docs/cookbook/configuration.md) exercises scratch writes with filesystem grants. |
 | `@jess/http` | `src/http/` | [HTTP](@/docs/api/http.md) | `http/`, `tests/cli/docs.rs`; the [HTTP recipe](@/docs/cookbook/http-get.md) uses loopback in CI and needs network grants. |
+| `@jess/net` | `src/net/` | [network loop](@/docs/api/net.md) | `net/`, `tests/lua/network_capability/`; sockets and DNS require the corresponding grants. |
+| `@jess/websocket` | `src/websocket/` | [WebSocket](@/docs/api/websocket.md) | `tests/lua/network_capability/websocket.rs`; TLS requires a usable trust store. |
+| `@jess/sse` | `src/sse/` | [event streams](@/docs/api/sse.md) | `sse/`, `tests/lua/network_capability/sse.rs`; a live stream requires network access. |
 | `@jess/render`, `@jess/render/camera` | `src/render/` | [render](@/docs/api/render.md) | `render/`; actual presentation requires a compatible GPU and, for windows, a display. |
 
 ### Public Rust modules

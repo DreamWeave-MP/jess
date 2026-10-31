@@ -410,10 +410,10 @@ local function heartbeat(connected: websocket.Socket)
   end
 end
 
-local gateway = loop:spawn(function()
+local notifications = loop:spawn(function()
   local backoff = 1000
   while true do
-    local connected, message, kind = websocket.connect(config.gateway)
+    local connected, message, kind = websocket.connect(config.notifications)
     if connected then
       socket, backoff = connected, 1000
       print('connected')
@@ -422,20 +422,20 @@ local gateway = loop:spawn(function()
       while connected:receive() do
       end
     elseif kind ~= 'cancelled' then
-      print(`gateway: {kind}: {message}`)
+      print(`notifications: {kind}: {message}`)
     end
 
     if not net.sleep(backoff) then return end
 
     backoff = math.min(backoff * 2, 60000)
   end
-end, 'gateway')
+end, 'notifications')
 
-local inference = loop:spawn(function()
+local request = loop:spawn(function()
   local response, message, kind = http.request {
-    url = config.inference,
+    url = config.request,
     method = 'POST',
-    json = { prompt = 'hello' },
+    json = { reading = 'ready' },
     headers = { Authorization = `Bearer {config.key}` },
     timeoutMs = 120000,
   }
@@ -444,17 +444,17 @@ local inference = loop:spawn(function()
   if kind == 'cancelled' then return end
 
   assert(response, message)
-  print(`inference {response.status} after {beats} heartbeats`)
-  if config.exitAfterInference then application.exit(0) end
-end, 'inference')
+  print(`request {response.status} after {beats} heartbeats`)
+  if config.exitAfterRequest then application.exit(0) end
+end, 'request')
 
 return {
   on = {
     host = {
       update = function() loop:step(0) end,
       shutdown = function()
-        gateway:cancel()
-        inference:cancel()
+        notifications:cancel()
+        request:cancel()
         local open = socket
         if open then loop:spawn(function() open:close(1001, 'shutting down') end, 'close') end
 
@@ -467,21 +467,60 @@ return {
 }
 ```
 
-The target declares what the module does and nothing else, `network.dns.resolve` and `network.tcp.connect`, and runs with exactly those, never `--trusted`:
+To run the module, put it in `monitor/src/monitor.jsl` and create this manifest in
+`monitor/jess.toml`:
+
+```toml
+manifest_version = 1
+
+[package]
+id = "org.example.monitor"
+version = "1.0.0"
+jess_api = "1"
+default_target = "monitor"
+include = ["src"]
+
+[managed.monitor]
+module = "src/monitor.jsl"
+
+[targets.monitor]
+kind = "application"
+entry = "src/entry.jsl"
+capabilities = ["network.dns.resolve", "network.tcp.connect"]
+```
+
+The entry file `monitor/src/entry.jsl` contains `return nil`. Supply
+`monitor/src/config.jsl` with your own reachable WebSocket and HTTP endpoints and credential:
+
+```luau
+--!strict
+return {
+  notifications = 'ws://127.0.0.1:8000/notifications',
+  request = 'http://127.0.0.1:8000/readings',
+  key = 'replace-with-a-test-credential',
+  intervalMs = 1000,
+  exitAfterRequest = false,
+}
+```
+
+The configured service must accept WebSocket connections and a JSON POST. This example retries the
+WebSocket connection and stays running after the POST; stop it with Ctrl+C. The integration test
+creates local fixture services and exercises shutdown without contacting the internet. The target
+declares `network.dns.resolve` and `network.tcp.connect` and runs with exactly those grants:
 
 ```sh
-jess package run agent --capability network.dns.resolve --capability network.tcp.connect
+jess package run monitor --capability network.dns.resolve --capability network.tcp.connect
 ```
 
 What makes it hold up:
 
-- **One loop, stepped with no wait.** `loop:step(0)` runs whatever is ready and returns. A message that arrives between frames waits at most a frame, about 16 ms, and a frame never waits for the network.
+- **One loop, stepped with no wait.** `loop:step(0)` runs whatever is ready and returns. A message that arrives between frames is observed on a later step. Ready tasks run in that step, so their own work can still delay the frame.
 - **Every wait is a task's.** The request, the receive and the heartbeat's sleep each wait on the loop, so none holds up the others. jess's own suite runs this module against a server that takes 1.5 seconds to answer the POST, and checks that heartbeats 100 ms apart keep arriving with no gap past 400 ms.
 - **Failures come back as values.** `connect`, `receive` and `request` return `nil`, a message and a kind, and the module decides what each means: back off and reconnect, give up, or carry on. A task that raises anyway is reported by the `step` that ran it, as a failure in `update`, and the loop runs on.
-- **Shutdown is ordinary code.** Ctrl+C, SIGTERM and `application.exit` all run `shutdown`. It cancels what's in flight (the cancelled request returns `cancelled`, which the task takes as the answer it is), starts the close handshake as a task, gives the loop three seconds to finish, and closes it, which closes anything left. A `shutdown` that raised part way would leave the rest undone, which is why the inference task checks for `cancelled` before it asserts.
+- **Shutdown is ordinary code.** Ctrl+C, SIGTERM and `application.exit` all run `shutdown`. It cancels what's in flight (the cancelled request returns `cancelled`, which the task takes as the answer it is), starts the close handshake as a task, gives the loop three seconds to finish, and closes it, which closes anything left. A `shutdown` that raised part way would leave the rest undone, which is why the request task checks for `cancelled` before it asserts.
 - **Nothing piles up.** A loop watches a socket only while a task waits on it, connections count against `maxConnections` and tasks against `maxTasks`, sends wait for the socket instead of queueing, and every message is bounded both ways, by `maxMessageBytes` and `maxSendBytes`. The suite reconnects 200 times and checks that the loop holds nothing afterwards and the heap hasn't grown.
 
-An application that calls the same services all day keeps an [`http.client`](@/docs/api/http.md#client), so its requests share connections instead of resolving, connecting and shaking hands every time; a model that answers token by token is read with [`http.open`](@/docs/api/http.md#open), or with [`@jess/sse`](@/docs/api/sse.md) when it answers in Server-Sent Events, each piece handled as it arrives. One that takes webhooks or serves anything of its own runs [`http.serve`](@/docs/api/http.md#serve) on the same loop, each connection a task beside the rest. They wait the way everything above does: the suite holds a heartbeat 50 ms apart beside an event stream and twenty pooled requests on one loop, and checks it never goes quiet for 300 ms.
+An application that calls the same services all day keeps an [`http.client`](@/docs/api/http.md#client), so its requests share connections instead of resolving, connecting and shaking hands every time; a service that sends a response in pieces is read with [`http.open`](@/docs/api/http.md#open), or with [`@jess/sse`](@/docs/api/sse.md) when it answers in Server-Sent Events, each piece handled as it arrives. One that takes webhooks or serves anything of its own runs [`http.serve`](@/docs/api/http.md#serve) on the same loop, each connection a task beside the rest. They wait the way everything above does: the suite holds a heartbeat 50 ms apart beside an event stream and twenty pooled requests on one loop, and checks it never goes quiet for 300 ms.
 
 ## Authority
 

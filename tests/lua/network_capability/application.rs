@@ -13,7 +13,7 @@ use super::websocket::WsServer;
 
 /// The guide's own example, as the guide shows it: the managed module of a long-running networked
 /// application, in "On the network" of the Applications page.
-fn agent_module() -> &'static str {
+fn monitor_module() -> &'static str {
     const GUIDE: &str = include_str!("../../../site/content/docs/scripting/applications.md");
     let section = &GUIDE[GUIDE.find("## On the network").expect("the guide's section")..];
     let code = &section[section.find("```luau\n").unwrap() + "```luau\n".len()..];
@@ -23,36 +23,36 @@ fn agent_module() -> &'static str {
 const MANIFEST: &str = r#"manifest_version = 1
 
 [package]
-id = "org.example.agent"
+id = "org.example.monitor"
 version = "1.0.0"
 jess_api = "1"
-default_target = "agent"
+default_target = "monitor"
 include = ["src"]
 
-[managed.agent]
-module = "src/agent.jsl"
+[managed.monitor]
+module = "src/monitor.jsl"
 
-[targets.agent]
+[targets.monitor]
 kind = "application"
 entry = "src/entry.jsl"
 capabilities = ["network.dns.resolve", "network.tcp.connect"]
 "#;
 
 /// A scratch package for one test, removed when dropped.
-struct Agent(PathBuf);
+struct Monitor(PathBuf);
 
-impl Agent {
-    fn new(name: &str, gateway: &str, inference: &str, exit_after_inference: bool) -> Self {
+impl Monitor {
+    fn new(name: &str, notifications: &str, request: &str, exit_after_request: bool) -> Self {
         let root = std::env::temp_dir().join(format!("jess-network-{name}-{}", std::process::id()));
         drop(std::fs::remove_dir_all(&root));
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("jess.toml"), MANIFEST).unwrap();
-        std::fs::write(root.join("src/agent.jsl"), agent_module()).unwrap();
+        std::fs::write(root.join("src/monitor.jsl"), monitor_module()).unwrap();
         std::fs::write(root.join("src/entry.jsl"), "return nil\n").unwrap();
         std::fs::write(
             root.join("src/config.jsl"),
             format!(
-                "--!strict\nreturn {{ gateway = {gateway:?}, inference = {inference:?}, key = 'not-a-real-key', intervalMs = 100, exitAfterInference = {exit_after_inference} }}\n"
+                "--!strict\nreturn {{ notifications = {notifications:?}, request = {request:?}, key = 'not-a-real-key', intervalMs = 100, exitAfterRequest = {exit_after_request} }}\n"
             ),
         )
         .unwrap();
@@ -66,7 +66,7 @@ impl Agent {
     }
 }
 
-impl Drop for Agent {
+impl Drop for Monitor {
     fn drop(&mut self) {
         drop(std::fs::remove_dir_all(&self.0));
     }
@@ -99,15 +99,27 @@ fn output_within(mut child: std::process::Child, limit: Duration) -> Output {
 }
 
 #[test]
+fn the_networked_application_type_checks_as_a_package() {
+    assert!(include_str!("../../../site/content/docs/scripting/applications.md").contains(MANIFEST));
+    let monitor = Monitor::new("check", "ws://127.0.0.1:1/", "http://127.0.0.1:1/", false);
+    let output = Command::new(env!("CARGO_BIN_EXE_jess"))
+        .args(["package", "check"])
+        .arg(&monitor.0)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
 fn a_heartbeat_keeps_time_while_a_slow_request_is_in_flight() {
-    let gateway = WsServer::start();
-    let inference = Server::start(vec![(
+    let notifications = WsServer::start();
+    let request = Server::start(vec![(
         "/v1/messages",
         Answer::Slow(Duration::from_millis(1500), response(200, r#"{"content":"hi"}"#, &[])),
     )]);
-    let agent = Agent::new("heartbeat", &gateway.url("/sink"), &inference.url("/v1/messages"), true);
+    let monitor = Monitor::new("heartbeat", &notifications.url("/sink"), &request.url("/v1/messages"), true);
 
-    let child = granted(&mut agent.command())
+    let child = granted(&mut monitor.command())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -124,7 +136,7 @@ fn a_heartbeat_keeps_time_while_a_slow_request_is_in_flight() {
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines[0], "connected");
     let beats: u32 = lines[1]
-        .strip_prefix("inference 200 after ")
+        .strip_prefix("request 200 after ")
         .and_then(|rest| rest.strip_suffix(" heartbeats"))
         .and_then(|count| count.parse().ok())
         .unwrap_or_else(|| panic!("{stdout}"));
@@ -132,8 +144,8 @@ fn a_heartbeat_keeps_time_while_a_slow_request_is_in_flight() {
     assert!(beats >= 6, "only {beats} heartbeats in a 1.5 s request");
     assert_eq!(lines[2], "shut down");
 
-    assert_eq!(gateway.wait_until_idle(), 0, "the socket was closed");
-    let seen = gateway.seen.lock().unwrap();
+    assert_eq!(notifications.wait_until_idle(), 0, "the socket was closed");
+    let seen = notifications.seen.lock().unwrap();
     let gap = longest_gap(&seen.arrivals);
     assert!(gap < Duration::from_millis(400), "heartbeats stalled for {gap:?}");
     assert_eq!(
@@ -145,16 +157,16 @@ fn a_heartbeat_keeps_time_while_a_slow_request_is_in_flight() {
 
 #[test]
 fn the_target_s_capabilities_are_granted_explicitly_or_it_does_not_start() {
-    let gateway = WsServer::start();
-    let agent = Agent::new("ungranted", &gateway.url("/sink"), "http://127.0.0.1:1/", true);
-    let output = agent.command().output().unwrap();
+    let notifications = WsServer::start();
+    let monitor = Monitor::new("ungranted", &notifications.url("/sink"), "http://127.0.0.1:1/", true);
+    let output = monitor.command().output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_ne!(output.status.code(), Some(0));
     assert!(
         stderr.contains("network.dns.resolve") || stderr.contains("network.tcp.connect"),
         "{stderr}"
     );
-    assert_eq!(gateway.seen.lock().unwrap().accepted, 0, "nothing ran");
+    assert_eq!(notifications.seen.lock().unwrap().accepted, 0, "nothing ran");
 }
 
 /// SIGTERM stops the application the way its own exit does: shutdown cancels the request that is
@@ -164,17 +176,17 @@ fn the_target_s_capabilities_are_granted_explicitly_or_it_does_not_start() {
 fn sigterm_cancels_what_is_in_flight_and_closes_the_socket() {
     use std::io::{BufRead, BufReader, Read};
 
-    let gateway = WsServer::start();
-    let inference = Server::start(vec![("/v1/messages", Answer::Hang)]);
-    let agent = Agent::new("sigterm", &gateway.url("/sink"), &inference.url("/v1/messages"), false);
-    let mut child = granted(&mut agent.command()).stdout(Stdio::piped()).spawn().unwrap();
+    let notifications = WsServer::start();
+    let request = Server::start(vec![("/v1/messages", Answer::Hang)]);
+    let monitor = Monitor::new("sigterm", &notifications.url("/sink"), &request.url("/v1/messages"), false);
+    let mut child = granted(&mut monitor.command()).stdout(Stdio::piped()).spawn().unwrap();
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
     let mut line = String::new();
     stdout.read_line(&mut line).unwrap();
     assert_eq!(line, "connected\n");
 
     let started = Instant::now();
-    while gateway.seen.lock().unwrap().arrivals.len() < 3 {
+    while notifications.seen.lock().unwrap().arrivals.len() < 3 {
         assert!(started.elapsed() < Duration::from_secs(10), "no heartbeats arrived");
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -201,6 +213,9 @@ fn sigterm_cancels_what_is_in_flight_and_closes_the_socket() {
         stopped.elapsed() < Duration::from_secs(4),
         "shutdown waited on the hung request"
     );
-    assert_eq!(gateway.wait_until_idle(), 0);
-    assert_eq!(gateway.seen.lock().unwrap().closes, [(1001, "shutting down".to_owned())]);
+    assert_eq!(notifications.wait_until_idle(), 0);
+    assert_eq!(
+        notifications.seen.lock().unwrap().closes,
+        [(1001, "shutting down".to_owned())]
+    );
 }

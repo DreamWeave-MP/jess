@@ -20,7 +20,7 @@ The [headless application recipe](@/docs/cookbook/headless.md) runs a host until
 
 ## Plan authority and I/O
 
-[Capabilities and Trust](@/docs/getting-started/authority.md) explains what the target requests and what the caller grants. For files and data, start with [Files, TOML, and Regex](@/docs/scripting/files-toml-regex.md) and the [backup recipe](@/docs/cookbook/safe-write.md). For HTTP, read [@jess/http](@/docs/api/http.md) and the [L3i module map](@/docs/api/l3i.md) for the underlying transport. Capability gates are not an operating-system sandbox.
+[Capabilities and Trust](@/docs/getting-started/authority.md) explains what the target requests and what the caller grants. For files and data, start with [Files, TOML, and Regex](@/docs/scripting/files-toml-regex.md) and the [backup recipe](@/docs/cookbook/safe-write.md). For network I/O, follow [the task loop](@/docs/api/net.md), [HTTP](@/docs/api/http.md), [WebSocket](@/docs/api/websocket.md), and [event streams](@/docs/api/sse.md); the [L3i module map](@/docs/api/l3i.md) covers the underlying transport. Capability gates are not an operating-system sandbox.
 
 ## Add input, graphics, or audio
 
