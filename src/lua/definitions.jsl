@@ -1960,17 +1960,19 @@ The runtime's device. The first call asks the backend for a low-power adapter an
 
 ## GpuDevice
 
-| Field | Type | Holds |
-| --- | --- | --- |
-| `name` | `string` | The adapter's name, as its driver gives it. |
-| `backend` | `string` | The API wgpu reaches it through: `vulkan`, `metal`, `dx12`, or `gl`. |
-| `kind` | `string` | `discrete`, `integrated`, `virtual`, `cpu` (a software adapter), or `other`. |
-| `limits` | `{ textureSize, textureLayers, bufferSize, workgroups }` | The widest or tallest 2D texture, the most layers an array texture has, the largest buffer in bytes, and the most workgroups a dispatch has on one axis. |
-| `pipelines` | `{ compiled, reused }` | How many pipelines the device compiled, and how many times `GpuDevice:pipeline` gave back one it already had. |
-| `timestamps` | `boolean` | Whether the device times passes, which `GpuPlan:timings` reports. |
-| `live` | `{ buffers, textures, samplers, bindGroups, pipelines }` | How many of each the device has alive: made, and not yet let go of. A count that only grows is a leak. |
-| `made` | `{ buffers, textures, samplers, bindGroups, pipelines }` | How many of each the device ever made, let go of or not. A count that grows every frame of a scene that doesn't change is churn: a run of a plan makes nothing the run before it made. |
-| `sets` | `GpuDrawSets` | The device's own [draw sets](#draw-sets), which a draw set joins unless told otherwise and a run draws from unless given others. |
+{{ api_symbol(value="GpuDevice") }}
+
+| Field | Holds |
+| --- | --- |
+| `name` | The adapter's name, as its driver gives it. |
+| `backend` | The API wgpu reaches it through: `vulkan`, `metal`, `dx12`, or `gl`. |
+| `kind` | `discrete`, `integrated`, `virtual`, `cpu` (a software adapter), or `other`. |
+| `limits` | The widest or tallest 2D texture, the most layers an array texture has, the largest buffer in bytes, and the most workgroups a dispatch has on one axis. |
+| `pipelines` | How many pipelines the device compiled, and how many times `GpuDevice:pipeline` gave back one it already had. |
+| `timestamps` | Whether the device times passes, which `GpuPlan:timings` reports. |
+| `live` | How many of each the device has alive: made, and not yet let go of. A count that only grows is a leak. |
+| `made` | How many of each the device ever made, let go of or not. A count that grows every frame of a scene that doesn't change is churn: a run of a plan makes nothing the run before it made. |
+| `sets` | The device's own [draw sets](#draw-sets), which a draw set joins unless told otherwise and a run draws from unless given others. |
 
 `tostring(device)` is `GpuDevice(name, backend)`.
 
@@ -1991,10 +1993,10 @@ What a script changes about what the GPU draws (a buffer or texture it writes, a
 
 A commit happens at the end of every frame under an application's host, at `jess.gpu.pump()`, at `device:commit()`, and before anything that uses the GPU and waits for it (`plan:run`, `device:render`, `device:dispatch`, a read), so a script always sees its own changes when it asks the GPU for something. What reads a draw set or a plan back (`set.count`, `set.added`, `sets:has`, `plan:enabled`) says what the last commit left. Mistakes are refused when the change is asked for, not at the commit. A commit is whole in what a frame sees, but it isn't a transaction: a change the GPU itself refuses at the commit is reported, the changes after it still apply, and nothing before it is rolled back.
 
-| Member | Type | Does |
-| --- | --- | --- |
-| `commit()` | `() -> boolean` | Applies everything changed since the last commit, saying whether there was anything. |
-| `room` | `{ changes, bytes }` | How much more fits before the next commit: 65 536 changes carrying 256 MiB of data a frame. A change that doesn't fit is refused, naming what waits; commit, or change less. |
+| Member | Does |
+| --- | --- |
+| `commit()` | Applies everything changed since the last commit, saying whether there was anything. |
+| `room` | How much more fits before the next commit: 65 536 changes carrying 256 MiB of data a frame. A change that doesn't fit is refused, naming what waits; commit, or change less. |
 
 ## Resources
 
@@ -2010,16 +2012,18 @@ A device makes three kinds of resource. Each lives as long as a script holds it,
 
 {{ api_symbol(value="GpuDevice.texture") }}
 
-| Field | Type | Holds |
-| --- | --- | --- |
-| `width`, `height` | `number` | Its size in texels. |
-| `format` | `GpuTextureFormat` | Every texel's format: `rgba8Unorm`, `rgba8UnormSrgb`, `bgra8Unorm`, `bgra8UnormSrgb`, `rgba16Float`, `r8Unorm`, `rg8Unorm`, `r16Float`, `rg16Float`, `r32Float`, `rg32Float`, `rgba32Float`, `r32Uint`, `rgba8Uint`, `rgba32Uint`, `r32Sint`, `rgba32Sint`, `depth24Plus`, or `depth32Float`. |
-| `usage` | `GpuTextureUsage \| { GpuTextureUsage }` | `sampled` (shaders read it), `target` (passes draw into it), or both. |
-| `shape` | `GpuTextureShape?` | `2d` (the default), `2dArray`, `cube` (six square faces, +x, -x, +y, -y, +z, -z), or `3d`. |
-| `layers` | `number?` | A `2dArray`'s layers. |
-| `depth` | `number?` | A `3d` texture's slices. |
-| `mips` | `number?` | How many mip levels, the first full size and each after it half the last; 1 by default. |
-| `samples` | `number?` | Samples a texel: 1 (the default), or 4 for a multisampled `2d` `target` of one level, which a pass draws into and [resolves](#gpudevice-render). Nothing samples, writes, or reads one back; only formats the device multisamples take 4. |
+{{ api_symbol(value="GpuTextureDesc") }}
+
+| Field | Holds |
+| --- | --- |
+| `width`, `height` | Its size in texels. |
+| `format` | Every texel's format: `rgba8Unorm`, `rgba8UnormSrgb`, `bgra8Unorm`, `bgra8UnormSrgb`, `rgba16Float`, `r8Unorm`, `rg8Unorm`, `r16Float`, `rg16Float`, `r32Float`, `rg32Float`, `rgba32Float`, `r32Uint`, `rgba8Uint`, `rgba32Uint`, `r32Sint`, `rgba32Sint`, `depth24Plus`, or `depth32Float`. |
+| `usage` | `sampled` (shaders read it), `target` (passes draw into it), or both. |
+| `shape` | `2d` (the default), `2dArray`, `cube` (six square faces, +x, -x, +y, -y, +z, -z), or `3d`. |
+| `layers` | A `2dArray`'s layers. |
+| `depth` | A `3d` texture's slices. |
+| `mips` | How many mip levels, the first full size and each after it half the last; 1 by default. |
+| `samples` | Samples a texel: 1 (the default), or 4 for a multisampled `2d` `target` of one level, which a pass draws into and [resolves](#gpudevice-render). Nothing samples, writes, or reads one back; only formats the device multisamples take 4. |
 
 A name the table doesn't take is an error listing the ones it does, so `layer = 2` doesn't quietly make a one-layer texture.
 
@@ -2027,22 +2031,26 @@ A name the table doesn't take is an error listing the ones it does, so `layer = 
 
 {{ api_symbol(value="GpuDevice.sampler") }}
 
-| Field | Type | Holds |
-| --- | --- | --- |
-| `filter` | `('nearest' \| 'linear')?` | How it reads between texels; `nearest` by default. |
-| `mipmapFilter` | `('nearest' \| 'linear')?` | How it reads between mip levels; `nearest` by default. |
-| `address` | `('clamp' \| 'repeat' \| 'mirror')?` | What it reads past an edge, on every axis: the edge texel (the default), the texture tiled, or the texture mirrored. |
-| `compare` | `GpuCompare?` | Makes a comparison sampler, which compares a reference with what it reads: `never`, `less`, `equal`, `lessEqual`, `greater`, `notEqual`, `greaterEqual`, or `always`. It reads depth textures, for shadows. |
+{{ api_symbol(value="GpuSamplerDesc") }}
+
+| Field | Holds |
+| --- | --- |
+| `filter` | How it reads between texels; `nearest` by default. |
+| `mipmapFilter` | How it reads between mip levels; `nearest` by default. |
+| `address` | What it reads past an edge, on every axis: the edge texel (the default), the texture tiled, or the texture mirrored. |
+| `compare` | Makes a comparison sampler, which compares a reference with what it reads: `never`, `less`, `equal`, `lessEqual`, `greater`, `notEqual`, `greaterEqual`, or `always`. It reads depth textures, for shadows. |
 
 ## GpuBuffer
 
-| Member | Type | Does |
-| --- | --- | --- |
-| `size` | `number` | Its size in bytes. |
-| `usage` | `{ GpuBufferUsage }` | What it is for, in the order `vertex`, `index`, `uniform`, `storage`, `indirect`. |
-| `write` | `(self, offset: number, bytes: buffer \| string, from: number?, length: number?) -> ()` | Copies `bytes` (or `length` of them from `from`) into the buffer at `offset`, at the next [commit](#commits). |
-| `read` | `(self, offset: number?, length: number?) -> buffer` | Commits pending changes and returns `length` bytes from `offset` as a new `buffer`, waiting for submitted work when the length is nonzero. The offset defaults to zero and the length to the remainder. |
-| `readLater` | `(self, offset: number?, length: number?) -> GpuRead` | Commits pending changes and submits a copy without waiting for GPU completion; the [read](#gpuread) supplies the bytes when ready. |
+{{ api_symbol(value="GpuBuffer") }}
+
+| Member | Does |
+| --- | --- |
+| `size` | Its size in bytes. |
+| `usage` | What it is for, in the order `vertex`, `index`, `uniform`, `storage`, `indirect`. |
+| `write` | Copies `bytes` (or `length` of them from `from`) into the buffer at `offset`, at the next [commit](#commits). |
+| `read` | Commits pending changes and returns `length` bytes from `offset` as a new `buffer`, waiting for submitted work when the length is nonzero. The offset defaults to zero and the length to the remainder. |
+| `readLater` | Commits pending changes and submits a copy without waiting for GPU completion; the [read](#gpuread) supplies the bytes when ready. |
 
 Offsets and lengths are whole numbers from 0 through 4,294,967,295. GPU offsets and transferred lengths must also be multiples of 4, and a range past the end is an error. The source `from` offset for `write` is zero-based, defaults to zero, and can be unaligned as long as the resulting transferred length is aligned; its `length` defaults to the remaining source bytes, capped at 4,294,967,295. `read` and `readLater` apply the same cap to their default length. An unaligned default is rejected, so specify an aligned length when the remaining range exceeds that cap. `tostring(gpuBuffer)` is `GpuBuffer(16 bytes, vertex, storage)`.
 
@@ -2063,16 +2071,18 @@ print(positions, buffer.readf32(back, 0), buffer.readstring(back, 4, 4), buffer.
 
 ## GpuTexture
 
-| Member | Type | Does |
-| --- | --- | --- |
-| `width`, `height` | `number` | Its size in texels. |
-| `format` | `GpuTextureFormat` | Its texels' format. |
-| `shape` | `GpuTextureShape` | `2d`, `2dArray`, `cube`, or `3d`. |
-| `layers` | `number` | How many 2D layers it has: an array's layers, a cube's 6, 1 otherwise. |
-| `mips` | `number` | How many mip levels. |
-| `write` | `(self, bytes: buffer \| string, level: number?, layer: number?) -> ()` | Replaces every texel of mip `level` of `layer` (every slice, for a `3d` texture), rows packed tightly, top row first, at the next [commit](#commits). Both default to 0. |
-| `read` | `(self, level: number?, layer: number?) -> buffer` | Waits for everything submitted so far, and returns that level of that layer the way `write` takes it. |
-| `readLater` | `(self, level: number?, layer: number?) -> GpuRead` | Commits pending changes and submits a copy without waiting for GPU completion: a [read](#gpuread). |
+{{ api_symbol(value="GpuTexture") }}
+
+| Member | Does |
+| --- | --- |
+| `width`, `height` | Its size in texels. |
+| `format` | Its texels' format. |
+| `shape` | `2d`, `2dArray`, `cube`, or `3d`. |
+| `layers` | How many 2D layers it has: an array's layers, a cube's 6, 1 otherwise. |
+| `mips` | How many mip levels. |
+| `write` | Replaces every texel of mip `level` of `layer` (every slice, for a `3d` texture), rows packed tightly, top row first, at the next [commit](#commits). Both default to 0. |
+| `read` | Waits for everything submitted so far, and returns that level of that layer the way `write` takes it. |
+| `readLater` | Commits pending changes and submits a copy without waiting for GPU completion: a [read](#gpuread). |
 
 The bytes are exactly the selected mip level's width × height × depth × the format's texel size. Depth is one for a 2D texture, array layer, or cube face; a 3D level includes all of its slices and uses `layer = 0`. Rows are tightly packed, with slices in order. Invalid levels, layers, sizes, or multisampled transfers raise. A pass writes a depth texture; a script can't, and `depth24Plus`, whose layout is the backend's, can't be read back either. `tostring(texture)` is `GpuTexture(2×2 rgba8Unorm, 2dArray)`.
 
@@ -2100,11 +2110,13 @@ print(atlas, atlas.layers, atlas.mips, buffer.len(level), buffer.readu8(level, 2
 
 Bytes on their way back from the GPU, from `readLater`. They are what the submitted copy saw, so a script that wants a frame's picking id can ask after the run and poll for it later without waiting for GPU completion. Completion time depends on the device and workload.
 
-| Member | Type | Does |
-| --- | --- | --- |
-| `poll()` | `() -> buffer?` | The bytes, once the GPU has copied them; `nil` until then. It polls the device without waiting for GPU completion and copies the mapped bytes when ready. Device or mapping failures raise. |
-| `wait()` | `() -> buffer` | The bytes, waiting for submitted GPU work if needed. Device or mapping failures raise. |
-| `ready` | `boolean` | Whether the last `poll` or `wait` found them. |
+{{ api_symbol(value="GpuRead") }}
+
+| Member | Does |
+| --- | --- |
+| `poll()` | The bytes, once the GPU has copied them; `nil` until then. It polls the device without waiting for GPU completion and copies the mapped bytes when ready. Device or mapping failures raise. |
+| `wait()` | The bytes, waiting for submitted GPU work if needed. Device or mapping failures raise. |
+| `ready` | Whether the last `poll` or `wait` found them. |
 
 Once there, the same bytes come back every time. `tostring(read)` is `GpuRead(waiting)` or `GpuRead(ready)`.
 
@@ -2120,14 +2132,16 @@ A sampler has nothing to read: it is what a draw binds beside a texture. `tostri
 
 A [shader program](@/docs/api/shader.md), lowered, validated by the backend, and made ready to run. A compute program takes no state. A vertex and fragment program takes the fixed-function state everything else about drawing needs:
 
-| Field | Type | Holds |
-| --- | --- | --- |
-| `colors` | `{ GpuTextureFormat \| { format, blend } }` | A color target per fragment output, by location, each of a format the output fits. `blend` is `replace` (the default), `alpha`, `premultiplied`, or `additive`; an integer target only replaces. |
-| `depth` | `(GpuTextureFormat \| { format, compare, write })?` | The depth target it tests against. A format's name alone tests `less` and writes; `compare` is a `GpuCompare` and `write` a boolean. |
-| `topology` | `string?` | `triangles` (the default), `triangleStrip`, `lines`, `lineStrip`, or `points`. |
-| `cull` | `string?` | Which triangles it throws away: `none` (the default), `front`, or `back`. |
-| `clockwise` | `boolean?` | Whether a triangle running clockwise faces the camera; by default a counter-clockwise one does. |
-| `multisampled` | `boolean?` | Whether it draws into targets of 4 samples a texel; single-sample ones by default. A pass's targets and its pipelines agree on it. |
+{{ api_symbol(value="GpuPipelineState") }}
+
+| Field | Holds |
+| --- | --- |
+| `colors` | A color target per fragment output, by location, each of a format the output fits. `blend` is `replace` (the default), `alpha`, `premultiplied`, or `additive`; an integer target only replaces. |
+| `depth` | The depth target it tests against. A format's name alone tests `less` and writes; `compare` is a `GpuCompare` and `write` a boolean. |
+| `topology` | `triangles` (the default), `triangleStrip`, `lines`, `lineStrip`, or `points`. |
+| `cull` | Which triangles it throws away: `none` (the default), `front`, or `back`. |
+| `clockwise` | Whether a triangle running clockwise faces the camera; by default a counter-clockwise one does. |
+| `multisampled` | Whether it draws into targets of 4 samples a texel; single-sample ones by default. A pass's targets and its pipelines agree on it. |
 
 The program's own layout decides everything else: its bind groups, its vertex buffers' strides and attributes. A pipeline can't disagree with its program.
 
@@ -2135,10 +2149,12 @@ The device compiles a pipeline once. Asking again for a program that lowers to t
 
 ## GpuPipeline
 
-| Member | Type | Does |
-| --- | --- | --- |
-| `kind` | `'render' \| 'compute'` | Whether it draws or computes. |
-| `bind` | `(self, frequency, bindings) -> GpuBindGroup` | What one frequency binds for it. |
+{{ api_symbol(value="GpuPipeline") }}
+
+| Member | Does |
+| --- | --- |
+| `kind` | Whether it draws or computes. |
+| `bind` | What one frequency binds for it. |
 
 `tostring(pipeline)` is `GpuPipeline(render, 1 color target, depth)`, or `GpuPipeline(compute 64×1×1)`.
 
@@ -2162,25 +2178,29 @@ What one frequency binds. It binds for every pipeline whose program lays that fr
 
 Draws `draws`, in order, into `colors` (by location) and `depth`, and submits the pass. A target is a texture made with the `target` usage, and keeps what it holds, or a table:
 
-| Field | Type | Holds |
-| --- | --- | --- |
-| `texture` | `GpuTexture` | The texture drawn into. |
-| `clear` | `({ number } \| number)?` | What it is cleared to first: four channels (whole numbers for an integer format), or a depth from 0 to 1. Without one, the pass draws over what's there. |
-| `level`, `layer` | `number?` | The mip level, and the array layer or cube face, drawn into; 0 by default. |
-| `store` | `boolean?` | `false` throws away what the pass drew. |
-| `resolve` | `(GpuTexture \| { texture, level, layer })?` | Where a multisampled color target's samples average into when the pass ends: level 0 of layer 0 of a single-sample `target` texture of its format, or the level and layer named, of its size. The samples themselves can then go unstored. |
+{{ api_symbol(value="GpuTarget") }}
+
+| Field | Holds |
+| --- | --- |
+| `texture` | The texture drawn into. |
+| `clear` | What it is cleared to first: four channels (whole numbers for an integer format), or a depth from 0 to 1. Without one, the pass draws over what's there. |
+| `level`, `layer` | The mip level, and the array layer or cube face, drawn into; 0 by default. |
+| `store` | `false` throws away what the pass drew. |
+| `resolve` | Where a multisampled color target's samples average into when the pass ends: level 0 of layer 0 of a single-sample `target` texture of its format, or the level and layer named, of its size. The samples themselves can then go unstored. |
 
 A draw is a table:
 
-| Field | Type | Holds |
-| --- | --- | --- |
-| `pipeline` | `GpuPipeline` | A render pipeline whose targets are the pass's. |
-| `count` | `number` | How many vertices, or with `indices`, how many indices. |
-| `instanceCount` | `number?` | How many instances; 1 by default. |
-| `pass`, `material`, `draw` | `GpuBindGroup?` | A bind group for each frequency its program binds anything for, laid out as its program lays that frequency out. |
-| `vertices`, `instances` | `GpuBuffer?` | The per-vertex and per-instance attributes, if the program has any, in vertex buffers holding every one drawn. |
-| `indices`, `indexFormat` | `GpuBuffer?`, `('u16' \| 'u32')?` | An index buffer, and how wide its indices are (`u32` by default). |
-| `indirect`, `indirectOffset` | `GpuBuffer?`, `number?` | Where the counts come from instead of `count` and `instanceCount`: an `indirect` buffer holding, from `indirectOffset` (0 by default, a multiple of 4), four `u32`s (vertex count, instance count, first vertex, first instance) or, for an indexed draw, five (index count, instance count, first index, base vertex, first instance). Whatever the GPU wrote there is drawn, a compute pass's count of what it kept, say; nothing checks it against the buffers, and the GPU keeps a draw past their ends inside them. |
+{{ api_symbol(value="GpuDraw") }}
+
+| Field | Holds |
+| --- | --- |
+| `pipeline` | A render pipeline whose targets are the pass's. |
+| `count` | How many vertices, or with `indices`, how many indices. |
+| `instanceCount` | How many instances; 1 by default. |
+| `pass`, `material`, `draw` | A bind group for each frequency its program binds anything for, laid out as its program lays that frequency out. |
+| `vertices`, `instances` | The per-vertex and per-instance attributes, if the program has any, in vertex buffers holding every one drawn. |
+| `indices`, `indexFormat` | An index buffer, and how wide its indices are (`u32` by default). |
+| `indirect`, `indirectOffset` | Where the counts come from instead of `count` and `instanceCount`: an `indirect` buffer holding, from `indirectOffset` (0 by default, a multiple of 4), four `u32`s (vertex count, instance count, first vertex, first instance) or, for an indexed draw, five (index count, instance count, first index, base vertex, first instance). Whatever the GPU wrote there is drawn, a compute pass's count of what it kept, say; nothing checks it against the buffers, and the GPU keeps a draw past their ends inside them. |
 
 Everything is checked before anything is submitted, and each mistake names its draw: `draw 0 is invalid: its program binds a material group, and the draw gives none`. A pass reads its draws one at a time, so a pass of ten thousand draws holds no more of the Luau stack than a pass of one.
 
@@ -2280,14 +2300,16 @@ Keeps a draw in a collection of draw sets, the device's own (`device.sets`) unle
 
 ## GpuDrawSet
 
-| Member | Type | Holds |
-| --- | --- | --- |
-| `count` | `number` | How many vertices, or indices, it draws. Setting it checks it fits the buffers. |
-| `instanceCount` | `number` | How many instances; at least 1, and no more than its instance buffer holds. |
-| `visible` | `boolean` | Whether passes draw it. |
-| `tags` | `{ string }` | What the passes that take it look for. |
-| `added` | `boolean` | Whether it is in the collection it was made into. |
-| `add()`, `remove()` | `() -> ()`, `() -> boolean` | Puts it back in that collection, or takes it out, saying whether it was there. Both are harmless twice. |
+{{ api_symbol(value="GpuDrawSet") }}
+
+| Member | Holds |
+| --- | --- |
+| `count` | How many vertices, or indices, it draws. Setting it checks it fits the buffers. |
+| `instanceCount` | How many instances; at least 1, and no more than its instance buffer holds. |
+| `visible` | Whether passes draw it. |
+| `tags` | What the passes that take it look for. |
+| `added` | Whether it is in the collection it was made into. |
+| `add()`, `remove()` | Puts it back in that collection, or takes it out, saying whether it was there. Both are harmless twice. |
 
 Changing a set changes nothing else: what it draws is read again at every frame, so nothing is rebuilt.
 
@@ -2297,12 +2319,14 @@ Changing a set changes nothing else: what it draws is read again at every frame,
 
 A collection of its own: the draw sets of one scene, say, which a run draws from when it is given them (`plan:run(imports, sets)`, `window:show(plan, target, imports, sets)`) instead of the device's. A set can be in any number of collections. A plan remembers which sets carry its draw passes' tags, for each collection, until something is added to or removed from it; showing and hiding a set, or changing its counts, needs no choosing again.
 
-| Member | Type | Does |
-| --- | --- | --- |
-| `count` | `number` | How many sets it holds. |
-| `add(set)` | `(GpuDrawSet) -> ()` | Adds a set, last; adding it again does nothing. |
-| `remove(set)` | `(GpuDrawSet) -> boolean` | Takes a set out, saying whether it was there. |
-| `has(set)` | `(GpuDrawSet) -> boolean` | Whether it holds a set. |
+{{ api_symbol(value="GpuDrawSets") }}
+
+| Member | Does |
+| --- | --- |
+| `count` | How many sets it holds. |
+| `add(set)` | Adds a set, last; adding it again does nothing. |
+| `remove(set)` | Takes a set out, saying whether it was there. |
+| `has(set)` | Whether it holds a set. |
 
 `tostring(sets)` is `GpuDrawSets(3 sets)`.
 
@@ -2346,13 +2370,15 @@ print(quad, quad.added)
 
 Compiles a [render graph](@/docs/contributing/render-graph.md) for the device: the targets and buffers a frame uses, the passes that use them, and what each pass does. Passes are ordered by what they read and write, not by where they are in the list; passes whose work nothing sees are culled; transient targets and buffers whose lifetimes don't overlap share memory. Planning allocates them and makes every bind group it can, so a frame does nothing but record.
 
-| Field | Type | Holds |
-| --- | --- | --- |
-| `name` | `string?` | The plan's name, `plan` by default, and every pass's owner unless the pass names one. |
-| `viewport` | `{ width, height }` | The pixels relative targets are sized against. |
-| `targets` | `{ GpuPlanTarget }?` | `{ name, format, scale \| width and height, mips, layers, samples, imported, kept }`: a color or depth target the viewport's size times `scale` (1 by default), or a fixed size, of `mips` levels and `layers` layers (1 of each by default) and `samples` samples a texel (1, or 4 for a multisampled target of one level and one layer). An `imported` one is given to each run, a window's backbuffer, say; a `kept` one is the plan's from run to run (below). |
-| `buffers` | `{ GpuPlanBuffer }?` | `{ name, size \| image and scale, imported, kept }`: `size` bytes, a multiple of 4, or room for all of an `image` target of that format at the viewport's size times `scale` (1 by default), each row padded as a copy lays it out, so a copy of a whole target fits it at any viewport. |
-| `passes` | `{ GpuPlanPass }` | What runs: below. |
+{{ api_symbol(value="GpuPlanDesc") }}
+
+| Field | Holds |
+| --- | --- |
+| `name` | The plan's name, `plan` by default, and every pass's owner unless the pass names one. |
+| `viewport` | The pixels relative targets are sized against. |
+| `targets` | `{ name, format, scale \| width and height, mips, layers, samples, imported, kept }`: a color or depth target the viewport's size times `scale` (1 by default), or a fixed size, of `mips` levels and `layers` layers (1 of each by default) and `samples` samples a texel (1, or 4 for a multisampled target of one level and one layer). An `imported` one is given to each run, a window's backbuffer, say; a `kept` one is the plan's from run to run (below). |
+| `buffers` | `{ name, size \| image and scale, imported, kept }`: `size` bytes, a multiple of 4, or room for all of an `image` target of that format at the viewport's size times `scale` (1 by default), each row padded as a copy lays it out, so a copy of a whole target fits it at any viewport. |
+| `passes` | What runs: below. |
 
 Every pass has a `name` and a `kind`, and may name an `owner`: whoever declared it, a package or a subsystem, for profilers and graph inspectors to attribute it to. It is the plan's `name` unless the pass says otherwise, and never empty. What a pass reads and writes depends on the kind:
 
@@ -2378,23 +2404,25 @@ Mistakes in the description name the pass: `GpuDevice:plan: pass present uses no
 
 ## GpuPlan
 
-| Member | Type | Holds |
-| --- | --- | --- |
-| `name` | `string` | The plan's name. |
-| `order` | `{ string }` | The passes that run, in the order they run. |
-| `viewport` | `{ width, height }` | What its relative targets are sized for. |
-| `allocations` | `number` | How many textures and buffers it made for its own targets and buffers: one for each group sharing memory. |
-| `run(imports, sets)` | `({ [string]: GpuTexture \| GpuBuffer }?, GpuDrawSets?) -> ()` | Runs every pass it records once, in one submission, with a texture or buffer for each imported target or buffer by name (a texture of its format and size at the viewport, a buffer of its size), its draw passes drawing from `sets`, or the device's own. |
-| `setEnabled(passes, enabled)` | `(string \| { string }, boolean) -> ()` | Leaves passes out of the runs after it, or puts them back, together. A pass left out does nothing, so whatever it stores keeps what it held: a pass still recorded can't read or load it (`pass present uses what pass overlay stores: leave both out, or neither`), and a culled pass is refused, since it never runs. |
-| `enabled(pass)` | `(string) -> boolean` | Whether runs record a pass. |
-| `read(name, level, layer)` | `(string, number?, number?) -> buffer` | What a kept buffer, or `level` of `layer` of a kept target, holds once the GPU has finished the runs before the call, the way `GpuBuffer:read` and `GpuTexture:read` read them. |
-| `readLater(name, level, layer)` | `(string, number?, number?) -> GpuRead` | The same, [without waiting](#gpuread). |
-| `bytes(buffer)` | `(string) -> number` | How many bytes a buffer holds at the plan's viewport: what an imported one sized by it must be given. |
-| `extent(target)` | `(string) -> { width, height }` | How big level 0 of a target is at the plan's viewport. |
-| `setRegion(pass, region)` | `(string, GpuCopyRegion) -> ()` | Changes what a copy pass copies from the next run on: `{ from, to, size }`, where `from` and `to` are `{ column, row }` in a target or `{ offset }` in a buffer, of the level and layer the pass names. It is checked now, and resolved again at each size the plan is resized to. |
-| `resized(width, height)` | `(number, number) -> GpuPlan` | The same plan for another viewport, its targets made again at the new size. It shares the passes left out and the regions with the plan it was resized from, both ways, as the plan a window shows does. |
-| `dump()` | `() -> string` | The compiled graph: the passes in order, where each was declared (the `device:plan` call: a pass is a table, with no place of its own), what each reads and writes, what was culled, every target's lifetime, and what shares memory. |
-| `timings()` | `() -> { { pass, ms } }?` | How long each pass of the last run took on the GPU, in milliseconds, in the order they ran; a copy pass has no `ms`. `nil` on a device without `timestamps`. Asking waits for that run to finish, so ask once in a while, not every frame. |
+{{ api_symbol(value="GpuPlan") }}
+
+| Member | Holds |
+| --- | --- |
+| `name` | The plan's name. |
+| `order` | The passes that run, in the order they run. |
+| `viewport` | What its relative targets are sized for. |
+| `allocations` | How many textures and buffers it made for its own targets and buffers: one for each group sharing memory. |
+| `run(imports, sets)` | Runs every pass it records once, in one submission, with a texture or buffer for each imported target or buffer by name (a texture of its format and size at the viewport, a buffer of its size), its draw passes drawing from `sets`, or the device's own. |
+| `setEnabled(passes, enabled)` | Leaves passes out of the runs after it, or puts them back, together. A pass left out does nothing, so whatever it stores keeps what it held: a pass still recorded can't read or load it (`pass present uses what pass overlay stores: leave both out, or neither`), and a culled pass is refused, since it never runs. |
+| `enabled(pass)` | Whether runs record a pass. |
+| `read(name, level, layer)` | What a kept buffer, or `level` of `layer` of a kept target, holds once the GPU has finished the runs before the call, the way `GpuBuffer:read` and `GpuTexture:read` read them. |
+| `readLater(name, level, layer)` | The same, [without waiting](#gpuread). |
+| `bytes(buffer)` | How many bytes a buffer holds at the plan's viewport: what an imported one sized by it must be given. |
+| `extent(target)` | How big level 0 of a target is at the plan's viewport. |
+| `setRegion(pass, region)` | Changes what a copy pass copies from the next run on: `{ from, to, size }`, where `from` and `to` are `{ column, row }` in a target or `{ offset }` in a buffer, of the level and layer the pass names. It is checked now, and resolved again at each size the plan is resized to. |
+| `resized(width, height)` | The same plan for another viewport, its targets made again at the new size. It shares the passes left out and the regions with the plan it was resized from, both ways, as the plan a window shows does. |
+| `dump()` | The compiled graph: the passes in order, where each was declared (the `device:plan` call: a pass is a table, with no place of its own), what each reads and writes, what was culled, every target's lifetime, and what shares memory. |
+| `timings()` | How long each pass of the last run took on the GPU, in milliseconds, in the order they ran; a copy pass has no `ms`. `nil` on a device without `timestamps`. Asking waits for that run to finish, so ask once in a while, not every frame. |
 
 `tostring(plan)` is `GpuPlan(name, 4 of 5 passes, 640×480)`.
 
@@ -2518,15 +2546,17 @@ print(string.unpack('BBBB', buffer.tostring(pixels:read(0, 4))))
 
 Opens a native window with a surface on `device`. The window is what a person sees an application in; which windows an application has, what they show, and when they close are the application's to decide, from Luau, with what follows. [A window](@/docs/scripting/applications.md#a-window) in the applications guide puts all of it together: a package whose application draws a triangle from a vertex buffer into a window, turns it every frame, and answers the window's resizes and its close.
 
-| Field | Type | Holds |
-| --- | --- | --- |
-| `title` | `string?` | Its title; `jess` by default. |
-| `width`, `height` | `number?` | Its inner size in physical pixels; 800 by 600 by default. The window system may give it another. |
-| `resizable` | `boolean?` | Whether the person can resize it; `true` by default. |
-| `vsync` | `boolean?` | Whether presenting waits for the display's refresh, one image a refresh; `true` by default. |
-| `format` | `GpuTextureFormat?` | The format its surface draws in; by default the first of `bgra8Unorm`, `rgba8Unorm`, `bgra8UnormSrgb`, and `rgba8UnormSrgb` it offers. |
-| `key` | `string?` | What the application calls it, to keep it: a window opened with a key stays open when every handle to it is gone, still showing what it showed, and opening the key again hands it back instead of opening another. |
-| `closes` | `boolean?` | Whether the person asking it to close (its close button, say) closes it; `true` by default. With `false`, the request is only an event, and the application decides: asks to save, say, then calls `close`. |
+{{ api_symbol(value="GpuWindowDesc") }}
+
+| Field | Holds |
+| --- | --- |
+| `title` | Its title; `jess` by default. |
+| `width`, `height` | Its inner size in physical pixels; 800 by 600 by default. The window system may give it another. |
+| `resizable` | Whether the person can resize it; `true` by default. |
+| `vsync` | Whether presenting waits for the display's refresh, one image a refresh; `true` by default. |
+| `format` | The format its surface draws in; by default the first of `bgra8Unorm`, `rgba8Unorm`, `bgra8UnormSrgb`, and `rgba8UnormSrgb` it offers. |
+| `key` | What the application calls it, to keep it: a window opened with a key stays open when every handle to it is gone, still showing what it showed, and opening the key again hands it back instead of opening another. |
+| `closes` | Whether the person asking it to close (its close button, say) closes it; `true` by default. With `false`, the request is only an event, and the application decides: asks to save, say, then calls `close`. |
 
 - **Capability:** `gpu.window`. A script you run holds it, as it holds the GPU; a package target declares it.
 - **Errors:** `jess.gpu.window: no window system: …` on a machine without a display (over SSH, say, or in a container), which a later call tries again, as the display may have come back; `windows belong to the thread that opened the first one`, since a process has one window system loop; on macOS, `jess.gpu.window: on macOS, windows open on the process's main thread`, so a worker can't open one there; and a jess built without the `window` feature says so: `jess.gpu.window: this jess has no windows: it was built without the window feature`.
@@ -2537,21 +2567,23 @@ Handles what the window system reported since the last call (sizes, closes, keys
 
 ## GpuWindow
 
-| Member | Type | Holds |
-| --- | --- | --- |
-| `title` | `string` | Its title. |
-| `number` | `number` | Its own number, no other window's in the process: its keyboard and pointer are the input devices whose `backend` is `window:<number>`. |
-| `key` | `string?` | The key it is kept by, if it was opened with one. |
-| `frames` | `number` | How many frames it has presented: one for each commit, plan shown, and resize there was something new to draw for. |
-| `width`, `height` | `number` | Its inner size in physical pixels, which its surface and the plan it shows are sized to. |
-| `scale` | `number` | How many physical pixels a logical one is on its display. |
-| `format` | `GpuTextureFormat?` | What its images are; `nil` once it's closed. |
-| `open` | `boolean` | Whether it's open: neither closed by the person nor by `close`. |
-| `show(plan, target, imports?, sets?)` | `(GpuPlan, string, { [string]: GpuTexture \| GpuBuffer }?, GpuDrawSets?) -> ()` | Draws `plan` into it from the next [commit](#commits) on, its image as the plan's imported target `target`, which must have the window's format, with `imports` for the plan's other imported targets and buffers, drawing from `sets` or the device's own. The plan goes with the window: resized with it, so `plan` itself runs, reads back, and reports its size at the window's size from then on, and what it keeps is what the window drew. A plan is shown in one window at a time; showing it in another is refused (`the plan is shown in another window, whose size it takes`), and `plan:resized` makes one of its own. |
-| `hide()`, `close()` | `() -> ()` | Stops drawing from the next commit on, or closes it now. |
-| `resize(width, height)` | `(number, number) -> ()` | Asks the window system for that inner size in physical pixels. It may give another, or none (a tiling window manager, say); what it gives arrives as a `resized` event, and the shown plan goes with it. |
-| `events()` | `() -> { GpuWindowEvent }` | What happened to it since the last call, oldest first, the last 256 at most (a run of pointer moves is the last of them): `{ kind = 'resized', width, height }`, `{ kind = 'scaled', scale }`, `{ kind = 'focused', focused }`, `{ kind = 'closeRequested' }`, and `{ kind = 'closed' }`, and what the person did in it, below. A shown plan is resized already when its `resized` is read; this is for what the application does about it (a camera's aspect, say). |
-| `textInput(enabled, area?)` | `(boolean, GpuTextArea?) -> ()` | Asks for text, or stops. While it asks, an input method (the one that writes Japanese, say) may compose for it, showing its candidates beside `area`, `{ x, y, width, height }` in physical pixels from the top left: where the text goes. Keys type `text` whether it asks or not. |
+{{ api_symbol(value="GpuWindow") }}
+
+| Member | Holds |
+| --- | --- |
+| `title` | Its title. |
+| `number` | Its own number, no other window's in the process: its keyboard and pointer are the input devices whose `backend` is `window:<number>`. |
+| `key` | The key it is kept by, if it was opened with one. |
+| `frames` | How many frames it has presented: one for each commit, plan shown, and resize there was something new to draw for. |
+| `width`, `height` | Its inner size in physical pixels, which its surface and the plan it shows are sized to. |
+| `scale` | How many physical pixels a logical one is on its display. |
+| `format` | What its images are; `nil` once it's closed. |
+| `open` | Whether it's open: neither closed by the person nor by `close`. |
+| `show(plan, target, imports?, sets?)` | Draws `plan` into it from the next [commit](#commits) on, its image as the plan's imported target `target`, which must have the window's format, with `imports` for the plan's other imported targets and buffers, drawing from `sets` or the device's own. The plan goes with the window: resized with it, so `plan` itself runs, reads back, and reports its size at the window's size from then on, and what it keeps is what the window drew. A plan is shown in one window at a time; showing it in another is refused (`the plan is shown in another window, whose size it takes`), and `plan:resized` makes one of its own. |
+| `hide()`, `close()` | Stops drawing from the next commit on, or closes it now. |
+| `resize(width, height)` | Asks the window system for that inner size in physical pixels. It may give another, or none (a tiling window manager, say); what it gives arrives as a `resized` event, and the shown plan goes with it. |
+| `events()` | What happened to it since the last call, oldest first, the last 256 at most (a run of pointer moves is the last of them): `{ kind = 'resized', width, height }`, `{ kind = 'scaled', scale }`, `{ kind = 'focused', focused }`, `{ kind = 'closeRequested' }`, and `{ kind = 'closed' }`, and what the person did in it, below. A shown plan is resized already when its `resized` is read; this is for what the application does about it (a camera's aspect, say). |
+| `textInput(enabled, area?)` | Asks for text, or stops. While it asks, an input method (the one that writes Japanese, say) may compose for it, showing its candidates beside `area`, `{ x, y, width, height }` in physical pixels from the top left: where the text goes. Keys type `text` whether it asks or not. |
 
 Under an application's host, a window something happened to is announced: the host posts the [named event](@/docs/scripting/applications.md#named-events) [`jess.window`](@/docs/api/events.md#jess-window), `{ title, key }`, once until its events are read, and a handler of it (`on.event['jess.window']`) reads them with `events()`. Nothing runs while nothing happens to a window, and the handler runs in the frame the news came in. A script that drives its own frames reads `events()` when it likes.
 
@@ -3469,15 +3501,17 @@ shader.program {
 
 What `shader.program` and `shader.compute` return and a shader module hands back: finished, validated, and read-only.
 
-| Field | Type | Holds |
-| --- | --- | --- |
-| `attributes` | `{ { name: string, type: string } }` | The per-vertex attributes, sorted by name. |
-| `instance` | `{ { name: string, type: string } }` | The per-instance attributes, sorted by name. |
-| `pass`, `material`, `draw` | `{ { name: string, type: string } }` | What each frequency binds, sorted by name: `Vec4f`, `Camera`, `Light[4]`, `Texture2D`, `Sampler`. A texture's own sampler is part of the texture. |
-| `varyings` | `{ { name: string, type: string } }` | What `vertex` passes to `fragment`, sorted by name. |
-| `outputs` | `{ { name: string, type: string } }` | The fragment outputs, by color location: `color` alone for a fragment function that returned one value. |
-| `workgroupSize` | `{ number }?` | A compute program's workgroup size, `{ x, y, z }`; `nil` for a vertex and fragment program. |
-| `layout` | `ShaderLayout` | Where everything lives: see [layout](#layout). |
+{{ api_symbol(value="ShaderProgram") }}
+
+| Field | Holds |
+| --- | --- |
+| `attributes` | The per-vertex attributes, sorted by name. |
+| `instance` | The per-instance attributes, sorted by name. |
+| `pass`, `material`, `draw` | What each frequency binds, sorted by name: `Vec4f`, `Camera`, `Light[4]`, `Texture2D`, `Sampler`. A texture's own sampler is part of the texture. |
+| `varyings` | What `vertex` passes to `fragment`, sorted by name. |
+| `outputs` | The fragment outputs, by color location: `color` alone for a fragment function that returned one value. |
+| `workgroupSize` | A compute program's workgroup size, `{ x, y, z }`; `nil` for a vertex and fragment program. |
+| `layout` | Where everything lives: see [layout](#layout). |
 
 `tostring(program)` counts them, both kinds of attribute together and the uniform members of every frequency together: `ShaderProgram(3 attributes, 4 uniforms, 1 texture, 2 varyings)`. A compute program says so, with its workgroup and its storage buffers: `ShaderProgram(compute 64×1×1, 1 uniform, 0 textures, 2 storage buffers)`.
 
