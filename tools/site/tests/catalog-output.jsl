@@ -60,4 +60,8 @@ for _, module in { 'net', 'http', 'websocket', 'sse' } do
   assert(not string.find(page, 'api_symbol', 1, true), `unexpanded {module} symbol reference`)
   assert(not string.find(page, '### Declaration:', 1, true), `generated declarations clutter the {module} table of contents`)
 end
+local netPage = read(fs.join(output, 'docs', 'api', 'net', 'index.html'))
+local netAnchor = generator.anchor('@jess/net.loop')
+assert(string.find(netPage, `<span id="{netAnchor}"></span>\n<pre><code`, 1, true),
+  'the network symbol reference must lead directly to a rendered signature')
 print(`checked {#catalog.symbols} generated symbols`)

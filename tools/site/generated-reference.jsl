@@ -428,7 +428,9 @@ local function generateContents(root: string, scratch: string): string
   for _, document in documentation do
     local path = `docs/api/{document.slug}/`
     references[document.module] = path
-    for name in string.gmatch(document.body, '{{ api_symbol%(value="([^"]+)"%) }}') do references[name] = path end
+    for name in string.gmatch(document.body, '{{ api_symbol%(value="([^"]+)"%) }}') do
+      references[name] = `{path}#{anchor(name)}`
+    end
   end
 
   for _, symbol in symbols do
@@ -492,8 +494,9 @@ local function prepareContents(root: string, api: string, staging: string)
     body = string.gsub(body, '{{ api_symbol%(value="([^"]+)"%) }}', function(name: string): string
       local symbol = symbolsByName[name]
       if not symbol then error(`API reference: {document.source} references missing symbol {name}`, 0) end
+      local target = if referenced[name] then '' else `<span id="{anchor(name)}"></span>\n\n`
       referenced[name] = true
-      return `\x60\x60\x60text\n{symbol.signature}\n\x60\x60\x60`
+      return `{target}\x60\x60\x60text\n{symbol.signature}\n\x60\x60\x60`
     end)
     local declarations = { '\n\n## Other generated declarations\n' }
     local unplaced = 0
