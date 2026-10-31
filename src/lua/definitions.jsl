@@ -3877,8 +3877,11 @@ Four things to know before reaching for it:
   should keep what was there, which is [`@jess/backup`](@/docs/api/backup.md).
 - `stat(path)` has `size`, `modifiedSeconds`, and `modifiedNanoseconds`; there is no separate
   `size` or `modified` call.
-- `lock(path)` takes the operating system's lock on a file without waiting; a lock held elsewhere
-  answers `wouldBlock`. The lock ends with its holder, however the holder ends.
+- `lock(path)` needs `filesystem.write`, creates the file if necessary, and takes an exclusive
+  operating-system lock without waiting; `shared = true` requests a shared lock. A conflicting
+  lock answers `wouldBlock`. The handle releases its lock when unlocked, collected, or its runtime
+  shuts down; process exit also releases it. On Unix the lock is advisory: it excludes cooperating
+  locks, not ordinary reads or writes.
 
 The whole module, with the rest of L3i's primitives, is on [L3i's site](@/docs/api/l3i.md).
 

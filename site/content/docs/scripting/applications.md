@@ -385,7 +385,7 @@ What each piece is doing:
 
 ## On the network
 
-An application that talks to the network for weeks needs two things the host already gives it: a frame that comes around whether or not anything happened, and a shutdown that runs however it stops. What it needs on top is never to wait in a callback. A request that takes forty seconds inside `update` is forty seconds with no frames, no heartbeat and no `shutdown` either.
+An application that runs for a long time needs regular frames and a way to release resources during graceful shutdown. A crash or forced termination cannot guarantee that shutdown handlers run. Avoid waiting for a slow request in `update`: while that callback waits, the application cannot advance frames or run its shutdown callback.
 
 [`@jess/net`](@/docs/api/net.md) is how not to. A managed module keeps one loop, runs its network work as tasks on it, and steps it from `update` without waiting. Here, one task keeps a WebSocket open and reconnects with a backoff when it drops, one sends a heartbeat on it, and one makes a slow JSON POST; the heartbeat keeps its time while the POST waits:
 
@@ -516,7 +516,7 @@ What makes it hold up:
 
 - **One loop, stepped with no wait.** `loop:step(0)` runs whatever is ready and returns. A message that arrives between frames is observed on a later step. Ready tasks run in that step, so their own work can still delay the frame.
 - **Every wait is a task's.** The request, the receive and the heartbeat's sleep each wait on the loop, so none holds up the others. jess's own suite runs this module against a server that takes 1.5 seconds to answer the POST, and checks that heartbeats 100 ms apart keep arriving with no gap past 400 ms.
-- **Failures come back as values.** `connect`, `receive` and `request` return `nil`, a message and a kind, and the module decides what each means: back off and reconnect, give up, or carry on. A task that raises anyway is reported by the `step` that ran it, as a failure in `update`, and the loop runs on.
+- **Failures come back as values.** `connect`, `receive` and `request` return `nil`, a message and a kind, and the module decides what each means: back off and reconnect, give up, or carry on. A task that raises anyway is reported by the `step` that ran it, as a failure in `update`; the host handles that callback failure according to its lifecycle rules.
 - **Shutdown is ordinary code.** Ctrl+C, SIGTERM and `application.exit` all run `shutdown`. It cancels what's in flight (the cancelled request returns `cancelled`, which the task takes as the answer it is), starts the close handshake as a task, gives the loop three seconds to finish, and closes it, which closes anything left. A `shutdown` that raised part way would leave the rest undone, which is why the request task checks for `cancelled` before it asserts.
 - **Nothing piles up.** A loop watches a socket only while a task waits on it, connections count against `maxConnections` and tasks against `maxTasks`, sends wait for the socket instead of queueing, and every message is bounded both ways, by `maxMessageBytes` and `maxSendBytes`. The suite reconnects 200 times and checks that the loop holds nothing afterwards and the heap hasn't grown.
 

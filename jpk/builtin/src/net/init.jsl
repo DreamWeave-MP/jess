@@ -1329,9 +1329,9 @@ return table.freeze {
 
 
 
-The `@dream` network modules never wait: a read with nothing to read says `wouldBlock` and returns. Something has to do the waiting, and if it is a loop around `poller:wait` in the middle of your `update`, everything else in the application waits with it. `@jess/net` is that something, done once. A **loop** owns one poller. **Tasks** are coroutines on it. Every wait a task makes, on a socket, a name lookup, a timer, a signal or another task, yields to the loop, which runs whatever else is ready and comes back when the wait is over or its deadline passes.
+Socket operations can return `wouldBlock` when they cannot make progress. Waiting in `poller:wait` in the middle of `update` holds up the callback. `@jess/net` coordinates readiness for you: a **loop** owns a poller, and **tasks** are coroutines on it. Its waits on sockets, name lookups, timers, signals, and other tasks yield to the loop, which can run other ready tasks until a wait ends or its deadline passes.
 
-An application steps its loop from a host callback, never waiting there. A script or a command target runs one to the end. [`@jess/http`](@/docs/api/http.md) and [`@jess/websocket`](@/docs/api/websocket.md) are written on it, so their requests and sockets wait the same way.
+An application can step its loop from a host callback with a zero poll timeout. Ready tasks still run synchronously during that callback and can take time. A script or a command target can run a loop to the end. [`@jess/http`](@/docs/api/http.md) and [`@jess/websocket`](@/docs/api/websocket.md) use the loop for their waits.
 
 It holds no authority: connecting needs `network.tcp.connect` and resolving `network.dns.resolve`, both the runtime's to grant, and nothing here grants either.
 
@@ -1389,7 +1389,7 @@ Starts `body` as a task, first run at the loop's next step. The name appears in 
 
 Runs every task that can run, and returns how many are left. When none can, it waits at most `waitMs` (0 unless given) for a socket to become ready or a deadline to pass, then runs what that woke. A task that raised is handed to `onError`; a loop without one raises after the step, with every failure of the step in one message, so a failure in a task becomes a failure in the host callback that stepped it, reported like any other.
 
-An application calls `loop:step(0)` from `update`. Tasks then run once a frame, without ever holding the frame up, and what arrives between frames waits at most one frame. A step never runs a task more than 64 rounds, so tasks that keep waking each other can't hold a frame forever either.
+An application can call `loop:step(0)` from `update` to poll without waiting for readiness. Each step runs ready tasks synchronously, so a task that does substantial work before yielding can delay the frame. The loop makes two ready-task passes per step, each capped at 64 rounds; that limits repeated wakeups, not the time spent inside a task or the number of tasks in a round. Frame timing also depends on the host and operating system.
 
 ### Loop:run
 
