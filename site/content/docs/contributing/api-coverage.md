@@ -10,6 +10,8 @@ This is a review map, not a promise that every listed function has been checked.
 
 The reference generates signatures from declarations rather than comparing them to a handwritten baseline. Counts vary with the runtime and enabled features; generated signatures do not prove a behavioral audit. Behavioral explanations and examples live in source documentation; this table records where their verification remains incomplete.
 
+The catalog identifies each symbol's generated declaration and source. A `reference` path links it to a behavioral page where one is associated; a missing path or adjacent description is a coverage gap to investigate, not evidence that the operation is unsupported. Many structural type fields and handle methods still need individual descriptions and a source-and-test review of their errors, ownership, and scheduling. The catalog's `valueExpression` flag identifies exports whose inferred types are not expanded.
+
 ## Native runtime services
 
 | Surface | Canonical reference | Source and tests to review | Current status |
@@ -74,6 +76,13 @@ The manifest is `jpk/builtin/jess.toml`; `jess luau-types` copies these sources 
 The [CLI reference](@/docs/cli/_index.md), [workspace reference](@/docs/cli/workspace.md), and [capabilities](@/docs/reference/capabilities.md) map to `src/cli/`, `src/main.rs`, `src/lua/stdlib/workspace.jsl`, and `tests/cli/`. `tools/site/tests/cli-reference.jsl` compares the command tree and option names with the actual help and exercises trailing argument forwarding. A complete behavioral audit, including every exit path, install behavior, and platform-specific standalone artifact, remains open.
 
 The tutorial checks exercise a small set of complete paths. They do not replace the remaining API audit, browser and keyboard testing, or platform verification. The generated catalog does not establish the accuracy or completeness of behavioral prose.
+
+## Unsupported and environment-dependent surfaces
+
+- Android and dedicated console distributions are not established by the published release artifacts. Check the [installation matrix](@/docs/getting-started/install.md) and [deployment guide](@/docs/reference/deployment.md) for the actual destination.
+- `@jess/websocket` implements clients; it does not provide a WebSocket server or negotiate extensions such as compression. The [WebSocket reference](@/docs/api/websocket.md) describes its limits.
+- Window, GPU, and audio output depend on build features and the destination's display, adapter, driver, or audio device. Offline audio is covered without a device; that does not establish hardware behavior.
+- Worker and event payloads have a known non-UTF-8 table-key corruption defect. The [worker reference](@/docs/api/worker.md) states the affected boundary; fixing it requires a byte-key setter in the underlying binding, not a documentation workaround.
 
 A WebKit visual review covered the first application page at 1440 and 390 CSS pixels and the GPU reference at 390 pixels. The pages and navigation rendered at those widths; this is not a complete keyboard, assistive technology, browser, or platform audit.
 
