@@ -326,12 +326,21 @@ return table.freeze(render)
 
 ## Writers
 
+{{ api_symbol(value="@jess/render.block") }}
+
+{{ api_symbol(value="@jess/render.Block") }}
 
 The uniform block `frequency` declares, as bytes, all zeros. `block:set(name, value)` writes a member where the layout puts it, and `block:upload(gpuBuffer, offset?)` writes the bytes to a buffer. `block.bytes` and `block.size` are the bytes and their length.
 
+{{ api_symbol(value="@jess/render.vertices") }}
+
+{{ api_symbol(value="@jess/render.Vertices") }}
 
 `count` vertices of the program's per-vertex attributes, or instances of its per-instance ones. `vertices:set(index, name, value)` writes vertex `index` (from 1); `stride`, `count`, `bytes`, and `upload` are a block's.
 
+{{ api_symbol(value="@jess/render.elements") }}
+
+{{ api_symbol(value="@jess/render.Elements") }}
 
 `count` elements of the storage buffer `name`. `elements:set(index, value)` writes element `index`, from 1.
 
@@ -356,23 +365,23 @@ The standard camera is a convention a program opts into, not something the kerne
 
 The generated signatures use the camera module's `Matrix` type and the render module's `Block`:
 
-```text
-camera.identity() -> Matrix
-camera.lookAt(eye: vector, target: vector, up: vector) -> Matrix
-camera.multiply(after: Matrix, before: Matrix) -> Matrix
-camera.orthographic(
-  left: number,
-  right: number,
-  bottom: number,
-  top: number,
-  near: number,
-  far: number
-) -> Matrix
-camera.perspective(fovY: number, aspect: number, near: number, far: number) -> Matrix
-camera.transform(matrix: Matrix, point: vector) -> vector
-camera.with(extra: { [string]: ShaderType }) -> { [string]: ShaderType }
-camera.write(block: render.Block, view: Matrix, projection: Matrix, position: vector)
-```
+{{ api_symbol(value="@jess/render/camera.block") }}
+
+{{ api_symbol(value="@jess/render/camera.identity") }}
+
+{{ api_symbol(value="@jess/render/camera.lookAt") }}
+
+{{ api_symbol(value="@jess/render/camera.multiply") }}
+
+{{ api_symbol(value="@jess/render/camera.orthographic") }}
+
+{{ api_symbol(value="@jess/render/camera.perspective") }}
+
+{{ api_symbol(value="@jess/render/camera.transform") }}
+
+{{ api_symbol(value="@jess/render/camera.with") }}
+
+{{ api_symbol(value="@jess/render/camera.write") }}
 
 | Member | Does |
 | --- | --- |

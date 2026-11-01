@@ -11,6 +11,13 @@ print('API catalog is deterministic')
 local extracted = json.decode(first) :: { documents: { { slug: string, body: string } } }
 local hasGpu = false
 for _, document in extracted.documents do
+  for code in string.gmatch(document.body, '```text\n(.-)```') do
+    for line in string.gmatch(code, '[^\n]+') do
+      assert(not string.match(line, '^[%w_./:]+%b()%s*%-%>'),
+        `API reference: {document.slug} contains a copied signature in a text block`)
+    end
+  end
+
   if document.slug ~= 'gpu' then continue end
   hasGpu = true
   assert(not string.find(document.body, '| Field | Type |', 1, true), 'GPU fields must use generated types')
