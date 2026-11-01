@@ -28,6 +28,7 @@ for _, module in catalog.modules do
 end
 
 local names: { [string]: boolean } = {}
+local hasCameraBlock = false
 for _, symbol in catalog.symbols do
   assert(not names[symbol.name], `duplicate symbol {symbol.name}`)
   names[symbol.name] = true
@@ -35,11 +36,17 @@ for _, symbol in catalog.symbols do
   assert(symbol.url == `{generator.modulePath(symbol.module)}#{target}`, `bad catalog URL for {symbol.name}`)
   assert(symbol.valueExpression == (string.sub(symbol.signature, 1, #symbol.name + 3) == `{symbol.name} = `),
     `bad value classification for {symbol.name}`)
+  if symbol.name == '@jess/render/camera.block' then
+    hasCameraBlock = true
+    assert(symbol.signature == '@jess/render/camera.block: { [string]: ShaderType }', 'camera block type is missing')
+    assert(symbol.description ~= '' and not symbol.valueExpression, 'camera block source documentation is missing')
+  end
   assert(string.find(pages[symbol.module], `id="{target}"`, 1, true), `missing generated symbol {symbol.name}`)
   local record = records[symbol.name]
   assert(record and record.description == symbol.signature and string.sub(record.url, -#target) == target,
     `missing search record for {symbol.name}`)
 end
+assert(hasCameraBlock, 'camera block is missing from the catalog')
 
 local jpk = read(fs.join(output, 'docs', 'api', 'jpk', 'index.html'))
 assert(string.find(jpk, 'The canonical writer', 1, true), 'source documentation is missing from JPK reference')

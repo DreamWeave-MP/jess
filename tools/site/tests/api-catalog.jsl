@@ -52,4 +52,16 @@ return table.freeze {}]]
   test.expect(field).toBe(true)
 end)
 
+suite.it('uses source annotations and comments for exported frozen values', function()
+  local source = [[local module = {}
+-- The public mapping.
+local values: { [string]: number } = { answer = 42 }
+module.values = table.freeze(values)
+return table.freeze(module)]]
+  local symbols = catalog.packageModule(source, '@jess/example', 'example.jsl')
+  test.expect(#symbols).toBe(1)
+  test.expect(symbols[1].signature).toBe '@jess/example.values: { [string]: number }'
+  test.expect(symbols[1].description).toBe 'The public mapping.'
+end)
+
 return suite

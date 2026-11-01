@@ -165,6 +165,7 @@ local function packageModule(source: string, module: string, path: string): { Sy
   local parsed = luau.parse(source)
   if #parsed.errors > 0 then error(`API reference: {path} does not parse`, 0) end
   local functions: { [string]: { func: dream_luau_ExprFunction, line: number } } = {}
+  local annotations: { [string]: { type: dream_luau_Type, line: number } } = {}
   local frozen: { [string]: string } = {}
   local aliases: { [string]: dream_luau_Type } = {}
   local result: { Symbol } = {}
@@ -177,6 +178,7 @@ local function packageModule(source: string, module: string, path: string): { Sy
       aliases[statement.name] = statement.type
     elseif statement.kind == 'StatLocal' then
       for index, variable in statement.vars do
+        if variable.annotation then annotations[variable.name] = { type = variable.annotation, line = statement.line } end
         local value = statement.values[index]
         if not value or value.kind ~= 'ExprCall' or value.func.kind ~= 'ExprIndexName' or value.func.index ~= 'freeze' then continue end
         local argument = value.args[1]
@@ -190,14 +192,28 @@ local function packageModule(source: string, module: string, path: string): { Sy
     end
   end
 
+  local function annotated(value: dream_luau_Expr): { type: dream_luau_Type, line: number }?
+    if value.kind == 'ExprCall' and value.func.kind == 'ExprIndexName' and value.func.index == 'freeze' then
+      local owner = value.func.expr
+      if owner.kind == 'ExprGlobal' and owner.name == 'table' then value = value.args[1] or value end
+    end
+
+    if value.kind == 'ExprLocal' then return annotations[value['local'].name] end
+    return nil
+  end
+
   if returned then
     for _, item in returned.items do
       if not item.key or item.key.kind ~= 'ExprConstantString' then error(`API reference: unsupported export in {path}`, 0) end
       local name = `{module}.{item.key.value}`
       local found = if item.value.kind == 'ExprLocal' then functions[item.value['local'].name] else nil
       local func = if found then found.func elseif item.value.kind == 'ExprFunction' then item.value else nil
-      local signature = if func then functionSignature(source, parsed.lineStarts, name, func) else `{name} = {excerpt(source, parsed.lineStarts, item.value)}`
-      table.insert(result, { name = name, module = module, signature = signature, description = description(source, if found then found.line else item.line), source = path })
+      local annotation = annotated(item.value)
+      local signature = if func then functionSignature(source, parsed.lineStarts, name, func)
+        elseif annotation then `{name}: {excerpt(source, parsed.lineStarts, annotation.type)}`
+        else `{name} = {excerpt(source, parsed.lineStarts, item.value)}`
+      local line = if found then found.line elseif annotation then annotation.line else item.line
+      table.insert(result, { name = name, module = module, signature = signature, description = description(source, line), source = path })
     end
   elseif returnedName then
     local returnedFunction = functions[returnedName]
@@ -223,7 +239,9 @@ local function packageModule(source: string, module: string, path: string): { Sy
         local value = statement.values[index]
         if not value then continue end
         local name = `{module}.{target.index}`
-        table.insert(result, { name = name, module = module, signature = `{name} = {excerpt(source, parsed.lineStarts, value)}`, description = description(source, statement.line), source = path })
+        local annotation = annotated(value)
+        local signature = if annotation then `{name}: {excerpt(source, parsed.lineStarts, annotation.type)}` else `{name} = {excerpt(source, parsed.lineStarts, value)}`
+        table.insert(result, { name = name, module = module, signature = signature, description = description(source, if annotation then annotation.line else statement.line), source = path })
       end
     end
   else
