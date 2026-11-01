@@ -41,12 +41,19 @@ for _, symbol in catalog.symbols do
     assert(symbol.signature == '@jess/render/camera.block: { [string]: ShaderType }', 'camera block type is missing')
     assert(symbol.description ~= '' and not symbol.valueExpression, 'camera block source documentation is missing')
   end
+
+  if symbol.name == '@jess/json.null' or symbol.name == '@jess/yaml.null' or symbol.name == '@jess/data/value.Null' then
+    assert(symbol.signature == `{symbol.name}: JessNull` and not symbol.valueExpression,
+      `the shared null type is missing for {symbol.name}`)
+  end
   assert(string.find(pages[symbol.module], `id="{target}"`, 1, true), `missing generated symbol {symbol.name}`)
   local record = records[symbol.name]
   assert(record and record.description == symbol.signature and string.sub(record.url, -#target) == target,
     `missing search record for {symbol.name}`)
 end
 assert(hasCameraBlock, 'camera block is missing from the catalog')
+assert(names['@jess/json.null'] and names['@jess/yaml.null'] and names['@jess/data/value.Null'],
+  'a shared null export is missing from the catalog')
 
 local jpk = read(fs.join(output, 'docs', 'api', 'jpk', 'index.html'))
 assert(string.find(jpk, 'The canonical writer', 1, true), 'source documentation is missing from JPK reference')

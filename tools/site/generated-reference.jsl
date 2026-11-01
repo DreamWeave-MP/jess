@@ -292,6 +292,8 @@ local function imports(source: string): { [string]: string }
         if argument and argument.kind == 'ExprConstantString' then found[variable.name] = argument.value end
       elseif value.kind == 'ExprIndexName' and value.expr.kind == 'ExprGlobal' and value.expr.name == 'jess' then
         found[variable.name] = `jess.{value.index}`
+      elseif value.kind == 'ExprIndexName' and value.expr.kind == 'ExprLocal' then
+        found[variable.name] = `{value.expr['local'].name}.{value.index}`
       end
     end
   end
@@ -348,8 +350,14 @@ local function resolveExports(symbols: { Symbol }, scratch: string, manifest: { 
     if not owner then owner = string.match(expression, '^([%w_]+)$') end
     if not owner then return end
     if not imported[symbol.module] then load(symbol.module) end
-    local target = imported[symbol.module] and imported[symbol.module][owner :: string]
+    local bindings = imported[symbol.module]
+    local target = bindings and bindings[owner :: string]
     if not target then return end
+    local aliasOwner, aliasMember = string.match(target, '^([%w_]+)%.([%w_]+)$')
+    if aliasOwner and aliasOwner ~= 'jess' and bindings and bindings[aliasOwner] then
+      if member then return end
+      target, member = bindings[aliasOwner], aliasMember
+    end
     local module = targetModule(target, symbol.module)
     if not module then return end
     local targetName = if member then `{module}.{member}` else module
