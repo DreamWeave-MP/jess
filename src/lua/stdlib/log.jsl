@@ -142,7 +142,13 @@ A logger for `target`, carrying `fields` in every record it writes. The table is
 
 ### JessLogger.debug, info, warn, error
 
+{{ api_symbol(value="JessLogger.debug") }}
+
 {{ api_symbol(value="JessLogger.info") }}
+
+{{ api_symbol(value="JessLogger.warn") }}
+
+{{ api_symbol(value="JessLogger.error") }}
 
 Writes one record at that level. `fields` are merged over the logger's, the call's winning. A field that isn't a string, a finite number, or a boolean is an error, as is a message that isn't a string.
 
@@ -150,7 +156,9 @@ Writes one record at that level. `fields` are merged over the logger's, the call
 
 {{ api_symbol(value="JessLogger.child") }}
 
-A logger with the same target and more context.
+A logger with the same target and more context. Its fields override fields with the same names in
+the parent. The supplied table is copied and frozen, so later changes to it do not change the child
+or the parent. Invalid field names or values raise before a child is returned.
 
 ### log.debug, info, warn, error
 
