@@ -967,6 +967,8 @@ return table.freeze {
 
 ## analysis.analyze
 
+{{ api_symbol(value="@jess/analysis.analyze") }}
+
 
 `ParseOptions` is `{ declarations: boolean?, path: string? }`.
 
@@ -1027,12 +1029,18 @@ local log = require '@jess/log'
 
 ## analysis.file
 
+{{ api_symbol(value="@jess/analysis.file") }}
+
 
 Reads one file and analyzes it, with `source.path` set to the path with its separators normalized. Needs `filesystem.read`.
 
 - **Errors:** `<path>: <why>` when the file can't be read.
 
 ## analysis.files, analysis.workspace
+
+{{ api_symbol(value="@jess/analysis.files") }}
+
+{{ api_symbol(value="@jess/analysis.workspace") }}
 
 
 `files` walks the paths given, folders recursively, and returns matching source paths sorted. It collects `.jsl` and `.lua` by default; `options.extensions` replaces that list, with extensions including their leading dot and compared without case. Entries whose names start with `.` are skipped while walking a directory, as are `target`, `node_modules`, and the additional names in `options.skipDirectories`. An explicitly supplied root is considered even if its name starts with a dot. Duplicate path strings are removed, but different spellings of the same file are not canonicalized. Returned paths retain their filesystem spelling. A path that doesn't exist is an error, not an empty result: finding no files would read as finding nothing wrong. This operation needs `filesystem.read`.
@@ -1064,15 +1072,33 @@ error: dream.fs.exists: needs the 'filesystem.read' capability, which this runti
 
 ## analysis.callsTo, analysis.callsInModule
 
+{{ api_symbol(value="@jess/analysis.callsTo") }}
+
+{{ api_symbol(value="@jess/analysis.callsInModule") }}
+
 
 The calls whose `target` is exactly `target` (`'print'`, `'@jess/log.new'`), or whose callee is any member of the module required as `module`.
 
 ## analysis.resolve, analysis.tableField, analysis.resolvedTableField
 
+{{ api_symbol(value="@jess/analysis.resolve") }}
+
+{{ api_symbol(value="@jess/analysis.tableField") }}
+
+{{ api_symbol(value="@jess/analysis.resolvedTableField") }}
+
 
 `resolve` follows a local back through the expressions it was given, up to `depth` steps (16 by default) and never around a cycle, and through groups, type assertions, and instantiations, to the expression that made it. `tableField` is the value of a `name = value` entry in a table constructor; `resolvedTableField` resolves the expression first, so a table built into a local and returned later still answers. These functions do not unwrap calls: for `return table.freeze { run = run }`, the caller must first inspect the call and pass its table argument to `tableField`.
 
 ## analysis.qualifiedPath, analysis.literalString, analysis.line, analysis.normalizePath
+
+{{ api_symbol(value="@jess/analysis.qualifiedPath") }}
+
+{{ api_symbol(value="@jess/analysis.literalString") }}
+
+{{ api_symbol(value="@jess/analysis.line") }}
+
+{{ api_symbol(value="@jess/analysis.normalizePath") }}
 
 
 `qualifiedPath` names an expression as the walker does: the dotted path, the module it is a member of, and the member, or `nil` for one that can't be named. `literalString` is the value of a string-literal expression, `nil` for anything else. `line` is one line of the source text without its line ending, or `''` past the end. `normalizePath` turns backslashes into slashes, drops a leading `./`, and collapses repeated slashes; it is for module keys and messages, never for a path handed back to the filesystem, where a backslash can be part of a name.

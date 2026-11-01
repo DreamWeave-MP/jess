@@ -1354,6 +1354,14 @@ The text the writers produce is byte for byte what a Rust program's serializer w
 
 ## value.array, value.map, value.set, value.struct
 
+{{ api_symbol(value="@jess/data/value.array") }}
+
+{{ api_symbol(value="@jess/data/value.map") }}
+
+{{ api_symbol(value="@jess/data/value.set") }}
+
+{{ api_symbol(value="@jess/data/value.struct") }}
+
 
 `array` marks a table as a list and returns it. `map` makes an empty ordered map, `{ keys, values }`, and `set` adds a key to it, keeping the first position a key was given, so setting a key again changes its value and not its place. `struct` makes a map from `{ key, value }` pairs in order, the way a struct serializes its fields; a pair whose value is `nil` becomes `None`, an absent field.
 
@@ -1378,10 +1386,16 @@ verbose, name	false
 
 ## value.variant, value.float
 
+{{ api_symbol(value="@jess/data/value.variant") }}
+
+{{ api_symbol(value="@jess/data/value.float") }}
+
 
 `variant` is an enum variant with a payload: a tagged value, written as one-key object, `!tag`, or a table by format. `float` is a number that is always written as a float, so `1` comes out as `1.0`; without it a whole number is an integer.
 
 ## value.kindOf
+
+{{ api_symbol(value="@jess/data/value.kindOf") }}
 
 
 Which of the kinds above a value is: `'null'`, `'none'`, `'boolean'`, `'string'`, `'int'`, `'float'`, `'array'`, `'map'`, or `'variant'`.
@@ -1402,6 +1416,8 @@ array	map	variant
 ```
 
 ## value.encode
+
+{{ api_symbol(value="@jess/data/value.encode") }}
 
 
 Writes a value in one of the three formats. The codecs' own `encode` functions call this with their format; it's here for code that picks the format at run time.
@@ -1452,6 +1468,10 @@ command = "greet"
 The same record, three documents: `note` is `null` twice and absent once, and the variant is an object, a tag, and a table.
 
 ## value.shortest, value.display
+
+{{ api_symbol(value="@jess/data/value.shortest") }}
+
+{{ api_symbol(value="@jess/data/value.display") }}
 
 
 The two float spellings the writers use, for code that wants to match them. `shortest` takes a finite number and returns the shortest round-tripping decimal in Ryū's layout, fixed notation for decimal exponents from -5 to 15 and scientific past them, with `plus` writing the `+` on a positive exponent as `serde_json` does. `display` is Rust's `Display` for a float: never an exponent; it also handles NaN and infinities.

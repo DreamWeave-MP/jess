@@ -46,6 +46,10 @@ for _, symbol in catalog.symbols do
     assert(symbol.signature == `{symbol.name}: JessNull` and not symbol.valueExpression,
       `the shared null type is missing for {symbol.name}`)
   end
+
+  if symbol.name == '@jess/analysis.workspace' then
+    assert(symbol.reference == `docs/api/analysis/#{target}`, 'grouped analysis declaration lacks its contract link')
+  end
   assert(string.find(pages[symbol.module], `id="{target}"`, 1, true), `missing generated symbol {symbol.name}`)
   local record = records[symbol.name]
   assert(record and record.description == symbol.signature and string.sub(record.url, -#target) == target,
@@ -54,6 +58,7 @@ end
 assert(hasCameraBlock, 'camera block is missing from the catalog')
 assert(names['@jess/json.null'] and names['@jess/yaml.null'] and names['@jess/data/value.Null'],
   'a shared null export is missing from the catalog')
+assert(names['@jess/analysis.workspace'], 'analysis workspace export is missing from the catalog')
 
 local jpk = read(fs.join(output, 'docs', 'api', 'jpk', 'index.html'))
 assert(string.find(jpk, 'The canonical writer', 1, true), 'source documentation is missing from JPK reference')

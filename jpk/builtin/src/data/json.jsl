@@ -412,6 +412,8 @@ A JSON `null` decodes to [`jess.null`](@/docs/api/jess.md#jess-null), which `jso
 
 ## json.decode
 
+{{ api_symbol(value="@jess/json.decode") }}
+
 
 Parses one JSON text and returns its value.
 
@@ -439,6 +441,8 @@ com.example.greeter	1.0.0	2	true
 ```
 
 ## json.encode
+
+{{ api_symbol(value="@jess/json.encode") }}
 
 
 Writes a value built with [`@jess/data/value`](@/docs/api/value.md) as compact JSON on one line, the way `serde_json` writes it: keys in the order the map was given them, a forced float as `1.0`, an absent field as `null`, a variant as a one-key object.
@@ -468,6 +472,8 @@ print(json.encode(record))
 ```
 
 ## json.encodeTable
+
+{{ api_symbol(value="@jess/json.encodeTable") }}
 
 
 Writes a plain Luau table as JSON, for tools that write what people read and diff. The rules are fixed so the output is too: a table whose keys are exactly 1 to some *n* is an array; a table with string keys is an object, its keys sorted; an empty table is `[]`; `nil` and `jess.null` are `null`; a field that is `nil` is absent.

@@ -515,6 +515,8 @@ The Zstandard encoder is ruzstd's, through `@dream/bytes`' `zstdCompress`, at th
 
 ## jpk.open
 
+{{ api_symbol(value="@jess/jpk.open") }}
+
 
 Reads the end record and the central directory and checks every entry against the budgets, before reading a single entry's bytes. `source` is the whole archive as a buffer, or `{ size, read }`, where `read(offset, length)` returns that many bytes: a source over a file reads only the directory and the entries asked for, never the whole file.
 
@@ -565,15 +567,21 @@ This is not a sandbox, and the budgets are not a security boundary. They make co
 
 ## jpk.write
 
+{{ api_symbol(value="@jess/jpk.write") }}
+
 
 The canonical archive of `files`, each `{ path, data }`, as described above. A file that says `store = true` is stored whatever Zstandard would save: what an archive holds to be read in place with `source` has to be. A path that isn't canonical, or one given twice, is an error. More than 65535 entries, or an archive past 4 GiB, is an error rather than ZIP64.
 
 ## jpk.checkPath
 
+{{ api_symbol(value="@jess/jpk.checkPath") }}
+
 
 Why `path` can't name an entry, or nil when it can. Package manifests are checked with this, so a `jess.toml` can't name a file the container couldn't hold.
 
 ## jpk.budgets
+
+{{ api_symbol(value="@jess/jpk.budgets") }}
 
 
 The default reader budgets listed under [jpk.open](#jpk-open). Pass budget options to `open` when a caller needs different limits.

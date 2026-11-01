@@ -38,6 +38,8 @@ is yours.
 
 ### toml.decode
 
+{{ api_symbol(value="@jess/data/toml.decode") }}
+
 
 Parses a TOML document, returning its tables and a layout table for what Luau tables forget.
 `Options` is `{ positions: boolean? }`; `Table` and `Layout` are exported types of this module.
@@ -88,6 +90,8 @@ print(top.floats.ratio, top.floats.count, top.datetimes.when) -- true  nil  true
 ## encode
 
 ### toml.encode
+
+{{ api_symbol(value="@jess/data/toml.encode") }}
 
 
 Writes a value built with `@jess/data/value` (its `map`, `struct`, `array` and `float`) as a TOML

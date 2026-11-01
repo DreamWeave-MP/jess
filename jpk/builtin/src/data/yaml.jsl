@@ -1365,6 +1365,8 @@ A YAML null (`~`, `null`, or nothing) decodes to [`jess.null`](@/docs/api/jess.m
 
 ## yaml.decode
 
+{{ api_symbol(value="@jess/yaml.decode") }}
+
 
 Parses a text holding one document and returns its value. `yaml.version` is the spec version the loader follows, `'1.2.2'`.
 
@@ -1413,6 +1415,8 @@ tool	tool	!flag	enabled
 
 ## yaml.decodeAll
 
+{{ api_symbol(value="@jess/yaml.decodeAll") }}
+
 
 Parses a text holding any number of documents, separated by `---`, and returns their values in order. A text with none gives an empty table. It takes the same depth option and reports the same parsing errors as `decode`.
 
@@ -1429,6 +1433,8 @@ print(#documents, (documents[1] :: { id: string }).id, (documents[2] :: { id: st
 ```
 
 ## yaml.encode
+
+{{ api_symbol(value="@jess/yaml.encode") }}
 
 
 `Values.Value` is the exported `Value` type of [`@jess/data/value`](@/docs/api/value.md).

@@ -196,6 +196,8 @@ It parses with [`@dream/luau`](@/docs/api/l3i.md), so a file that doesn't parse 
 
 ### style.check
 
+{{ api_symbol(value="@jess/style.check") }}
+
 
 Every finding in `text`, sorted by position; `given` supplies the options below.
 
@@ -217,11 +219,15 @@ Every finding in `text`, sorted by position; `given` supplies the options below.
 
 ### style.checkFile
 
+{{ api_symbol(value="@jess/style.checkFile") }}
+
 
 `style.check` on a file. A `.md` file is checked one ```` ```luau ```` block at a time, as a fragment, with each finding's lines counted from the top of the page.
 This operation needs `filesystem.read`.
 
 ### style.files
+
+{{ api_symbol(value="@jess/style.files") }}
 
 
 The `.jsl` and `.lua` files under each directory, sorted. A path that is not a directory is kept whatever its extension, including a nonexistent path; a later `checkFile` then reports a read failure. Folders named `target` and dot-folders are skipped while walking.
@@ -229,10 +235,14 @@ Discovering or reading files needs `filesystem.read`; `run` and `checkPackage` u
 
 ### style.run
 
+{{ api_symbol(value="@jess/style.run") }}
+
 
 Checks every file `style.files(paths)` finds, prints each finding with `style.format`, and returns how many errors and how many warnings there were.
 
 ### style.checkPackage
+
+{{ api_symbol(value="@jess/style.checkPackage") }}
 
 
 Every finding under the package folder `root`, each formatted with `style.format` and its path: what a package's own style test checks. Files in the payload, `<root>/src/`, are also held to `payload`, by default `--!strict` and no `any`; tests, benches, and tools follow the style alone.
@@ -254,20 +264,32 @@ return suite
 
 ### style.format
 
+{{ api_symbol(value="@jess/style.format") }}
+
 
 One finding on one line: `path:line:column: severity[rule]: message`, or without the path.
 
 ### style.markdownBlocks
+
+{{ api_symbol(value="@jess/style.markdownBlocks") }}
 
 
 A Markdown page's ```` ```luau ```` blocks, each with the line its opening fence is on. `Block` is `{ line: number, source: string }`.
 
 ### style.rules
 
+{{ api_symbol(value="@jess/style.rules") }}
+
 
 Every rule by id, frozen. [Luau Style](@/docs/contributing/luau-style.md#the-checker) has the table.
 
 ### style.analysis, style.analyze, style.workspace
+
+{{ api_symbol(value="@jess/style.analysis") }}
+
+{{ api_symbol(value="@jess/style.analyze") }}
+
+{{ api_symbol(value="@jess/style.workspace") }}
 
 
 The same values as [`@jess/analysis`](@/docs/api/analysis.md) exports, re-exported so a style tool that also wants the dependency analysis needs one `require`.

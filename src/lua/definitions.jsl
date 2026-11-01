@@ -1554,6 +1554,8 @@ Also `require('@jess/application')`. What an [application's](@/docs/scripting/ap
 
 ## jess.application.exit
 
+{{ api_symbol(value="jess.application.exit") }}
+
 
 Asks the host to stop after the current frame, with `status` (0 without one) as the process's exit status. It returns; the frame finishes, then the `shutdown` handlers run and the application is torn down. A later call in the same frame replaces the status. A restart forgets the request.
 
@@ -1590,10 +1592,14 @@ A number means something only on the build releases ship. jess is built with L3i
 
 ## jess.bench.verified
 
+{{ api_symbol(value="jess.bench.verified") }}
+
 
 Whether this jess was built with the verified toolchain. A harness refuses to produce a number when it isn't; a time from an unverified build measures a slower Luau, and the honest thing to do with it is nothing.
 
 ## jess.bench.collect
+
+{{ api_symbol(value="jess.bench.collect") }}
 
 
 Runs a full garbage collection, so one batch's garbage isn't collected inside the next one's timing. Call it between batches, not inside one.
@@ -1645,6 +1651,8 @@ Related: [Performance](@/docs/scripting/performance.md).
 Also `require('@jess/context')`. This is the script side of a [ScriptDomain](@/docs/contributing/script-domains.md): a host that embeds jess declares contexts, each with the phases it may run in, and a script binds its handlers to them. Under `jess run` there is no domain, so `bind` errors with `context.bind: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and command targets run scripts outside one`; the examples here are a domain's main script.
 
 ## jess.context.bind
+
+{{ api_symbol(value="jess.context.bind") }}
 
 
 Binds one handler per phase to the context the host declared as `name`. A later `bind` for the same phase replaces the earlier handler; other phases keep theirs.
@@ -1707,6 +1715,8 @@ Related: [jess.worker](@/docs/api/worker.md), [Script Domains](@/docs/contributi
 Also `require('@jess/events')`. Named events are how a domain's code tells the rest of the domain something happened, and, when a host routes them, how one domain tells another. Their handlers are the `on.event` tables of an [application's](@/docs/scripting/applications.md) managed modules. Only a domain's own code emits: under `jess run`, a command target, or in a worker there is no queue to emit into, and `emit` errors.
 
 ## jess.events.emit
+
+{{ api_symbol(value="jess.events.emit") }}
 
 
 Queues the event `name` with `payload` and returns. No handler runs inside `emit`. At the domain's next event drain, the end of the current frame, every handler bound to `name` gets the payload, in context order; events are delivered in the order they were emitted, and one emitted during a drain waits for the next. A handler that raises is reported with its context and event name, and the rest still run. An event nothing handles is counted as unhandled and dropped.
@@ -1778,6 +1788,8 @@ The loader calls `interfaceOverride(previous)` only when an earlier provider of 
 
 ## jess.interfaces.get
 
+{{ api_symbol(value="jess.interfaces.get") }}
+
 
 The effective implementation of `id`.
 
@@ -1795,6 +1807,8 @@ print(`{inventory.getArmorType('cuirass')} cuirass, {inventory.getWeight('cuiras
 ```
 
 ## jess.interfaces.tryGet
+
+{{ api_symbol(value="jess.interfaces.tryGet") }}
 
 
 The same, or `nil` when no package provides `id`: for an interface that is optional. The other errors are `get`'s; an application that isn't composed yet is a mistake, not an absence.
