@@ -272,7 +272,6 @@ fn workers_import_the_application_plan_with_isolated_module_state() {
     let source = r"
 local counter = require('@example/counter')
 assert(not jess.granted('filesystem.read'))
-assert(not pcall(require('@dream/fs').readFileString, 'jess.toml'))
 return function() return counter.next() end
 ";
     let workers = [
@@ -325,6 +324,119 @@ return function() return counter.next() end
     let worker = domain
         .spawn_worker(WorkerSpec::new("packed", source).capabilities(CapabilitySet::empty()))
         .unwrap();
+    domain.send_to_worker(worker, Message::Nil).unwrap();
+    assert_eq!(
+        domain.receive_from_worker(worker, Some(Duration::from_secs(20))).unwrap(),
+        Some(Message::Number(1.0))
+    );
+    application.stop().unwrap();
+}
+
+#[test]
+fn worker_native_filesystem_access_requires_its_own_grant() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("authority");
+    write(
+        &root,
+        &[
+            (
+                "jess.toml",
+                &manifest(
+                    "org.example.worker-authority",
+                    "[targets.app]\nkind = \"application\"\nentry = \"src/main.jsl\"\ncapabilities = [\"filesystem.read\"]\n",
+                ),
+            ),
+            ("src/main.jsl", "return nil\n"),
+            ("src/known.txt", "known content"),
+        ],
+    );
+    let mut requested = request(&root, "app", &[]);
+    requested.grant = Some(vec!["filesystem.read".to_owned()]);
+    let application = launch(&requested);
+    let path = text(&root.join("src/known.txt"));
+    application
+        .domain()
+        .with_runtime(|runtime| {
+            runtime
+                .exec(&format!(
+                    "assert(require('@dream/fs').readFileString({path:?}) == 'known content')"
+                ))
+                .unwrap();
+        })
+        .unwrap();
+    let domain = application.domain();
+    let worker = domain
+        .spawn_worker(
+            WorkerSpec::new(
+                "denied",
+                r"
+return function(path)
+  local ok, result = pcall(require('@dream/fs').readFileString, path)
+  assert(not ok)
+  return tostring(result)
+end
+",
+            )
+            .capabilities(CapabilitySet::empty()),
+        )
+        .unwrap();
+    domain.send_to_worker(worker, Message::text(&path)).unwrap();
+    let reply = domain
+        .receive_from_worker(worker, Some(Duration::from_secs(20)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        reply,
+        Message::text("dream.fs.readFileString: needs the 'filesystem.read' capability, which this runtime does not grant")
+    );
+    application.stop().unwrap();
+}
+
+#[test]
+fn worker_provider_recovers_after_first_activation_failure_and_restart() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("provider");
+    let original = "local count = 0\nreturn { next = function() count += 1; return count end }\n";
+    write(
+        &root,
+        &[
+            (
+                "jess.toml",
+                &manifest(
+                    "org.example.worker-provider",
+                    "[modules]\n\"@example/counter\" = \"src/counter.jsl\"\n\n[[layer]]\nid = \"example.counter\"\nexports = [\"@example/counter\"]\n\n[targets.app]\nkind = \"application\"\nentry = \"src/main.jsl\"\n",
+                ),
+            ),
+            ("src/main.jsl", "return nil\n"),
+            ("src/counter.jsl", original),
+        ],
+    );
+    let mut application = launch(&request(&root, "app", &[]));
+    let source = "local counter = require('@example/counter'); return function() return counter.next() end";
+    std::fs::write(root.join("src/counter.jsl"), "return { next = function() return 99 end }\n").unwrap();
+    let worker = application
+        .domain()
+        .spawn_worker(WorkerSpec::new("rejected", source))
+        .unwrap();
+    let failure = application
+        .domain()
+        .receive_from_worker(worker, Some(Duration::from_secs(20)))
+        .unwrap_err();
+    assert!(failure.to_string().contains("worker package plan changed"), "{failure}");
+    std::fs::write(root.join("src/counter.jsl"), original).unwrap();
+    for _ in 0..3 {
+        let domain = application.domain();
+        let worker = domain.spawn_worker(WorkerSpec::new("recovered", source)).unwrap();
+        domain.send_to_worker(worker, Message::Nil).unwrap();
+        assert_eq!(
+            domain.receive_from_worker(worker, Some(Duration::from_secs(20))).unwrap(),
+            Some(Message::Number(1.0))
+        );
+        domain.join_worker(worker, Some(Duration::from_secs(20))).unwrap();
+    }
+    application.restart().unwrap();
+    let domain = application.domain();
+    let worker = domain.spawn_worker(WorkerSpec::new("new generation", source)).unwrap();
     domain.send_to_worker(worker, Message::Nil).unwrap();
     assert_eq!(
         domain.receive_from_worker(worker, Some(Duration::from_secs(20))).unwrap(),
@@ -392,6 +504,29 @@ assert(not ok and string.find(tostring(failure), "doesn't declare org.example.ot
         "{failure}"
     );
     application.stop().unwrap();
+
+    write(
+        &app,
+        &[
+            (
+                "jess.toml",
+                &manifest(
+                    "org.example.worker-app",
+                    "[dependencies]\n\"org.example.other\" = \"^1.0\"\n\n[[layer]]\nid = \"example.app\"\nrequires = [\"example.other\"]\n\n[targets.app]\nkind = \"application\"\nentry = \"src/main.jsl\"\ncapabilities = [\"worker.spawn\"]\n",
+                ),
+            ),
+            (
+                "src/main.jsl",
+                r#"local worker = require('@jess/worker').spawn {
+  source = "local value = require('@example/other'); return function() return value end",
+}
+worker:send(true)
+assert(worker:receive(20) == 42)
+"#,
+            ),
+        ],
+    );
+    launch(&requested).stop().unwrap();
 }
 
 /// A provider without `interfaceOverride` replaces the table outright: nothing is merged.
