@@ -563,7 +563,7 @@ fn children(folder: &Path) -> l3i::Result<Vec<(String, &'static str)>> {
 }
 
 /// Code jess runs because its layer was activated, and the capabilities it needs.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Entrypoint {
     /// The module name, one the manifest's `[modules]` names.
     pub module: String,
@@ -692,7 +692,7 @@ pub struct Packed {
 }
 
 /// A layer in a plan, in activation order.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct PlanLayer {
     /// The layer id.
     pub id: String,
@@ -709,7 +709,7 @@ pub struct PlanLayer {
 }
 
 /// An entrypoint a plan runs, in order.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct PlanEntrypoint {
     /// The module name.
     pub module: String,
@@ -722,7 +722,7 @@ pub struct PlanEntrypoint {
 }
 
 /// A package in a plan.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct PlanPackage {
     /// The package id.
     pub id: String,
@@ -739,7 +739,7 @@ pub struct PlanPackage {
 }
 
 /// A module name in a plan's namespace.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct PlanModule {
     /// The module name.
     pub name: String,
@@ -750,7 +750,7 @@ pub struct PlanModule {
 }
 
 /// A capability a plan requires, and who requires it.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct PlanCapability {
     /// The capability.
     pub capability: String,
@@ -813,7 +813,7 @@ impl Search {
 }
 
 /// An activation plan: requested layers resolved over the packages offered, with nothing run.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Plan {
     /// The layers asked for, sorted.
     pub requested: Vec<String>,

@@ -140,7 +140,7 @@ struct Setup {
 }
 
 struct WorkerPlan {
-    plan: serde_json::Value,
+    plan: package::Plan,
     mount: package::SharedMount,
     provider: Mutex<Option<WorkerProvider>>,
 }
@@ -349,7 +349,6 @@ fn message_of(problem: &RuntimeError) -> String {
 impl Setup {
     fn mount(&self, runtime: &Runtime) -> l3i::Result<()> {
         let plan = package::mount_with(runtime, &self.locations, &self.layers, Some(&self.capabilities), &self.search)?;
-        let plan = serde_json::to_value(plan).map_err(|problem| error(problem.to_string()))?;
         let package_state = state(runtime)?;
         let mount = package_state
             .packages
@@ -595,8 +594,7 @@ fn worker_setup(
                         let result = (|| {
                             let runtime = crate::lua::runtime_with_capabilities(options, &capabilities)?;
                             let plan = package::mount_with(&runtime, &locations, &layers, Some(&capabilities), &search)?;
-                            let actual = serde_json::to_value(plan).map_err(|problem| error(problem.to_string()))?;
-                            if actual != expected {
+                            if plan != expected {
                                 return Err(error("worker package plan changed since the application activated it"));
                             }
                             drop(ready.send(Ok(())));
