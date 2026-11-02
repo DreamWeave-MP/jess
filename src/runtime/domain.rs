@@ -61,7 +61,9 @@ pub trait RuntimeFactory: Send + Sync + 'static {
     fn create(&self) -> l3i::Result<Runtime>;
 
     /// Creates a worker runtime with the delegated capabilities. Factories whose native
-    /// extensions enforce grants at VM creation must override this method.
+    /// extensions enforce grants at VM creation must override this method. The default calls
+    /// `create` unchanged and does not restrict native grants; the domain's authority broker
+    /// cannot revoke a capability a native extension already received at construction.
     ///
     /// # Errors
     ///
