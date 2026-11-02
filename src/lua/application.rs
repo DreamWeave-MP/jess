@@ -27,6 +27,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Sender, channel, sync_channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -132,9 +133,49 @@ struct Setup {
     layers: Vec<String>,
     capabilities: Vec<String>,
     search: Search,
+    worker_plan: Arc<Mutex<Option<Arc<WorkerPlan>>>>,
     args: Vec<String>,
     /// The contexts the last load declared, so the next one can retire those its code dropped.
     declared: RefCell<Vec<String>>,
+}
+
+struct WorkerPlan {
+    plan: serde_json::Value,
+    mount: package::SharedMount,
+    provider: Mutex<Option<WorkerProvider>>,
+}
+
+struct WorkerProvider {
+    sender: Sender<package::ProviderRead>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+impl Drop for WorkerPlan {
+    fn drop(&mut self) {
+        if let Some(provider) = self.provider.get_mut().unwrap_or_else(PoisonError::into_inner).take() {
+            drop(provider.sender);
+            drop(provider.thread.join());
+        }
+    }
+}
+
+struct ApplicationFactory {
+    options: crate::lua::Options,
+    capabilities: Vec<String>,
+}
+
+impl RuntimeFactory for ApplicationFactory {
+    fn create(&self) -> l3i::Result<Runtime> {
+        crate::lua::runtime_with_capabilities(self.options.clone(), &self.capabilities)
+    }
+
+    fn create_worker(&self, capabilities: &CapabilitySet) -> l3i::Result<Runtime> {
+        let names = capabilities
+            .iter()
+            .map(|capability| capability.name().to_owned())
+            .collect::<Vec<_>>();
+        crate::lua::runtime_with_capabilities(self.options.clone(), &names)
+    }
 }
 
 /// Where a function was defined, `source:line`, for diagnostics.
@@ -306,11 +347,29 @@ fn message_of(problem: &RuntimeError) -> String {
 }
 
 impl Setup {
+    fn mount(&self, runtime: &Runtime) -> l3i::Result<()> {
+        let plan = package::mount_with(runtime, &self.locations, &self.layers, Some(&self.capabilities), &self.search)?;
+        let plan = serde_json::to_value(plan).map_err(|problem| error(problem.to_string()))?;
+        let package_state = state(runtime)?;
+        let mount = package_state
+            .packages
+            .borrow()
+            .as_ref()
+            .ok_or_else(|| error("application mounted no package plan"))?
+            .shared();
+        *self.worker_plan.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(WorkerPlan {
+            plan,
+            mount,
+            provider: Mutex::new(None),
+        }));
+        Ok(())
+    }
+
     /// Loads the application into `runtime`, the domain's primary one. See the module docs.
     fn load(&self, runtime: &Runtime) -> l3i::Result<()> {
         let domain = crate::runtime::luau::domain_of(runtime)
             .ok_or_else(|| error("an application loads into a ScriptDomain's primary runtime"))?;
-        package::mount_with(runtime, &self.locations, &self.layers, Some(&self.capabilities), &self.search)?;
+        self.mount(runtime)?;
         // From here until they are published, a lookup says the interfaces are being composed:
         // the layers' entrypoints run before any managed module, and are early too.
         crate::runtime::luau::compose_interfaces(runtime);
@@ -499,6 +558,78 @@ impl std::fmt::Debug for Application {
     }
 }
 
+fn worker_setup(
+    accepted: Arc<Mutex<Option<Arc<WorkerPlan>>>>,
+    worker_locations: Vec<String>,
+    worker_layers: Vec<String>,
+    worker_capabilities: Vec<String>,
+    worker_search: Search,
+    worker_options: crate::lua::Options,
+) -> crate::runtime::SetupHook {
+    Arc::new(move |runtime: &Runtime| {
+        let accepted = accepted
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| error("worker package plan is not activated"))?;
+        let plan = Arc::clone(&accepted);
+        let worker_locations = worker_locations.clone();
+        let worker_layers = worker_layers.clone();
+        let worker_capabilities = worker_capabilities.clone();
+        let worker_search = worker_search.clone();
+        let worker_options = worker_options.clone();
+        let provider: Arc<dyn Fn() -> l3i::Result<Sender<package::ProviderRead>> + Send + Sync> = Arc::new(move || {
+            let mut provider = plan.provider.lock().unwrap_or_else(PoisonError::into_inner);
+            if provider.is_none() {
+                let (sender, receiver) = channel();
+                let (ready, started) = sync_channel(1);
+                let locations = worker_locations.clone();
+                let layers = worker_layers.clone();
+                let capabilities = worker_capabilities.clone();
+                let search = worker_search.clone();
+                let options = worker_options.clone();
+                let expected = plan.plan.clone();
+                let thread = std::thread::Builder::new()
+                    .name("jess-package-provider".to_owned())
+                    .spawn(move || {
+                        let result = (|| {
+                            let runtime = crate::lua::runtime_with_capabilities(options, &capabilities)?;
+                            let plan = package::mount_with(&runtime, &locations, &layers, Some(&capabilities), &search)?;
+                            let actual = serde_json::to_value(plan).map_err(|problem| error(problem.to_string()))?;
+                            if actual != expected {
+                                return Err(error("worker package plan changed since the application activated it"));
+                            }
+                            drop(ready.send(Ok(())));
+                            package::serve_provider(&runtime, &receiver)
+                        })();
+                        if let Err(problem) = result {
+                            drop(ready.send(Err(problem.to_string())));
+                        }
+                    })
+                    .map_err(|problem| error(format!("cannot start worker package provider: {problem}")))?;
+                started
+                    .recv()
+                    .map_err(|_| error("worker package provider failed to start"))?
+                    .map_err(error)?;
+                *provider = Some(WorkerProvider { sender, thread });
+            }
+            Ok(provider.as_ref().expect("provider just started").sender.clone())
+        });
+        accepted.mount.install(runtime, &provider)
+    })
+}
+
+fn target_search(request: &TargetRequest, inspection: &Inspection) -> Search {
+    Search {
+        paths: request.paths.clone(),
+        candidates: request.candidates.clone(),
+        pins: request.pins.clone(),
+        roots: vec![inspection.id.clone()],
+        dev: Vec::new(),
+        image: request.image.clone(),
+    }
+}
+
 /// Loads the application target `target` of the package `inspection` describes, as `request`
 /// asks, into a host of its own. The domain's load resolves the package's plan and admits every
 /// entrypoint against the target's capabilities before anything a package holds runs. With `input`
@@ -519,14 +650,16 @@ pub(crate) fn launch(
     let layers = inspection.layers.iter().map(|layer| layer.id.clone()).collect::<Vec<_>>();
     let mut locations = vec![request.package.clone()];
     locations.extend_from_slice(&request.packages);
-    let search = Search {
-        paths: request.paths.clone(),
-        candidates: request.candidates.clone(),
-        pins: request.pins.clone(),
-        roots: vec![inspection.id.clone()],
-        dev: Vec::new(),
-        image: request.image.clone(),
-    };
+    let search = target_search(request, inspection);
+    let worker_plan: Arc<Mutex<Option<Arc<WorkerPlan>>>> = Arc::new(Mutex::new(None));
+    let worker_setup = worker_setup(
+        Arc::clone(&worker_plan),
+        locations.clone(),
+        layers.clone(),
+        target.capabilities.clone(),
+        search.clone(),
+        options.clone(),
+    );
     let setup = Rc::new(Setup {
         package: inspection.id.clone(),
         target: target.id.clone(),
@@ -535,16 +668,18 @@ pub(crate) fn launch(
         layers,
         capabilities: target.capabilities.clone(),
         search,
+        worker_plan,
         args: request.args.clone(),
         declared: RefCell::new(Vec::new()),
     });
-    let capabilities = target.capabilities.clone();
-    let runtime_options = options.clone();
-    let factory: Arc<dyn RuntimeFactory> =
-        Arc::new(move || crate::lua::runtime_with_capabilities(runtime_options.clone(), &capabilities));
+    let factory: Arc<dyn RuntimeFactory> = Arc::new(ApplicationFactory {
+        options: options.clone(),
+        capabilities: target.capabilities.clone(),
+    });
     let grant = RootAuthority::new().grant(CapabilitySet::from_names(&target.capabilities).map_err(l3i::Error::from)?);
     let diagnostics = Arc::new(Diagnostics::default());
     let spec = DomainSpec::new(format!("{}:{}", inspection.id, target.id), grant)
+        .worker_setup(worker_setup)
         .diagnostics(diagnostics.clone())
         .fixed_step(FixedStep {
             step: FRAME,

@@ -48,6 +48,7 @@ pub struct WorkerSpec {
     pub(crate) name: String,
     pub(crate) chunk_name: String,
     pub(crate) source: String,
+    pub(crate) origin: Option<String>,
     pub(crate) capabilities: Option<CapabilitySet>,
     pub(crate) services: Sharing,
     pub(crate) budget: Option<Budget>,
@@ -65,6 +66,7 @@ impl WorkerSpec {
             chunk_name: format!("=worker:{name}"),
             name,
             source: source.into(),
+            origin: None,
             capabilities: None,
             services: Sharing::None,
             budget: None,
@@ -224,6 +226,7 @@ pub struct Launch {
     pub(crate) services: Arc<Services>,
     pub(crate) factory: Arc<dyn RuntimeFactory>,
     pub(crate) setup: Option<SetupHook>,
+    pub(crate) worker_setup: Option<SetupHook>,
     pub(crate) diagnostics: Arc<dyn DiagnosticSink>,
     pub(crate) profiler: Arc<dyn ProfileSink>,
     pub(crate) logs: Option<Arc<dyn LogSink>>,
@@ -498,8 +501,11 @@ fn run(launch: &Launch, commands: &Receiver<Command>, results: &SyncSender<Outpu
 
 fn serve(launch: &Launch, commands: &Receiver<Command>, results: &SyncSender<Output>, closing: &AtomicBool) {
     let started = Instant::now();
-    let built = launch.factory.create().and_then(|runtime| {
+    let built = launch.factory.create_worker(&launch.capabilities).and_then(|runtime| {
         if let Some(setup) = &launch.setup {
+            setup(&runtime)?;
+        }
+        if let Some(setup) = &launch.worker_setup {
             setup(&runtime)?;
         }
         Ok(runtime)
@@ -512,6 +518,9 @@ fn serve(launch: &Launch, commands: &Receiver<Command>, results: &SyncSender<Out
         runtime.set_limits(budget.limits());
     }
     crate::runtime::luau::attach_worker(&runtime, WorkerLink { outbox: results.clone() });
+    if let Ok(jess) = crate::lua::state(&runtime) {
+        jess.worker_origin.borrow_mut().clone_from(&launch.spec.origin);
+    }
     let observer = Observer {
         diagnostics: Arc::clone(&launch.diagnostics),
         profiler: Arc::clone(&launch.profiler),

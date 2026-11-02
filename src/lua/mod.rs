@@ -44,7 +44,7 @@ mod mach_o;
 pub mod namespaces;
 pub mod package;
 pub mod plan;
-mod require;
+pub(crate) mod require;
 pub mod scripts;
 pub mod shader;
 pub mod stdlib;
@@ -228,6 +228,8 @@ pub(crate) struct Jess {
     pub(crate) luau_require: RefCell<Option<Function>>,
     /// The packages an activated plan mounted ([`package::activate`]); `None` until one is.
     pub(crate) packages: RefCell<Option<package::Mounted>>,
+    /// The package chunk that supplied a worker's source, if any.
+    pub(crate) worker_origin: RefCell<Option<String>>,
     /// `tostring`, for `print`.
     pub(crate) tostring: Function,
     /// The built-in package's manifest, decoded the first time `require` needs it.

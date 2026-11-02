@@ -59,6 +59,16 @@ pub trait RuntimeFactory: Send + Sync + 'static {
     /// Whatever building the runtime fails with: a plan that does not finalize, a VM that
     /// cannot be set up.
     fn create(&self) -> l3i::Result<Runtime>;
+
+    /// Creates a worker runtime with the delegated capabilities. Factories whose native
+    /// extensions enforce grants at VM creation must override this method.
+    ///
+    /// # Errors
+    ///
+    /// Whatever building the worker runtime fails with.
+    fn create_worker(&self, _capabilities: &CapabilitySet) -> l3i::Result<Runtime> {
+        self.create()
+    }
 }
 
 impl<F> RuntimeFactory for F
@@ -134,6 +144,7 @@ pub struct DomainSpec {
     budget: Option<Budget>,
     event_limits: EventLimits,
     setup: Option<SetupHook>,
+    worker_setup: Option<SetupHook>,
     services: Services,
 }
 
@@ -169,6 +180,7 @@ impl DomainSpec {
             budget: None,
             event_limits: EventLimits::default(),
             setup: None,
+            worker_setup: None,
             services: Services::new(),
         }
     }
@@ -177,6 +189,11 @@ impl DomainSpec {
     #[must_use]
     pub const fn parent(mut self, parent: DomainId) -> DomainSpec {
         self.parent = Some(parent);
+        self
+    }
+
+    pub(crate) fn worker_setup(mut self, setup: SetupHook) -> DomainSpec {
+        self.worker_setup = Some(setup);
         self
     }
 
@@ -624,6 +641,7 @@ pub struct DomainCore {
     shared_generation: Arc<AtomicU64>,
     factory: Arc<dyn RuntimeFactory>,
     setup: Option<SetupHook>,
+    worker_setup: Option<SetupHook>,
     services: Arc<Services>,
     diagnostics: Arc<dyn DiagnosticSink>,
     profiler: Arc<dyn ProfileSink>,
@@ -1115,6 +1133,7 @@ impl DomainCore {
                 services,
                 factory: Arc::clone(&self.factory),
                 setup: self.setup.clone(),
+                worker_setup: self.worker_setup.clone(),
                 diagnostics: Arc::clone(&self.diagnostics),
                 profiler: Arc::clone(&self.profiler),
                 logs: self.observer.logs.clone(),
@@ -1267,6 +1286,7 @@ impl ScriptDomain {
             shared_generation: Arc::new(AtomicU64::new(Generation::FIRST.raw())),
             factory,
             setup: spec.setup,
+            worker_setup: spec.worker_setup,
             services: Arc::new(spec.services),
             diagnostics: spec.diagnostics,
             profiler: spec.profiler,

@@ -259,6 +259,7 @@ impl Jess {
             loaded,
             luau_require: RefCell::new(None),
             packages: RefCell::new(None),
+            worker_origin: RefCell::new(None),
             tostring,
             builtin: RefCell::new(None),
             toml_decode: RefCell::new(None),

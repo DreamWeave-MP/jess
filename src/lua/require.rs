@@ -170,7 +170,8 @@ pub fn freeze_export(key: &str, value: l3i::stack::ValueView<'_>) -> l3i::Result
 
 /// Fails when a mounted package's module requires another mounted package's export without
 /// declaring that package as a dependency. A script that belongs to no package holds the whole
-/// plan's namespace: it is the host's, and the host chose the plan.
+/// plan's namespace: it is the host's, and the host chose the plan. A worker's source has
+/// the spawning package's dependencies even though it is an anonymous chunk.
 fn check_declared(call: &Call<'_>, jess: &Jess, name: &str) -> l3i::Result<()> {
     let mounted = jess.packages.borrow();
     let Some(mounted) = mounted.as_ref() else {
@@ -187,7 +188,11 @@ fn check_declared(call: &Call<'_>, jess: &Jess, name: &str) -> l3i::Result<()> {
     let Some(caller) = caller else {
         return Ok(());
     };
-    let Some((index, _)) = mounted.owner(&caller) else {
+    let origin = jess.worker_origin.borrow();
+    let Some((index, _)) = mounted
+        .owner(&caller)
+        .or_else(|| origin.as_deref().and_then(|chunk| mounted.owner(chunk)))
+    else {
         return Ok(());
     };
     if mounted.may_require(index, owner) {

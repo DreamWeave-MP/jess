@@ -403,6 +403,7 @@ fn spawn(bindings: &Bindings, call: &Call<'_>, options: ValueView<'_>) -> l3i::R
         }
     });
     let mut spec = WorkerSpec::new(name, source);
+    spec.origin = crate::lua::require::caller_chunk(call);
     if !location.is_empty() {
         spec = spec.chunk_name(format!("=worker@{location}"));
     }

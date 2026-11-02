@@ -18,6 +18,8 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender, SyncSender, sync_channel};
 
 use l3i::Runtime;
 use l3i::bind::{ArgView, Call, StackResults};
@@ -39,6 +41,28 @@ pub(crate) struct Mounted {
     exports: HashMap<String, (usize, String)>,
     /// The resolved layers' entrypoints, in activation order: package, module name, path.
     entrypoints: Vec<(usize, String, String)>,
+}
+
+/// The resolver metadata of an accepted mount, independent of any Luau state.
+pub(crate) struct SharedMount {
+    packages: Vec<SharedPackage>,
+    exports: HashMap<String, (usize, String)>,
+    entrypoints: Vec<(usize, String, String)>,
+}
+
+struct SharedPackage {
+    id: String,
+    dependencies: Vec<usize>,
+    managed: Vec<Managed>,
+    digest: String,
+    prefix: String,
+    files: Vec<String>,
+}
+
+pub(crate) struct ProviderRead {
+    package: usize,
+    path: String,
+    reply: SyncSender<Result<Option<Vec<u8>>, String>>,
 }
 
 struct MountedPackage {
@@ -63,6 +87,24 @@ pub(crate) struct PackageModule {
 }
 
 impl Mounted {
+    pub(crate) fn shared(&self) -> SharedMount {
+        SharedMount {
+            packages: self
+                .packages
+                .iter()
+                .map(|package| SharedPackage {
+                    id: package.id.clone(),
+                    dependencies: package.dependencies.clone(),
+                    managed: package.managed.clone(),
+                    digest: package.digest.clone(),
+                    prefix: package.prefix.clone(),
+                    files: package.files.clone(),
+                })
+                .collect(),
+            exports: self.exports.clone(),
+            entrypoints: self.entrypoints.clone(),
+        }
+    }
     /// The package and path a module name is exported as.
     pub(crate) fn export(&self, name: &str) -> Option<(usize, &str)> {
         self.exports.get(name).map(|(index, path)| (*index, path.as_str()))
@@ -146,6 +188,82 @@ impl Mounted {
             || self.packages[caller].dependencies.contains(&owner)
             || self.packages[owner].id == crate::lua::builtin::ID
     }
+}
+
+impl SharedMount {
+    /// Installs the accepted namespace with a reader that asks the provider lane for bytes.
+    pub(crate) fn install(
+        &self,
+        runtime: &Runtime,
+        provider: &Arc<dyn Fn() -> l3i::Result<Sender<ProviderRead>> + Send + Sync>,
+    ) -> l3i::Result<()> {
+        let state = crate::lua::state(runtime)?;
+        if state.packages.borrow().is_some() {
+            return Err(error("worker runtime already has packages activated"));
+        }
+        let mut packages = Vec::with_capacity(self.packages.len());
+        for (index, package) in self.packages.iter().enumerate() {
+            let provider = Arc::clone(provider);
+            let read = runtime.bind_function(
+                "jess.package.workerRead",
+                move |path: Text| -> l3i::Result<Option<NewBuffer>> {
+                    let (reply, response) = sync_channel(1);
+                    provider()?
+                        .send(ProviderRead {
+                            package: index,
+                            path: path.0,
+                            reply,
+                        })
+                        .map_err(|_| error("worker package provider stopped"))?;
+                    response
+                        .recv()
+                        .map_err(|_| error("worker package provider stopped"))?
+                        .map(|bytes| bytes.map(NewBuffer))
+                        .map_err(error)
+                },
+            )?;
+            packages.push(MountedPackage {
+                id: package.id.clone(),
+                dependencies: package.dependencies.clone(),
+                managed: package.managed.clone(),
+                digest: package.digest.clone(),
+                prefix: package.prefix.clone(),
+                files: package.files.clone(),
+                read,
+            });
+        }
+        *state.packages.borrow_mut() = Some(Mounted {
+            packages,
+            exports: self.exports.clone(),
+            entrypoints: self.entrypoints.clone(),
+        });
+        Ok(())
+    }
+}
+
+pub(crate) fn serve_provider(runtime: &Runtime, requests: &Receiver<ProviderRead>) -> l3i::Result<()> {
+    let state = crate::lua::state(runtime)?;
+    for request in requests {
+        let result = (|| {
+            let mounted = state.packages.borrow();
+            let mounted = mounted.as_ref().ok_or_else(|| error("package provider has no mount"))?;
+            let package = mounted
+                .packages
+                .get(request.package)
+                .ok_or_else(|| error("invalid package provider index"))?;
+            package
+                .read
+                .invoke_with(&runtime.stack(), (request.path.as_str(),), |_, value| {
+                    if value.is_nil() {
+                        return Ok(None);
+                    }
+                    Ok(Some(value.read::<l3i::convert::BufferView<'_>>()?.to_vec()))
+                })
+        })()
+        .map_err(|problem: l3i::Error| problem.to_string());
+        drop(request.reply.send(result));
+    }
+    Ok(())
 }
 
 /// `jess.payload()`: the calling module's own package payload, as `{ files, read }`: every path

@@ -14,7 +14,7 @@ use jess::lua::Options;
 use jess::lua::application::Application;
 use jess::lua::l3i;
 use jess::lua::package::{self, Launched, TargetRequest};
-use jess::runtime::{DiagnosticKind, Message, Phase};
+use jess::runtime::{CapabilitySet, DiagnosticKind, Message, Phase, WorkerSpec};
 
 use super::write;
 
@@ -227,6 +227,171 @@ fn a_package_source_and_its_jpks_run_the_same_application() {
     }
     source.stop().unwrap();
     jpk.stop().unwrap();
+}
+
+#[test]
+fn workers_import_the_application_plan_with_isolated_module_state() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("worker-package");
+    write(
+        &root,
+        &[
+            (
+                "jess.toml",
+                &manifest(
+                    "org.example.workers",
+                    "[modules]\n\"@example/counter\" = \"src/counter.jsl\"\n\"@example/private\" = \"src/private.jsl\"\n\n[[layer]]\nid = \"example.counter\"\nexports = [\"@example/counter\"]\n\n[[layer.entrypoint]]\nmodule = \"@example/private\"\n\n[targets.app]\nkind = \"application\"\nentry = \"src/main.jsl\"\ncapabilities = [\"filesystem.read\"]\n",
+                ),
+            ),
+            (
+                "src/counter.jsl",
+                "local count = 0\nreturn { next = function() count += 1; return count end }\n",
+            ),
+            ("src/main.jsl", "assert(require('@example/counter').next() == 1)\n"),
+            ("src/private.jsl", "return 1\n"),
+        ],
+    );
+    let mut application_request = request(&root, "app", &[]);
+    application_request.grant = Some(vec!["filesystem.read".to_owned()]);
+    let packed = temp.path().join("worker-package.jpk");
+    package::pack(&jess::lua::runtime(Options::default()).unwrap(), &text(&root), &text(&packed)).unwrap();
+    let application = launch(&application_request);
+    assert_eq!(eval(&application, "return tostring(jess.granted('filesystem.read'))"), "true");
+    let domain = application.domain();
+    let original = std::fs::read(root.join("src/counter.jsl")).unwrap();
+    std::fs::write(root.join("src/counter.jsl"), "return {}\n").unwrap();
+    let inline = domain
+        .spawn_worker(WorkerSpec::new("inline", "return function() return 42 end"))
+        .unwrap();
+    domain.send_to_worker(inline, Message::Nil).unwrap();
+    assert_eq!(
+        domain.receive_from_worker(inline, Some(Duration::from_secs(20))).unwrap(),
+        Some(Message::Number(42.0))
+    );
+    std::fs::write(root.join("src/counter.jsl"), original).unwrap();
+    let source = r"
+local counter = require('@example/counter')
+assert(not jess.granted('filesystem.read'))
+assert(not pcall(require('@dream/fs').readFileString, 'jess.toml'))
+return function() return counter.next() end
+";
+    let workers = [
+        domain
+            .spawn_worker(WorkerSpec::new("first", source).capabilities(CapabilitySet::empty()))
+            .unwrap(),
+        domain
+            .spawn_worker(WorkerSpec::new("second", source).capabilities(CapabilitySet::empty()))
+            .unwrap(),
+    ];
+    for worker in workers {
+        domain.send_to_worker(worker, Message::Nil).unwrap();
+    }
+    for worker in workers {
+        assert_eq!(
+            domain.receive_from_worker(worker, Some(Duration::from_secs(20))).unwrap(),
+            Some(Message::Number(1.0))
+        );
+    }
+    assert_eq!(eval(&application, "return tostring(require('@example/counter').next())"), "2");
+    let missing = domain
+        .spawn_worker(WorkerSpec::new(
+            "missing",
+            "require('@example/private'); return function() end",
+        ))
+        .unwrap();
+    let failure = domain
+        .receive_from_worker(missing, Some(Duration::from_secs(20)))
+        .unwrap_err();
+    assert!(
+        failure.to_string().contains("module not found: @example/private"),
+        "{failure}"
+    );
+    std::fs::write(root.join("src/counter.jsl"), "return { next = function() return 99 end }\n").unwrap();
+    let changed = domain.spawn_worker(WorkerSpec::new("changed", source)).unwrap();
+    let failure = domain
+        .receive_from_worker(changed, Some(Duration::from_secs(20)))
+        .unwrap_err();
+    assert!(
+        failure
+            .to_string()
+            .contains("'src/counter.jsl' changed since the package was opened"),
+        "{failure}"
+    );
+    application.stop().unwrap();
+
+    application_request.package = text(&packed);
+    let application = launch(&application_request);
+    let domain = application.domain();
+    let worker = domain
+        .spawn_worker(WorkerSpec::new("packed", source).capabilities(CapabilitySet::empty()))
+        .unwrap();
+    domain.send_to_worker(worker, Message::Nil).unwrap();
+    assert_eq!(
+        domain.receive_from_worker(worker, Some(Duration::from_secs(20))).unwrap(),
+        Some(Message::Number(1.0))
+    );
+    application.stop().unwrap();
+}
+
+#[test]
+fn worker_package_imports_still_check_declared_dependencies() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = temp.path().join("app");
+    let other = temp.path().join("other");
+    write(
+        &app,
+        &[
+            (
+                "jess.toml",
+                &manifest(
+                    "org.example.worker-app",
+                    "[modules]\n\"@example/bad\" = \"src/bad.jsl\"\n\n[[layer]]\nid = \"example.app\"\nrequires = [\"example.other\"]\nexports = [\"@example/bad\"]\n\n[targets.app]\nkind = \"application\"\nentry = \"src/main.jsl\"\ncapabilities = [\"worker.spawn\"]\n",
+                ),
+            ),
+            (
+                "src/main.jsl",
+                r#"local worker = require('@jess/worker').spawn {
+  source = "require('@example/other'); return function() end",
+}
+local ok, failure = pcall(function() worker:receive(20) end)
+assert(not ok and string.find(tostring(failure), "doesn't declare org.example.other as a dependency", 1, true))
+"#,
+            ),
+            ("src/bad.jsl", "return require('@example/other')\n"),
+        ],
+    );
+    write(
+        &other,
+        &[
+            (
+                "jess.toml",
+                &manifest(
+                    "org.example.other",
+                    "[modules]\n\"@example/other\" = \"src/main.jsl\"\n\n[[layer]]\nid = \"example.other\"\nexports = [\"@example/other\"]\n",
+                ),
+            ),
+            ("src/main.jsl", "return 42\n"),
+        ],
+    );
+    let mut requested = request(&app, "app", &[]);
+    requested.packages.push(text(&other));
+    requested.grant = Some(vec!["worker.spawn".to_owned()]);
+    let application = launch(&requested);
+    let domain = application.domain();
+    let worker = domain
+        .spawn_worker(WorkerSpec::new(
+            "dependency",
+            "require('@example/bad'); return function() end",
+        ))
+        .unwrap();
+    let failure = domain.receive_from_worker(worker, Some(Duration::from_secs(20))).unwrap_err();
+    assert!(
+        failure
+            .to_string()
+            .contains("doesn't declare org.example.other as a dependency"),
+        "{failure}"
+    );
+    application.stop().unwrap();
 }
 
 /// A provider without `interfaceOverride` replaces the table outright: nothing is merged.
