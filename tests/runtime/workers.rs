@@ -29,6 +29,68 @@ end
 ";
 
 #[test]
+fn immutable_buffers_cross_persistent_workers() {
+    let harness = support::domain("shared buffers", &[]);
+    let domain = &harness.domain;
+    domain
+        .with_runtime(|runtime| {
+            runtime.exec(
+                r"
+local shared = require('@jess/sharedBuffer')
+local builder = shared.create(16)
+builder:writeu32(0, 3735928559)
+builder:writef64(8, 42.5)
+payload = builder:seal()
+assert(payload:readu32(0) == 3735928559)
+assert(not pcall(function() payload:readf64(9) end))
+assert(not pcall(function() payload:slice(-1, 1) end))
+assert(not pcall(function() builder:writef64(0, 1) end))
+assert(not pcall(function() builder:seal() end))
+",
+            )?;
+            Ok::<(), l3i::Error>(())
+        })
+        .unwrap()
+        .unwrap();
+    let message = domain
+        .with_runtime(|runtime| {
+            let value = runtime.global("payload")?;
+            runtime.stack().with_frame(|frame| {
+                value.with_value(frame, |frame, view| Ok(Message::read(frame, view, "payload").unwrap()))
+            })
+        })
+        .unwrap()
+        .unwrap();
+    for count in [1, 2, 4, 8] {
+        let workers: Vec<_> = (0..count)
+            .map(|_| {
+                domain
+                    .spawn_worker(WorkerSpec::new(
+                        "shared",
+                        "return function(value) assert(value:readf64(8) == 42.5) return value:slice(8, 8) end",
+                    ))
+                    .unwrap()
+            })
+            .collect();
+        for _ in 0..3 {
+            for &worker in &workers {
+                domain.send_to_worker(worker, message.clone()).unwrap();
+            }
+            for &worker in &workers {
+                let reply = domain.receive_from_worker(worker, WAIT).unwrap().unwrap();
+                let (Message::SharedBuffer(original), Message::SharedBuffer(received)) = (&message, &reply) else {
+                    panic!("expected shared buffers");
+                };
+                assert!(original.shares_storage(received));
+            }
+        }
+        for worker in workers {
+            assert_eq!(domain.join_worker(worker, WAIT).unwrap(), WorkerState::Stopped);
+        }
+    }
+}
+
+#[test]
 fn workers_share_nothing_with_each_other_or_their_domain() {
     let harness = support::domain("isolated", &[]);
     let domain = &harness.domain;

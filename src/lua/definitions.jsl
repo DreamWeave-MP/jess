@@ -2,6 +2,22 @@
 
 declare extern type JessNull with end
 
+--- A read-only view over shared native storage.
+declare extern type SharedBuffer with
+  read length: number
+  readf64: (self: SharedBuffer, offset: number) -> number
+  readu32: (self: SharedBuffer, offset: number) -> number
+  slice: (self: SharedBuffer, offset: number, length: number) -> SharedBuffer
+end
+
+--- Native storage that can be written until sealed.
+declare extern type SharedBufferBuilder with
+  write: (self: SharedBufferBuilder, offset: number, value: buffer) -> ()
+  writef64: (self: SharedBufferBuilder, offset: number, value: number) -> ()
+  writeu32: (self: SharedBufferBuilder, offset: number, value: number) -> ()
+  seal: (self: SharedBufferBuilder) -> SharedBuffer
+end
+
 --- A handle to a native resource that may cross domain and worker boundaries in a message: its
 --- `kind`, in the vocabulary of whatever made it.
 declare extern type JessHandle with
@@ -1446,6 +1462,11 @@ declare jess: {
   payload: () -> { files: { string }, read: (path: string) -> buffer? },
   --- Typed shader construction; `require("@jess/shader")` is the same table.
   shader: ShaderModule,
+
+  --- Native immutable bytes shared between worker VMs.
+  sharedBuffer: {
+    create: (length: number) -> SharedBufferBuilder,
+  },
 
   --- Script contexts (`@jess/context`): binds handlers to the phases the host scheduled for a
   --- context it declared. Only a runtime a ScriptDomain owns has contexts; elsewhere `bind` errors.

@@ -1,0 +1,24 @@
+--!strict
+--!native
+-- Read the same f64 layout as shared-buffer-read, without including construction.
+local function run(scale: number): number
+  local count = math.max(1, math.floor(4000000 * scale))
+  local data = buffer.create(4096 * 8)
+  for index = 0, 4095 do
+    buffer.writef64(data, index * 8, index)
+  end
+
+  local started, total = os.clock(), 0
+  for index = 0, count - 1 do
+    total += buffer.readf64(data, (index % 4096) * 8)
+  end
+
+  assert(total >= 0)
+  return os.clock() - started
+end
+
+return table.freeze {
+  name = 'ordinary-buffer-read',
+  path = 'tools/bench/canaries/ordinary-buffer-read.jsl',
+  run = run,
+}

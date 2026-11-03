@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use l3i::Runtime;
 use l3i::bind::{Call, StackResults};
-use l3i::convert::{Integer, Push};
+use l3i::convert::{BufferView, Integer, Push};
 use l3i::extension::{Extension, ExtensionDescriptor, InstallContext, TagPolicy};
 use l3i::stack::{Scope, Type, ValueView};
 use l3i::userdata::{Owned, Userdata};
@@ -37,6 +37,7 @@ use crate::runtime::domain::{DomainCore, DomainLink};
 use crate::runtime::error::RuntimeError;
 use crate::runtime::ids::{CapabilityId, WorkerId};
 use crate::runtime::message::{Message, ResourceHandle};
+use crate::runtime::shared_buffer::{Builder, SharedBuffer};
 use crate::runtime::worker::{WorkerLink, WorkerSpec};
 
 /// The extension's id.
@@ -47,6 +48,7 @@ pub const CONTEXT_MODULE: &str = "@jess/context";
 
 /// The `require` path of the worker module.
 pub const WORKER_MODULE: &str = "@jess/worker";
+const SHARED_BUFFER_MODULE: &str = "@jess/sharedBuffer";
 
 /// The `require` path of the named-event module.
 pub const EVENTS_MODULE: &str = "@jess/events";
@@ -67,6 +69,8 @@ pub struct Modules {
     pub context: Table,
     /// The `@jess/worker` table.
     pub worker: Table,
+    /// The immutable shared buffer module.
+    pub shared_buffer: Table,
     /// The `@jess/events` table.
     pub events: Table,
     /// The `@jess/interfaces` table.
@@ -435,12 +439,58 @@ fn spawn(bindings: &Bindings, call: &Call<'_>, options: ValueView<'_>) -> l3i::R
     }))
 }
 
+fn describe_shared_buffer(d: &mut ExtensionDescriptor) {
+    d.module(SHARED_BUFFER_MODULE)
+        .doc("Immutable native buffers shared between worker VMs.")
+        .installed("create")
+        .signature("(length: number) -> jess_runtime_SharedBufferBuilder");
+    let mut builder = d.userdata::<Builder>(Builder::NAME);
+    builder.tag(TagPolicy::Never).doc("A writable buffer before sealing.");
+    builder
+        .method("writef64", |this: &Builder, offset: i32, value: f64| {
+            this.write(offset, &value.to_le_bytes())
+        })
+        .signature("(self, offset: number, value: number): ()");
+    builder
+        .method("writeu32", |this: &Builder, offset: i32, value: u32| {
+            this.write(offset, &value.to_le_bytes())
+        })
+        .signature("(self, offset: number, value: number): ()");
+    builder
+        .method("write", |this: &Builder, offset: i32, value: BufferView<'_>| {
+            this.write_buffer(offset, &value)
+        })
+        .signature("(self, offset: number, value: buffer): ()");
+    builder
+        .method("seal", |this: &Builder| this.seal().map(Owned))
+        .signature("(self): jess_runtime_SharedBuffer");
+    let mut shared = d.userdata::<SharedBuffer>(SharedBuffer::NAME);
+    shared.tag(TagPolicy::Preferred).doc("An immutable shared native buffer.");
+    shared
+        .method("readf64", |this: &SharedBuffer, offset: i32| this.read_f64(offset))
+        .signature("(self, offset: number): number");
+    shared
+        .method("readu32", |this: &SharedBuffer, offset: i32| this.read_u32(offset))
+        .signature("(self, offset: number): number");
+    shared
+        .method("slice", |this: &SharedBuffer, offset: i32, length: i32| {
+            this.slice(offset, length).map(Owned)
+        })
+        .signature("(self, offset: number, length: number): jess_runtime_SharedBuffer");
+    shared
+        .getter("length", |this: &SharedBuffer| {
+            i32::try_from(this.bytes().len()).unwrap_or(i32::MAX)
+        })
+        .signature("number");
+}
+
 impl Extension for RuntimeExtension {
     fn id(&self) -> &'static str {
         EXTENSION_ID
     }
 
     fn describe(&self, d: &mut ExtensionDescriptor) -> l3i::Result<()> {
+        describe_shared_buffer(d);
         d.module(CONTEXT_MODULE)
             .doc("Script contexts: bind handlers to the phases a context the host declared may run in.")
             .installed("bind")
@@ -543,6 +593,9 @@ impl Extension for RuntimeExtension {
     }
 
     fn install(&self, cx: &mut InstallContext<'_>) -> l3i::Result<()> {
+        let shared_buffer = cx.module(SHARED_BUFFER_MODULE)?;
+        shared_buffer.function("create", |length: i32| Builder::new(length).map(Owned))?;
+        let shared_buffer = shared_buffer.table().clone();
         let bindings = cx.insert_state(Bindings {
             owner: RefCell::new(Owner::Detached),
             interfaces: RefCell::new(Interfaces::Absent),
@@ -599,6 +652,7 @@ impl Extension for RuntimeExtension {
         cx.insert_state(Modules {
             context,
             worker,
+            shared_buffer,
             events,
             interfaces,
         });

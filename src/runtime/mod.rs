@@ -74,6 +74,7 @@ mod message;
 mod profile;
 mod resources;
 mod service;
+mod shared_buffer;
 mod worker;
 
 pub use capability::{
@@ -96,4 +97,5 @@ pub use message::{MAX_DEPTH, Message, MessageKey, ResourceHandle, TransferError,
 pub use profile::{CollectedProfile, Direction, DiscardProfile, DomainStats, ProfileEvent, ProfileSink};
 pub use resources::OwnedResource;
 pub use service::Services;
+pub use shared_buffer::SharedBuffer;
 pub use worker::{WORKER_QUEUE, WorkerFailurePolicy, WorkerInfo, WorkerSpec, WorkerState};

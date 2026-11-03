@@ -1,0 +1,61 @@
+--!strict
+-- Run with a verified release: jess package run --capability worker.spawn tools/bench/worker-transfer
+local application = require '@jess/application'
+local sharedBuffer = require '@jess/sharedBuffer'
+local workers = require '@jess/worker'
+
+local function run(size: number, count: number, shared: boolean)
+  local source = if shared
+    then 'return function(data) return data:readf64(0) end'
+    else 'return function(data) return buffer.readf64(data, 0) end'
+  local lanes: { Worker } = {}
+  for index = 1, count do
+    lanes[index] = workers.spawn { source = source, capabilities = {} }
+  end
+
+  local data: buffer | SharedBuffer
+  if shared then
+    local builder = sharedBuffer.create(size)
+    builder:writef64(0, 42.5)
+    data = builder:seal()
+  else
+    local ordinary = buffer.create(size)
+    buffer.writef64(ordinary, 0, 42.5)
+    data = ordinary
+  end
+
+  for job = 1, 3 do
+    local started = os.clock()
+    for _, lane in lanes do
+      lane:send(data)
+    end
+
+    for _, lane in lanes do
+      assert(lane:receive(120) == 42.5)
+    end
+    print(`{if shared then 'shared' else 'copied'} bytes={size} workers={count} job={job} seconds={os.clock() - started}`)
+  end
+
+  for _, lane in lanes do
+    lane:join(120)
+  end
+end
+
+return {
+  on = {
+    host = {
+      startup = function()
+        assert(jess.bench.verified, 'benchmarks need a verified release build')
+        for _, size in { 4800000, 48000000, 480000000 } do
+          for _, count in { 1, 2, 4, 8 } do
+            run(size, count, true)
+            jess.bench.collect()
+            run(size, count, false)
+            jess.bench.collect()
+          end
+        end
+        application.exit(0)
+      end,
+    },
+  },
+}
