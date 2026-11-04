@@ -53,7 +53,13 @@ export type ManagedModule = {
 --- What `jess.worker.spawn` takes: the worker module's source (a chunk returning the message
 --- handler), a name for diagnostics, and the capabilities the worker holds, a subset of the
 --- spawner's.
-export type WorkerOptions = { source: string, name: string?, capabilities: { string }?, shareServices: boolean? }
+export type WorkerOptions = {
+  source: string,
+  name: string?,
+  capabilities: { string }?,
+  shareServices: boolean?,
+  sharedBufferBudget: number?,
+}
 
 --- A worker the domain spawned: `send` queues a message for its handler, `receive` reads its next
 --- reply (waiting up to the seconds given), `close` stops it after the queued messages, `join`
@@ -1462,6 +1468,7 @@ declare jess: {
   --- Native immutable bytes shared between worker VMs.
   sharedBuffer: {
     create: (length: number) -> SharedBufferBuilder,
+    setLimit: (bytes: number) -> (),
   },
 
   --- Script contexts (`@jess/context`): binds handlers to the phases the host scheduled for a
@@ -1867,7 +1874,7 @@ and the built-in package, just as the spawning package can.
 
 The worker's runtime comes from the same plan as the domain's, so a worker has the whole jess API and the same package exports, with state of its own.
 
-- **Errors:** `unknown worker.spawn option '<key>': expected capabilities, name, shareServices, or source`; `worker.spawn needs source, the worker module's Luau source`; `capability 'worker.spawn' denied to <domain> ...`; `<domain> cannot delegate capabilities it does not hold: <names>`; inside a worker, `worker.spawn is for a domain's own code`.
+- **Errors:** `unknown worker.spawn option '<key>': expected capabilities, name, shareServices, sharedBufferBudget, or source`; `worker.spawn needs source, the worker module's Luau source`; `capability 'worker.spawn' denied to <domain> ...`; `<domain> cannot delegate capabilities it does not hold: <names>`; inside a worker, `worker.spawn is for a domain's own code`.
 
 ```luau
 --!strict
@@ -3696,7 +3703,7 @@ Related: [jess.gpu](@/docs/api/gpu.md), [@jess/render](@/docs/api/render.md), [S
 {% usage_note(title="Conventions") %}
 - Functions, methods, table fields, and report codes are camelCase. Types are PascalCase.
 - An uncaught error stops the script with its message and a stack traceback. Individual APIs also return failures as values: for example, filesystem operations can return an error message and kind, and a test suite returns a report with a `failed` count. Check each API's contract.
-- Option tables, the last argument most functions take, reject keys they don't take. The error names the key and lists the ones the function does take (`unknown worker.spawn option 'sources': expected capabilities, name, shareServices, or source`), so a typo fails instead of quietly doing the default.
+- Option tables, the last argument most functions take, reject keys they don't take. The error names the key and lists the ones the function does take (`unknown worker.spawn option 'sources': expected capabilities, name, shareServices, sharedBufferBudget, or source`), so a typo fails instead of quietly doing the default.
 - Lists you get back are ordinary 1-based arrays. A list that must keep its positions holds `jess.null` where it has no value.
 - Raw bytes are `buffer`s.
 - What a script may touch is a capability. The CLI admits some terminal, input, GPU, and audio capabilities by default, while others require an explicit grant; targets still declare what they need. [`jess.granted`](#jess-granted) says what you hold, and [Capabilities](@/docs/reference/capabilities.md) specifies the defaults and names.

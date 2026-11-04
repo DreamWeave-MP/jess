@@ -596,7 +596,8 @@ mod tests {
 
     #[test]
     fn a_shared_buffer_counts_as_a_reference_not_its_payload() {
-        let builder = crate::runtime::shared_buffer::Builder::new(1024).unwrap();
+        let ledger = crate::runtime::shared_buffer::Ledger::new(1024, None);
+        let builder = crate::runtime::shared_buffer::Builder::new(1024, ledger).unwrap();
         let message = Message::SharedBuffer(builder.seal().unwrap());
         assert_eq!(message.size_hint(), 8);
     }

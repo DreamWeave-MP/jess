@@ -37,6 +37,13 @@ pub enum RuntimeError {
         /// The capabilities it lacks.
         missing: Vec<CapabilityId>,
     },
+    /// A worker asked for a larger shared buffer budget than its spawner has.
+    SharedBufferBudget {
+        /// What the worker asked for, in bytes.
+        requested: usize,
+        /// What its spawner has, in bytes.
+        available: usize,
+    },
     /// A capability name that is not dotted lowercase segments.
     InvalidCapabilityName(String),
     /// An action a domain's state does not allow.
@@ -171,6 +178,12 @@ impl fmt::Display for RuntimeError {
                     f,
                     "{grantor} cannot delegate capabilities it does not hold: {}",
                     names.join(", ")
+                )
+            }
+            RuntimeError::SharedBufferBudget { requested, available } => {
+                write!(
+                    f,
+                    "a worker can't have a shared buffer budget of {requested} bytes: its spawner has {available}"
                 )
             }
             RuntimeError::InvalidCapabilityName(name) => {

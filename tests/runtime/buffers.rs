@@ -377,3 +377,104 @@ end
     let refused = domain.receive_from_worker(bare, WAIT).unwrap_err().to_string();
     assert!(refused.contains(SHARED_BUFFER_CREATE), "{refused}");
 }
+
+const ALLOCATES: &str = r"
+return function(length)
+  local view = require('@jess/sharedBuffer').create(length):seal()
+  return view.length
+end
+";
+
+#[test]
+fn a_worker_cannot_allocate_past_its_budget_and_gets_it_back() {
+    let harness = support::domain("budget", &[SHARED_BUFFER_CREATE]);
+    let domain = &harness.domain;
+    let source = r"
+local shared = require('@jess/sharedBuffer')
+local kept
+
+return function(message)
+  if message == 'drop' then
+    kept = nil
+    for _ = 1, 2000000 do
+      local _ = {}
+    end
+
+    return 'dropped'
+  end
+
+  kept = shared.create(message):seal()
+  return kept.length
+end
+";
+    let worker = domain
+        .spawn_worker(
+            WorkerSpec::new("budgeted", source)
+                .shared_buffer_budget(64)
+                .on_failure(jess::runtime::WorkerFailurePolicy::Continue),
+        )
+        .unwrap();
+    domain.send_to_worker(worker, Message::Number(64.0)).unwrap();
+    assert_eq!(
+        domain.receive_from_worker(worker, WAIT).unwrap().unwrap().as_number(),
+        Some(64.0)
+    );
+
+    // The first is what's held; a second allocation would pass the budget.
+    domain.send_to_worker(worker, Message::Number(1.0)).unwrap();
+    let refused = domain.receive_from_worker(worker, WAIT).unwrap_err().to_string();
+    assert!(refused.contains("shared buffer memory limit exceeded"), "{refused}");
+
+    domain.send_to_worker(worker, Message::text("drop")).unwrap();
+    assert!(domain.receive_from_worker(worker, WAIT).unwrap().is_some());
+    domain.send_to_worker(worker, Message::Number(64.0)).unwrap();
+    assert_eq!(
+        domain.receive_from_worker(worker, WAIT).unwrap().unwrap().as_number(),
+        Some(64.0)
+    );
+}
+
+#[test]
+fn a_worker_cannot_ask_for_more_than_its_domain_has() {
+    let (spec, _, _) = support::spec("narrow", &[SHARED_BUFFER_CREATE]);
+    let domain = ScriptDomain::create(support::factory(), spec.shared_buffer_budget(128)).unwrap();
+    let refused = domain
+        .spawn_worker(WorkerSpec::new("greedy", ALLOCATES).shared_buffer_budget(129))
+        .unwrap_err();
+    assert!(matches!(
+        refused,
+        jess::runtime::RuntimeError::SharedBufferBudget {
+            requested: 129,
+            available: 128
+        }
+    ));
+
+    // A worker with no budget of its own draws on the domain's, and its domain's stops it.
+    let worker = domain.spawn_worker(WorkerSpec::new("drawing", ALLOCATES)).unwrap();
+    domain.send_to_worker(worker, Message::Number(129.0)).unwrap();
+    let refused = domain.receive_from_worker(worker, WAIT).unwrap_err().to_string();
+    assert!(refused.contains("shared buffer memory limit exceeded"), "{refused}");
+}
+
+#[test]
+fn a_shared_view_is_charged_to_its_creator_and_outlives_it() {
+    let harness = support::domain("outlives", &[SHARED_BUFFER_CREATE]);
+    let domain = &harness.domain;
+    let source = "return function(length) return require('@jess/sharedBuffer').create(length):seal() end";
+    let creator = domain
+        .spawn_worker(WorkerSpec::new("creator", source).shared_buffer_budget(64))
+        .unwrap();
+    domain.send_to_worker(creator, Message::Number(64.0)).unwrap();
+    let view = domain.receive_from_worker(creator, WAIT).unwrap().unwrap();
+    assert_eq!(domain.join_worker(creator, WAIT).unwrap(), WorkerState::Stopped);
+
+    // A reader with a budget too small for the view pays nothing for receiving it.
+    let reader = domain
+        .spawn_worker(WorkerSpec::new("reader", "return function(view) return view.length end").shared_buffer_budget(1))
+        .unwrap();
+    domain.send_to_worker(reader, view).unwrap();
+    assert_eq!(
+        domain.receive_from_worker(reader, WAIT).unwrap().unwrap().as_number(),
+        Some(64.0)
+    );
+}

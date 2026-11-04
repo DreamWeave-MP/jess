@@ -42,6 +42,7 @@ use crate::runtime::message::{Message, push_frozen_message};
 use crate::runtime::profile::{Counters, Direction, DiscardProfile, DomainStats, ProfileEvent, ProfileSink};
 use crate::runtime::resources::{OwnedResource, ResourceRegistry};
 use crate::runtime::service::Services;
+use crate::runtime::shared_buffer::{Ledger, process_ledger};
 use crate::runtime::worker::{Launch, WorkerInfo, WorkerRecord, WorkerSpec, WorkerState};
 
 /// Makes the runtimes of a domain: its primary one, on the domain's thread, and one per worker,
@@ -144,6 +145,7 @@ pub struct DomainSpec {
     logs: Option<Arc<dyn LogSink>>,
     fixed_step: Option<FixedStep>,
     budget: Option<Budget>,
+    shared_buffer_budget: Option<usize>,
     event_limits: EventLimits,
     setup: Option<SetupHook>,
     worker_setup: Option<SetupHook>,
@@ -180,6 +182,7 @@ impl DomainSpec {
             logs: None,
             fixed_step: None,
             budget: None,
+            shared_buffer_budget: None,
             event_limits: EventLimits::default(),
             setup: None,
             worker_setup: None,
@@ -232,6 +235,14 @@ impl DomainSpec {
     #[must_use]
     pub const fn budget(mut self, budget: Budget) -> DomainSpec {
         self.budget = Some(budget);
+        self
+    }
+
+    /// How many bytes of shared buffer storage the domain and its workers may hold together,
+    /// within what the process may. Without one, they draw on the process's budget.
+    #[must_use]
+    pub const fn shared_buffer_budget(mut self, bytes: usize) -> DomainSpec {
+        self.shared_buffer_budget = Some(bytes);
         self
     }
 
@@ -651,6 +662,7 @@ pub struct DomainCore {
     observer: Arc<Observer>,
     fixed_step: Option<FixedStep>,
     budget: Option<Budget>,
+    shared_buffers: Arc<Ledger>,
     accumulator: Cell<Duration>,
     contexts: RefCell<Vec<ContextRecord>>,
     next_order: Cell<u64>,
@@ -689,6 +701,7 @@ impl DomainCore {
             capabilities,
             Arc::clone(&self.services),
             Some(Arc::clone(&self.observer)),
+            Arc::clone(&self.shared_buffers),
         )
     }
 
@@ -1124,6 +1137,7 @@ impl DomainCore {
                 return Err(error);
             }
         };
+        let shared_buffers = self.worker_budget(&spec, spawner)?;
         let id = WorkerId::allocate();
         let attribution = self.attribution().in_worker(id);
         let record = WorkerRecord::spawn(
@@ -1133,6 +1147,7 @@ impl DomainCore {
                 attribution,
                 capabilities,
                 services,
+                shared_buffers,
                 factory: Arc::clone(&self.factory),
                 setup: self.setup.clone(),
                 worker_setup: self.worker_setup.clone(),
@@ -1145,6 +1160,27 @@ impl DomainCore {
         Counters::add(&self.counters.workers_spawned, 1);
         self.workers.borrow_mut().push(record);
         Ok(id)
+    }
+
+    /// The budget a worker draws on: its own within its spawner's, or its spawner's.
+    fn worker_budget(&self, spec: &WorkerSpec, spawner: Option<&Authority>) -> Result<Arc<Ledger>, RuntimeError> {
+        let parent = spawner.map_or(&self.shared_buffers, Authority::shared_buffers);
+        let Some(requested) = spec.shared_buffer_budget else {
+            return Ok(Arc::clone(parent));
+        };
+        let available = parent.effective_limit();
+        if requested > available {
+            let error = RuntimeError::SharedBufferBudget { requested, available };
+            self.report(Diagnostic::new(
+                self.attribution(),
+                Severity::Error,
+                DiagnosticKind::SpawnRefused,
+                error.to_string(),
+            ));
+            return Err(error);
+        }
+
+        Ok(Ledger::new(requested, Some(Arc::clone(parent))))
     }
 
     fn with_worker<R>(
@@ -1296,6 +1332,9 @@ impl ScriptDomain {
             observer,
             fixed_step: spec.fixed_step,
             budget: spec.budget,
+            shared_buffers: spec
+                .shared_buffer_budget
+                .map_or_else(process_ledger, |limit| Ledger::new(limit, Some(process_ledger()))),
             accumulator: Cell::new(Duration::ZERO),
             contexts: RefCell::new(Vec::new()),
             next_order: Cell::new(0),

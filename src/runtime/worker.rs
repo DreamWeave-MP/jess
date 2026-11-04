@@ -30,6 +30,7 @@ use crate::runtime::log::LogSink;
 use crate::runtime::message::Message;
 use crate::runtime::profile::{Counters, Direction, ProfileEvent, ProfileSink};
 use crate::runtime::service::{Services, Shared};
+use crate::runtime::shared_buffer::Ledger;
 
 /// What a worker does after its handler raises on a message.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -52,6 +53,7 @@ pub struct WorkerSpec {
     pub(crate) capabilities: Option<CapabilitySet>,
     pub(crate) services: Sharing,
     pub(crate) budget: Option<Budget>,
+    pub(crate) shared_buffer_budget: Option<usize>,
     pub(crate) on_failure: WorkerFailurePolicy,
 }
 
@@ -70,6 +72,7 @@ impl WorkerSpec {
             capabilities: None,
             services: Sharing::None,
             budget: None,
+            shared_buffer_budget: None,
             on_failure: WorkerFailurePolicy::Stop,
         }
     }
@@ -113,6 +116,14 @@ impl WorkerSpec {
     #[must_use]
     pub fn share_all(mut self) -> WorkerSpec {
         self.services = Sharing::All;
+        self
+    }
+
+    /// How many bytes of shared buffer storage the worker may hold, within what its spawner may.
+    /// Without one, it draws on its spawner's budget.
+    #[must_use]
+    pub const fn shared_buffer_budget(mut self, bytes: usize) -> WorkerSpec {
+        self.shared_buffer_budget = Some(bytes);
         self
     }
 
@@ -224,6 +235,7 @@ pub struct Launch {
     pub(crate) attribution: Attribution,
     pub(crate) capabilities: Arc<CapabilitySet>,
     pub(crate) services: Arc<Services>,
+    pub(crate) shared_buffers: Arc<Ledger>,
     pub(crate) factory: Arc<dyn RuntimeFactory>,
     pub(crate) setup: Option<SetupHook>,
     pub(crate) worker_setup: Option<SetupHook>,
@@ -532,6 +544,7 @@ fn serve(launch: &Launch, commands: &Receiver<Command>, results: &SyncSender<Out
         Arc::clone(&launch.capabilities),
         Arc::clone(&launch.services),
         Some(Arc::new(observer)),
+        Arc::clone(&launch.shared_buffers),
     ));
     let scope = CallContext {
         id: u64::from(launch.attribution.worker.map_or(0, WorkerId::raw)),
