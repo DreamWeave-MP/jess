@@ -131,6 +131,21 @@ impl SharedBuffer {
         Ok(f64::from_le_bytes(bytes))
     }
 
+    /// Copies `length` bytes starting at `source_offset` into `target`. Both ranges are checked
+    /// before any byte moves, so a failed call leaves `target` untouched.
+    pub(crate) fn copy_into(
+        &self,
+        target: &l3i::convert::BufferView<'_>,
+        target_offset: i32,
+        source_offset: i32,
+        length: i32,
+    ) -> l3i::Result<()> {
+        let length = usize::try_from(length).map_err(|_| l3i::Error::runtime("negative buffer length"))?;
+        let source = range(source_offset, length, self.len)?;
+        let destination = range(target_offset, length, target.len())?;
+        target.write(destination.start, &self.bytes()[source])
+    }
+
     pub(crate) fn read_u32(&self, offset: i32) -> l3i::Result<u32> {
         let range = range(offset, 4, self.len)?;
         let mut bytes = [0; 4];

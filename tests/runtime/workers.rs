@@ -91,6 +91,99 @@ assert(not pcall(function() builder:seal() end))
 }
 
 #[test]
+fn shared_buffers_copy_into_ordinary_buffers() {
+    let harness = support::domain("shared copy", &[]);
+    let domain = &harness.domain;
+    domain
+        .with_runtime(|runtime| {
+            runtime.exec(
+                r"
+local shared = require('@jess/sharedBuffer')
+local builder = shared.create(32)
+for index = 0, 3 do
+  builder:writef64(index * 8, index + 0.5)
+end
+payload = builder:seal()
+view = payload:slice(8, 16)
+target = buffer.create(24)
+for index = 0, 23 do
+  buffer.writeu8(target, index, 255)
+end
+
+payload:copyInto(target, 4, 16, 8)
+assert(buffer.readf64(target, 4) == 2.5)
+assert(buffer.readu8(target, 0) == 255 and buffer.readu8(target, 12) == 255)
+
+view:copyInto(target, 0, 0, 16)
+assert(buffer.readf64(target, 0) == 1.5 and buffer.readf64(target, 8) == 2.5)
+
+payload:copyInto(target, 24, 0, 0)
+payload:copyInto(target, 0, 32, 0)
+",
+            )?;
+            Ok::<(), l3i::Error>(())
+        })
+        .unwrap()
+        .unwrap();
+
+    // Numbers convert to i32 the way every shared-buffer method does: they round to the nearest
+    // integer, halves away from zero, so 1.4 is offset 1, 1.6 is 2 and -0.5 is negative; NaN, infinities and anything past i32 raise.
+    domain
+        .with_runtime(|runtime| {
+            runtime.exec(
+                r"
+local floored = buffer.create(8)
+local exact = buffer.create(8)
+payload:copyInto(floored, 0, 1.4, 8)
+payload:copyInto(exact, 0, 1, 8)
+assert(buffer.readf64(floored, 0) == buffer.readf64(exact, 0))
+payload:copyInto(floored, 0, 1.6, 8)
+payload:copyInto(exact, 0, 2, 8)
+assert(buffer.readf64(floored, 0) == buffer.readf64(exact, 0))
+payload:copyInto(floored, 0, -0.4, 8)
+assert(buffer.readf64(floored, 0) == 0.5)
+payload:copyInto(floored, 0.4, 0, 8)
+",
+            )?;
+            Ok::<(), l3i::Error>(())
+        })
+        .unwrap()
+        .unwrap();
+
+    // Each failing call must raise and must leave the target as it was.
+    for call in [
+        "payload:copyInto(target, 0, -0.5, 8)",
+        "payload:copyInto(target, 0, 0/0, 8)",
+        "payload:copyInto(target, 0, math.huge, 8)",
+        "payload:copyInto(target, 0, 4294967304, 8)",
+        "payload:copyInto(target, 0, 0, 25)",
+        "payload:copyInto(target, 1, 0, 24)",
+        "payload:copyInto(target, 0, 17, 16)",
+        "view:copyInto(target, 0, 1, 16)",
+        "view:copyInto(target, 0, 0, 17)",
+        "payload:copyInto(target, -1, 0, 8)",
+        "payload:copyInto(target, 0, -1, 8)",
+        "payload:copyInto(target, 0, 0, -1)",
+        "payload:copyInto(target, 2147483647, 0, 8)",
+        "payload:copyInto(target, 0, 2147483647, 8)",
+        "payload:copyInto(target, 0, 0, 2147483647)",
+    ] {
+        let failed = domain
+            .with_runtime(|runtime| Ok::<_, l3i::Error>(runtime.exec(call).is_err()))
+            .unwrap()
+            .unwrap();
+        assert!(failed, "{call} must raise");
+    }
+    domain
+        .with_runtime(|runtime| {
+            runtime.exec("assert(buffer.readf64(target, 0) == 1.5 and buffer.readf64(target, 8) == 2.5)")?;
+            Ok::<(), l3i::Error>(())
+        })
+        .unwrap()
+        .unwrap();
+}
+
+#[test]
 fn workers_share_nothing_with_each_other_or_their_domain() {
     let harness = support::domain("isolated", &[]);
     let domain = &harness.domain;

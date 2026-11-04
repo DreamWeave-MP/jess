@@ -473,6 +473,14 @@ fn describe_shared_buffer(d: &mut ExtensionDescriptor) {
         .method("readu32", |this: &SharedBuffer, offset: i32| this.read_u32(offset))
         .signature("(self, offset: number): number");
     shared
+        .method(
+            "copyInto",
+            |this: &SharedBuffer, target: BufferView<'_>, target_offset: i32, source_offset: i32, length: i32| {
+                this.copy_into(&target, target_offset, source_offset, length)
+            },
+        )
+        .signature("(self, target: buffer, targetOffset: number, sourceOffset: number, length: number): ()");
+    shared
         .method("slice", |this: &SharedBuffer, offset: i32, length: i32| {
             this.slice(offset, length).map(Owned)
         })

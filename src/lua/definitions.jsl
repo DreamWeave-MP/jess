@@ -7,6 +7,13 @@ declare extern type SharedBuffer with
   read length: number
   readf64: (self: SharedBuffer, offset: number) -> number
   readu32: (self: SharedBuffer, offset: number) -> number
+  copyInto: (
+    self: SharedBuffer,
+    target: buffer,
+    targetOffset: number,
+    sourceOffset: number,
+    length: number
+  ) -> ()
   slice: (self: SharedBuffer, offset: number, length: number) -> SharedBuffer
 end
 
