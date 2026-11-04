@@ -4,7 +4,7 @@
 -- same arithmetic in the same order, so their totals must match exactly.
 export type Mode = 'generate' | 'private' | 'window' | 'scalar'
 
-local RecordBytes, WindowRecords = 48, 2048
+local RecordBytes, BuildRecords = 48, 2048
 
 local function fold(
   total: number,
@@ -81,11 +81,11 @@ local function privately(source: buffer, count: number): number
   return total
 end
 
-local function windowed(source: SharedBuffer, count: number): number
-  local window = buffer.create(WindowRecords * RecordBytes)
+local function windowed(source: SharedBuffer, count: number, windowRecords: number): number
+  local window = buffer.create(windowRecords * RecordBytes)
   local position, total = 0, 0
   while position < count do
-    local rows = math.min(WindowRecords, count - position)
+    local rows = math.min(windowRecords, count - position)
     source:copyInto(window, 0, position * RecordBytes, rows * RecordBytes)
     for row = 0, rows - 1 do
       total = readBuffer(total, window, row * RecordBytes)
@@ -117,7 +117,7 @@ end
 
 return table.freeze {
   RecordBytes = RecordBytes,
-  WindowRecords = WindowRecords,
+  BuildRecords = BuildRecords,
   fill = fill,
   generated = generated,
   privately = privately,

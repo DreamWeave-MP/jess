@@ -1,7 +1,8 @@
 --!strict
 -- One case per process, so an outside tool can report its peak memory:
--- jess package run --capability worker.spawn tools/bench/record-sweep -- MODE RECORDS WORKERS SWEEPS
+-- jess package run --capability worker.spawn tools/bench/record-sweep -- MODE RECORDS WORKERS SWEEPS [WINDOW]
 -- Construction and delivery are timed apart from the sweeps; only verified builds post numbers.
+-- generate recomputes each record per sweep, so it is a control, not a measure of access cost.
 local application = require '@jess/application'
 local bench = require '@jess/bench'
 local records = require '@record-sweep/records'
@@ -13,12 +14,13 @@ local Wait = 3600
 local WorkerSource = [[
 local records = require '@record-sweep/records'
 local mode
+local window
 local count
 local history
 
 return function(message)
   if message.mode then
-    mode, count = message.mode, message.count
+    mode, count, window = message.mode, message.count, message.window
     return true
   end
 
@@ -29,7 +31,7 @@ return function(message)
 
   if mode == 'generate' then return records.generated(count) end
   if mode == 'private' then return records.privately(history, count) end
-  if mode == 'window' then return records.windowed(history, count) end
+  if mode == 'window' then return records.windowed(history, count, window) end
   return records.scalar(history, count)
 end
 ]]
@@ -39,19 +41,21 @@ local mode = arguments[1]
 local count = tonumber(arguments[2]) or 0
 local workerCount = tonumber(arguments[3]) or 0
 local sweeps = tonumber(arguments[4]) or 0
+local windowRecords = tonumber(arguments[5] or '2048') or 0
 assert(mode == 'generate' or mode == 'private' or mode == 'window' or mode == 'scalar', 'unknown mode')
 assert(count >= 1 and count % 1 == 0, 'invalid record count')
 assert(workerCount >= 1 and workerCount % 1 == 0, 'invalid worker count')
 assert(sweeps >= 1 and sweeps % 1 == 0, 'invalid sweep count')
+assert(windowRecords >= 1 and windowRecords % 1 == 0, 'invalid window')
 assert(bench.verified or count <= 100000, 'benchmarks need a verified release build')
 
 local function sharedHistory(): SharedBuffer
   local builder = sharedBuffer.create(count * records.RecordBytes)
-  local chunk = buffer.create(records.WindowRecords * records.RecordBytes)
+  local chunk = buffer.create(records.BuildRecords * records.RecordBytes)
   local position = 0
   while position < count do
-    local rows = math.min(records.WindowRecords, count - position)
-    if rows < records.WindowRecords then chunk = buffer.create(rows * records.RecordBytes) end
+    local rows = math.min(records.BuildRecords, count - position)
+    if rows < records.BuildRecords then chunk = buffer.create(rows * records.RecordBytes) end
     records.fill(chunk, position, rows)
     builder:write(position * records.RecordBytes, chunk)
     position += rows
@@ -73,7 +77,7 @@ end
 
 -- A worker that has answered has finished starting, so delivery times only delivery.
 for _, lane in lanes do
-  lane:send { mode = mode, count = count }
+  lane:send { mode = mode, count = count, window = windowRecords }
   assert(lane:receive(Wait), 'a worker did not start')
 end
 
@@ -97,8 +101,9 @@ local delivered = os.clock() - started
 history = nil
 bench.collect()
 
+-- The reference no worker computes: every mode's total must equal it exactly.
+local reference = records.generated(count)
 local timings: { string } = {}
-local total: number? = nil
 for sweep = 1, sweeps do
   started = os.clock()
   for _, lane in lanes do
@@ -108,8 +113,7 @@ for sweep = 1, sweeps do
   for _, lane in lanes do
     local reply = lane:receive(Wait)
     assert(type(reply) == 'number', 'a worker did not reply with a total')
-    assert(total == nil or reply == total, 'workers disagree on the total')
-    total = reply
+    assert(reply == reference, 'a worker disagrees with the reference total')
   end
 
   timings[sweep] = string.format('%.6f', os.clock() - started)
@@ -120,13 +124,14 @@ for _, lane in lanes do
 end
 
 print(string.format(
-  'mode=%s records=%d workers=%d built_s=%.6f delivered_s=%.6f sweeps_s=%s total=%.17g',
+  'mode=%s records=%d workers=%d window=%d built_s=%.6f delivered_s=%.6f sweeps_s=%s total=%.17g',
   mode,
   count,
   workerCount,
+  windowRecords,
   built,
   delivered,
   table.concat(timings, ','),
-  total :: number
+  reference
 ))
 application.exit(0)
