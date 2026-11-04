@@ -19,3 +19,17 @@ before shared; the second reversed that order. Both scopes were terminated durin
 480 MB, eight-worker copied case; neither produced a peak-memory report. The second log includes
 all three 480 MB shared, eight-worker jobs. Allocation counts and per-case memory consumption were
 not measured. No claim about end-to-end numerical throughput follows from these transfer timings.
+
+## Native reads and the record sweep
+
+`jess-0.3.0-shared-buffer-native.json` is the two read canaries on a verified build of `a904391`,
+after `readf64` and `readu32` were lowered to native loads: 0.187 s for shared reads against 0.157 s
+for ordinary ones, five samples after two warmups, where the method took 1.808 s against 0.174 s.
+
+The `record-sweep` files are one process per row, from `tools/bench/record-sweep`: mode, records,
+workers, sweeps, window, the one-minute load when the row started, peak RSS in KiB with user and
+system seconds, and the fixture's own line. Every row's total equalled a reference computed outside
+the workers. `-native` is the same `a904391` build, at a load of 3 to 7. `-method` is `7227325`,
+before the lowering, at a load of 6 to 14. The machine was shared throughout, so small differences
+mean nothing. The per-record work is deliberately small, so these compare ways of reading and say
+nothing about end-to-end throughput.
