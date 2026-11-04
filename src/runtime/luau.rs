@@ -25,7 +25,7 @@ use std::time::Duration;
 use l3i::Runtime;
 use l3i::bind::{Call, StackResults};
 use l3i::convert::{BufferView, Exact, Integer, Push};
-use l3i::extension::{Extension, ExtensionDescriptor, InstallContext, TagPolicy};
+use l3i::extension::{CompilerTypePolicy, Extension, ExtensionDescriptor, InstallContext, TagPolicy};
 use l3i::stack::{Scope, Type, ValueView};
 use l3i::userdata::{Owned, Userdata};
 use l3i::value::{Function, Table};
@@ -38,6 +38,7 @@ use crate::runtime::error::RuntimeError;
 use crate::runtime::ids::{CapabilityId, WorkerId};
 use crate::runtime::message::{Message, ResourceHandle};
 use crate::runtime::shared_buffer::{Builder, SharedBuffer};
+use crate::runtime::shared_buffer_lowering::{SharedBufferLowering, count_method_read};
 use crate::runtime::worker::{WorkerLink, WorkerSpec};
 
 /// The extension's id.
@@ -441,6 +442,7 @@ fn spawn(bindings: &Bindings, call: &Call<'_>, options: ValueView<'_>) -> l3i::R
 
 fn describe_shared_buffer(d: &mut ExtensionDescriptor) {
     d.optional_capability(SHARED_BUFFER_CREATE);
+    d.native_hooks(SharedBufferLowering);
     d.module(SHARED_BUFFER_MODULE)
         .doc("Immutable native buffers shared between worker VMs.")
         .installed("create")
@@ -467,14 +469,19 @@ fn describe_shared_buffer(d: &mut ExtensionDescriptor) {
         .method("seal", |this: &Builder| this.seal().map(Owned))
         .signature("(self): jess_runtime_SharedBuffer");
     let mut shared = d.userdata::<SharedBuffer>(SharedBuffer::NAME);
-    shared.tag(TagPolicy::Preferred).doc("An immutable shared native buffer.");
+    shared
+        .tag(TagPolicy::Required)
+        .compiler_type(CompilerTypePolicy::Required)
+        .doc("An immutable shared native buffer.");
     shared
         .method("readf64", |this: &SharedBuffer, Exact(offset): Exact<i32>| {
+            count_method_read();
             this.read_f64(offset)
         })
         .signature("(self, offset: number): number");
     shared
         .method("readu32", |this: &SharedBuffer, Exact(offset): Exact<i32>| {
+            count_method_read();
             this.read_u32(offset)
         })
         .signature("(self, offset: number): number");

@@ -28,12 +28,25 @@ unsafe impl Userdata for Builder {
 }
 
 #[derive(Clone, Debug)]
-/// An immutable view of reference-counted native bytes.
+/// An immutable view of reference-counted native bytes. The address and length come first and
+/// never change: native code reads them from the payload ([`crate::runtime::shared_buffer_lowering`]).
+#[repr(C)]
 pub struct SharedBuffer {
+    address: usize,
+    len: usize,
     storage: Arc<Storage>,
     start: usize,
-    len: usize,
 }
+
+/// Where native code finds a view's address and length in its payload.
+pub const PAYLOAD_ADDRESS: usize = 0;
+pub const PAYLOAD_LENGTH: usize = 8;
+
+const _: () = {
+    assert!(std::mem::offset_of!(SharedBuffer, address) == PAYLOAD_ADDRESS);
+    // The lowering runs only on 64-bit targets.
+    assert!(std::mem::offset_of!(SharedBuffer, len) == PAYLOAD_LENGTH || cfg!(not(target_pointer_width = "64")));
+};
 
 impl PartialEq for SharedBuffer {
     fn eq(&self, other: &Self) -> bool {
@@ -96,10 +109,13 @@ impl Builder {
             .take()
             .ok_or_else(|| l3i::Error::runtime("builder is sealed"))?;
         let len = storage.0.len();
+        // Sealing moves the `Vec`, not its allocation, and nothing can reallocate it afterwards.
+        let address = storage.0.as_ptr() as usize;
         Ok(SharedBuffer {
+            address,
+            len,
             storage: Arc::new(storage),
             start: 0,
-            len,
         })
     }
 }
@@ -125,9 +141,10 @@ impl SharedBuffer {
         let length = usize::try_from(length).map_err(|_| l3i::Error::runtime("negative buffer length"))?;
         let range = range(offset, length, self.len)?;
         Ok(Self {
+            address: self.address + range.start,
+            len: length,
             storage: Arc::clone(&self.storage),
             start: self.start + range.start,
-            len: length,
         })
     }
 

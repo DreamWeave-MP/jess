@@ -246,7 +246,7 @@ fn shared_buffer_crosses_workers_from_source_and_packed_packages() {
             ("src/main.jsl", "return nil\n"),
             (
                 "src/worker.jsl",
-                "return function(value) assert(value:readf64(0) == 17.5) return value end\n",
+                "--!native\nreturn function(value: jess_runtime_SharedBuffer)\n  assert(value:readf64(0) == 17.5)\n  return value\nend\n",
             ),
         ],
     );
@@ -269,20 +269,31 @@ fn shared_buffer_crosses_workers_from_source_and_packed_packages() {
             })
             .unwrap()
             .unwrap();
-        let worker = domain
-            .spawn_worker(
-                WorkerSpec::new("shared", "return require('@example/shared-worker')").capabilities(CapabilitySet::empty()),
-            )
-            .unwrap();
-        domain.send_to_worker(worker, message.clone()).unwrap();
-        let reply = domain
-            .receive_from_worker(worker, Some(Duration::from_secs(20)))
-            .unwrap()
-            .unwrap();
-        let (Message::SharedBuffer(original), Message::SharedBuffer(received)) = (&message, &reply) else {
-            panic!("expected shared buffers");
-        };
-        assert!(original.shares_storage(received));
+        let workers: Vec<_> = (0..4)
+            .map(|_| {
+                domain
+                    .spawn_worker(
+                        WorkerSpec::new("shared", "return require('@example/shared-worker')")
+                            .capabilities(CapabilitySet::empty()),
+                    )
+                    .unwrap()
+            })
+            .collect();
+        for &worker in &workers {
+            domain.send_to_worker(worker, message.clone()).unwrap();
+        }
+
+        for &worker in &workers {
+            let reply = domain
+                .receive_from_worker(worker, Some(Duration::from_secs(20)))
+                .unwrap()
+                .unwrap();
+            let (Message::SharedBuffer(original), Message::SharedBuffer(received)) = (&message, &reply) else {
+                panic!("expected shared buffers");
+            };
+            assert!(original.shares_storage(received));
+        }
+
         application.stop().unwrap();
     }
 }

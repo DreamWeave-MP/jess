@@ -75,6 +75,7 @@ mod profile;
 mod resources;
 mod service;
 mod shared_buffer;
+pub mod shared_buffer_lowering;
 mod worker;
 
 pub use capability::{

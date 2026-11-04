@@ -2,20 +2,9 @@
 
 declare extern type JessNull with end
 
---- A read-only view over shared native storage.
-declare extern type SharedBuffer with
-  read length: number
-  readf64: (self: SharedBuffer, offset: number) -> number
-  readu32: (self: SharedBuffer, offset: number) -> number
-  copyInto: (
-    self: SharedBuffer,
-    target: buffer,
-    targetOffset: number,
-    sourceOffset: number,
-    length: number
-  ) -> ()
-  slice: (self: SharedBuffer, offset: number, length: number) -> SharedBuffer
-end
+--- A read-only view over shared native storage. Annotate with `jess_runtime_SharedBuffer` for native
+--- reads: Luau's compiler knows the type by that name and can't see through this alias.
+export type SharedBuffer = jess_runtime_SharedBuffer
 
 --- Native storage that can be written until sealed.
 declare extern type SharedBufferBuilder with
