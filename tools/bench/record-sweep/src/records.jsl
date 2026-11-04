@@ -81,7 +81,7 @@ local function privately(source: buffer, count: number): number
   return total
 end
 
-local function windowed(source: SharedBuffer, count: number, windowRecords: number): number
+local function windowed(source: jess_runtime_SharedBuffer, count: number, windowRecords: number): number
   local window = buffer.create(windowRecords * RecordBytes)
   local position, total = 0, 0
   while position < count do
@@ -97,7 +97,7 @@ local function windowed(source: SharedBuffer, count: number, windowRecords: numb
   return total
 end
 
-local function scalar(source: SharedBuffer, count: number): number
+local function scalar(source: jess_runtime_SharedBuffer, count: number): number
   local total = 0
   for row = 0, count - 1 do
     local offset = row * RecordBytes

@@ -9,7 +9,7 @@ local function run(scale: number): number
   for index = 0, 4095 do
     builder:writef64(index * 8, index)
   end
-  local data = builder:seal()
+  local data: jess_runtime_SharedBuffer = builder:seal()
 
   local started, total = os.clock(), 0
   for index = 0, count - 1 do
