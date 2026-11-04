@@ -43,7 +43,7 @@ const NUMBER_TAG: u8 = Type::Number as u8;
 const UDATA_DATA: i64 = 16;
 
 /// The Luau release [`UDATA_DATA`] was read from.
-const VERIFIED_LUAU: &str = "0.744";
+const VERIFIED_LUAU: &str = "0.745";
 
 const fn same_text(left: &str, right: &str) -> bool {
     let (left, right) = (left.as_bytes(), right.as_bytes());
