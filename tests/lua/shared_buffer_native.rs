@@ -243,10 +243,12 @@ fn failed_guards_raise_what_the_method_raises() {
     }
 }
 
+// A release build compiles the method's counter out.
+#[cfg(debug_assertions)]
 #[test]
 fn a_lowered_read_makes_no_call() {
     let before = lowered_sites();
-    let (runtime, _) = fixture();
+    let (runtime, bytes) = fixture();
     assert!(lowered_sites() > before, "the native readers were lowered");
 
     let reads = method_reads();
@@ -256,12 +258,35 @@ fn a_lowered_read_makes_no_call() {
     let _: f64 = runtime.eval("return state.plain_sum(state.view, 1000)").unwrap();
     assert_eq!(method_reads(), reads + 1000, "an interpreted read takes the method");
 
-    // A failed guard leaves for the method, which raises, and native code stays native afterwards.
+    // A whole offset out of range passes the binder's conversion, so it reaches the method once,
+    // with its arguments intact, and the method raises.
     let reads = method_reads();
-    assert!(runtime.exec("state.native_f64(state.view, 0.5)").is_err());
-    assert_eq!(method_reads(), reads);
+    let error = runtime.exec("state.native_f64(state.view, 57)").unwrap_err();
+    assert_eq!(message(&error), "buffer range is out of bounds");
+    assert_eq!(method_reads(), reads + 1, "the guard's exit reached the method");
+
+    // A fractional offset is refused by the binder's conversion, before the method's body runs.
+    let reads = method_reads();
+    let error = runtime.exec("state.native_f64(state.view, 0.5)").unwrap_err();
+    let plain = runtime.exec("state.plain_f64(state.view, 0.5)").unwrap_err();
+    assert_eq!(message(&error), message(&plain));
+    assert_eq!(method_reads(), reads, "the conversion refuses it before the method");
+
+    // Neither failure costs the function its native code, and a value read after one is right.
+    let value: f64 = runtime.eval("return state.native_f64(state.view, 1)").unwrap();
+    assert_eq!(value.to_bits(), f64_at(&bytes, 1));
     let _: f64 = runtime.eval("return state.native_sum(state.view, 1000)").unwrap();
     assert_eq!(method_reads(), reads, "native code stayed native after a failed guard");
+}
+
+// Where Luau has a code generator, it must be running here, or every test in this file would pass
+// by comparing the interpreter with itself.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[test]
+fn native_code_runs_on_this_architecture() {
+    let (runtime, _) = fixture();
+    assert!(runtime.native_code().unwrap().is_available());
+    assert!(lowered_sites() > 0, "this thread's fixture lowered its reads");
 }
 
 #[test]
