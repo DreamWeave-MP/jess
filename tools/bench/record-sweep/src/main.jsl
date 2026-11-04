@@ -1,0 +1,132 @@
+--!strict
+-- One case per process, so an outside tool can report its peak memory:
+-- jess package run --capability worker.spawn tools/bench/record-sweep -- MODE RECORDS WORKERS SWEEPS
+-- Construction and delivery are timed apart from the sweeps; only verified builds post numbers.
+local application = require '@jess/application'
+local bench = require '@jess/bench'
+local records = require '@record-sweep/records'
+local sharedBuffer = require '@jess/sharedBuffer'
+local workers = require '@jess/worker'
+
+local Wait = 3600
+
+local WorkerSource = [[
+local records = require '@record-sweep/records'
+local mode
+local count
+local history
+
+return function(message)
+  if message.mode then
+    mode, count = message.mode, message.count
+    return true
+  end
+
+  if message.history then
+    history = message.history
+    return true
+  end
+
+  if mode == 'generate' then return records.generated(count) end
+  if mode == 'private' then return records.privately(history, count) end
+  if mode == 'window' then return records.windowed(history, count) end
+  return records.scalar(history, count)
+end
+]]
+
+local arguments: { string } = { ... }
+local mode = arguments[1]
+local count = tonumber(arguments[2]) or 0
+local workerCount = tonumber(arguments[3]) or 0
+local sweeps = tonumber(arguments[4]) or 0
+assert(mode == 'generate' or mode == 'private' or mode == 'window' or mode == 'scalar', 'unknown mode')
+assert(count >= 1 and count % 1 == 0, 'invalid record count')
+assert(workerCount >= 1 and workerCount % 1 == 0, 'invalid worker count')
+assert(sweeps >= 1 and sweeps % 1 == 0, 'invalid sweep count')
+assert(bench.verified or count <= 100000, 'benchmarks need a verified release build')
+
+local function sharedHistory(): SharedBuffer
+  local builder = sharedBuffer.create(count * records.RecordBytes)
+  local chunk = buffer.create(records.WindowRecords * records.RecordBytes)
+  local position = 0
+  while position < count do
+    local rows = math.min(records.WindowRecords, count - position)
+    if rows < records.WindowRecords then chunk = buffer.create(rows * records.RecordBytes) end
+    records.fill(chunk, position, rows)
+    builder:write(position * records.RecordBytes, chunk)
+    position += rows
+  end
+
+  return builder:seal()
+end
+
+local function privateHistory(): buffer
+  local history = buffer.create(count * records.RecordBytes)
+  records.fill(history, 0, count)
+  return history
+end
+
+local lanes: { Worker } = {}
+for index = 1, workerCount do
+  lanes[index] = workers.spawn { name = `sweep-{index}`, source = WorkerSource, capabilities = {} }
+end
+
+-- A worker that has answered has finished starting, so delivery times only delivery.
+for _, lane in lanes do
+  lane:send { mode = mode, count = count }
+  assert(lane:receive(Wait), 'a worker did not start')
+end
+
+local started = os.clock()
+local history: (buffer | SharedBuffer)? = nil
+if mode == 'private' then history = privateHistory() end
+if mode == 'window' or mode == 'scalar' then history = sharedHistory() end
+local built = os.clock() - started
+
+-- One worker at a time: a private copy's transit cost then overlaps nothing else, which is the
+-- kindest delivery that mode can have.
+started = os.clock()
+if history then
+  for _, lane in lanes do
+    lane:send { history = history }
+    assert(lane:receive(Wait), 'a worker did not take its history')
+  end
+end
+
+local delivered = os.clock() - started
+history = nil
+bench.collect()
+
+local timings: { string } = {}
+local total: number? = nil
+for sweep = 1, sweeps do
+  started = os.clock()
+  for _, lane in lanes do
+    lane:send {}
+  end
+
+  for _, lane in lanes do
+    local reply = lane:receive(Wait)
+    assert(type(reply) == 'number', 'a worker did not reply with a total')
+    assert(total == nil or reply == total, 'workers disagree on the total')
+    total = reply
+  end
+
+  timings[sweep] = string.format('%.6f', os.clock() - started)
+end
+
+for _, lane in lanes do
+  assert(lane:join(Wait) == 'stopped', 'a worker did not stop')
+end
+
+print(string.format(
+  'mode=%s records=%d workers=%d built_s=%.6f delivered_s=%.6f sweeps_s=%s total=%.17g',
+  mode,
+  count,
+  workerCount,
+  built,
+  delivered,
+  table.concat(timings, ','),
+  total :: number
+))
+application.exit(0)
