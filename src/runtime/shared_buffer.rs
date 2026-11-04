@@ -37,7 +37,8 @@ pub struct SharedBuffer {
 
 impl PartialEq for SharedBuffer {
     fn eq(&self, other: &Self) -> bool {
-        self.bytes() == other.bytes()
+        let same_view = Arc::ptr_eq(&self.storage, &other.storage) && self.start == other.start && self.len == other.len;
+        same_view || self.bytes() == other.bytes()
     }
 }
 
@@ -211,6 +212,22 @@ mod tests {
         assert!(Builder::new(-1).is_err());
         assert!(Builder::new(i32::MAX).is_err());
         assert_eq!(allocated(), before);
+    }
+
+    #[test]
+    fn views_compare_by_their_bytes() {
+        let _accounting = ACCOUNTING.lock().unwrap();
+        let sealed = |value: u8| {
+            let builder = Builder::new(16).unwrap();
+            builder.write(0, &[value; 16]).unwrap();
+            builder.seal().unwrap()
+        };
+        let shared = sealed(1);
+        assert_eq!(shared, shared.clone());
+        assert_eq!(shared, sealed(1));
+        assert_ne!(shared, sealed(2));
+        assert_eq!(shared.slice(0, 8).unwrap(), shared.slice(8, 8).unwrap());
+        assert_ne!(shared.slice(0, 8).unwrap(), shared);
     }
 
     #[test]
