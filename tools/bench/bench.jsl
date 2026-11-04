@@ -1,7 +1,7 @@
 --!strict
 -- Jess's native-kernel benchmark harness. Everything measured here belongs to Jess itself; package-
 -- specific workloads live with their packages. Run with
--- `jess run --capability filesystem.read --capability filesystem.write tools/bench/bench.jsl canaries`.
+-- `jess run --capability filesystem.read --capability filesystem.write --capability shared-buffer.create tools/bench/bench.jsl canaries`.
 local json = require '@jess/json'
 local bytes = require '@dream/bytes'
 local fs = require '@dream/fs'
@@ -297,8 +297,9 @@ local function usage(): number
   jess run GRANTS tools/bench/bench.jsl compare BASELINE CANDIDATE
   jess run tools/bench/bench.jsl list
 
-GRANTS is --capability filesystem.read --capability filesystem.write: the canaries' sources and
-the baselines are read, and the results are written.]]
+GRANTS is --capability filesystem.read --capability filesystem.write --capability
+shared-buffer.create: the canaries' sources and
+the baselines are read, the results are written, and one canary allocates shared storage.]]
   return 0
 end
 

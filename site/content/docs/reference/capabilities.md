@@ -31,6 +31,7 @@ There are seventeen names. Jess knows all of them up front, so a misspelled gran
 | `gpu.window` | Opening a window on the screen, drawing into it, and hearing its keyboard and pointer. | [`jess.gpu.window`](@/docs/api/gpu.md#windows) |
 | `audio.output` | Opening an output device and playing through it. Mixing offline, into a buffer, needs nothing. | [`@jess/audio`](@/docs/api/audio.md#contexts)'s `output` |
 | `worker.spawn` | Spawning an isolated Luau worker beside a script domain. | [`jess.worker.spawn`](@/docs/api/worker.md) |
+| `shared-buffer.create` | Allocating shared buffer storage, which counts against a process-wide limit rather than the Luau heap. Receiving and reading a shared buffer need nothing. | [`@jess/sharedBuffer`](@/docs/contributing/script-domains.md)'s `create` |
 
 The native modules are L3i's, and L3i owns the check for each; jess decides what is granted. [The @dream modules](@/docs/api/l3i.md) says which module is which.
 

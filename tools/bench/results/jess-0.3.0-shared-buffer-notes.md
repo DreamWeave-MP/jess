@@ -13,7 +13,7 @@ kernel.
 The worker-transfer fixture measures sending an already constructed dataset and reading its first
 f64 in each worker, not a complete calculation over it. Each combination has a first job followed
 by two repeated jobs; worker startup and dataset construction are outside the measured interval.
-Run it with `jess package run --capability worker.spawn tools/bench/worker-transfer`. The two raw
+Run it with `jess package run --capability shared-buffer.create --capability worker.spawn tools/bench/worker-transfer`. The two raw
 logs were obtained in a user scope with `MemoryMax=7G` and `MemorySwapMax=2G`. The first ran copied
 before shared; the second reversed that order. Both scopes were terminated during the repeated
 480 MB, eight-worker copied case; neither produced a peak-memory report. The second log includes

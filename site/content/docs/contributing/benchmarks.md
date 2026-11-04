@@ -24,7 +24,7 @@ The build to measure is `cargo build --release` in a shell where the development
 ## The canaries
 
 ```sh
-jess run --capability filesystem.read --capability filesystem.write tools/bench/bench.jsl canaries
+jess run --capability filesystem.read --capability filesystem.write --capability shared-buffer.create tools/bench/bench.jsl canaries
 ```
 
 `tools/bench/bench.jsl` is the native kernel's own harness: small synthetic workloads for regressions in the runtime and jess's bindings, the things a new binding layer changes. They need no data and no packages. Each prints how long its hot loop took, which is the number the harness compares.

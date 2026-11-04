@@ -112,7 +112,11 @@ impl Extension for TestExtension {
 /// The test plan: the runtime's own extension and the test services.
 pub fn plan_with(rendezvous: &Arc<Rendezvous>) -> l3i::Result<Rc<RuntimePlan>> {
     RuntimePlan::builder()
-        .policy(RuntimePolicy::new().debug_root("test"))
+        .policy(
+            RuntimePolicy::new()
+                .debug_root("test")
+                .capability(jess::runtime::SHARED_BUFFER_CREATE),
+        )
         .extension(RuntimeExtension)
         .extension(TestExtension {
             rendezvous: Arc::clone(rendezvous),

@@ -1,5 +1,6 @@
 --!strict
--- Run with a verified release: jess package run --capability worker.spawn tools/bench/worker-transfer
+-- Run with a verified release:
+-- jess package run --capability shared-buffer.create --capability worker.spawn tools/bench/worker-transfer
 local application = require '@jess/application'
 local sharedBuffer = require '@jess/sharedBuffer'
 local workers = require '@jess/worker'

@@ -30,7 +30,7 @@ use l3i::stack::{Scope, Type, ValueView};
 use l3i::userdata::{Owned, Userdata};
 use l3i::value::{Function, Table};
 
-use crate::runtime::capability::{CapabilitySet, current_authority};
+use crate::runtime::capability::{CapabilitySet, SHARED_BUFFER_CREATE, current_authority, require_capability};
 use crate::runtime::context::Phase;
 use crate::runtime::diagnostics::{Diagnostic, DiagnosticKind, Severity};
 use crate::runtime::domain::{DomainCore, DomainLink};
@@ -440,6 +440,7 @@ fn spawn(bindings: &Bindings, call: &Call<'_>, options: ValueView<'_>) -> l3i::R
 }
 
 fn describe_shared_buffer(d: &mut ExtensionDescriptor) {
+    d.optional_capability(SHARED_BUFFER_CREATE);
     d.module(SHARED_BUFFER_MODULE)
         .doc("Immutable native buffers shared between worker VMs.")
         .installed("create")
@@ -611,8 +612,18 @@ impl Extension for RuntimeExtension {
     }
 
     fn install(&self, cx: &mut InstallContext<'_>) -> l3i::Result<()> {
+        let granted = cx.plan().policy().grants(SHARED_BUFFER_CREATE);
         let shared_buffer = cx.module(SHARED_BUFFER_MODULE)?;
-        shared_buffer.function("create", |Exact(length): Exact<i32>| Builder::new(length).map(Owned))?;
+        shared_buffer.function("create", move |Exact(length): Exact<i32>| {
+            // Under a domain its broker decides; outside one, what the plan granted.
+            if current_authority().is_some() {
+                require_capability(SHARED_BUFFER_CREATE).map_err(l3i::Error::from)?;
+            } else if !granted {
+                return Err(l3i::Error::denied("@jess/sharedBuffer.create", SHARED_BUFFER_CREATE));
+            }
+
+            Builder::new(length).map(Owned)
+        })?;
         let shared_buffer = shared_buffer.table().clone();
         let bindings = cx.insert_state(Bindings {
             owner: RefCell::new(Owner::Detached),

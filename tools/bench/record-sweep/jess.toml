@@ -17,4 +17,4 @@ exports = ["@record-sweep/records"]
 [targets.bench]
 kind = "application"
 entry = "src/main.jsl"
-capabilities = ["worker.spawn"]
+capabilities = ["shared-buffer.create", "worker.spawn"]

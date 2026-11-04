@@ -1,6 +1,6 @@
 --!strict
 -- One case per process, so an outside tool can report its peak memory:
--- jess package run --capability worker.spawn tools/bench/record-sweep -- MODE RECORDS WORKERS SWEEPS [WINDOW]
+-- jess package run --capability shared-buffer.create --capability worker.spawn tools/bench/record-sweep -- MODE RECORDS WORKERS SWEEPS [WINDOW]
 -- Construction and delivery are timed apart from the sweeps; only verified builds post numbers.
 -- generate recomputes each record per sweep, so it is a control, not a measure of access cost.
 local application = require '@jess/application'

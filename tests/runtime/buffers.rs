@@ -4,7 +4,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use jess::runtime::l3i;
-use jess::runtime::{Message, ScriptDomain, SharedBuffer, WorkerSpec, WorkerState, push_message};
+use jess::runtime::{
+    CapabilitySet, Message, SHARED_BUFFER_CREATE, ScriptDomain, SharedBuffer, WorkerSpec, WorkerState, push_message,
+};
 
 use super::support::{self, Rendezvous};
 use crate::allocations::measure;
@@ -339,4 +341,39 @@ end
     }
 
     assert_owners(original, baseline);
+}
+
+#[test]
+fn allocating_needs_the_capability_and_receiving_does_not() {
+    let harness = support::domain("allocation", &[SHARED_BUFFER_CREATE]);
+    let domain = &harness.domain;
+    let message = sealed(domain);
+    let source = r"
+return function(message)
+  if message == 'create' then
+    return require('@jess/sharedBuffer').create(8):seal().length
+  end
+
+  return message:readf64(8)
+end
+";
+    let holder = domain.spawn_worker(WorkerSpec::new("holder", source)).unwrap();
+    domain.send_to_worker(holder, Message::text("create")).unwrap();
+    assert_eq!(
+        domain.receive_from_worker(holder, WAIT).unwrap().unwrap().as_number(),
+        Some(8.0)
+    );
+
+    let bare = domain
+        .spawn_worker(WorkerSpec::new("bare", source).capabilities(CapabilitySet::empty()))
+        .unwrap();
+    domain.send_to_worker(bare, message).unwrap();
+    assert_eq!(
+        domain.receive_from_worker(bare, WAIT).unwrap().unwrap().as_number(),
+        Some(1.0)
+    );
+
+    domain.send_to_worker(bare, Message::text("create")).unwrap();
+    let refused = domain.receive_from_worker(bare, WAIT).unwrap_err().to_string();
+    assert!(refused.contains(SHARED_BUFFER_CREATE), "{refused}");
 }

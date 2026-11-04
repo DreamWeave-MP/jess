@@ -219,3 +219,27 @@ fn a_script_named_like_a_package_module_is_a_loose_script() {
     assert!(printed.starts_with("false\tmodule not found: ./src/data/common"), "{printed}");
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn run_allocates_shared_buffers_only_when_granted() {
+    let root = temp_dir_path("capability-shared-buffer");
+    drop(fs::remove_dir_all(&root));
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("script.jsl"),
+        "print(require('@jess/sharedBuffer').create(8):seal().length)\n",
+    )
+    .unwrap();
+
+    let denied = jess().arg("run").arg(root.join("script.jsl")).output().unwrap();
+    assert!(!denied.status.success());
+    assert!(stderr(&denied).contains("shared-buffer.create"), "{}", stderr(&denied));
+
+    let granted = jess()
+        .args(["run", "--capability", "shared-buffer.create"])
+        .arg(root.join("script.jsl"))
+        .output()
+        .unwrap();
+    assert!(granted.status.success(), "{}", stderr(&granted));
+    fs::remove_dir_all(root).unwrap();
+}

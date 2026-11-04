@@ -25,6 +25,10 @@ use crate::runtime::service::Services;
 /// The capability a script needs to spawn a worker from Luau.
 pub const WORKER_SPAWN: &str = "worker.spawn";
 
+/// The capability a script needs to allocate shared buffer storage. Receiving and reading a shared
+/// buffer need nothing: only allocation spends the process-wide native limit.
+pub const SHARED_BUFFER_CREATE: &str = "shared-buffer.create";
+
 /// Every interned name, by id, and each name's id.
 #[derive(Default)]
 struct Names {

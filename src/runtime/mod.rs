@@ -78,8 +78,8 @@ mod shared_buffer;
 mod worker;
 
 pub use capability::{
-    Authority, CapabilityDenied, CapabilitySet, Grant, Grantor, RootAuthority, WORKER_SPAWN, current_authority,
-    require_capability, service,
+    Authority, CapabilityDenied, CapabilitySet, Grant, Grantor, RootAuthority, SHARED_BUFFER_CREATE, WORKER_SPAWN,
+    current_authority, require_capability, service,
 };
 pub use context::{Budget, ContextInfo, ContextSpec, FixedStep, Phase};
 pub use diagnostics::{

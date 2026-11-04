@@ -22,6 +22,7 @@ for _, name in {
   'network.tcp.public',
   'network.transport',
   'worker.spawn',
+  'shared-buffer.create',
 } do
   assert(not jess.granted(name), `unexpected default capability {name}`)
 end

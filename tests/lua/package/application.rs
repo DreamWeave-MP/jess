@@ -240,7 +240,7 @@ fn shared_buffer_crosses_workers_from_source_and_packed_packages() {
                 "jess.toml",
                 &manifest(
                     "org.example.shared",
-                    "[modules]\n\"@example/shared-worker\" = \"src/worker.jsl\"\n\n[[layer]]\nid = \"example.shared\"\nexports = [\"@example/shared-worker\"]\n\n[targets.app]\nkind = \"application\"\nentry = \"src/main.jsl\"\n",
+                    "[modules]\n\"@example/shared-worker\" = \"src/worker.jsl\"\n\n[[layer]]\nid = \"example.shared\"\nexports = [\"@example/shared-worker\"]\n\n[targets.app]\nkind = \"application\"\nentry = \"src/main.jsl\"\ncapabilities = [\"shared-buffer.create\"]\n",
                 ),
             ),
             ("src/main.jsl", "return nil\n"),
@@ -253,7 +253,10 @@ fn shared_buffer_crosses_workers_from_source_and_packed_packages() {
     let packed = temp.path().join("shared.jpk");
     package::pack(&jess::lua::runtime(Options::default()).unwrap(), &text(&root), &text(&packed)).unwrap();
     for path in [&root, &packed] {
-        let application = launch(&request(path, "app", &[]));
+        let application = launch(&TargetRequest {
+            grant: Some(vec!["shared-buffer.create".to_owned()]),
+            ..request(path, "app", &[])
+        });
         let domain = application.domain();
         let message = domain
             .with_runtime(|runtime| {
