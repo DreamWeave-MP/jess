@@ -130,11 +130,10 @@ impl Message {
     pub fn size_hint(&self) -> usize {
         match self {
             Message::Nil => 0,
-            Message::Boolean(_) | Message::Number(_) | Message::Integer(_) => 8,
+            Message::Boolean(_) | Message::Number(_) | Message::Integer(_) | Message::SharedBuffer(_) => 8,
             Message::Vector(_) => 12,
             Message::String(bytes) => bytes.len(),
             Message::Bytes(bytes) => bytes.len(),
-            Message::SharedBuffer(_) => 8,
             Message::List(items) => items.iter().map(Message::size_hint).sum(),
             Message::Map(entries) => entries
                 .iter()
