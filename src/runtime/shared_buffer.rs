@@ -14,9 +14,9 @@ pub const DEFAULT_SHARED_BUFFER_LIMIT: usize = 1024 * 1024 * 1024;
 /// One level of the shared storage budget: a worker's, a domain's, or the process's. Native
 /// allocations are outside Luau's allocator, so they are bounded independently of VM heaps.
 ///
-/// An allocation is charged to the level of the code that made it and every level above, once,
-/// however many views and messages share it, and released when its last owner goes. Receiving
-/// and reading a view charge nothing.
+/// These budget allocation, not retention or physical memory. An allocation is charged to the level
+/// of the code that made it and every level above, once, however many views and messages share it,
+/// and released when its last owner goes. Receiving and reading a view charge nothing.
 #[derive(Debug)]
 pub struct Ledger {
     used: AtomicUsize,
@@ -95,7 +95,9 @@ impl Drop for Storage {
 }
 
 /// `length` zero bytes, asked of the allocator as zeroed memory: pages the script never touches
-/// stay unbacked, and a request the allocator can't meet is an error here, not a killed process.
+/// stay unbacked, and a request the allocator refuses is an error. That is not a promise of physical
+/// memory: where the system overcommits, a request can succeed and writing to it later can still
+/// run the machine out.
 fn zeroed(length: usize) -> Option<Vec<u8>> {
     if length == 0 {
         return Some(Vec::new());
@@ -338,6 +340,36 @@ mod tests {
 
         drop(held);
         assert_eq!((used(&worker), used(&domain), used(&process)), (0, 0, 0));
+    }
+
+    // Mandatory and allocation-free: the 64-bit arithmetic the opt-in large test exercises for real.
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn ranges_and_budgets_work_past_32_bits() {
+        const FOUR_GIB: usize = 4 * 1024 * 1024 * 1024;
+        let high = 3 * 1024 * 1024 * 1024;
+        let range = range(high, 8, FOUR_GIB).unwrap();
+        assert_eq!(range.start, 3_221_225_472);
+        assert_eq!(range.end, 3_221_225_480);
+        assert!(super::range(4 * 1024 * 1024 * 1024, 1, FOUR_GIB).is_err());
+        assert!(super::range(i64::MAX, 8, FOUR_GIB).is_err());
+        assert!(super::range(-1, 8, FOUR_GIB).is_err());
+
+        let process = Ledger::new(FOUR_GIB, None);
+        let worker = Ledger::new(FOUR_GIB, Some(Arc::clone(&process)));
+        assert!(worker.charge(FOUR_GIB));
+        assert!(!worker.charge(1));
+        worker.release(FOUR_GIB);
+        assert_eq!(used(&process), 0);
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn a_refusal_from_the_allocator_releases_its_charge() {
+        let ledger = Ledger::new(usize::MAX, None);
+        let refused = Builder::new(i64::MAX, Arc::clone(&ledger));
+        assert!(refused.is_err());
+        assert_eq!(used(&ledger), 0);
     }
 
     #[test]

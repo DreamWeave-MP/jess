@@ -39,7 +39,11 @@ end
 
 /// A runtime with a `state` table, since a runtime's own globals are read-only to scripts.
 fn with_state() -> Runtime {
-    let runtime = jess::lua::runtime_with_capabilities(Options::default(), &["shared-buffer.create".to_owned()]).unwrap();
+    let runtime = jess::lua::runtime_with_capabilities(
+        Options::default(),
+        &["shared-buffer.create".to_owned(), "shared-buffer.limit".to_owned()],
+    )
+    .unwrap();
     let state = Table::from_value(runtime.eval::<Value>("return {}").unwrap()).unwrap();
     set_global(&runtime, "state", &state);
     runtime
@@ -350,4 +354,58 @@ end
     }
 
     assert_eq!(total.to_bits(), sum.to_bits());
+}
+
+#[test]
+fn an_offset_past_32_bits_is_a_range_error_not_a_conversion_error() {
+    let (runtime, _) = fixture();
+    for offset in ["2147483648", "4294967304", "1099511627776"] {
+        for mode in ["native", "plain"] {
+            let error = runtime.exec(&format!("state.{mode}_f64(state.view, {offset})")).unwrap_err();
+            assert_eq!(message(&error), "buffer range is out of bounds", "{mode} at {offset}");
+        }
+    }
+}
+
+// Opt-in: `cargo test --test integration lua::shared_buffer_native::past -- --ignored`. It raises the
+// process-wide limit, so run it alone. Its pages stay unbacked but for the few it writes, and a
+// release build compiles out the method counter it reads.
+#[cfg(all(target_pointer_width = "64", debug_assertions))]
+#[test]
+#[ignore = "reserves 3 GiB of address space and raises the process's shared buffer limit"]
+fn past_two_gibibytes_reads_are_native_and_match_the_method() {
+    let (runtime, _) = fixture();
+    run(
+        &runtime,
+        r"
+local shared = require('@jess/sharedBuffer')
+shared.setLimit(4 * 1024 * 1024 * 1024)
+local builder = shared.create(3 * 1024 * 1024 * 1024)
+builder:writef64(2684354560, 42.5)
+builder:writeu32(3221225468, 3735928559)
+state.big = builder:seal()
+assert(state.big.length == 3221225472)
+state.high = state.big:slice(2684354560, 16)
+local window = buffer.create(8)
+state.big:copyInto(window, 0, 2684354560, 8)
+assert(buffer.readf64(window, 0) == 42.5)
+",
+    );
+
+    let reads = method_reads();
+    let value: f64 = runtime.eval("return state.native_f64(state.big, 2684354560)").unwrap();
+    assert_eq!(value.to_bits(), 42.5f64.to_bits());
+    let value: f64 = runtime.eval("return state.native_u32(state.big, 3221225468)").unwrap();
+    assert_eq!(value, 3_735_928_559.0);
+    let value: f64 = runtime.eval("return state.native_f64(state.high, 0)").unwrap();
+    assert_eq!(value.to_bits(), 42.5f64.to_bits());
+    assert_eq!(method_reads(), reads, "a read past 2 GiB reached the method");
+
+    let error = runtime.exec("state.native_f64(state.big, 3221225465)").unwrap_err();
+    assert_eq!(message(&error), "buffer range is out of bounds");
+    assert_eq!(method_reads(), reads + 1, "only the failed read reached the method");
+
+    let value: f64 = runtime.eval("return state.plain_f64(state.big, 2684354560)").unwrap();
+    assert_eq!(value.to_bits(), 42.5f64.to_bits());
+    assert_eq!(method_reads(), reads + 2, "the interpreted read took the method");
 }

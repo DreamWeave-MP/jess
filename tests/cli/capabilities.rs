@@ -283,54 +283,6 @@ fn the_shared_buffer_limit_defaults_to_a_gibibyte_and_moves_only_with_its_capabi
 }
 
 #[test]
-fn a_shared_buffer_past_two_gibibytes_reads_at_every_offset_natively_and_not() {
-    let root = temp_dir_path("capability-shared-large");
-    drop(fs::remove_dir_all(&root));
-    fs::create_dir_all(&root).unwrap();
-    let script = r"
-local Size, High = 3 * 1024 * 1024 * 1024, 2684354560
-shared.setLimit(4 * 1024 * 1024 * 1024)
-local builder = shared.create(Size)
-builder:writef64(High, 42.5)
-builder:writeu32(Size - 4, 3735928559)
-local chunk = buffer.create(8)
-buffer.writef64(chunk, 0, 7.25)
-builder:write(High + 8, chunk)
-local view = builder:seal()
-assert(view.length == Size)
-
-local function direct(source: jess_runtime_SharedBuffer): number
-  return source:readf64(High) + source:readf64(High + 8) + source:readu32(Size - 4)
-end
-
-assert(direct(view) == 42.5 + 7.25 + 3735928559)
-local slice = view:slice(High, 16)
-assert(slice.length == 16 and slice:readf64(8) == 7.25)
-local window = buffer.create(16)
-view:copyInto(window, 0, High, 16)
-assert(buffer.readf64(window, 0) == 42.5 and buffer.readf64(window, 8) == 7.25)
-print('ok')
-";
-    for directive in ["", "--!native\n"] {
-        fs::write(root.join("script.jsl"), format!("{directive}{SHARED}{script}")).unwrap();
-        let output = jess()
-            .args([
-                "run",
-                "--capability",
-                "shared-buffer.create",
-                "--capability",
-                "shared-buffer.limit",
-            ])
-            .arg(root.join("script.jsl"))
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "{directive}{}", stderr(&output));
-    }
-
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
 fn a_worker_cannot_set_the_limit_and_its_budget_only_narrows() {
     let root = temp_dir_path("capability-shared-worker");
     drop(fs::remove_dir_all(&root));
