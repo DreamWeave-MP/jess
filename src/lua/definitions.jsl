@@ -2,16 +2,12 @@
 
 declare extern type JessNull with end
 
---- A read-only view over shared native storage. Annotate with `jess_runtime_SharedBuffer` for native
---- reads: Luau's compiler knows the type by that name and can't see through this alias.
-export type SharedBuffer = jess_runtime_SharedBuffer
-
 --- Native storage that can be written until sealed.
 declare extern type SharedBufferBuilder with
   write: (self: SharedBufferBuilder, offset: number, value: buffer) -> ()
   writef64: (self: SharedBufferBuilder, offset: number, value: number) -> ()
   writeu32: (self: SharedBufferBuilder, offset: number, value: number) -> ()
-  seal: (self: SharedBufferBuilder) -> SharedBuffer
+  seal: (self: SharedBufferBuilder) -> jess_runtime_SharedBuffer
 end
 
 --- A handle to a native resource that may cross domain and worker boundaries in a message: its

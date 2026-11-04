@@ -49,7 +49,7 @@ assert(sweeps >= 1 and sweeps % 1 == 0, 'invalid sweep count')
 assert(windowRecords >= 1 and windowRecords % 1 == 0, 'invalid window')
 assert(bench.verified or count <= 100000, 'benchmarks need a verified release build')
 
-local function sharedHistory(): SharedBuffer
+local function sharedHistory(): jess_runtime_SharedBuffer
   local builder = sharedBuffer.create(count * records.RecordBytes)
   local chunk = buffer.create(records.BuildRecords * records.RecordBytes)
   local position = 0
@@ -82,7 +82,7 @@ for _, lane in lanes do
 end
 
 local started = os.clock()
-local history: (buffer | SharedBuffer)? = nil
+local history: (buffer | jess_runtime_SharedBuffer)? = nil
 if mode == 'private' then history = privateHistory() end
 if mode == 'window' or mode == 'scalar' then history = sharedHistory() end
 local built = os.clock() - started

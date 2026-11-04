@@ -14,7 +14,7 @@ local function run(size: number, count: number, shared: boolean)
     lanes[index] = workers.spawn { source = source, capabilities = {} }
   end
 
-  local data: buffer | SharedBuffer
+  local data: buffer | jess_runtime_SharedBuffer
   if shared then
     local builder = sharedBuffer.create(size)
     builder:writef64(0, 42.5)
