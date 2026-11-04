@@ -37,21 +37,29 @@ fn immutable_buffers_cross_persistent_workers() {
             runtime.exec(
                 r"
 local shared = require('@jess/sharedBuffer')
-local builder = shared.create(16)
+builder = shared.create(16)
 builder:writeu32(0, 3735928559)
 builder:writef64(8, 42.5)
 payload = builder:seal()
 assert(payload:readu32(0) == 3735928559)
-assert(not pcall(function() payload:readf64(9) end))
-assert(not pcall(function() payload:slice(-1, 1) end))
-assert(not pcall(function() builder:writef64(0, 1) end))
-assert(not pcall(function() builder:seal() end))
 ",
             )?;
             Ok::<(), l3i::Error>(())
         })
         .unwrap()
         .unwrap();
+    for call in [
+        "payload:readf64(9)",
+        "payload:slice(-1, 1)",
+        "builder:writef64(0, 1)",
+        "builder:seal()",
+    ] {
+        let failed = domain
+            .with_runtime(|runtime| Ok::<_, l3i::Error>(runtime.exec(call).is_err()))
+            .unwrap()
+            .unwrap();
+        assert!(failed, "{call} must raise");
+    }
     let message = domain
         .with_runtime(|runtime| {
             let value = runtime.global("payload")?;
@@ -127,22 +135,23 @@ payload:copyInto(target, 0, 32, 0)
         .unwrap();
 
     // Numbers convert to i32 the way every shared-buffer method does: they round to the nearest
-    // integer, halves away from zero, so 1.4 is offset 1, 1.6 is 2 and -0.5 is negative; NaN, infinities and anything past i32 raise.
+    // integer, halves away from zero, so 1.4 is offset 1, 1.6 is 2 and -0.5 is negative; NaN,
+    // infinities and anything past i32 raise.
     domain
         .with_runtime(|runtime| {
             runtime.exec(
                 r"
-local floored = buffer.create(8)
+local rounded = buffer.create(8)
 local exact = buffer.create(8)
-payload:copyInto(floored, 0, 1.4, 8)
+payload:copyInto(rounded, 0, 1.4, 8)
 payload:copyInto(exact, 0, 1, 8)
-assert(buffer.readf64(floored, 0) == buffer.readf64(exact, 0))
-payload:copyInto(floored, 0, 1.6, 8)
+assert(buffer.readf64(rounded, 0) == buffer.readf64(exact, 0))
+payload:copyInto(rounded, 0, 1.6, 8)
 payload:copyInto(exact, 0, 2, 8)
-assert(buffer.readf64(floored, 0) == buffer.readf64(exact, 0))
-payload:copyInto(floored, 0, -0.4, 8)
-assert(buffer.readf64(floored, 0) == 0.5)
-payload:copyInto(floored, 0.4, 0, 8)
+assert(buffer.readf64(rounded, 0) == buffer.readf64(exact, 0))
+payload:copyInto(rounded, 0, -0.4, 8)
+assert(buffer.readf64(rounded, 0) == 0.5)
+payload:copyInto(rounded, 0.4, 0, 8)
 ",
             )?;
             Ok::<(), l3i::Error>(())

@@ -110,6 +110,12 @@ impl SharedBuffer {
         Arc::ptr_eq(&self.storage, &other.storage)
     }
 
+    /// How many views, in any VM or message, retain this backing allocation right now.
+    #[must_use]
+    pub fn owners(&self) -> usize {
+        Arc::strong_count(&self.storage)
+    }
+
     pub(crate) fn bytes(&self) -> &[u8] {
         &self.storage.0[self.start..self.start + self.len]
     }
@@ -156,10 +162,60 @@ impl SharedBuffer {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
+
+    // `ALLOCATED` is process-wide, and exact totals can't be read while another test allocates.
+    static ACCOUNTING: Mutex<()> = Mutex::new(());
+
+    fn allocated() -> usize {
+        ALLOCATED.load(Ordering::Relaxed)
+    }
+
+    #[test]
+    fn storage_is_charged_once_and_released_by_its_last_owner() {
+        let _accounting = ACCOUNTING.lock().unwrap();
+        let before = allocated();
+        let builder = Builder::new(1024).unwrap();
+        assert_eq!(allocated(), before + 1024);
+
+        let shared = builder.seal().unwrap();
+        let clone = shared.clone();
+        let slice = shared.slice(8, 8).unwrap();
+        assert_eq!(allocated(), before + 1024);
+        assert_eq!(shared.owners(), 3);
+
+        drop(shared);
+        drop(builder);
+        drop(clone);
+        assert_eq!(allocated(), before + 1024);
+        assert_eq!(slice.owners(), 1);
+
+        drop(slice);
+        assert_eq!(allocated(), before);
+    }
+
+    #[test]
+    fn a_builder_that_never_seals_releases_its_charge() {
+        let _accounting = ACCOUNTING.lock().unwrap();
+        let before = allocated();
+        drop(Builder::new(1024).unwrap());
+        assert_eq!(allocated(), before);
+    }
+
+    #[test]
+    fn a_refused_allocation_charges_nothing() {
+        let _accounting = ACCOUNTING.lock().unwrap();
+        let before = allocated();
+        assert!(Builder::new(-1).is_err());
+        assert!(Builder::new(i32::MAX).is_err());
+        assert_eq!(allocated(), before);
+    }
 
     #[test]
     fn sealing_and_slicing_preserve_the_allocation() {
+        let _accounting = ACCOUNTING.lock().unwrap();
         let builder = Builder::new(24).unwrap();
         builder.write(8, &42.5f64.to_le_bytes()).unwrap();
         let address = builder.0.borrow().as_ref().unwrap().0.as_ptr();
