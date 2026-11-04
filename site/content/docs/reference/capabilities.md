@@ -101,7 +101,7 @@ Three different texts, from three different places, and each tells you which:
 | --- | --- |
 | The function, at the seam | `dream.fs.readFileString: needs the 'filesystem.read' capability, which this runtime does not grant` |
 | `jess package run`, before activation | `cannot run target greet` followed by `required capability denied:` and the names, then `requested by:` the package, version, and target |
-| The grant itself | `unknown capability 'filesystem.raed'; a jess runtime can be granted audio.output, filesystem.read, filesystem.write, gpu.device, gpu.window, input.actions, input.configure, input.observe, network.dns.resolve, network.tcp.connect, network.tcp.listen, network.tcp.public, network.transport, process.environment, process.spawn, process.stdio, worker.spawn` |
+| The grant itself | `unknown capability 'filesystem.raed'; a jess runtime can be granted audio.output, filesystem.read, filesystem.write, gpu.device, gpu.window, input.actions, input.configure, input.observe, network.dns.resolve, network.tcp.connect, network.tcp.listen, network.tcp.public, network.transport, process.environment, process.spawn, process.stdio, shared-buffer.create, worker.spawn` |
 
 The last one also fires for a target that declares a name jess doesn't know. `jess package inspect` accepts any dotted name, since the manifest format is older than any particular list; `jess package run` refuses it. Inside a script domain, the runtime's own broker reports a denial as `capability '<name>' denied to <context or worker>`, attributed to whoever asked.
 
