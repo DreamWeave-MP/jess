@@ -10,13 +10,11 @@
 //!
 //! Luau's IR has no load from an arbitrary address. Its buffer loads add `offsetof(Udata, data)`
 //! to their base under the userdata tag, from whatever register they are given, so an address
-//! less that offset is a base. l3i's own intern lowering reads a pool's arrays the same way, and
-//! pins the offset against Luau's headers when it builds.
+//! less that offset is a base, the pattern l3i's own intern lowering ships.
 //!
-//! Every part of that contract breaks the build rather than a run. This module pins the payload's
-//! layout with `offset_of!`. l3i doesn't export the header's size, so [`VERIFIED_LUAU`] names the
-//! Luau release it was read from, and a jess on any other Luau refuses to compile until someone
-//! reads `offsetof(Udata, data)` in that release's `VM/src/lobject.h` again.
+//! Every part of that contract breaks the build rather than a run. `USERDATA_PAYLOAD_OFFSET` comes
+//! from l3i, whose build fails if Luau moves the field, and this module pins the payload's layout
+//! with `offset_of!`.
 //!
 //! # Why the address can't dangle
 //!
@@ -29,44 +27,15 @@
 
 use std::cell::Cell;
 
-use l3i::native_code::NativeCodeHooks;
 use l3i::native_code::hooks::{NamecallSite, NativeContext};
 use l3i::native_code::ir::{IrBuilder, IrCmd, IrCondition, IrOp, bytecode_type};
+use l3i::native_code::{NativeCodeHooks, USERDATA_PAYLOAD_OFFSET};
 use l3i::stack::Type;
 
 use crate::runtime::shared_buffer::{PAYLOAD_ADDRESS, PAYLOAD_LENGTH, SharedBuffer};
 
 const USERDATA_TAG: u8 = Type::Userdata as u8;
 const NUMBER_TAG: u8 = Type::Number as u8;
-
-/// `offsetof(Udata, data)`: what a buffer load adds under the userdata tag.
-const UDATA_DATA: i64 = 16;
-
-/// The Luau release [`UDATA_DATA`] was read from.
-const VERIFIED_LUAU: &str = "0.745";
-
-const fn same_text(left: &str, right: &str) -> bool {
-    let (left, right) = (left.as_bytes(), right.as_bytes());
-    if left.len() != right.len() {
-        return false;
-    }
-
-    let mut index = 0;
-    while index < left.len() {
-        if left[index] != right[index] {
-            return false;
-        }
-
-        index += 1;
-    }
-
-    true
-}
-
-const _: () = assert!(
-    same_text(l3i::LUAU_VERSION, VERIFIED_LUAU),
-    "Luau changed: check offsetof(Udata, data) in VM/src/lobject.h against UDATA_DATA, then update VERIFIED_LUAU"
-);
 
 // Per thread: a test compares these before and after, and tests run in parallel.
 thread_local! {
@@ -189,7 +158,7 @@ impl NativeCodeHooks for SharedBufferLowering {
 
         let address = payload_word(build, userdata, PAYLOAD_ADDRESS);
         let at = build.inst(IrCmd::ADD_INT64, &[address, offset]);
-        let header = build.const_int64(UDATA_DATA);
+        let header = build.const_int64(USERDATA_PAYLOAD_OFFSET);
         let base = build.inst(IrCmd::SUB_INT64, &[at, header]);
         let index = build.const_int(0);
         let tag = build.const_tag(USERDATA_TAG);
