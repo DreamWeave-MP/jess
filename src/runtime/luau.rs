@@ -543,7 +543,7 @@ impl Extension for RuntimeExtension {
             .doc("Workers: isolated Luau states that run beside the domain and talk to it in messages.")
             .installed("spawn")
             .signature(
-                "(options: { source: string, name: string?, capabilities: { string }?, shareServices: boolean? }) -> jess_runtime_Worker",
+                "(options: { source: string, name: string?, capabilities: { string }?, shareServices: boolean?, sharedBufferBudget: number? }) -> jess_runtime_Worker",
             )
             .doc("Spawns a worker from its module source; needs the worker.spawn capability. shareServices = true gives it every service the domain carries.")
             .installed("send")

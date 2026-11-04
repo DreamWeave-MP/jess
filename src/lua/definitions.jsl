@@ -1867,6 +1867,7 @@ and the built-in package, just as the spawning package can.
 - `name`: for diagnostics and profiles; by default, where `spawn` was called.
 - `capabilities`: the names the worker holds, a subset of the calling context's. By default it inherits them all.
 - `shareServices`: `true` gives the worker the domain's services (under a host, its live input). Off by default: a worker exists to run apart from the domain's state, and its capabilities still say what it may do with what it sees.
+- `sharedBufferBudget`: how many bytes of shared buffer storage the worker may allocate, within what its spawner may. Asking for more raises here. By default it draws on its spawner's budget. It limits allocation, not what the worker can receive and read.
 
 The worker's runtime comes from the same plan as the domain's, so a worker has the whole jess API and the same package exports, with state of its own.
 
