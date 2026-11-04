@@ -29,6 +29,158 @@ end
 ";
 
 #[test]
+fn immutable_buffers_cross_persistent_workers() {
+    let harness = support::domain("shared buffers", &[]);
+    let domain = &harness.domain;
+    domain
+        .with_runtime(|runtime| {
+            runtime.exec(
+                r"
+local shared = require('@jess/sharedBuffer')
+builder = shared.create(16)
+builder:writeu32(0, 3735928559)
+builder:writef64(8, 42.5)
+payload = builder:seal()
+assert(payload:readu32(0) == 3735928559)
+",
+            )?;
+            Ok::<(), l3i::Error>(())
+        })
+        .unwrap()
+        .unwrap();
+    for call in [
+        "payload:readf64(9)",
+        "payload:slice(-1, 1)",
+        "builder:writef64(0, 1)",
+        "builder:seal()",
+        "payload:readf64(0.5)",
+        "payload:readu32(1.5)",
+        "payload:slice(0.5, 8)",
+        "payload:slice(0, 8.5)",
+        "require('@jess/sharedBuffer').create(1.5)",
+        "require('@jess/sharedBuffer').create(16):writef64(0.5, 1)",
+        "require('@jess/sharedBuffer').create(16):writeu32(0, 1.5)",
+        "require('@jess/sharedBuffer').create(16):write(0.5, buffer.create(1))",
+    ] {
+        let failed = domain
+            .with_runtime(|runtime| Ok::<_, l3i::Error>(runtime.exec(call).is_err()))
+            .unwrap()
+            .unwrap();
+        assert!(failed, "{call} must raise");
+    }
+    let message = domain
+        .with_runtime(|runtime| {
+            let value = runtime.global("payload")?;
+            runtime.stack().with_frame(|frame| {
+                value.with_value(frame, |frame, view| Ok(Message::read(frame, view, "payload").unwrap()))
+            })
+        })
+        .unwrap()
+        .unwrap();
+    for count in [1, 2, 4, 8] {
+        let workers: Vec<_> = (0..count)
+            .map(|_| {
+                domain
+                    .spawn_worker(WorkerSpec::new(
+                        "shared",
+                        "return function(value) assert(value:readf64(8) == 42.5) return value:slice(8, 8) end",
+                    ))
+                    .unwrap()
+            })
+            .collect();
+        for _ in 0..3 {
+            for &worker in &workers {
+                domain.send_to_worker(worker, message.clone()).unwrap();
+            }
+            for &worker in &workers {
+                let reply = domain.receive_from_worker(worker, WAIT).unwrap().unwrap();
+                let (Message::SharedBuffer(original), Message::SharedBuffer(received)) = (&message, &reply) else {
+                    panic!("expected shared buffers");
+                };
+                assert!(original.shares_storage(received));
+            }
+        }
+        for worker in workers {
+            assert_eq!(domain.join_worker(worker, WAIT).unwrap(), WorkerState::Stopped);
+        }
+    }
+}
+
+#[test]
+fn shared_buffers_copy_into_ordinary_buffers() {
+    let harness = support::domain("shared copy", &[]);
+    let domain = &harness.domain;
+    domain
+        .with_runtime(|runtime| {
+            runtime.exec(
+                r"
+local shared = require('@jess/sharedBuffer')
+local builder = shared.create(32)
+for index = 0, 3 do
+  builder:writef64(index * 8, index + 0.5)
+end
+payload = builder:seal()
+view = payload:slice(8, 16)
+target = buffer.create(24)
+for index = 0, 23 do
+  buffer.writeu8(target, index, 255)
+end
+
+payload:copyInto(target, 4, 16, 8)
+assert(buffer.readf64(target, 4) == 2.5)
+assert(buffer.readu8(target, 0) == 255 and buffer.readu8(target, 12) == 255)
+
+view:copyInto(target, 0, 0, 16)
+assert(buffer.readf64(target, 0) == 1.5 and buffer.readf64(target, 8) == 2.5)
+
+payload:copyInto(target, 24, 0, 0)
+payload:copyInto(target, 0, 32, 0)
+",
+            )?;
+            Ok::<(), l3i::Error>(())
+        })
+        .unwrap()
+        .unwrap();
+
+    // Each failing call must raise and must leave the target as it was.
+    for call in [
+        "payload:copyInto(target, 0, -0.5, 8)",
+        "payload:copyInto(target, 0, -0.4, 8)",
+        "payload:copyInto(target, 0, 1.4, 8)",
+        "payload:copyInto(target, 0, 1.6, 8)",
+        "payload:copyInto(target, 0.4, 0, 8)",
+        "payload:copyInto(target, 0, 0, 8.5)",
+        "payload:copyInto(target, 0, 0/0, 8)",
+        "payload:copyInto(target, 0, math.huge, 8)",
+        "payload:copyInto(target, 0, 4294967304, 8)",
+        "payload:copyInto(target, 0, 0, 25)",
+        "payload:copyInto(target, 1, 0, 24)",
+        "payload:copyInto(target, 0, 17, 16)",
+        "view:copyInto(target, 0, 1, 16)",
+        "view:copyInto(target, 0, 0, 17)",
+        "payload:copyInto(target, -1, 0, 8)",
+        "payload:copyInto(target, 0, -1, 8)",
+        "payload:copyInto(target, 0, 0, -1)",
+        "payload:copyInto(target, 2147483647, 0, 8)",
+        "payload:copyInto(target, 0, 2147483647, 8)",
+        "payload:copyInto(target, 0, 0, 2147483647)",
+    ] {
+        let failed = domain
+            .with_runtime(|runtime| Ok::<_, l3i::Error>(runtime.exec(call).is_err()))
+            .unwrap()
+            .unwrap();
+        assert!(failed, "{call} must raise");
+    }
+    domain
+        .with_runtime(|runtime| {
+            runtime.exec("assert(buffer.readf64(target, 0) == 1.5 and buffer.readf64(target, 8) == 2.5)")?;
+            Ok::<(), l3i::Error>(())
+        })
+        .unwrap()
+        .unwrap();
+}
+
+#[test]
 fn workers_share_nothing_with_each_other_or_their_domain() {
     let harness = support::domain("isolated", &[]);
     let domain = &harness.domain;

@@ -1,0 +1,27 @@
+--!strict
+--!native
+-- Read the same f64 layout as ordinary-buffer-read, without including construction.
+local sharedBuffer = require '@jess/sharedBuffer'
+
+local function run(scale: number): number
+  local count = math.max(1, math.floor(4000000 * scale))
+  local builder = sharedBuffer.create(4096 * 8)
+  for index = 0, 4095 do
+    builder:writef64(index * 8, index)
+  end
+  local data: jess_runtime_SharedBuffer = builder:seal()
+
+  local started, total = os.clock(), 0
+  for index = 0, count - 1 do
+    total += data:readf64((index % 4096) * 8)
+  end
+
+  assert(total >= 0)
+  return os.clock() - started
+end
+
+return table.freeze {
+  name = 'shared-buffer-read',
+  path = 'tools/bench/canaries/shared-buffer-read.jsl',
+  run = run,
+}

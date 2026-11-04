@@ -219,3 +219,94 @@ fn a_script_named_like_a_package_module_is_a_loose_script() {
     assert!(printed.starts_with("false\tmodule not found: ./src/data/common"), "{printed}");
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn run_allocates_shared_buffers_only_when_granted() {
+    let root = temp_dir_path("capability-shared-buffer");
+    drop(fs::remove_dir_all(&root));
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("script.jsl"),
+        "print(require('@jess/sharedBuffer').create(8):seal().length)\n",
+    )
+    .unwrap();
+
+    let denied = jess().arg("run").arg(root.join("script.jsl")).output().unwrap();
+    assert!(!denied.status.success());
+    assert!(stderr(&denied).contains("shared-buffer.create"), "{}", stderr(&denied));
+
+    let granted = jess()
+        .args(["run", "--capability", "shared-buffer.create"])
+        .arg(root.join("script.jsl"))
+        .output()
+        .unwrap();
+    assert!(granted.status.success(), "{}", stderr(&granted));
+    fs::remove_dir_all(root).unwrap();
+}
+
+const SHARED: &str = "local shared = require('@jess/sharedBuffer')\n";
+
+fn run_shared(root: &Path, script: &str, grants: &[&str]) -> std::process::Output {
+    fs::write(root.join("script.jsl"), format!("{SHARED}{script}")).unwrap();
+    let mut command = jess();
+    command.arg("run");
+    for grant in grants {
+        command.args(["--capability", grant]);
+    }
+
+    command.arg(root.join("script.jsl")).output().unwrap()
+}
+
+#[test]
+fn the_shared_buffer_limit_defaults_to_a_gibibyte_and_moves_only_with_its_capability() {
+    let root = temp_dir_path("capability-shared-limit");
+    drop(fs::remove_dir_all(&root));
+    fs::create_dir_all(&root).unwrap();
+    let create = "shared-buffer.create";
+    let limit = "shared-buffer.limit";
+
+    let over = run_shared(&root, "shared.create(1073741825)\n", &[create]);
+    assert!(
+        stderr(&over).contains("shared buffer memory limit exceeded"),
+        "{}",
+        stderr(&over)
+    );
+    let denied = run_shared(&root, "shared.setLimit(2147483648)\n", &[create]);
+    assert!(stderr(&denied).contains(limit), "{}", stderr(&denied));
+    let lowered = run_shared(&root, "shared.setLimit(8)\nshared.create(9)\n", &[create, limit]);
+    assert!(
+        stderr(&lowered).contains("shared buffer memory limit exceeded"),
+        "{}",
+        stderr(&lowered)
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_worker_cannot_set_the_limit_and_its_budget_only_narrows() {
+    let root = temp_dir_path("capability-shared-worker");
+    drop(fs::remove_dir_all(&root));
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(
+        root.join("jess.toml"),
+        "manifest_version = 1\n\n[package]\nid = \"org.example.budgets\"\nversion = \"0.1.0\"\njess_api = \"1\"\ninclude = [\"src\"]\ndefault_target = \"app\"\n\n[targets.app]\nkind = \"application\"\nentry = \"src/main.jsl\"\ncapabilities = [\"shared-buffer.create\", \"shared-buffer.limit\", \"worker.spawn\"]\n",
+    )
+    .unwrap();
+    let run = |main: &str| {
+        fs::write(root.join("src/main.jsl"), main).unwrap();
+        jess().args(["package", "run", "--trusted"]).arg(&root).output().unwrap()
+    };
+
+    let setting = run(
+        "local lane = require('@jess/worker').spawn { source = [[return function() require('@jess/sharedBuffer').setLimit(1) end]] }\nlane:send(1)\nlane:receive(20)\n",
+    );
+    assert!(stderr(&setting).contains("not a worker's"), "{}", stderr(&setting));
+
+    let greedy =
+        run("require('@jess/worker').spawn { source = [[return function() end]], sharedBufferBudget = 2147483648 }\n");
+    assert!(stderr(&greedy).contains("shared buffer budget"), "{}", stderr(&greedy));
+
+    let negative = run("require('@jess/worker').spawn { source = [[return function() end]], sharedBufferBudget = -1 }\n");
+    assert!(stderr(&negative).contains("can't be negative"), "{}", stderr(&negative));
+    fs::remove_dir_all(root).unwrap();
+}

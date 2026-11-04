@@ -12,13 +12,13 @@ fn only_generic_members_are_installed() {
         r"
         local expected = {
             'application', 'audio', 'bench', 'context', 'events', 'gpu', 'granted', 'input',
-            'interfaces', 'null', 'payload', 'shader', 'version', 'worker',
+            'interfaces', 'null', 'payload', 'shader', 'sharedBuffer', 'version', 'worker',
         }
         local members = {}
         for name in jess do table.insert(members, name) end
         table.sort(members)
         assert(table.concat(members, ' ') == table.concat(expected, ' '), table.concat(members, ' '))
-        for _, name in { 'shader', 'gpu', 'context', 'worker', 'events', 'interfaces', 'application', 'bench' } do
+        for _, name in { 'shader', 'sharedBuffer', 'gpu', 'context', 'worker', 'events', 'interfaces', 'application', 'bench' } do
             assert(require('@jess/' .. name) == jess[name], name)
         end
         -- @jess/input is the built-in package's Luau, over jess.input.
@@ -121,6 +121,7 @@ fn the_types_cover_exactly_the_kernel_s_modules() {
             "@jess/render",
             "@jess/render/camera",
             "@jess/shader",
+            "@jess/sharedBuffer",
             "@jess/sse",
             "@jess/style",
             "@jess/test",

@@ -24,19 +24,23 @@ use std::time::Duration;
 
 use l3i::Runtime;
 use l3i::bind::{Call, StackResults};
-use l3i::convert::{Integer, Push};
-use l3i::extension::{Extension, ExtensionDescriptor, InstallContext, TagPolicy};
+use l3i::convert::{BufferView, Exact, Integer, Push};
+use l3i::extension::{CompilerTypePolicy, Extension, ExtensionDescriptor, InstallContext, TagPolicy};
 use l3i::stack::{Scope, Type, ValueView};
 use l3i::userdata::{Owned, Userdata};
 use l3i::value::{Function, Table};
 
-use crate::runtime::capability::{CapabilitySet, current_authority};
+use crate::runtime::capability::{
+    CapabilitySet, SHARED_BUFFER_CREATE, SHARED_BUFFER_LIMIT, current_authority, require_capability,
+};
 use crate::runtime::context::Phase;
 use crate::runtime::diagnostics::{Diagnostic, DiagnosticKind, Severity};
 use crate::runtime::domain::{DomainCore, DomainLink};
 use crate::runtime::error::RuntimeError;
 use crate::runtime::ids::{CapabilityId, WorkerId};
 use crate::runtime::message::{Message, ResourceHandle};
+use crate::runtime::shared_buffer::{Builder, SharedBuffer, process_ledger};
+use crate::runtime::shared_buffer_lowering::{SharedBufferLowering, count_method_read};
 use crate::runtime::worker::{WorkerLink, WorkerSpec};
 
 /// The extension's id.
@@ -47,6 +51,7 @@ pub const CONTEXT_MODULE: &str = "@jess/context";
 
 /// The `require` path of the worker module.
 pub const WORKER_MODULE: &str = "@jess/worker";
+const SHARED_BUFFER_MODULE: &str = "@jess/sharedBuffer";
 
 /// The `require` path of the named-event module.
 pub const EVENTS_MODULE: &str = "@jess/events";
@@ -67,6 +72,8 @@ pub struct Modules {
     pub context: Table,
     /// The `@jess/worker` table.
     pub worker: Table,
+    /// The immutable shared buffer module.
+    pub shared_buffer: Table,
     /// The `@jess/events` table.
     pub events: Table,
     /// The `@jess/interfaces` table.
@@ -350,7 +357,7 @@ fn emit(bindings: &Bindings, call: &Call<'_>, name: &str, payload: Option<ValueV
     })
 }
 
-const SPAWN_OPTIONS: [&str; 4] = ["capabilities", "name", "shareServices", "source"];
+const SPAWN_OPTIONS: [&str; 5] = ["capabilities", "name", "shareServices", "sharedBufferBudget", "source"];
 
 /// `worker.spawn(options)`. The options are checked before the owner is, so a misspelled key
 /// reads the same in every runtime, owned or not.
@@ -358,18 +365,20 @@ fn spawn(bindings: &Bindings, call: &Call<'_>, options: ValueView<'_>) -> l3i::R
     if !options.is_table() {
         return Err(options.type_error(Type::Table));
     }
-    let (source, name, capabilities, share_services) = call.with_frame(|frame| {
+    let (source, name, capabilities, share_services, shared_buffer_budget) = call.with_frame(|frame| {
         let table = options.as_table()?;
         table.for_each(frame, |_, key, _| match key.read::<&str>() {
             Ok(key) if SPAWN_OPTIONS.contains(&key) => Ok(()),
             Ok(key) => Err(l3i::Error::runtime(format!(
-                "unknown worker.spawn option '{key}': expected capabilities, name, shareServices, or source"
+                "unknown worker.spawn option '{key}': expected capabilities, name, shareServices, sharedBufferBudget, or source"
             ))),
             Err(_) => Err(l3i::Error::runtime("worker.spawn options are named by strings")),
         })?;
         let source: Option<String> = table.get_optional(frame, "source", "worker.spawn options")?;
         let name: Option<String> = table.get_optional(frame, "name", "worker.spawn options")?;
         let share_services: Option<bool> = table.get_optional(frame, "shareServices", "worker.spawn options")?;
+        let shared_buffer_budget: Option<Exact<i64>> =
+            table.get_optional(frame, "sharedBufferBudget", "worker.spawn options")?;
         let listed = table.get(frame, "capabilities")?;
         let capabilities = if listed.is_nil() {
             None
@@ -386,7 +395,7 @@ fn spawn(bindings: &Bindings, call: &Call<'_>, options: ValueView<'_>) -> l3i::R
                 listed.type_of().name()
             )));
         };
-        Ok((source, name, capabilities, share_services))
+        Ok((source, name, capabilities, share_services, shared_buffer_budget))
     })?;
     let Some(source) = source else {
         return Err(l3i::Error::runtime(
@@ -419,6 +428,12 @@ fn spawn(bindings: &Bindings, call: &Call<'_>, options: ValueView<'_>) -> l3i::R
         }
         spec = spec.capabilities(set);
     }
+    if let Some(Exact(bytes)) = shared_buffer_budget {
+        let bytes =
+            usize::try_from(bytes).map_err(|_| l3i::Error::runtime("worker.spawn: sharedBufferBudget can't be negative"))?;
+        spec = spec.shared_buffer_budget(bytes);
+    }
+
     if share_services == Some(true) {
         spec = spec.share_all();
     }
@@ -435,12 +450,90 @@ fn spawn(bindings: &Bindings, call: &Call<'_>, options: ValueView<'_>) -> l3i::R
     }))
 }
 
+fn describe_shared_buffer(d: &mut ExtensionDescriptor) {
+    d.optional_capability(SHARED_BUFFER_CREATE);
+    d.optional_capability(SHARED_BUFFER_LIMIT);
+    d.native_hooks(SharedBufferLowering);
+    d.module(SHARED_BUFFER_MODULE)
+        .doc("Immutable native buffers shared between worker VMs.")
+        .installed("create")
+        .signature("(length: number) -> jess_runtime_SharedBufferBuilder");
+    d.module(SHARED_BUFFER_MODULE)
+        .installed("setLimit")
+        .signature("(bytes: number) -> ()");
+    let mut builder = d.userdata::<Builder>(Builder::NAME);
+    builder.tag(TagPolicy::Never).doc("A writable buffer before sealing.");
+    builder
+        .method("writef64", |this: &Builder, Exact(offset): Exact<i64>, value: f64| {
+            this.write(offset, &value.to_le_bytes())
+        })
+        .signature("(self, offset: number, value: number): ()");
+    builder
+        .method(
+            "writeu32",
+            |this: &Builder, Exact(offset): Exact<i64>, Exact(value): Exact<u32>| this.write(offset, &value.to_le_bytes()),
+        )
+        .signature("(self, offset: number, value: number): ()");
+    builder
+        .method("write", |this: &Builder, Exact(offset): Exact<i64>, value: BufferView<'_>| {
+            this.write_buffer(offset, &value)
+        })
+        .signature("(self, offset: number, value: buffer): ()");
+    builder
+        .method("seal", |this: &Builder| this.seal().map(Owned))
+        .signature("(self): jess_runtime_SharedBuffer");
+    let mut shared = d.userdata::<SharedBuffer>(SharedBuffer::NAME);
+    shared
+        .tag(TagPolicy::Required)
+        .compiler_type(CompilerTypePolicy::Required)
+        .doc("An immutable shared native buffer.");
+    shared
+        .method("readf64", |this: &SharedBuffer, Exact(offset): Exact<i64>| {
+            count_method_read();
+            this.read_f64(offset)
+        })
+        .signature("(self, offset: number): number");
+    shared
+        .method("readu32", |this: &SharedBuffer, Exact(offset): Exact<i64>| {
+            count_method_read();
+            this.read_u32(offset)
+        })
+        .signature("(self, offset: number): number");
+    shared
+        .method(
+            "copyInto",
+            |this: &SharedBuffer,
+             target: BufferView<'_>,
+             Exact(target_offset): Exact<i64>,
+             Exact(source_offset): Exact<i64>,
+             Exact(length): Exact<i64>| { this.copy_into(&target, target_offset, source_offset, length) },
+        )
+        .signature("(self, target: buffer, targetOffset: number, sourceOffset: number, length: number): ()");
+    shared
+        .method(
+            "slice",
+            |this: &SharedBuffer, Exact(offset): Exact<i64>, Exact(length): Exact<i64>| {
+                this.slice(offset, length).map(Owned)
+            },
+        )
+        .signature("(self, offset: number, length: number): jess_runtime_SharedBuffer");
+    shared
+        .getter("length", |this: &SharedBuffer| {
+            // A limit that fits memory fits a double exactly.
+            #[allow(clippy::cast_precision_loss)]
+            let length = this.bytes().len() as f64;
+            length
+        })
+        .signature("number");
+}
+
 impl Extension for RuntimeExtension {
     fn id(&self) -> &'static str {
         EXTENSION_ID
     }
 
     fn describe(&self, d: &mut ExtensionDescriptor) -> l3i::Result<()> {
+        describe_shared_buffer(d);
         d.module(CONTEXT_MODULE)
             .doc("Script contexts: bind handlers to the phases a context the host declared may run in.")
             .installed("bind")
@@ -450,7 +543,7 @@ impl Extension for RuntimeExtension {
             .doc("Workers: isolated Luau states that run beside the domain and talk to it in messages.")
             .installed("spawn")
             .signature(
-                "(options: { source: string, name: string?, capabilities: { string }?, shareServices: boolean? }) -> jess_runtime_Worker",
+                "(options: { source: string, name: string?, capabilities: { string }?, shareServices: boolean?, sharedBufferBudget: number? }) -> jess_runtime_Worker",
             )
             .doc("Spawns a worker from its module source; needs the worker.spawn capability. shareServices = true gives it every service the domain carries.")
             .installed("send")
@@ -543,6 +636,40 @@ impl Extension for RuntimeExtension {
     }
 
     fn install(&self, cx: &mut InstallContext<'_>) -> l3i::Result<()> {
+        let may_create = cx.plan().policy().grants(SHARED_BUFFER_CREATE);
+        let may_limit = cx.plan().policy().grants(SHARED_BUFFER_LIMIT);
+        let shared_buffer = cx.module(SHARED_BUFFER_MODULE)?;
+        shared_buffer.function("create", move |Exact(length): Exact<i64>| {
+            // Under a domain its broker decides; outside one, what the plan granted.
+            let authority = current_authority();
+            if authority.is_some() {
+                require_capability(SHARED_BUFFER_CREATE).map_err(l3i::Error::from)?;
+            } else if !may_create {
+                return Err(l3i::Error::denied("@jess/sharedBuffer.create", SHARED_BUFFER_CREATE));
+            }
+
+            let ledger =
+                authority.map_or_else(process_ledger, |authority| std::sync::Arc::clone(authority.shared_buffers()));
+            Builder::new(length, ledger).map(Owned)
+        })?;
+        shared_buffer.function("setLimit", move |Exact(bytes): Exact<i64>| {
+            match current_authority() {
+                // A worker's budget only narrows, so what it may spend stays what its spawner chose.
+                Some(authority) if authority.attribution().worker.is_some() => {
+                    return Err(l3i::Error::permission(
+                        "@jess/sharedBuffer.setLimit is for a domain's own code, not a worker's",
+                    ));
+                }
+                Some(_) => require_capability(SHARED_BUFFER_LIMIT).map_err(l3i::Error::from)?,
+                None if may_limit => {}
+                None => return Err(l3i::Error::denied("@jess/sharedBuffer.setLimit", SHARED_BUFFER_LIMIT)),
+            }
+
+            let bytes = usize::try_from(bytes).map_err(|_| l3i::Error::runtime("negative shared buffer limit"))?;
+            process_ledger().set_limit(bytes);
+            Ok(())
+        })?;
+        let shared_buffer = shared_buffer.table().clone();
         let bindings = cx.insert_state(Bindings {
             owner: RefCell::new(Owner::Detached),
             interfaces: RefCell::new(Interfaces::Absent),
@@ -599,6 +726,7 @@ impl Extension for RuntimeExtension {
         cx.insert_state(Modules {
             context,
             worker,
+            shared_buffer,
             events,
             interfaces,
         });

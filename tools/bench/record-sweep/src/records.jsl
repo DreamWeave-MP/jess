@@ -1,0 +1,126 @@
+--!strict
+--!native
+-- Fixed-width records of six f64s, swept four ways over the same values. Every sweep folds the
+-- same arithmetic in the same order, so their totals must match exactly.
+export type Mode = 'generate' | 'private' | 'window' | 'scalar'
+
+local RecordBytes, BuildRecords = 48, 2048
+
+local function fold(
+  total: number,
+  first: number,
+  second: number,
+  third: number,
+  fourth: number,
+  fifth: number,
+  sixth: number
+): number
+  return total * 0.999 + first * 1e-9 + second - third * 1e-6 + fourth * fifth + sixth
+end
+
+local function second(index: number): number
+  return index % 7 + 1
+end
+
+local function third(index: number): number
+  return index * 0.5
+end
+
+local function fourth(index: number): number
+  return (index % 97) / 97
+end
+
+local function fifth(index: number): number
+  return math.sin((index % 5000) * 0.03)
+end
+
+local function sixth(index: number): number
+  return index % 13 - 6
+end
+
+-- Writes `count` records starting at record `first` to the start of `target`.
+local function fill(target: buffer, first: number, count: number)
+  for row = 0, count - 1 do
+    local index, offset = first + row, row * RecordBytes
+    buffer.writef64(target, offset, index)
+    buffer.writef64(target, offset + 8, second(index))
+    buffer.writef64(target, offset + 16, third(index))
+    buffer.writef64(target, offset + 24, fourth(index))
+    buffer.writef64(target, offset + 32, fifth(index))
+    buffer.writef64(target, offset + 40, sixth(index))
+  end
+end
+
+local function generated(count: number): number
+  local total = 0
+  for index = 0, count - 1 do
+    total = fold(total, index, second(index), third(index), fourth(index), fifth(index), sixth(index))
+  end
+
+  return total
+end
+
+local function readBuffer(total: number, source: buffer, offset: number): number
+  return fold(
+    total,
+    buffer.readf64(source, offset),
+    buffer.readf64(source, offset + 8),
+    buffer.readf64(source, offset + 16),
+    buffer.readf64(source, offset + 24),
+    buffer.readf64(source, offset + 32),
+    buffer.readf64(source, offset + 40)
+  )
+end
+
+local function privately(source: buffer, count: number): number
+  local total = 0
+  for row = 0, count - 1 do
+    total = readBuffer(total, source, row * RecordBytes)
+  end
+
+  return total
+end
+
+local function windowed(source: jess_runtime_SharedBuffer, count: number, windowRecords: number): number
+  local window = buffer.create(windowRecords * RecordBytes)
+  local position, total = 0, 0
+  while position < count do
+    local rows = math.min(windowRecords, count - position)
+    source:copyInto(window, 0, position * RecordBytes, rows * RecordBytes)
+    for row = 0, rows - 1 do
+      total = readBuffer(total, window, row * RecordBytes)
+    end
+
+    position += rows
+  end
+
+  return total
+end
+
+local function scalar(source: jess_runtime_SharedBuffer, count: number): number
+  local total = 0
+  for row = 0, count - 1 do
+    local offset = row * RecordBytes
+    total = fold(
+      total,
+      source:readf64(offset),
+      source:readf64(offset + 8),
+      source:readf64(offset + 16),
+      source:readf64(offset + 24),
+      source:readf64(offset + 32),
+      source:readf64(offset + 40)
+    )
+  end
+
+  return total
+end
+
+return table.freeze {
+  RecordBytes = RecordBytes,
+  BuildRecords = BuildRecords,
+  fill = fill,
+  generated = generated,
+  privately = privately,
+  windowed = windowed,
+  scalar = scalar,
+}

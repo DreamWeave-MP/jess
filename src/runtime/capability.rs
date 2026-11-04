@@ -21,9 +21,17 @@ use crate::runtime::ids::{CapabilityId, DomainId};
 use crate::runtime::log::LogSink;
 use crate::runtime::profile::{Counters, ProfileEvent, ProfileSink};
 use crate::runtime::service::Services;
+use crate::runtime::shared_buffer::Ledger;
 
 /// The capability a script needs to spawn a worker from Luau.
 pub const WORKER_SPAWN: &str = "worker.spawn";
+
+/// The capability a script needs to allocate shared buffer storage. Receiving and reading a shared
+/// buffer need nothing: only allocation spends the process-wide native limit.
+pub const SHARED_BUFFER_CREATE: &str = "shared-buffer.create";
+
+/// The capability a domain needs to change how much shared buffer storage the process may hold.
+pub const SHARED_BUFFER_LIMIT: &str = "shared-buffer.limit";
 
 /// Every interned name, by id, and each name's id.
 #[derive(Default)]
@@ -354,6 +362,7 @@ pub struct Authority {
     capabilities: Arc<CapabilitySet>,
     services: Arc<Services>,
     observer: Option<Arc<Observer>>,
+    shared_buffers: Arc<Ledger>,
 }
 
 impl fmt::Debug for Authority {
@@ -372,13 +381,20 @@ impl Authority {
         capabilities: Arc<CapabilitySet>,
         services: Arc<Services>,
         observer: Option<Arc<Observer>>,
+        shared_buffers: Arc<Ledger>,
     ) -> Authority {
         Authority {
             attribution,
             capabilities,
             services,
             observer,
+            shared_buffers,
         }
+    }
+
+    /// The budget shared buffers the running code allocates are charged to.
+    pub(crate) fn shared_buffers(&self) -> &Arc<Ledger> {
+        &self.shared_buffers
     }
 
     /// Which domain, generation, context, and worker is running.
@@ -551,6 +567,7 @@ mod tests {
             Arc::new(CapabilitySet::from_names(["test.guarded"]).unwrap()),
             Arc::new(services),
             None,
+            crate::runtime::shared_buffer::process_ledger(),
         );
         assert!(service::<String>().is_none(), "no authority, no service");
         {

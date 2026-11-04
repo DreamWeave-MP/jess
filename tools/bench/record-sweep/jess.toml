@@ -1,0 +1,20 @@
+manifest_version = 1
+
+[package]
+id = "org.dreamweave.jess.bench.record-sweep"
+version = "0.1.0"
+jess_api = "1"
+include = ["src"]
+default_target = "bench"
+
+[modules]
+"@record-sweep/records" = "src/records.jsl"
+
+[[layer]]
+id = "record-sweep.core"
+exports = ["@record-sweep/records"]
+
+[targets.bench]
+kind = "application"
+entry = "src/main.jsl"
+capabilities = ["shared-buffer.create", "worker.spawn"]

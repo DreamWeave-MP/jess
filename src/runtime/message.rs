@@ -6,15 +6,14 @@
 //! else converts, and nothing unsupported is dropped quietly: [`TransferError`] names the path to
 //! the offending value and what it was.
 //!
-//! Bytes travel as [`Message::Bytes`], an `Arc<[u8]>`: one copy out of the sending VM and one
-//! copy into a fresh `buffer` in the receiving one, and no copy at all between native parties
-//! that share the `Arc`. A zero-copy buffer shared between two VMs would need Luau to alias
-//! external memory as a `buffer`, which l3i does not expose; that is the documented follow-up.
+//! Ordinary buffers are copied into a fresh buffer in the receiving VM. Shared buffers carry
+//! immutable native storage across the boundary without copying its payload.
 
 use std::fmt;
 use std::sync::Arc;
 
-use l3i::convert::{BufferView, Integer, NewBuffer, Push, Vector3};
+use crate::runtime::shared_buffer::SharedBuffer;
+use l3i::convert::{BufferView, Integer, Push, Vector3, new_buffer};
 use l3i::stack::{Frame, Scope, Type, ValueView};
 use l3i::userdata::Userdata;
 
@@ -65,6 +64,8 @@ pub enum Message {
     Vector([f32; 3]),
     /// A Luau `buffer`; arrives as a fresh buffer of the same bytes.
     Bytes(Arc<[u8]>),
+    /// Immutable native storage shared across VMs.
+    SharedBuffer(SharedBuffer),
     /// A table whose keys are exactly `1..=n`.
     List(Vec<Message>),
     /// Any other table, with string or number keys, in key order.
@@ -123,12 +124,13 @@ impl Message {
     }
 
     /// An estimate of the message's size in bytes, for message and byte counters: the payload
-    /// bytes of strings and buffers, eight per scalar, and the sum over containers.
+    /// bytes of strings and buffers, eight per scalar or shared buffer, whose payload does not
+    /// cross, and the sum over containers.
     #[must_use]
     pub fn size_hint(&self) -> usize {
         match self {
             Message::Nil => 0,
-            Message::Boolean(_) | Message::Number(_) | Message::Integer(_) => 8,
+            Message::Boolean(_) | Message::Number(_) | Message::Integer(_) | Message::SharedBuffer(_) => 8,
             Message::Vector(_) => 12,
             Message::String(bytes) => bytes.len(),
             Message::Bytes(bytes) => bytes.len(),
@@ -161,13 +163,19 @@ impl Message {
 
     /// What the message weighs in a queue: the storage it holds, not only its payload. Every
     /// value costs a [`Message`]'s size, every element of a list or map a key's too, and strings,
-    /// buffers, string keys, and handle kinds their bytes; the sum saturates. A list of a million empty tables weighs
+    /// buffers, string keys, and handle kinds their bytes; shared buffer storage is accounted
+    /// separately and only its reference is charged here. The sum saturates. A list of a million empty tables weighs
     /// what it takes to hold them, where [`Message::size_hint`], a payload count for profiling,
     /// says nothing.
     #[must_use]
     pub fn queue_weight(&self) -> usize {
         let held = match self {
-            Message::Nil | Message::Boolean(_) | Message::Number(_) | Message::Integer(_) | Message::Vector(_) => 0,
+            Message::Nil
+            | Message::Boolean(_)
+            | Message::Number(_)
+            | Message::Integer(_)
+            | Message::Vector(_)
+            | Message::SharedBuffer(_) => 0,
             Message::String(bytes) => bytes.len(),
             Message::Bytes(bytes) => bytes.len(),
             Message::List(items) => items.iter().fold(0, |total: usize, item| {
@@ -301,9 +309,13 @@ fn read_at(frame: &Frame<'_>, view: ValueView<'_>, depth: usize, budget: &mut Bu
         Type::Buffer => {
             let bytes = view.read::<BufferView<'_>>().map_err(read_failed)?;
             budget.charge(bytes.len())?;
-            Ok(Message::Bytes(Arc::from(bytes.to_vec())))
+            // SAFETY: the slice lives only for this one copy, which runs no Luau and writes nothing.
+            Ok(Message::Bytes(Arc::from(unsafe { bytes.bytes_unchecked() })))
         }
         Type::Table => read_table(frame, view, depth, budget),
+        Type::Userdata if l3i::userdata::receiver::<SharedBuffer>(view).is_some() => Ok(Message::SharedBuffer(
+            l3i::userdata::receiver::<SharedBuffer>(view).expect("checked above").clone(),
+        )),
         Type::Userdata => l3i::userdata::receiver::<ResourceHandle>(view).map_or_else(
             || Err(unsupported(format!("a {}", l3i::diagnostics::object_type_name(view)))),
             |handle| {
@@ -459,7 +471,10 @@ fn push(frame: &Frame<'_>, message: &Message, frozen: bool) -> l3i::Result<()> {
             frame.push(&Vector3 { x: *x, y: *y, z: *z })?;
         }
         Message::Bytes(bytes) => {
-            frame.push(&NewBuffer(bytes.to_vec()))?;
+            new_buffer(frame, bytes.len())?.write(0, bytes)?;
+        }
+        Message::SharedBuffer(bytes) => {
+            l3i::userdata::push_owned(frame, bytes.clone())?;
         }
         Message::List(items) => {
             let table = frame.push_table(items.len(), 0)?;
@@ -577,6 +592,14 @@ mod tests {
         let cyclic = round_trip(&runtime, "(function() local t = {} t.again = t return t end)()").unwrap_err();
         assert!(cyclic.found.contains("nested more than"), "{cyclic}");
         assert!(cyclic.path.starts_with("message.again.again"), "{cyclic}");
+    }
+
+    #[test]
+    fn a_shared_buffer_counts_as_a_reference_not_its_payload() {
+        let ledger = crate::runtime::shared_buffer::Ledger::new(1024, None);
+        let builder = crate::runtime::shared_buffer::Builder::new(1024, ledger).unwrap();
+        let message = Message::SharedBuffer(builder.seal().unwrap());
+        assert_eq!(message.size_hint(), 8);
     }
 
     #[test]

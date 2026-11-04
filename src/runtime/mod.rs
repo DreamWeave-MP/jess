@@ -74,11 +74,13 @@ mod message;
 mod profile;
 mod resources;
 mod service;
+mod shared_buffer;
+pub mod shared_buffer_lowering;
 mod worker;
 
 pub use capability::{
-    Authority, CapabilityDenied, CapabilitySet, Grant, Grantor, RootAuthority, WORKER_SPAWN, current_authority,
-    require_capability, service,
+    Authority, CapabilityDenied, CapabilitySet, Grant, Grantor, RootAuthority, SHARED_BUFFER_CREATE, WORKER_SPAWN,
+    current_authority, require_capability, service,
 };
 pub use context::{Budget, ContextInfo, ContextSpec, FixedStep, Phase};
 pub use diagnostics::{
@@ -96,4 +98,5 @@ pub use message::{MAX_DEPTH, Message, MessageKey, ResourceHandle, TransferError,
 pub use profile::{CollectedProfile, Direction, DiscardProfile, DomainStats, ProfileEvent, ProfileSink};
 pub use resources::OwnedResource;
 pub use service::Services;
+pub use shared_buffer::{DEFAULT_SHARED_BUFFER_LIMIT, SharedBuffer};
 pub use worker::{WORKER_QUEUE, WorkerFailurePolicy, WorkerInfo, WorkerSpec, WorkerState};

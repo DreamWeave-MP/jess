@@ -230,6 +230,75 @@ fn a_package_source_and_its_jpks_run_the_same_application() {
 }
 
 #[test]
+fn shared_buffer_crosses_workers_from_source_and_packed_packages() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("shared-package");
+    write(
+        &root,
+        &[
+            (
+                "jess.toml",
+                &manifest(
+                    "org.example.shared",
+                    "[modules]\n\"@example/shared-worker\" = \"src/worker.jsl\"\n\n[[layer]]\nid = \"example.shared\"\nexports = [\"@example/shared-worker\"]\n\n[targets.app]\nkind = \"application\"\nentry = \"src/main.jsl\"\ncapabilities = [\"shared-buffer.create\"]\n",
+                ),
+            ),
+            ("src/main.jsl", "return nil\n"),
+            (
+                "src/worker.jsl",
+                "--!native\nreturn function(value: jess_runtime_SharedBuffer)\n  assert(value:readf64(0) == 17.5)\n  return value\nend\n",
+            ),
+        ],
+    );
+    let packed = temp.path().join("shared.jpk");
+    package::pack(&jess::lua::runtime(Options::default()).unwrap(), &text(&root), &text(&packed)).unwrap();
+    for path in [&root, &packed] {
+        let application = launch(&TargetRequest {
+            grant: Some(vec!["shared-buffer.create".to_owned()]),
+            ..request(path, "app", &[])
+        });
+        let domain = application.domain();
+        let message = domain
+            .with_runtime(|runtime| {
+                runtime.stack().with_frame(|frame| {
+                    let source = "local builder = require('@jess/sharedBuffer').create(8) builder:writef64(0, 17.5) return builder:seal()";
+                    let chunk = runtime.load(frame, "=shared", source, &runtime.compile_options())?;
+                    let value: l3i::value::Value = chunk.as_function()?.invoke(frame, ())?;
+                    value.with_value(frame, |frame, view| Ok(Message::read(frame, view, "payload").unwrap()))
+                })
+            })
+            .unwrap()
+            .unwrap();
+        let workers: Vec<_> = (0..4)
+            .map(|_| {
+                domain
+                    .spawn_worker(
+                        WorkerSpec::new("shared", "return require('@example/shared-worker')")
+                            .capabilities(CapabilitySet::empty()),
+                    )
+                    .unwrap()
+            })
+            .collect();
+        for &worker in &workers {
+            domain.send_to_worker(worker, message.clone()).unwrap();
+        }
+
+        for &worker in &workers {
+            let reply = domain
+                .receive_from_worker(worker, Some(Duration::from_secs(20)))
+                .unwrap()
+                .unwrap();
+            let (Message::SharedBuffer(original), Message::SharedBuffer(received)) = (&message, &reply) else {
+                panic!("expected shared buffers");
+            };
+            assert!(original.shares_storage(received));
+        }
+
+        application.stop().unwrap();
+    }
+}
+
+#[test]
 fn workers_import_the_application_plan_with_isolated_module_state() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("worker-package");

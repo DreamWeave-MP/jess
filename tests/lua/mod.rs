@@ -14,4 +14,5 @@ mod network_capability;
 mod package;
 mod script_support;
 mod shader;
+mod shared_buffer_native;
 mod stdlib;
