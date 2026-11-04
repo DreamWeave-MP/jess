@@ -13,7 +13,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::runtime::shared_buffer::SharedBuffer;
-use l3i::convert::{BufferView, Integer, NewBuffer, Push, Vector3};
+use l3i::convert::{BufferView, Integer, Push, Vector3, new_buffer};
 use l3i::stack::{Frame, Scope, Type, ValueView};
 use l3i::userdata::Userdata;
 
@@ -309,7 +309,8 @@ fn read_at(frame: &Frame<'_>, view: ValueView<'_>, depth: usize, budget: &mut Bu
         Type::Buffer => {
             let bytes = view.read::<BufferView<'_>>().map_err(read_failed)?;
             budget.charge(bytes.len())?;
-            Ok(Message::Bytes(Arc::from(bytes.to_vec())))
+            // SAFETY: the slice lives only for this one copy, which runs no Luau and writes nothing.
+            Ok(Message::Bytes(Arc::from(unsafe { bytes.bytes_unchecked() })))
         }
         Type::Table => read_table(frame, view, depth, budget),
         Type::Userdata if l3i::userdata::receiver::<SharedBuffer>(view).is_some() => Ok(Message::SharedBuffer(
@@ -470,7 +471,7 @@ fn push(frame: &Frame<'_>, message: &Message, frozen: bool) -> l3i::Result<()> {
             frame.push(&Vector3 { x: *x, y: *y, z: *z })?;
         }
         Message::Bytes(bytes) => {
-            frame.push(&NewBuffer(bytes.to_vec()))?;
+            new_buffer(frame, bytes.len())?.write(0, bytes)?;
         }
         Message::SharedBuffer(bytes) => {
             l3i::userdata::push_owned(frame, bytes.clone())?;

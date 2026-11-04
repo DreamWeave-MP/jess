@@ -3,6 +3,7 @@
 //! in minutes and one that builds in an hour. Run one area with a filter:
 //! `cargo test --test integration cli::`, `... lua::package::`, `... lua::luau_style::`.
 
+mod allocations;
 mod cli;
 #[cfg(feature = "gpu")]
 mod gpu;
@@ -12,3 +13,6 @@ mod lua;
 mod render;
 mod runtime;
 mod shader;
+
+#[global_allocator]
+static ALLOCATOR: allocations::Counting = allocations::Counting;
