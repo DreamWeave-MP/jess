@@ -53,6 +53,14 @@ assert(payload:readu32(0) == 3735928559)
         "payload:slice(-1, 1)",
         "builder:writef64(0, 1)",
         "builder:seal()",
+        "payload:readf64(0.5)",
+        "payload:readu32(1.5)",
+        "payload:slice(0.5, 8)",
+        "payload:slice(0, 8.5)",
+        "require('@jess/sharedBuffer').create(1.5)",
+        "require('@jess/sharedBuffer').create(16):writef64(0.5, 1)",
+        "require('@jess/sharedBuffer').create(16):writeu32(0, 1.5)",
+        "require('@jess/sharedBuffer').create(16):write(0.5, buffer.create(1))",
     ] {
         let failed = domain
             .with_runtime(|runtime| Ok::<_, l3i::Error>(runtime.exec(call).is_err()))
@@ -134,34 +142,14 @@ payload:copyInto(target, 0, 32, 0)
         .unwrap()
         .unwrap();
 
-    // Numbers convert to i32 the way every shared-buffer method does: they round to the nearest
-    // integer, halves away from zero, so 1.4 is offset 1, 1.6 is 2 and -0.5 is negative; NaN,
-    // infinities and anything past i32 raise.
-    domain
-        .with_runtime(|runtime| {
-            runtime.exec(
-                r"
-local rounded = buffer.create(8)
-local exact = buffer.create(8)
-payload:copyInto(rounded, 0, 1.4, 8)
-payload:copyInto(exact, 0, 1, 8)
-assert(buffer.readf64(rounded, 0) == buffer.readf64(exact, 0))
-payload:copyInto(rounded, 0, 1.6, 8)
-payload:copyInto(exact, 0, 2, 8)
-assert(buffer.readf64(rounded, 0) == buffer.readf64(exact, 0))
-payload:copyInto(rounded, 0, -0.4, 8)
-assert(buffer.readf64(rounded, 0) == 0.5)
-payload:copyInto(rounded, 0.4, 0, 8)
-",
-            )?;
-            Ok::<(), l3i::Error>(())
-        })
-        .unwrap()
-        .unwrap();
-
     // Each failing call must raise and must leave the target as it was.
     for call in [
         "payload:copyInto(target, 0, -0.5, 8)",
+        "payload:copyInto(target, 0, -0.4, 8)",
+        "payload:copyInto(target, 0, 1.4, 8)",
+        "payload:copyInto(target, 0, 1.6, 8)",
+        "payload:copyInto(target, 0.4, 0, 8)",
+        "payload:copyInto(target, 0, 0, 8.5)",
         "payload:copyInto(target, 0, 0/0, 8)",
         "payload:copyInto(target, 0, math.huge, 8)",
         "payload:copyInto(target, 0, 4294967304, 8)",

@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use l3i::Runtime;
 use l3i::bind::{Call, StackResults};
-use l3i::convert::{BufferView, Integer, Push};
+use l3i::convert::{BufferView, Exact, Integer, Push};
 use l3i::extension::{Extension, ExtensionDescriptor, InstallContext, TagPolicy};
 use l3i::stack::{Scope, Type, ValueView};
 use l3i::userdata::{Owned, Userdata};
@@ -447,17 +447,18 @@ fn describe_shared_buffer(d: &mut ExtensionDescriptor) {
     let mut builder = d.userdata::<Builder>(Builder::NAME);
     builder.tag(TagPolicy::Never).doc("A writable buffer before sealing.");
     builder
-        .method("writef64", |this: &Builder, offset: i32, value: f64| {
+        .method("writef64", |this: &Builder, Exact(offset): Exact<i32>, value: f64| {
             this.write(offset, &value.to_le_bytes())
         })
         .signature("(self, offset: number, value: number): ()");
     builder
-        .method("writeu32", |this: &Builder, offset: i32, value: u32| {
-            this.write(offset, &value.to_le_bytes())
-        })
+        .method(
+            "writeu32",
+            |this: &Builder, Exact(offset): Exact<i32>, Exact(value): Exact<u32>| this.write(offset, &value.to_le_bytes()),
+        )
         .signature("(self, offset: number, value: number): ()");
     builder
-        .method("write", |this: &Builder, offset: i32, value: BufferView<'_>| {
+        .method("write", |this: &Builder, Exact(offset): Exact<i32>, value: BufferView<'_>| {
             this.write_buffer(offset, &value)
         })
         .signature("(self, offset: number, value: buffer): ()");
@@ -467,23 +468,32 @@ fn describe_shared_buffer(d: &mut ExtensionDescriptor) {
     let mut shared = d.userdata::<SharedBuffer>(SharedBuffer::NAME);
     shared.tag(TagPolicy::Preferred).doc("An immutable shared native buffer.");
     shared
-        .method("readf64", |this: &SharedBuffer, offset: i32| this.read_f64(offset))
+        .method("readf64", |this: &SharedBuffer, Exact(offset): Exact<i32>| {
+            this.read_f64(offset)
+        })
         .signature("(self, offset: number): number");
     shared
-        .method("readu32", |this: &SharedBuffer, offset: i32| this.read_u32(offset))
+        .method("readu32", |this: &SharedBuffer, Exact(offset): Exact<i32>| {
+            this.read_u32(offset)
+        })
         .signature("(self, offset: number): number");
     shared
         .method(
             "copyInto",
-            |this: &SharedBuffer, target: BufferView<'_>, target_offset: i32, source_offset: i32, length: i32| {
-                this.copy_into(&target, target_offset, source_offset, length)
-            },
+            |this: &SharedBuffer,
+             target: BufferView<'_>,
+             Exact(target_offset): Exact<i32>,
+             Exact(source_offset): Exact<i32>,
+             Exact(length): Exact<i32>| { this.copy_into(&target, target_offset, source_offset, length) },
         )
         .signature("(self, target: buffer, targetOffset: number, sourceOffset: number, length: number): ()");
     shared
-        .method("slice", |this: &SharedBuffer, offset: i32, length: i32| {
-            this.slice(offset, length).map(Owned)
-        })
+        .method(
+            "slice",
+            |this: &SharedBuffer, Exact(offset): Exact<i32>, Exact(length): Exact<i32>| {
+                this.slice(offset, length).map(Owned)
+            },
+        )
         .signature("(self, offset: number, length: number): jess_runtime_SharedBuffer");
     shared
         .getter("length", |this: &SharedBuffer| {
@@ -602,7 +612,7 @@ impl Extension for RuntimeExtension {
 
     fn install(&self, cx: &mut InstallContext<'_>) -> l3i::Result<()> {
         let shared_buffer = cx.module(SHARED_BUFFER_MODULE)?;
-        shared_buffer.function("create", |length: i32| Builder::new(length).map(Owned))?;
+        shared_buffer.function("create", |Exact(length): Exact<i32>| Builder::new(length).map(Owned))?;
         let shared_buffer = shared_buffer.table().clone();
         let bindings = cx.insert_state(Bindings {
             owner: RefCell::new(Owner::Detached),
