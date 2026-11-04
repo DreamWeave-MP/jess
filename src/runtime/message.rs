@@ -124,7 +124,8 @@ impl Message {
     }
 
     /// An estimate of the message's size in bytes, for message and byte counters: the payload
-    /// bytes of strings and buffers, eight per scalar, and the sum over containers.
+    /// bytes of strings and buffers, eight per scalar or shared buffer, whose payload does not
+    /// cross, and the sum over containers.
     #[must_use]
     pub fn size_hint(&self) -> usize {
         match self {
@@ -133,7 +134,7 @@ impl Message {
             Message::Vector(_) => 12,
             Message::String(bytes) => bytes.len(),
             Message::Bytes(bytes) => bytes.len(),
-            Message::SharedBuffer(bytes) => bytes.bytes().len(),
+            Message::SharedBuffer(_) => 8,
             Message::List(items) => items.iter().map(Message::size_hint).sum(),
             Message::Map(entries) => entries
                 .iter()
@@ -592,6 +593,13 @@ mod tests {
         let cyclic = round_trip(&runtime, "(function() local t = {} t.again = t return t end)()").unwrap_err();
         assert!(cyclic.found.contains("nested more than"), "{cyclic}");
         assert!(cyclic.path.starts_with("message.again.again"), "{cyclic}");
+    }
+
+    #[test]
+    fn a_shared_buffer_counts_as_a_reference_not_its_payload() {
+        let builder = crate::runtime::shared_buffer::Builder::new(1024).unwrap();
+        let message = Message::SharedBuffer(builder.seal().unwrap());
+        assert_eq!(message.size_hint(), 8);
     }
 
     #[test]
