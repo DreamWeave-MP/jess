@@ -33,3 +33,16 @@ the workers. `-native` is the same `a904391` build, at a load of 3 to 7. `-metho
 before the lowering, at a load of 6 to 14. The machine was shared throughout, so small differences
 mean nothing. The per-record work is deliberately small, so these compare ways of reading and say
 nothing about end-to-end throughput.
+
+## On l3i main
+
+The `-l3i-main` files repeat those runs on a verified build of `bace5d6`, on l3i `e1ca1cc` and Luau
+0.745, with the budgets and 64-bit offsets in place: 0.206 s for shared reads against 0.174 s for
+ordinary ones (1.18x). Rows ran at a load of 5 to 9. Every total equalled the reference again.
+
+`jess-0.3.0-worker-transfer-l3i-main.log` is the transfer fixture in a 7 GiB scope with no swap. Its
+shared cases all finished, including every 480 MB, eight-worker job. The scope killed it during the
+second 480 MB, eight-worker copied job, after the first took 2.40 s, so the fixture's last case has
+no third job. Delivery in that fixture sends to every worker at once and repeats without collecting,
+which is harder on memory than the one-at-a-time delivery in the record sweep. It measures sending
+and one read, not a calculation.
