@@ -333,7 +333,7 @@ fn a_worker_is_told_it_has_no_frames() {
         ]] })
         worker:send('report')
         local answer = worker:receive(20)
-        assert(not answer.ok and answer.message:find('worker', 1, true), answer.message)
+        assert(not answer.ok and answer.message:find('@jess/timer.after is for a domain', 1, true), answer.message)
         worker:close()
         worker:join(20)
     ",
@@ -376,7 +376,8 @@ fn a_dispatch_budget_defers_the_rest_of_the_batch_in_order() {
 }
 
 /// Not a check: what timers cost, for a verified build.
-/// `cargo test --release --test integration -- --ignored --nocapture runtime::timers::measure`
+/// `cargo test --release --test integration --all-features -- --ignored --nocapture --exact runtime::timers::measure_timer_overhead`,
+/// in a shell where `tools/dev/no-lto.sh` was not sourced.
 #[test]
 #[ignore = "a measurement, meaningful only on a verified release build"]
 fn measure_timer_overhead() {
