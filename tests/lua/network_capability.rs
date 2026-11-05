@@ -2,6 +2,7 @@ use jess::lua::Options;
 use jess::lua::l3i::Runtime;
 
 mod application;
+mod fixture;
 mod http;
 mod server;
 mod soak;

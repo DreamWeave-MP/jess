@@ -8,12 +8,12 @@ use std::io::{BufRead, BufReader, ErrorKind, Read, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use jess::lua::Options;
 use jess::lua::l3i::Runtime;
 
+use super::fixture::{Listening, linger};
 use super::{run_task, tls_runtime};
 
 /// What the fixture answers to one path.
@@ -50,47 +50,30 @@ pub(super) enum Answer {
 }
 
 pub(super) struct Server {
-    port: u16,
+    listening: Listening,
     /// Connections accepted, whatever they asked for.
     accepted: Arc<AtomicUsize>,
     /// Requests read, over every connection.
     requests: Arc<AtomicUsize>,
     /// The head of every request read, in the order they arrived.
     heads: Arc<Mutex<Vec<String>>>,
-    /// Set when the server is dropped: answers still waiting stop, so no thread outlives its test.
-    closed: Arc<AtomicBool>,
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        self.closed.store(true, Ordering::SeqCst);
-    }
 }
 
 impl Server {
     pub(super) fn start(routes: Vec<(&'static str, Answer)>) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
         let accepted = Arc::new(AtomicUsize::new(0));
         let requests = Arc::new(AtomicUsize::new(0));
         let heads = Arc::new(Mutex::new(Vec::new()));
-        let closed = Arc::new(AtomicBool::new(false));
         let (counted, asked, recorded) = (Arc::clone(&accepted), Arc::clone(&requests), Arc::clone(&heads));
-        let ended = Arc::clone(&closed);
-        thread::spawn(move || {
-            for stream in listener.incoming().flatten() {
-                counted.fetch_add(1, Ordering::SeqCst);
-                let routes = routes.clone();
-                let (asked, recorded, ended) = (Arc::clone(&asked), Arc::clone(&recorded), Arc::clone(&ended));
-                thread::spawn(move || answer(stream, &routes, &asked, &recorded, &ended));
-            }
+        let listening = Listening::start(move |stream, closed| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            answer(stream, &routes, &asked, &recorded, closed);
         });
         Self {
-            port,
+            listening,
             accepted,
             requests,
             heads,
-            closed,
         }
     }
 
@@ -107,7 +90,7 @@ impl Server {
     }
 
     pub(super) fn url(&self, path: &str) -> String {
-        format!("http://127.0.0.1:{}{path}", self.port)
+        format!("http://127.0.0.1:{}{path}", self.listening.port)
     }
 }
 
@@ -130,33 +113,6 @@ fn read_head(reader: &mut BufReader<TcpStream>, mut head: String) -> (String, us
         }
     }
     (head, length)
-}
-
-/// Waits out `pause`, or less once the client hangs up or `closed` is set: true when the whole
-/// pause passed. A thread waiting for a test that has moved on lets go within 20 ms.
-pub(super) fn linger(stream: &TcpStream, pause: Duration, closed: &AtomicBool) -> bool {
-    let started = Instant::now();
-    let mut byte = [0u8; 1];
-    loop {
-        let left = pause.saturating_sub(started.elapsed());
-        if left.is_zero() {
-            break;
-        }
-        if closed.load(Ordering::SeqCst) {
-            return false;
-        }
-        let slice = left.min(Duration::from_millis(20));
-        drop(stream.set_read_timeout(Some(slice)));
-        match stream.peek(&mut byte) {
-            Ok(0) => return false,
-            // Bytes the client sent that nobody has read hide its hanging up; `closed` still ends it.
-            Ok(_) => thread::sleep(slice),
-            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
-            Err(_) => return false,
-        }
-    }
-    drop(stream.set_read_timeout(None));
-    true
 }
 
 /// Answers requests on `stream` until a route's answer ends the connection.
@@ -785,7 +741,7 @@ fn https_is_verified_against_the_roots_it_is_given() {
             }})
             table.insert(out, `wrong name {{connection == nil}} {{mismatchKind}}`)
             ",
-            port = server.port
+            port = server.listening.port
         ),
     );
     assert_eq!(lines[0], "200 hello world");

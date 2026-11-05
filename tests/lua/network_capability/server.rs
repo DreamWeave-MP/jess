@@ -16,7 +16,7 @@ use super::{run_task, tls_runtime};
 const SERVER: &str = r"
 local http = require '@jess/http'
 local net = require '@jess/net'
-local port, headTimeout = ...
+local headTimeout, reportPort = ...
 local errors: { string } = {}
 local together, steps = 0, 0
 local allTogether = net.signal()
@@ -113,7 +113,7 @@ end
 local quit = net.signal()
 local finished, problem = net.run(function()
   local server = assert(http.serve {
-    address = `127.0.0.1:{port}`,
+    address = '127.0.0.1:0',
     maxConnections = 4,
     maxHeadBytes = 2048,
     maxBodyBytes = 1000,
@@ -128,6 +128,12 @@ local finished, problem = net.run(function()
     end,
     onError = function(message: string) table.insert(errors, message) end,
   })
+
+  -- Tells the test the port it got. A port chosen beforehand and bound here could be taken in
+  -- between by a server another test starts.
+  local report = assert(net.connect('127.0.0.1', reportPort))
+  assert(report:send(tostring(server.port)))
+  report:close()
 
   quit:wait()
   net.sleep(50)
@@ -151,18 +157,30 @@ impl Served {
     }
 
     fn with_head_timeout(milliseconds: u32) -> Self {
-        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let report = TcpListener::bind("127.0.0.1:0").unwrap();
+        let report_port = report.local_addr().unwrap().port();
+        report.set_nonblocking(true).unwrap();
         let done = thread::spawn(move || {
-            let runtime =
-                jess::lua::runtime_with_capabilities(Options::default(), &["network.tcp.listen".to_owned()]).unwrap();
-            let script = format!("return (function(...) {SERVER} end)({port}, {milliseconds})");
+            let capabilities = ["network.tcp.listen", "network.tcp.connect", "network.dns.resolve"].map(str::to_owned);
+            let runtime = jess::lua::runtime_with_capabilities(Options::default(), &capabilities).unwrap();
+            let script = format!("return (function(...) {SERVER} end)({milliseconds}, {report_port})");
             runtime.eval::<String>(&script).unwrap_or_else(|error| panic!("{error}"))
         });
         let started = Instant::now();
-        while TcpStream::connect(("127.0.0.1", port)).is_err() {
-            assert!(started.elapsed() < Duration::from_secs(60), "the server never listened");
-            thread::sleep(Duration::from_millis(10));
-        }
+        let mut told = loop {
+            match report.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(!done.is_finished(), "the server ended before it listened");
+                    assert!(started.elapsed() < Duration::from_secs(60), "the server never listened");
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("{error}"),
+            }
+        };
+        told.set_nonblocking(false).unwrap();
+        told.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
+        let port = read_all(&mut told).parse().unwrap();
         Self { port, done: Some(done) }
     }
 
