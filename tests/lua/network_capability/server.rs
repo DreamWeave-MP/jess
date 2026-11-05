@@ -520,6 +520,40 @@ fn failed_and_abandoned_tls_handshakes_give_their_places_back() {
     );
 }
 
+/// The acceptor counts a connection the moment it accepts it, and the connection's task runs later:
+/// a server closed in between closes the socket under a task that hasn't started, which then
+/// finds it closed instead of raising on it.
+#[test]
+fn a_server_closed_between_accepting_a_connection_and_serving_it_closes_it_quietly() {
+    let lines = run_task(
+        &tls_runtime(),
+        "
+        local tcp = require '@dream/tcp'
+        local tls = require '@dream/tls'
+        local config = assert(tls.serverConfig { certChain = SERVER_CERT, privateKey = SERVER_KEY })
+        for _, secure in { false, true } do
+          local server = assert(http.serve {
+            address = '127.0.0.1:0',
+            tls = if secure then config else nil,
+            handler = function() return { body = 'fine' } end,
+          })
+          -- The acceptor starts waiting on its listener.
+          net.yield()
+          -- A connect that doesn't wait on the loop: the connection is there at the next poll.
+          local raw = assert(tcp.connect(`127.0.0.1:{server.port}`))
+          -- Woken by its deadline in the step whose poll wakes the acceptor, and after it: the
+          -- connection is accepted, and its task hasn't run.
+          net.signal():wait(net.now())
+          table.insert(out, `{secure} accepted {server:stats().connections}`)
+          server:close()
+          net.sleep(20)
+          raw:close()
+        end
+        ",
+    );
+    assert_eq!(lines, ["false accepted 1", "true accepted 1"]);
+}
+
 #[test]
 fn a_closed_server_frees_its_address_at_once_before_during_and_after_accepting() {
     let lines = run_task(
