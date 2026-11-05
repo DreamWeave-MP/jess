@@ -329,7 +329,8 @@ fn declared(
 fn unknown_callback(label: &str, key: &str) -> l3i::Error {
     let hint = match key {
         "event" => "raw events are @jess/context's; named events go in on.event".to_owned(),
-        "message" | "timer" => format!("nothing in the kernel dispatches the {key} phase yet"),
+        "message" => "nothing in the kernel dispatches the message phase yet".to_owned(),
+        "timer" => "a timer is scheduled with @jess/timer, and runs in the context that scheduled it".to_owned(),
         _ => {
             let names = HOST_CALLBACKS.iter().map(|(name, _)| *name).collect::<Vec<_>>();
             format!("expected {}", names.join(", "))
@@ -402,7 +403,8 @@ impl Setup {
                             .phases
                             .iter()
                             .map(|(phase, _, _)| *phase)
-                            .chain((!declared.events.is_empty()).then_some(Phase::Event)),
+                            .chain((!declared.events.is_empty()).then_some(Phase::Event))
+                            .chain([Phase::Timer]),
                     ),
                 )
                 .map_err(|problem| error(format!("{}: {problem}", declared.label)))?;

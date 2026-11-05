@@ -629,6 +629,7 @@ pub struct TeardownReport {
 }
 
 /// One handler call the scheduler is about to make.
+#[derive(Clone)]
 struct Dispatch {
     context: ContextId,
     handler: Function,
@@ -642,8 +643,11 @@ struct Dispatch {
     budget: Option<Budget>,
 }
 
+mod timer;
+
 /// The part of a domain its own runtime's bindings reach: everything but the runtime.
 pub struct DomainCore {
+    timers: RefCell<crate::runtime::timers::Timers<Dispatch>>,
     id: DomainId,
     name: String,
     parent: Option<DomainId>,
@@ -1315,6 +1319,7 @@ impl ScriptDomain {
             counters: Arc::clone(&counters),
         });
         let core = Rc::new(DomainCore {
+            timers: RefCell::default(),
             id: DomainId::allocate(),
             name: spec.name,
             parent: spec.parent,
@@ -1542,6 +1547,7 @@ impl ScriptDomain {
                 Ok(())
             }
             Err(error) => {
+                self.core.timers.borrow_mut().clear();
                 self.core.state.set(DomainState::Failed);
                 Err(error)
             }
@@ -1670,6 +1676,7 @@ impl ScriptDomain {
     pub fn advance(&self, delta: Duration) -> Result<TickReport, RuntimeError> {
         self.core.refuse_reentry("advance")?;
         self.core.require_state(&[DomainState::Running], "advance")?;
+        self.core.timers.borrow_mut().advance(delta);
         let mut report = TickReport {
             fixed_steps: 0,
             dropped_steps: 0,
@@ -1695,6 +1702,9 @@ impl ScriptDomain {
         Counters::add(&self.core.counters.updates, 1);
         report.phases.push(self.broadcast(Phase::Update, &seconds)?);
         report.phases.push(self.broadcast(Phase::LateUpdate, &seconds)?);
+        if self.core.timers.borrow().has_due() {
+            report.phases.push(self.dispatch_timers()?);
+        }
         report.events = self.drain()?;
         Ok(report)
     }
@@ -1990,6 +2000,7 @@ impl ScriptDomain {
         } else {
             Vec::new()
         };
+        self.core.timers.borrow_mut().clear();
         let workers_stopped = self.core.stop_workers();
         let resources_released = self.core.release_resources();
         for context in self.core.contexts.borrow_mut().iter_mut() {

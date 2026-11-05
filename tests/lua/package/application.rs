@@ -156,22 +156,29 @@ fn an_application_target_loads_its_managed_modules_into_one_domain() {
         [
             (
                 "org.example.inventory/inventory".to_owned(),
-                vec![Phase::Startup, Phase::Event],
+                vec![Phase::Startup, Phase::Timer, Phase::Event],
                 names(&["playerDied"])
             ),
             (
                 "org.example.armor/armor".to_owned(),
-                vec![Phase::Event],
+                vec![Phase::Timer, Phase::Event],
                 names(&["playerDied"])
             ),
             (
                 "org.example.game/director".to_owned(),
-                vec![Phase::Load, Phase::Startup, Phase::Update, Phase::Event, Phase::Shutdown],
+                vec![
+                    Phase::Load,
+                    Phase::Startup,
+                    Phase::Update,
+                    Phase::Timer,
+                    Phase::Event,
+                    Phase::Shutdown
+                ],
                 names(&["gameOver"])
             ),
             (
                 "org.example.game/scoreboard".to_owned(),
-                vec![Phase::Event],
+                vec![Phase::Timer, Phase::Event],
                 names(&["playerDied"])
             ),
         ]
@@ -1018,7 +1025,7 @@ fn a_malformed_managed_module_fails_the_launch_naming_package_module_and_key() {
         (
             "return { on = { host = { timer = function() end } } }",
             None,
-            "on.host.timer is not a host callback; nothing in the kernel dispatches the timer phase yet",
+            "on.host.timer is not a host callback; a timer is scheduled with @jess/timer",
         ),
         (
             "return { on = { host = { update = 5 } } }",

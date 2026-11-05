@@ -76,6 +76,7 @@ mod resources;
 mod service;
 mod shared_buffer;
 pub mod shared_buffer_lowering;
+pub mod timers;
 mod worker;
 
 pub use capability::{
