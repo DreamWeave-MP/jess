@@ -83,7 +83,7 @@ cc = { version = "^1.2", optional = true }
 
 
 [dev-dependencies]
-l3i = { version = "2.6.0", features = ["analysis"] }
+l3i = { version = "2.7.0", features = ["analysis"] }
 naga = { version = "30.0.1", features = ["wgsl-in"] }
 serde-saphyr = "^2.0"
 toml = { version = "^1.1", features = ["preserve_order"] }

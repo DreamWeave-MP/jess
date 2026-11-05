@@ -69,7 +69,7 @@ Open a new terminal afterwards; old ones keep the old `Path`.
 
 ## From crates.io
 
-With a Rust toolchain (1.92 or newer):
+With a Rust toolchain (1.95 or newer):
 
 ```sh
 cargo install jess

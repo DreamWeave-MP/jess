@@ -55,7 +55,7 @@ Every push and pull request goes through [StroggForge](https://github.com/DreamW
 | Format | `cargo fmt --all --check` |
 | Clippy | `cargo clippy --workspace --all-targets --all-features -- -W clippy::pedantic -D warnings` |
 | Tests | `cargo test --workspace --all-targets --all-features` |
-| MSRV | `L3I_UNVERIFIED_TOOLCHAIN=1 cargo +1.92 check --workspace --all-features --all-targets` |
+| MSRV | `L3I_UNVERIFIED_TOOLCHAIN=1 cargo +1.95 check --workspace --all-features --all-targets` |
 | Docs | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps` |
 | The built-in package | `jess package test jpk/builtin` |
 
@@ -72,7 +72,7 @@ Things worth knowing about those:
   ```
 
   macOS can't be cross-checked; read its `cfg` code by eye, remember APFS is case-insensitive and refuses non-UTF-8 file names, and gate such tests `target_os = "linux"`.
-- **MSRV** is read from `rust-version` in `Cargo.toml` (`msrv: auto`). Rust 1.92 ships an older LLVM than current clang, so a local `cargo +1.92 check` needs `L3I_UNVERIFIED_TOOLCHAIN=1`; a check never links, so the mismatch can't matter there.
+- **MSRV** is read from `rust-version` in `Cargo.toml` (`msrv: auto`). The MSRV check uses `L3I_UNVERIFIED_TOOLCHAIN=1` because the installed clang and lld may not match rustc's LLVM major; `cargo check` does not link, so cross-language LTO is not involved.
 - **Tests must not depend on the platform.** No Linux path separators, no case-sensitive filesystems, no non-UTF-8 names: compare resolved paths as paths, keep case twins off disk, and gate symlink tests with `#[cfg(unix)]`.
 
 For day-to-day work, the faster loop:

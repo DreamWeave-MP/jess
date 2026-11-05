@@ -449,7 +449,7 @@ Each JPK is stored rather than compressed again: its own entries are already com
 # Written by `jess workspace pack`: what this packed workspace runs, pinned.
 format = "jess-packed-workspace"
 format_version = 1
-builtin = "0.1.0"
+builtin = "0.3.0"
 default = "org.example.showcase:showcase"
 
 [[target]]
