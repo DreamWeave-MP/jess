@@ -557,11 +557,17 @@ fn a_server_closed_between_accepting_a_connection_and_serving_it_closes_it_quiet
           })
           -- The acceptor starts waiting on its listener.
           net.yield()
-          -- A connect that doesn't wait on the loop: the connection is there at the next poll.
           local raw = assert(tcp.connect(`127.0.0.1:{server.port}`))
-          -- Woken by its deadline in the step whose poll wakes the acceptor, and after it: the
-          -- connection is accepted, and its task hasn't run.
-          net.signal():wait(net.now())
+          -- A yielded task wakes at the end of the next step, in the same batch as the tasks that
+          -- step's poll woke and after them. So the step that wakes the acceptor wakes this right
+          -- after it accepts, before the connection's task, which runs in the round after. That
+          -- holds however long the platform takes to report the connection.
+          local limit = net.now() + 30000
+          repeat
+            net.yield()
+            assert(net.now() < limit, 'the connection was never accepted')
+          until server:stats().connections > 0
+
           table.insert(out, `{secure} accepted {server:stats().connections}`)
           server:close()
           net.sleep(20)
