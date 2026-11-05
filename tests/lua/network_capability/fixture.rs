@@ -6,8 +6,9 @@
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::net::{Shutdown, TcpListener, TcpStream};
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -51,15 +52,33 @@ impl Listening {
                 stream.set_nonblocking(false).unwrap();
                 next += 1;
                 let id = next;
-                held.lock().unwrap().insert(id, stream.try_clone().unwrap());
+                {
+                    // Under the lock `Drop` sets the flag under, so a connection is either registered
+                    // before shutdown begins, and shut down with the rest, or never served.
+                    let mut connections = held.lock().unwrap();
+                    if ended.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    connections.insert(id, stream.try_clone().unwrap());
+                }
                 let (serve, ended, held) = (Arc::clone(&serve), Arc::clone(&ended), Arc::clone(&held));
                 workers.push(thread::spawn(move || {
-                    serve(stream, &ended);
+                    let served = panic::catch_unwind(AssertUnwindSafe(|| serve(stream, &ended)));
                     held.lock().unwrap().remove(&id);
+                    if let Err(payload) = served {
+                        panic::resume_unwind(payload);
+                    }
                 }));
             }
+            // Every worker is joined before the first panic among them is passed on.
+            let mut failure = None;
             for worker in workers {
-                drop(worker.join());
+                if let Err(payload) = worker.join() {
+                    failure.get_or_insert(payload);
+                }
+            }
+            if let Some(payload) = failure {
+                panic::resume_unwind(payload);
             }
         });
         Self {
@@ -73,13 +92,21 @@ impl Listening {
 
 impl Drop for Listening {
     fn drop(&mut self) {
-        self.closed.store(true, Ordering::SeqCst);
-        // Unblocks every read and write a connection's thread is in, which then ends.
-        for (_, stream) in self.connections.lock().unwrap().drain() {
-            drop(stream.shutdown(Shutdown::Both));
+        {
+            let mut connections = self.connections.lock().unwrap_or_else(PoisonError::into_inner);
+            self.closed.store(true, Ordering::SeqCst);
+            // Unblocks every read and write a connection's thread is in, which then ends.
+            for (_, stream) in connections.drain() {
+                drop(stream.shutdown(Shutdown::Both));
+            }
         }
-        if let Some(acceptor) = self.acceptor.take() {
-            drop(acceptor.join());
+        // A connection's thread that panicked fails the test that owns the server, unless that
+        // test is already failing, whose own panic is the one to keep.
+        if let Some(acceptor) = self.acceptor.take()
+            && let Err(payload) = acceptor.join()
+            && !thread::panicking()
+        {
+            panic::resume_unwind(payload);
         }
     }
 }
@@ -109,4 +136,16 @@ pub(super) fn linger(stream: &TcpStream, pause: Duration, closed: &AtomicBool) -
     }
     drop(stream.set_read_timeout(None));
     true
+}
+
+#[test]
+#[should_panic(expected = "a connection's thread broke")]
+fn a_connection_thread_that_panics_fails_the_test_that_owns_the_server() {
+    let listening = Listening::start(|_, _| panic!("a connection's thread broke"));
+    drop(TcpStream::connect(("127.0.0.1", listening.port)).unwrap());
+    // The acceptor polls; this lets it take the connection before the server is dropped.
+    let started = Instant::now();
+    while listening.connections.lock().unwrap().is_empty() && started.elapsed() < Duration::from_secs(30) {
+        thread::sleep(Duration::from_millis(1));
+    }
 }

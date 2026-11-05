@@ -256,7 +256,10 @@ fn open(path: &str, stream: &mut TcpStream, seen: &Mutex<Seen>, closed: &AtomicB
 }
 
 fn serve(mut stream: TcpStream, seen: &Mutex<Seen>, closed: &AtomicBool) {
-    stream.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
+    // Fails only on a connection the server has already shut down.
+    if stream.set_read_timeout(Some(Duration::from_secs(60))).is_err() {
+        return;
+    }
     let mut head = Vec::new();
     let mut byte = [0u8; 1];
     while !head.ends_with(b"\r\n\r\n") {

@@ -123,7 +123,8 @@ fn answer(
     heads: &Mutex<Vec<String>>,
     closed: &AtomicBool,
 ) {
-    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    let Ok(clone) = stream.try_clone() else { return };
+    let mut reader = BufReader::new(clone);
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line).is_err() || line.is_empty() {
