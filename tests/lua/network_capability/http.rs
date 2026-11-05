@@ -4,9 +4,9 @@
 //! the loop running; HTTPS through the Luau TLS front; and nothing without the runtime's grant.
 
 use std::fmt::Write as _;
-use std::io::{BufRead, BufReader, Read, Write as _};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write as _};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -23,7 +23,7 @@ pub(super) enum Answer {
     Raw(String),
     /// A full response of any bytes, written as is, then the connection is closed.
     Bytes(Vec<u8>),
-    /// Accept, read the request, and answer nothing for two minutes.
+    /// Accept, read the request, and answer nothing for two minutes or until the client goes.
     Hang,
     /// The request as it arrived (head, then body), as the response body.
     Echo,
@@ -57,6 +57,14 @@ pub(super) struct Server {
     requests: Arc<AtomicUsize>,
     /// The head of every request read, in the order they arrived.
     heads: Arc<Mutex<Vec<String>>>,
+    /// Set when the server is dropped: answers still waiting stop, so no thread outlives its test.
+    closed: Arc<AtomicBool>,
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        self.closed.store(true, Ordering::SeqCst);
+    }
 }
 
 impl Server {
@@ -66,13 +74,15 @@ impl Server {
         let accepted = Arc::new(AtomicUsize::new(0));
         let requests = Arc::new(AtomicUsize::new(0));
         let heads = Arc::new(Mutex::new(Vec::new()));
+        let closed = Arc::new(AtomicBool::new(false));
         let (counted, asked, recorded) = (Arc::clone(&accepted), Arc::clone(&requests), Arc::clone(&heads));
+        let ended = Arc::clone(&closed);
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 counted.fetch_add(1, Ordering::SeqCst);
                 let routes = routes.clone();
-                let (asked, recorded) = (Arc::clone(&asked), Arc::clone(&recorded));
-                thread::spawn(move || answer(stream, &routes, &asked, &recorded));
+                let (asked, recorded, ended) = (Arc::clone(&asked), Arc::clone(&recorded), Arc::clone(&ended));
+                thread::spawn(move || answer(stream, &routes, &asked, &recorded, &ended));
             }
         });
         Self {
@@ -80,6 +90,7 @@ impl Server {
             accepted,
             requests,
             heads,
+            closed,
         }
     }
 
@@ -121,8 +132,41 @@ fn read_head(reader: &mut BufReader<TcpStream>, mut head: String) -> (String, us
     (head, length)
 }
 
+/// Waits out `pause`, or less once the client hangs up or `closed` is set: true when the whole
+/// pause passed. A thread waiting for a test that has moved on lets go within 20 ms.
+pub(super) fn linger(stream: &TcpStream, pause: Duration, closed: &AtomicBool) -> bool {
+    let started = Instant::now();
+    let mut byte = [0u8; 1];
+    loop {
+        let left = pause.saturating_sub(started.elapsed());
+        if left.is_zero() {
+            break;
+        }
+        if closed.load(Ordering::SeqCst) {
+            return false;
+        }
+        let slice = left.min(Duration::from_millis(20));
+        drop(stream.set_read_timeout(Some(slice)));
+        match stream.peek(&mut byte) {
+            Ok(0) => return false,
+            // Bytes the client sent that nobody has read hide its hanging up; `closed` still ends it.
+            Ok(_) => thread::sleep(slice),
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+            Err(_) => return false,
+        }
+    }
+    drop(stream.set_read_timeout(None));
+    true
+}
+
 /// Answers requests on `stream` until a route's answer ends the connection.
-fn answer(mut stream: TcpStream, routes: &[(&str, Answer)], asked: &AtomicUsize, heads: &Mutex<Vec<String>>) {
+fn answer(
+    mut stream: TcpStream,
+    routes: &[(&str, Answer)],
+    asked: &AtomicUsize,
+    heads: &Mutex<Vec<String>>,
+    closed: &AtomicBool,
+) {
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     loop {
         let mut line = String::new();
@@ -160,8 +204,7 @@ fn answer(mut stream: TcpStream, routes: &[(&str, Answer)], asked: &AtomicUsize,
                 return;
             }
             Answer::SlowKept(pause, text) => {
-                thread::sleep(pause);
-                if stream.write_all(text.as_bytes()).is_err() {
+                if !linger(&stream, pause, closed) || stream.write_all(text.as_bytes()).is_err() {
                     return;
                 }
             }
@@ -177,8 +220,7 @@ fn answer(mut stream: TcpStream, routes: &[(&str, Answer)], asked: &AtomicUsize,
             }
             Answer::TrickleBytes(pieces) => {
                 for (pause, piece) in pieces {
-                    thread::sleep(pause);
-                    if stream.write_all(&piece).is_err() {
+                    if !linger(&stream, pause, closed) || stream.write_all(&piece).is_err() {
                         return;
                     }
                 }
@@ -186,7 +228,7 @@ fn answer(mut stream: TcpStream, routes: &[(&str, Answer)], asked: &AtomicUsize,
             }
             Answer::DropUnread => return,
             Answer::Stepped(pieces, steps) => {
-                write_stepped(&mut stream, &pieces, &steps);
+                write_stepped(&mut stream, &pieces, &steps, closed);
                 return;
             }
             Answer::Step(steps) => {
@@ -196,30 +238,29 @@ fn answer(mut stream: TcpStream, routes: &[(&str, Answer)], asked: &AtomicUsize,
             }
             Answer::Trickle(pieces) => {
                 for (pause, piece) in pieces {
-                    thread::sleep(pause);
-                    if stream.write_all(piece.as_bytes()).is_err() {
+                    if !linger(&stream, pause, closed) || stream.write_all(piece.as_bytes()).is_err() {
                         return;
                     }
                 }
                 return;
             }
             Answer::Hang => {
-                thread::sleep(Duration::from_secs(120));
+                linger(&stream, Duration::from_secs(120), closed);
                 return;
             }
         }
     }
 }
 
-/// Writes the Nth of `pieces` once `steps` has reached N, and stops if it doesn't in a minute.
-fn write_stepped(stream: &mut TcpStream, pieces: &[String], steps: &AtomicUsize) {
+/// Writes the Nth of `pieces` once `steps` has reached N. If it doesn't in a minute, or the client
+/// goes, it stops with the response unfinished, which fails whatever was waiting for the rest.
+fn write_stepped(stream: &mut TcpStream, pieces: &[String], steps: &AtomicUsize, closed: &AtomicBool) {
     for (index, piece) in pieces.iter().enumerate() {
         let started = Instant::now();
         while steps.load(Ordering::SeqCst) < index {
-            if started.elapsed() > Duration::from_secs(60) {
+            if started.elapsed() > Duration::from_secs(60) || !linger(stream, Duration::from_millis(5), closed) {
                 return;
             }
-            thread::sleep(Duration::from_millis(5));
         }
         if stream.write_all(piece.as_bytes()).is_err() {
             return;
@@ -770,7 +811,7 @@ fn a_url_with_a_line_break_fails_before_anything_connects() {
     }
     assert_eq!(
         listener.accept().map(|_| ()).unwrap_err().kind(),
-        std::io::ErrorKind::WouldBlock,
+        ErrorKind::WouldBlock,
         "nothing connected"
     );
 }

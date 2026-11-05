@@ -7,12 +7,14 @@
 use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use jess::lua::l3i::Runtime;
 
+use super::http::linger;
 use super::{network_runtime, tls_runtime};
 
 /// What the server saw from clients, across every connection.
@@ -32,6 +34,14 @@ pub(super) struct Seen {
 pub(super) struct WsServer {
     pub(super) port: u16,
     pub(super) seen: Arc<Mutex<Seen>>,
+    /// Set when the server is dropped, so a connection still held open lets its thread go.
+    closed: Arc<AtomicBool>,
+}
+
+impl Drop for WsServer {
+    fn drop(&mut self) {
+        self.closed.store(true, Ordering::SeqCst);
+    }
 }
 
 impl WsServer {
@@ -40,21 +50,23 @@ impl WsServer {
         let port = listener.local_addr().unwrap().port();
         let seen = Arc::new(Mutex::new(Seen::default()));
         let shared = Arc::clone(&seen);
+        let closed = Arc::new(AtomicBool::new(false));
+        let ended = Arc::clone(&closed);
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                let seen = Arc::clone(&shared);
+                let (seen, ended) = (Arc::clone(&shared), Arc::clone(&ended));
                 thread::spawn(move || {
                     {
                         let mut seen = seen.lock().unwrap();
                         seen.accepted += 1;
                         seen.open += 1;
                     }
-                    serve(stream, &seen);
+                    serve(stream, &seen, &ended);
                     seen.lock().unwrap().open -= 1;
                 });
             }
         });
-        Self { port, seen }
+        Self { port, seen, closed }
     }
 
     pub(super) fn url(&self, path: &str) -> String {
@@ -204,9 +216,10 @@ fn read_frame(stream: &mut TcpStream, seen: &Mutex<Seen>) -> Option<(bool, u8, V
 }
 
 /// What the server sends first on `path`, after the handshake; false when the connection should end
-/// there. `/fragment-pause` and `/split` hold the rest of their message until the client sends a
-/// frame, so its receive times out part way through however slow the machine is.
-fn open(path: &str, stream: &mut TcpStream, seen: &Mutex<Seen>) -> bool {
+/// there. `/fragment-pause` and `/split` send part of a message and an unsolicited pong, and hold
+/// the rest until the client sends a frame: once a receive has noted the pong and timed out, it
+/// timed out part way through the message, however slow the machine is.
+fn open(path: &str, stream: &mut TcpStream, seen: &Mutex<Seen>, closed: &AtomicBool) -> bool {
     let opening: Vec<Vec<u8>> = match path {
         "/echo" => vec![frame(0x89, b"server-ping", false)],
         "/masked" => vec![frame(0x81, b"masked", true)],
@@ -223,18 +236,23 @@ fn open(path: &str, stream: &mut TcpStream, seen: &Mutex<Seen>) -> bool {
             frame(0x80, b"world", false),
         ],
         "/no-read" => {
-            thread::sleep(Duration::from_secs(120));
+            linger(stream, Duration::from_secs(120), closed);
             return false;
         }
         "/fragment-pause" => {
-            if stream.write_all(&frame(0x01, b"hel", false)).is_err() || read_frame(stream, seen).is_none() {
+            // The pong comes after the fragment on the wire, so a receive has taken in both.
+            let first = [frame(0x01, b"hel", false), frame(0x8A, b"mark", false)].concat();
+            if stream.write_all(&first).is_err() || read_frame(stream, seen).is_none() {
                 return false;
             }
             vec![frame(0x80, b"lo", false)]
         }
         "/split" => {
+            // A pong can't go inside a frame, so it goes just before, in the same nine-byte write;
+            // loopback delivers a write that small whole.
             let whole = frame(0x81, b"helloworld", false);
-            if stream.write_all(&whole[..7]).is_err() || read_frame(stream, seen).is_none() {
+            let first = [frame(0x8A, b"mark", false).as_slice(), &whole[..7]].concat();
+            if stream.write_all(&first).is_err() || read_frame(stream, seen).is_none() {
                 return false;
             }
             vec![whole[7..].to_vec()]
@@ -248,7 +266,7 @@ fn open(path: &str, stream: &mut TcpStream, seen: &Mutex<Seen>) -> bool {
     opening.iter().all(|bytes| stream.write_all(bytes).is_ok())
 }
 
-fn serve(mut stream: TcpStream, seen: &Mutex<Seen>) {
+fn serve(mut stream: TcpStream, seen: &Mutex<Seen>, closed: &AtomicBool) {
     stream.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
     let mut head = Vec::new();
     let mut byte = [0u8; 1];
@@ -289,7 +307,7 @@ fn serve(mut stream: TcpStream, seen: &Mutex<Seen>) {
         return;
     }
 
-    if !open(&path, &mut stream, seen) {
+    if !open(&path, &mut stream, seen, closed) {
         return;
     }
 
@@ -598,8 +616,11 @@ fn a_receive_that_times_out_part_way_through_a_frame_leaves_it_whole_for_the_nex
         &format!(
             "
             local socket = assert(websocket.connect({url:?}))
-            local early, _, kind = socket:receive(net.now() + 100)
-            table.insert(out, `{{early == nil}} {{kind}} {{socket.state}}`)
+            repeat
+              local early, _, kind = socket:receive(net.now() + 100)
+              assert(early == nil and kind == 'timeout', kind)
+            until socket.lastPongAt
+            table.insert(out, `timed out {{socket.state}}`)
             assert(socket:send('go on'))
             local message = assert(socket:receive(net.now() + 30000))
             table.insert(out, message.data)
@@ -608,7 +629,7 @@ fn a_receive_that_times_out_part_way_through_a_frame_leaves_it_whole_for_the_nex
             url = server.url("/split")
         ),
     );
-    assert_eq!(lines, ["true timeout open", "helloworld"]);
+    assert_eq!(lines, ["timed out open", "helloworld"]);
     assert_eq!(server.wait_until_idle(), 0);
 }
 
@@ -620,8 +641,11 @@ fn a_receive_that_times_out_between_fragments_leaves_the_message_for_the_next() 
         &format!(
             "
             local socket = assert(websocket.connect({url:?}))
-            local early, _, kind = socket:receive(net.now() + 100)
-            table.insert(out, `{{early == nil}} {{kind}} {{socket.state}}`)
+            repeat
+              local early, _, kind = socket:receive(net.now() + 100)
+              assert(early == nil and kind == 'timeout', kind)
+            until socket.lastPongAt
+            table.insert(out, `timed out {{socket.state}}`)
             assert(socket:send('go on'))
             local message = assert(socket:receive(net.now() + 30000))
             table.insert(out, `{{message.kind}} {{message.data}}`)
@@ -631,7 +655,7 @@ fn a_receive_that_times_out_between_fragments_leaves_the_message_for_the_next() 
             url = server.url("/fragment-pause")
         ),
     );
-    assert_eq!(lines, ["true timeout open", "text hello", "1000"]);
+    assert_eq!(lines, ["timed out open", "text hello", "1000"]);
     assert_eq!(server.wait_until_idle(), 0);
     assert_eq!(
         server.seen.lock().unwrap().closes,

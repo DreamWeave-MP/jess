@@ -137,7 +137,9 @@ fn repeated_requests_cancelled_streams_and_sockets_leave_nothing_behind() {
                   end
 
                   reader:cancel()
-                  assert(reader:join(net.now() + 30000) == false)
+                  local completed, reason = reader:join(net.now() + 30000)
+                  assert(not completed and reason == 'cancelled', tostring(reason))
+                  assert(reader.status == 'cancelled', reader.status)
 
                   local socket = assert(websocket.connect({gateway:?}))
                   assert(socket:send('cycle'))

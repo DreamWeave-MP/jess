@@ -28,6 +28,8 @@ local function awaitStep(count: number)
   while steps < count and net.now() < limit do
     net.sleep(5)
   end
+
+  assert(steps >= count, `timed out waiting for step {count}`)
 end
 
 local function handle(request: http.ServerRequest): http.ServerResponse
@@ -69,15 +71,27 @@ local function handle(request: http.ServerRequest): http.ServerResponse
     return { body = 'stepped' }
   end
 
+  -- Holds its connection's place until the client goes, and says so with its first chunk.
+  if request.path == '/hold' then
+    return {
+      stream = function(send: (data: string | buffer) -> boolean)
+        local limit = net.now() + 60000
+        while send('.') and net.now() < limit do
+          net.sleep(20)
+        end
+      end,
+    }
+  end
+
   if request.path == '/stepped' then
     return {
       headers = { ['Content-Type'] = 'text/plain' },
       stream = function(send: (data: string | buffer) -> boolean)
-        send('one ')
+        assert(send('one '))
         awaitStep(1)
-        send('two ')
+        assert(send('two '))
         awaitStep(2)
-        send('three')
+        assert(send('three'))
       end,
     }
   end
@@ -654,10 +668,16 @@ fn slow_handlers_on_separate_connections_run_at_once_and_connections_are_bounded
         assert!(answer.ends_with("together"), "{answer}");
     }
 
-    // Four connections that send nothing hold every place; a fifth is not answered until one of them
-    // goes, long before their head timeout would free one.
-    let mut idle: Vec<TcpStream> = (0..4).map(|_| server.connect()).collect();
-    thread::sleep(Duration::from_millis(50));
+    // Four connections held by their handlers hold every place, each known to by its first chunk; a
+    // fifth is not answered until one of them goes.
+    let mut held: Vec<TcpStream> = (0..4)
+        .map(|_| {
+            let mut stream = server.connect();
+            stream.write_all(b"GET /hold HTTP/1.1\r\nHost: t\r\n\r\n").unwrap();
+            read_until(&mut stream, &mut Vec::new(), "\r\n\r\n1\r\n.");
+            stream
+        })
+        .collect();
     let mut fifth = server.connect();
     fifth
         .write_all(b"GET /hello HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n")
@@ -668,13 +688,13 @@ fn slow_handlers_on_separate_connections_run_at_once_and_connections_are_bounded
         fifth.read(&mut early).is_err(),
         "the fifth was answered while every place was held"
     );
-    drop(idle.remove(0).shutdown(Shutdown::Both));
+    drop(held.remove(0).shutdown(Shutdown::Both));
     fifth.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
     assert!(
         read_all(&mut fifth).ends_with("hi"),
         "a place came free and the fifth was served"
     );
-    for stream in idle {
+    for stream in held {
         drop(stream.shutdown(Shutdown::Both));
     }
     drop(server.finish());
