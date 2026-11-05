@@ -375,6 +375,103 @@ fn a_dispatch_budget_defers_the_rest_of_the_batch_in_order() {
     assert!(!report.phases.iter().any(|phase| phase.phase == Phase::Timer));
 }
 
+/// The line a host with restricted contexts has to know about: authority follows where the timer
+/// was scheduled, not which handlers the module goes on to bind.
+#[test]
+fn a_timer_from_load_holds_the_domain_s_grant_and_one_from_a_restricted_handler_does_not() {
+    let harness = support::domain("contrast", &[support::TEST_ECHO]);
+    let domain = &harness.domain;
+    domain
+        .register_context(
+            ContextSpec::new("restricted")
+                .schedule([Phase::Startup, Phase::Timer])
+                .capabilities(CapabilitySet::empty()),
+        )
+        .unwrap();
+    domain
+        .load_source(
+            "=contrast",
+            r"
+        local timer = require('@jess/timer')
+        local echo = require('@test/echo')
+        local journal = require('@test/journal')
+        local function attempt(label)
+            echo.echo(1)
+            journal.write(label)
+        end
+        timer.after(0, function() attempt('from load') end)
+        require('@jess/context').bind('restricted', { startup = function()
+            timer.after(0, function() attempt('from the restricted handler') end)
+        end })
+    ",
+        )
+        .unwrap();
+    domain.start().unwrap();
+    let report = domain.advance(Duration::ZERO).unwrap();
+    let timers = report.phases.iter().find(|phase| phase.phase == Phase::Timer).unwrap();
+    assert_eq!(timers.ran, 2);
+    assert_eq!(timers.failures.len(), 1);
+    assert_eq!(support::journal(), ["from load"]);
+    assert_eq!(domain.context("@jess/timer").unwrap().failures, 0);
+    assert_eq!(domain.context("restricted").unwrap().failures, 1);
+}
+
+/// A real budget, against real work. Each callback spins for at least 20 ms, so the budget of 50 ms
+/// has gone by the third however fast the machine is, and a slow machine only makes that sooner.
+/// The roomy domain's budget is minutes, which no scheduling hiccup reaches.
+#[test]
+fn a_positive_dispatch_budget_spreads_slow_work_over_frames_and_leaves_quick_work_alone() {
+    const TEN_CALLBACKS: &str = r"
+        local timer = require('@jess/timer')
+        local journal = require('@test/journal')
+        for index = 1, 10 do
+            timer.after(0, function()
+                local started = os.clock()
+                repeat until os.clock() - started >= SPIN
+                journal.write(tostring(index))
+            end)
+        end
+    ";
+    let budgeted = |name: &str, budget, spin: &str| {
+        let grant = RootAuthority::new().grant(CapabilitySet::empty());
+        let spec = DomainSpec::new(name, grant).timer_dispatch_budget(budget);
+        let domain = ScriptDomain::create(support::factory(), spec).unwrap();
+        domain.load_source("=budgeted", &TEN_CALLBACKS.replace("SPIN", spin)).unwrap();
+        domain.start().unwrap();
+        domain
+    };
+    let ran = |domain: &ScriptDomain| {
+        let report = domain.advance(Duration::ZERO).unwrap();
+        report
+            .phases
+            .iter()
+            .find(|phase| phase.phase == Phase::Timer)
+            .map_or(0, |phase| phase.ran)
+    };
+    let everything: Vec<String> = (1..=10).map(|index| index.to_string()).collect();
+
+    let roomy = budgeted("roomy", Duration::from_secs(300), "0");
+    assert_eq!(ran(&roomy), 10);
+    assert_eq!(support::journal(), everything);
+    assert_eq!(ran(&roomy), 0);
+
+    let tight = budgeted("tight", Duration::from_millis(50), "0.02");
+    let mut frames = Vec::new();
+    loop {
+        match ran(&tight) {
+            0 => break,
+            count => frames.push(count),
+        }
+    }
+    assert!(frames.iter().all(|count| (1..=3).contains(count)), "{frames:?}");
+    assert!(
+        frames.len() >= 4,
+        "ten callbacks at three a frame need four frames: {frames:?}"
+    );
+    assert_eq!(frames.iter().sum::<usize>(), 10, "{frames:?}");
+    assert_eq!(support::journal(), everything, "in order, each exactly once");
+}
+
 /// Not a check: what timers cost, for a verified build.
 /// `cargo test --release --test integration --all-features -- --ignored --nocapture --exact runtime::timers::measure_timer_overhead`,
 /// in a shell where `tools/dev/no-lto.sh` was not sourced.
