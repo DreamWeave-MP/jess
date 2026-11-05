@@ -46,7 +46,7 @@ fn run_task(runtime: &Runtime, body: &str) -> Vec<String> {
         local task = loop:spawn(function()
           {body}
         end, 'test')
-        local deadline = net.now() + 20000
+        local deadline = net.now() + 60000
         while task.status == 'running' and net.now() < deadline do
           loop:step(50)
         end

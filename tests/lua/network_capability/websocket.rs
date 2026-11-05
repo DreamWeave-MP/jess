@@ -61,9 +61,10 @@ impl WsServer {
         format!("ws://127.0.0.1:{}{path}", self.port)
     }
 
-    /// Waits up to two seconds for every connection to have ended on the server's side.
+    /// Waits up to fifty seconds for every connection to have ended on the server's side: inside the
+    /// sixty its reads time out after, so a connection the client left open still shows.
     pub(super) fn wait_until_idle(&self) -> usize {
-        for _ in 0..200 {
+        for _ in 0..5000 {
             if self.seen.lock().unwrap().open == 0 {
                 return 0;
             }
@@ -203,8 +204,9 @@ fn read_frame(stream: &mut TcpStream, seen: &Mutex<Seen>) -> Option<(bool, u8, V
 }
 
 /// What the server sends first on `path`, after the handshake; false when the connection should end
-/// there.
-fn open(path: &str, stream: &mut TcpStream) -> bool {
+/// there. `/fragment-pause` and `/split` hold the rest of their message until the client sends a
+/// frame, so its receive times out part way through however slow the machine is.
+fn open(path: &str, stream: &mut TcpStream, seen: &Mutex<Seen>) -> bool {
     let opening: Vec<Vec<u8>> = match path {
         "/echo" => vec![frame(0x89, b"server-ping", false)],
         "/masked" => vec![frame(0x81, b"masked", true)],
@@ -221,22 +223,20 @@ fn open(path: &str, stream: &mut TcpStream) -> bool {
             frame(0x80, b"world", false),
         ],
         "/no-read" => {
-            thread::sleep(Duration::from_secs(10));
+            thread::sleep(Duration::from_secs(120));
             return false;
         }
         "/fragment-pause" => {
-            if stream.write_all(&frame(0x01, b"hel", false)).is_err() {
+            if stream.write_all(&frame(0x01, b"hel", false)).is_err() || read_frame(stream, seen).is_none() {
                 return false;
             }
-            thread::sleep(Duration::from_millis(400));
             vec![frame(0x80, b"lo", false)]
         }
         "/split" => {
             let whole = frame(0x81, b"helloworld", false);
-            if stream.write_all(&whole[..7]).is_err() {
+            if stream.write_all(&whole[..7]).is_err() || read_frame(stream, seen).is_none() {
                 return false;
             }
-            thread::sleep(Duration::from_millis(400));
             vec![whole[7..].to_vec()]
         }
         "/drop" => {
@@ -249,7 +249,7 @@ fn open(path: &str, stream: &mut TcpStream) -> bool {
 }
 
 fn serve(mut stream: TcpStream, seen: &Mutex<Seen>) {
-    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
     let mut head = Vec::new();
     let mut byte = [0u8; 1];
     while !head.ends_with(b"\r\n\r\n") {
@@ -289,7 +289,7 @@ fn serve(mut stream: TcpStream, seen: &Mutex<Seen>) {
         return;
     }
 
-    if !open(&path, &mut stream) {
+    if !open(&path, &mut stream, seen) {
         return;
     }
 
@@ -344,17 +344,17 @@ fn messages_round_trip_masked_under_fresh_keys_and_the_close_handshake_completes
             local socket = assert(websocket.connect({url:?}, {{ protocols = {{ 'chat', 'other' }} }}))
             table.insert(out, `protocol {{socket.protocol}} {{socket.state}}`)
             assert(socket:send('hello'))
-            local message = assert(socket:receive(net.now() + 5000))
+            local message = assert(socket:receive(net.now() + 30000))
             table.insert(out, `{{message.kind}} {{message.data}}`)
             for _, size in {{ 300, 70000 }} do
               local payload = string.rep(string.char(size % 251), size)
               assert(socket:send(payload, 'binary'))
-              local back = assert(socket:receive(net.now() + 5000))
+              local back = assert(socket:receive(net.now() + 30000))
               table.insert(out, `{{back.kind}} {{#back.data}} {{back.data == payload}}`)
             end
             assert(socket:ping('are you there'))
             assert(socket:send('after the ping'))
-            local after = assert(socket:receive(net.now() + 5000))
+            local after = assert(socket:receive(net.now() + 30000))
             table.insert(out, `{{after.data}} pong {{socket.lastPongAt ~= nil}}`)
             socket:close(1000, 'done')
             table.insert(out, `{{socket.state}} {{socket.closeCode}} {{socket.closeReason}}`)
@@ -398,7 +398,7 @@ fn fragments_reassemble_around_a_control_frame() {
         &format!(
             "
             local socket = assert(websocket.connect({url:?}))
-            local message = assert(socket:receive(net.now() + 5000))
+            local message = assert(socket:receive(net.now() + 30000))
             table.insert(out, `{{message.kind}} {{message.data}}`)
             socket:close()
             ",
@@ -456,7 +456,7 @@ fn malformed_frames_close_the_connection_with_the_code_that_names_them() {
             &format!(
                 "
                 local socket = assert(websocket.connect({url:?}, {{ maxMessageBytes = 1000 }}))
-                local message, problem, kind = socket:receive(net.now() + 5000)
+                local message, problem, kind = socket:receive(net.now() + 30000)
                 table.insert(out, `{{kind}} {{socket.closeCode}} {{socket.state}}`)
                 ",
                 url = server.url(path)
@@ -478,7 +478,7 @@ fn the_peer_s_close_and_a_dropped_connection_are_reported_with_their_codes() {
             "
             for _, url in {{ {close:?}, {drop:?} }} do
               local socket = assert(websocket.connect(url))
-              local message, problem, kind = socket:receive(net.now() + 5000)
+              local message, problem, kind = socket:receive(net.now() + 30000)
               table.insert(out, `{{kind}} {{socket.closeCode}} {{socket.closeReason}} {{socket.state}}`)
             end
             ",
@@ -509,7 +509,7 @@ fn repeated_reconnects_release_every_socket_watch_and_task() {
                 for _ = 1, {count} do
                   local socket = assert(websocket.connect({url:?}))
                   assert(socket:send('round'))
-                  assert(socket:receive(net.now() + 5000))
+                  assert(socket:receive(net.now() + 30000))
                   socket:close()
                 end
 
@@ -553,7 +553,7 @@ fn wss_verifies_the_server_against_the_roots_it_is_given() {
             local trusted = assert(tls.clientConfig {{ roots = CA, platform = false }})
             local socket = assert(websocket.connect(`wss://localhost:{{port}}/echo`, {{ tls = trusted }}))
             assert(socket:send('secure hello'))
-            local message = assert(socket:receive(net.now() + 5000))
+            local message = assert(socket:receive(net.now() + 30000))
             table.insert(out, `{{socket.response.status}} {{message.data}}`)
             socket:close()
             table.insert(out, `{{socket.closeCode}}`)
@@ -600,7 +600,8 @@ fn a_receive_that_times_out_part_way_through_a_frame_leaves_it_whole_for_the_nex
             local socket = assert(websocket.connect({url:?}))
             local early, _, kind = socket:receive(net.now() + 100)
             table.insert(out, `{{early == nil}} {{kind}} {{socket.state}}`)
-            local message = assert(socket:receive(net.now() + 5000))
+            assert(socket:send('go on'))
+            local message = assert(socket:receive(net.now() + 30000))
             table.insert(out, message.data)
             socket:close()
             ",
@@ -621,7 +622,8 @@ fn a_receive_that_times_out_between_fragments_leaves_the_message_for_the_next() 
             local socket = assert(websocket.connect({url:?}))
             local early, _, kind = socket:receive(net.now() + 100)
             table.insert(out, `{{early == nil}} {{kind}} {{socket.state}}`)
-            local message = assert(socket:receive(net.now() + 5000))
+            assert(socket:send('go on'))
+            local message = assert(socket:receive(net.now() + 30000))
             table.insert(out, `{{message.kind}} {{message.data}}`)
             socket:close()
             table.insert(out, `{{socket.closeCode}}`)
@@ -656,7 +658,7 @@ fn sends_are_bounded_and_concurrent_senders_never_interleave_frames() {
               end))
             end
             for _, sender in senders do
-              assert(sender:join(net.now() + 10000))
+              assert(sender:join(net.now() + 30000))
             end
 
             socket:close()

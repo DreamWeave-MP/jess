@@ -36,7 +36,7 @@ fn events_are_parsed_as_the_standard_says_wherever_the_pieces_split_them() {
         "
         local events = assert(sse.open {{ url = {url:?}, lastEventId = '3' }})
         while true do
-          local event, problem = events:next(net.now() + 5000)
+          local event, problem = events:next(net.now() + 30000)
           if not event then
             table.insert(out, `end {{problem}} ended {{events.ended}}`)
             break
@@ -78,7 +78,7 @@ fn an_event_past_its_limit_and_a_response_that_is_not_a_stream_are_refused() {
         "
         for _, path in {{ '/huge', '/endless-line' }} do
           local events = assert(sse.open {{ url = {base:?} .. path, maxEventBytes = 1000 }})
-          local event, problem, kind = events:next(net.now() + 5000)
+          local event, problem, kind = events:next(net.now() + 30000)
           table.insert(out, `{{path}} {{event == nil}} {{kind}} ended {{events.ended}}`)
         end
 
@@ -125,7 +125,7 @@ fn a_byte_order_mark_split_across_reads_is_still_dropped() {
     let lines = run(&format!(
         "
         local events = assert(sse.open {{ url = {url:?} }})
-        local event = events:next(net.now() + 5000)
+        local event = events:next(net.now() + 30000)
         table.insert(out, if event then event.data else 'no event')
         ",
         url = server.url("/bom")
