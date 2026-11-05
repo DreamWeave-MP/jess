@@ -1123,18 +1123,27 @@ local function step(loop: LoopState, waitMs: number?): number
   end
 
   current = now()
-  local overdue: { TaskState } = {}
+  -- Made only when a deadline has passed: most steps find none.
+  local overdue: { TaskState }? = nil
   for parked in loop.parked do
-    if parked.waiting and parked.deadline and parked.deadline <= current then table.insert(overdue, parked) end
+    if not (parked.waiting and parked.deadline and parked.deadline <= current) then continue end
+
+    local due = overdue or {}
+    table.insert(due, parked)
+    overdue = due
   end
 
-  -- A step that ran late finds several deadlines passed, and the set of parked tasks has no order.
-  table.sort(overdue, function(first: TaskState, second: TaskState): boolean
-    return (first.deadline :: number) < (second.deadline :: number)
-  end)
+  if overdue then
+    -- A step that ran late finds several deadlines passed, and the set of parked tasks has no order.
+    if #overdue > 1 then
+      table.sort(overdue, function(first: TaskState, second: TaskState): boolean
+        return (first.deadline :: number) < (second.deadline :: number)
+      end)
+    end
 
-  for _, parked in overdue do
-    wake(parked, 'timeout')
+    for _, parked in overdue do
+      wake(parked, 'timeout')
+    end
   end
 
   local deferred = loop.deferred
