@@ -7,6 +7,16 @@ use l3i::value::Function;
 
 use super::{ContextSpec, Dispatch, DomainCore, DomainState, Phase, PhaseReport, RuntimeError, ScriptDomain};
 use crate::runtime::capability::current_authority;
+use crate::runtime::ids::ContextId;
+
+/// What a scheduled timer remembers: whose it is and what to call. Its authority and budget are
+/// its context's, read when it fires, so reconfiguring the context reaches timers already queued.
+#[derive(Clone)]
+pub(super) struct Scheduled {
+    context: ContextId,
+    handler: Function,
+    source: Rc<str>,
+}
 
 impl DomainCore {
     pub(crate) fn schedule_timer(
@@ -55,19 +65,33 @@ impl DomainCore {
                 record.name
             )));
         }
-        let target = Dispatch {
+        let scheduled = Scheduled {
             context,
             handler,
-            source: Some(Rc::from(source)),
-            event: None,
-            stats: Rc::clone(&record.stats),
-            capabilities: Arc::clone(authority.capabilities()),
-            budget: record.budget,
+            source: Rc::from(source),
         };
         self.timers
             .borrow_mut()
-            .insert(delay, repeating, target)
+            .insert(delay, repeating, scheduled)
             .map_err(l3i::Error::runtime)
+    }
+
+    /// The call `scheduled` makes now: its context's current authority and budget, or `None` when
+    /// the context is gone or no longer schedules the timer phase.
+    fn timer_dispatch(&self, scheduled: Scheduled) -> Option<Dispatch> {
+        let contexts = self.contexts.borrow();
+        let record = contexts
+            .iter()
+            .find(|record| record.id == scheduled.context && record.schedule.contains(&Phase::Timer))?;
+        Some(Dispatch {
+            context: scheduled.context,
+            handler: scheduled.handler,
+            source: Some(scheduled.source),
+            event: None,
+            stats: Rc::clone(&record.stats),
+            capabilities: Arc::clone(&record.capabilities),
+            budget: record.budget,
+        })
     }
 
     pub(crate) fn cancel_timer(&self, id: u64) -> bool {
@@ -93,12 +117,12 @@ impl ScriptDomain {
             failures: Vec::new(),
         };
         for id in batch {
-            let target = self.core.timers.borrow().get(id).cloned();
-            let Some(target) = target else { continue };
-            if !self.core.contexts.borrow().iter().any(|record| record.id == target.context) {
+            let scheduled = self.core.timers.borrow().get(id).cloned();
+            let Some(scheduled) = scheduled else { continue };
+            let Some(target) = self.core.timer_dispatch(scheduled) else {
                 self.core.cancel_timer(id);
                 continue;
-            }
+            };
             report.ran += 1;
             if let Err(error) = self
                 .core
@@ -111,5 +135,108 @@ impl ScriptDomain {
             self.core.timers.borrow_mut().finish(id);
         }
         Ok(report)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use l3i::Runtime;
+
+    use crate::lua::{Options, runtime_with_capabilities};
+    use crate::runtime::{
+        Budget, CapabilitySet, ContextSpec, DomainSpec, Phase, RootAuthority, RuntimeFactory, ScriptDomain,
+    };
+
+    const GRANT: &str = "shared-buffer.create";
+
+    struct Factory;
+
+    impl RuntimeFactory for Factory {
+        fn create(&self) -> l3i::Result<Runtime> {
+            runtime_with_capabilities(Options::default(), &[GRANT.to_owned()])
+        }
+    }
+
+    fn timer_failures(domain: &ScriptDomain) -> Option<(usize, usize)> {
+        let report = domain.advance(Duration::from_millis(1)).unwrap();
+        let phase = report.phases.iter().find(|phase| phase.phase == Phase::Timer)?;
+        Some((phase.ran, phase.failures.len()))
+    }
+
+    /// Only the crate can redeclare a context mid-generation, so this is a unit test.
+    #[test]
+    fn a_queued_timer_runs_under_what_its_context_is_now() {
+        let grant = RootAuthority::new().grant(CapabilitySet::from_names(&[GRANT.to_owned()]).unwrap());
+        let domain = ScriptDomain::create(Arc::new(Factory), DomainSpec::new("reconfigured", grant)).unwrap();
+        let schedule = [Phase::Startup, Phase::Timer];
+        domain
+            .register_context(ContextSpec::new("module").schedule(schedule))
+            .unwrap();
+        domain
+            .load_source(
+                "=reconfigured",
+                r"
+            local shared = require('@jess/sharedBuffer')
+            local timer = require('@jess/timer')
+            require('@jess/context').bind('module', { startup = function()
+                timer.every(1, function()
+                    shared.create(8)
+                    local started = os.clock()
+                    repeat until os.clock() - started > 0.04
+                end)
+            end })
+            ",
+            )
+            .unwrap();
+        domain.start().unwrap();
+        assert_eq!(timer_failures(&domain), Some((1, 0)));
+
+        domain
+            .core
+            .declare_context(
+                ContextSpec::new("module")
+                    .schedule(schedule)
+                    .capabilities(CapabilitySet::empty()),
+            )
+            .unwrap();
+        assert_eq!(
+            timer_failures(&domain),
+            Some((1, 1)),
+            "the narrowed grant reaches the queued timer"
+        );
+
+        domain
+            .core
+            .declare_context(
+                ContextSpec::new("module")
+                    .schedule(schedule)
+                    .budget(Budget::time(Duration::from_millis(5))),
+            )
+            .unwrap();
+        assert_eq!(
+            timer_failures(&domain),
+            Some((1, 1)),
+            "the new budget reaches the queued timer"
+        );
+
+        domain
+            .core
+            .declare_context(ContextSpec::new("module").schedule(schedule))
+            .unwrap();
+        assert_eq!(timer_failures(&domain), Some((1, 0)), "and so does lifting both");
+
+        domain
+            .core
+            .declare_context(ContextSpec::new("module").schedule([Phase::Startup]))
+            .unwrap();
+        assert_eq!(
+            timer_failures(&domain),
+            Some((0, 0)),
+            "without the timer phase it is dropped unrun"
+        );
+        assert_eq!(timer_failures(&domain), None, "and stays gone");
     }
 }

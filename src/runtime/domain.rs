@@ -629,7 +629,6 @@ pub struct TeardownReport {
 }
 
 /// One handler call the scheduler is about to make.
-#[derive(Clone)]
 struct Dispatch {
     context: ContextId,
     handler: Function,
@@ -647,7 +646,7 @@ mod timer;
 
 /// The part of a domain its own runtime's bindings reach: everything but the runtime.
 pub struct DomainCore {
-    timers: RefCell<crate::runtime::timers::Timers<Dispatch>>,
+    timers: RefCell<crate::runtime::timers::Timers<timer::Scheduled>>,
     id: DomainId,
     name: String,
     parent: Option<DomainId>,
