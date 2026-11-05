@@ -62,6 +62,9 @@ export type WorkerOptions = {
 --- waits for it to end.
 export type Worker = jess_runtime_Worker
 
+--- A timer `jess.timer` scheduled: `cancel` stops it, `active` says whether it can still fire.
+export type Timer = jess_runtime_Timer
+
 --- What an action's value is shaped like: `digital` (boolean), `scalar` (number), or `vector2`
 --- (a `vector` with `z` 0).
 export type InputValueType = 'digital' | 'scalar' | 'vector2'
@@ -1475,6 +1478,17 @@ declare jess: {
     bind: (name: string, handlers: ContextHandlers) -> (),
   },
 
+  --- Timers (`@jess/timer`): callbacks the domain's frames run, in milliseconds of simulated time.
+  --- Only a domain's own code schedules them; elsewhere every function errors.
+  timer: {
+    --- Runs `callback` once, `delayMilliseconds` from now, under the calling context's authority.
+    after: (delayMilliseconds: number, callback: () -> ()) -> Timer,
+    --- Runs `callback` every `intervalMilliseconds`, at most once a frame; missed ticks are skipped.
+    every: (intervalMilliseconds: number, callback: () -> ()) -> Timer,
+    --- The domain's elapsed simulated time in milliseconds, 0 at load and again after a restart.
+    now: () -> number,
+  },
+
   --- Workers (`@jess/worker`): isolated Luau states beside the domain, talking in messages.
   worker: {
     --- Spawns a worker from its module source, a chunk returning the message handler; needs the
@@ -1687,7 +1701,8 @@ The table is validated before any handlers are installed: a bad key, a non-funct
 | `startup` | Once, when the domain starts. |
 | `fixedUpdate` | Zero or more fixed steps per advance, bounded by the host's catch-up limit. |
 | `update`, `lateUpdate` | Once per advance. |
-| `input`, `renderPrepare`, `message`, `timer`, `onDemand` | When the host or a layer above asks. |
+| `timer` | When a [timer](@/docs/api/timer.md) of the context is due, or when the host or a layer above asks. |
+| `input`, `renderPrepare`, `message`, `onDemand` | When the host or a layer above asks. |
 | `event` | When an event queued for the context is delivered. |
 | `shutdown` | Once, when the domain stops or restarts. |
 
@@ -1725,6 +1740,74 @@ A handler that raises is reported to the host with the domain, generation, conte
 An [application target](@/docs/scripting/applications.md) needs none of this by hand: each of its managed modules returns its handlers in `on.host`, and the loader declares a context for it, `<package>/<managed id>`, and binds them. `bind` still works on those contexts, under the same rules. The `event` phase here takes raw events a host posted to a context; a managed module's `on.event` handlers take [named events](@/docs/api/events.md), and the two never reach each other.
 
 Related: [jess.worker](@/docs/api/worker.md), [Script Domains](@/docs/contributing/script-domains.md).
+
+]========]
+
+--[========[
+@api-document timer jess.timer
+
+
+Also `require('@jess/timer')`. A timer is a callback a domain's frames run once its delay has passed. It needs no network and no thread: `advance(delta)` moves the domain's clock by the delta the host supplied, so a timer's time is simulated time. It is monotonic, a test or a replay controls it, and a paused host pauses it. Delays are milliseconds, and fractions of one are fine.
+
+```luau
+--!strict
+local timer = require '@jess/timer'
+
+timer.after(250, function()
+  print('a quarter of a second of frames went by')
+end)
+
+local beats = 0
+local heartbeat
+heartbeat = timer.every(1000, function()
+  beats += 1
+  if beats == 3 then heartbeat:cancel() end
+end)
+```
+
+Each frame runs what is due after `lateUpdate` and before the event drain, earliest deadline first, and in the order they were scheduled when deadlines tie.
+
+A timer belongs to the context that scheduled it. Its callback runs in the `timer` phase under that context's authority and budget as they are when it fires, with a failure reported as that context's, naming the line that scheduled it. If the context has gone or no longer schedules the `timer` phase by then, the timer is dropped unrun. A failure doesn't stop the frame or a repeating timer. Code outside any handler, such as a module's top level during load, gets a context named `@jess/timer`, which holds the domain's whole grant. Authority follows where the timer was scheduled, not what the module binds afterwards: a timer scheduled at load doesn't take on the narrower capabilities of a restricted context the same module binds to. To run under a restricted context's authority, schedule from one of its handlers. Scheduling from a context the host declared without the `timer` phase is an error; every application module's context has it.
+
+Timers end with their generation: `stop` and `restart` drop them unrun, as a failed load does, and the clock starts again from 0. So do the handles' answers: `cancel` returns `false` and `active` is `false` from then on. The domain holds a scheduled timer until it fires or is cancelled, so dropping the handle cancels nothing.
+
+Timers exist only where frames do. Under `jess run`, `jess test` and a command target there is no frame loop, so these functions raise rather than schedule a callback nothing would ever run; a script like that waits with [`net.run` and `net.sleep`](@/docs/api/net.md). A worker has no frames either, and raises too.
+
+## jess.timer.after
+
+{{ api_symbol(value="jess.timer.after") }}
+
+Runs `callback` once, `delayMilliseconds` from now, and returns its handle. A delay of 0 waits for the frame's dispatch, and a timer scheduled during dispatch waits for a later frame however short its delay, so a callback that schedules another never recurses.
+
+- **Errors:** a delay that is negative, NaN, infinite or over 31,536,000,000 milliseconds (a year); more than 16,384 active timers in the domain; a context that doesn't schedule the `timer` phase; no domain to belong to.
+
+## jess.timer.every
+
+{{ api_symbol(value="jess.timer.every") }}
+
+Runs `callback` every `intervalMilliseconds`, which must be above 0, and returns its handle.
+
+A repeating timer fires at most once a frame, then schedules its next run an interval on from that frame. Missed ticks are skipped, not owed: after a ten-second stall a 10 ms timer fires once, not a thousand times, and a timer shorter than a frame fires once a frame.
+
+One frame delivers at most 1,024 callbacks. What is left stays queued in deadline order for the next frame. That bounds a count, not a time: 1,024 slow callbacks are still a slow frame, each limited only by its context's budget. A host that needs a time limit sets one (`DomainSpec::timer_dispatch_budget`), and the application host doesn't, so that which frame a timer lands on doesn't depend on the machine.
+
+- **Errors:** as `after`, and an interval of 0 or below.
+
+## jess.timer.now
+
+{{ api_symbol(value="jess.timer.now") }}
+
+The domain's elapsed simulated time in milliseconds: the sum of the deltas so far in this generation. It doesn't read a clock, so two runs fed the same deltas agree.
+
+## Timer
+
+{{ api_symbol(value="jess_runtime_Timer.cancel") }}
+
+`timer:cancel()` stops the timer and returns whether that did anything: `false` once it has been cancelled, finished or torn down. It is safe inside the timer's own callback, where it stops a repeating timer, and from another callback in the same dispatch, where it wins even if the timer was already due.
+
+`timer.active` is `true` until the timer has been cancelled, finished its one run, or been torn down. It stays `true` during a one-shot's own callback.
+
+Related: [Applications](@/docs/scripting/applications.md), [contexts](@/docs/api/context.md), [@jess/net](@/docs/api/net.md).
 
 ]========]
 
@@ -3908,7 +3991,7 @@ error: dream.process.env: needs the 'process.environment' capability, which this
 | [`@dream/intern`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-intern) | String interning, one table of unique strings | none |
 | [`@dream/intl`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-intl) | Locales, plural rules, number and date formatting; what [`@jess/l10n`](@/docs/api/l10n.md) is built on | none |
 | [`@dream/luau`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-luau) | Luau's own parser, as data; what [`@jess/analysis`](@/docs/api/analysis.md) and [`@jess/style`](@/docs/api/style.md) are built on | none |
-| [`@dream/process`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-process) | The environment, the standard streams, and child processes | `process.environment` for `env`, `process.stdio` for `write`, `process.spawn` for `run` |
+| [`@dream/process`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-process) | The environment, the standard streams, and child processes | `process.environment` for `env`, `process.stdio` for `write` and `openStdin`, `process.spawn` for `run` |
 | [`@dream/tcp`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-tcp) | Streams, listeners, and a poller | `network.tcp.connect` to connect out; `network.tcp.listen` to listen on loopback, plus `network.tcp.public` to bind a wildcard or non-loopback address |
 | [`@dream/tls`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-tls) | TLS sessions over a connected TCP stream | none of its own: making the stream took `network.tcp.connect` or `network.tcp.listen` |
 | [`@dream/udp`](https://DreamWeave-MP.github.io/l3i/docs/builtin-extensions/#dream-udp) | An authenticated datagram transport, client and server | `network.transport` |

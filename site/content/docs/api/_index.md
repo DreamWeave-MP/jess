@@ -18,7 +18,7 @@ The generated [symbol index](@/docs/api/symbols.md) and [machine-readable API ca
 
 Three kinds of module live here:
 
-- **The `jess` global and its members**: `jess.context`, `jess.worker`, `jess.events`, `jess.interfaces`, `jess.application`, `jess.shader`, `jess.gpu`, `jess.input`, `jess.audio`, `jess.bench`, and the values that belong to no module. Most are also available through `require('@jess/<name>')`. `@jess/input` and `@jess/audio` are built-in package modules wrapping the corresponding native tables, not those same tables.
+- **The `jess` global and its members**: `jess.context`, `jess.timer`, `jess.worker`, `jess.events`, `jess.interfaces`, `jess.application`, `jess.shader`, `jess.gpu`, `jess.input`, `jess.audio`, `jess.bench`, and the values that belong to no module. Most are also available through `require('@jess/<name>')`. `@jess/input` and `@jess/audio` are built-in package modules wrapping the corresponding native tables, not those same tables.
 - **The built-in modules**, Luau that ships inside the binary: `@jess/log`, `@jess/test`, `@jess/jpk`, `@jess/package`.
 - **The built-in package's exports**: `@jess/style`, `@jess/analysis`, `@jess/json`, `@jess/yaml`, `@jess/data/toml`, `@jess/data/value`, `@jess/l10n`, `@jess/input`, `@jess/audio`, `@jess/render`, `@jess/render/camera`, `@jess/backup`, `@jess/http`, `@jess/sse`, `@jess/net`, `@jess/websocket`.
 
@@ -28,7 +28,7 @@ The native primitives under all of it, files, bytes, processes, the network, and
 
 | What you need | Reference |
 | --- | --- |
-| Runtime values, grants, and `require` | [jess](@/docs/api/jess.md), [context](@/docs/api/context.md), [workers](@/docs/api/worker.md) |
+| Runtime values, grants, and `require` | [jess](@/docs/api/jess.md), [context](@/docs/api/context.md), [workers](@/docs/api/worker.md), [timers](@/docs/api/timer.md) |
 | Application lifecycle and communication | [application](@/docs/api/application.md), [events](@/docs/api/events.md), [interfaces](@/docs/api/interfaces.md) |
 | Packages and containers | [package](@/docs/api/package.md), [JPK](@/docs/api/jpk.md) |
 | Tests, logging, and analysis | [test](@/docs/api/test.md), [log](@/docs/api/log.md), [analysis](@/docs/api/analysis.md), [style](@/docs/api/style.md) |

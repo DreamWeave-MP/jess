@@ -111,7 +111,7 @@ fn builder(capabilities: &[String], profiling: bool) -> RuntimePlanBuilder {
         .extension(l3i::fs::FsExtension)
         .extension(l3i::intern::InternExtension)
         .extension(l3i::intl::IntlExtension)
-        .extension(l3i::process::ProcessExtension)
+        .extension(l3i::process::ProcessExtension.with_input_policy(Rc::new(crate::runtime::StdinPolicy)))
         .extension(l3i::syntax::SyntaxExtension)
         .extension(l3i::tcp::TcpExtension::default())
         .extension(l3i::tls::TlsExtension::default())
@@ -121,13 +121,14 @@ fn builder(capabilities: &[String], profiling: bool) -> RuntimePlanBuilder {
 
 /// The members of `@jess`, installed per runtime. Each table among them is also the module
 /// `@jess/<name>` (`require("@jess/shader")`).
-pub(crate) const MEMBERS: [&str; 15] = [
+pub(crate) const MEMBERS: [&str; 16] = [
     "version",
     "null",
     "granted",
     "payload",
     "shader",
     "context",
+    "timer",
     "worker",
     "sharedBuffer",
     "events",
@@ -238,6 +239,7 @@ impl Extension for JessExtension {
             .ok_or_else(|| l3i::Error::logic("jess.runtime installed no modules"))?;
         let module = cx.module(MODULE)?;
         module.set("context", &modules.context)?;
+        module.set("timer", &modules.timer)?;
         module.set("worker", &modules.worker)?;
         module.set("sharedBuffer", &modules.shared_buffer)?;
         module.set("events", &modules.events)?;

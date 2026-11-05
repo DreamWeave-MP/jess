@@ -7,5 +7,7 @@ mod fixture;
 mod lifecycle;
 mod scheduling;
 mod services;
+mod stdin;
 mod support;
+mod timers;
 mod workers;

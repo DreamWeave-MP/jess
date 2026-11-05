@@ -63,7 +63,7 @@ The rows are exactly what `InputRuntime:tick()` returns to a script, so reading 
 
 ### Advance
 
-`ScriptDomain::advance(delta)`: fixed steps, update, late update, and the event drain.
+`ScriptDomain::advance(delta)`: fixed steps, update, late update, due timers, and the event drain.
 
 ## Windows and the GPU
 
@@ -117,6 +117,8 @@ capability 'input.actions' denied to domain#1 gen#1 context#2
 ```
 
 The denial is also counted (`DomainStats::capability_denials`) and reported as a `DiagnosticKind::CapabilityDenied` carrying the capability and the attribution. Outside any domain the runtime's own grant decides, the same set its l3i plan was built from: `jess run` and `jess test` grant a script its terminal (`process.stdio`), the input devices in front of the person running it (`input.actions`, `input.observe`, `input.configure`), their GPU and windows on their screen (`gpu.device`, `gpu.window`), and their speakers (`audio.output`), since they already have the keyboard, the screen, and the sound; a package target holds what it declares, those of that set without asking and the rest once the operator grants them; and a library caller grants what it means to (`jess::lua::host_script_grant`), or gets `jess.input: needs the 'input.configure' capability, which this runtime does not grant`. Everything else in `@jess/input` (the builders, `graph`, `fromJson`, labels, presentation, conflicts, and the router) checks nothing, because it touches no device and no runtime: it is data.
+
+Stdin follows the same rule through l3i's input policy (`runtime::stdin`): under a dispatch, opening is the broker's check and `wait` is refused, because the domain thread must not sit in a terminal read. Outside one, the runtime's grant has decided and a script may wait. Reads aren't checked, deliberately: the handle is the authority, and passing it to a context holding less delegates reading. The claim is process-wide and lives in l3i; it goes back when the handle closes or its runtime is dropped, which ending a generation or a worker does, and the reader thread is never joined.
 
 What needs no capability: anything that works on values already in the VM (the codecs, `@jess/style`, `jess.shader`, `@jess/l10n`'s formatting), `print` and `@jess/log`, `os.time` and `os.clock`, and `require` of a module beside the caller or exported by an activated package, which reads through the script's folder or the package's provider rather than through `@dream/fs`. A package's modules may require only what its manifest declares, so that read is bounded by the plan, not by a grant.
 

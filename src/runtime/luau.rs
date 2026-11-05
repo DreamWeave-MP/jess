@@ -17,6 +17,8 @@
 //! Interfaces are plain tables in this runtime, so they are this domain's alone: a worker or
 //! another domain never sees them, and a restart, which builds a new runtime, starts without.
 
+mod timer;
+
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -68,6 +70,8 @@ pub struct RuntimeExtension;
 /// requires this one can expose them under its own names (`jess.context`, `jess.worker`, ...).
 #[derive(Debug)]
 pub struct Modules {
+    /// The domain timer module.
+    pub timer: Table,
     /// The `@jess/context` table.
     pub context: Table,
     /// The `@jess/worker` table.
@@ -533,6 +537,7 @@ impl Extension for RuntimeExtension {
     }
 
     fn describe(&self, d: &mut ExtensionDescriptor) -> l3i::Result<()> {
+        timer::describe(d);
         describe_shared_buffer(d);
         d.module(CONTEXT_MODULE)
             .doc("Script contexts: bind handlers to the phases a context the host declared may run in.")
@@ -723,7 +728,9 @@ impl Extension for RuntimeExtension {
         })?;
         let interfaces = interfaces.table().clone();
 
+        let timer = timer::install(cx, &bindings)?;
         cx.insert_state(Modules {
+            timer,
             context,
             worker,
             shared_buffer,

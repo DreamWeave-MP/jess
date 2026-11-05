@@ -144,6 +144,7 @@ pub struct DomainSpec {
     profiler: Arc<dyn ProfileSink>,
     logs: Option<Arc<dyn LogSink>>,
     fixed_step: Option<FixedStep>,
+    timer_dispatch_budget: Option<Duration>,
     budget: Option<Budget>,
     shared_buffer_budget: Option<usize>,
     event_limits: EventLimits,
@@ -181,6 +182,7 @@ impl DomainSpec {
             profiler: Arc::new(DiscardProfile),
             logs: None,
             fixed_step: None,
+            timer_dispatch_budget: None,
             budget: None,
             shared_buffer_budget: None,
             event_limits: EventLimits::default(),
@@ -228,6 +230,17 @@ impl DomainSpec {
     #[must_use]
     pub const fn fixed_step(mut self, fixed_step: FixedStep) -> DomainSpec {
         self.fixed_step = Some(fixed_step);
+        self
+    }
+
+    /// How long one [`ScriptDomain::advance`] may spend starting timer callbacks: once a callback
+    /// ends past this, the rest of the frame's batch waits for the next advance, in order. At least
+    /// one callback runs per advance, so a backlog always drains, and a callback already running is
+    /// its context's budget to stop. Without this only the count per advance bounds a dispatch,
+    /// which keeps the frame a timer lands on deterministic; with it, wall time decides that frame.
+    #[must_use]
+    pub const fn timer_dispatch_budget(mut self, budget: Duration) -> DomainSpec {
+        self.timer_dispatch_budget = Some(budget);
         self
     }
 
@@ -642,8 +655,11 @@ struct Dispatch {
     budget: Option<Budget>,
 }
 
+mod timer;
+
 /// The part of a domain its own runtime's bindings reach: everything but the runtime.
 pub struct DomainCore {
+    timers: RefCell<crate::runtime::timers::Timers<timer::Scheduled>>,
     id: DomainId,
     name: String,
     parent: Option<DomainId>,
@@ -663,6 +679,7 @@ pub struct DomainCore {
     fixed_step: Option<FixedStep>,
     budget: Option<Budget>,
     shared_buffers: Arc<Ledger>,
+    timer_dispatch_budget: Option<Duration>,
     accumulator: Cell<Duration>,
     contexts: RefCell<Vec<ContextRecord>>,
     next_order: Cell<u64>,
@@ -1315,6 +1332,7 @@ impl ScriptDomain {
             counters: Arc::clone(&counters),
         });
         let core = Rc::new(DomainCore {
+            timers: RefCell::default(),
             id: DomainId::allocate(),
             name: spec.name,
             parent: spec.parent,
@@ -1331,6 +1349,7 @@ impl ScriptDomain {
             counters,
             observer,
             fixed_step: spec.fixed_step,
+            timer_dispatch_budget: spec.timer_dispatch_budget,
             budget: spec.budget,
             shared_buffers: spec
                 .shared_buffer_budget
@@ -1542,6 +1561,7 @@ impl ScriptDomain {
                 Ok(())
             }
             Err(error) => {
+                self.core.timers.borrow_mut().clear();
                 self.core.state.set(DomainState::Failed);
                 Err(error)
             }
@@ -1670,6 +1690,7 @@ impl ScriptDomain {
     pub fn advance(&self, delta: Duration) -> Result<TickReport, RuntimeError> {
         self.core.refuse_reentry("advance")?;
         self.core.require_state(&[DomainState::Running], "advance")?;
+        self.core.timers.borrow_mut().advance(delta);
         let mut report = TickReport {
             fixed_steps: 0,
             dropped_steps: 0,
@@ -1695,6 +1716,9 @@ impl ScriptDomain {
         Counters::add(&self.core.counters.updates, 1);
         report.phases.push(self.broadcast(Phase::Update, &seconds)?);
         report.phases.push(self.broadcast(Phase::LateUpdate, &seconds)?);
+        if self.core.timers.borrow().has_due() {
+            report.phases.push(self.dispatch_timers()?);
+        }
         report.events = self.drain()?;
         Ok(report)
     }
@@ -1990,6 +2014,7 @@ impl ScriptDomain {
         } else {
             Vec::new()
         };
+        self.core.timers.borrow_mut().clear();
         let workers_stopped = self.core.stop_workers();
         let resources_released = self.core.release_resources();
         for context in self.core.contexts.borrow_mut().iter_mut() {

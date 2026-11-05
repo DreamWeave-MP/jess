@@ -103,9 +103,42 @@ The program form takes no other flags: everything after the script is the script
 The program form, and `--trusted`, give a script every capability in the [table](@/docs/reference/capabilities.md): it reads and writes your files, your environment, and the network as you. Use it for scripts you wrote or chose to install. `jess run` grants the default terminal and device capabilities and names a missing capability when code reaches for one; `jess check` reads it without running anything. On Windows, dropping a `.jsl` onto `jess.exe` is the program form too.
 {% end %}
 
+## Reading standard input
+
+A script that holds `process.stdio`, as any you run does, reads stdin through `@dream/process`. This one reads a pipeline to its end, or a person until they send end of input:
+
+```luau
+--!strict
+local process = require '@dream/process'
+
+local input = assert(process.openStdin())
+
+while true do
+  local line, message, kind = input:readLine()
+
+  if kind == 'wouldBlock' then
+    input:wait(1000)
+  elseif message then
+    error(message)
+  elseif line == nil then
+    break
+  else
+    print(`read {line}`)
+  end
+end
+
+input:close()
+```
+
+`readLine` never blocks; `wait` is where a script chooses to, for at most a minute at a time. To ask a question, `process.write('stdout', 'Name: ')` first, then read the same way.
+
+A line is bytes without its LF and any CR before it, and an invalid UTF-8 byte stays what it is, since nothing here assumes the input is text. `''` is an empty line and `nil` alone is end of input, so the two never get confused, and a final line with no newline still arrives. Lines are bounded, at 64 KiB unless you ask for up to 1 MiB: past the bound, `readLine` returns `nil, message, 'invalidInput'` and the next call carries on with what is left of the line, so call until a line comes back to skip it. For bytes rather than lines, `input:read(maxBytes)` returns them unchanged, and short reads are normal.
+
+Timers need frames, so a script has none: [`@jess/timer`](@/docs/api/timer.md) raises here and says so. To wait for time, or for time and sockets together, use [`net.run` and `net.sleep`](@/docs/api/net.md). An [application](@/docs/scripting/applications.md#standard-input) reads stdin without ever blocking its frames.
+
 ## Capabilities
 
-A script you run is yours, so it holds what you already have: its terminal (`process.stdio`, for `@dream/process`'s `write`), the input devices in front of you (`input.actions`, `input.observe`, `input.configure`), the GPU (`gpu.device`), the screen (`gpu.window`), and the speakers (`audio.output`). Everything else is a flag away and denied without one, with the function and the capability named:
+A script you run is yours, so it holds what you already have: its terminal (`process.stdio`, for `@dream/process`'s `write` and `openStdin`), the input devices in front of you (`input.actions`, `input.observe`, `input.configure`), the GPU (`gpu.device`), the screen (`gpu.window`), and the speakers (`audio.output`). Everything else is a flag away and denied without one, with the function and the capability named:
 
 ```text
 $ jess run read.jsl

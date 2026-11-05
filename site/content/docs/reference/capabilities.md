@@ -18,7 +18,7 @@ There are seventeen names. Jess knows all of them up front, so a misspelled gran
 | `filesystem.write` | Filesystem service writes, creation, removal, and renaming. | `@dream/fs`, [`@jess/backup`](@/docs/api/backup.md), and package packing through [`@jess/package`](@/docs/api/package.md) |
 | `process.environment` | Reading environment variables. | `@dream/process`'s `env` |
 | `process.spawn` | Running a child process. | `@dream/process`'s `run` |
-| `process.stdio` | Writing to the host's standard streams. `print` doesn't need it; it is jess's own. | `@dream/process`'s `write` |
+| `process.stdio` | Writing to the host's standard streams and reading its standard input. `print` doesn't need it; it is jess's own. Checked when stdin is opened: the handle is then the authority to read, and passing it on delegates that. | `@dream/process`'s `write` and `openStdin` |
 | `network.dns.resolve` | Resolving names to addresses. | `@dream/dns` |
 | `network.tcp.connect` | Outbound TCP connections to any address. A TLS session rides on a connected stream and needs no additional capability. The client operations in [`@jess/net`](@/docs/api/net.md), [`@jess/http`](@/docs/api/http.md), and [`@jess/websocket`](@/docs/api/websocket.md) use this grant and `network.dns.resolve`; they grant neither to themselves. | `@dream/tcp`'s `connect` |
 | `network.tcp.listen` | Listening on a loopback address. [`http.serve`](@/docs/api/http.md#serve) uses this grant; non-loopback binding also needs `network.tcp.public`. | `@dream/tcp`'s `listen` |

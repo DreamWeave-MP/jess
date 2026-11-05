@@ -76,7 +76,11 @@ mod resources;
 mod service;
 mod shared_buffer;
 pub mod shared_buffer_lowering;
+mod stdin;
+pub mod timers;
 mod worker;
+
+pub(crate) use stdin::StdinPolicy;
 
 pub use capability::{
     Authority, CapabilityDenied, CapabilitySet, Grant, Grantor, RootAuthority, SHARED_BUFFER_CREATE, WORKER_SPAWN,
