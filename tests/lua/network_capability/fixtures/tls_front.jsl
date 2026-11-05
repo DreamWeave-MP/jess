@@ -71,7 +71,12 @@ local function relay(loop: net.Loop, socket: dream_tcp_Stream, config: dream_tls
   end
 
   upstream:close()
-  back:join(net.now() + 2000)
+  -- It may be parked writing to a client that has stopped reading; the session can't close under it.
+  if not back:join(net.now() + 2000) then
+    back:cancel()
+    back:join()
+  end
+
   secure:close()
 end
 

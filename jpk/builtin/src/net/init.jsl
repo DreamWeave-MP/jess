@@ -410,14 +410,22 @@ local function waitOn(handle: dream_tcp_Watchable, interest: Interest, deadline:
   return reason == 'ready', reason
 end
 
+--- Ends a wait on a handle being released. A task the poll already woke as ready and that hasn't
+--- run yet hears `closed` too: told `ready`, it would go on to touch the closed handle, which raises.
+local function wakeReleased(state: TaskState)
+  if state.reason == 'ready' then state.reason = 'closed' end
+
+  wake(state, 'closed')
+end
+
 --- Wakes whoever waits on `handle`, with `closed`, and stops watching it.
 local function release(loop: LoopState, handle: dream_tcp_Watchable)
   local watch = loop.byHandle[handle]
   if not watch then return end
 
   forget(loop, watch)
-  if watch.reader then wake(watch.reader, 'closed') end
-  if watch.writer then wake(watch.writer, 'closed') end
+  if watch.reader then wakeReleased(watch.reader) end
+  if watch.writer then wakeReleased(watch.writer) end
 end
 
 local function newSignal(): Signal

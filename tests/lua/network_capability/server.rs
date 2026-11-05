@@ -793,3 +793,59 @@ fn a_handle_is_waited_on_from_one_loop_at_a_time() {
     assert!(lines[0].contains("another loop is already waiting on this handle"), "{text}");
     assert_eq!(lines[1], "timeout", "{text}");
 }
+
+/// Two tasks woken by one poll: whichever runs first closes the other's connection, whose task has
+/// been told it is ready and hasn't run yet. That task hears its connection closed; it doesn't go on
+/// to read a closed stream, which raises.
+#[test]
+fn a_connection_closed_under_a_task_already_woken_ends_its_receive_as_closed() {
+    let lines = run_task(
+        &tls_runtime(),
+        "
+        local tcp = require '@dream/tcp'
+        local listener = assert(tcp.listen('127.0.0.1:0'))
+        local port = assert(tonumber(string.match(listener.localAddress, ':(%d+)$')))
+        local connections = { assert(net.connect('127.0.0.1', port)), assert(net.connect('127.0.0.1', port)) }
+        local peers = {}
+        while #peers < 2 do
+          local peer, _, kind = listener:accept()
+          if peer then
+            table.insert(peers, peer)
+            continue
+          end
+
+          assert(kind == 'wouldBlock', kind)
+          assert(net.wait(listener, 'read', net.now() + 5000))
+        end
+
+        local ended = {}
+        local tasks = {}
+        for index, connection in connections do
+          table.insert(tasks, loop:spawn(function()
+            local piece, _, kind = connection:receiveSome(16)
+            table.insert(ended, piece or kind)
+            if piece then connections[3 - index]:close() end
+          end))
+        end
+
+        -- Both tasks park on this yield; both peers then write before the next poll.
+        net.yield()
+        for _, peer in peers do
+          assert(peer:write('x', 0, 1))
+        end
+
+        for _, task in tasks do
+          assert(task:join(net.now() + 5000))
+        end
+
+        table.sort(ended)
+        table.insert(out, table.concat(ended, ' '))
+        for _, peer in peers do
+          peer:close()
+        end
+
+        listener:close()
+        ",
+    );
+    assert_eq!(lines, ["closed x"]);
+}
