@@ -193,20 +193,36 @@ impl Served {
     /// Asks the server to stop and returns what it reported.
     fn finish(mut self) -> String {
         let mut stream = self.connect();
-        stream
-            .write_all(b"GET /quit HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n")
-            .unwrap();
+        stream.write_all(QUIT).unwrap();
         drop(read_all(&mut stream));
         self.done.take().unwrap().join().unwrap()
     }
 }
 
+const QUIT: &[u8] = b"GET /quit HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n";
+
+/// A test that didn't `finish` its server stops it here, and waits for its thread, so the server's
+/// runtime and listener don't outlive the test. The wait is bounded: a server that can't take the
+/// request to stop, because something still holds every place, fails the test instead of hanging it.
 impl Drop for Served {
     fn drop(&mut self) {
-        if self.done.is_some()
-            && let Ok(mut stream) = TcpStream::connect(("127.0.0.1", self.port))
+        let Some(done) = self.done.take() else { return };
+        if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", self.port)) {
+            drop(stream.write_all(QUIT));
+        }
+        let started = Instant::now();
+        while !done.is_finished() {
+            if started.elapsed() > Duration::from_secs(60) {
+                assert!(thread::panicking(), "the server never stopped");
+                return;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        // A test that is already failing keeps its own panic.
+        if let Err(payload) = done.join()
+            && !thread::panicking()
         {
-            drop(stream.write_all(b"GET /quit HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n"));
+            std::panic::resume_unwind(payload);
         }
     }
 }

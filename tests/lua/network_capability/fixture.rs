@@ -141,11 +141,15 @@ pub(super) fn linger(stream: &TcpStream, pause: Duration, closed: &AtomicBool) -
 #[test]
 #[should_panic(expected = "a connection's thread broke")]
 fn a_connection_thread_that_panics_fails_the_test_that_owns_the_server() {
-    let listening = Listening::start(|_, _| panic!("a connection's thread broke"));
-    drop(TcpStream::connect(("127.0.0.1", listening.port)).unwrap());
-    // The acceptor polls; this lets it take the connection before the server is dropped.
-    let started = Instant::now();
-    while listening.connections.lock().unwrap().is_empty() && started.elapsed() < Duration::from_secs(30) {
-        thread::sleep(Duration::from_millis(1));
-    }
+    let (started, began) = std::sync::mpsc::channel();
+    let listening = Listening::start(move |_, _| {
+        started.send(()).unwrap();
+        panic!("a connection's thread broke");
+    });
+    let stream = TcpStream::connect(("127.0.0.1", listening.port)).unwrap();
+    began
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the connection's thread never started");
+    drop(stream);
+    drop(listening);
 }
