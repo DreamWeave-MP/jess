@@ -111,7 +111,7 @@ fn builder(capabilities: &[String], profiling: bool) -> RuntimePlanBuilder {
         .extension(l3i::fs::FsExtension)
         .extension(l3i::intern::InternExtension)
         .extension(l3i::intl::IntlExtension)
-        .extension(l3i::process::ProcessExtension)
+        .extension(l3i::process::ProcessExtension.with_input_policy(Rc::new(crate::runtime::StdinPolicy)))
         .extension(l3i::syntax::SyntaxExtension)
         .extension(l3i::tcp::TcpExtension::default())
         .extension(l3i::tls::TlsExtension::default())

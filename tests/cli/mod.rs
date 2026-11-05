@@ -11,5 +11,6 @@ mod init;
 mod install;
 mod jsw;
 mod luau_test;
+mod stdin;
 mod toplevel;
 mod workspace;
