@@ -191,11 +191,17 @@ mod tests {
                 r"
             local shared = require('@jess/sharedBuffer')
             local timer = require('@jess/timer')
+            local firings = 0
             require('@jess/context').bind('module', { startup = function()
                 timer.every(1, function()
+                    firings += 1
                     shared.create(8)
+                    -- The third firing has the budget. The watchdog polls every 64 safepoints, so a
+                    -- short spin that one scheduler stall carries past its end can finish unpolled:
+                    -- this one only ends by being stopped. The limit stops a hang if it never is.
+                    local spin = if firings == 3 then 60 else 0.04
                     local started = os.clock()
-                    repeat until os.clock() - started > 0.04
+                    repeat until os.clock() - started > spin
                 end)
             end })
             ",
