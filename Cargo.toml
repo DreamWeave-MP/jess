@@ -213,4 +213,4 @@ codegen-units = 1
 
 # Unreleased l3i, until its next release. Delete this block when jess takes that release.
 [patch.crates-io]
-l3i = { git = "https://github.com/DreamWeave-MP/l3i", branch = "main" }
+l3i = { git = "https://github.com/DreamWeave-MP/l3i", rev = "368040d20e6521b759c2d299e205f3e1d16a6f7d" }
