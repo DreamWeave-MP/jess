@@ -7,27 +7,18 @@ local test = require '@jess/test'
 local expect = test.expect
 local suite = test.new()
 
---- Steps `loop` until its tasks are done or a second passes.
+--- Steps `loop` until its tasks are done. The limit only stops a hang, so a slow machine never
+--- reaches it.
 local function settle(loop: net.Loop)
-  local deadline = net.now() + 1000
+  local deadline = net.now() + 30000
   while loop:step(5) > 0 and net.now() < deadline do
   end
 end
 
 suite.describe('@jess/net', function()
-  suite.it('runs tasks in the order they wake, sleeps by the clock, and yields to the rest', function()
+  suite.it('runs tasks in the order they wake, and yields to the rest', function()
     local loop = net.loop()
     local order: { string } = {}
-
-    loop:spawn(function()
-      net.sleep(200)
-      table.insert(order, 'slow')
-    end)
-
-    loop:spawn(function()
-      net.sleep(100)
-      table.insert(order, 'quick')
-    end)
 
     loop:spawn(function()
       table.insert(order, 'first')
@@ -35,9 +26,43 @@ suite.describe('@jess/net', function()
       table.insert(order, 'yielded')
     end)
 
+    loop:spawn(function() table.insert(order, 'second') end)
+
     settle(loop)
-    expect(table.concat(order, ' ')).toBe 'first yielded quick slow'
+    expect(table.concat(order, ' ')).toBe 'first second yielded'
     expect(loop:stats().tasks).toBe(0)
+    loop:close()
+  end)
+
+  suite.it('sleeps at least as long as it was asked', function()
+    local loop = net.loop()
+    local slept = 0
+
+    loop:spawn(function()
+      local started = net.now()
+      net.sleep(20)
+      slept = net.now() - started
+    end)
+
+    settle(loop)
+    expect(slept >= 19).toBe(true)
+    loop:close()
+  end)
+
+  suite.it('wakes what is overdue in the order of its deadlines, however late the step', function()
+    local loop = net.loop()
+    local order: { string } = {}
+    local base = net.now()
+
+    for _, late in { 3, 5, 1, 4, 2 } do
+      loop:spawn(function()
+        net.signal():wait(base - late)
+        table.insert(order, tostring(late))
+      end)
+    end
+
+    settle(loop)
+    expect(table.concat(order, ' ')).toBe '5 4 3 2 1'
     loop:close()
   end)
 
@@ -50,7 +75,8 @@ suite.describe('@jess/net', function()
       loop:step(0)
     end
 
-    expect(net.now() - started < 100).toBe(true)
+    -- A step that waited would wait out the sleep: ten seconds, however busy the machine.
+    expect(net.now() - started < 5000).toBe(true)
     loop:close()
   end)
 
@@ -177,7 +203,7 @@ suite.describe('@jess/net', function()
       end)
     end
 
-    local deadline = net.now() + 5000
+    local deadline = net.now() + 60000
     while loop:step(0) > 0 and net.now() < deadline do
     end
 

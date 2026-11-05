@@ -6,6 +6,8 @@
 
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use super::http::{Answer, Server, response};
@@ -76,16 +78,6 @@ fn granted(command: &mut Command) -> &mut Command {
     command.args(["--capability", "network.dns.resolve", "--capability", "network.tcp.connect"])
 }
 
-/// The longest silence between consecutive heartbeats the server received.
-fn longest_gap(arrivals: &[(Instant, String)]) -> Duration {
-    let beats: Vec<Instant> = arrivals
-        .iter()
-        .filter(|(_, text)| text.starts_with("heartbeat"))
-        .map(|(at, _)| *at)
-        .collect();
-    beats.windows(2).map(|pair| pair[1] - pair[0]).max().unwrap_or_default()
-}
-
 fn output_within(mut child: std::process::Child, limit: Duration) -> Output {
     let started = Instant::now();
     while child.try_wait().unwrap().is_none() {
@@ -113,10 +105,27 @@ fn the_networked_application_type_checks_as_a_package() {
 #[test]
 fn a_heartbeat_keeps_time_while_a_slow_request_is_in_flight() {
     let notifications = WsServer::start();
+    // The request is answered only once heartbeats have reached the other server: a module that held
+    // up its loop waiting on the answer would never send them, and would never get one.
+    let steps = Arc::new(AtomicUsize::new(0));
     let request = Server::start(vec![(
         "/v1/messages",
-        Answer::Slow(Duration::from_millis(1500), response(200, r#"{"content":"hi"}"#, &[])),
+        Answer::Stepped(
+            vec![String::new(), response(200, r#"{"content":"hi"}"#, &[])],
+            Arc::clone(&steps),
+        ),
     )]);
+    let seen = Arc::clone(&notifications.seen);
+    std::thread::spawn(move || {
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(60) {
+            if seen.lock().unwrap().arrivals.len() >= 3 {
+                steps.fetch_add(1, Ordering::SeqCst);
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    });
     let monitor = Monitor::new("heartbeat", &notifications.url("/sink"), &request.url("/v1/messages"), true);
 
     let child = granted(&mut monitor.command())
@@ -124,7 +133,7 @@ fn a_heartbeat_keeps_time_while_a_slow_request_is_in_flight() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let output = output_within(child, Duration::from_secs(30));
+    let output = output_within(child, Duration::from_secs(120));
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(
         output.status.code(),
@@ -140,14 +149,11 @@ fn a_heartbeat_keeps_time_while_a_slow_request_is_in_flight() {
         .and_then(|rest| rest.strip_suffix(" heartbeats"))
         .and_then(|count| count.parse().ok())
         .unwrap_or_else(|| panic!("{stdout}"));
-    // 15 at 100 ms apart; a busy runner's timers drift, and the gap below is what proves no stall.
-    assert!(beats >= 6, "only {beats} heartbeats in a 1.5 s request");
+    assert!(beats >= 3, "only {beats} heartbeats before the answer");
     assert_eq!(lines[2], "shut down");
 
     assert_eq!(notifications.wait_until_idle(), 0, "the socket was closed");
     let seen = notifications.seen.lock().unwrap();
-    let gap = longest_gap(&seen.arrivals);
-    assert!(gap < Duration::from_millis(400), "heartbeats stalled for {gap:?}");
     assert_eq!(
         seen.closes,
         [(1001, "shutting down".to_owned())],
@@ -187,7 +193,7 @@ fn sigterm_cancels_what_is_in_flight_and_closes_the_socket() {
 
     let started = Instant::now();
     while notifications.seen.lock().unwrap().arrivals.len() < 3 {
-        assert!(started.elapsed() < Duration::from_secs(10), "no heartbeats arrived");
+        assert!(started.elapsed() < Duration::from_secs(60), "no heartbeats arrived");
         std::thread::sleep(Duration::from_millis(20));
     }
 
@@ -199,7 +205,7 @@ fn sigterm_cancels_what_is_in_flight_and_closes_the_socket() {
         if let Some(status) = child.try_wait().unwrap() {
             break status;
         }
-        if stopped.elapsed() > Duration::from_secs(10) {
+        if stopped.elapsed() > Duration::from_secs(60) {
             drop(child.kill());
             panic!("SIGTERM did not stop the application");
         }
@@ -210,7 +216,7 @@ fn sigterm_cancels_what_is_in_flight_and_closes_the_socket() {
     assert_eq!(rest, "shut down\n");
     assert_eq!(status.code(), Some(130));
     assert!(
-        stopped.elapsed() < Duration::from_secs(4),
+        stopped.elapsed() < Duration::from_secs(30),
         "shutdown waited on the hung request"
     );
     assert_eq!(notifications.wait_until_idle(), 0);

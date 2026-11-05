@@ -410,14 +410,22 @@ local function waitOn(handle: dream_tcp_Watchable, interest: Interest, deadline:
   return reason == 'ready', reason
 end
 
+--- Ends a wait on a handle being released. A task the poll already woke as ready and that hasn't
+--- run yet hears `closed` too: told `ready`, it would go on to touch the closed handle, which raises.
+local function wakeReleased(state: TaskState)
+  if state.reason == 'ready' then state.reason = 'closed' end
+
+  wake(state, 'closed')
+end
+
 --- Wakes whoever waits on `handle`, with `closed`, and stops watching it.
 local function release(loop: LoopState, handle: dream_tcp_Watchable)
   local watch = loop.byHandle[handle]
   if not watch then return end
 
   forget(loop, watch)
-  if watch.reader then wake(watch.reader, 'closed') end
-  if watch.writer then wake(watch.writer, 'closed') end
+  if watch.reader then wakeReleased(watch.reader) end
+  if watch.writer then wakeReleased(watch.writer) end
 end
 
 local function newSignal(): Signal
@@ -1115,8 +1123,27 @@ local function step(loop: LoopState, waitMs: number?): number
   end
 
   current = now()
+  -- Made only when a deadline has passed: most steps find none.
+  local overdue: { TaskState }? = nil
   for parked in loop.parked do
-    if parked.waiting and parked.deadline and parked.deadline <= current then wake(parked, 'timeout') end
+    if not (parked.waiting and parked.deadline and parked.deadline <= current) then continue end
+
+    local due = overdue or {}
+    table.insert(due, parked)
+    overdue = due
+  end
+
+  if overdue then
+    -- A step that ran late finds several deadlines passed, and the set of parked tasks has no order.
+    if #overdue > 1 then
+      table.sort(overdue, function(first: TaskState, second: TaskState): boolean
+        return (first.deadline :: number) < (second.deadline :: number)
+      end)
+    end
+
+    for _, parked in overdue do
+      wake(parked, 'timeout')
+    end
   end
 
   local deferred = loop.deferred

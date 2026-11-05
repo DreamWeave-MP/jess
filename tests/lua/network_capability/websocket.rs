@@ -6,13 +6,15 @@
 
 use std::collections::HashSet;
 use std::io::{Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{Shutdown, TcpStream};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use jess::lua::l3i::Runtime;
 
+use super::fixture::{Listening, linger};
 use super::{network_runtime, tls_runtime};
 
 /// What the server saw from clients, across every connection.
@@ -32,38 +34,38 @@ pub(super) struct Seen {
 pub(super) struct WsServer {
     pub(super) port: u16,
     pub(super) seen: Arc<Mutex<Seen>>,
+    /// Ends every connection and thread the server started when it is dropped.
+    _listening: Listening,
 }
 
 impl WsServer {
     pub(super) fn start() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
         let seen = Arc::new(Mutex::new(Seen::default()));
         let shared = Arc::clone(&seen);
-        thread::spawn(move || {
-            for stream in listener.incoming().flatten() {
-                let seen = Arc::clone(&shared);
-                thread::spawn(move || {
-                    {
-                        let mut seen = seen.lock().unwrap();
-                        seen.accepted += 1;
-                        seen.open += 1;
-                    }
-                    serve(stream, &seen);
-                    seen.lock().unwrap().open -= 1;
-                });
+        let listening = Listening::start(move |stream, closed| {
+            {
+                let mut seen = shared.lock().unwrap();
+                seen.accepted += 1;
+                seen.open += 1;
             }
+            serve(stream, &shared, closed);
+            shared.lock().unwrap().open -= 1;
         });
-        Self { port, seen }
+        Self {
+            port: listening.port,
+            seen,
+            _listening: listening,
+        }
     }
 
     pub(super) fn url(&self, path: &str) -> String {
         format!("ws://127.0.0.1:{}{path}", self.port)
     }
 
-    /// Waits up to two seconds for every connection to have ended on the server's side.
+    /// Waits up to fifty seconds for every connection to have ended on the server's side: inside the
+    /// sixty its reads time out after, so a connection the client left open still shows.
     pub(super) fn wait_until_idle(&self) -> usize {
-        for _ in 0..200 {
+        for _ in 0..5000 {
             if self.seen.lock().unwrap().open == 0 {
                 return 0;
             }
@@ -203,8 +205,10 @@ fn read_frame(stream: &mut TcpStream, seen: &Mutex<Seen>) -> Option<(bool, u8, V
 }
 
 /// What the server sends first on `path`, after the handshake; false when the connection should end
-/// there.
-fn open(path: &str, stream: &mut TcpStream) -> bool {
+/// there. `/fragment-pause` and `/split` send part of a message and an unsolicited pong, and hold
+/// the rest until the client sends a frame: once a receive has noted the pong and timed out, it
+/// timed out part way through the message, however slow the machine is.
+fn open(path: &str, stream: &mut TcpStream, seen: &Mutex<Seen>, closed: &AtomicBool) -> bool {
     let opening: Vec<Vec<u8>> = match path {
         "/echo" => vec![frame(0x89, b"server-ping", false)],
         "/masked" => vec![frame(0x81, b"masked", true)],
@@ -221,22 +225,25 @@ fn open(path: &str, stream: &mut TcpStream) -> bool {
             frame(0x80, b"world", false),
         ],
         "/no-read" => {
-            thread::sleep(Duration::from_secs(10));
+            linger(stream, Duration::from_secs(120), closed);
             return false;
         }
         "/fragment-pause" => {
-            if stream.write_all(&frame(0x01, b"hel", false)).is_err() {
+            // The pong comes after the fragment on the wire, so a receive has taken in both.
+            let first = [frame(0x01, b"hel", false), frame(0x8A, b"mark", false)].concat();
+            if stream.write_all(&first).is_err() || read_frame(stream, seen).is_none() {
                 return false;
             }
-            thread::sleep(Duration::from_millis(400));
             vec![frame(0x80, b"lo", false)]
         }
         "/split" => {
+            // A pong can't go inside a frame, so it goes just before, in the same write. That the
+            // frame's first bytes arrived with it is likely, not certain: TCP may split any write.
             let whole = frame(0x81, b"helloworld", false);
-            if stream.write_all(&whole[..7]).is_err() {
+            let first = [frame(0x8A, b"mark", false).as_slice(), &whole[..7]].concat();
+            if stream.write_all(&first).is_err() || read_frame(stream, seen).is_none() {
                 return false;
             }
-            thread::sleep(Duration::from_millis(400));
             vec![whole[7..].to_vec()]
         }
         "/drop" => {
@@ -248,8 +255,11 @@ fn open(path: &str, stream: &mut TcpStream) -> bool {
     opening.iter().all(|bytes| stream.write_all(bytes).is_ok())
 }
 
-fn serve(mut stream: TcpStream, seen: &Mutex<Seen>) {
-    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+fn serve(mut stream: TcpStream, seen: &Mutex<Seen>, closed: &AtomicBool) {
+    // Fails only on a connection the server has already shut down.
+    if stream.set_read_timeout(Some(Duration::from_secs(60))).is_err() {
+        return;
+    }
     let mut head = Vec::new();
     let mut byte = [0u8; 1];
     while !head.ends_with(b"\r\n\r\n") {
@@ -289,7 +299,7 @@ fn serve(mut stream: TcpStream, seen: &Mutex<Seen>) {
         return;
     }
 
-    if !open(&path, &mut stream) {
+    if !open(&path, &mut stream, seen, closed) {
         return;
     }
 
@@ -344,17 +354,17 @@ fn messages_round_trip_masked_under_fresh_keys_and_the_close_handshake_completes
             local socket = assert(websocket.connect({url:?}, {{ protocols = {{ 'chat', 'other' }} }}))
             table.insert(out, `protocol {{socket.protocol}} {{socket.state}}`)
             assert(socket:send('hello'))
-            local message = assert(socket:receive(net.now() + 5000))
+            local message = assert(socket:receive(net.now() + 30000))
             table.insert(out, `{{message.kind}} {{message.data}}`)
             for _, size in {{ 300, 70000 }} do
               local payload = string.rep(string.char(size % 251), size)
               assert(socket:send(payload, 'binary'))
-              local back = assert(socket:receive(net.now() + 5000))
+              local back = assert(socket:receive(net.now() + 30000))
               table.insert(out, `{{back.kind}} {{#back.data}} {{back.data == payload}}`)
             end
             assert(socket:ping('are you there'))
             assert(socket:send('after the ping'))
-            local after = assert(socket:receive(net.now() + 5000))
+            local after = assert(socket:receive(net.now() + 30000))
             table.insert(out, `{{after.data}} pong {{socket.lastPongAt ~= nil}}`)
             socket:close(1000, 'done')
             table.insert(out, `{{socket.state}} {{socket.closeCode}} {{socket.closeReason}}`)
@@ -398,7 +408,7 @@ fn fragments_reassemble_around_a_control_frame() {
         &format!(
             "
             local socket = assert(websocket.connect({url:?}))
-            local message = assert(socket:receive(net.now() + 5000))
+            local message = assert(socket:receive(net.now() + 30000))
             table.insert(out, `{{message.kind}} {{message.data}}`)
             socket:close()
             ",
@@ -456,7 +466,7 @@ fn malformed_frames_close_the_connection_with_the_code_that_names_them() {
             &format!(
                 "
                 local socket = assert(websocket.connect({url:?}, {{ maxMessageBytes = 1000 }}))
-                local message, problem, kind = socket:receive(net.now() + 5000)
+                local message, problem, kind = socket:receive(net.now() + 30000)
                 table.insert(out, `{{kind}} {{socket.closeCode}} {{socket.state}}`)
                 ",
                 url = server.url(path)
@@ -478,7 +488,7 @@ fn the_peer_s_close_and_a_dropped_connection_are_reported_with_their_codes() {
             "
             for _, url in {{ {close:?}, {drop:?} }} do
               local socket = assert(websocket.connect(url))
-              local message, problem, kind = socket:receive(net.now() + 5000)
+              local message, problem, kind = socket:receive(net.now() + 30000)
               table.insert(out, `{{kind}} {{socket.closeCode}} {{socket.closeReason}} {{socket.state}}`)
             end
             ",
@@ -509,7 +519,7 @@ fn repeated_reconnects_release_every_socket_watch_and_task() {
                 for _ = 1, {count} do
                   local socket = assert(websocket.connect({url:?}))
                   assert(socket:send('round'))
-                  assert(socket:receive(net.now() + 5000))
+                  assert(socket:receive(net.now() + 30000))
                   socket:close()
                 end
 
@@ -553,7 +563,7 @@ fn wss_verifies_the_server_against_the_roots_it_is_given() {
             local trusted = assert(tls.clientConfig {{ roots = CA, platform = false }})
             local socket = assert(websocket.connect(`wss://localhost:{{port}}/echo`, {{ tls = trusted }}))
             assert(socket:send('secure hello'))
-            local message = assert(socket:receive(net.now() + 5000))
+            local message = assert(socket:receive(net.now() + 30000))
             table.insert(out, `{{socket.response.status}} {{message.data}}`)
             socket:close()
             table.insert(out, `{{socket.closeCode}}`)
@@ -590,6 +600,9 @@ fn nothing_connects_without_the_runtime_s_grant() {
     assert_eq!(server.seen.lock().unwrap().accepted, 0);
 }
 
+/// What this proves: a receive that times out with the rest of a frame withheld loses nothing of it.
+/// That the receive held the frame's first bytes when it timed out is likely but unobserved; the
+/// fragment test after it shows the same for a message, with the precondition observed.
 #[test]
 fn a_receive_that_times_out_part_way_through_a_frame_leaves_it_whole_for_the_next() {
     let server = WsServer::start();
@@ -598,16 +611,22 @@ fn a_receive_that_times_out_part_way_through_a_frame_leaves_it_whole_for_the_nex
         &format!(
             "
             local socket = assert(websocket.connect({url:?}))
-            local early, _, kind = socket:receive(net.now() + 100)
-            table.insert(out, `{{early == nil}} {{kind}} {{socket.state}}`)
-            local message = assert(socket:receive(net.now() + 5000))
+            local marked = net.now() + 30000
+            repeat
+              local early, _, kind = socket:receive(net.now() + 100)
+              assert(early == nil and kind == 'timeout', kind)
+              assert(net.now() < marked, 'the marker pong never arrived')
+            until socket.lastPongAt
+            table.insert(out, `timed out {{socket.state}}`)
+            assert(socket:send('go on'))
+            local message = assert(socket:receive(net.now() + 30000))
             table.insert(out, message.data)
             socket:close()
             ",
             url = server.url("/split")
         ),
     );
-    assert_eq!(lines, ["true timeout open", "helloworld"]);
+    assert_eq!(lines, ["timed out open", "helloworld"]);
     assert_eq!(server.wait_until_idle(), 0);
 }
 
@@ -619,9 +638,15 @@ fn a_receive_that_times_out_between_fragments_leaves_the_message_for_the_next() 
         &format!(
             "
             local socket = assert(websocket.connect({url:?}))
-            local early, _, kind = socket:receive(net.now() + 100)
-            table.insert(out, `{{early == nil}} {{kind}} {{socket.state}}`)
-            local message = assert(socket:receive(net.now() + 5000))
+            local marked = net.now() + 30000
+            repeat
+              local early, _, kind = socket:receive(net.now() + 100)
+              assert(early == nil and kind == 'timeout', kind)
+              assert(net.now() < marked, 'the marker pong never arrived')
+            until socket.lastPongAt
+            table.insert(out, `timed out {{socket.state}}`)
+            assert(socket:send('go on'))
+            local message = assert(socket:receive(net.now() + 30000))
             table.insert(out, `{{message.kind}} {{message.data}}`)
             socket:close()
             table.insert(out, `{{socket.closeCode}}`)
@@ -629,7 +654,7 @@ fn a_receive_that_times_out_between_fragments_leaves_the_message_for_the_next() 
             url = server.url("/fragment-pause")
         ),
     );
-    assert_eq!(lines, ["true timeout open", "text hello", "1000"]);
+    assert_eq!(lines, ["timed out open", "text hello", "1000"]);
     assert_eq!(server.wait_until_idle(), 0);
     assert_eq!(
         server.seen.lock().unwrap().closes,
@@ -656,7 +681,7 @@ fn sends_are_bounded_and_concurrent_senders_never_interleave_frames() {
               end))
             end
             for _, sender in senders do
-              assert(sender:join(net.now() + 10000))
+              assert(sender:join(net.now() + 30000))
             end
 
             socket:close()

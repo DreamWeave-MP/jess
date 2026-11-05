@@ -16,8 +16,21 @@ use super::{run_task, tls_runtime};
 const SERVER: &str = r"
 local http = require '@jess/http'
 local net = require '@jess/net'
-local port = ...
+local headTimeout, reportPort = ...
 local errors: { string } = {}
+local together, steps = 0, 0
+local allTogether = net.signal()
+
+--- Waits until `/step` has been asked for `count` times, so a test can read each chunk of `/stepped`
+--- before the next is sent. The limit stops a hang.
+local function awaitStep(count: number)
+  local limit = net.now() + 30000
+  while steps < count and net.now() < limit do
+    net.sleep(5)
+  end
+
+  assert(steps >= count, `timed out waiting for step {count}`)
+end
 
 local function handle(request: http.ServerRequest): http.ServerResponse
   if request.path == '/hello' then return { headers = { ['Content-Type'] = 'text/plain' }, body = 'hi' } end
@@ -40,9 +53,47 @@ local function handle(request: http.ServerRequest): http.ServerResponse
     return { body = `{request.method} {request.path}?{request.query} {kind} {buffer.len(request.body)}|{buffer.tostring(request.body)}` }
   end
 
-  if request.path == '/slow' then
-    net.sleep(300)
-    return { body = 'slow' }
+  -- Each of three handlers waits for the others: handlers run one at a time would wait out the
+  -- limit and answer alone.
+  if request.path == '/together' then
+    together += 1
+    if together == 3 then
+      allTogether:notify()
+    elseif not allTogether:wait(net.now() + 30000) then
+      return { body = 'alone' }
+    end
+
+    return { body = 'together' }
+  end
+
+  if request.path == '/step' then
+    steps += 1
+    return { body = 'stepped' }
+  end
+
+  -- Holds its connection's place until the client goes, and says so with its first chunk.
+  if request.path == '/hold' then
+    return {
+      stream = function(send: (data: string | buffer) -> boolean)
+        local limit = net.now() + 60000
+        while send('.') and net.now() < limit do
+          net.sleep(20)
+        end
+      end,
+    }
+  end
+
+  if request.path == '/stepped' then
+    return {
+      headers = { ['Content-Type'] = 'text/plain' },
+      stream = function(send: (data: string | buffer) -> boolean)
+        assert(send('one '))
+        awaitStep(1)
+        assert(send('two '))
+        awaitStep(2)
+        assert(send('three'))
+      end,
+    }
   end
 
   if request.path == '/stream' then
@@ -50,9 +101,7 @@ local function handle(request: http.ServerRequest): http.ServerResponse
       headers = { ['Content-Type'] = 'text/plain' },
       stream = function(send: (data: string | buffer) -> boolean)
         send('one ')
-        net.sleep(150)
         send('two ')
-        net.sleep(150)
         send('three')
       end,
     }
@@ -64,11 +113,11 @@ end
 local quit = net.signal()
 local finished, problem = net.run(function()
   local server = assert(http.serve {
-    address = `127.0.0.1:{port}`,
+    address = '127.0.0.1:0',
     maxConnections = 4,
     maxHeadBytes = 2048,
     maxBodyBytes = 1000,
-    headTimeoutMs = 400,
+    headTimeoutMs = headTimeout,
     handler = function(request: http.ServerRequest): http.ServerResponse
       if request.path == '/quit' then
         quit:notify()
@@ -79,6 +128,12 @@ local finished, problem = net.run(function()
     end,
     onError = function(message: string) table.insert(errors, message) end,
   })
+
+  -- Tells the test the port it got. A port chosen beforehand and bound here could be taken in
+  -- between by a server another test starts.
+  local report = assert(net.connect('127.0.0.1', reportPort))
+  assert(report:send(tostring(server.port)))
+  report:close()
 
   quit:wait()
   net.sleep(50)
@@ -96,45 +151,78 @@ struct Served {
 }
 
 impl Served {
+    /// A server whose head timeout no slow machine reaches between a connection and its request.
     fn start() -> Self {
-        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        Self::with_head_timeout(60_000)
+    }
+
+    fn with_head_timeout(milliseconds: u32) -> Self {
+        let report = TcpListener::bind("127.0.0.1:0").unwrap();
+        let report_port = report.local_addr().unwrap().port();
+        report.set_nonblocking(true).unwrap();
         let done = thread::spawn(move || {
-            let runtime =
-                jess::lua::runtime_with_capabilities(Options::default(), &["network.tcp.listen".to_owned()]).unwrap();
-            let script = format!("return (function(...) {SERVER} end)({port})");
+            let capabilities = ["network.tcp.listen", "network.tcp.connect", "network.dns.resolve"].map(str::to_owned);
+            let runtime = jess::lua::runtime_with_capabilities(Options::default(), &capabilities).unwrap();
+            let script = format!("return (function(...) {SERVER} end)({milliseconds}, {report_port})");
             runtime.eval::<String>(&script).unwrap_or_else(|error| panic!("{error}"))
         });
         let started = Instant::now();
-        while TcpStream::connect(("127.0.0.1", port)).is_err() {
-            assert!(started.elapsed() < Duration::from_secs(10), "the server never listened");
-            thread::sleep(Duration::from_millis(10));
-        }
+        let mut told = loop {
+            match report.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(!done.is_finished(), "the server ended before it listened");
+                    assert!(started.elapsed() < Duration::from_secs(60), "the server never listened");
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("{error}"),
+            }
+        };
+        told.set_nonblocking(false).unwrap();
+        told.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
+        let port = read_all(&mut told).parse().unwrap();
         Self { port, done: Some(done) }
     }
 
     fn connect(&self) -> TcpStream {
         let stream = TcpStream::connect(("127.0.0.1", self.port)).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
         stream
     }
 
     /// Asks the server to stop and returns what it reported.
     fn finish(mut self) -> String {
         let mut stream = self.connect();
-        stream
-            .write_all(b"GET /quit HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n")
-            .unwrap();
+        stream.write_all(QUIT).unwrap();
         drop(read_all(&mut stream));
         self.done.take().unwrap().join().unwrap()
     }
 }
 
+const QUIT: &[u8] = b"GET /quit HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n";
+
+/// A test that didn't `finish` its server stops it here, and waits for its thread, so the server's
+/// runtime and listener don't outlive the test. The wait is bounded: a server that can't take the
+/// request to stop, because something still holds every place, fails the test instead of hanging it.
 impl Drop for Served {
     fn drop(&mut self) {
-        if self.done.is_some()
-            && let Ok(mut stream) = TcpStream::connect(("127.0.0.1", self.port))
+        let Some(done) = self.done.take() else { return };
+        if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", self.port)) {
+            drop(stream.write_all(QUIT));
+        }
+        let started = Instant::now();
+        while !done.is_finished() {
+            if started.elapsed() > Duration::from_secs(60) {
+                assert!(thread::panicking(), "the server never stopped");
+                return;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        // A test that is already failing keeps its own panic.
+        if let Err(payload) = done.join()
+            && !thread::panicking()
         {
-            drop(stream.write_all(b"GET /quit HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n"));
+            std::panic::resume_unwind(payload);
         }
     }
 }
@@ -163,6 +251,16 @@ fn read_response(stream: &mut TcpStream) -> (String, String) {
     let mut body = vec![0u8; length];
     stream.read_exact(&mut body).unwrap();
     (head, String::from_utf8_lossy(&body).into_owned())
+}
+
+/// Reads into `received` until it holds `text`; the stream's read timeout fails the test.
+fn read_until(stream: &mut TcpStream, received: &mut Vec<u8>, text: &str) {
+    let mut piece = [0u8; 256];
+    while !String::from_utf8_lossy(received).contains(text) {
+        let count = stream.read(&mut piece).unwrap();
+        assert_ne!(count, 0, "the stream ended before {text:?}");
+        received.extend_from_slice(&piece[..count]);
+    }
 }
 
 /// What the server answers to `request` sent whole, read until it closes.
@@ -304,15 +402,17 @@ fn requests_that_could_be_smuggled_or_are_malformed_are_refused_and_closed() {
 
 #[test]
 fn a_head_that_never_ends_is_dropped_without_an_answer() {
-    let server = Served::start();
+    let server = Served::with_head_timeout(400);
+    // Before the connection, since the server's timeout starts from it.
+    let started = Instant::now();
     let mut stream = server.connect();
     stream.write_all(b"GET /hello HTTP/1.1\r\nHost: t\r\n").unwrap();
-    let started = Instant::now();
     let answer = read_all(&mut stream);
     assert_eq!(answer, "", "a half-sent head gets nothing");
     let waited = started.elapsed();
+    // The upper bound tells the head timeout from the read timeout this side gave up at.
     assert!(
-        waited >= Duration::from_millis(300) && waited < Duration::from_secs(3),
+        waited >= Duration::from_millis(390) && waited < Duration::from_secs(25),
         "{waited:?}"
     );
     drop(server.finish());
@@ -378,7 +478,7 @@ fn a_raising_on_error_still_gives_the_connection_back_and_fails_only_its_task() 
                 local response = assert(http.request { url = `http://127.0.0.1:{server.port}/fail` })
                 table.insert(lines, tostring(response.status))
               end
-              local response = assert(http.request { url = `http://127.0.0.1:{server.port}/fine`, timeoutMs = 3000 })
+              local response = assert(http.request { url = `http://127.0.0.1:{server.port}/fine`, timeoutMs = 30000 })
               table.insert(lines, buffer.tostring(response.body))
               server:close()
             end)
@@ -402,46 +502,96 @@ fn failed_and_abandoned_tls_handshakes_give_their_places_back() {
         "
         local tls = require '@dream/tls'
         local config = assert(tls.serverConfig { certChain = SERVER_CERT, privateKey = SERVER_KEY })
-        local server = assert(http.serve {
-          address = '127.0.0.1:0',
-          tls = config,
-          maxConnections = 2,
-          headTimeoutMs = 300,
-          handler = function() return { body = 'fine' } end,
-        })
+        local function serve(headTimeoutMs: number)
+          return assert(http.serve {
+            address = '127.0.0.1:0',
+            tls = config,
+            maxConnections = 2,
+            headTimeoutMs = headTimeoutMs,
+            handler = function() return { body = 'fine' } end,
+          })
+        end
+
+        -- The timeout only one handshake below is meant to reach is on a server of its own, so a
+        -- slow machine's handshakes on the other never run into it.
+        local server, hasty = serve(120000), serve(300)
 
         -- More refused handshakes than the server has places.
         for _ = 1, 6 do
           local raw = assert(net.connect('127.0.0.1', server.port))
           assert(raw:send('this is not a TLS client hello\\r\\n\\r\\n'))
-          while raw:receiveSome(4096, net.now() + 3000) do end
+          while raw:receiveSome(4096, net.now() + 30000) do end
           raw:close()
         end
 
         -- And one that says nothing until its handshake times out.
-        local silent = assert(net.connect('127.0.0.1', server.port))
-        while silent:receiveSome(4096, net.now() + 3000) do end
+        local silent = assert(net.connect('127.0.0.1', hasty.port))
+        while silent:receiveSome(4096, net.now() + 30000) do end
         silent:close()
-        table.insert(out, `after failures {server:stats().connections}`)
+        table.insert(out, `after failures {server:stats().connections} {hasty:stats().connections}`)
+        hasty:close()
 
         local trusted = assert(tls.clientConfig { roots = CA, platform = false })
-        local response = assert(http.request { url = `https://localhost:{server.port}/`, tls = trusted, timeoutMs = 3000 })
+        local response = assert(http.request { url = `https://localhost:{server.port}/`, tls = trusted, timeoutMs = 30000 })
         table.insert(out, buffer.tostring(response.body))
 
         -- A handshake still waiting when the server closes is closed with it.
         local pending = assert(net.connect('127.0.0.1', server.port))
-        net.sleep(50)
+        while server:stats().connections == 0 do
+          net.sleep(5)
+        end
+
         table.insert(out, `pending {server:stats().connections}`)
         server:close()
         table.insert(out, `closed {server:stats().connections}`)
-        table.insert(out, `pending ended {pending:receiveSome(10, net.now() + 2000) == nil}`)
+        table.insert(out, `pending ended {pending:receiveSome(10, net.now() + 30000) == nil}`)
         pending:close()
         ",
     );
     assert_eq!(
         lines,
-        ["after failures 0", "fine", "pending 1", "closed 0", "pending ended true"]
+        ["after failures 0 0", "fine", "pending 1", "closed 0", "pending ended true"]
     );
+}
+
+/// The acceptor counts a connection the moment it accepts it, and the connection's task runs later:
+/// a server closed in between closes the socket under a task that hasn't started, which then
+/// finds it closed instead of raising on it.
+#[test]
+fn a_server_closed_between_accepting_a_connection_and_serving_it_closes_it_quietly() {
+    let lines = run_task(
+        &tls_runtime(),
+        "
+        local tcp = require '@dream/tcp'
+        local tls = require '@dream/tls'
+        local config = assert(tls.serverConfig { certChain = SERVER_CERT, privateKey = SERVER_KEY })
+        for _, secure in { false, true } do
+          local server = assert(http.serve {
+            address = '127.0.0.1:0',
+            tls = if secure then config else nil,
+            handler = function() return { body = 'fine' } end,
+          })
+          -- The acceptor starts waiting on its listener.
+          net.yield()
+          local raw = assert(tcp.connect(`127.0.0.1:{server.port}`))
+          -- A yielded task wakes at the end of the next step, in the same batch as the tasks that
+          -- step's poll woke and after them. So the step that wakes the acceptor wakes this right
+          -- after it accepts, before the connection's task, which runs in the round after. That
+          -- holds however long the platform takes to report the connection.
+          local limit = net.now() + 30000
+          repeat
+            net.yield()
+            assert(net.now() < limit, 'the connection was never accepted')
+          until server:stats().connections > 0
+
+          table.insert(out, `{secure} accepted {server:stats().connections}`)
+          server:close()
+          net.sleep(20)
+          raw:close()
+        end
+        ",
+    );
+    assert_eq!(lines, ["false accepted 1", "true accepted 1"]);
 }
 
 #[test]
@@ -552,30 +702,20 @@ fn a_streamed_response_goes_out_chunk_by_chunk_as_it_is_made() {
     let server = Served::start();
     let mut stream = server.connect();
     stream
-        .write_all(b"GET /stream HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n")
+        .write_all(b"GET /stepped HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n")
         .unwrap();
-    let started = Instant::now();
+    // Each chunk goes out only once the one before it has arrived here, so a server that held them
+    // back until the end never gets as far as sending this test what it reads for.
+    let step = "GET /step HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n";
     let mut received = Vec::new();
-    let mut first = None;
-    let mut piece = [0u8; 256];
-    loop {
-        let count = stream.read(&mut piece).unwrap();
-        if count == 0 {
-            break;
-        }
-        received.extend_from_slice(&piece[..count]);
-        if first.is_none() && String::from_utf8_lossy(&received).contains("one ") {
-            first = Some(started.elapsed());
-        }
-    }
+    read_until(&mut stream, &mut received, "one ");
+    assert!(exchange(&server, step).ends_with("stepped"));
+    read_until(&mut stream, &mut received, "two ");
+    assert!(exchange(&server, step).ends_with("stepped"));
+    drop(stream.read_to_end(&mut received));
     let text = String::from_utf8_lossy(&received).into_owned();
     assert!(text.contains("transfer-encoding: chunked\r\n"), "{text}");
     assert!(text.ends_with("4\r\none \r\n4\r\ntwo \r\n5\r\nthree\r\n0\r\n\r\n"), "{text}");
-    assert!(
-        first.unwrap() < Duration::from_millis(150),
-        "the first chunk waited for the rest"
-    );
-    assert!(started.elapsed() >= Duration::from_millis(290));
 
     // An HTTP/1.0 client doesn't read chunks: its stream is the bytes, ended by the close.
     let old = exchange(&server, "GET /stream HTTP/1.0\r\n\r\n");
@@ -588,26 +728,30 @@ fn a_streamed_response_goes_out_chunk_by_chunk_as_it_is_made() {
 #[test]
 fn slow_handlers_on_separate_connections_run_at_once_and_connections_are_bounded() {
     let server = Served::start();
-    let started = Instant::now();
     let slow: Vec<_> = (0..3)
         .map(|_| {
             let mut stream = server.connect();
             stream
-                .write_all(b"GET /slow HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n")
+                .write_all(b"GET /together HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n")
                 .unwrap();
             stream
         })
         .collect();
     for mut stream in slow {
-        assert!(read_all(&mut stream).ends_with("slow"));
+        let answer = read_all(&mut stream);
+        assert!(answer.ends_with("together"), "{answer}");
     }
-    // Three 300 ms handlers one after another would take 900 ms; together they take about 300.
-    assert!(started.elapsed() < Duration::from_millis(850), "{:?}", started.elapsed());
 
-    // Four connections that send nothing hold every place; a fifth is not answered until one of them
-    // goes, well before their head timeout would free one.
-    let mut idle: Vec<TcpStream> = (0..4).map(|_| server.connect()).collect();
-    thread::sleep(Duration::from_millis(50));
+    // Four connections held by their handlers hold every place, each known to by its first chunk; a
+    // fifth is not answered until one of them goes.
+    let mut held: Vec<TcpStream> = (0..4)
+        .map(|_| {
+            let mut stream = server.connect();
+            stream.write_all(b"GET /hold HTTP/1.1\r\nHost: t\r\n\r\n").unwrap();
+            read_until(&mut stream, &mut Vec::new(), "\r\n\r\n1\r\n.");
+            stream
+        })
+        .collect();
     let mut fifth = server.connect();
     fifth
         .write_all(b"GET /hello HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n")
@@ -618,13 +762,13 @@ fn slow_handlers_on_separate_connections_run_at_once_and_connections_are_bounded
         fifth.read(&mut early).is_err(),
         "the fifth was answered while every place was held"
     );
-    drop(idle.remove(0).shutdown(Shutdown::Both));
-    fifth.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    drop(held.remove(0).shutdown(Shutdown::Both));
+    fifth.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
     assert!(
         read_all(&mut fifth).ends_with("hi"),
         "a place came free and the fifth was served"
     );
-    for stream in idle {
+    for stream in held {
         drop(stream.shutdown(Shutdown::Both));
     }
     drop(server.finish());
@@ -665,7 +809,7 @@ fn jess_s_client_reuses_a_connection_to_jess_s_server_over_tcp_and_tls() {
         local events = assert(sse.open { url = `http://127.0.0.1:{plain.port}/events`, client = client })
         local seen = {}
         while true do
-          local event = events:next(net.now() + 5000)
+          local event = events:next(net.now() + 30000)
           if not event then break end
           table.insert(seen, `{event.id}:{event.data}`)
         end
@@ -727,7 +871,7 @@ fn net_release_wakes_a_task_waiting_on_a_listener_so_it_can_be_closed_at_once() 
         listener:close()
         -- Releasing a handle nobody waits on does nothing.
         net.release(listener)
-        table.insert(out, `joined {waiter:join(net.now() + 1000)}`)
+        table.insert(out, `joined {waiter:join(net.now() + 30000)}`)
         table.insert(out, woke)
         ",
     );
@@ -792,4 +936,60 @@ fn a_handle_is_waited_on_from_one_loop_at_a_time() {
     let lines: Vec<_> = text.lines().collect();
     assert!(lines[0].contains("another loop is already waiting on this handle"), "{text}");
     assert_eq!(lines[1], "timeout", "{text}");
+}
+
+/// Two tasks woken by one poll: whichever runs first closes the other's connection, whose task has
+/// been told it is ready and hasn't run yet. That task hears its connection closed; it doesn't go on
+/// to read a closed stream, which raises.
+#[test]
+fn a_connection_closed_under_a_task_already_woken_ends_its_receive_as_closed() {
+    let lines = run_task(
+        &tls_runtime(),
+        "
+        local tcp = require '@dream/tcp'
+        local listener = assert(tcp.listen('127.0.0.1:0'))
+        local port = assert(tonumber(string.match(listener.localAddress, ':(%d+)$')))
+        local connections = { assert(net.connect('127.0.0.1', port)), assert(net.connect('127.0.0.1', port)) }
+        local peers = {}
+        while #peers < 2 do
+          local peer, _, kind = listener:accept()
+          if peer then
+            table.insert(peers, peer)
+            continue
+          end
+
+          assert(kind == 'wouldBlock', kind)
+          assert(net.wait(listener, 'read', net.now() + 30000))
+        end
+
+        local ended = {}
+        local tasks = {}
+        for index, connection in connections do
+          table.insert(tasks, loop:spawn(function()
+            local piece, _, kind = connection:receiveSome(16)
+            table.insert(ended, piece or kind)
+            if piece then connections[3 - index]:close() end
+          end))
+        end
+
+        -- Both tasks park on this yield; both peers then write before the next poll.
+        net.yield()
+        for _, peer in peers do
+          assert(peer:write('x', 0, 1))
+        end
+
+        for _, task in tasks do
+          assert(task:join(net.now() + 30000))
+        end
+
+        table.sort(ended)
+        table.insert(out, table.concat(ended, ' '))
+        for _, peer in peers do
+          peer:close()
+        end
+
+        listener:close()
+        ",
+    );
+    assert_eq!(lines, ["closed x"]);
 }

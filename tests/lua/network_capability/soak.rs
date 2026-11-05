@@ -3,6 +3,7 @@
 //! and repeated cycles of requests, cancelled streams and sockets that leave the loop, the pool
 //! and the heap where they started.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use jess::lua::l3i::Runtime;
@@ -23,32 +24,28 @@ fn kept(body: &str) -> String {
     format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len())
 }
 
-/// The longest silence between consecutive messages the WebSocket server received.
-fn longest_gap(server: &WsServer) -> Duration {
-    let arrivals: Vec<_> = server.seen.lock().unwrap().arrivals.iter().map(|(at, _)| *at).collect();
-    arrivals.windows(2).map(|pair| pair[1] - pair[0]).max().unwrap_or_default()
-}
-
+/// Each event goes out only after another heartbeat, so a stalled heartbeat stops the stream, and
+/// anything that held up the loop stops both.
 #[test]
-fn a_heartbeat_keeps_time_beside_an_event_stream_and_pooled_requests() {
+fn a_heartbeat_keeps_going_beside_an_event_stream_and_pooled_requests() {
     let gateway = WsServer::start();
-    let mut pieces = vec![(
-        Duration::ZERO,
-        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n".to_owned(),
-    )];
-    pieces.extend((1..=12).map(|index| (Duration::from_millis(150), format!("event: token\ndata: {index}\n\n"))));
+    let mut pieces = vec!["HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n".to_owned()];
+    pieces.extend((1..=12).map(|index| format!("event: token\ndata: {index}\n\n")));
+    let steps = Arc::default();
     let api = Server::start(vec![
-        ("/generate", Answer::Trickle(pieces)),
+        ("/generate", Answer::Stepped(pieces, Arc::clone(&steps))),
         ("/issue", Answer::Kept(kept("{}"))),
     ]);
+    // On a server of its own, so `api` counts only the pool's connections and the stream's.
+    let stepper = Server::start(vec![("/step", Answer::Step(steps))]);
     let lines = run(
         &network_runtime(),
         &format!(
             "
             local socket = assert(websocket.connect({gateway:?}))
             local beating = true
+            local count = 0
             local beats = loop:spawn(function()
-              local count = 0
               while beating do
                 net.sleep(50)
                 count += 1
@@ -66,15 +63,21 @@ fn a_heartbeat_keeps_time_beside_an_event_stream_and_pooled_requests() {
 
             local events = assert(sse.open {{ url = {generate:?}, client = client }})
             local tokens = {{}}
-            while true do
-              local event, problem = events:next()
-              if not event then assert(not problem, problem) break end
-              table.insert(tokens, event.data)
+            for _ = 1, 12 do
+              local seen = count
+              while count == seen do
+                net.sleep(5)
+              end
+
+              assert(http.get({step:?}))
+              table.insert(tokens, assert(events:next(net.now() + 30000)).data)
             end
 
-            assert(requests:join(net.now() + 10000))
+            local last, problem = events:next(net.now() + 30000)
+            assert(not last and not problem, problem)
+            assert(requests:join(net.now() + 30000))
             beating = false
-            assert(beats:join(net.now() + 1000))
+            assert(beats:join(net.now() + 30000))
             socket:close()
             client:close()
             table.insert(out, table.concat(tokens, ' '))
@@ -83,21 +86,20 @@ fn a_heartbeat_keeps_time_beside_an_event_stream_and_pooled_requests() {
             gateway = gateway.url("/sink"),
             issue = api.url("/issue"),
             generate = api.url("/generate"),
+            step = stepper.url("/step"),
         ),
     );
     assert_eq!(lines, ["1 2 3 4 5 6 7 8 9 10 11 12", "idle 0 busy 0"]);
-    let gap = longest_gap(&gateway);
-    assert!(gap < Duration::from_millis(300), "the heartbeat stalled for {gap:?}");
-    assert!(
-        gateway.seen.lock().unwrap().arrivals.len() >= 25,
-        "the heartbeat ran the whole stream"
-    );
     assert!(
         api.accepted() <= 3,
         "{} connections: two pooled, one for the stream",
         api.accepted()
     );
     assert_eq!(gateway.wait_until_idle(), 0);
+    assert!(
+        gateway.seen.lock().unwrap().arrivals.len() >= 12,
+        "the heartbeat ran the whole stream"
+    );
 }
 
 #[test]
@@ -108,7 +110,8 @@ fn repeated_requests_cancelled_streams_and_sockets_leave_nothing_behind() {
             Duration::ZERO,
             "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npart".to_owned(),
         ),
-        (Duration::from_millis(1500), String::new()),
+        // Longer than any test waits, so the cancel always comes first.
+        (Duration::from_secs(120), String::new()),
     ];
     let api = Server::start(vec![("/kept", Answer::Kept(kept("ok"))), ("/stall", Answer::Trickle(stall))]);
     let runtime = network_runtime();
@@ -122,14 +125,21 @@ fn repeated_requests_cancelled_streams_and_sockets_leave_nothing_behind() {
                   assert(client:request {{ url = {kept:?} }})
 
                   local stream = assert(client:open {{ url = {stall:?} }})
+                  local reading = false
                   local reader = loop:spawn(function()
                     assert(stream:read() == 'part')
+                    reading = true
                     local piece, _, kind = stream:read()
                     assert(piece == nil and kind == 'cancelled', kind)
                   end)
-                  net.sleep(10)
+                  while not reading do
+                    net.sleep(1)
+                  end
+
                   reader:cancel()
-                  reader:join(net.now() + 1000)
+                  local completed, reason = reader:join(net.now() + 30000)
+                  assert(not completed and reason == 'cancelled', tostring(reason))
+                  assert(reader.status == 'cancelled', reader.status)
 
                   local socket = assert(websocket.connect({gateway:?}))
                   assert(socket:send('cycle'))

@@ -1797,7 +1797,9 @@ end
 --- Serves the requests `slot` carries until the client, a limit or the server ends it; a failure to
 --- report, or nil.
 local function session(state: ServerState, slot: Slot): string?
-  if not handshake(state, slot) then return nil end
+  -- The server can close between accepting a connection and this task's first run; a closed socket
+  -- raises at its first use.
+  if slot.closed or not handshake(state, slot) then return nil end
 
   local adopted = net.adopt(slot.socket, { tls = slot.secure })
   if not adopted then return nil end

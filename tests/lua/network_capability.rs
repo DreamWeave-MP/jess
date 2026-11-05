@@ -2,6 +2,7 @@ use jess::lua::Options;
 use jess::lua::l3i::Runtime;
 
 mod application;
+mod fixture;
 mod http;
 mod server;
 mod soak;
@@ -46,7 +47,7 @@ fn run_task(runtime: &Runtime, body: &str) -> Vec<String> {
         local task = loop:spawn(function()
           {body}
         end, 'test')
-        local deadline = net.now() + 20000
+        local deadline = net.now() + 60000
         while task.status == 'running' and net.now() < deadline do
           loop:step(50)
         end
