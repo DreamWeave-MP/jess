@@ -1,6 +1,6 @@
 //! Timers execute as context-owned scheduler work, driven entirely by simulated time.
 use super::support;
-use jess::runtime::{Budget, CapabilitySet, ContextSpec, Phase};
+use jess::runtime::{Budget, CapabilitySet, ContextSpec, DomainSpec, Phase, RootAuthority, ScriptDomain};
 use std::time::Duration;
 
 #[test]
@@ -339,6 +339,40 @@ fn a_worker_is_told_it_has_no_frames() {
     ",
         )
         .unwrap();
+}
+
+/// A budget of zero is the one a test can state without a clock: every callback ends past it.
+#[test]
+fn a_dispatch_budget_defers_the_rest_of_the_batch_in_order() {
+    let grant = RootAuthority::new().grant(CapabilitySet::empty());
+    let spec = DomainSpec::new("budgeted", grant).timer_dispatch_budget(Duration::ZERO);
+    let domain = ScriptDomain::create(support::factory(), spec).unwrap();
+    domain
+        .load_source(
+            "=budgeted",
+            r"
+        local timer = require('@jess/timer')
+        local journal = require('@test/journal')
+        local cancelled
+        timer.after(0, function()
+            journal.write('first')
+            assert(cancelled:cancel())
+            timer.after(0, function() journal.write('newborn') end)
+        end)
+        cancelled = timer.after(0, function() journal.write('cancelled') end)
+        timer.after(0, function() journal.write('third') end)
+    ",
+        )
+        .unwrap();
+    domain.start().unwrap();
+    for expected in ["first", "third", "newborn"] {
+        let report = domain.advance(Duration::ZERO).unwrap();
+        assert_eq!(support::journal(), [expected]);
+        let timers = report.phases.iter().find(|phase| phase.phase == Phase::Timer).unwrap();
+        assert_eq!(timers.ran, 1);
+    }
+    let report = domain.advance(Duration::ZERO).unwrap();
+    assert!(!report.phases.iter().any(|phase| phase.phase == Phase::Timer));
 }
 
 /// Not a check: what timers cost, for a verified build.

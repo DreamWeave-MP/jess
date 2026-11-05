@@ -144,6 +144,7 @@ pub struct DomainSpec {
     profiler: Arc<dyn ProfileSink>,
     logs: Option<Arc<dyn LogSink>>,
     fixed_step: Option<FixedStep>,
+    timer_dispatch_budget: Option<Duration>,
     budget: Option<Budget>,
     shared_buffer_budget: Option<usize>,
     event_limits: EventLimits,
@@ -181,6 +182,7 @@ impl DomainSpec {
             profiler: Arc::new(DiscardProfile),
             logs: None,
             fixed_step: None,
+            timer_dispatch_budget: None,
             budget: None,
             shared_buffer_budget: None,
             event_limits: EventLimits::default(),
@@ -228,6 +230,17 @@ impl DomainSpec {
     #[must_use]
     pub const fn fixed_step(mut self, fixed_step: FixedStep) -> DomainSpec {
         self.fixed_step = Some(fixed_step);
+        self
+    }
+
+    /// How long one [`ScriptDomain::advance`] may spend starting timer callbacks: once a callback
+    /// ends past this, the rest of the frame's batch waits for the next advance, in order. At least
+    /// one callback runs per advance, so a backlog always drains, and a callback already running is
+    /// its context's budget to stop. Without this only the count per advance bounds a dispatch,
+    /// which keeps the frame a timer lands on deterministic; with it, wall time decides that frame.
+    #[must_use]
+    pub const fn timer_dispatch_budget(mut self, budget: Duration) -> DomainSpec {
+        self.timer_dispatch_budget = Some(budget);
         self
     }
 
@@ -666,6 +679,7 @@ pub struct DomainCore {
     fixed_step: Option<FixedStep>,
     budget: Option<Budget>,
     shared_buffers: Arc<Ledger>,
+    timer_dispatch_budget: Option<Duration>,
     accumulator: Cell<Duration>,
     contexts: RefCell<Vec<ContextRecord>>,
     next_order: Cell<u64>,
@@ -1335,6 +1349,7 @@ impl ScriptDomain {
             counters,
             observer,
             fixed_step: spec.fixed_step,
+            timer_dispatch_budget: spec.timer_dispatch_budget,
             budget: spec.budget,
             shared_buffers: spec
                 .shared_buffer_budget

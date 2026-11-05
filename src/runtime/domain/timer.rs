@@ -1,7 +1,7 @@
 //! Domain timer ownership and dispatch through the same call path as every other phase.
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use l3i::value::Function;
 
@@ -116,7 +116,9 @@ impl ScriptDomain {
             ran: 0,
             failures: Vec::new(),
         };
-        for id in batch {
+        let started = Instant::now();
+        let mut batch = batch.into_iter();
+        while let Some(id) = batch.next() {
             let scheduled = self.core.timers.borrow().get(id).cloned();
             let Some(scheduled) = scheduled else { continue };
             let Some(target) = self.core.timer_dispatch(scheduled) else {
@@ -133,6 +135,14 @@ impl ScriptDomain {
                 report.failures.push(error);
             }
             self.core.timers.borrow_mut().finish(id);
+            if self
+                .core
+                .timer_dispatch_budget
+                .is_some_and(|budget| started.elapsed() >= budget)
+            {
+                self.core.timers.borrow_mut().restore(batch);
+                break;
+            }
         }
         Ok(report)
     }

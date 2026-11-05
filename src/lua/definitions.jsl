@@ -1789,7 +1789,7 @@ Runs `callback` every `intervalMilliseconds`, which must be above 0, and returns
 
 A repeating timer fires at most once a frame, then schedules its next run an interval on from that frame. Missed ticks are skipped, not owed: after a ten-second stall a 10 ms timer fires once, not a thousand times, and a timer shorter than a frame fires once a frame.
 
-One frame delivers at most 1,024 callbacks. What is left stays queued in deadline order for the next frame, so a backlog costs frames rather than one very long frame.
+One frame delivers at most 1,024 callbacks. What is left stays queued in deadline order for the next frame. That bounds a count, not a time: 1,024 slow callbacks are still a slow frame, each limited only by its context's budget. A host that needs a time limit sets one (`DomainSpec::timer_dispatch_budget`), and the application host doesn't, so that which frame a timer lands on doesn't depend on the machine.
 
 - **Errors:** as `after`, and an interval of 0 or below.
 

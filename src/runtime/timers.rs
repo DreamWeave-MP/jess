@@ -10,7 +10,7 @@ pub const MAX_TIMER_CALLBACKS: usize = 1024;
 
 struct Entry<T> {
     value: T,
-    deadline: Option<Duration>,
+    deadline: Duration,
     interval: Option<Duration>,
 }
 
@@ -47,7 +47,7 @@ impl<T> Timers<T> {
             id,
             Entry {
                 value,
-                deadline: Some(deadline),
+                deadline,
                 interval: repeating.then_some(delay),
             },
         );
@@ -79,7 +79,6 @@ impl<T> Timers<T> {
                 break;
             }
             self.deadlines.pop_first();
-            self.entries.get_mut(&id).expect("deadline has an entry").deadline = None;
             batch.push(id);
         }
         batch
@@ -98,7 +97,7 @@ impl<T> Timers<T> {
                 self.cancel(id);
                 return;
             };
-            entry.deadline = Some(deadline);
+            entry.deadline = deadline;
             self.deadlines.insert((deadline, id));
         } else {
             self.entries.remove(&id);
@@ -107,10 +106,19 @@ impl<T> Timers<T> {
 
     pub(crate) fn cancel(&mut self, id: u64) -> bool {
         let Some(entry) = self.entries.remove(&id) else { return false };
-        if let Some(deadline) = entry.deadline {
-            self.deadlines.remove(&(deadline, id));
-        }
+        // Not there while it is in a batch; removing it then does nothing.
+        self.deadlines.remove(&(entry.deadline, id));
         true
+    }
+
+    /// Puts back what a batch didn't reach, under its own deadline, so it keeps its place ahead of
+    /// anything scheduled later. One cancelled meanwhile stays cancelled.
+    pub(crate) fn restore(&mut self, batch: impl IntoIterator<Item = u64>) {
+        for id in batch {
+            if let Some(entry) = self.entries.get(&id) {
+                self.deadlines.insert((entry.deadline, id));
+            }
+        }
     }
 
     pub(crate) fn clear(&mut self) {
@@ -184,6 +192,21 @@ mod tests {
             assert!(timers.cancel(id));
         }
         assert!(timers.deadlines.is_empty());
+    }
+
+    #[test]
+    fn a_restored_batch_keeps_its_order_and_its_cancellations() {
+        let mut timers = Timers::default();
+        let first = timers.insert(Duration::ZERO, false, ()).unwrap();
+        let second = timers.insert(Duration::ZERO, false, ()).unwrap();
+        let third = timers.insert(Duration::ZERO, false, ()).unwrap();
+        let batch = timers.due();
+        assert_eq!(batch, [first, second, third]);
+        let newborn = timers.insert(Duration::ZERO, false, ()).unwrap();
+        timers.finish(first);
+        assert!(timers.cancel(second));
+        timers.restore([second, third]);
+        assert_eq!(timers.due(), [third, newborn]);
     }
 
     #[test]
