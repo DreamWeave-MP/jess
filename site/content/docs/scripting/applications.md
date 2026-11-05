@@ -82,9 +82,9 @@ error: org.example.app target app failed to load:
 error in org.example.app:app during load: managed 'main' of org.example.app (org.example.app@1.0.0/src/main.jsl): on.host.updat is not a host callback; expected load, startup, fixedUpdate, update, lateUpdate, input, renderPrepare, onDemand, shutdown, interfaceOverride
 ```
 
-There is no "unknown key, probably fine". `on.host.event` is refused, because raw events are [`@jess/context`](@/docs/api/context.md)'s and named ones go in `on.event`. `message` and `timer` are refused because nothing in the kernel dispatches those phases yet, and a handler that never runs is worse than an error. A handler that isn't a function, an `on.event` keyed by a number, an interface the manifest doesn't declare, a declared interface the module didn't return, and an `interfaceOverride` with no interface to override all fail the same way.
+There is no "unknown key, probably fine". `on.host.event` is refused, because raw events are [`@jess/context`](@/docs/api/context.md)'s and named ones go in `on.event`. `timer` is refused because a timer is scheduled, not declared: [`@jess/timer`](@/docs/api/timer.md) runs it in the context that scheduled it. `message` is refused because nothing in the kernel dispatches that phase yet, and a handler that never runs is worse than an error. A handler that isn't a function, an `on.event` keyed by a number, an interface the manifest doesn't declare, a declared interface the module didn't return, and an `interfaceOverride` with no interface to override all fail the same way.
 
-Each managed module gets a context of its own, named `<package>/<managed id>`, scheduling exactly the phases it declared, plus the event phase when it has named events. Two modules that both declare `update` are two contexts with one handler each; nobody's handler replaces anybody's.
+Each managed module gets a context of its own, named `<package>/<managed id>`, scheduling exactly the phases it declared, plus the event phase when it has named events and the timer phase its timers run in. Two modules that both declare `update` are two contexts with one handler each; nobody's handler replaces anybody's.
 
 ## How an application starts
 
@@ -193,6 +193,73 @@ game.domain().route("playerDied", server.domain().mailbox()?)?;
 ```
 
 A native host can also post a named event into any domain from any thread with `DomainMailbox::post_named`. Either way it is stamped with the recipient's generation, so a restart drops what was queued for the old code. Interfaces never cross; only the event's payload does. A routed copy leaves when the event is emitted, not when the emitter's frame or load finishes: one emitted during a load that later fails has already been posted.
+
+## Timers
+
+[`@jess/timer`](@/docs/api/timer.md) runs a callback after a delay or on an interval, on the application's frames:
+
+```luau
+--!strict
+local timer = require '@jess/timer'
+
+return {
+  on = {
+    host = {
+      startup = function()
+        timer.after(250, function()
+          print('a quarter of a second in')
+        end)
+
+        local saves = 0
+        local autosave
+        autosave = timer.every(30000, function()
+          saves += 1
+          print('saving')
+          if saves == 3 then autosave:cancel() end
+        end)
+      end,
+    },
+  },
+}
+```
+
+Due timers run after `lateUpdate` and before the event drain. A timer's time is the sum of the frames' deltas, so `--frames` and a replaying host see the same order every run. A repeating timer fires at most once a frame and skips what it missed, so a long stall produces one call rather than a burst. Everything a generation scheduled is gone when it ends: nothing fires after `shutdown`, and a restart starts a new clock from 0.
+
+## Standard input
+
+A frame that waits on a terminal is a frozen window. An application reads stdin by polling: `read` and `readLine` never block, and return `nil, message, 'wouldBlock'` until something has arrived. Under an application `input:wait` raises instead of blocking. A timer is a natural place to poll from:
+
+```luau
+--!strict
+local application = require '@jess/application'
+local process = require '@dream/process'
+local timer = require '@jess/timer'
+
+return {
+  on = {
+    host = {
+      startup = function()
+        local input = assert(process.openStdin())
+
+        timer.every(50, function()
+          local line, message, kind = input:readLine()
+          if kind == 'wouldBlock' then return end
+          if message then error(message) end
+
+          if line == nil then
+            application.exit(0)
+            return
+          end
+
+          print(`you said {line}`)
+        end)
+      end,
+    },
+  },
+}
+```
+
+The target needs `process.stdio`. Stdin is one stream with one consumer at a time, across every domain and worker in the process, and not a broadcast: a second `openStdin` returns `nil, message, 'wouldBlock'` until the first closes or its generation or worker ends. The open is what's checked. The handle is the authority to read, so passing it to code holding less hands that code the reading. A read still in flight doesn't hold up stopping: the process's one reader thread is left in the terminal read and never calls Luau. See [`@dream/process`](@/docs/api/l3i.md) for raw reads and line bounds.
 
 ## Running and stopping
 
@@ -524,7 +591,7 @@ An application that calls the same services all day keeps an [`http.client`](@/d
 
 ## Authority
 
-An application holds what its target declares and nothing more, as a command target does. Every managed module's context holds that grant; a package doesn't get a VM or a capability of its own for being in the graph. Workers a module spawns hold a subset, and have no interfaces and no event queue of their own to emit into. `require` works in managed modules exactly as in any package module: their own files, their declared dependencies' exports, never past their package's root.
+An application holds what its target declares and nothing more, as a command target does. Every managed module's context holds that grant; a package doesn't get a VM or a capability of its own for being in the graph. Holding `process.stdio` includes reading stdin, the same terminal it writes to. Workers a module spawns hold a subset, and have no interfaces and no event queue of their own to emit into. `require` works in managed modules exactly as in any package module: their own files, their declared dependencies' exports, never past their package's root.
 
 ## Embedding it
 

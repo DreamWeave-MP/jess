@@ -66,7 +66,9 @@ Binding to a phase the host did not schedule is an error. Binding never widens a
 
 The phases are generic: `load`, `startup`, `fixedUpdate`, `update`, `lateUpdate`, `input`, `renderPrepare`, `message`, `timer`, `event`, `onDemand`, `shutdown`. Within a phase, contexts run by priority, then registration order. No hash map decides anything.
 
-Every entry into script code goes through the scheduler: `run_phase` broadcasts one phase, `advance(delta)` runs the fixed steps the accumulator owes (bounded by a catch-up limit, the rest dropped and counted), then `update`, `lateUpdate`, and an event drain. A native event never calls Luau directly; it is posted to the mailbox and delivered on the next drain. A handler that tries to re-enter the scheduler through a native service gets `RuntimeError::Reentrant` and a hint to queue an event instead.
+Every entry into script code goes through the scheduler: `run_phase` broadcasts one phase, `advance(delta)` runs the fixed steps the accumulator owes (bounded by a catch-up limit, the rest dropped and counted), then `update`, `lateUpdate`, the [timers](@/docs/api/timer.md) that are due, and an event drain. A native event never calls Luau directly; it is posted to the mailbox and delivered on the next drain. A handler that tries to re-enter the scheduler through a native service gets `RuntimeError::Reentrant` and a hint to queue an event instead.
+
+Timers are the domain's own: a bounded deadline queue (`runtime::timers`, independent of Luau and of any clock) moved by `advance`'s delta, 16,384 active and 1,024 delivered per advance. Each entry keeps the context, the authority and the source of the code that scheduled it, and dispatch goes through the same call as any handler, in `Phase::Timer`. An advance with nothing due adds a comparison, not a phase. Nothing in the queue survives the generation.
 
 Each handler call runs under the context's authority, inside its budget (l3i's watchdog), inside an l3i call scope carrying its `ContextId`, and timed. A Luau error in it becomes a `Diagnostic` and a `RuntimeError::Script` in the phase report; the phase goes on, and so does the domain.
 
