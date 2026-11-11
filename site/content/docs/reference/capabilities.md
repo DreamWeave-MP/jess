@@ -17,7 +17,7 @@ There are seventeen names. Jess knows all of them up front, so a misspelled gran
 | `filesystem.read` | Filesystem service reads: file contents, sizes, listings, and canonical paths. | [`@dream/fs`](@/docs/api/l3i.md), and package inspection through [`@jess/package`](@/docs/api/package.md) |
 | `filesystem.write` | Filesystem service writes, creation, removal, and renaming. | `@dream/fs`, [`@jess/backup`](@/docs/api/backup.md), and package packing through [`@jess/package`](@/docs/api/package.md) |
 | `process.environment` | Reading environment variables. | `@dream/process`'s `env` |
-| `process.spawn` | Running a child process. | `@dream/process`'s `run` |
+| `process.spawn` | Running a child process, to its end or as a handle that is read, written and stopped. | `@dream/process`'s `run` and `start` |
 | `process.stdio` | Writing to the host's standard streams and reading its standard input. `print` doesn't need it; it is jess's own. Checked when stdin is opened: the handle is then the authority to read, and passing it on delegates that. | `@dream/process`'s `write` and `openStdin` |
 | `network.dns.resolve` | Resolving names to addresses. | `@dream/dns` |
 | `network.tcp.connect` | Outbound TCP connections to any address. A TLS session rides on a connected stream and needs no additional capability. The client operations in [`@jess/net`](@/docs/api/net.md), [`@jess/http`](@/docs/api/http.md), and [`@jess/websocket`](@/docs/api/websocket.md) use this grant and `network.dns.resolve`; they grant neither to themselves. | `@dream/tcp`'s `connect` |
