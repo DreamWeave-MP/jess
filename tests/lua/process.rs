@@ -1,0 +1,371 @@
+//! `@dream/process` as a jess runtime gives it to a script: bounded runs, started children read
+//! and written without blocking, stopping them, who may start them, what is left when the runtime
+//! or the domain goes, and what a frame costs while a child runs.
+//!
+//! The children are `sh`, `sleep`, `sort` and `cat`, so these are Unix tests.
+
+#![cfg(unix)]
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use jess::host::{Host, HostSpec};
+use jess::lua::Options;
+use jess::lua::l3i::Runtime;
+use jess::lua::l3i::value::Function;
+use jess::runtime::{CapabilitySet, CollectedLogs, ContextSpec, DomainSpec, Phase, RootAuthority, RuntimeFactory};
+
+use super::common;
+
+const SPAWN: &str = "process.spawn";
+
+/// A runtime that may start children and nothing else beyond a runtime's defaults.
+fn spawning() -> Runtime {
+    jess::lua::runtime_with_capabilities(Options::default(), &[SPAWN.to_owned()]).unwrap_or_else(|error| panic!("{error}"))
+}
+
+/// Whether `pid` is a process this one may signal: a child that was killed and reaped is not.
+fn alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Waits up to two seconds for `pid` to be gone.
+fn gone(pid: u32) -> bool {
+    let started = Instant::now();
+    while alive(pid) {
+        if started.elapsed() > Duration::from_secs(2) {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    true
+}
+
+/// Starts a child that prints its pid and then sleeps, and answers the pid, leaving the handle in
+/// the script's `kept` so that nothing collects it.
+const KEEP_A_SLEEPER: &str = r"
+    local process = require('@dream/process')
+    local child = assert(process.start('sh', { '-c', 'echo $$; exec sleep 30' }, { stdout = 'pipe' }))
+    local text = ''
+    while not string.find(text, '\n', 1, true) do
+      local chunk, message, kind = child:readStdout(64)
+      if chunk then
+        text ..= chunk
+      elseif kind == 'wouldBlock' then
+        process.sleep(0.005)
+      else
+        error(message or 'the child closed its output before printing its pid')
+      end
+    end
+    return child, tonumber((string.gsub(text, '%s', '')))
+";
+
+#[test]
+fn a_bounded_run_answers_its_result_or_the_limit_that_stopped_it() {
+    common::run(
+        &spawning(),
+        r"
+        local process = require('@dream/process')
+
+        local result = assert(process.run('sh', { '-c', 'printf out; printf err >&2; exit 3' },
+          { stdout = 'capture', stderr = 'capture', timeoutMs = 5000, maxStdoutBytes = 16, maxStderrBytes = 16 }))
+        assert(not result.success and result.code == 3, tostring(result.code))
+        assert(result.stdout == 'out' and result.stderr == 'err')
+
+        local started = os.clock()
+        local late, lateMessage, lateKind = process.run('sleep', { '30' }, { timeoutMs = 100 })
+        assert(late == nil and lateKind == 'timeout', tostring(lateKind))
+        assert(type(lateMessage) == 'string')
+        assert(os.clock() - started < 5, 'the limit, not the child, ended the run')
+
+        local loud, _, loudKind = process.run('sh', { '-c', 'while :; do echo xxxxxxxxxxxxxxxx; done' },
+          { stdout = 'capture', timeoutMs = 5000, maxStdoutBytes = 1024 })
+        assert(loud == nil and loudKind == 'outputLimit', tostring(loudKind))
+
+        -- A limit that is no limit is refused before anything starts.
+        local ok, problem = pcall(process.run, 'true', {}, { timeoutMs = 0 })
+        assert(not ok and string.find(tostring(problem), 'timeoutMs', 1, true), tostring(problem))
+        local ceiling = pcall(process.run, 'true', {}, { maxStdoutBytes = 8 })
+        assert(not ceiling, 'a ceiling needs a captured stream')
+    ",
+    );
+}
+
+#[test]
+fn a_started_child_is_written_to_and_read_from_without_blocking() {
+    common::run(
+        &spawning(),
+        r"
+        local process = require('@dream/process')
+        local child = assert(process.start('sort', nil, { stdin = 'pipe', stdout = 'pipe', timeoutMs = 10000 }))
+
+        -- Nothing to read yet, and saying so takes no time.
+        local early, _, earlyKind = child:readStdout(16)
+        assert(early == nil and earlyKind == 'wouldBlock', tostring(earlyKind))
+        local running, _, runningKind = child:wait()
+        assert(running == nil and runningKind == 'wouldBlock', tostring(runningKind))
+
+        assert(child:write('pear\napple\nfig\n') == 15)
+        child:closeStdin()
+        local lines = ''
+        while true do
+          local chunk, message, kind = child:readStdout(4)
+          if chunk then
+            assert(#chunk >= 1 and #chunk <= 4)
+            lines ..= chunk
+          elseif kind == 'wouldBlock' then
+            process.sleep(0.005)
+          elseif message then
+            error(message)
+          else
+            break
+          end
+        end
+        assert(lines == 'apple\nfig\npear\n', lines)
+        assert(assert(child:wait(5000)).success)
+        child:close()
+        child:close()
+        assert(not pcall(child.wait, child), 'a closed handle answers nothing')
+    ",
+    );
+}
+
+#[test]
+fn a_started_child_is_stopped_by_kill_by_close_and_by_its_limit() {
+    let runtime = spawning();
+    common::run(
+        &runtime,
+        r"
+        local process = require('@dream/process')
+
+        local killed = assert(process.start('sleep', { '30' }))
+        assert(killed:kill() and killed:kill())
+        local status = assert(killed:wait(5000))
+        assert(not status.success and status.code == nil and type(status.signal) == 'number')
+        killed:close()
+
+        local limited = assert(process.start('sh', { '-c', 'sleep 30' }, { stdout = 'pipe', timeoutMs = 100 }))
+        local ended
+        for _ = 1, 400 do
+          ended = limited:wait(25)
+          if ended then break end
+        end
+        assert(ended and not ended.success, 'the limit stops the child')
+        local chunk, _, kind = limited:readStdout(16)
+        assert(chunk == nil and kind == 'timeout', tostring(kind))
+        limited:close()
+    ",
+    );
+    let pid: u32 = runtime
+        .eval(&format!(
+            "local child, pid = (function() {KEEP_A_SLEEPER} end)(); child:close(); return pid"
+        ))
+        .unwrap();
+    assert!(gone(pid), "close kills and reaps a child that still runs");
+}
+
+#[test]
+fn only_a_runtime_granted_process_spawn_starts_anything() {
+    common::run(
+        &common::runtime(),
+        r"
+        local process = require('@dream/process')
+        assert(jess.granted('process.spawn') == false)
+        for _, name in { 'run', 'start' } do
+          local ok, problem = pcall(process[name], 'true', {})
+          assert(not ok, `{name} started a child without the capability`)
+          assert(string.find(tostring(problem), `'process.spawn' capability`, 1, true), tostring(problem))
+        end
+    ",
+    );
+}
+
+/// A domain's runtimes are built from its grant, as `jess package run` builds an application's, so
+/// a domain not granted `process.spawn` starts nothing. The check is the runtime plan's: l3i owns
+/// this module, and the plan is where its capabilities are decided.
+#[test]
+fn a_domain_starts_children_only_when_its_grant_and_its_runtime_carry_process_spawn() {
+    for (granted, expected) in [(false, "false false"), (true, "true true")] {
+        let names: Vec<String> = if granted { vec![SPAWN.to_owned()] } else { Vec::new() };
+        let logs = Arc::new(CollectedLogs::new());
+        let grant = RootAuthority::new().grant(CapabilitySet::from_names(&names).unwrap());
+        let factory: Arc<dyn RuntimeFactory> =
+            Arc::new(move || jess::lua::runtime_with_capabilities(Options::default(), &names));
+        let domain =
+            jess::runtime::ScriptDomain::create(factory, DomainSpec::new("spawning", grant).logs(logs.clone())).unwrap();
+        domain
+            .register_context(ContextSpec::new("main").schedule([Phase::Startup]))
+            .unwrap();
+        domain
+            .load_source(
+                "@test/process/granted.jsl",
+                r"
+                local process = require('@dream/process')
+                local ran = pcall(process.run, 'true', {}, { timeoutMs = 5000 })
+                local started, child = pcall(process.start, 'true', {})
+                if started and child then child:close() end
+                require('@jess/log').new('spawning').info(`{jess.granted('process.spawn')} {ran and started}`)
+                ",
+            )
+            .unwrap();
+        let messages = logs.drain().into_iter().map(|record| record.message).collect::<Vec<_>>();
+        assert_eq!(messages, [expected]);
+    }
+}
+
+#[test]
+fn no_child_outlives_the_runtime_that_started_it() {
+    let runtime = spawning();
+    // Globals are read-only, so the handles live in a closure this test holds: nothing collects
+    // them, and it is the runtime's shutdown that ends the children.
+    let keep: Function = runtime
+        .eval(&format!(
+            r"local first, firstPid = (function() {KEEP_A_SLEEPER} end)()
+              local second, secondPid = (function() {KEEP_A_SLEEPER} end)()
+              return function() return firstPid, secondPid, first, second end"
+        ))
+        .unwrap();
+    let (first, second) = keep.invoke::<(u32, u32), ()>(&runtime.stack(), ()).unwrap();
+    assert!(alive(first) && alive(second), "the children run while their runtime does");
+    drop(keep);
+    drop(runtime);
+    assert!(
+        gone(first) && gone(second),
+        "shutting the runtime down kills and reaps what it started"
+    );
+}
+
+/// Nor the domain: a handle a context still holds when the domain stops goes with its runtime.
+#[test]
+fn no_child_outlives_the_domain_that_started_it() {
+    let logs = Arc::new(CollectedLogs::new());
+    let grant = RootAuthority::new().grant(CapabilitySet::from_names([SPAWN]).unwrap());
+    let factory: Arc<dyn RuntimeFactory> =
+        Arc::new(|| jess::lua::runtime_with_capabilities(Options::default(), &[SPAWN.to_owned()]));
+    let mut host = Host::create(factory, HostSpec::new(DomainSpec::new("leaving", grant).logs(logs.clone()))).unwrap();
+    host.domain()
+        .register_context(ContextSpec::new("main").schedule([Phase::Update]))
+        .unwrap();
+    host.domain()
+        .load_source(
+            "@test/process/leaving.jsl",
+            &format!(
+                r"local child, pid = (function() {KEEP_A_SLEEPER} end)()
+                  require('@jess/log').new('leaving').info(tostring(pid))
+                  require('@jess/context').bind('main', {{ update = function() return child end }})"
+            ),
+        )
+        .unwrap();
+    host.domain().start().unwrap();
+    host.frame(Duration::from_millis(16)).unwrap();
+    let pid: u32 = logs.drain()[0].message.parse().unwrap();
+    assert!(alive(pid), "the child runs while its domain does");
+    host.stop().unwrap();
+    assert!(gone(pid), "stopping the domain kills and reaps what it started");
+}
+
+/// A frame-driven host polls: the child runs for a third of a second, and no frame waits for it.
+#[test]
+fn frames_keep_their_pace_while_a_child_runs() {
+    let logs = Arc::new(CollectedLogs::new());
+    let factory: Arc<dyn RuntimeFactory> =
+        Arc::new(|| jess::lua::runtime_with_capabilities(Options::default(), &[SPAWN.to_owned()]));
+    let grant = RootAuthority::new().grant(CapabilitySet::from_names([SPAWN]).unwrap());
+    let mut host = Host::create(factory, HostSpec::new(DomainSpec::new("pacing", grant).logs(logs.clone()))).unwrap();
+    host.domain()
+        .register_context(ContextSpec::new("main").schedule([Phase::Update, Phase::Shutdown]))
+        .unwrap();
+    host.domain()
+        .load_source(
+            "@test/process/pacing.jsl",
+            r"
+            local process = require('@dream/process')
+            local log = require('@jess/log').new('pacing')
+            local child = assert(process.start('sh', { '-c', 'sleep 0.3; echo done' }, { stdout = 'pipe', timeoutMs = 10000 }))
+            local output = ''
+            local finished = false
+
+            require('@jess/context').bind('main', {
+              update = function()
+                if finished then return end
+
+                local chunk = child:readStdout(4096)
+                if chunk then output ..= chunk end
+
+                local status = child:wait()
+                if status and string.find(output, 'done', 1, true) then
+                  finished = true
+                  child:close()
+                  log.info(`finished {status.success}`)
+                end
+              end,
+            })
+            ",
+        )
+        .unwrap();
+    host.domain().start().unwrap();
+
+    let started = Instant::now();
+    let mut frames: u32 = 0;
+    let mut slowest = Duration::ZERO;
+    let mut messages = Vec::new();
+    while messages.is_empty() && started.elapsed() < Duration::from_secs(10) {
+        let before = Instant::now();
+        host.frame(Duration::from_millis(2)).unwrap();
+        slowest = slowest.max(before.elapsed());
+        frames += 1;
+        messages.extend(logs.drain().into_iter().map(|record| record.message));
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    host.stop().unwrap();
+
+    assert_eq!(messages, ["finished true"]);
+    assert!(started.elapsed() >= Duration::from_millis(300), "the child ran its course");
+    assert!(frames >= 20, "only {frames} frames advanced while the child ran");
+    // A blocking wait would cost a frame the child's whole third of a second.
+    assert!(
+        slowest < Duration::from_millis(150),
+        "a frame took {slowest:?} while a child ran"
+    );
+}
+
+/// The declarations jess hands a checker come from the l3i it was built with: the bounded run and
+/// the handle type-check under `--!strict`, and a method the handle lacks does not.
+#[test]
+fn the_types_describe_bounded_runs_and_process_handles() {
+    let good = common::type_check(
+        r"--!strict
+        local process = require('@dream/process')
+        local result, message, kind = process.run('true', {}, { stdout = 'capture', timeoutMs = 100, maxStdoutBytes = 64 })
+        if result then
+          local _code: number? = result.code
+        elseif kind == 'timeout' or kind == 'outputLimit' then
+          local _text: string? = message
+        end
+        local child = process.start('cat', nil, { stdin = 'pipe', stdout = 'pipe', stderr = 'null', timeoutMs = 100 })
+        if child then
+          local _queued: number? = child:write('x')
+          child:closeStdin()
+          local _chunk: (buffer | string)? = child:readStdout(16)
+          local status = child:wait(10)
+          if status then
+            local _success: boolean = status.success
+          end
+          child:kill()
+          child:close()
+        end
+        ",
+    );
+    assert_eq!(good, "", "{good}");
+    let bad = common::type_check(
+        r"--!strict
+        local child = assert(require('@dream/process').start('true'))
+        child:detach()
+        ",
+    );
+    assert!(bad.contains("detach"), "{bad}");
+}
