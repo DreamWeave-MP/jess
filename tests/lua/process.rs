@@ -369,3 +369,76 @@ fn the_types_describe_bounded_runs_and_process_handles() {
     );
     assert!(bad.contains("detach"), "{bad}");
 }
+
+/// A secret for a child (l3i 2.9.0): it arrives on a descriptor the child inherits, named by
+/// number in a variable, readable once, and is in neither the child's arguments nor its
+/// environment. It needs `process.spawn` and nothing more, and under a domain it is the domain's
+/// grant that says whether anything is started at all.
+#[test]
+fn a_secret_reaches_a_child_once_and_only_through_its_descriptor() {
+    common::run(
+        &spawning(),
+        r#"
+        local process = require('@dream/process')
+        local secret = 'jess-ZZ-SECRET-ZZ'
+        local result = assert(process.run('sh', { '-c',
+          'printf "%s|" "$JESS_SECRET_FD"; cat "/dev/fd/$JESS_SECRET_FD"; printf "|"; cat "/dev/fd/$JESS_SECRET_FD"; printf "|"; env; echo "$0" "$@"' },
+          { secret = { env = 'JESS_SECRET_FD', data = secret }, stdout = 'capture', timeoutMs = 10000 }))
+        local number, first, second, rest = string.match(result.stdout, '^(%d+)|(.-)|(.-)|(.*)$')
+        assert(tonumber(number) >= 3, result.stdout)
+        assert(first == secret, 'the child did not read the secret')
+        assert(second == '', 'the secret could be read twice')
+        assert(string.find(rest, 'JESS_SECRET_FD=', 1, true) and not string.find(rest, 'ZZ-SECRET-ZZ', 1, true),
+          'the secret is in the child\'s environment or arguments')
+
+        -- A started child takes one the same way.
+        local child = assert(process.start('sh', { '-c', 'cat "/dev/fd/$JESS_SECRET_FD"' },
+          { secret = { env = 'JESS_SECRET_FD', data = buffer.fromstring(secret) }, stdout = 'pipe', timeoutMs = 10000 }))
+        local text = ''
+        while true do
+          local chunk, message, kind = child:readStdout(4096)
+          if chunk then
+            text ..= chunk
+          elseif kind == 'wouldBlock' then
+            process.sleep(0.005)
+          elseif message then
+            error(message)
+          else
+            break
+          end
+        end
+        child:close()
+        assert(text == secret, text)
+
+        -- Malformed ones raise before anything starts, and say nothing of the bytes.
+        for _, bad in { { env = 'lower', data = secret }, { env = 'PATH', data = secret }, { env = 'FD', data = '' }, { env = 'FD' } } do
+          local ok, problem = pcall(process.run, 'true', {}, { secret = bad })
+          assert(not ok and not string.find(tostring(problem), 'ZZ-SECRET-ZZ', 1, true), tostring(problem))
+        end
+    "#,
+    );
+    // Without the capability nothing is started, secret or not.
+    common::run(
+        &common::runtime(),
+        r"
+        local process = require('@dream/process')
+        local ok, problem = pcall(process.run, 'true', {}, { secret = { env = 'FD', data = 'x' } })
+        assert(not ok and string.find(tostring(problem), `'process.spawn' capability`, 1, true), tostring(problem))
+    ",
+    );
+    // And the declarations a checker is handed know the option.
+    let typed = common::type_check(
+        r"--!strict
+        local process = require('@dream/process')
+        local _run = process.run('true', {}, { secret = { env = 'FD', data = 'x' }, timeoutMs = 100 })
+        local _start = process.start('true', nil, { secret = { env = 'FD', data = buffer.fromstring('x') } })
+        ",
+    );
+    assert_eq!(typed, "", "{typed}");
+    let mistyped = common::type_check(
+        r"--!strict
+        local _run = require('@dream/process').run('true', {}, { secret = { env = 'FD' } })
+        ",
+    );
+    assert!(!mistyped.is_empty(), "a secret without data type-checked");
+}
