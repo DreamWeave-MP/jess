@@ -846,8 +846,8 @@ local function parseBlockScalar(index: number, indicatorColumn: number, token: s
   end
 
   local values: { string } = {}
-  local more: { boolean } = {}
-  local ended = false
+  local more: { boolean }, endings: { boolean } = {}, {}
+  local last = 0
   scan = index + 1
   while scan <= #Lines do
     local candidate = Lines[scan]
@@ -858,42 +858,43 @@ local function parseBlockScalar(index: number, indicatorColumn: number, token: s
     local value = blank and '' or string.sub(candidate.text, contentIndent + 1)
     table.insert(values, value)
     table.insert(more, not blank and candidate.indent > contentIndent)
-    ended = candidate.ended
+    table.insert(endings, candidate.ended)
+    if not blank then last = #values end
     scan += 1
   end
 
+  -- The content runs to the last non-blank line. Its own line break is the one clip keeps, and
+  -- each trailing empty line that a break ends is one more for keep. Lines with no break (the last
+  -- line of a source that does not end in one) add nothing.
   local out: { string } = {}
-  if style == '|' then
-    for index, value in values do
-      table.insert(out, value)
-      if index < #values or ended then table.insert(out, '\n') end
+  for index = 1, last do
+    local value = values[index]
+    table.insert(out, value)
+    if index == last then break end
+
+    if style == '|' then
+      table.insert(out, '\n')
+      continue
     end
-  else
-    for index, value in values do
-      table.insert(out, value)
-      if index < #values then
-        local nextValue = values[index + 1]
-        if more[index] or more[index + 1] then
-          table.insert(out, '\n')
-        elseif value ~= '' and nextValue ~= '' then
-          table.insert(out, ' ')
-        elseif value == '' then
-          table.insert(out, '\n')
-        end
-      elseif ended then
-        table.insert(out, '\n')
-      end
+
+    local nextValue = values[index + 1]
+    if more[index] or more[index + 1] then
+      table.insert(out, '\n')
+    elseif value ~= '' and nextValue ~= '' then
+      table.insert(out, ' ')
+    elseif value == '' then
+      table.insert(out, '\n')
     end
   end
 
-  local value = table.concat(out)
-  if chomp == '-' then
-    value = string.gsub(value, '\n+$', '')
-  elseif chomp == '' then
-    value = string.gsub(value, '\n+$', '')
-    if #values > 0 and ended then value ..= '\n' end
+  if chomp == '-' then return table.concat(out), scan end
+  if last > 0 and endings[last] then table.insert(out, '\n') end
+  if chomp == '' then return table.concat(out), scan end
+
+  for index = last + 1, #values do
+    if endings[index] then table.insert(out, '\n') end
   end
-  return value, scan
+  return table.concat(out), scan
 end
 
 local function startsSpecialInline(text: string): boolean

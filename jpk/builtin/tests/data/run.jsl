@@ -195,6 +195,56 @@ custom: !<tag:example.com,2026:thing> hello
     expect(value.custom.value).toBe 'hello'
   end)
 
+  -- A block scalar keeps its last line break under clip whether the source ends there or not.
+  -- Every expected value here is what PyYAML loads from the same text.
+  suite.it('chomps a block scalar at the end of the source as it does before more content', function()
+    local cases: { { string } } = {
+      { 'a: |\n  x\n', 'x\n' },
+      { 'a: >\n  x\n  y\n', 'x y\n' },
+      { 'a: |\n  x\nb: 1\n', 'x\n' },
+      { 'a: |\n  x\n  y\n', 'x\ny\n' },
+      { 'a: >\n  x\n\n  y\n', 'x\ny\n' },
+      { 'a: >\n  x\n\n  y\n\n', 'x\ny\n' },
+      { 'a: |-\n  x\n', 'x' },
+      { 'a: >-\n  x\n', 'x' },
+      { 'a: |+\n  x\n', 'x\n' },
+      { 'a: >+\n  x\n', 'x\n' },
+      { 'a: |+\n  x\n\n', 'x\n\n' },
+      { 'a: >+\n  x\n  y\n\n', 'x y\n\n' },
+      { 'a: |\n  x', 'x' },
+      { 'a: >\n  x\n  y', 'x y' },
+      { 'a: |+\n  x', 'x' },
+      { 'a: |+\n  x\n  ', 'x\n' },
+      { 'a: >+\n  x\n\n  ', 'x\n\n' },
+      { 'a: |\n  x\n\n\n', 'x\n' },
+      { 'a: >\n  x\n\n\n', 'x\n' },
+      { 'a: |-\n  x\n\n\n', 'x' },
+      { 'a: |+\n  x\n\n\n', 'x\n\n\n' },
+      { 'a: >+\n  x\n\n\n', 'x\n\n\n' },
+      { 'a: >+\n  x\n\nb: 1\n', 'x\n\n' },
+      { 'a: |\n', '' },
+      { 'a: |+\n', '' },
+      { 'a: |\n\n\n', '' },
+      { 'a: |+\n\n', '\n' },
+      { 'a: |+\n\n\n', '\n\n' },
+    }
+
+    for _, case in cases do
+      local value = yaml.decode(case[1]) :: { a: string }
+      expect(value.a).toBe(case[2])
+    end
+
+    expect(yaml.decode '- |\n  x\n').toEqual { 'x\n' }
+    expect(yaml.decode '- >\n  x\n  y\n').toEqual { 'x y\n' }
+    expect(yaml.decode '- >+\n  x\n\n\n').toEqual { 'x\n\n\n' }
+
+    local nested = yaml.decode 'a:\n  b:\n    - c: |\n        x\n' :: { a: { b: { { c: string } } } }
+    expect(nested.a.b[1].c).toBe 'x\n'
+
+    local folded = yaml.decode 'a:\n  b: >\n    x\n    y\n' :: { a: { b: string } }
+    expect(folded.a.b).toBe 'x y\n'
+  end)
+
   suite.it('loads independent documents and rejects malformed graphs', function()
     local documents = yaml.decodeAll '---\none\n...\n---\ntwo\n...\n'
     expect(documents).toEqual { 'one', 'two' }
