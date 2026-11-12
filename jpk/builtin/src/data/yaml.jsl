@@ -494,7 +494,12 @@ local function parseTagToken(): string
     if isNameEnd(byte) or byte == 35 then break end
     flowAt += 1
   end
-  return string.sub(source, start, flowAt - 1)
+
+  -- `!` alone is the non-specific tag; a named handle (`!!`, `!e!`) needs a suffix after it.
+  local tag = string.sub(source, start, flowAt - 1)
+  if #tag > 1 and string.sub(tag, -1) == '!' then failAt(start, 'a tag handle needs a suffix') end
+
+  return tag
 end
 
 local function parseAnchorName(indicator: number): string
@@ -801,16 +806,19 @@ local function parseFlowMapping(tag: string?, anchor: string?, depth: number, po
 
     local key: Value = Null
     local byte = string.byte(source, flowAt)
-    if byte ~= 58 and byte ~= 44 and byte ~= 125 then key = parseFlowNode(true, depth + 1) end
+    local keyed = byte ~= 58 and byte ~= 44 and byte ~= 125
+    if keyed then key = parseFlowNode(true, depth + 1) end
     skipFlowSpace()
 
     local value: Value = Null
-    if string.byte(source, flowAt) == 58 then
+    local after = string.byte(source, flowAt)
+    if after == 58 then
       flowAt += 1
       skipFlowSpace()
       byte = string.byte(source, flowAt)
       if byte ~= 44 and byte ~= 125 then value = parseFlowNode(false, depth + 1) end
-    elseif not explicit then
+    elseif not explicit and not (keyed and (after == 44 or after == 125)) then
+      -- `{a, b}` is two keys with null values; anything else after a key wants its `:`.
       failAt(flowAt, "expected ':' in flow mapping")
     end
     setMappingPair(map, key, value, pairAt)
@@ -891,7 +899,9 @@ local function parseBlockNode(index: number, indent: number, depth: number, tag:
   return parseBlockNodeImpl(index, indent, depth, tag, anchor)
 end
 
-local function parseBlockScalar(index: number, indicatorColumn: number, token: string): (string, number)
+--- A block scalar whose header `token` is on line `index`. `parent` is the indentation of the node
+--- it belongs to, which for a compact `- key: |2` mapping is the key's column, not the line's.
+local function parseBlockScalar(index: number, indicatorColumn: number, token: string, parent: number?): (string, number)
   local line = Lines[index]
   local style = string.sub(token, 1, 1)
   local modifiers = stripComment(string.sub(token, 2))
@@ -915,7 +925,7 @@ local function parseBlockScalar(index: number, indicatorColumn: number, token: s
     end
   end
 
-  local parentIndent = line.indent
+  local parentIndent = math.max(line.indent, parent or line.indent)
   local contentIndent = parentIndent + 1
   local scan = index + 1
   if explicit then
@@ -1080,7 +1090,7 @@ local function parseInlineBlock(text: string, index: number, parentIndent: numbe
   local position = line.start + (#stripComment(line.text) - #text) + leading
 
   if string.sub(clean, 1, 1) == '|' or string.sub(clean, 1, 1) == '>' then
-    local value, nextIndex = parseBlockScalar(index, position - line.start + 1, clean)
+    local value, nextIndex = parseBlockScalar(index, position - line.start + 1, clean, parentIndent)
     return value, nextIndex, false
   end
 
@@ -1408,7 +1418,8 @@ end
 local function parseDirective(index: number, content: string): number
   if string.sub(content, 1, 5) == '%YAML' and isSeparation(string.byte(content, 6)) then
     local version = Bytes.trim(string.sub(content, 6), ' \t')
-    if version ~= '1.2' then failLine(index, 1, `unsupported YAML version {version}`) end
+    -- YAML 1.2 (6.8.1) reads a document of another 1.x version as 1.2; only another major is refused.
+    if not string.match(version, '^1%.%d+$') then failLine(index, 1, `unsupported YAML version {version}`) end
   elseif string.sub(content, 1, 4) == '%TAG' and isSeparation(string.byte(content, 5)) then
     local rest = Bytes.trim(string.sub(content, 5), ' \t')
     local handle, prefix = string.match(rest, '^(%S+)%s+(%S+)$')
