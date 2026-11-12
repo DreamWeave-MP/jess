@@ -1388,9 +1388,9 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "l3i"
-version = "2.7.0"
+version = "2.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7631b60f2d33317eaf867e17ca64a0bcf46535384a3af512913970003896928"
+checksum = "9c323790d81a2c06c539bcc2beb80aad89af97f3f6f29f0df9d7a05cd1c66816"
 dependencies = [
  "adler2",
  "blake3",

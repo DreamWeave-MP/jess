@@ -12,6 +12,7 @@ mod lua_api;
 mod luau_style;
 mod network_capability;
 mod package;
+mod process;
 mod script_support;
 mod shader;
 mod shared_buffer_native;
