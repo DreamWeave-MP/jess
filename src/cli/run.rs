@@ -192,6 +192,10 @@ fn disassemble(lua: &Runtime, script: &Path, output: &Path) -> Result<(), String
     Ok(())
 }
 
+/// How many source files and lines a profile lists; `JESS_PROFILE_LINES` asks for more lines.
+const PROFILE_FILES: usize = 24;
+const PROFILE_LINES: usize = 20;
+
 fn print_profile(lua: &Runtime) {
     let stats = lua.call_stats();
     let allocations = stats.allocation_by_context.get(&1).copied().unwrap_or_default();
@@ -204,7 +208,20 @@ fn print_profile(lua: &Runtime) {
     eprintln!("jess profile: {} safepoint samples", samples.count);
     let mut lines: Vec<_> = samples.lines.into_iter().collect();
     lines.sort_by_key(|(_, location)| Reverse(location.samples));
-    for (line, location) in lines.into_iter().take(20) {
+    // By source file as well: twenty lines seldom say where a long run went, and the files do.
+    let mut files: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    for (line, location) in &lines {
+        let file = line.rsplit_once(':').map_or(line.as_str(), |(file, _)| file);
+        *files.entry(file.to_owned()).or_default() += location.samples as u64;
+    }
+    let mut by_file: Vec<_> = files.into_iter().collect();
+    by_file.sort_by_key(|(file, samples)| (Reverse(*samples), file.clone()));
+    let total = samples.count.max(1) as f64;
+    for (file, count) in by_file.into_iter().take(PROFILE_FILES) {
+        eprintln!("  {count:>8}  {:>5.1}%  {file}", count as f64 * 100.0 / total);
+    }
+    let shown = std::env::var("JESS_PROFILE_LINES").ok().and_then(|value| value.parse().ok()).unwrap_or(PROFILE_LINES);
+    for (line, location) in lines.into_iter().take(shown) {
         eprintln!("  {:>6}  {line}", location.samples);
     }
     if let Some(generator) = lua.native_code() {
