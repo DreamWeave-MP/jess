@@ -377,6 +377,18 @@ custom: !<tag:example.com,2026:thing> hello
     expect(yaml.decode 'key: a\u{85}b\n').toEqual { key = 'a\u{85}b' }
   end)
 
+  suite.it('reads implicit flow entries, any 1.x version, and block indentation from a compact key', function()
+    expect(yaml.decode 'map: {first, second: 2}\n').toEqual { map = { first = jess.null, second = 2 } }
+    expect(function() yaml.decode 'map: {, second}\n' end).toThrow "YAML: expected ':' in flow mapping"
+    expect(yaml.decode '%YAML 1.1\n---\nkey: value\n').toEqual { key = 'value' }
+    expect(function() yaml.decode '%YAML 2.0\n---\nkey: value\n' end).toThrow 'YAML: unsupported YAML version 2.0'
+    expect(function() yaml.decode 'key: !! value\n' end).toThrow 'YAML: a tag handle needs a suffix'
+    expect(yaml.decode 'key: ! value\n').toEqual { key = 'value' }
+    expect(yaml.decode '- run: |2\n     indented\n').toEqual { { run = ' indented\n' } }
+    expect(yaml.decode 'run: |2\n   indented\n').toEqual { run = ' indented\n' }
+    expect(yaml.decode '- |2\n   indented\n').toEqual { ' indented\n' }
+  end)
+
   -- A Luau table can't say whether the file wrote `{}` or `[]`, `{1: a}` or `[a]`, `1.0` or `1`.
   suite.it('keeps the layout side channel the Luau tables forget', function()
     local text = 'empty_map: {}\nempty_list: []\nblock_map:\n  1: a\n  2: b\nblock_list:\n  - a\n  - b\n'
