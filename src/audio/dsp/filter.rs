@@ -235,8 +235,7 @@ impl Processor for Filter {
         let (mut block, _) = io.effect();
         let block = &mut block;
         let coefficients = self.coefficients;
-        for channel in 0..block.channels {
-            let section = &mut self.sections[channel];
+        for (channel, section) in self.sections[..block.channels].iter_mut().enumerate() {
             for sample in block.channel(channel) {
                 *sample = section.next(&coefficients, f64::from(*sample)) as f32;
             }

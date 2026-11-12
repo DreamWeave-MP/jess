@@ -572,7 +572,7 @@ pub fn pack_for_runtimes(runtime: &Runtime, at: &Locate, output: &Path, runtimes
                 path.display()
             )));
         };
-        found.push((path.clone(), rest.to_owned()));
+        found.push((path, rest.to_owned()));
     }
     found.sort();
     if found.is_empty() {
