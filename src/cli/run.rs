@@ -220,7 +220,10 @@ fn print_profile(lua: &Runtime) {
     for (file, count) in by_file.into_iter().take(PROFILE_FILES) {
         eprintln!("  {count:>8}  {:>5.1}%  {file}", count as f64 * 100.0 / total);
     }
-    let shown = std::env::var("JESS_PROFILE_LINES").ok().and_then(|value| value.parse().ok()).unwrap_or(PROFILE_LINES);
+    let shown = std::env::var("JESS_PROFILE_LINES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(PROFILE_LINES);
     for (line, location) in lines.into_iter().take(shown) {
         eprintln!("  {:>6}  {line}", location.samples);
     }
