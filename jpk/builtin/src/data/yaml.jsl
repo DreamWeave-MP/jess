@@ -205,8 +205,21 @@ local function significant(index: number): (number?, string?)
   return nil, nil
 end
 
-local function documentMarker(content: string): boolean
-  return content == '---' or content == '...'
+--- What follows `---` on a document start line, or nil when `content`, a line's content after its
+--- `indent`, isn't one. `---` alone gives the empty string. A marker starts in the first column; an
+--- indented `---` is content.
+local function startMarker(content: string, indent: number): string?
+  if indent ~= 0 then return nil end
+  if content == '---' then return '' end
+
+  if string.sub(content, 1, 3) == '---' and (string.byte(content, 4) == 32 or string.byte(content, 4) == 9) then
+    return Bytes.trim(string.sub(content, 5), ' \t')
+  end
+  return nil
+end
+
+local function documentMarker(content: string, indent: number): boolean
+  return (indent == 0 and content == '...') or startMarker(content, indent) ~= nil
 end
 
 local function mapColon(text: string): number?
@@ -991,11 +1004,11 @@ local function parsePlainBlock(first: string, index: number, parentIndent: numbe
   while scan <= #Lines do
     local candidate = Lines[scan]
     local clean = stripComment(string.sub(candidate.text, candidate.indent + 1))
-    if documentMarker(clean) or string.byte(clean, 1) == 37 then break end
+    if documentMarker(clean, candidate.indent) or string.byte(clean, 1) == 37 then break end
 
     if clean == '' then
       local nextIndex, nextContent = significant(scan + 1)
-      if not nextIndex or Lines[nextIndex].indent <= parentIndent or (nextContent and documentMarker(nextContent)) then break end
+      if not nextIndex or Lines[nextIndex].indent <= parentIndent or (nextContent and documentMarker(nextContent, Lines[nextIndex].indent)) then break end
       table.insert(lines, '')
       scan += 1
       continue
@@ -1074,7 +1087,7 @@ local function parseBlockSequence(index: number, indent: number, depth: number, 
     local contentText = content :: string
     local line = Lines[foundAt]
     if (not compactFirst and line.indent ~= indent) or not looksSequence(contentText) then break end
-    if documentMarker(contentText) then break end
+    if documentMarker(contentText, line.indent) then break end
 
     local rest = string.sub(contentText, 2)
     if string.sub(rest, 1, 1) == ' ' or string.sub(rest, 1, 1) == '\t' then rest = string.sub(rest, 2) end
@@ -1082,7 +1095,7 @@ local function parseBlockSequence(index: number, indent: number, depth: number, 
 
     if Bytes.trim(rest, ' \t') == '' then
       local child, childContent = significant(foundAt + 1)
-      if child and childContent and not documentMarker(childContent) and Lines[child].indent > indent then
+      if child and childContent and not documentMarker(childContent, Lines[child].indent) and Lines[child].indent > indent then
         local value, nextIndex = parseBlockNode(child, Lines[child].indent, depth + 1, nil, nil)
         push(list, value)
         scan = nextIndex
@@ -1179,7 +1192,7 @@ local function parseBlockMapping(index: number, indent: number, depth: number, t
       break
     end
     local line = Lines[found]
-    if line.indent ~= indent or looksSequence(content) or documentMarker(content) then break end
+    if line.indent ~= indent or looksSequence(content) or documentMarker(content, line.indent) then break end
 
     local key: Value
     local rhs: string
@@ -1211,7 +1224,7 @@ local function parseBlockMapping(index: number, indent: number, depth: number, t
     local propertyTag, propertyAnchor, onlyProperties = propertyOnly(cleanRhs)
     if onlyProperties then
       local child, childContent = significant(found + 1)
-      if child and childContent and not documentMarker(childContent) and Lines[child].indent > indent then
+      if child and childContent and not documentMarker(childContent, Lines[child].indent) and Lines[child].indent > indent then
         value, nextIndex = parseBlockNode(child, Lines[child].indent, depth + 1, propertyTag, propertyAnchor)
       else
         value = constructTagged(propertyTag, Null, false, line.start + indent)
@@ -1220,7 +1233,7 @@ local function parseBlockMapping(index: number, indent: number, depth: number, t
       end
     elseif Bytes.trim(cleanRhs, ' \t') == '' then
       local child, childContent = significant(found + 1)
-      if child and childContent and not documentMarker(childContent) then
+      if child and childContent and not documentMarker(childContent, Lines[child].indent) then
         local childIndent = Lines[child].indent
         if childIndent > indent or (childIndent == indent and looksSequence(childContent)) then
           value, nextIndex = parseBlockNode(child, childIndent, depth + 1, nil, nil)
@@ -1286,6 +1299,32 @@ parseBlockNodeImpl = function(index: number, indent: number, depth: number, inhe
   return value, nextIndex
 end
 
+-- A document's root node. Its properties may stand alone on its first line, the node itself
+-- starting on the next at any indentation, since the root's parent indentation is -1. On a `---`
+-- line, `inline` is the rest of the line: a scalar, a flow collection, a block scalar header or
+-- properties, but never the start of a block collection.
+local function parseRoot(index: number, inline: string?): (Value, number)
+  local line = Lines[index]
+  local text = inline or stripComment(string.sub(line.text, line.indent + 1))
+  local tag, anchor, onlyProperties = propertyOnly(text)
+  if onlyProperties then
+    local child, childContent = significant(index + 1)
+    if child and childContent and not documentMarker(childContent, Lines[child].indent) then
+      return parseBlockNode(child, Lines[child].indent, 1, tag, anchor)
+    end
+    local value = constructTagged(tag, Null, false, line.start + line.indent)
+    registerAnchor(anchor, value, line.start + line.indent)
+    return value, index + 1
+  end
+
+  if not inline then return parseBlockNode(index, line.indent, 1, nil, nil) end
+
+  if looksSequence(inline) or looksExplicitKey(inline) or (mapColon(inline) and not startsSpecialInline(inline)) then
+    failLine(index, line.indent + 5, "a block collection cannot start on the '---' line")
+  end
+  return parseInlineBlock(inline, index, -1, 1)
+end
+
 local function resetDocument()
   table.clear(Anchors)
   table.clear(AnchorFloats)
@@ -1346,30 +1385,35 @@ local function parseDocuments(text: string, options: Options?): { Value }
     local found, content = significant(index)
     if not found or not content then return documents end
 
-    if sawDirective then
-      if content ~= '---' then failLine(found, 1, "directives must be followed by '---'") end
-      index = found + 1
-    elseif content == '---' then
-      index = found + 1
-    elseif content == '...' then
+    local inline = startMarker(content, Lines[found].indent)
+    if sawDirective and not inline then failLine(found, 1, "directives must be followed by '---'") end
+
+    if content == '...' then
       index = found + 1
       table.insert(documents, Null)
       continue
     end
 
-    found, content = significant(index)
-    if not found or not content then
-      table.insert(documents, Null)
-      return documents
-    end
-
-    if content == '...' or content == '---' then
-      table.insert(documents, Null)
-      if content == '...' then index = found + 1 else index = found end
-    else
-      local value, nextIndex = parseBlockNode(found, Lines[found].indent, 1, nil, nil)
+    if inline and inline ~= '' then
+      local value, nextIndex = parseRoot(found, inline)
       table.insert(documents, value)
       index = nextIndex
+    else
+      if inline then index = found + 1 end
+      found, content = significant(index)
+      if not found or not content then
+        table.insert(documents, Null)
+        return documents
+      end
+
+      if documentMarker(content, Lines[found].indent) then
+        table.insert(documents, Null)
+        if content == '...' then index = found + 1 else index = found end
+      else
+        local value, nextIndex = parseRoot(found, nil)
+        table.insert(documents, value)
+        index = nextIndex
+      end
     end
 
     local marker, markerContent = significant(index)
@@ -1381,7 +1425,7 @@ local function parseDocuments(text: string, options: Options?): { Value }
       if nextLine and nextContent and string.byte(nextContent, 1) == 37 then
         index = nextLine
       end
-    elseif markerContent == '---' then
+    elseif startMarker(markerContent, Lines[marker].indent) then
       index = marker
     elseif string.byte(markerContent, 1) == 37 then
       failLine(marker, 1, "a directive after a document requires an explicit '...' document end")

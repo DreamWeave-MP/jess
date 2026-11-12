@@ -290,6 +290,26 @@ custom: !<tag:example.com,2026:thing> hello
     expect(value.list).toEqual { "it's" }
   end)
 
+  -- A root node may start on the `---` line, or put its properties on a line of their own.
+  suite.it('starts a root node on its --- line or after its own properties', function()
+    expect(yaml.decode '--- [1.0]\n').toEqual { 1 }
+    expect(yaml.decode '--- |\n  x\n').toBe 'x\n'
+    expect(yaml.decode '--- plain\n').toBe 'plain'
+    expect(yaml.decode '--- # only a comment\nkey: 1\n').toEqual { key = 1 }
+    expect(yaml.decode '--- !thing\nkey: 1\n').toEqual { tag = '!thing', value = { key = 1 } }
+    expect(yaml.decode '!thing\nkey: 1\n').toEqual { tag = '!thing', value = { key = 1 } }
+    expect(yaml.decode '---\n!thing\n- item\n').toEqual { tag = '!thing', value = { 'item' } }
+    local anchored = yaml.decode '--- &root\nkey: 1\n' :: { key: number }
+    expect(anchored.key).toBe(1)
+    expect(yaml.decodeAll '--- [1]\n--- [2]\n').toEqual { { 1 }, { 2 } }
+    expect(yaml.decodeAll '--- first\n...\n--- second\n').toEqual { 'first', 'second' }
+    expect(function() yaml.decode '--- key: 1\n' end).toThrow "YAML: a block collection cannot start on the '---' line"
+    expect(function() yaml.decode '--- - item\n' end).toThrow "YAML: a block collection cannot start on the '---' line"
+    -- An indented --- is content, not a marker.
+    expect(yaml.decode 'key: x\n  --- y\n').toEqual { key = 'x --- y' }
+    expect(yaml.decode '- item\n- ---\n').toEqual { 'item', '---' }
+  end)
+
   -- A Luau table can't say whether the file wrote `{}` or `[]`, `{1: a}` or `[a]`, `1.0` or `1`.
   suite.it('keeps the layout side channel the Luau tables forget', function()
     local text = 'empty_map: {}\nempty_list: []\nblock_map:\n  1: a\n  2: b\nblock_list:\n  - a\n  - b\n'
