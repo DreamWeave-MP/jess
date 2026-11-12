@@ -212,13 +212,16 @@ fn print_profile(lua: &Runtime) {
     let mut files: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
     for (line, location) in &lines {
         let file = line.rsplit_once(':').map_or(line.as_str(), |(file, _)| file);
-        *files.entry(file.to_owned()).or_default() += location.samples as u64;
+        *files.entry(file.to_owned()).or_default() += location.samples;
     }
     let mut by_file: Vec<_> = files.into_iter().collect();
     by_file.sort_by_key(|(file, samples)| (Reverse(*samples), file.clone()));
-    let total = samples.count.max(1) as f64;
+    // A share in tenths of a percent, kept in whole numbers: a count of samples has no business
+    // in a float.
+    let total = samples.count.max(1);
     for (file, count) in by_file.into_iter().take(PROFILE_FILES) {
-        eprintln!("  {count:>8}  {:>5.1}%  {file}", count as f64 * 100.0 / total);
+        let tenths = count.saturating_mul(1000) / total;
+        eprintln!("  {count:>8}  {:>3}.{}%  {file}", tenths / 10, tenths % 10);
     }
     let shown = std::env::var("JESS_PROFILE_LINES")
         .ok()
