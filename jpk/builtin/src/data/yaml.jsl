@@ -12,6 +12,16 @@ export type Options = {
   maxDepth: number?,
 }
 
+--- What a decoded collection forgets, keyed by the collection's table. A mapping's entry has
+--- `keys`, its keys in document order; a sequence's has none. `floats` marks the values written
+--- as floats (`1.0`, `!!float 1`) rather than integers, by key for a mapping and by 1-based
+--- position for a sequence.
+export type LayoutEntry = {
+  keys: { Value }?,
+  floats: { [Value]: boolean },
+}
+export type Layout = { [Value]: LayoutEntry }
+
 export type Tagged = {
   tag: string,
   value: Value,
@@ -35,6 +45,31 @@ local maxDepth = 512
 local Lines: { Line } = {}
 local Anchors: { [string]: Value } = {}
 local TagHandles: { [string]: string } = {}
+local AnchorFloats: { [string]: boolean } = {}
+
+-- The layout of the text being decoded, and whether the number finished last was written as a
+-- float. resolvePlain, constructTagged and an alias set the flag; a mark is taken from it only when
+-- the value being placed is a number (push, setMappingPair), and every number a parser hands back
+-- was last touched by one of those three. A new path that returns a number must set it too.
+local layout: Layout = {}
+local lastFloat = false
+
+local function newSequence(): { Value }
+  local list: { Value } = {}
+  layout[list] = { floats = {} }
+  return list
+end
+
+local function newMapping(): { [Value]: Value }
+  local map: { [Value]: Value } = {}
+  layout[map] = { keys = {}, floats = {} }
+  return map
+end
+
+local function push(list: { Value }, value: Value)
+  table.insert(list, value)
+  if lastFloat and type(value) == 'number' then layout[list].floats[#list] = true end
+end
 
 local function failAt(at: number, message: string): never
   Common.fail('YAML', source, at, message)
@@ -121,67 +156,22 @@ end
 -- Strip a block-line comment. A '#' starts a comment only at the start of the content or after
 -- separation white space; quoted and flow collection contents are skipped so their '#' bytes are
 -- ordinary scalar data.
-local function stripComment(text: string): string
+--- Scans one line of block content for what the block parser needs from it: where its first `:`
+--- mapping indicator outside quotes and flow collections is, and where its comment starts. A quote
+--- or a bracket opens a node only where a node can start: at the start, after `- `, `? ` or a `: `
+--- indicator, or after a tag or an anchor. Once a plain scalar has begun, its quotes and brackets are
+--- its own bytes, as YAML reads them: `echo "a #b"` is `echo "a` and a comment.
+local function scanLine(text: string): (number?, number?)
   local quote: number? = nil
   local depth = 0
+  local expecting = true
+  local colon: number? = nil
   local index = 1
   local size = #text
 
   while index <= size do
     local byte = string.byte(text, index)
-    if quote == 39 then
-      if byte == 39 then
-        if string.byte(text, index + 1) == 39 then
-          index += 2
-          continue
-        end
-        quote = nil
-      end
-    elseif quote == 34 then
-      if byte == 92 then
-        index += 2
-        continue
-      elseif byte == 34 then
-        quote = nil
-      end
-    else
-      if (byte == 39 or byte == 34) and opensNode(text, index, depth) then
-        quote = byte
-      elseif (byte == 91 or byte == 123) and (depth > 0 or opensNode(text, index, depth)) then
-        depth += 1
-      elseif byte == 93 or byte == 125 then
-        if depth > 0 then depth -= 1 end
-      elseif byte == 35 and (index == 1 or isSeparation(string.byte(text, index - 1))) then
-        return Bytes.trimEnd(string.sub(text, 1, index - 1), ' \t')
-      end
-    end
-    index += 1
-  end
-
-  return Bytes.trimEnd(text, ' \t')
-end
-
-local function significant(index: number): (number?, string?)
-  while index <= #Lines do
-    local line = Lines[index]
-    local content = stripComment(string.sub(line.text, line.indent + 1))
-    if content ~= '' then return index, content end
-    index += 1
-  end
-  return nil, nil
-end
-
-local function documentMarker(content: string): boolean
-  return content == '---' or content == '...'
-end
-
-local function mapColon(text: string): number?
-  local quote: number? = nil
-  local depth = 0
-  local index = 1
-
-  while index <= #text do
-    local byte = string.byte(text, index)
+    local previous = if index > 1 then string.byte(text, index - 1) else nil
     if quote == 39 then
       if byte == 39 then
         if string.byte(text, index + 1) == 39 then
@@ -197,21 +187,82 @@ local function mapColon(text: string): number?
       end
 
       if byte == 34 then quote = nil end
-    else
+    elseif byte == 35 and (index == 1 or isSeparation(previous)) then
+      return colon, index
+    elseif depth > 0 then
       if (byte == 39 or byte == 34) and opensNode(text, index, depth) then
         quote = byte
-      elseif (byte == 91 or byte == 123) and (depth > 0 or opensNode(text, index, depth)) then
+      elseif byte == 91 or byte == 123 then
         depth += 1
       elseif byte == 93 or byte == 125 then
-        if depth > 0 then depth -= 1 end
-      elseif byte == 58 and depth == 0 and isSeparation(string.byte(text, index + 1)) then
-        return index
+        depth -= 1
       end
+    elseif byte == 32 or byte == 9 then
+      -- Separation: neither starts nor ends a node.
+    elseif expecting then
+      if byte == 39 or byte == 34 then
+        quote = byte
+        expecting = false
+      elseif byte == 91 or byte == 123 then
+        depth = 1
+        expecting = false
+      elseif (byte == 45 or byte == 63 or byte == 58) and isSeparation(string.byte(text, index + 1)) then
+        -- `- `, `? ` or `: `: a node can still start after it.
+        if byte == 58 and not colon then colon = index end
+      elseif byte == 33 or byte == 38 then
+        -- A tag or an anchor: the node starts after it.
+        index = string.find(text, '[ \t]', index) or size + 1
+        continue
+      else
+        expecting = false
+      end
+    elseif byte == 58 and isSeparation(string.byte(text, index + 1)) then
+      if not colon then colon = index end
+      expecting = true
     end
     index += 1
   end
 
+  return colon, nil
+end
+
+local function stripComment(text: string): string
+  local _, comment = scanLine(text)
+  if comment then return Bytes.trimEnd(string.sub(text, 1, comment - 1), ' \t') end
+
+  return Bytes.trimEnd(text, ' \t')
+end
+
+local function significant(index: number): (number?, string?)
+  while index <= #Lines do
+    local line = Lines[index]
+    local content = stripComment(string.sub(line.text, line.indent + 1))
+    if content ~= '' then return index, content end
+    index += 1
+  end
+  return nil, nil
+end
+
+--- What follows `---` on a document start line, or nil when `content`, a line's content after its
+--- `indent`, isn't one. `---` alone gives the empty string. A marker starts in the first column; an
+--- indented `---` is content.
+local function startMarker(content: string, indent: number): string?
+  if indent ~= 0 then return nil end
+  if content == '---' then return '' end
+
+  if string.sub(content, 1, 3) == '---' and (string.byte(content, 4) == 32 or string.byte(content, 4) == 9) then
+    return Bytes.trim(string.sub(content, 5), ' \t')
+  end
   return nil
+end
+
+local function documentMarker(content: string, indent: number): boolean
+  return (indent == 0 and content == '...') or startMarker(content, indent) ~= nil
+end
+
+local function mapColon(text: string): number?
+  local colon = scanLine(text)
+  return colon
 end
 
 local function looksSequence(content: string): boolean
@@ -273,7 +324,27 @@ local function foldLines(lines: { string }): string
   return table.concat(out)
 end
 
+-- The largest magnitudes a signed 64-bit integer holds, by base, without leading zeros. l3i's
+-- integer.fromstring saturates a decimal and wraps a hexadecimal past them, so the digits are
+-- compared before it sees them.
+local IntegerLimits: { [number]: { positive: string, negative: string } } = {
+  [8] = { positive = '777777777777777777777', negative = '1000000000000000000000' },
+  [10] = { positive = '9223372036854775807', negative = '9223372036854775808' },
+  [16] = { positive = '7fffffffffffffff', negative = '8000000000000000' },
+}
+
+local function fitsSigned(text: string, base: number): boolean
+  local sign, digits = string.match(text, '^([-+]?)0*(.*)$')
+  local magnitude = string.lower(digits or '')
+  local limits = IntegerLimits[base]
+  local limit = if sign == '-' then limits.negative else limits.positive
+  if #magnitude ~= #limit then return #magnitude < #limit end
+
+  return magnitude <= limit
+end
+
 local function parseSignedInteger(text: string, base: number, position: number): Value
+  if not fitsSigned(text, base) then failAt(position, 'integer is outside the signed 64-bit Luau range') end
   local value = integer.fromstring(text, base)
   if value == nil then failAt(position, 'integer is outside the signed 64-bit Luau range') end
   if integer.ge(value, SafeIntegerMin) and integer.le(value, SafeIntegerMax) then return integer.tonumber(value) end
@@ -281,6 +352,7 @@ local function parseSignedInteger(text: string, base: number, position: number):
 end
 
 local function resolvePlain(text: string, position: number): Value
+  lastFloat = false
   if text == '' or text == '~' or text == 'null' or text == 'Null' or text == 'NULL' then return Null end
   if text == 'true' or text == 'True' or text == 'TRUE' then return true end
   if text == 'false' or text == 'False' or text == 'FALSE' then return false end
@@ -298,9 +370,12 @@ local function resolvePlain(text: string, position: number): Value
   end
 
   local lower = string.lower(text)
-  if lower == '.inf' or lower == '+.inf' then return Huge end
-  if lower == '-.inf' then return -Huge end
-  if lower == '.nan' then return 0 / 0 end
+  if lower == '.inf' or lower == '+.inf' or lower == '-.inf' or lower == '.nan' then
+    lastFloat = true
+    if lower == '-.inf' then return -Huge end
+    if lower == '.nan' then return 0 / 0 end
+    return Huge
+  end
 
   local numeric = string.match(text, '^[-+]?%.%d+[eE][-+]?%d+$')
     or string.match(text, '^[-+]?%.%d+$')
@@ -310,6 +385,7 @@ local function resolvePlain(text: string, position: number): Value
   if numeric then
     local value = tonumber(text)
     if not value then failAt(position, 'invalid floating-point value') end
+    lastFloat = true
     return value
   end
 
@@ -317,6 +393,7 @@ local function resolvePlain(text: string, position: number): Value
 end
 
 local function constructTagged(tag: string?, value: Value, plain: boolean, position: number): Value
+  lastFloat = false
   if not tag or tag == '?' then
     if plain then return resolvePlain(value :: string, position) end
     return value
@@ -351,6 +428,7 @@ local function constructTagged(tag: string?, value: Value, plain: boolean, posit
 
   if full == 'tag:yaml.org,2002:int' then
     local scalar = tostring(value)
+    lastFloat = false
     if string.match(scalar, '^[-+]?%d+$') then return parseSignedInteger(scalar, 10, position) end
     if string.match(scalar, '^0o[0-7]+$') then return parseSignedInteger(string.sub(scalar, 3), 8, position) end
     if string.match(scalar, '^0x[%da-fA-F]+$') then return parseSignedInteger(string.sub(scalar, 3), 16, position) end
@@ -360,7 +438,10 @@ local function constructTagged(tag: string?, value: Value, plain: boolean, posit
   if full == 'tag:yaml.org,2002:float' then
     local scalar = tostring(value)
     local resolved = resolvePlain(scalar, position)
-    if type(resolved) == 'number' then return resolved end
+    if type(resolved) == 'number' then
+      lastFloat = true
+      return resolved
+    end
     failAt(position, 'invalid !!float scalar')
   end
 
@@ -591,6 +672,9 @@ local function setMappingPair(map: { [Value]: Value }, key: Value, value: Value,
   if type(key) == 'number' and key ~= key then failAt(position, 'NaN cannot be represented as a Luau table key') end
   if map[key] ~= nil then failAt(position, 'duplicate mapping key') end
   map[key] = value
+  local entry = layout[map]
+  table.insert(entry.keys :: { Value }, key)
+  if lastFloat and type(value) == 'number' then entry.floats[key] = true end
 end
 
 local function parseFlowPlain(stopColon: boolean): (string, number)
@@ -638,11 +722,12 @@ local function registerAnchor(anchor: string?, value: Value, position: number)
   if not anchor then return end
   if Anchors[anchor] ~= nil then failAt(position, `anchor &{anchor} is already defined`) end
   Anchors[anchor] = value
+  AnchorFloats[anchor] = lastFloat and type(value) == 'number'
 end
 
 local function parseFlowSequence(tag: string?, anchor: string?, depth: number, position: number): Value
   if depth > maxDepth then failAt(position, 'maximum nesting depth exceeded') end
-  local list: { Value } = {}
+  local list = newSequence()
   registerAnchor(anchor, list, position)
   flowCollections += 1
   flowAt += 1
@@ -662,14 +747,15 @@ local function parseFlowSequence(tag: string?, anchor: string?, depth: number, p
     if string.byte(source, flowAt) == 58 then
       flowAt += 1
       skipFlowSpace()
-      local map: { [Value]: Value } = {}
+      local map = newMapping()
       local value
       local nextByte = string.byte(source, flowAt)
       if nextByte == 44 or nextByte == 93 then value = Null else value = parseFlowNode(false, depth + 1) end
       setMappingPair(map, item, value, itemStart)
       item = map
+      lastFloat = false
     end
-    table.insert(list, item)
+    push(list, item)
 
     skipFlowSpace()
     local byte = string.byte(source, flowAt)
@@ -693,7 +779,7 @@ end
 
 local function parseFlowMapping(tag: string?, anchor: string?, depth: number, position: number): Value
   if depth > maxDepth then failAt(position, 'maximum nesting depth exceeded') end
-  local map: { [Value]: Value } = {}
+  local map = newMapping()
   registerAnchor(anchor, map, position)
   flowCollections += 1
   flowAt += 1
@@ -763,6 +849,7 @@ parseFlowNode = function(stopColon: boolean, depth: number): Value
     local name = parseAnchorName(42)
     local value = Anchors[name]
     if value == nil then failAt(position, `alias *{name} refers to an unknown anchor`) end
+    lastFloat = AnchorFloats[name] == true
     return value
   end
 
@@ -902,18 +989,20 @@ local function startsSpecialInline(text: string): boolean
   return byte == 34 or byte == 39 or byte == 91 or byte == 123 or byte == 42 or byte == 33 or byte == 38
 end
 
-local function propertyOnly(text: string): (string?, string?, boolean)
+--- The tag and anchor at the start of `text`, and what follows them.
+local function splitProperties(text: string): (string?, string?, string)
   local rest = Bytes.trim(stripComment(text), ' \t')
   local tag: string? = nil
   local anchor: string? = nil
 
   while rest ~= '' do
+    local before = rest
     local first = string.sub(rest, 1, 1)
-    if first ~= '!' and first ~= '&' then return tag, anchor, false end
+    if first ~= '!' and first ~= '&' then return tag, anchor, rest end
     local token: string
     if string.sub(rest, 1, 2) == '!<' then
       local close = string.find(rest, '>', 3, true)
-      if not close then return tag, anchor, false end
+      if not close then return tag, anchor, rest end
       token = string.sub(rest, 1, close)
       rest = Bytes.trim(string.sub(rest, close + 1), ' \t')
     else
@@ -923,43 +1012,66 @@ local function propertyOnly(text: string): (string?, string?, boolean)
     end
 
     if first == '!' then
-      if tag then return tag, anchor, false end
+      if tag then return tag, anchor, before end
       tag = token
     else
-      if anchor or #token == 1 then return tag, anchor, false end
+      if anchor or #token == 1 then return tag, anchor, before end
       anchor = string.sub(token, 2)
     end
   end
 
+  return tag, anchor, ''
+end
+
+local function propertyOnly(text: string): (string?, string?, boolean)
+  local tag, anchor, rest = splitProperties(text)
+  if rest ~= '' then return nil, nil, false end
+
   return tag, anchor, tag ~= nil or anchor ~= nil
 end
 
-local function parsePlainBlock(first: string, index: number, parentIndent: number, position: number): (Value, number)
+--- A plain scalar from `first` on, and every more indented line after it. With `raw`, its text
+--- unresolved, for a tag to resolve.
+local function parsePlainBlock(first: string, index: number, parentIndent: number, position: number, raw: boolean?): (Value, number)
   local lines = { Bytes.trim(first, ' \t') }
   local scan = index + 1
+
+  -- A plain scalar can't hold a `: `, or end in `:`: that is a mapping, and one can't start here.
+  local function plainLine(text: string, at: number)
+    local colon = string.find(text, ':[ \t]') or (if string.sub(text, -1) == ':' then #text else nil)
+    if colon then failAt(at + colon - 1, 'mapping values are not allowed in a plain scalar') end
+  end
+
+  plainLine(lines[1], position)
 
   while scan <= #Lines do
     local candidate = Lines[scan]
     local clean = stripComment(string.sub(candidate.text, candidate.indent + 1))
-    if documentMarker(clean) or string.byte(clean, 1) == 37 then break end
+    if documentMarker(clean, candidate.indent) or string.byte(clean, 1) == 37 then break end
 
     if clean == '' then
       local nextIndex, nextContent = significant(scan + 1)
-      if not nextIndex or Lines[nextIndex].indent <= parentIndent or (nextContent and documentMarker(nextContent)) then break end
+      if not nextIndex or Lines[nextIndex].indent <= parentIndent or (nextContent and documentMarker(nextContent, Lines[nextIndex].indent)) then break end
       table.insert(lines, '')
       scan += 1
       continue
     end
 
     if candidate.indent <= parentIndent then break end
-    table.insert(lines, Bytes.trim(clean, ' \t'))
+    local continued = Bytes.trim(clean, ' \t')
+    plainLine(continued, candidate.start + candidate.indent)
+    table.insert(lines, continued)
     scan += 1
   end
+
+  if raw then return foldLines(lines), scan end
 
   return resolvePlain(foldLines(lines), position), scan
 end
 
-local function parseInlineBlock(text: string, index: number, parentIndent: number, depth: number): (Value, number)
+--- The node that starts at `text`, the end of line `index`. With `raw`, a plain scalar comes back as
+--- its text, and the third result says it did, so a tag on a line above can resolve it.
+local function parseInlineBlock(text: string, index: number, parentIndent: number, depth: number, raw: boolean?): (Value, number, boolean)
   local line = Lines[index]
   local leading = #text - #string.gsub(text, '^[ \t]+', '')
   local clean = string.sub(text, leading + 1)
@@ -969,17 +1081,18 @@ local function parseInlineBlock(text: string, index: number, parentIndent: numbe
 
   if string.sub(clean, 1, 1) == '|' or string.sub(clean, 1, 1) == '>' then
     local value, nextIndex = parseBlockScalar(index, position - line.start + 1, clean)
-    return value, nextIndex
+    return value, nextIndex, false
   end
 
   if not startsSpecialInline(clean) then
-    return parsePlainBlock(stripComment(clean), index, parentIndent, position)
+    local value, nextIndex = parsePlainBlock(stripComment(clean), index, parentIndent, position, raw)
+    return value, nextIndex, raw == true
   end
 
   flowAt = position
   local value = parseFlowNode(false, depth)
   local nextIndex = ensureInlineFinished(index)
-  return value, nextIndex
+  return value, nextIndex, false
 end
 
 local function parseKeyText(text: string, index: number, depth: number): Value
@@ -1000,7 +1113,7 @@ local function parseKeyText(text: string, index: number, depth: number): Value
 end
 
 local function parseBlockSequence(index: number, indent: number, depth: number, tag: string?, anchor: string?, firstContent: string?): (Value, number)
-  local list: { Value } = {}
+  local list = newSequence()
   local position = Lines[index].start + indent
   registerAnchor(anchor, list, position)
   local scan = index
@@ -1024,7 +1137,7 @@ local function parseBlockSequence(index: number, indent: number, depth: number, 
     local contentText = content :: string
     local line = Lines[foundAt]
     if (not compactFirst and line.indent ~= indent) or not looksSequence(contentText) then break end
-    if documentMarker(contentText) then break end
+    if documentMarker(contentText, line.indent) then break end
 
     local rest = string.sub(contentText, 2)
     if string.sub(rest, 1, 1) == ' ' or string.sub(rest, 1, 1) == '\t' then rest = string.sub(rest, 2) end
@@ -1032,12 +1145,12 @@ local function parseBlockSequence(index: number, indent: number, depth: number, 
 
     if Bytes.trim(rest, ' \t') == '' then
       local child, childContent = significant(foundAt + 1)
-      if child and childContent and not documentMarker(childContent) and Lines[child].indent > indent then
+      if child and childContent and not documentMarker(childContent, Lines[child].indent) and Lines[child].indent > indent then
         local value, nextIndex = parseBlockNode(child, Lines[child].indent, depth + 1, nil, nil)
-        table.insert(list, value)
+        push(list, value)
         scan = nextIndex
       else
-        table.insert(list, Null)
+        push(list, Null)
         scan = foundAt + 1
       end
       continue
@@ -1047,7 +1160,7 @@ local function parseBlockSequence(index: number, indent: number, depth: number, 
     -- indentation. Parse it through the mapping machinery by supplying the first entry explicitly.
     if looksSequence(rest) then
       local nested, nextIndex = parseBlockSequence(foundAt, indent + 2, depth + 1, nil, nil, rest)
-      table.insert(list, nested)
+      push(list, nested)
       scan = nextIndex
       continue
     end
@@ -1057,33 +1170,47 @@ local function parseBlockSequence(index: number, indent: number, depth: number, 
       local child, childContent = significant(foundAt + 1)
       if child and childContent and Lines[child].indent > indent then
         local value, nextIndex = parseBlockNode(child, Lines[child].indent, depth + 1, propertyTag, propertyAnchor)
-        table.insert(list, value)
+        push(list, value)
         scan = nextIndex
       else
         local value = constructTagged(propertyTag, Null, false, line.start + indent)
         registerAnchor(propertyAnchor, value, line.start + indent)
-        table.insert(list, value)
+        push(list, value)
         scan = foundAt + 1
       end
       continue
     end
 
-    local colon = mapColon(rest)
-    if colon and not startsSpecialInline(Bytes.trim(rest, ' \t')) then
-      local map: { [Value]: Value } = {}
-      local key = parseKeyText(string.sub(rest, 1, colon - 1), foundAt, depth + 1)
-      local rhs = string.sub(rest, colon + 1)
+    -- A compact mapping may carry properties before its first key: `- &base name: x`.
+    local compactTag, compactAnchor, compactRest = splitProperties(rest)
+    local body = if (compactTag or compactAnchor) and compactRest ~= '' then compactRest else rest
+    if body ~= rest and not (mapColon(body) and not startsSpecialInline(body)) then
+      compactTag, compactAnchor, body = nil, nil, rest
+    end
+
+    local colon = mapColon(body)
+    if colon and not startsSpecialInline(Bytes.trim(body, ' \t')) then
+      -- The mapping's own column, where its keys start: after the `-` and its blanks.
+      local column = indent + #contentText - #(string.match(string.sub(contentText, 2), '^[ \t]*(.*)$') or '')
+      local map = newMapping()
+      registerAnchor(compactAnchor, map, position)
+      local key = parseKeyText(string.sub(body, 1, colon - 1), foundAt, depth + 1)
+      local rhs = string.sub(body, colon + 1)
       local value: Value
       local nextIndex: number
       if Bytes.trim(stripComment(rhs), ' \t') == '' then
+        -- The value is on the lines below only when they're indented past the mapping's keys, or
+        -- a sequence at their column; otherwise the key has no value and the next line is a key.
         local child, childContent = significant(foundAt + 1)
-        if child and childContent and Lines[child].indent > indent then
-          value, nextIndex = parseBlockNode(child, Lines[child].indent, depth + 2, nil, nil)
+        local childIndent = child and Lines[child].indent
+        if child and childContent and childIndent and not documentMarker(childContent, childIndent)
+          and (childIndent > column or (childIndent == column and looksSequence(childContent))) then
+          value, nextIndex = parseBlockNode(child, childIndent, depth + 2, nil, nil)
         else
           value, nextIndex = Null, foundAt + 1
         end
       else
-        value, nextIndex = parseInlineBlock(rhs, foundAt, indent + 2, depth + 2)
+        value, nextIndex = parseInlineBlock(rhs, foundAt, column, depth + 2)
       end
       setMappingPair(map, key, value, position)
 
@@ -1091,17 +1218,29 @@ local function parseBlockSequence(index: number, indent: number, depth: number, 
       local look, lookContent = significant(nextIndex)
       if look and lookContent and Lines[look].indent > indent then compactIndent = Lines[look].indent end
 
+      if compactIndent and compactIndent ~= column then
+        failLine(look :: number, compactIndent + 1, 'a compact mapping continues at the column of its first key')
+      end
+
       if compactIndent then
         local moreMap, after = parseBlockNode(look :: number, compactIndent, depth + 1, nil, nil)
         if type(moreMap) ~= 'table' then failLine(look :: number, compactIndent + 1, 'compact mapping continuation must be a mapping') end
-        for otherKey, otherValue in moreMap :: { [Value]: Value } do setMappingPair(map, otherKey, otherValue, Lines[look :: number].start) end
+        local moreLayout = layout[moreMap]
+        if not moreLayout or not moreLayout.keys then failLine(look :: number, compactIndent + 1, 'compact mapping continuation must be a mapping') end
+        local more = moreMap :: { [Value]: Value }
+        for _, otherKey in (moreLayout :: LayoutEntry).keys :: { Value } do
+          lastFloat = (moreLayout :: LayoutEntry).floats[otherKey] == true
+          setMappingPair(map, otherKey, more[otherKey], Lines[look :: number].start)
+        end
+        -- Its entries now belong to `map`; the continuation itself is in no result.
+        layout[moreMap] = nil
         nextIndex = after
       end
-      table.insert(list, map)
+      push(list, constructTagged(compactTag, map, false, position))
       scan = nextIndex
     else
       local value, nextIndex = parseInlineBlock(rest, foundAt, indent, depth + 1)
-      table.insert(list, value)
+      push(list, value)
       scan = nextIndex
     end
   end
@@ -1110,7 +1249,7 @@ local function parseBlockSequence(index: number, indent: number, depth: number, 
 end
 
 local function parseBlockMapping(index: number, indent: number, depth: number, tag: string?, anchor: string?): (Value, number)
-  local map: { [Value]: Value } = {}
+  local map = newMapping()
   local position = Lines[index].start + indent
   registerAnchor(anchor, map, position)
   local scan = index
@@ -1122,7 +1261,7 @@ local function parseBlockMapping(index: number, indent: number, depth: number, t
       break
     end
     local line = Lines[found]
-    if line.indent ~= indent or looksSequence(content) or documentMarker(content) then break end
+    if line.indent ~= indent or looksSequence(content) or documentMarker(content, line.indent) then break end
 
     local key: Value
     local rhs: string
@@ -1154,7 +1293,7 @@ local function parseBlockMapping(index: number, indent: number, depth: number, t
     local propertyTag, propertyAnchor, onlyProperties = propertyOnly(cleanRhs)
     if onlyProperties then
       local child, childContent = significant(found + 1)
-      if child and childContent and not documentMarker(childContent) and Lines[child].indent > indent then
+      if child and childContent and not documentMarker(childContent, Lines[child].indent) and Lines[child].indent > indent then
         value, nextIndex = parseBlockNode(child, Lines[child].indent, depth + 1, propertyTag, propertyAnchor)
       else
         value = constructTagged(propertyTag, Null, false, line.start + indent)
@@ -1163,7 +1302,7 @@ local function parseBlockMapping(index: number, indent: number, depth: number, t
       end
     elseif Bytes.trim(cleanRhs, ' \t') == '' then
       local child, childContent = significant(found + 1)
-      if child and childContent and not documentMarker(childContent) then
+      if child and childContent and not documentMarker(childContent, Lines[child].indent) then
         local childIndent = Lines[child].indent
         if childIndent > indent or (childIndent == indent and looksSequence(childContent)) then
           value, nextIndex = parseBlockNode(child, childIndent, depth + 1, nil, nil)
@@ -1216,21 +1355,51 @@ parseBlockNodeImpl = function(index: number, indent: number, depth: number, inhe
     end
 
     if not looksSequence(content) and not looksExplicitKey(content) and not mapColon(content) then
-      return parseInlineBlock(originalContent, index, indent - 1, depth)
+      local value, nextIndex = parseInlineBlock(originalContent, index, indent - 1, depth)
+      return value, nextIndex
     end
   end
 
   if looksSequence(content) then return parseBlockSequence(index, indent, depth, tag, anchor) end
   if looksExplicitKey(content) or mapColon(content) then return parseBlockMapping(index, indent, depth, tag, anchor) end
 
-  local value, nextIndex = parseInlineBlock(content, index, indent - 1, depth)
-  if tag then value = constructTagged(tag :: string, value, false, line.start + indent) end
+  -- A tag from a line above resolves the scalar's text itself: `!!str` over `0x10` is "0x10", not 16.
+  local value, nextIndex, plain = parseInlineBlock(content, index, indent - 1, depth, tag ~= nil)
+  if tag then value = constructTagged(tag :: string, value, plain, line.start + indent) end
   registerAnchor(anchor, value, line.start + indent)
+  return value, nextIndex
+end
+
+-- A document's root node. Its properties may stand alone on its first line, the node itself
+-- starting on the next at any indentation, since the root's parent indentation is -1. On a `---`
+-- line, `inline` is the rest of the line: a scalar, a flow collection, a block scalar header or
+-- properties, but never the start of a block collection.
+local function parseRoot(index: number, inline: string?): (Value, number)
+  local line = Lines[index]
+  local text = inline or stripComment(string.sub(line.text, line.indent + 1))
+  local tag, anchor, onlyProperties = propertyOnly(text)
+  if onlyProperties then
+    local child, childContent = significant(index + 1)
+    if child and childContent and not documentMarker(childContent, Lines[child].indent) then
+      return parseBlockNode(child, Lines[child].indent, 1, tag, anchor)
+    end
+    local value = constructTagged(tag, Null, false, line.start + line.indent)
+    registerAnchor(anchor, value, line.start + line.indent)
+    return value, index + 1
+  end
+
+  if not inline then return parseBlockNode(index, line.indent, 1, nil, nil) end
+
+  if looksSequence(inline) or looksExplicitKey(inline) or (mapColon(inline) and not startsSpecialInline(inline)) then
+    failLine(index, line.indent + 5, "a block collection cannot start on the '---' line")
+  end
+  local value, nextIndex = parseInlineBlock(inline, index, -1, 1)
   return value, nextIndex
 end
 
 local function resetDocument()
   table.clear(Anchors)
+  table.clear(AnchorFloats)
   table.clear(TagHandles)
   TagHandles['!!'] = 'tag:yaml.org,2002:'
   TagHandles['!'] = '!'
@@ -1257,8 +1426,14 @@ local function parseDirective(index: number, content: string): number
 end
 
 local function parseDocuments(text: string, options: Options?): { Value }
+  layout = {}
+  lastFloat = false
   source = normalize(text)
   length = #source
+  -- YAML allows only printable characters, and tab, line feed and carriage return among the C0 and
+  -- C1 controls (U+0085 too).
+  local control = string.find(source, '[%z\1-\8\11\12\14-\31\127]') or string.find(source, '\194[\128-\132\134-\159]')
+  if control then failAt(control, 'control characters are not allowed') end
   maxDepth = options and options.maxDepth or 512
   flowCollections = 0
   if maxDepth < 1 or maxDepth ~= math.floor(maxDepth) then error('YAML: maxDepth must be a positive integer', 2) end
@@ -1286,30 +1461,35 @@ local function parseDocuments(text: string, options: Options?): { Value }
     local found, content = significant(index)
     if not found or not content then return documents end
 
-    if sawDirective then
-      if content ~= '---' then failLine(found, 1, "directives must be followed by '---'") end
-      index = found + 1
-    elseif content == '---' then
-      index = found + 1
-    elseif content == '...' then
+    local inline = startMarker(content, Lines[found].indent)
+    if sawDirective and not inline then failLine(found, 1, "directives must be followed by '---'") end
+
+    if content == '...' then
       index = found + 1
       table.insert(documents, Null)
       continue
     end
 
-    found, content = significant(index)
-    if not found or not content then
-      table.insert(documents, Null)
-      return documents
-    end
-
-    if content == '...' or content == '---' then
-      table.insert(documents, Null)
-      if content == '...' then index = found + 1 else index = found end
-    else
-      local value, nextIndex = parseBlockNode(found, Lines[found].indent, 1, nil, nil)
+    if inline and inline ~= '' then
+      local value, nextIndex = parseRoot(found, inline)
       table.insert(documents, value)
       index = nextIndex
+    else
+      if inline then index = found + 1 end
+      found, content = significant(index)
+      if not found or not content then
+        table.insert(documents, Null)
+        return documents
+      end
+
+      if documentMarker(content, Lines[found].indent) then
+        table.insert(documents, Null)
+        if content == '...' then index = found + 1 else index = found end
+      else
+        local value, nextIndex = parseRoot(found, nil)
+        table.insert(documents, value)
+        index = nextIndex
+      end
     end
 
     local marker, markerContent = significant(index)
@@ -1321,7 +1501,7 @@ local function parseDocuments(text: string, options: Options?): { Value }
       if nextLine and nextContent and string.byte(nextContent, 1) == 37 then
         index = nextLine
       end
-    elseif markerContent == '---' then
+    elseif startMarker(markerContent, Lines[marker].indent) then
       index = marker
     elseif string.byte(markerContent, 1) == 37 then
       failLine(marker, 1, "a directive after a document requires an explicit '...' document end")
@@ -1331,12 +1511,31 @@ local function parseDocuments(text: string, options: Options?): { Value }
   end
 end
 
+--- The documents in `text` and the layout of every collection in them. The module drops its own
+--- reference to the layout it hands over.
+local function decodeAllWithLayout(text: string, options: Options?): ({ Value }, Layout)
+  local documents = parseDocuments(text, options)
+  local decoded = layout
+  layout = {}
+  return documents, decoded
+end
+
+local function decodeWithLayout(text: string, options: Options?): (Value, Layout)
+  local documents, decoded = decodeAllWithLayout(text, options)
+  if #documents == 0 then return Null, decoded end
+  if #documents ~= 1 then error(`YAML: expected one document, got {#documents}; use decodeAllWithLayout`, 2) end
+  return documents[1], decoded
+end
+
+-- One result each, not two: callers pass these straight into calls and table constructors, where
+-- a second result would become an argument or an element.
 local function decodeAll(text: string, options: Options?): { Value }
-  return parseDocuments(text, options)
+  local documents = decodeAllWithLayout(text, options)
+  return documents
 end
 
 local function decode(text: string, options: Options?): Value
-  local documents = parseDocuments(text, options)
+  local documents = decodeAllWithLayout(text, options)
   if #documents == 0 then return Null end
   if #documents ~= 1 then error(`YAML: expected one document, got {#documents}; use decodeAll`, 2) end
   return documents[1]
@@ -1351,6 +1550,8 @@ return table.freeze {
   null = Null,
   decode = decode,
   decodeAll = decodeAll,
+  decodeWithLayout = decodeWithLayout,
+  decodeAllWithLayout = decodeAllWithLayout,
   encode = encode,
 }
 
@@ -1433,6 +1634,56 @@ print(#documents, (documents[1] :: { id: string }).id, (documents[2] :: { id: st
 2	one	two
 ```
 
+## yaml.decodeWithLayout
+
+{{ api_symbol(value="@jess/yaml.decodeWithLayout") }}
+
+
+`decode`, plus a layout table for what Luau tables forget: the same side channel [`@jess/data/toml`](@/docs/api/toml.md) returns, for a tool that has to hold a file to the shape its author wrote. `Layout` and `LayoutEntry` are exported types of this module.
+
+- **Returns:** two values:
+  1. The document's value, as `decode` returns it.
+  2. The layout, keyed by each decoded mapping and sequence (by identity). A mapping's entry has `keys`, its keys in document order; a sequence's has no `keys`, which is how `{}` is told from `[]` and `{1: a}` from `[a]`. `floats` marks the values written as floats (`1.0`, `1e3`, `.inf`, `!!float 1`) rather than integers, by key for a mapping and by 1-based position for a sequence. An alias shares its anchor's entry. A custom tag's `{ tag, value }` table has no entry; its `value` has one when it's a collection. The layout describes what's inside collections, so two things are out of its reach: a document that is itself a scalar (`1.0` and `1` decode alike), and a key written as a float (`1.0: a` is keyed `1`).
+- **Errors:** as `decode`, with `use decodeAllWithLayout` for a text of several documents.
+
+```luau
+--!strict
+local yaml = require '@jess/yaml'
+
+local document, layout = yaml.decodeWithLayout 'jobs: {}\nsteps: []\nratio: 1.0\ncount: 1\n'
+local root = document :: { jobs: unknown, steps: unknown }
+print(table.concat(layout[root].keys :: { any }, ', '))
+print(layout[root.jobs].keys ~= nil, layout[root.steps].keys ~= nil)
+print(layout[root].floats.ratio, layout[root].floats.count)
+```
+
+```text
+jobs, steps, ratio, count
+true	false
+true	nil
+```
+
+`decode` and `decodeAll` return one value each, so a call in the last place of an argument list or a table constructor adds one element, not two.
+
+## yaml.decodeAllWithLayout
+
+{{ api_symbol(value="@jess/yaml.decodeAllWithLayout") }}
+
+
+`decodeAll`, plus one layout covering every document's collections.
+
+```luau
+--!strict
+local yaml = require '@jess/yaml'
+
+local documents, layout = yaml.decodeAllWithLayout '---\n[1.0]\n---\n{}\n'
+print(layout[documents[1]].floats[1], layout[documents[2]].keys ~= nil)
+```
+
+```text
+true	true
+```
+
 ## yaml.encode
 
 {{ api_symbol(value="@jess/yaml.encode") }}
@@ -1480,8 +1731,8 @@ note: null
 | Any other plain scalar, and every quoted scalar | `string` |
 | `!!str`, `!!null`, `!!bool`, `!!int`, `!!float`, `!!seq`, `!!map` | The Core type, checked: `!!int abc` is an error, not a string |
 | Any other tag, `!flag` or `!<tag:example.com,2026:thing>` | `{ tag: string, value: unknown }`, with the tag as written, or resolved through its `%TAG` handle |
-| Sequence | A table from 1 |
-| Mapping | A table keyed by the resolved keys |
+| Sequence | A table from 1; its layout entry has no `keys` |
+| Mapping | A table keyed by the resolved keys; its layout entry's `keys` keep their order |
 | Alias | The anchored value itself, by identity |
 
 Related: [`@jess/data/value`](@/docs/api/value.md), [`@jess/json`](@/docs/api/json.md), [`@jess/data/toml`](@/docs/api/toml.md).

@@ -18,6 +18,16 @@ type CoreSchema = { nulls: { unknown }, booleans: { boolean }, integers: { numbe
 type Nodes = { first: { folded: string, literal: string, flow: { unknown } }, second: unknown, custom: yaml.Tagged }
 type Trailing = { quoted: string, single: string, flow: { number }, map: { a: number }, tagged: string, items: { unknown } }
 type Quotes = { ["Maren's House"]: string, plain: string, said: string, indexed: string, list: { string } }
+type Layered = {
+  empty_map: unknown,
+  empty_list: unknown,
+  block_map: unknown,
+  block_list: unknown,
+  mixed: unknown,
+  nested: unknown,
+  custom: yaml.Tagged,
+  compact: { { [string]: number } },
+}
 
 suite.describe('ordered values', function()
   suite.it('keeps one key when nil is assigned and replaced', function()
@@ -278,6 +288,127 @@ custom: !<tag:example.com,2026:thing> hello
     expect(value.said).toBe 'say "hi"'
     expect(value.indexed).toBe 'k[1]'
     expect(value.list).toEqual { "it's" }
+  end)
+
+  -- A root node may start on the `---` line, or put its properties on a line of their own.
+  suite.it('starts a root node on its --- line or after its own properties', function()
+    expect(yaml.decode '--- [1.0]\n').toEqual { 1 }
+    expect(yaml.decode '--- |\n  x\n').toBe 'x\n'
+    expect(yaml.decode '--- plain\n').toBe 'plain'
+    expect(yaml.decode '--- # only a comment\nkey: 1\n').toEqual { key = 1 }
+    expect(yaml.decode '--- !thing\nkey: 1\n').toEqual { tag = '!thing', value = { key = 1 } }
+    expect(yaml.decode '!thing\nkey: 1\n').toEqual { tag = '!thing', value = { key = 1 } }
+    expect(yaml.decode '---\n!thing\n- item\n').toEqual { tag = '!thing', value = { 'item' } }
+    local anchored = yaml.decode '--- &root\nkey: 1\n' :: { key: number }
+    expect(anchored.key).toBe(1)
+    expect(yaml.decodeAll '--- [1]\n--- [2]\n').toEqual { { 1 }, { 2 } }
+    expect(yaml.decodeAll '--- first\n...\n--- second\n').toEqual { 'first', 'second' }
+    expect(function() yaml.decode '--- key: 1\n' end).toThrow "YAML: a block collection cannot start on the '---' line"
+    expect(function() yaml.decode '--- - item\n' end).toThrow "YAML: a block collection cannot start on the '---' line"
+    -- An indented --- is content, not a marker.
+    expect(yaml.decode 'key: x\n  --- y\n').toEqual { key = 'x --- y' }
+    expect(yaml.decode '- item\n- ---\n').toEqual { 'item', '---' }
+  end)
+
+  -- A tag on a line of its own resolves the scalar's text, as the same tag inline would.
+  suite.it('resolves a scalar under a tag from the line above as the tag says', function()
+    expect(yaml.decode 'key: !!str\n  0x10\n').toEqual { key = '0x10' }
+    expect(yaml.decode '!!str\n1.0\n').toBe '1.0'
+    expect(yaml.decode 'key: !\n  1.5\n').toEqual { key = '1.5' }
+    expect(yaml.decode 'key: !!float\n  .inf\n').toEqual { key = math.huge }
+    expect(function() yaml.decode 'key: !!int\n  1.0\n' end).toThrow 'YAML: invalid !!int scalar'
+    local _, layout = yaml.decodeWithLayout 'key: !\n  1.5\nother: !!float\n  2\n'
+    local marks = {}
+    for _, entry in layout do
+      marks = entry.floats
+    end
+    expect(marks).toEqual { other = true }
+  end)
+
+  suite.it('reads a compact mapping as its own column says', function()
+    expect(yaml.decode '- first:\n  second: 1\n').toEqual { { first = jess.null, second = 1 } }
+    expect(yaml.decode '- first:\n    second: 1\n').toEqual { { first = { second = 1 } } }
+    expect(yaml.decode '- first:\n  - item\n').toEqual { { first = { 'item' } } }
+    local anchored = yaml.decode '- &base first: 1.5\n  second: 2\n- *base\n' :: { unknown }
+    expect(anchored[1]).toEqual { first = 1.5, second = 2 }
+    expect(anchored[2]).toBe(anchored[1])
+    expect(yaml.decode '- !thing first: 1\n').toEqual { { tag = '!thing', value = { first = 1 } } }
+    local value, layout = yaml.decodeWithLayout '- first: 1\n  second: 2\n'
+    local count = 0
+    for _ in layout do
+      count += 1
+    end
+    expect(count).toBe(2)
+    expect(layout[(value :: { unknown })[1]].keys).toEqual { 'first', 'second' }
+  end)
+
+  suite.it('refuses an integer outside the signed 64-bit range rather than clamping or wrapping it', function()
+    expect(typeof(yaml.decode '9223372036854775807')).toBe 'integer'
+    expect(typeof(yaml.decode '-9223372036854775808')).toBe 'integer'
+    expect(typeof(yaml.decode '0x7fffffffffffffff')).toBe 'integer'
+    expect(yaml.decode '000000000000000000000001').toBe(1)
+    for _, text in { '9223372036854775808', '-9223372036854775809', '99999999999999999999', '0xffffffffffffffffff', '0x8000000000000000', '0o1000000000000000000000' } do
+      expect(function() yaml.decode(text) end).toThrow 'YAML: integer is outside the signed 64-bit Luau range'
+    end
+  end)
+
+  -- A plain scalar's quotes are its own bytes, and it can never hold a mapping.
+  suite.it('reads a plain scalar as YAML does: quotes inside it are text, a colon and blank end it', function()
+    expect(yaml.decode 'run: echo "a #b"\n').toEqual { run = 'echo "a' }
+    expect(yaml.decode "run: echo '#x' # comment\n").toEqual { run = "echo '#x'" }
+    expect(yaml.decode 'run: echo "a:b"\n').toEqual { run = 'echo "a:b"' }
+    expect(yaml.decode 'key: http://example.test\n').toEqual { key = 'http://example.test' }
+    expect(yaml.decode 'key: first\n  - second\n').toEqual { key = 'first - second' }
+    expect(yaml.decode 'key: first\n  second:third\n').toEqual { key = 'first second:third' }
+    expect(yaml.decode 'key: "quoted: colon # and hash"\n').toEqual { key = 'quoted: colon # and hash' }
+    expect(yaml.decode "- 'it''s: fine'\n").toEqual { "it's: fine" }
+    for _, text in { 'run: echo "a: b"\n', 'key: first: second\n', 'key: first\n  second: third\n', 'run: first:\n', 'name: Setup\n  description: more\n' } do
+      expect(function() yaml.decode(text) end).toThrow 'YAML: mapping values are not allowed in a plain scalar'
+    end
+  end)
+
+  suite.it('refuses a compact mapping continued off its column, and control characters', function()
+    expect(function() yaml.decode '- first: [1]\n   second: 2\n' end).toThrow 'YAML: a compact mapping continues at the column of its first key'
+    expect(function() yaml.decode '- first: 1\n   second: 2\n' end).toThrow 'YAML: mapping values are not allowed in a plain scalar'
+    expect(function() yaml.decode 'key: a\0b\n' end).toThrow 'YAML: control characters are not allowed'
+    expect(function() yaml.decode 'key: a\27b\n' end).toThrow 'YAML: control characters are not allowed'
+    expect(function() yaml.decode 'key: a\u{9F}b\n' end).toThrow 'YAML: control characters are not allowed'
+    expect(yaml.decode 'key: a\tb\r\n').toEqual { key = 'a\tb' }
+    expect(yaml.decode 'key: a\u{85}b\n').toEqual { key = 'a\u{85}b' }
+  end)
+
+  -- A Luau table can't say whether the file wrote `{}` or `[]`, `{1: a}` or `[a]`, `1.0` or `1`.
+  suite.it('keeps the layout side channel the Luau tables forget', function()
+    local text = 'empty_map: {}\nempty_list: []\nblock_map:\n  1: a\n  2: b\nblock_list:\n  - a\n  - b\n'
+      .. 'whole: 1\nfraction: 1.0\nexponent: 1e3\ninfinite: .inf\ntagged: !!float 1\ncounted: !!int 2\n'
+      .. 'quoted: "1.0"\nanchored: &ratio 2.5\naliased: *ratio\nmixed: [1, 1.0, *ratio]\nnested: [1.0]\n'
+      .. 'custom: !thing {}\ncompact:\n  - first: 1.5\n    second: 2\n'
+    local value, layout = yaml.decodeWithLayout(text)
+    local document = value :: Layered
+    local top = layout[document]
+    expect(top.keys).toEqual {
+      'empty_map', 'empty_list', 'block_map', 'block_list', 'whole', 'fraction', 'exponent', 'infinite', 'tagged',
+      'counted', 'quoted', 'anchored', 'aliased', 'mixed', 'nested', 'custom', 'compact',
+    }
+    expect(layout[document.empty_map].keys).toEqual {}
+    expect(layout[document.empty_list].keys).toBe(nil)
+    expect(layout[document.block_map].keys).toEqual { 1, 2 }
+    expect(layout[document.block_list].keys).toBe(nil)
+    expect(document.block_map).toEqual(document.block_list)
+    expect(top.floats).toEqual { fraction = true, exponent = true, infinite = true, tagged = true, anchored = true, aliased = true }
+    expect(layout[document.mixed].floats).toEqual { [2] = true, [3] = true }
+    expect(layout[document.nested].floats).toEqual { [1] = true }
+    expect(layout[document.custom]).toBe(nil)
+    expect(layout[document.custom.value].keys).toEqual {}
+    local compact = document.compact[1]
+    expect(layout[compact].keys).toEqual { 'first', 'second' }
+    expect(layout[compact].floats).toEqual { first = true }
+
+    local documents, all = yaml.decodeAllWithLayout '---\n[1.0]\n---\n{}\n'
+    expect(all[documents[1]].floats).toEqual { [1] = true }
+    expect(all[documents[2]].keys).toEqual {}
+    local _, none = yaml.decodeWithLayout ''
+    expect((next(none))).toBe(nil)
   end)
 end)
 
