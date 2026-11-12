@@ -310,6 +310,48 @@ custom: !<tag:example.com,2026:thing> hello
     expect(yaml.decode '- item\n- ---\n').toEqual { 'item', '---' }
   end)
 
+  -- A tag on a line of its own resolves the scalar's text, as the same tag inline would.
+  suite.it('resolves a scalar under a tag from the line above as the tag says', function()
+    expect(yaml.decode 'key: !!str\n  0x10\n').toEqual { key = '0x10' }
+    expect(yaml.decode '!!str\n1.0\n').toBe '1.0'
+    expect(yaml.decode 'key: !\n  1.5\n').toEqual { key = '1.5' }
+    expect(yaml.decode 'key: !!float\n  .inf\n').toEqual { key = math.huge }
+    expect(function() yaml.decode 'key: !!int\n  1.0\n' end).toThrow 'YAML: invalid !!int scalar'
+    local _, layout = yaml.decodeWithLayout 'key: !\n  1.5\nother: !!float\n  2\n'
+    local marks = {}
+    for _, entry in layout do
+      marks = entry.floats
+    end
+    expect(marks).toEqual { other = true }
+  end)
+
+  suite.it('reads a compact mapping as its own column says', function()
+    expect(yaml.decode '- first:\n  second: 1\n').toEqual { { first = jess.null, second = 1 } }
+    expect(yaml.decode '- first:\n    second: 1\n').toEqual { { first = { second = 1 } } }
+    expect(yaml.decode '- first:\n  - item\n').toEqual { { first = { 'item' } } }
+    local anchored = yaml.decode '- &base first: 1.5\n  second: 2\n- *base\n' :: { unknown }
+    expect(anchored[1]).toEqual { first = 1.5, second = 2 }
+    expect(anchored[2]).toBe(anchored[1])
+    expect(yaml.decode '- !thing first: 1\n').toEqual { { tag = '!thing', value = { first = 1 } } }
+    local value, layout = yaml.decodeWithLayout '- first: 1\n  second: 2\n'
+    local count = 0
+    for _ in layout do
+      count += 1
+    end
+    expect(count).toBe(2)
+    expect(layout[(value :: { unknown })[1]].keys).toEqual { 'first', 'second' }
+  end)
+
+  suite.it('refuses an integer outside the signed 64-bit range rather than clamping or wrapping it', function()
+    expect(typeof(yaml.decode '9223372036854775807')).toBe 'integer'
+    expect(typeof(yaml.decode '-9223372036854775808')).toBe 'integer'
+    expect(typeof(yaml.decode '0x7fffffffffffffff')).toBe 'integer'
+    expect(yaml.decode '000000000000000000000001').toBe(1)
+    for _, text in { '9223372036854775808', '-9223372036854775809', '99999999999999999999', '0xffffffffffffffffff', '0x8000000000000000', '0o1000000000000000000000' } do
+      expect(function() yaml.decode(text) end).toThrow 'YAML: integer is outside the signed 64-bit Luau range'
+    end
+  end)
+
   -- A Luau table can't say whether the file wrote `{}` or `[]`, `{1: a}` or `[a]`, `1.0` or `1`.
   suite.it('keeps the layout side channel the Luau tables forget', function()
     local text = 'empty_map: {}\nempty_list: []\nblock_map:\n  1: a\n  2: b\nblock_list:\n  - a\n  - b\n'

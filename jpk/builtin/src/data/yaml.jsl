@@ -47,9 +47,10 @@ local Anchors: { [string]: Value } = {}
 local TagHandles: { [string]: string } = {}
 local AnchorFloats: { [string]: boolean } = {}
 
--- The layout of the text being decoded, and whether the node finished last was a number written
--- as a float. Every scalar ends in resolvePlain or constructTagged and every collection in
--- constructTagged, so the flag always describes the value a caller has just been handed.
+-- The layout of the text being decoded, and whether the number finished last was written as a
+-- float. resolvePlain, constructTagged and an alias set the flag; a mark is taken from it only when
+-- the value being placed is a number (push, setMappingPair), and every number a parser hands back
+-- was last touched by one of those three. A new path that returns a number must set it too.
 local layout: Layout = {}
 local lastFloat = false
 
@@ -320,7 +321,27 @@ local function foldLines(lines: { string }): string
   return table.concat(out)
 end
 
+-- The largest magnitudes a signed 64-bit integer holds, by base, without leading zeros. l3i's
+-- integer.fromstring saturates a decimal and wraps a hexadecimal past them, so the digits are
+-- compared before it sees them.
+local IntegerLimits: { [number]: { positive: string, negative: string } } = {
+  [8] = { positive = '777777777777777777777', negative = '1000000000000000000000' },
+  [10] = { positive = '9223372036854775807', negative = '9223372036854775808' },
+  [16] = { positive = '7fffffffffffffff', negative = '8000000000000000' },
+}
+
+local function fitsSigned(text: string, base: number): boolean
+  local sign, digits = string.match(text, '^([-+]?)0*(.*)$')
+  local magnitude = string.lower(digits or '')
+  local limits = IntegerLimits[base]
+  local limit = if sign == '-' then limits.negative else limits.positive
+  if #magnitude ~= #limit then return #magnitude < #limit end
+
+  return magnitude <= limit
+end
+
 local function parseSignedInteger(text: string, base: number, position: number): Value
+  if not fitsSigned(text, base) then failAt(position, 'integer is outside the signed 64-bit Luau range') end
   local value = integer.fromstring(text, base)
   if value == nil then failAt(position, 'integer is outside the signed 64-bit Luau range') end
   if integer.ge(value, SafeIntegerMin) and integer.le(value, SafeIntegerMax) then return integer.tonumber(value) end
@@ -965,18 +986,20 @@ local function startsSpecialInline(text: string): boolean
   return byte == 34 or byte == 39 or byte == 91 or byte == 123 or byte == 42 or byte == 33 or byte == 38
 end
 
-local function propertyOnly(text: string): (string?, string?, boolean)
+--- The tag and anchor at the start of `text`, and what follows them.
+local function splitProperties(text: string): (string?, string?, string)
   local rest = Bytes.trim(stripComment(text), ' \t')
   local tag: string? = nil
   local anchor: string? = nil
 
   while rest ~= '' do
+    local before = rest
     local first = string.sub(rest, 1, 1)
-    if first ~= '!' and first ~= '&' then return tag, anchor, false end
+    if first ~= '!' and first ~= '&' then return tag, anchor, rest end
     local token: string
     if string.sub(rest, 1, 2) == '!<' then
       local close = string.find(rest, '>', 3, true)
-      if not close then return tag, anchor, false end
+      if not close then return tag, anchor, rest end
       token = string.sub(rest, 1, close)
       rest = Bytes.trim(string.sub(rest, close + 1), ' \t')
     else
@@ -986,18 +1009,27 @@ local function propertyOnly(text: string): (string?, string?, boolean)
     end
 
     if first == '!' then
-      if tag then return tag, anchor, false end
+      if tag then return tag, anchor, before end
       tag = token
     else
-      if anchor or #token == 1 then return tag, anchor, false end
+      if anchor or #token == 1 then return tag, anchor, before end
       anchor = string.sub(token, 2)
     end
   end
 
+  return tag, anchor, ''
+end
+
+local function propertyOnly(text: string): (string?, string?, boolean)
+  local tag, anchor, rest = splitProperties(text)
+  if rest ~= '' then return nil, nil, false end
+
   return tag, anchor, tag ~= nil or anchor ~= nil
 end
 
-local function parsePlainBlock(first: string, index: number, parentIndent: number, position: number): (Value, number)
+--- A plain scalar from `first` on, and every more indented line after it. With `raw`, its text
+--- unresolved, for a tag to resolve.
+local function parsePlainBlock(first: string, index: number, parentIndent: number, position: number, raw: boolean?): (Value, number)
   local lines = { Bytes.trim(first, ' \t') }
   local scan = index + 1
 
@@ -1019,10 +1051,14 @@ local function parsePlainBlock(first: string, index: number, parentIndent: numbe
     scan += 1
   end
 
+  if raw then return foldLines(lines), scan end
+
   return resolvePlain(foldLines(lines), position), scan
 end
 
-local function parseInlineBlock(text: string, index: number, parentIndent: number, depth: number): (Value, number)
+--- The node that starts at `text`, the end of line `index`. With `raw`, a plain scalar comes back as
+--- its text, and the third result says it did, so a tag on a line above can resolve it.
+local function parseInlineBlock(text: string, index: number, parentIndent: number, depth: number, raw: boolean?): (Value, number, boolean)
   local line = Lines[index]
   local leading = #text - #string.gsub(text, '^[ \t]+', '')
   local clean = string.sub(text, leading + 1)
@@ -1032,17 +1068,18 @@ local function parseInlineBlock(text: string, index: number, parentIndent: numbe
 
   if string.sub(clean, 1, 1) == '|' or string.sub(clean, 1, 1) == '>' then
     local value, nextIndex = parseBlockScalar(index, position - line.start + 1, clean)
-    return value, nextIndex
+    return value, nextIndex, false
   end
 
   if not startsSpecialInline(clean) then
-    return parsePlainBlock(stripComment(clean), index, parentIndent, position)
+    local value, nextIndex = parsePlainBlock(stripComment(clean), index, parentIndent, position, raw)
+    return value, nextIndex, raw == true
   end
 
   flowAt = position
   local value = parseFlowNode(false, depth)
   local nextIndex = ensureInlineFinished(index)
-  return value, nextIndex
+  return value, nextIndex, false
 end
 
 local function parseKeyText(text: string, index: number, depth: number): Value
@@ -1131,22 +1168,36 @@ local function parseBlockSequence(index: number, indent: number, depth: number, 
       continue
     end
 
-    local colon = mapColon(rest)
-    if colon and not startsSpecialInline(Bytes.trim(rest, ' \t')) then
+    -- A compact mapping may carry properties before its first key: `- &base name: x`.
+    local compactTag, compactAnchor, compactRest = splitProperties(rest)
+    local body = if (compactTag or compactAnchor) and compactRest ~= '' then compactRest else rest
+    if body ~= rest and not (mapColon(body) and not startsSpecialInline(body)) then
+      compactTag, compactAnchor, body = nil, nil, rest
+    end
+
+    local colon = mapColon(body)
+    if colon and not startsSpecialInline(Bytes.trim(body, ' \t')) then
+      -- The mapping's own column, where its keys start: after the `-` and its blanks.
+      local column = indent + #contentText - #(string.match(string.sub(contentText, 2), '^[ \t]*(.*)$') or '')
       local map = newMapping()
-      local key = parseKeyText(string.sub(rest, 1, colon - 1), foundAt, depth + 1)
-      local rhs = string.sub(rest, colon + 1)
+      registerAnchor(compactAnchor, map, position)
+      local key = parseKeyText(string.sub(body, 1, colon - 1), foundAt, depth + 1)
+      local rhs = string.sub(body, colon + 1)
       local value: Value
       local nextIndex: number
       if Bytes.trim(stripComment(rhs), ' \t') == '' then
+        -- The value is on the lines below only when they're indented past the mapping's keys, or
+        -- a sequence at their column; otherwise the key has no value and the next line is a key.
         local child, childContent = significant(foundAt + 1)
-        if child and childContent and Lines[child].indent > indent then
-          value, nextIndex = parseBlockNode(child, Lines[child].indent, depth + 2, nil, nil)
+        local childIndent = child and Lines[child].indent
+        if child and childContent and childIndent and not documentMarker(childContent, childIndent)
+          and (childIndent > column or (childIndent == column and looksSequence(childContent))) then
+          value, nextIndex = parseBlockNode(child, childIndent, depth + 2, nil, nil)
         else
           value, nextIndex = Null, foundAt + 1
         end
       else
-        value, nextIndex = parseInlineBlock(rhs, foundAt, indent + 2, depth + 2)
+        value, nextIndex = parseInlineBlock(rhs, foundAt, column, depth + 2)
       end
       setMappingPair(map, key, value, position)
 
@@ -1164,10 +1215,11 @@ local function parseBlockSequence(index: number, indent: number, depth: number, 
           lastFloat = (moreLayout :: LayoutEntry).floats[otherKey] == true
           setMappingPair(map, otherKey, more[otherKey], Lines[look :: number].start)
         end
+        -- Its entries now belong to `map`; the continuation itself is in no result.
+        layout[moreMap] = nil
         nextIndex = after
       end
-      lastFloat = false
-      push(list, map)
+      push(list, constructTagged(compactTag, map, false, position))
       scan = nextIndex
     else
       local value, nextIndex = parseInlineBlock(rest, foundAt, indent, depth + 1)
@@ -1286,15 +1338,17 @@ parseBlockNodeImpl = function(index: number, indent: number, depth: number, inhe
     end
 
     if not looksSequence(content) and not looksExplicitKey(content) and not mapColon(content) then
-      return parseInlineBlock(originalContent, index, indent - 1, depth)
+      local value, nextIndex = parseInlineBlock(originalContent, index, indent - 1, depth)
+      return value, nextIndex
     end
   end
 
   if looksSequence(content) then return parseBlockSequence(index, indent, depth, tag, anchor) end
   if looksExplicitKey(content) or mapColon(content) then return parseBlockMapping(index, indent, depth, tag, anchor) end
 
-  local value, nextIndex = parseInlineBlock(content, index, indent - 1, depth)
-  if tag then value = constructTagged(tag :: string, value, false, line.start + indent) end
+  -- A tag from a line above resolves the scalar's text itself: `!!str` over `0x10` is "0x10", not 16.
+  local value, nextIndex, plain = parseInlineBlock(content, index, indent - 1, depth, tag ~= nil)
+  if tag then value = constructTagged(tag :: string, value, plain, line.start + indent) end
   registerAnchor(anchor, value, line.start + indent)
   return value, nextIndex
 end
@@ -1322,7 +1376,8 @@ local function parseRoot(index: number, inline: string?): (Value, number)
   if looksSequence(inline) or looksExplicitKey(inline) or (mapColon(inline) and not startsSpecialInline(inline)) then
     failLine(index, line.indent + 5, "a block collection cannot start on the '---' line")
   end
-  return parseInlineBlock(inline, index, -1, 1)
+  local value, nextIndex = parseInlineBlock(inline, index, -1, 1)
+  return value, nextIndex
 end
 
 local function resetDocument()
@@ -1435,8 +1490,8 @@ local function parseDocuments(text: string, options: Options?): { Value }
   end
 end
 
---- The documents in `text` and the layout of every collection in them. The layout is handed over
---- and the module lets go of it, so a decode keeps nothing alive after it returns.
+--- The documents in `text` and the layout of every collection in them. The module drops its own
+--- reference to the layout it hands over.
 local function decodeAllWithLayout(text: string, options: Options?): ({ Value }, Layout)
   local documents = parseDocuments(text, options)
   local decoded = layout
@@ -1447,7 +1502,7 @@ end
 local function decodeWithLayout(text: string, options: Options?): (Value, Layout)
   local documents, decoded = decodeAllWithLayout(text, options)
   if #documents == 0 then return Null, decoded end
-  if #documents ~= 1 then error(`YAML: expected one document, got {#documents}; use decodeAll`, 2) end
+  if #documents ~= 1 then error(`YAML: expected one document, got {#documents}; use decodeAllWithLayout`, 2) end
   return documents[1], decoded
 end
 
@@ -1567,8 +1622,8 @@ print(#documents, (documents[1] :: { id: string }).id, (documents[2] :: { id: st
 
 - **Returns:** two values:
   1. The document's value, as `decode` returns it.
-  2. The layout, keyed by each decoded mapping and sequence (by identity). A mapping's entry has `keys`, its keys in document order; a sequence's has no `keys`, which is how `{}` is told from `[]` and `{1: a}` from `[a]`. `floats` marks the values written as floats (`1.0`, `1e3`, `.inf`, `!!float 1`) rather than integers, by key for a mapping and by 1-based position for a sequence. An alias shares its anchor's entry. A custom tag's `{ tag, value }` table has no entry; its `value` has one when it's a collection.
-- **Errors:** as `decode`.
+  2. The layout, keyed by each decoded mapping and sequence (by identity). A mapping's entry has `keys`, its keys in document order; a sequence's has no `keys`, which is how `{}` is told from `[]` and `{1: a}` from `[a]`. `floats` marks the values written as floats (`1.0`, `1e3`, `.inf`, `!!float 1`) rather than integers, by key for a mapping and by 1-based position for a sequence. An alias shares its anchor's entry. A custom tag's `{ tag, value }` table has no entry; its `value` has one when it's a collection. The layout describes what's inside collections, so two things are out of its reach: a document that is itself a scalar (`1.0` and `1` decode alike), and a key written as a float (`1.0: a` is keyed `1`).
+- **Errors:** as `decode`, with `use decodeAllWithLayout` for a text of several documents.
 
 ```luau
 --!strict
