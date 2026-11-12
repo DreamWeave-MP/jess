@@ -18,6 +18,16 @@ type CoreSchema = { nulls: { unknown }, booleans: { boolean }, integers: { numbe
 type Nodes = { first: { folded: string, literal: string, flow: { unknown } }, second: unknown, custom: yaml.Tagged }
 type Trailing = { quoted: string, single: string, flow: { number }, map: { a: number }, tagged: string, items: { unknown } }
 type Quotes = { ["Maren's House"]: string, plain: string, said: string, indexed: string, list: { string } }
+type Layered = {
+  empty_map: unknown,
+  empty_list: unknown,
+  block_map: unknown,
+  block_list: unknown,
+  mixed: unknown,
+  nested: unknown,
+  custom: yaml.Tagged,
+  compact: { { [string]: number } },
+}
 
 suite.describe('ordered values', function()
   suite.it('keeps one key when nil is assigned and replaced', function()
@@ -278,6 +288,40 @@ custom: !<tag:example.com,2026:thing> hello
     expect(value.said).toBe 'say "hi"'
     expect(value.indexed).toBe 'k[1]'
     expect(value.list).toEqual { "it's" }
+  end)
+
+  -- A Luau table can't say whether the file wrote `{}` or `[]`, `{1: a}` or `[a]`, `1.0` or `1`.
+  suite.it('keeps the layout side channel the Luau tables forget', function()
+    local text = 'empty_map: {}\nempty_list: []\nblock_map:\n  1: a\n  2: b\nblock_list:\n  - a\n  - b\n'
+      .. 'whole: 1\nfraction: 1.0\nexponent: 1e3\ninfinite: .inf\ntagged: !!float 1\ncounted: !!int 2\n'
+      .. 'quoted: "1.0"\nanchored: &ratio 2.5\naliased: *ratio\nmixed: [1, 1.0, *ratio]\nnested: [1.0]\n'
+      .. 'custom: !thing {}\ncompact:\n  - first: 1.5\n    second: 2\n'
+    local value, layout = yaml.decodeWithLayout(text)
+    local document = value :: Layered
+    local top = layout[document]
+    expect(top.keys).toEqual {
+      'empty_map', 'empty_list', 'block_map', 'block_list', 'whole', 'fraction', 'exponent', 'infinite', 'tagged',
+      'counted', 'quoted', 'anchored', 'aliased', 'mixed', 'nested', 'custom', 'compact',
+    }
+    expect(layout[document.empty_map].keys).toEqual {}
+    expect(layout[document.empty_list].keys).toBe(nil)
+    expect(layout[document.block_map].keys).toEqual { 1, 2 }
+    expect(layout[document.block_list].keys).toBe(nil)
+    expect(document.block_map).toEqual(document.block_list)
+    expect(top.floats).toEqual { fraction = true, exponent = true, infinite = true, tagged = true, anchored = true, aliased = true }
+    expect(layout[document.mixed].floats).toEqual { [2] = true, [3] = true }
+    expect(layout[document.nested].floats).toEqual { [1] = true }
+    expect(layout[document.custom]).toBe(nil)
+    expect(layout[document.custom.value].keys).toEqual {}
+    local compact = document.compact[1]
+    expect(layout[compact].keys).toEqual { 'first', 'second' }
+    expect(layout[compact].floats).toEqual { first = true }
+
+    local documents, all = yaml.decodeAllWithLayout '---\n[1.0]\n---\n{}\n'
+    expect(all[documents[1]].floats).toEqual { [1] = true }
+    expect(all[documents[2]].keys).toEqual {}
+    local _, none = yaml.decodeWithLayout ''
+    expect((next(none))).toBe(nil)
   end)
 end)
 

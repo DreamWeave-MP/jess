@@ -12,6 +12,16 @@ export type Options = {
   maxDepth: number?,
 }
 
+--- What a decoded collection forgets, keyed by the collection's table. A mapping's entry has
+--- `keys`, its keys in document order; a sequence's has none. `floats` marks the values written
+--- as floats (`1.0`, `!!float 1`) rather than integers, by key for a mapping and by 1-based
+--- position for a sequence.
+export type LayoutEntry = {
+  keys: { Value }?,
+  floats: { [Value]: boolean },
+}
+export type Layout = { [Value]: LayoutEntry }
+
 export type Tagged = {
   tag: string,
   value: Value,
@@ -35,6 +45,30 @@ local maxDepth = 512
 local Lines: { Line } = {}
 local Anchors: { [string]: Value } = {}
 local TagHandles: { [string]: string } = {}
+local AnchorFloats: { [string]: boolean } = {}
+
+-- The layout of the text being decoded, and whether the node finished last was a number written
+-- as a float. Every scalar ends in resolvePlain or constructTagged and every collection in
+-- constructTagged, so the flag always describes the value a caller has just been handed.
+local layout: Layout = {}
+local lastFloat = false
+
+local function newSequence(): { Value }
+  local list: { Value } = {}
+  layout[list] = { floats = {} }
+  return list
+end
+
+local function newMapping(): { [Value]: Value }
+  local map: { [Value]: Value } = {}
+  layout[map] = { keys = {}, floats = {} }
+  return map
+end
+
+local function push(list: { Value }, value: Value)
+  table.insert(list, value)
+  if lastFloat and type(value) == 'number' then layout[list].floats[#list] = true end
+end
 
 local function failAt(at: number, message: string): never
   Common.fail('YAML', source, at, message)
@@ -281,6 +315,7 @@ local function parseSignedInteger(text: string, base: number, position: number):
 end
 
 local function resolvePlain(text: string, position: number): Value
+  lastFloat = false
   if text == '' or text == '~' or text == 'null' or text == 'Null' or text == 'NULL' then return Null end
   if text == 'true' or text == 'True' or text == 'TRUE' then return true end
   if text == 'false' or text == 'False' or text == 'FALSE' then return false end
@@ -298,9 +333,12 @@ local function resolvePlain(text: string, position: number): Value
   end
 
   local lower = string.lower(text)
-  if lower == '.inf' or lower == '+.inf' then return Huge end
-  if lower == '-.inf' then return -Huge end
-  if lower == '.nan' then return 0 / 0 end
+  if lower == '.inf' or lower == '+.inf' or lower == '-.inf' or lower == '.nan' then
+    lastFloat = true
+    if lower == '-.inf' then return -Huge end
+    if lower == '.nan' then return 0 / 0 end
+    return Huge
+  end
 
   local numeric = string.match(text, '^[-+]?%.%d+[eE][-+]?%d+$')
     or string.match(text, '^[-+]?%.%d+$')
@@ -310,6 +348,7 @@ local function resolvePlain(text: string, position: number): Value
   if numeric then
     local value = tonumber(text)
     if not value then failAt(position, 'invalid floating-point value') end
+    lastFloat = true
     return value
   end
 
@@ -317,6 +356,7 @@ local function resolvePlain(text: string, position: number): Value
 end
 
 local function constructTagged(tag: string?, value: Value, plain: boolean, position: number): Value
+  lastFloat = false
   if not tag or tag == '?' then
     if plain then return resolvePlain(value :: string, position) end
     return value
@@ -351,6 +391,7 @@ local function constructTagged(tag: string?, value: Value, plain: boolean, posit
 
   if full == 'tag:yaml.org,2002:int' then
     local scalar = tostring(value)
+    lastFloat = false
     if string.match(scalar, '^[-+]?%d+$') then return parseSignedInteger(scalar, 10, position) end
     if string.match(scalar, '^0o[0-7]+$') then return parseSignedInteger(string.sub(scalar, 3), 8, position) end
     if string.match(scalar, '^0x[%da-fA-F]+$') then return parseSignedInteger(string.sub(scalar, 3), 16, position) end
@@ -360,7 +401,10 @@ local function constructTagged(tag: string?, value: Value, plain: boolean, posit
   if full == 'tag:yaml.org,2002:float' then
     local scalar = tostring(value)
     local resolved = resolvePlain(scalar, position)
-    if type(resolved) == 'number' then return resolved end
+    if type(resolved) == 'number' then
+      lastFloat = true
+      return resolved
+    end
     failAt(position, 'invalid !!float scalar')
   end
 
@@ -591,6 +635,9 @@ local function setMappingPair(map: { [Value]: Value }, key: Value, value: Value,
   if type(key) == 'number' and key ~= key then failAt(position, 'NaN cannot be represented as a Luau table key') end
   if map[key] ~= nil then failAt(position, 'duplicate mapping key') end
   map[key] = value
+  local entry = layout[map]
+  table.insert(entry.keys :: { Value }, key)
+  if lastFloat and type(value) == 'number' then entry.floats[key] = true end
 end
 
 local function parseFlowPlain(stopColon: boolean): (string, number)
@@ -638,11 +685,12 @@ local function registerAnchor(anchor: string?, value: Value, position: number)
   if not anchor then return end
   if Anchors[anchor] ~= nil then failAt(position, `anchor &{anchor} is already defined`) end
   Anchors[anchor] = value
+  AnchorFloats[anchor] = lastFloat and type(value) == 'number'
 end
 
 local function parseFlowSequence(tag: string?, anchor: string?, depth: number, position: number): Value
   if depth > maxDepth then failAt(position, 'maximum nesting depth exceeded') end
-  local list: { Value } = {}
+  local list = newSequence()
   registerAnchor(anchor, list, position)
   flowCollections += 1
   flowAt += 1
@@ -662,14 +710,15 @@ local function parseFlowSequence(tag: string?, anchor: string?, depth: number, p
     if string.byte(source, flowAt) == 58 then
       flowAt += 1
       skipFlowSpace()
-      local map: { [Value]: Value } = {}
+      local map = newMapping()
       local value
       local nextByte = string.byte(source, flowAt)
       if nextByte == 44 or nextByte == 93 then value = Null else value = parseFlowNode(false, depth + 1) end
       setMappingPair(map, item, value, itemStart)
       item = map
+      lastFloat = false
     end
-    table.insert(list, item)
+    push(list, item)
 
     skipFlowSpace()
     local byte = string.byte(source, flowAt)
@@ -693,7 +742,7 @@ end
 
 local function parseFlowMapping(tag: string?, anchor: string?, depth: number, position: number): Value
   if depth > maxDepth then failAt(position, 'maximum nesting depth exceeded') end
-  local map: { [Value]: Value } = {}
+  local map = newMapping()
   registerAnchor(anchor, map, position)
   flowCollections += 1
   flowAt += 1
@@ -763,6 +812,7 @@ parseFlowNode = function(stopColon: boolean, depth: number): Value
     local name = parseAnchorName(42)
     local value = Anchors[name]
     if value == nil then failAt(position, `alias *{name} refers to an unknown anchor`) end
+    lastFloat = AnchorFloats[name] == true
     return value
   end
 
@@ -1000,7 +1050,7 @@ local function parseKeyText(text: string, index: number, depth: number): Value
 end
 
 local function parseBlockSequence(index: number, indent: number, depth: number, tag: string?, anchor: string?, firstContent: string?): (Value, number)
-  local list: { Value } = {}
+  local list = newSequence()
   local position = Lines[index].start + indent
   registerAnchor(anchor, list, position)
   local scan = index
@@ -1034,10 +1084,10 @@ local function parseBlockSequence(index: number, indent: number, depth: number, 
       local child, childContent = significant(foundAt + 1)
       if child and childContent and not documentMarker(childContent) and Lines[child].indent > indent then
         local value, nextIndex = parseBlockNode(child, Lines[child].indent, depth + 1, nil, nil)
-        table.insert(list, value)
+        push(list, value)
         scan = nextIndex
       else
-        table.insert(list, Null)
+        push(list, Null)
         scan = foundAt + 1
       end
       continue
@@ -1047,7 +1097,7 @@ local function parseBlockSequence(index: number, indent: number, depth: number, 
     -- indentation. Parse it through the mapping machinery by supplying the first entry explicitly.
     if looksSequence(rest) then
       local nested, nextIndex = parseBlockSequence(foundAt, indent + 2, depth + 1, nil, nil, rest)
-      table.insert(list, nested)
+      push(list, nested)
       scan = nextIndex
       continue
     end
@@ -1057,12 +1107,12 @@ local function parseBlockSequence(index: number, indent: number, depth: number, 
       local child, childContent = significant(foundAt + 1)
       if child and childContent and Lines[child].indent > indent then
         local value, nextIndex = parseBlockNode(child, Lines[child].indent, depth + 1, propertyTag, propertyAnchor)
-        table.insert(list, value)
+        push(list, value)
         scan = nextIndex
       else
         local value = constructTagged(propertyTag, Null, false, line.start + indent)
         registerAnchor(propertyAnchor, value, line.start + indent)
-        table.insert(list, value)
+        push(list, value)
         scan = foundAt + 1
       end
       continue
@@ -1070,7 +1120,7 @@ local function parseBlockSequence(index: number, indent: number, depth: number, 
 
     local colon = mapColon(rest)
     if colon and not startsSpecialInline(Bytes.trim(rest, ' \t')) then
-      local map: { [Value]: Value } = {}
+      local map = newMapping()
       local key = parseKeyText(string.sub(rest, 1, colon - 1), foundAt, depth + 1)
       local rhs = string.sub(rest, colon + 1)
       local value: Value
@@ -1094,14 +1144,21 @@ local function parseBlockSequence(index: number, indent: number, depth: number, 
       if compactIndent then
         local moreMap, after = parseBlockNode(look :: number, compactIndent, depth + 1, nil, nil)
         if type(moreMap) ~= 'table' then failLine(look :: number, compactIndent + 1, 'compact mapping continuation must be a mapping') end
-        for otherKey, otherValue in moreMap :: { [Value]: Value } do setMappingPair(map, otherKey, otherValue, Lines[look :: number].start) end
+        local moreLayout = layout[moreMap]
+        if not moreLayout or not moreLayout.keys then failLine(look :: number, compactIndent + 1, 'compact mapping continuation must be a mapping') end
+        local more = moreMap :: { [Value]: Value }
+        for _, otherKey in (moreLayout :: LayoutEntry).keys :: { Value } do
+          lastFloat = (moreLayout :: LayoutEntry).floats[otherKey] == true
+          setMappingPair(map, otherKey, more[otherKey], Lines[look :: number].start)
+        end
         nextIndex = after
       end
-      table.insert(list, map)
+      lastFloat = false
+      push(list, map)
       scan = nextIndex
     else
       local value, nextIndex = parseInlineBlock(rest, foundAt, indent, depth + 1)
-      table.insert(list, value)
+      push(list, value)
       scan = nextIndex
     end
   end
@@ -1110,7 +1167,7 @@ local function parseBlockSequence(index: number, indent: number, depth: number, 
 end
 
 local function parseBlockMapping(index: number, indent: number, depth: number, tag: string?, anchor: string?): (Value, number)
-  local map: { [Value]: Value } = {}
+  local map = newMapping()
   local position = Lines[index].start + indent
   registerAnchor(anchor, map, position)
   local scan = index
@@ -1231,6 +1288,7 @@ end
 
 local function resetDocument()
   table.clear(Anchors)
+  table.clear(AnchorFloats)
   table.clear(TagHandles)
   TagHandles['!!'] = 'tag:yaml.org,2002:'
   TagHandles['!'] = '!'
@@ -1257,6 +1315,8 @@ local function parseDirective(index: number, content: string): number
 end
 
 local function parseDocuments(text: string, options: Options?): { Value }
+  layout = {}
+  lastFloat = false
   source = normalize(text)
   length = #source
   maxDepth = options and options.maxDepth or 512
@@ -1331,12 +1391,31 @@ local function parseDocuments(text: string, options: Options?): { Value }
   end
 end
 
+--- The documents in `text` and the layout of every collection in them. The layout is handed over
+--- and the module lets go of it, so a decode keeps nothing alive after it returns.
+local function decodeAllWithLayout(text: string, options: Options?): ({ Value }, Layout)
+  local documents = parseDocuments(text, options)
+  local decoded = layout
+  layout = {}
+  return documents, decoded
+end
+
+local function decodeWithLayout(text: string, options: Options?): (Value, Layout)
+  local documents, decoded = decodeAllWithLayout(text, options)
+  if #documents == 0 then return Null, decoded end
+  if #documents ~= 1 then error(`YAML: expected one document, got {#documents}; use decodeAll`, 2) end
+  return documents[1], decoded
+end
+
+-- One result each, not two: callers pass these straight into calls and table constructors, where
+-- a second result would become an argument or an element.
 local function decodeAll(text: string, options: Options?): { Value }
-  return parseDocuments(text, options)
+  local documents = decodeAllWithLayout(text, options)
+  return documents
 end
 
 local function decode(text: string, options: Options?): Value
-  local documents = parseDocuments(text, options)
+  local documents = decodeAllWithLayout(text, options)
   if #documents == 0 then return Null end
   if #documents ~= 1 then error(`YAML: expected one document, got {#documents}; use decodeAll`, 2) end
   return documents[1]
@@ -1351,6 +1430,8 @@ return table.freeze {
   null = Null,
   decode = decode,
   decodeAll = decodeAll,
+  decodeWithLayout = decodeWithLayout,
+  decodeAllWithLayout = decodeAllWithLayout,
   encode = encode,
 }
 
@@ -1433,6 +1514,56 @@ print(#documents, (documents[1] :: { id: string }).id, (documents[2] :: { id: st
 2	one	two
 ```
 
+## yaml.decodeWithLayout
+
+{{ api_symbol(value="@jess/yaml.decodeWithLayout") }}
+
+
+`decode`, plus a layout table for what Luau tables forget: the same side channel [`@jess/data/toml`](@/docs/api/toml.md) returns, for a tool that has to hold a file to the shape its author wrote. `Layout` and `LayoutEntry` are exported types of this module.
+
+- **Returns:** two values:
+  1. The document's value, as `decode` returns it.
+  2. The layout, keyed by each decoded mapping and sequence (by identity). A mapping's entry has `keys`, its keys in document order; a sequence's has no `keys`, which is how `{}` is told from `[]` and `{1: a}` from `[a]`. `floats` marks the values written as floats (`1.0`, `1e3`, `.inf`, `!!float 1`) rather than integers, by key for a mapping and by 1-based position for a sequence. An alias shares its anchor's entry. A custom tag's `{ tag, value }` table has no entry; its `value` has one when it's a collection.
+- **Errors:** as `decode`.
+
+```luau
+--!strict
+local yaml = require '@jess/yaml'
+
+local document, layout = yaml.decodeWithLayout 'jobs: {}\nsteps: []\nratio: 1.0\ncount: 1\n'
+local root = document :: { jobs: unknown, steps: unknown }
+print(table.concat(layout[root].keys :: { any }, ', '))
+print(layout[root.jobs].keys ~= nil, layout[root.steps].keys ~= nil)
+print(layout[root].floats.ratio, layout[root].floats.count)
+```
+
+```text
+jobs, steps, ratio, count
+true	false
+true	nil
+```
+
+`decode` and `decodeAll` return one value each, so a call in the last place of an argument list or a table constructor adds one element, not two.
+
+## yaml.decodeAllWithLayout
+
+{{ api_symbol(value="@jess/yaml.decodeAllWithLayout") }}
+
+
+`decodeAll`, plus one layout covering every document's collections.
+
+```luau
+--!strict
+local yaml = require '@jess/yaml'
+
+local documents, layout = yaml.decodeAllWithLayout '---\n[1.0]\n---\n{}\n'
+print(layout[documents[1]].floats[1], layout[documents[2]].keys ~= nil)
+```
+
+```text
+true	true
+```
+
 ## yaml.encode
 
 {{ api_symbol(value="@jess/yaml.encode") }}
@@ -1480,8 +1611,8 @@ note: null
 | Any other plain scalar, and every quoted scalar | `string` |
 | `!!str`, `!!null`, `!!bool`, `!!int`, `!!float`, `!!seq`, `!!map` | The Core type, checked: `!!int abc` is an error, not a string |
 | Any other tag, `!flag` or `!<tag:example.com,2026:thing>` | `{ tag: string, value: unknown }`, with the tag as written, or resolved through its `%TAG` handle |
-| Sequence | A table from 1 |
-| Mapping | A table keyed by the resolved keys |
+| Sequence | A table from 1; its layout entry has no `keys` |
+| Mapping | A table keyed by the resolved keys; its layout entry's `keys` keep their order |
 | Alias | The anchored value itself, by identity |
 
 Related: [`@jess/data/value`](@/docs/api/value.md), [`@jess/json`](@/docs/api/json.md), [`@jess/data/toml`](@/docs/api/toml.md).
