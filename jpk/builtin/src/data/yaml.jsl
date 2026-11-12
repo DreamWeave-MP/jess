@@ -156,14 +156,22 @@ end
 -- Strip a block-line comment. A '#' starts a comment only at the start of the content or after
 -- separation white space; quoted and flow collection contents are skipped so their '#' bytes are
 -- ordinary scalar data.
-local function stripComment(text: string): string
+--- Scans one line of block content for what the block parser needs from it: where its first `:`
+--- mapping indicator outside quotes and flow collections is, and where its comment starts. A quote
+--- or a bracket opens a node only where a node can start: at the start, after `- `, `? ` or a `: `
+--- indicator, or after a tag or an anchor. Once a plain scalar has begun, its quotes and brackets are
+--- its own bytes, as YAML reads them: `echo "a #b"` is `echo "a` and a comment.
+local function scanLine(text: string): (number?, number?)
   local quote: number? = nil
   local depth = 0
+  local expecting = true
+  local colon: number? = nil
   local index = 1
   local size = #text
 
   while index <= size do
     local byte = string.byte(text, index)
+    local previous = if index > 1 then string.byte(text, index - 1) else nil
     if quote == 39 then
       if byte == 39 then
         if string.byte(text, index + 1) == 39 then
@@ -176,22 +184,51 @@ local function stripComment(text: string): string
       if byte == 92 then
         index += 2
         continue
-      elseif byte == 34 then
-        quote = nil
       end
-    else
+
+      if byte == 34 then quote = nil end
+    elseif byte == 35 and (index == 1 or isSeparation(previous)) then
+      return colon, index
+    elseif depth > 0 then
       if (byte == 39 or byte == 34) and opensNode(text, index, depth) then
         quote = byte
-      elseif (byte == 91 or byte == 123) and (depth > 0 or opensNode(text, index, depth)) then
+      elseif byte == 91 or byte == 123 then
         depth += 1
       elseif byte == 93 or byte == 125 then
-        if depth > 0 then depth -= 1 end
-      elseif byte == 35 and (index == 1 or isSeparation(string.byte(text, index - 1))) then
-        return Bytes.trimEnd(string.sub(text, 1, index - 1), ' \t')
+        depth -= 1
       end
+    elseif byte == 32 or byte == 9 then
+      -- Separation: neither starts nor ends a node.
+    elseif expecting then
+      if byte == 39 or byte == 34 then
+        quote = byte
+        expecting = false
+      elseif byte == 91 or byte == 123 then
+        depth = 1
+        expecting = false
+      elseif (byte == 45 or byte == 63 or byte == 58) and isSeparation(string.byte(text, index + 1)) then
+        -- `- `, `? ` or `: `: a node can still start after it.
+        if byte == 58 and not colon then colon = index end
+      elseif byte == 33 or byte == 38 then
+        -- A tag or an anchor: the node starts after it.
+        index = string.find(text, '[ \t]', index) or size + 1
+        continue
+      else
+        expecting = false
+      end
+    elseif byte == 58 and isSeparation(string.byte(text, index + 1)) then
+      if not colon then colon = index end
+      expecting = true
     end
     index += 1
   end
+
+  return colon, nil
+end
+
+local function stripComment(text: string): string
+  local _, comment = scanLine(text)
+  if comment then return Bytes.trimEnd(string.sub(text, 1, comment - 1), ' \t') end
 
   return Bytes.trimEnd(text, ' \t')
 end
@@ -224,42 +261,8 @@ local function documentMarker(content: string, indent: number): boolean
 end
 
 local function mapColon(text: string): number?
-  local quote: number? = nil
-  local depth = 0
-  local index = 1
-
-  while index <= #text do
-    local byte = string.byte(text, index)
-    if quote == 39 then
-      if byte == 39 then
-        if string.byte(text, index + 1) == 39 then
-          index += 2
-          continue
-        end
-        quote = nil
-      end
-    elseif quote == 34 then
-      if byte == 92 then
-        index += 2
-        continue
-      end
-
-      if byte == 34 then quote = nil end
-    else
-      if (byte == 39 or byte == 34) and opensNode(text, index, depth) then
-        quote = byte
-      elseif (byte == 91 or byte == 123) and (depth > 0 or opensNode(text, index, depth)) then
-        depth += 1
-      elseif byte == 93 or byte == 125 then
-        if depth > 0 then depth -= 1 end
-      elseif byte == 58 and depth == 0 and isSeparation(string.byte(text, index + 1)) then
-        return index
-      end
-    end
-    index += 1
-  end
-
-  return nil
+  local colon = scanLine(text)
+  return colon
 end
 
 local function looksSequence(content: string): boolean
@@ -1033,6 +1036,14 @@ local function parsePlainBlock(first: string, index: number, parentIndent: numbe
   local lines = { Bytes.trim(first, ' \t') }
   local scan = index + 1
 
+  -- A plain scalar can't hold a `: `, or end in `:`: that is a mapping, and one can't start here.
+  local function plainLine(text: string, at: number)
+    local colon = string.find(text, ':[ \t]') or (if string.sub(text, -1) == ':' then #text else nil)
+    if colon then failAt(at + colon - 1, 'mapping values are not allowed in a plain scalar') end
+  end
+
+  plainLine(lines[1], position)
+
   while scan <= #Lines do
     local candidate = Lines[scan]
     local clean = stripComment(string.sub(candidate.text, candidate.indent + 1))
@@ -1047,7 +1058,9 @@ local function parsePlainBlock(first: string, index: number, parentIndent: numbe
     end
 
     if candidate.indent <= parentIndent then break end
-    table.insert(lines, Bytes.trim(clean, ' \t'))
+    local continued = Bytes.trim(clean, ' \t')
+    plainLine(continued, candidate.start + candidate.indent)
+    table.insert(lines, continued)
     scan += 1
   end
 
@@ -1204,6 +1217,10 @@ local function parseBlockSequence(index: number, indent: number, depth: number, 
       local compactIndent: number? = nil
       local look, lookContent = significant(nextIndex)
       if look and lookContent and Lines[look].indent > indent then compactIndent = Lines[look].indent end
+
+      if compactIndent and compactIndent ~= column then
+        failLine(look :: number, compactIndent + 1, 'a compact mapping continues at the column of its first key')
+      end
 
       if compactIndent then
         local moreMap, after = parseBlockNode(look :: number, compactIndent, depth + 1, nil, nil)
@@ -1413,6 +1430,10 @@ local function parseDocuments(text: string, options: Options?): { Value }
   lastFloat = false
   source = normalize(text)
   length = #source
+  -- YAML allows only printable characters, and tab, line feed and carriage return among the C0 and
+  -- C1 controls (U+0085 too).
+  local control = string.find(source, '[%z\1-\8\11\12\14-\31\127]') or string.find(source, '\194[\128-\132\134-\159]')
+  if control then failAt(control, 'control characters are not allowed') end
   maxDepth = options and options.maxDepth or 512
   flowCollections = 0
   if maxDepth < 1 or maxDepth ~= math.floor(maxDepth) then error('YAML: maxDepth must be a positive integer', 2) end

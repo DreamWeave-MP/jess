@@ -352,6 +352,31 @@ custom: !<tag:example.com,2026:thing> hello
     end
   end)
 
+  -- A plain scalar's quotes are its own bytes, and it can never hold a mapping.
+  suite.it('reads a plain scalar as YAML does: quotes inside it are text, a colon and blank end it', function()
+    expect(yaml.decode 'run: echo "a #b"\n').toEqual { run = 'echo "a' }
+    expect(yaml.decode "run: echo '#x' # comment\n").toEqual { run = "echo '#x'" }
+    expect(yaml.decode 'run: echo "a:b"\n').toEqual { run = 'echo "a:b"' }
+    expect(yaml.decode 'key: http://example.test\n').toEqual { key = 'http://example.test' }
+    expect(yaml.decode 'key: first\n  - second\n').toEqual { key = 'first - second' }
+    expect(yaml.decode 'key: first\n  second:third\n').toEqual { key = 'first second:third' }
+    expect(yaml.decode 'key: "quoted: colon # and hash"\n').toEqual { key = 'quoted: colon # and hash' }
+    expect(yaml.decode "- 'it''s: fine'\n").toEqual { "it's: fine" }
+    for _, text in { 'run: echo "a: b"\n', 'key: first: second\n', 'key: first\n  second: third\n', 'run: first:\n', 'name: Setup\n  description: more\n' } do
+      expect(function() yaml.decode(text) end).toThrow 'YAML: mapping values are not allowed in a plain scalar'
+    end
+  end)
+
+  suite.it('refuses a compact mapping continued off its column, and control characters', function()
+    expect(function() yaml.decode '- first: [1]\n   second: 2\n' end).toThrow 'YAML: a compact mapping continues at the column of its first key'
+    expect(function() yaml.decode '- first: 1\n   second: 2\n' end).toThrow 'YAML: mapping values are not allowed in a plain scalar'
+    expect(function() yaml.decode 'key: a\0b\n' end).toThrow 'YAML: control characters are not allowed'
+    expect(function() yaml.decode 'key: a\27b\n' end).toThrow 'YAML: control characters are not allowed'
+    expect(function() yaml.decode 'key: a\u{9F}b\n' end).toThrow 'YAML: control characters are not allowed'
+    expect(yaml.decode 'key: a\tb\r\n').toEqual { key = 'a\tb' }
+    expect(yaml.decode 'key: a\u{85}b\n').toEqual { key = 'a\u{85}b' }
+  end)
+
   -- A Luau table can't say whether the file wrote `{}` or `[]`, `{1: a}` or `[a]`, `1.0` or `1`.
   suite.it('keeps the layout side channel the Luau tables forget', function()
     local text = 'empty_map: {}\nempty_list: []\nblock_map:\n  1: a\n  2: b\nblock_list:\n  - a\n  - b\n'
