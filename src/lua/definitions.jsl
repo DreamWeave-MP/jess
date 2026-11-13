@@ -1160,6 +1160,7 @@ declare extern type GpuDevice with
   limits: { textureSize: number, textureLayers: number, bufferSize: number, workgroups: number }
   pipelines: { compiled: number, reused: number }
   timestamps: boolean
+  indirectFirstInstance: boolean
   live: { buffers: number, textures: number, samplers: number, bindGroups: number, pipelines: number }
   made: { buffers: number, textures: number, samplers: number, bindGroups: number, pipelines: number }
   function buffer(self, size: number, usage: GpuBufferUsage | { GpuBufferUsage }): GpuBuffer
@@ -2123,6 +2124,7 @@ The runtime's device. The first call asks the backend for a low-power adapter an
 | `limits` | The widest or tallest 2D texture, the most layers an array texture has, the largest buffer in bytes, and the most workgroups a dispatch has on one axis. |
 | `pipelines` | How many pipelines the device compiled, and how many times `GpuDevice:pipeline` gave back one it already had. |
 | `timestamps` | Whether the device times passes, which `GpuPlan:timings` reports. |
+| `indirectFirstInstance` | Whether an indirect draw may start at an instance other than 0. Vulkan, Metal, and Direct3D 12 can; OpenGL can from 4.2 with `ARB_shader_draw_parameters`, and OpenGL ES can't. Where it can't, a draw whose arguments say otherwise is refused if a script wrote them, and draws nothing if the GPU did: bind the instances from `instancesOffset` instead, which every device does. |
 | `live` | How many of each the device has alive: made, and not yet let go of. A count that only grows is a leak. |
 | `made` | How many of each the device ever made, let go of or not. A count that grows every frame of a scene that doesn't change is churn: a run of a plan makes nothing the run before it made. |
 | `sets` | The device's own [draw sets](#draw-sets), which a draw set joins unless told otherwise and a run draws from unless given others. |
@@ -2356,7 +2358,7 @@ A draw is a table:
 | `pass`, `material`, `draw` | A bind group for each frequency its program binds anything for, laid out as its program lays that frequency out. |
 | `vertices`, `instances` | The per-vertex and per-instance attributes, if the program has any, in vertex buffers holding every one drawn. |
 | `indices`, `indexFormat` | An index buffer, and how wide its indices are (`u32` by default). |
-| `indirect`, `indirectOffset` | Where the counts come from instead of `count` and `instanceCount`: an `indirect` buffer holding, from `indirectOffset` (0 by default, a multiple of 4), four `u32`s (vertex count, instance count, first vertex, first instance) or, for an indexed draw, five (index count, instance count, first index, base vertex, first instance). Whatever the GPU wrote there is drawn, a compute pass's count of what it kept, say; nothing checks it against the buffers, and the GPU keeps a draw past their ends inside them. The arguments hold the draw's first vertex and base vertex, so it gives no `first` or `baseVertex` of its own; its offsets still apply. |
+| `indirect`, `indirectOffset` | Where the counts come from instead of `count` and `instanceCount`: an `indirect` buffer holding, from `indirectOffset` (0 by default, a multiple of 4), four `u32`s (vertex count, instance count, first vertex, first instance) or, for an indexed draw, five (index count, instance count, first index, base vertex, first instance). Whatever the GPU wrote there is drawn, a compute pass's count of what it kept, say; nothing checks it against the buffers, and the GPU keeps a draw past their ends inside them. The arguments hold the draw's first vertex and base vertex, so it gives no `first` or `baseVertex` of its own; its offsets still apply. A first instance other than 0 needs a device with `indirectFirstInstance`. |
 
 With these, many meshes share buffers: one vertex buffer and one index buffer hold every mesh of a scene, one instance buffer every group of instances, and each draw names its own part. A draw's range is checked against its buffers like its counts: `draw 1 is invalid: 6 indices of 4 bytes from index 7 run past its 48-byte index buffer`.
 

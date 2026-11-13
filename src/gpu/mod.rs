@@ -126,6 +126,10 @@ pub struct GpuInfo {
     pub max_workgroups: u32,
     /// Whether it times passes: a plan's [`Gpu::timings`] say how long each took.
     pub timestamps: bool,
+    /// Whether an indirect draw may start at an instance other than 0. Where it can't (OpenGL
+    /// before 4.2, OpenGL ES), such a draw is refused when the CPU wrote its arguments, and
+    /// draws nothing when the GPU did.
+    pub indirect_first_instance: bool,
 }
 
 /// The process's wgpu instances: one of the primary backends (Vulkan, Metal, Direct3D 12), and one
@@ -187,6 +191,22 @@ impl Gpu {
     ///
     /// No adapter at all, or one that opens no device.
     pub fn headless() -> Result<Gpu, GpuError> {
+        Gpu::open(wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::INDIRECT_FIRST_INSTANCE)
+    }
+
+    /// As [`Gpu::headless`], asking the adapter for nothing it could do without: the device the
+    /// least able backend gives, which neither times passes nor starts an indirect draw past
+    /// instance 0, for testing what a script meets there.
+    ///
+    /// # Errors
+    ///
+    /// As [`Gpu::headless`].
+    pub fn headless_plain() -> Result<Gpu, GpuError> {
+        Gpu::open(wgpu::Features::empty())
+    }
+
+    /// A device on whatever adapter the machine has, with those of `wanted` it offers.
+    fn open(wanted: wgpu::Features) -> Result<Gpu, GpuError> {
         let _opening = OPENING.lock().unwrap_or_else(PoisonError::into_inner);
         let mut found = None;
         'search: for (instance, backends) in [(&PRIMARY, wgpu::Backends::PRIMARY), (&FALLBACK, wgpu::Backends::GL)] {
@@ -205,13 +225,9 @@ impl Gpu {
             }
         }
         let (instance, adapter) = found.ok_or(GpuError::NoAdapter)?;
-        let timestamps = adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
+        let features = adapter.features() & wanted;
         let descriptor = wgpu::DeviceDescriptor {
-            required_features: if timestamps {
-                wgpu::Features::TIMESTAMP_QUERY
-            } else {
-                wgpu::Features::empty()
-            },
+            required_features: features,
             ..wgpu::DeviceDescriptor::default()
         };
         let (device, queue) =
@@ -235,7 +251,8 @@ impl Gpu {
             max_texture_layers: limits.max_texture_array_layers,
             max_buffer_size: limits.max_buffer_size,
             max_workgroups: limits.max_compute_workgroups_per_dimension,
-            timestamps,
+            timestamps: features.contains(wgpu::Features::TIMESTAMP_QUERY),
+            indirect_first_instance: features.contains(wgpu::Features::INDIRECT_FIRST_INSTANCE),
         };
         Ok(Gpu {
             instance,

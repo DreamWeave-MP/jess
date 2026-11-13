@@ -772,3 +772,93 @@ fn a_draw_of_nothing_draws_nothing() {
         assert_eq!(halves(&gpu, draw), [BLUE, BLUE, BLUE], "{name}");
     }
 }
+
+/// A buffer of an indexed indirect draw's arguments: the quad's six indices of one instance, the
+/// one at `first_instance`.
+fn quad_arguments(gpu: &Gpu, first_instance: u32) -> jess::gpu::Buffer {
+    let buffer = gpu.buffer(20, BufferUsage::INDIRECT).unwrap();
+    let words: Vec<u8> = [6u32, 1, 6, 0, first_instance]
+        .iter()
+        .flat_map(|word| word.to_le_bytes())
+        .collect();
+    gpu.write_buffer(&buffer, 0, &words).unwrap();
+    buffer
+}
+
+#[test]
+fn an_indirect_draw_starts_at_its_first_instance() {
+    let Some(gpu) = gpu("an_indirect_draw_starts_at_its_first_instance") else {
+        return;
+    };
+    let shared = shared(&gpu);
+    let (first, second) = (quad_arguments(&gpu, 0), quad_arguments(&gpu, 1));
+    let indirect = |arguments| Draw {
+        first: 0,
+        indirect: Some((arguments, 0)),
+        ..shared.draw()
+    };
+    assert_eq!(halves(&gpu, indirect(&first)), [GREEN, BLUE, BLUE]);
+    assert_eq!(
+        halves(
+            &gpu,
+            Draw {
+                instances_offset: 64,
+                ..indirect(&first)
+            }
+        ),
+        [BLUE, GREEN, GREEN],
+        "an indirect draw's instances are bound from an offset on every device"
+    );
+    if gpu.info().indirect_first_instance {
+        assert_eq!(halves(&gpu, indirect(&second)), [BLUE, GREEN, GREEN]);
+    } else {
+        eprintln!("an_indirect_draw_starts_at_its_first_instance: this device draws from instance 0 only");
+    }
+
+    let color = target(&gpu, TextureFormat::Rgba8Unorm);
+    let clear = Target::cleared(&color, ClearValue::Color([0.0; 4]));
+    let ranged = Draw {
+        first: 6,
+        ..indirect(&first)
+    };
+    assert_eq!(
+        gpu.render(&[clear], None, &[ranged]).unwrap_err().to_string(),
+        "draw 0 is invalid: its first vertex and base vertex are its indirect arguments', and the draw gives them too"
+    );
+}
+
+/// A device that can't start an indirect draw past instance 0 refuses one whose arguments the CPU
+/// wrote to, where the GPU would draw nothing and say nothing.
+#[test]
+fn a_first_instance_the_device_cannot_draw_is_refused() {
+    if gpu("a_first_instance_the_device_cannot_draw_is_refused").is_none() {
+        return;
+    }
+    let gpu = Gpu::headless_plain().unwrap();
+    assert!(!gpu.info().indirect_first_instance && !gpu.info().timestamps);
+    let shared = shared(&gpu);
+    let arguments = quad_arguments(&gpu, 1);
+    let draw = Draw {
+        first: 0,
+        indirect: Some((&arguments, 0)),
+        ..shared.draw()
+    };
+    let color = target(&gpu, TextureFormat::Rgba8Unorm);
+    let clear = Target::cleared(&color, ClearValue::Color([0.0; 4]));
+    assert_eq!(
+        gpu.render(&[clear], None, &[draw]).unwrap_err().to_string(),
+        "draw 0 is invalid: its indirect arguments start at instance 1, and this device draws an indirect draw from \
+         instance 0 only: bind its instances from an offset instead"
+    );
+
+    gpu.write_buffer(&arguments, 16, &0u32.to_le_bytes()).unwrap();
+    let rebound = Draw {
+        instances_offset: 64,
+        ..draw
+    };
+    assert_eq!(
+        halves(&gpu, rebound),
+        [BLUE, GREEN, GREEN],
+        "the same instance, bound from its offset"
+    );
+}

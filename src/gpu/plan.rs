@@ -1307,7 +1307,11 @@ impl Recording<'_> {
         timed: Option<(&wgpu::QuerySet, u32)>,
     ) {
         for output in &pass.outputs {
-            if let (LoadOp::Clear(_), Some(Live::Buffer(buffer))) = (output.load, live[output.resource.index()]) {
+            let Some(Live::Buffer(buffer)) = live[output.resource.index()] else {
+                continue;
+            };
+            buffer.gpu_wrote();
+            if let LoadOp::Clear(_) = output.load {
                 encoder.clear_buffer(&buffer.raw, 0, None);
             }
         }

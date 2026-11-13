@@ -2,7 +2,7 @@
 
 use std::fmt;
 use std::ops::BitOr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use super::live::{Kind, Token};
 use super::{Gpu, GpuError};
@@ -80,6 +80,11 @@ pub struct Buffer {
     pub(crate) raw: wgpu::Buffer,
     size: u64,
     usage: BufferUsage,
+    /// What the CPU wrote into an indirect buffer, on a device that draws an indirect draw from
+    /// instance 0 only: what a draw's check reads the first instance it would start at from.
+    /// `None` in it once the GPU may have written the buffer, and for every other buffer: a
+    /// storage buffer is the GPU's to write at any time.
+    written: Option<Mutex<Option<Box<[u8]>>>>,
     token: Token,
 }
 
@@ -99,6 +104,37 @@ impl Buffer {
     #[must_use]
     pub fn usage(&self) -> BufferUsage {
         self.usage
+    }
+
+    /// The first instance the indirect arguments ending with the word at `offset` start at, when
+    /// it is known not to be 0 on a device that draws from 0 only.
+    pub(super) fn first_instance(&self, offset: u64) -> Option<u32> {
+        let start = usize::try_from(offset).ok()?;
+        let written = self.written.as_ref()?.lock().unwrap_or_else(PoisonError::into_inner);
+        let word: [u8; 4] = written.as_deref()?.get(start..start + 4)?.try_into().ok()?;
+        drop(written);
+        Some(u32::from_le_bytes(word)).filter(|first| *first != 0)
+    }
+
+    /// Says the GPU wrote it, a copy or a clear: what the CPU wrote no longer says what it holds.
+    pub(super) fn gpu_wrote(&self) {
+        if let Some(written) = &self.written {
+            *written.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        }
+    }
+
+    /// Remembers that the CPU wrote `bytes` at `offset`, a range inside it.
+    fn cpu_wrote(&self, offset: u64, bytes: &[u8]) {
+        let Some(written) = &self.written else {
+            return;
+        };
+        let mut written = written.lock().unwrap_or_else(PoisonError::into_inner);
+        let range = usize::try_from(offset)
+            .ok()
+            .and_then(|start| written.as_deref_mut()?.get_mut(start..start + bytes.len()));
+        if let Some(range) = range {
+            range.copy_from_slice(bytes);
+        }
     }
 }
 
@@ -126,10 +162,20 @@ impl Gpu {
                 mapped_at_creation: false,
             })
         })?;
+        // Only an indirect buffer nothing but copies and the CPU write, where a first instance
+        // would be dropped unseen, is worth a copy of what it holds.
+        let shadowed = usage.contains(BufferUsage::INDIRECT)
+            && !usage.contains(BufferUsage::STORAGE)
+            && !self.info.indirect_first_instance;
+        let written = shadowed
+            .then(|| usize::try_from(size).ok())
+            .flatten()
+            .map(|size| Mutex::new(Some(vec![0; size].into_boxed_slice())));
         Ok(Buffer {
             raw,
             size,
             usage,
+            written,
             token: self.live.token(Kind::Buffer),
         })
     }
@@ -142,7 +188,9 @@ impl Gpu {
     pub fn write_buffer(&self, buffer: &Buffer, offset: u64, bytes: &[u8]) -> Result<(), GpuError> {
         let length = bytes.len() as u64;
         check_range(buffer, offset, length)?;
-        self.checked(|| self.queue.write_buffer(&buffer.raw, offset, bytes))
+        self.checked(|| self.queue.write_buffer(&buffer.raw, offset, bytes))?;
+        buffer.cpu_wrote(offset, bytes);
+        Ok(())
     }
 
     /// Writes `bytes` into `buffer` at `offset`, as [`Gpu::write_buffer`] does, at the next

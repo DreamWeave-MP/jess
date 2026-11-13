@@ -776,6 +776,44 @@ fn a_script_draws_ranges_of_shared_buffers() {
     }
 }
 
+/// An indexed indirect draw whose arguments start at the second instance draws that instance, on
+/// a device that can; one that can't refuses it by name. It never draws nothing and says nothing.
+#[cfg(feature = "gpu")]
+#[test]
+fn a_script_draws_indirectly_from_a_first_instance() {
+    let Some(runtime) = gpu_runtime("a_script_draws_indirectly_from_a_first_instance") else {
+        return;
+    };
+    let script = format!(
+        "{RANGES}
+            local words = buffer.create(20)
+            for index, word in {{ 6, 1, 0, 0, 1 }} do
+              buffer.writeu32(words, (index - 1) * 4, word)
+            end
+            local arguments = device:buffer(20, 'indirect')
+            arguments:write(0, words)
+            tall:remove()
+            short:remove()
+            device:drawSet({{
+              pipeline = pipeline,
+              vertices = vertices,
+              indices = indices,
+              instances = instances,
+              indirect = arguments,
+              tags = {{ 'scene' }},
+            }})
+            assert(drawn() == 'black black red red', drawn())
+        "
+    );
+    match runtime.exec(&script) {
+        Ok(()) => {}
+        Err(error) => {
+            let error = error.to_string();
+            assert!(error.contains("its indirect arguments start at instance 1"), "{error}");
+        }
+    }
+}
+
 /// A plan described in Luau: opaque draw sets with depth, an overlay depth tested read-only, a
 /// fullscreen pass sampling the result into an imported target, and a copy of that into an
 /// imported buffer, run again after a set changes, and resized.

@@ -88,6 +88,8 @@ pub struct Draw<'a> {
     /// indexed draw, five (index count, instance count, first index, base vertex, first instance).
     /// `count`, `instance_count`, `first`, and `base_vertex` are then the buffer's, and nothing
     /// checks the counts against the buffers: the GPU keeps a draw past their ends inside them.
+    /// A first instance that isn't 0 needs a device with
+    /// [`indirect_first_instance`](super::GpuInfo::indirect_first_instance).
     pub indirect: Option<(&'a Buffer, u64)>,
 }
 
@@ -373,13 +375,20 @@ fn arguments_problem(draw: &Draw<'_>, buffer: &Buffer, offset: u64) -> Option<St
             buffer.size()
         ));
     }
-    (draw.first != 0 || draw.base_vertex != 0)
-        .then(|| "its first vertex and base vertex are its indirect arguments', and the draw gives them too".to_owned())
+    if draw.first != 0 || draw.base_vertex != 0 {
+        return Some("its first vertex and base vertex are its indirect arguments', and the draw gives them too".to_owned());
+    }
+    buffer.first_instance(offset + needed - 4).map(|first| {
+        format!(
+            "its indirect arguments start at instance {first}, and this device draws an indirect draw from instance \
+             0 only: bind its instances from an offset instead"
+        )
+    })
 }
 
 /// What is wrong with a draw's buffers and the range of them it draws, if anything. An indirect
 /// draw's counts are the GPU's, so only its buffers' usages and offsets and its argument buffer's
-/// size are checked.
+/// size are checked, and its first instance where the device can't draw one and the CPU wrote it.
 pub fn buffer_problem(draw: &Draw<'_>) -> Option<String> {
     let counted = draw.indirect.is_none();
     let indexed = draw.indices.is_some();
