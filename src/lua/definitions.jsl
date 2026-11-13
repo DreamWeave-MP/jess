@@ -918,6 +918,29 @@ export type GpuDrawSetDesc = {
   tags: { string }?,
 }
 
+--- What one pass of a plan's last run gave the GPU to draw: how many `draws` drew something, how
+--- many more were `indirect` (their counts are the GPU's, and nothing else here counts them), and
+--- over the rest, the `instances`, the `vertices` (or indices: each draw's count times its
+--- instances), and the `primitives` (triangles, lines, or points, as each pipeline draws).
+export type GpuPassStats = {
+  pass: string,
+  draws: number,
+  indirect: number,
+  instances: number,
+  vertices: number,
+  primitives: number,
+}
+
+--- Draw sets in an order a script chose, shown and hidden together: `show` takes a mask, a
+--- `buffer` or string holding a byte for each set from `from` (0 by default), and shows the sets
+--- whose byte isn't 0 and hides the rest, as one change. `tostring` gives
+--- `GpuVisibility(8000 sets)`.
+declare extern type GpuVisibility with
+  count: number
+  function show(self, mask: buffer | string, from: number?): ()
+  __tostring: (self: GpuVisibility) -> string
+end
+
 --- A target a plan declares: a color or depth format, the viewport's size times `scale` (1 by
 --- default) or a fixed `width` and `height`, and whether the run gives it (`imported`) or the
 --- plan keeps it from run to run (`kept`), for the script to read with `GpuPlan:read`. It has
@@ -1060,6 +1083,7 @@ declare extern type GpuPlan with
   function resized(self, width: number, height: number): GpuPlan
   function dump(self): string
   function timings(self): { { pass: string, ms: number? } }?
+  function stats(self): { GpuPassStats }
   __tostring: (self: GpuPlan) -> string
 end
 
@@ -1164,6 +1188,7 @@ declare extern type GpuDevice with
   baseVertex: boolean
   live: { buffers: number, textures: number, samplers: number, bindGroups: number, pipelines: number }
   made: { buffers: number, textures: number, samplers: number, bindGroups: number, pipelines: number }
+  memory: { buffers: number, textures: number }
   function buffer(self, size: number, usage: GpuBufferUsage | { GpuBufferUsage }): GpuBuffer
   function texture(self, desc: GpuTextureDesc): GpuTexture
   function sampler(self, desc: GpuSamplerDesc?): GpuSampler
@@ -1175,6 +1200,7 @@ declare extern type GpuDevice with
   function commit(self): boolean
   function drawSet(self, desc: GpuDrawSetDesc): GpuDrawSet
   function drawSets(self): GpuDrawSets
+  function visibility(self, sets: { GpuDrawSet }): GpuVisibility
   function plan(self, desc: GpuPlanDesc): GpuPlan
   __tostring: (self: GpuDevice) -> string
 end
@@ -2128,6 +2154,7 @@ The runtime's device. The first call asks the backend for a low-power adapter an
 | `indirectFirstInstance` | Whether an indirect draw may start at an instance other than 0: nearly every Vulkan, Metal, and Direct3D 12 device can, OpenGL can from 4.2 with `ARB_shader_draw_parameters`, and OpenGL ES can't. Where it can't, a pass refuses a draw whose arguments a script wrote to start past instance 0; arguments the GPU wrote (a storage buffer, or a buffer a plan's pass writes) can't be read first, and such a draw is dropped or starts at instance 0, as the driver likes. Binding the instances from `instancesOffset` does the same job on every device. |
 | `baseVertex` | Whether an indexed draw may give a `baseVertex`: everything but OpenGL ES before 3.2. Where it can't, a draw that gives one is refused. |
 | `live` | How many of each the device has alive: made, and not yet let go of. A count that only grows is a leak. |
+| `memory` | How many bytes its live `buffers` and `textures` hold: what was asked of the GPU (every level, layer, and sample of a texture), not what a driver spends on it. A window's own images count nothing. |
 | `made` | How many of each the device ever made, let go of or not. A count that grows every frame of a scene that doesn't change is churn: a run of a plan makes nothing the run before it made. |
 | `sets` | The device's own [draw sets](#draw-sets), which a draw set joins unless told otherwise and a run draws from unless given others. |
 
@@ -2526,6 +2553,54 @@ A collection of its own: the draw sets of one scene, say, which a run draws from
 
 `tostring(sets)` is `GpuDrawSets(3 sets)`.
 
+### GpuDevice:visibility
+
+{{ api_symbol(value="GpuDevice.visibility") }}
+
+Every assignment to a set's `visible` is a change, and a commit holds 65,536 of them. Culling thousands of sets a frame wants one: `device:visibility(sets)` keeps the sets it is given, in the order given, and `show(mask)` shows and hides all of them from a mask of a byte each, as one change carrying that many bytes.
+
+{{ api_symbol(value="GpuVisibility") }}
+
+| Member | Does |
+| --- | --- |
+| `count` | How many sets it holds. |
+| `show(mask, from?)` | Shows each set whose byte isn't 0 and hides each whose byte is, from the next commit on. `mask` is a `buffer` or string with a byte for each set, starting at `from` (0 by default); more bytes than sets are ignored, fewer are refused. |
+
+Make it once, when the sets are made. A set can be in any number of them, and `set.visible` still works: whichever change a commit applies last wins.
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+local program = shader.program {
+  attributes = { position = shader.vec2 },
+  vertex = function(input)
+    return { position = shader.vec4(input.attributes.position, 0, 1) }
+  end,
+  fragment = function() return shader.vec4(1, 1, 1, 1) end,
+}
+
+local device = jess.gpu.device()
+local pipeline = device:pipeline(program, { colors = { 'rgba8Unorm' } })
+local vertices = device:buffer(24, 'vertex')
+local chunks = {}
+for index = 1, 4 do
+  chunks[index] = device:drawSet { pipeline = pipeline, vertices = vertices, count = 3 }
+end
+
+local visibility = device:visibility(chunks)
+local mask = buffer.create(visibility.count)
+buffer.writeu8(mask, 1, 1)
+buffer.writeu8(mask, 3, 1)
+device:commit()
+visibility:show(mask)
+print(device.room.changes, device.room.bytes)
+device:commit()
+print(chunks[1].visible, chunks[2].visible, chunks[3].visible, chunks[4].visible)
+-- 65535  268435452
+-- false  true  false  true
+```
+
 ```luau
 --!strict
 local shader = require '@jess/shader'
@@ -2619,6 +2694,7 @@ Mistakes in the description name the pass: `GpuDevice:plan: pass present uses no
 | `resized(width, height)` | The same plan for another viewport, its targets made again at the new size. It shares the passes left out and the regions with the plan it was resized from, both ways, as the plan a window shows does. |
 | `dump()` | The compiled graph: the passes in order, where each was declared (the `device:plan` call: a pass is a table, with no place of its own), what each reads and writes, what was culled, every target's lifetime, and what shares memory. |
 | `timings()` | How long each pass of the last run took on the GPU, in milliseconds, in the order they ran; a copy pass has no `ms`. `nil` on a device without `timestamps`. Asking waits for that run to finish, so ask once in a while, not every frame. |
+| `stats()` | What each pass of the last run gave the GPU to draw, in the order they ran: `{ pass, draws, indirect, instances, vertices, primitives }`. `draws` are the draws that drew something; `indirect` ones are counted apart, since their counts are the GPU's; `vertices` is each draw's count (of vertices, or of indices) times its instances, and `primitives` the triangles, lines, or points that makes. All zero for a pass the run left out. Reading them costs nothing: they are counted as the run records. |
 
 `tostring(plan)` is `GpuPlan(name, 4 of 5 passes, 640×480)`.
 

@@ -903,6 +903,30 @@ pub fn device_methods(device: &mut UserdataBuilder<'_, LuaGpuDevice>) {
     device.method("plan", plan).untyped();
 }
 
+/// `plan:stats()`: what each pass of the last run gave the GPU to draw.
+fn stats(this: &LuaGpuPlan, call: &Call<'_>) -> l3i::Result<StackResults> {
+    let stats = this.current().stats();
+    l3i::stack::push_list(call, stats.iter(), |frame, stats| {
+        push_table(frame, 0, 6, |frame, table| {
+            table.raw_set_value(frame, "pass", stats.pass.as_str())?;
+            let drawn = stats.drawn;
+            // What a frame draws is far below 2^53 of anything.
+            #[allow(clippy::cast_precision_loss)]
+            for (name, count) in [
+                ("draws", drawn.draws),
+                ("indirect", drawn.indirect),
+                ("instances", drawn.instances),
+                ("vertices", drawn.vertices),
+                ("primitives", drawn.primitives),
+            ] {
+                table.raw_set_value(frame, name, &(count as f64))?;
+            }
+            Ok(())
+        })
+    })?;
+    Ok(StackResults)
+}
+
 /// Declares the plan type.
 pub fn describe(d: &mut ExtensionDescriptor) {
     let mut plan = d.userdata::<LuaGpuPlan>(LuaGpuPlan::NAME);
@@ -968,6 +992,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         Ok(StackResults)
     })
     .untyped();
+    plan.method("stats", stats).untyped();
     plan.method("resized", resized).untyped();
     plan.method("dump", |this: &LuaGpuPlan| -> l3i::Result<String> {
         let plan = this.current();

@@ -100,6 +100,19 @@ pub struct TextureDesc {
 }
 
 impl TextureDesc {
+    /// How many bytes its texels take: every level, layer, and sample of them.
+    #[must_use]
+    pub fn bytes(&self) -> u64 {
+        let texel = u64::from(self.format.texel_bytes().unwrap_or(0));
+        let layers = u64::from(self.shape.layers()) * u64::from(self.samples.max(1));
+        (0..self.mips)
+            .map(|level| {
+                let side = |size: u32| u64::from((size >> level).max(1));
+                side(self.width) * side(self.height) * layers * texel
+            })
+            .sum()
+    }
+
     /// A 2D texture of one mip level.
     #[must_use]
     pub fn d2(width: u32, height: u32, format: TextureFormat, usage: TextureUsage) -> TextureDesc {
@@ -252,7 +265,7 @@ impl Gpu {
             view,
             levels: Texture::levels(desc),
             desc: *desc,
-            token: self.live.token(Kind::Texture),
+            token: self.live.sized(Kind::Texture, desc.bytes()),
         })
     }
 

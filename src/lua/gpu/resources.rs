@@ -360,7 +360,7 @@ pub fn compare_of(name: &str) -> Compare {
 
 /// Bytes from a Luau `buffer` or string, borrowed, from `from` for `length` (to the end by
 /// default).
-fn with_bytes<R>(
+pub fn with_bytes<R>(
     function: &str,
     bytes: ValueView<'_>,
     from: Option<ValueView<'_>>,

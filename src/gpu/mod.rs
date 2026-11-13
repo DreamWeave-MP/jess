@@ -40,11 +40,11 @@ pub use cache::PipelineStats;
 pub use commit::{BYTES, CHANGES, Room};
 pub use compute::ComputePipeline;
 pub use draw_set::{DrawRange, DrawSet, DrawSetDesc, DrawSets};
-pub use live::LiveCounts;
+pub use live::{LiveBytes, LiveCounts};
 pub use pass::{Draw, IndexFormat, Resolve, Target};
 pub use pipeline::{Blend, ColorState, Cull, DepthState, PipelineState, RenderPipeline, Topology};
 pub(crate) use pipeline::{Group, Slot};
-pub use plan::{Import, PassTiming, Plan, PlanBinding, PlanGroup, SharedPlan, Work};
+pub use plan::{Import, PassStats, PassTiming, Plan, PlanBinding, PlanGroup, SharedPlan, Work};
 pub use read::PendingRead;
 pub use sampler::{AddressMode, Compare, Filter, Sampler, SamplerDesc};
 #[cfg(feature = "window")]
@@ -282,6 +282,13 @@ impl Gpu {
             frame: Mutex::default(),
             commits: AtomicU64::new(0),
         })
+    }
+
+    /// How many bytes its live buffers and textures hold: what was asked of the GPU, not what a
+    /// driver spends on it.
+    #[must_use]
+    pub fn memory(&self) -> LiveBytes {
+        self.live.bytes()
     }
 
     /// How many buffers, textures, samplers, bind groups, and pipelines it has alive: what was
