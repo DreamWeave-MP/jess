@@ -20,14 +20,32 @@ pub struct TestArgs {
     /// that reads or writes files needs.
     #[arg(long = "capability", value_name = "NAME")]
     capabilities: Vec<String>,
+    /// A package to activate before each module runs (repeatable), as jess run does: a Package
+    /// Source folder or a .jpk, whose exports the modules can then require.
+    #[arg(long = "package", value_name = "PACKAGE")]
+    packages: Vec<PathBuf>,
+    /// A layer to activate (repeatable). Without any, every layer the packages declare.
+    #[arg(long = "layer", value_name = "ID")]
+    layers: Vec<String>,
+    /// A folder of packages to find layers and dependencies in (repeatable), as jess run takes
+    /// it.
+    #[arg(long = "package-path", value_name = "FOLDER")]
+    package_paths: Vec<PathBuf>,
 }
 
 pub fn run(args: &TestArgs, format: Format) -> Result<(), String> {
-    let report = jess::lua::testing::run_with(
+    let grant = jess::lua::host_script_grant(&args.capabilities);
+    let named = crate::run::Named {
+        packages: &args.packages,
+        layers: &args.layers,
+        paths: &args.package_paths,
+    };
+    let report = jess::lua::testing::run_prepared(
         &jess::lua::Options::default(),
-        &jess::lua::host_script_grant(&args.capabilities),
+        &grant,
         &args.modules,
         !args.shared,
+        &|runtime| crate::run::activate(runtime, &named, &grant).map_err(l3i::Error::runtime),
     )
     .map_err(|error| error.to_string())?;
     output::print(&report, format)?;

@@ -103,6 +103,22 @@ pub fn run_with(
     paths: &[PathBuf],
     isolated: bool,
 ) -> l3i::Result<TestRun> {
+    run_prepared(options, capabilities, paths, isolated, &|_| Ok(()))
+}
+
+/// [`run_with`], each runtime made ready by `prepare` before a module runs in it: packages
+/// activated, say.
+///
+/// # Errors
+///
+/// Returns an error if a VM can't be made, or `prepare` fails.
+pub fn run_prepared(
+    options: &crate::lua::Options,
+    capabilities: &[String],
+    paths: &[PathBuf],
+    isolated: bool,
+    prepare: &dyn Fn(&Runtime) -> l3i::Result<()>,
+) -> l3i::Result<TestRun> {
     let mut shared = None;
     let mut run = TestRun {
         passed: 0,
@@ -111,7 +127,9 @@ pub fn run_with(
     };
     for path in paths {
         if shared.is_none() || isolated {
-            shared = Some(crate::lua::runtime_with_capabilities(options.clone(), capabilities)?);
+            let runtime = crate::lua::runtime_with_capabilities(options.clone(), capabilities)?;
+            prepare(&runtime)?;
+            shared = Some(runtime);
         }
         let runtime = shared.as_ref().ok_or_else(|| crate::lua::error("no runtime"))?;
         run_module(runtime, path, &mut run)?;

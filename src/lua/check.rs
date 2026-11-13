@@ -430,7 +430,8 @@ pub fn check_scripts(
         }
         if layers.is_empty() && roots.is_empty() {
             return Err(error(
-                "a package path offers packages without choosing any: name a layer with --layer".to_owned(),
+                "a package path offers packages without choosing any: name one with --package, or a layer with --layer"
+                    .to_owned(),
             ));
         }
         let search = Search { roots, ..search.clone() };
