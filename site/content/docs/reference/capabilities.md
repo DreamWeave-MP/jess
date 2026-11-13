@@ -106,4 +106,4 @@ Three different texts, from three different places, and each tells you which:
 
 The last one also fires for a target that declares a name jess doesn't know. `jess package inspect` accepts any dotted name, since the manifest format is older than any particular list; `jess package run` refuses it. Inside a script domain, the runtime's own broker reports a denial as `capability '<name>' denied to <context or worker>`, attributed to whoever asked.
 
-The one capability with its own message is `worker.spawn` outside a domain. There is nothing to grant it against: `worker.spawn: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and command targets run scripts outside one`.
+The one capability with its own message is `worker.spawn` outside a domain. There is nothing to grant it against: `worker.spawn: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and command targets run scripts outside one. An application target runs its code in one: jess init --application writes one, and jess package run runs it`.

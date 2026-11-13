@@ -1691,7 +1691,7 @@ Also `require('@jess/application')`. What an [application's](@/docs/scripting/ap
 
 Asks the host to stop after the current frame, with `status` (0 without one) as the process's exit status. It returns; the frame finishes, then the `shutdown` handlers run and the application is torn down. A later call in the same frame replaces the status. A restart forgets the request.
 
-- **Errors:** `application.exit: the status is an integer from 0 to 255, not <status>`; `application.exit: needs an application host; jess run, jess test, and command targets end when their script returns`; in a worker, `application.exit is for the domain's own code; a worker asks the domain in a message`.
+- **Errors:** `application.exit: the status is an integer from 0 to 255, not <status>`; `application.exit: needs an application host; jess run, jess test, and command targets end when their script returns. An application target has one: jess init --application writes one, and jess package run runs it`; in a worker, `application.exit is for the domain's own code; a worker asks the domain in a message`.
 
 This managed module requests shutdown after 600 updates. It needs a manifest that declares it in an application target; it is not a standalone `jess run` script. The [headless recipe](@/docs/cookbook/headless.md) supplies a complete runnable package.
 
@@ -1780,7 +1780,7 @@ Related: [Performance](@/docs/scripting/performance.md).
 @api-document context jess.context
 
 
-Also `require('@jess/context')`. This is the script side of a [ScriptDomain](@/docs/contributing/script-domains.md): a host that embeds jess declares contexts, each with the phases it may run in, and a script binds its handlers to them. Under `jess run` there is no domain, so `bind` errors with `context.bind: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and command targets run scripts outside one`; the examples here are a domain's main script.
+Also `require('@jess/context')`. This is the script side of a [ScriptDomain](@/docs/contributing/script-domains.md): a host that embeds jess declares contexts, each with the phases it may run in, and a script binds its handlers to them. Under `jess run` there is no domain, so `bind` errors with `context.bind: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and command targets run scripts outside one. An application target runs its code in one: jess init --application writes one, and jess package run runs it`; the examples here are a domain's main script.
 
 ## jess.context.bind
 
@@ -1930,7 +1930,7 @@ A name that is also a host callback is still just an event: `emit('update')` rea
 
 The queue is bounded. By default a domain holds at most 65,536 waiting events and 64 MiB of payload, where payload means the storage every value takes, not only its strings and buffers (a list of a million empty tables is not free) and each queued event's name, and one drain delivers at most 4,096 of them, leaving the rest, in order, for the next frame. An event that doesn't fit isn't queued, quietly or otherwise: `emit` raises, the refusal is reported as a diagnostic, and nothing is routed. A payload is read no further than the limit, so a vast table is refused part way in rather than copied and then measured. A handler that answers each event with two more fills the queue and then fails, instead of eating the machine.
 
-- **Errors:** `events.emit: an event needs a name`; `events.emit: an event name is at most 256 bytes, and this one is <length>`; `events.emit: '<name>' wasn't queued: <domain>'s event queue is full: 65536 events are waiting, the most it holds` (or holds at most so many bytes of payload); `payload.<path>: a function can't cross a worker or event boundary` (or a thread, a userdata, a table nested more than 32 deep), also reported as a diagnostic; outside a domain, `events.emit: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and command targets run scripts outside one`; in a worker, `events.emit is for a domain's own code; a worker handles messages and answers them`.
+- **Errors:** `events.emit: an event needs a name`; `events.emit: an event name is at most 256 bytes, and this one is <length>`; `events.emit: '<name>' wasn't queued: <domain>'s event queue is full: 65536 events are waiting, the most it holds` (or holds at most so many bytes of payload); `payload.<path>: a function can't cross a worker or event boundary` (or a thread, a userdata, a table nested more than 32 deep), also reported as a diagnostic; outside a domain, `events.emit: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and command targets run scripts outside one. An application target runs its code in one: jess init --application writes one, and jess package run runs it`; in a worker, `events.emit is for a domain's own code; a worker handles messages and answers them`.
 
 ```luau
 --!strict
@@ -2030,7 +2030,7 @@ Related: [Applications](@/docs/scripting/applications.md#overrides), [jess.event
 
 
 
-Also `require('@jess/worker')`. A worker is a second Luau state the [ScriptDomain](@/docs/contributing/script-domains.md) owns, with its own globals, its own modules, and its own garbage collector, able to run while the domain's own code does. It exchanges messages with the domain; the spawner can also explicitly share domain services. Under `jess run` there is no domain, so `spawn` errors with `worker.spawn: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and command targets run scripts outside one`.
+Also `require('@jess/worker')`. A worker is a second Luau state the [ScriptDomain](@/docs/contributing/script-domains.md) owns, with its own globals, its own modules, and its own garbage collector, able to run while the domain's own code does. It exchanges messages with the domain; the spawner can also explicitly share domain services. Under `jess run` there is no domain, so `spawn` errors with `worker.spawn: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and command targets run scripts outside one. An application target runs its code in one: jess init --application writes one, and jess package run runs it`.
 
 ## jess.worker.spawn
 

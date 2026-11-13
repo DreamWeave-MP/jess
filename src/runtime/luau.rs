@@ -138,7 +138,7 @@ impl Bindings {
 
 fn detached(function: &str) -> l3i::Error {
     l3i::Error::permission(format!(
-        "{function}: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and command targets run scripts outside one"
+        "{function}: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and command targets run scripts outside one. An application target runs its code in one: jess init --application writes one, and jess package run runs it"
     ))
 }
 

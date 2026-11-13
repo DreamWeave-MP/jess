@@ -148,7 +148,7 @@ $ jess run --capability filesystem.read read.jsl
 
 A script can ask instead of trying: [`jess.granted`](@/docs/api/jess.md#jess-granted) says whether it holds a capability, so a tool can explain which flag it wants rather than fail halfway. [Capabilities](@/docs/reference/capabilities.md) lists every name, what asks for it, and what grants it.
 
-There's no script domain under `jess run`, so `jess.worker.spawn` and `jess.context.bind` refuse: `worker.spawn: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and command targets run scripts outside one`. Those belong to [applications](@/docs/scripting/applications.md) and embedding hosts.
+There's no script domain under `jess run`, so `jess.worker.spawn` and `jess.context.bind` refuse: `worker.spawn: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and command targets run scripts outside one. An application target runs its code in one: jess init --application writes one, and jess package run runs it`. Those belong to [applications](@/docs/scripting/applications.md) and embedding hosts.
 
 ## Looking at the code
 

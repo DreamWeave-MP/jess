@@ -55,7 +55,7 @@ fn exit(status: Option<f64>) -> l3i::Result<()> {
     }
     let no_host = || {
         error(
-            "application.exit: needs an application host; jess run, jess test, and command targets end when their script returns",
+            "application.exit: needs an application host; jess run, jess test, and command targets end when their script returns. An application target has one: jess init --application writes one, and jess package run runs it",
         )
     };
     let authority = crate::runtime::current_authority().ok_or_else(no_host)?;
