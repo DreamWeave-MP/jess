@@ -1049,6 +1049,26 @@ export type GpuWindowDesc = {
   format: GpuTextureFormat?,
   closes: boolean?,
   key: string?,
+  fullscreen: GpuFullscreen?,
+}
+
+--- How much of a display a window takes: a window among windows (`windowed`), the whole display
+--- as a window without edges (`borderless`), or the display itself, in its own mode at its
+--- fastest rate (`exclusive`).
+export type GpuFullscreen = 'windowed' | 'borderless' | 'exclusive'
+
+--- A display: what the window system calls it, its size in physical pixels and where it is among
+--- the displays, the `scale` of a logical pixel on it, how many images a second it shows, where
+--- the window system says, and whether it is the primary one, where there is one.
+export type GpuMonitor = {
+  name: string?,
+  width: number,
+  height: number,
+  x: number,
+  y: number,
+  scale: number,
+  refreshRate: number?,
+  primary: boolean,
 }
 
 --- What happened to a window, from `GpuWindow:events`: it was `resized` (to `width` by `height`),
@@ -1098,7 +1118,9 @@ export type GpuTextArea = { x: number, y: number, width: number, height: number 
 --- happened to it since the last call, oldest first: under an application's host, the named event
 --- `jess.window` announces that there is some. `textInput` asks for text, which lets an input
 --- method compose for it beside `area`. `cursor` shows, hides, or captures the pointer, and says
---- how the window holds it. `number` is its own, and names its input devices.
+--- how the window holds it; `fullscreen` gives it a whole display or makes it a window again, and
+--- says which it is; `monitor` is the display it is on. `number` is its own, and names its input
+--- devices.
 --- `tostring` gives `GpuWindow(title, 800×600)`.
 declare extern type GpuWindow with
   title: string
@@ -1110,6 +1132,7 @@ declare extern type GpuWindow with
   scale: number
   format: GpuTextureFormat?
   open: boolean
+  monitor: GpuMonitor?
   function show(
     self,
     plan: GpuPlan,
@@ -1123,6 +1146,7 @@ declare extern type GpuWindow with
   function events(self): { GpuWindowEvent }
   function textInput(self, enabled: boolean, area: GpuTextArea?): ()
   function cursor(self, mode: ('normal' | 'hidden' | 'captured')?): GpuCursor
+  function fullscreen(self, mode: GpuFullscreen?): GpuFullscreen
   __tostring: (self: GpuWindow) -> string
 end
 
@@ -1585,6 +1609,8 @@ declare jess: {
     --- every frame. Needs `gpu.window`; a jess built without the `window` feature says it has no
     --- windows.
     window: (device: GpuDevice, desc: GpuWindowDesc?) -> GpuWindow,
+    --- The displays the window system has. Needs `gpu.window`.
+    monitors: () -> { GpuMonitor },
     --- Handles what the window system reported since the last call and draws every window showing
     --- a plan: what an application's host does every frame, for a script no host drives.
     pump: () -> (),
@@ -2696,6 +2722,24 @@ Opens a native window with a surface on `device`. The window is what a person se
 - **Capability:** `gpu.window`. A script you run holds it, as it holds the GPU; a package target declares it.
 - **Errors:** `jess.gpu.window: no window system: …` on a machine without a display (over SSH, say, or in a container), which a later call tries again, as the display may have come back; `windows belong to the thread that opened the first one`, since a process has one window system loop; on macOS, `jess.gpu.window: on macOS, windows open on the process's main thread`, so a worker can't open one there; and a jess built without the `window` feature says so: `jess.gpu.window: this jess has no windows: it was built without the window feature`.
 
+{{ api_symbol(value="jess.gpu.monitors") }}
+
+The displays the window system has, in its order, for a benchmark to state what it ran on or an application to choose where it opens:
+
+{{ api_symbol(value="GpuMonitor") }}
+
+| Field | Holds |
+| --- | --- |
+| `name` | What the window system calls it (`DP-1`, `eDP-1`), where it calls it anything. |
+| `width`, `height` | Its size in physical pixels, in the mode it is in. |
+| `x`, `y` | Where its top left is among the displays, in physical pixels. |
+| `scale` | How many physical pixels a logical one is on it. |
+| `refreshRate` | How many images a second it shows, to a thousandth, where the window system says. |
+| `primary` | Whether it is the display the window system calls primary. Wayland calls none that. |
+
+- **Needs:** `gpu.window`.
+- **Errors:** `jess.gpu.monitors: no window system: …` on a machine without a display.
+
 {{ api_symbol(value="jess.gpu.pump") }}
 
 Handles what the window system reported since the last call (sizes, closes, keys, the pointer), [commits](#commits) what the script changed, and waits for every window to draw it, a quarter of a second at most, so a script's own loop goes at the display's pace. An application's host does the same every frame, around the frame, without the waiting, and its scripts never call it; a script that opens a window itself calls it once a frame.
@@ -2714,6 +2758,8 @@ Handles what the window system reported since the last call (sizes, closes, keys
 | `scale` | How many physical pixels a logical one is on its display. |
 | `format` | What its images are; `nil` once it's closed. |
 | `open` | Whether it's open: neither closed by the person nor by `close`. |
+| `monitor` | The [display](#jess-gpu-monitors) most of it is on, where the window system says; `nil` once it's closed. |
+| `fullscreen(mode?)` | Gives it the whole display it is on (`'borderless'`, a window without edges, or `'exclusive'`, the display itself in its own mode at its fastest rate), or makes it a window again (`'windowed'`), and says what it asked for; with no mode, what the window system has it as now. `'exclusive'` is `'borderless'` where the window system gives no window a display of its own, as Wayland doesn't. The window system does it in its own time, and the new size arrives as a `resized` event. A window opens that way with `fullscreen` in its description. |
 | `show(plan, target, imports?, sets?)` | Draws `plan` into it from the next [commit](#commits) on, its image as the plan's imported target `target`, which must have the window's format, with `imports` for the plan's other imported targets and buffers, drawing from `sets` or the device's own. The plan goes with the window: resized with it, so `plan` itself runs, reads back, and reports its size at the window's size from then on, and what it keeps is what the window drew. A plan is shown in one window at a time; showing it in another is refused (`the plan is shown in another window, whose size it takes`), and `plan:resized` makes one of its own. |
 | `hide()`, `close()` | Stops drawing from the next commit on, or closes it now. |
 | `resize(width, height)` | Asks the window system for that inner size in physical pixels. It may give another, or none (a tiling window manager, say); what it gives arrives as a `resized` event, and the shown plan goes with it. |

@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use l3i::bind::{Call, StackResults};
-use l3i::extension::{ExtensionDescriptor, TagPolicy};
+use l3i::extension::{ExtensionDescriptor, TagPolicy, UserdataBuilder};
 use l3i::stack::{Frame, Scope, TableView, ValueView};
 use l3i::userdata::{Owned, Userdata, receiver};
 
@@ -15,7 +15,7 @@ use super::plan::{Given, LuaGpuPlan, given};
 use super::resources::{format_name, format_of, shown, whole};
 use crate::gpu::PresentMode;
 use crate::lua::{error, kind, push_table};
-use crate::window::{CursorRequest, Imported, Showing, TextArea, Window, WindowDesc, WindowEvent};
+use crate::window::{CursorRequest, Fullscreen, Imported, Monitor, Showing, TextArea, Window, WindowDesc, WindowEvent};
 
 /// A window and the device its surface is on.
 #[derive(Debug)]
@@ -28,7 +28,55 @@ unsafe impl Userdata for LuaGpuWindow {
     const NAME: &'static str = "jess.gpu.Window";
 }
 
-const WINDOW_KEYS: [&str; 8] = ["closes", "format", "height", "key", "resizable", "title", "vsync", "width"];
+const WINDOW_KEYS: [&str; 9] = [
+    "closes",
+    "format",
+    "fullscreen",
+    "height",
+    "key",
+    "resizable",
+    "title",
+    "vsync",
+    "width",
+];
+
+/// How much of a display `view` asks for, for `function`.
+fn fullscreen_of(function: &str, view: ValueView<'_>) -> l3i::Result<Fullscreen> {
+    match view.is_string().then(|| view.read::<&str>()).transpose()? {
+        Some("windowed") => Ok(Fullscreen::Windowed),
+        Some("borderless") => Ok(Fullscreen::Borderless),
+        Some("exclusive") => Ok(Fullscreen::Exclusive),
+        _ => Err(error(format!(
+            "{function}: fullscreen is 'windowed', 'borderless', or 'exclusive', not {}",
+            shown(view)
+        ))),
+    }
+}
+
+/// Fills `table` with `monitor`, as `jess.gpu.monitors` lists it.
+fn monitor_fields(frame: &Frame<'_>, table: &TableView<'_>, monitor: &Monitor) -> l3i::Result<()> {
+    if let Some(name) = &monitor.name {
+        table.raw_set_value(frame, "name", name.as_str())?;
+    }
+    table.raw_set_value(frame, "width", &f64::from(monitor.width))?;
+    table.raw_set_value(frame, "height", &f64::from(monitor.height))?;
+    table.raw_set_value(frame, "x", &f64::from(monitor.x))?;
+    table.raw_set_value(frame, "y", &f64::from(monitor.y))?;
+    table.raw_set_value(frame, "scale", &monitor.scale)?;
+    if let Some(refresh) = monitor.refresh {
+        table.raw_set_value(frame, "refreshRate", &refresh)?;
+    }
+    table.raw_set_value(frame, "primary", &monitor.primary)
+}
+
+/// `jess.gpu.monitors()`: the displays the window system has.
+pub fn monitors(call: &Call<'_>) -> l3i::Result<StackResults> {
+    let monitors = crate::window::monitors().map_err(|problem| error(format!("jess.gpu.monitors: {problem}")))?;
+    l3i::stack::push_list(call, monitors.iter(), |frame, monitor| {
+        push_table(frame, 0, 8, |frame, table| monitor_fields(frame, table, monitor))
+    })?;
+    Ok(StackResults)
+}
 
 const AREA_KEYS: [&str; 4] = ["height", "width", "x", "y"];
 
@@ -63,6 +111,10 @@ pub fn open(call: &Call<'_>, device: ValueView<'_>, desc: Option<ValueView<'_>>)
             )?;
             wanted.resizable = flag(frame, FUNCTION, &fields, "resizable", true)?;
             wanted.closes = flag(frame, FUNCTION, &fields, "closes", true)?;
+            let fullscreen = fields.raw_get(frame, "fullscreen")?;
+            if !fullscreen.is_nil() {
+                wanted.fullscreen = fullscreen_of(FUNCTION, fullscreen)?;
+            }
             let key = fields.raw_get(frame, "key")?;
             if key.is_string() {
                 wanted.key = Some(key.read::<&str>()?.to_owned());
@@ -201,7 +253,37 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         })
         .untyped();
     window.method("close", |this: &LuaGpuWindow| this.window.close()).untyped();
+    describe_modes(&mut window);
+}
+
+/// Declares what a window does with the pointer and the display, what it is asked for, and how
+/// it prints.
+fn describe_modes(window: &mut UserdataBuilder<'_, LuaGpuWindow>) {
     window.method("cursor", cursor).untyped();
+    window
+        .method(
+            "fullscreen",
+            |this: &LuaGpuWindow, mode: Option<ValueView<'_>>| -> l3i::Result<&'static str> {
+                let Some(mode) = mode.filter(|mode| !mode.is_nil()) else {
+                    return Ok(this.window.fullscreen().name());
+                };
+                let wanted = fullscreen_of("GpuWindow:fullscreen", mode)?;
+                Ok(this.window.set_fullscreen(wanted).name())
+            },
+        )
+        .untyped();
+    window
+        .getter(
+            "monitor",
+            |this: &LuaGpuWindow, call: &Call<'_>| -> l3i::Result<StackResults> {
+                match this.window.monitor() {
+                    Some(monitor) => push_table(call, 0, 8, |frame, table| monitor_fields(frame, table, &monitor))?,
+                    None => call.with_frame(|frame| frame.push_nil().map(drop))?,
+                }
+                Ok(StackResults)
+            },
+        )
+        .untyped();
     window
         .method(
             "resize",
@@ -260,7 +342,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
             },
         )
         .untyped();
-    crate::lua::plan::metamethod(&mut window, "__tostring", |this: &LuaGpuWindow| {
+    crate::lua::plan::metamethod(window, "__tostring", |this: &LuaGpuWindow| {
         let size = this.window.size();
         let closed = if this.window.is_open() { "" } else { ", closed" };
         format!("GpuWindow({}, {}×{}{closed})", this.window.title(), size.width, size.height)

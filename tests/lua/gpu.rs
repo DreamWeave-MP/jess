@@ -1151,6 +1151,15 @@ const WINDOW: &str = r"
             })
             assert(window.open and window.width > 0 and window.scale > 0, tostring(window))
             assert(string.find(tostring(window), 'GpuWindow(jess window test, ', 1, true) == 1, tostring(window))
+            -- It opened as a window, on one of the displays the window system lists.
+            assert(window:fullscreen() == 'windowed')
+            local monitors = jess.gpu.monitors()
+            assert(#monitors >= 1, 'a desktop has a display')
+            for _, monitor in monitors do
+              assert(monitor.width > 0 and monitor.height > 0 and monitor.scale > 0)
+              assert(type(monitor.primary) == 'boolean' and type(monitor.x) == 'number')
+              assert(monitor.refreshRate == nil or monitor.refreshRate > 0)
+            end
             -- The pointer is shown until the window is asked otherwise, and says how it is held.
             assert(window:cursor() == 'normal')
             assert(window:cursor('hidden') == 'hidden' and window:cursor() == 'hidden')
@@ -1253,6 +1262,14 @@ fn a_script_shows_a_plan_in_a_window() {
     let runtime = jess::lua::runtime_with_capabilities(jess::lua::Options::default(), &capabilities).unwrap();
     let refusal = runtime.exec(WINDOW).unwrap_err().to_string();
     assert!(refusal.contains("shown in another window"), "{refusal}");
+    let refusal = runtime
+        .exec("jess.gpu.window(jess.gpu.device(), { title = 'jess mode test', fullscreen = 'huge' })")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refusal.contains("jess.gpu.window: fullscreen is 'windowed', 'borderless', or 'exclusive', not \"huge\""),
+        "{refusal}"
+    );
     let refusal = runtime
         .exec("jess.gpu.window(jess.gpu.device(), { title = 'jess cursor test' }):cursor('grabbed')")
         .unwrap_err()

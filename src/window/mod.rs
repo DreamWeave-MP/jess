@@ -78,8 +78,10 @@ use winit::event::{
 };
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::monitor::MonitorHandle;
 use winit::platform::pump_events::EventLoopExtPumpEvents;
-use winit::window::{CursorGrabMode, Window as RawWindow, WindowAttributes, WindowId};
+use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use winit::window::{CursorGrabMode, Fullscreen as RawFullscreen, Window as RawWindow, WindowAttributes, WindowId};
 
 use crate::gpu::{Buffer, DrawSets, Gpu, GpuError, PresentMode, SharedPlan, Surface, Texture};
 use crate::input::{
@@ -141,6 +143,88 @@ pub struct WindowDesc {
     /// instead of opening another. That is how a window outlives the generation of code that
     /// opened it: see [`reclaim`].
     pub key: Option<String>,
+    /// Whether it opens over a whole display, and how.
+    pub fullscreen: Fullscreen,
+}
+
+/// How much of a display a window takes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Fullscreen {
+    /// A window among windows.
+    #[default]
+    Windowed,
+    /// The whole of the display it is on, as a window without edges: the display keeps its mode,
+    /// and other windows come and go over it as the window system likes.
+    Borderless,
+    /// The display itself, in its own mode at its fastest rate, for as long as the window has it.
+    Exclusive,
+}
+
+impl Fullscreen {
+    /// Its name, as `GpuWindow:fullscreen` gives it.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Fullscreen::Windowed => "windowed",
+            Fullscreen::Borderless => "borderless",
+            Fullscreen::Exclusive => "exclusive",
+        }
+    }
+}
+
+/// A display the window system has.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Monitor {
+    /// What the window system calls it, if it calls it anything.
+    pub name: Option<String>,
+    /// Its width in physical pixels, in the mode it is in.
+    pub width: u32,
+    /// Its height in physical pixels.
+    pub height: u32,
+    /// Where its left edge is among the displays, in physical pixels.
+    pub x: i32,
+    /// Where its top edge is.
+    pub y: i32,
+    /// How many physical pixels a logical one is on it.
+    pub scale: f64,
+    /// How many images a second it shows, where the window system says.
+    pub refresh: Option<f64>,
+    /// Whether it is the one the window system calls primary, where it calls one that.
+    pub primary: bool,
+}
+
+impl Monitor {
+    fn of(raw: &MonitorHandle, primary: Option<&MonitorHandle>) -> Monitor {
+        let (size, position) = (raw.size(), raw.position());
+        Monitor {
+            name: raw.name(),
+            width: size.width,
+            height: size.height,
+            x: position.x,
+            y: position.y,
+            scale: raw.scale_factor(),
+            refresh: raw.refresh_rate_millihertz().map(|millihertz| f64::from(millihertz) / 1000.0),
+            primary: primary == Some(raw),
+        }
+    }
+}
+
+/// The display `raw` is on taken whole in its own mode at its fastest rate, where the window
+/// system gives a display to a window at all: Wayland doesn't, and winit says nothing when asked.
+fn exclusive(raw: &RawWindow) -> Option<RawFullscreen> {
+    if matches!(
+        raw.window_handle().map(|handle| handle.as_raw()),
+        Ok(RawWindowHandle::Wayland(_))
+    ) {
+        return None;
+    }
+    let monitor = raw.current_monitor()?;
+    let size = monitor.size();
+    monitor
+        .video_modes()
+        .filter(|mode| mode.size() == size)
+        .max_by_key(winit::monitor::VideoModeHandle::refresh_rate_millihertz)
+        .map(RawFullscreen::Exclusive)
 }
 
 /// What happened to a window, in the order it happened, for whoever drives it to read.
@@ -385,6 +469,7 @@ impl Default for WindowDesc {
             format: None,
             closes: true,
             key: None,
+            fullscreen: Fullscreen::Windowed,
         }
     }
 }
@@ -569,6 +654,9 @@ struct Handler<'a> {
     /// A window to open at the first callback that can, and what opening it gave.
     opening: Option<WindowAttributes>,
     opened: Option<Result<Arc<RawWindow>, String>>,
+    /// The displays, listed at the first callback that can if they are asked for.
+    listing: bool,
+    listed: Option<Vec<Monitor>>,
 }
 
 impl Handler<'_> {
@@ -579,6 +667,15 @@ impl Handler<'_> {
                     .create_window(attributes)
                     .map(Arc::new)
                     .map_err(|problem| problem.to_string()),
+            );
+        }
+        if std::mem::take(&mut self.listing) {
+            let primary = event_loop.primary_monitor();
+            self.listed = Some(
+                event_loop
+                    .available_monitors()
+                    .map(|monitor| Monitor::of(&monitor, primary.as_ref()))
+                    .collect(),
             );
         }
     }
@@ -785,6 +882,8 @@ pub fn open(gpu: &Arc<Gpu>, desc: &WindowDesc) -> Result<Window, WindowError> {
             windows: &system.windows,
             opening: Some(attributes),
             opened: None,
+            listing: false,
+            listed: None,
         };
         // The first pump of a loop resumes it, which opens the window; later ones open it before
         // they wait. Either way one pump does it, and a few more only cover a slow compositor.
@@ -836,6 +935,9 @@ pub fn open(gpu: &Arc<Gpu>, desc: &WindowDesc) -> Result<Window, WindowError> {
         }));
         system.windows.push((id, Rc::downgrade(&state)));
         let window = Window { id, state };
+        if desc.fullscreen != Fullscreen::Windowed {
+            let _ = window.set_fullscreen(desc.fullscreen);
+        }
         if let Some(key) = &desc.key {
             system.kept.push(Kept {
                 key: key.clone(),
@@ -1033,9 +1135,44 @@ pub fn pump() {
             windows: &system.windows,
             opening: None,
             opened: None,
+            listing: false,
+            listed: None,
         };
         system.event_loop.pump_app_events(Some(Duration::ZERO), &mut handler);
     });
+}
+
+/// The displays the window system has, making the event loop on this thread if nothing has yet.
+///
+/// # Errors
+///
+/// No window system, or an event loop another thread made.
+pub fn monitors() -> Result<Vec<Monitor>, WindowError> {
+    SYSTEM.with_borrow_mut(|system| {
+        if system.is_none() {
+            *system = Some(System::new()?);
+        }
+        let Some(system) = system else {
+            unreachable!("made above");
+        };
+        let mut handler = Handler {
+            windows: &system.windows,
+            opening: None,
+            opened: None,
+            listing: true,
+            listed: None,
+        };
+        // As a window opens: one pump does it, and a few more cover a slow compositor.
+        for _ in 0..8 {
+            system.event_loop.pump_app_events(Some(Duration::ZERO), &mut handler);
+            if handler.listed.is_some() {
+                break;
+            }
+        }
+        handler
+            .listed
+            .ok_or_else(|| WindowError::System("the window system never listed its displays".to_owned()))
+    })
 }
 
 /// Ends a frame for the windows, without waiting for them to draw it.
@@ -1302,6 +1439,46 @@ impl Window {
     #[must_use]
     pub fn number(&self) -> u64 {
         u64::from(self.id)
+    }
+
+    /// How much of a display it takes now, as the window system has it: `Windowed` once it is
+    /// closed.
+    #[must_use]
+    pub fn fullscreen(&self) -> Fullscreen {
+        match self.state.borrow().raw.as_ref().and_then(|raw| raw.fullscreen()) {
+            None => Fullscreen::Windowed,
+            Some(RawFullscreen::Borderless(_)) => Fullscreen::Borderless,
+            Some(RawFullscreen::Exclusive(_)) => Fullscreen::Exclusive,
+        }
+    }
+
+    /// Asks the window system to give it the whole display it is on, or to make it a window
+    /// again; what was asked of it, which for `Exclusive` is `Borderless` where the window system
+    /// gives no window a display of its own (Wayland) or the display lists no mode. Its new size
+    /// arrives as a [`WindowEvent::Resized`] when the window system has done it.
+    #[must_use]
+    pub fn set_fullscreen(&self, wanted: Fullscreen) -> Fullscreen {
+        let Some(raw) = self.state.borrow().raw.clone() else {
+            return Fullscreen::Windowed;
+        };
+        let (asked, mode) = match wanted {
+            Fullscreen::Windowed => (wanted, None),
+            Fullscreen::Borderless => (wanted, Some(RawFullscreen::Borderless(None))),
+            Fullscreen::Exclusive => exclusive(&raw).map_or_else(
+                || (Fullscreen::Borderless, Some(RawFullscreen::Borderless(None))),
+                |mode| (wanted, Some(mode)),
+            ),
+        };
+        raw.set_fullscreen(mode);
+        asked
+    }
+
+    /// The display most of it is on, if the window system says: `None` once it is closed.
+    #[must_use]
+    pub fn monitor(&self) -> Option<Monitor> {
+        let raw = self.state.borrow().raw.clone()?;
+        let primary = raw.primary_monitor();
+        raw.current_monitor().map(|monitor| Monitor::of(&monitor, primary.as_ref()))
     }
 
     /// How it holds the pointer.
