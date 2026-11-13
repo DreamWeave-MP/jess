@@ -142,6 +142,160 @@ pub struct Lock {
     pub packages: Vec<Locked>,
 }
 
+/// What a loose script runs with when its command line names no packages: the `[scripts]` table
+/// of the workspace file above it.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Scripts {
+    /// Whether a workspace file above the script has the table.
+    found: bool,
+    /// The folder that file is in.
+    pub root: String,
+    /// The packages to activate, each a Package Source folder or a JPK, as `--package` names one.
+    pub packages: Vec<String>,
+    /// The folders to find layers and dependencies in, as `--package-path` names one.
+    pub package_paths: Vec<String>,
+    /// The layers to activate, as `--layer` names one; every layer the packages declare when
+    /// empty.
+    pub layers: Vec<String>,
+}
+
+/// What the loose script `script` runs with when its command line names no packages.
+///
+/// It is the `[scripts]` table of the nearest `jess-workspace.toml` in the script's own folder or
+/// above it, where the script is the file itself and not a link to it. `None` when there is no
+/// such file, it has no such table, or it is not the current user's to have written (below). Only
+/// the file is read, so a workspace whose lock is stale still runs a loose script.
+///
+/// The table chooses code that runs with what the script was granted, and a script does not
+/// choose the folders above it. So on Unix the nearest workspace file counts only when it is a
+/// plain file, never a link to one; the user running the script owns it and nobody else may
+/// write it; and the same is true of the folder it is in, so that nobody else can swap the file,
+/// link another user's into its place, or put packages beside it. Anything less is passed over as
+/// if no file were there, and so is everything above it. The file is opened once: what is judged
+/// is what is read.
+///
+/// Every package the table names, and every entry of a folder it names, must be inside the
+/// workspace once links are followed.
+///
+/// # Errors
+///
+/// Returns an error if that workspace file can't be read or is malformed, or names something
+/// outside the workspace.
+pub fn scripts(runtime: &Runtime, script: &Path) -> l3i::Result<Option<Scripts>> {
+    let Some((root, text)) = scripts_file(script).map_err(crate::lua::error)? else {
+        return Ok(None);
+    };
+    let shape = serde_json::json!({
+        "found": false, "root": "", "packages": [""], "packagePaths": [""], "layers": [""],
+    });
+    let scripts: Scripts = package::bootstrap(runtime, "workspaceScripts", &shape, (root.display().to_string(), text))?;
+    if !scripts.found {
+        return Ok(None);
+    }
+    for folder in &scripts.package_paths {
+        held_inside(Path::new(&scripts.root), Path::new(folder)).map_err(crate::lua::error)?;
+    }
+    Ok(Some(scripts))
+}
+
+/// The workspace file's name.
+const WORKSPACE_FILE: &str = "jess-workspace.toml";
+
+/// The folder and text of the workspace file a loose script's packages come from, if there is one
+/// they may come from: the nearest at or above the script's own folder.
+fn scripts_file(script: &Path) -> Result<Option<(PathBuf, String)>, String> {
+    // The script's own place, not a link's: a program linked into a folder of programs still runs
+    // with its own folder's packages. Windows is left its plain absolute path, whose canonical
+    // form the workspace's own reader makes.
+    #[cfg(unix)]
+    let script = std::fs::canonicalize(script);
+    #[cfg(not(unix))]
+    let script = std::path::absolute(script);
+    // A script that isn't there has nothing above it; running it says so better.
+    let Ok(script) = script else {
+        return Ok(None);
+    };
+    let mut folder = script.parent();
+    while let Some(at) = folder {
+        let file = at.join(WORKSPACE_FILE);
+        // Whatever has the name, other than a folder, is the nearest: it decides, even when the
+        // decision is that it may not be used.
+        if std::fs::symlink_metadata(&file).is_ok_and(|found| !found.is_dir()) {
+            return read_own(at, &file).map(|text| text.map(|text| (at.to_path_buf(), text)));
+        }
+        folder = at.parent();
+    }
+    Ok(None)
+}
+
+/// The text of the workspace file `file` in `folder`, or `None` when it is not the current
+/// user's to have written.
+#[cfg(unix)]
+fn read_own(folder: &Path, file: &Path) -> Result<Option<String>, String> {
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    /// Write permission for the group and for everyone else.
+    const OTHERS_WRITE: u32 = 0o022;
+    // SAFETY: `geteuid` takes nothing, touches no memory, and cannot fail.
+    let user = unsafe { libc::geteuid() };
+    let own = |metadata: &std::fs::Metadata| metadata.uid() == user && metadata.mode() & OTHERS_WRITE == 0;
+    // The folder first: in one that is the user's alone, nobody else made what has the name, and
+    // nobody else can change which file has it from here on.
+    if !std::fs::metadata(folder).is_ok_and(|around| own(&around)) {
+        return Ok(None);
+    }
+    // The user's own link is still not the file it names: the table's paths are below this folder.
+    if std::fs::symlink_metadata(file).is_ok_and(|found| found.is_symlink()) {
+        return Ok(None);
+    }
+    let failed = |error: std::io::Error| format!("'{}': {error}", file.display());
+    // Never through a link, and never waiting on a FIFO: the handle opened here is the one whose
+    // owner is asked and whose bytes are read. A file of the user's that will not open is theirs
+    // to hear about.
+    let mut opened = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(file)
+        .map_err(failed)?;
+    let metadata = opened.metadata().map_err(failed)?;
+    if !metadata.is_file() || !own(&metadata) {
+        return Ok(None);
+    }
+    let mut text = String::new();
+    opened.read_to_string(&mut text).map(|_| Some(text)).map_err(failed)
+}
+
+/// The text of the workspace file `file`: whose it is isn't asked on a system this build has no
+/// way to ask it of.
+#[cfg(not(unix))]
+fn read_own(_: &Path, file: &Path) -> Result<Option<String>, String> {
+    std::fs::read_to_string(file)
+        .map(Some)
+        .map_err(|error| format!("'{}': {error}", file.display()))
+}
+
+/// Refuses an entry of `folder`, a folder of packages a `[scripts]` table names, that a link
+/// leads out of the workspace at `root`. A folder that isn't there has nothing to refuse.
+fn held_inside(root: &Path, folder: &Path) -> Result<(), String> {
+    let (Ok(root), Ok(entries)) = (std::fs::canonicalize(root), std::fs::read_dir(folder)) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if let Ok(resolved) = std::fs::canonicalize(&path)
+            && !resolved.starts_with(&root)
+        {
+            return Err(format!(
+                "'{}': [scripts] package_path holds '{}', which is '{}', outside the workspace",
+                root.join(WORKSPACE_FILE).display(),
+                path.display(),
+                resolved.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// A package id and the content digest a resolution holds it to.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Pin {

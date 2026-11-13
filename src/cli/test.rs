@@ -36,11 +36,13 @@ pub struct TestArgs {
 
 pub fn run(args: &TestArgs, format: Format) -> Result<(), String> {
     let grant = jess::lua::host_script_grant(&args.capabilities);
+    // The modules of one run are one folder's tests: what the first runs with, they all do.
     let named = crate::run::Named {
         packages: &args.packages,
         layers: &args.layers,
         paths: &args.package_paths,
-    };
+    }
+    .resolve(None, &args.modules[0])?;
     let report = jess::lua::testing::run_prepared(
         &jess::lua::Options::default(),
         &grant,

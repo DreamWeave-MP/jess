@@ -194,6 +194,17 @@ type Universe = {
 --- runs when it is run without a name.
 type Packing = { read targets: { string }?, read default: string? }
 
+--- What a loose script under a workspace's folder runs with when its command line names no
+--- packages, as the workspace file's `[scripts]` table says: the packages, each a Package Source
+--- folder or a JPK, the folders to find layers and dependencies in, and the layers, every one the
+--- packages declare when it names none. Locations, each below `root`.
+export type Scripts = {
+  read root: string,
+  read packages: { string },
+  read packagePaths: { string },
+  read layers: { string },
+}
+
 --- What `jess.lock` pins, and whether that is what the members need: `fresh` when it is,
 --- `stale` when the members need something it doesn't pin, or something else, and `missing` when
 --- it is but `.jess/packages` lacks a package it pins. A workspace that needs nothing beyond its
@@ -348,6 +359,83 @@ local function packing(document: { [string]: unknown }, where: string): Packing
   return table.freeze { targets = table.freeze(targets), default = default :: string? }
 end
 
+--- The tables a workspace file may have.
+local WorkspaceKeys = { 'manifest_version', 'workspace', 'dev-dependencies', 'pack', 'scripts' }
+
+--- One path of the workspace file's `[scripts]` table: names joined by `/`, below the workspace.
+local function checkScriptPath(path: unknown, where: string, key: string): string
+  if type(path) ~= 'string' then fail(`{where}: [scripts] {key} is a list of paths, as strings`) end
+
+  local text = path :: string
+  local plain = text ~= ''
+    and not string.find(text, '\\', 1, true)
+    and not string.find(text, ':', 1, true)
+    and string.sub(text, 1, 1) ~= '/'
+
+  for _, name in string.split(text, '/') do
+    if name == '' or name == '.' or name == '..' then plain = false end
+  end
+
+  if not plain then
+    fail(`{where}: [scripts] {key} '{text}' is not a path of names below the workspace (packages/tool.jpk)`)
+  end
+
+  return text
+end
+
+--- The workspace file's `[scripts]` table, or nil when it has none: what a loose script below
+--- `root` runs with when its command line names no packages.
+local function scripting(document: { [string]: unknown }, root: string, where: string): Scripts?
+  local section = document.scripts
+
+  if section == nil then return nil end
+
+  if type(section) ~= 'table' then fail(`{where}: [scripts] is a table`) end
+
+  local fields = section :: { [string]: unknown }
+  checkKeys(fields, { 'packages', 'package_path', 'layers' }, `{where} [scripts]`)
+
+  local function paths(key: string): { string }
+    local listed = fields[key]
+    local found: { string } = {}
+
+    if listed == nil then return found end
+
+    if type(listed) ~= 'table' then fail(`{where}: [scripts] {key} is a list of paths, as strings`) end
+
+    for _, path in listed :: { unknown } do
+      table.insert(found, `{root}/{checkScriptPath(path, where, key)}`)
+    end
+
+    return found
+  end
+
+  local layers: { string } = {}
+
+  if fields.layers ~= nil then
+    if type(fields.layers) ~= 'table' then fail(`{where}: [scripts] layers is a list of layer ids`) end
+
+    for _, id in fields.layers :: { unknown } do
+      if type(id) ~= 'string' or id == '' then fail(`{where}: [scripts] layers is a list of layer ids`) end
+
+      table.insert(layers, id :: string)
+    end
+  end
+
+  local packages, packagePaths = paths('packages'), paths('package_path')
+
+  if #packages == 0 and #packagePaths == 0 then
+    fail(`{where}: [scripts] names no packages: list them in packages, or folders of them in package_path`)
+  end
+
+  return table.freeze {
+    root = root,
+    packages = table.freeze(packages),
+    packagePaths = table.freeze(packagePaths),
+    layers = table.freeze(layers),
+  }
+end
+
 --- The members the workspace file at `root` lists, in its order, its `[dev-dependencies]`, and
 --- its `[pack]`.
 local function listed(root: string): ({ string }, { [string]: string }, Packing)
@@ -357,9 +445,13 @@ local function listed(root: string): ({ string }, { [string]: string }, Packing)
   if not text then fail(`{where} is not there`) end
 
   local document = readToml(`{root}/{WorkspaceFile}`, text :: buffer)
-  checkKeys(document, { 'manifest_version', 'workspace', 'dev-dependencies', 'pack' }, where)
+  checkKeys(document, WorkspaceKeys, where)
 
   if document.manifest_version ~= 1 then fail(`{where}: manifest_version must be 1`) end
+
+  -- Read for its errors: a workspace with a [scripts] table nothing could use says so when it is
+  -- opened, not only when a script is run.
+  scripting(document, root, where)
 
   local section = document.workspace
 
@@ -385,6 +477,43 @@ local function listed(root: string): ({ string }, { [string]: string }, Packing)
   if #paths ~= count then fail(`{where}: [workspace] members must be a list of folders`) end
 
   return paths, tooling(document, where), packing(document, where)
+end
+
+--- What a loose script runs with when its command line names no packages: the `[scripts]` table
+--- of the workspace file in `folder`, or nil when the file has no such table. `text` is that
+--- file's, as the host read it: the host found the file above the script and judged whose it is,
+--- and what it judged is what is read here, not whatever has the name by now. The file is held to
+--- what any reader holds it to, but its members and its lock are not read: they are not a loose
+--- script's concern, and an unsynced workspace still runs one. A package reached through a link
+--- must land inside the workspace, as a member must.
+local function scripts(folder: string, text: string): Scripts?
+  local root = host.canonical(folder) or fail(`'{folder}' is not there`)
+  local path = `{root}/{WorkspaceFile}`
+  local where = `'{path}'`
+  local document = readToml(path, buffer.fromstring(text))
+  checkKeys(document, WorkspaceKeys, where)
+
+  if document.manifest_version ~= 1 then fail(`{where}: manifest_version must be 1`) end
+
+  local named = scripting(document, root, where)
+
+  if not named then return nil end
+
+  local function inside(locations: { string })
+    for _, location in locations do
+      local resolved = host.canonical(location)
+
+      if resolved and not host.relative(root, resolved) then
+        fail(`{where}: [scripts] '{location}' is '{resolved}', outside the workspace`)
+      end
+    end
+  end
+
+  -- The entries of a package path are the host's to hold inside: this module lists no folders.
+  inside(named.packages)
+  inside(named.packagePaths)
+
+  return named
 end
 
 --- Where member `path` of the workspace at `root` is, or nil when nothing is there.
@@ -1917,6 +2046,7 @@ return function(
   return {
     open = open,
     discover = discover,
+    scripts = scripts,
     describe = describe,
     verify = verify,
     target = target,

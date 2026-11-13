@@ -28,14 +28,21 @@ pub struct CheckArgs {
 }
 
 pub fn run(args: &CheckArgs, format: Format) -> Result<(), String> {
-    let texts = |paths: &[PathBuf]| paths.iter().map(|path| path.display().to_string()).collect::<Vec<_>>();
+    // The scripts of one check are one folder's: what the first runs with, they are all typed
+    // against.
+    let named = crate::run::Named {
+        packages: &args.packages,
+        layers: &args.layers,
+        paths: &args.package_paths,
+    }
+    .resolve(None, &args.scripts[0])?;
     let report = jess::lua::check::check_scripts(
         &jess::lua::Options::default(),
         &args.scripts,
-        &texts(&args.packages),
-        &args.layers,
+        &named.packages,
+        &named.layers,
         &jess::lua::package::Search {
-            paths: texts(&args.package_paths),
+            paths: named.paths,
             ..Default::default()
         },
     )

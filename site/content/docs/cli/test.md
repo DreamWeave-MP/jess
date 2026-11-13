@@ -17,6 +17,8 @@ Runs Luau test modules. Each is a file that returns a suite made with [`@jess/te
 | `--capability NAME` | Grant the modules a capability they don't hold by default (repeatable), as [`jess run`](@/docs/cli/run.md#capabilities) does: test modules hold the terminal and the input devices, and everything else, such as `filesystem.read` for a suite that reads files, is a flag away. |
 | `--package PACKAGE`, `--package-path FOLDER`, `--layer ID` | Activate packages before each module runs, exactly as [`jess run`](@/docs/cli/run.md) takes them, so a module can `require` what they export. They are activated in every module's VM, so a layer's entrypoint runs once a module, and what it prints lands before the report; with `--shared` they are activated once, in the one VM. A package's own tests belong to it instead: list them under `tests` in its manifest and [`jess package test`](@/docs/cli/package.md) runs them from source and packed, with its dependencies. |
 
+With none of the three, the modules run with what the `[scripts]` table of the workspace file above them names, as [`jess run`](@/docs/cli/run.md#the-folder-s-packages) does; the table is found from the first module's folder.
+
 Plus the [global options](@/docs/cli/global-options.md). Like `jess run`, a test module holds its terminal and the input devices and nothing else until a flag says otherwise.
 
 ```luau
