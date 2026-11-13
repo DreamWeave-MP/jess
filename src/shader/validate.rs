@@ -942,8 +942,7 @@ fn check_declarations(program: &Program, errors: &mut Vec<ValidationError>) {
         uniform_stride_errors(program, &layout, uniform.ty, &path, errors);
     }
     let count = layout
-        .vertex_buffers
-        .iter()
+        .buffers()
         .flat_map(|buffer| &buffer.attributes)
         .map(|layout| layout.locations)
         .sum();

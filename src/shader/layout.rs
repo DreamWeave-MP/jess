@@ -230,6 +230,10 @@ pub struct GroupLayout {
     pub storage: Vec<StorageBinding>,
 }
 
+/// The most streams a program may read: a device binds eight vertex buffers, and a draw's
+/// vertices and instances are two of them.
+pub const MAX_STREAMS: usize = 6;
+
 /// Everything about where a program's interface lives.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProgramLayout {
@@ -239,6 +243,9 @@ pub struct ProgramLayout {
     pub groups: [GroupLayout; 3],
     /// The per-vertex buffer (0) and per-instance buffer (1).
     pub vertex_buffers: [VertexBufferLayout; 2],
+    /// The streams: the per-vertex buffers beside the first, by stream number less one. One no
+    /// attribute was declared into is empty.
+    pub streams: Vec<VertexBufferLayout>,
 }
 
 impl ProgramLayout {
@@ -293,11 +300,13 @@ impl ProgramLayout {
             }
         });
 
+        // Locations run through the per-vertex buffer, then the per-instance one, then each
+        // stream, so a program gains a stream without anything it had moving.
         let mut location = 0;
-        let vertex_buffers = Rate::ALL.map(|rate| {
+        let mut buffer_of = |rate: Rate, stream: u32| {
             let mut buffer = VertexBufferLayout::default();
             for (index, attribute) in attributes.iter().enumerate() {
-                if attribute.rate != rate {
+                if attribute.rate != rate || attribute.stream != stream {
                     continue;
                 }
                 let locations = attribute.ty.column().map_or(1, |column| u32::from(column.components()));
@@ -312,12 +321,21 @@ impl ProgramLayout {
                 location += locations;
             }
             buffer
-        });
+        };
+        let vertex_buffers = Rate::ALL.map(|rate| buffer_of(rate, 0));
+        let last = attributes
+            .iter()
+            .filter(|attribute| attribute.rate == Rate::Vertex)
+            .map(|attribute| attribute.stream)
+            .max()
+            .unwrap_or(0);
+        let streams = (1..=last).map(|stream| buffer_of(Rate::Vertex, stream)).collect();
 
         ProgramLayout {
             structs: struct_layouts,
             groups,
             vertex_buffers,
+            streams,
         }
     }
 
@@ -362,9 +380,14 @@ impl ProgramLayout {
     /// Where `attribute` is in its buffer.
     #[must_use]
     pub fn attribute(&self, attribute: AttributeId) -> Option<&AttributeLayout> {
-        self.vertex_buffers
-            .iter()
+        self.buffers()
             .flat_map(|buffer| &buffer.attributes)
             .find(|layout| layout.attribute == attribute)
+    }
+
+    /// Every vertex buffer a draw of the program binds, in slot order: per vertex, per instance,
+    /// then each stream.
+    pub fn buffers(&self) -> impl Iterator<Item = &VertexBufferLayout> {
+        self.vertex_buffers.iter().chain(&self.streams)
     }
 }
