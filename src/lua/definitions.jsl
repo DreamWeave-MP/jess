@@ -4078,7 +4078,7 @@ Related: [jess.gpu](@/docs/api/gpu.md), [@jess/render](@/docs/api/render.md), [S
 | `@jess/l10n` | Localized text from message bundles | [@jess/l10n](@/docs/api/l10n.md) |
 | `@jess/input` | Action graphs, labels, conflicts, intents, and the input runtime | [@jess/input](@/docs/api/input.md) |
 | `@jess/audio` | Voices on a sample clock through a graph of buses and processors, streams and feeds, voices in space, tempo maps, offline renders, WAV, and compressed files | [@jess/audio](@/docs/api/audio.md) |
-| `@jess/render`, `@jess/render/camera` | Writers for shader layouts and a standard camera | [@jess/render](@/docs/api/render.md) |
+| `@jess/render`, `@jess/render/camera`, `@jess/render/cull` | Writers for shader layouts, a standard camera, and what it may see | [@jess/render](@/docs/api/render.md) |
 | `@jess/backup` | Overwrite a file, keeping what was there as `.bak` | [@jess/backup](@/docs/api/backup.md) |
 | `@jess/http` | HTTP/1.1 clients and servers, including streaming and connection pooling | [@jess/http](@/docs/api/http.md) |
 | `@jess/net` | Tasks on an event loop, sockets, lookups, timers, and buffered connections | [@jess/net](@/docs/api/net.md) |

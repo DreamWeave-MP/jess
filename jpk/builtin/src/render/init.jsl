@@ -431,4 +431,45 @@ print(pass.size, string.format('%.3f', origin.z))
 
 `pass:upload(cameraBuffer)` then writes the block into a uniform buffer of `pass.size` bytes, which `pipeline:bind('pass', { [0] = cameraBuffer })` binds. The [windowed application](@/docs/scripting/applications.md#a-window) does exactly that every frame.
 
+## Culling
+
+`@jess/render/cull` says which of a scene's bounding spheres the camera may see, so a script hides the rest. It is a loop over every sphere, every frame, which is why it is one of the few modules compiled natively.
+
+{{ api_symbol(value="@jess/render/cull.spheres") }}
+
+| Argument | Holds |
+| --- | --- |
+| `bounds` | Each sphere as four `f32`s, 16 bytes: its center's `x`, `y`, `z`, and its radius. |
+| `count` | How many spheres. |
+| `viewProjection` | Projection after view: `camera.multiply(projection, view)`. |
+| `mask` | Gets a byte a sphere: 1 where any of it is inside all six planes of the view, 0 where it is wholly outside one. |
+| `maskOffset` | Where in `mask` the first byte goes; 0 by default. |
+
+It returns how many it marked. The test errs toward drawing: a sphere beside a corner of the view may be marked though none of it shows. The mask is what [`GpuVisibility:show`](@/docs/api/gpu.md#gpudevice-visibility) takes, so culling a scene is two calls and one change to a commit:
+
+```luau
+--!strict
+local camera = require '@jess/render/camera'
+local cull = require '@jess/render/cull'
+
+-- Three spheres of radius 1: ahead of the camera, behind it, and far off to one side.
+local bounds = buffer.create(48)
+for index, center in { { 0, 0, -10 }, { 0, 0, 10 }, { 500, 0, -10 } } do
+  local at = (index - 1) * 16
+  buffer.writef32(bounds, at, center[1])
+  buffer.writef32(bounds, at + 4, center[2])
+  buffer.writef32(bounds, at + 8, center[3])
+  buffer.writef32(bounds, at + 12, 1)
+end
+
+local view = camera.lookAt(vector.zero, vector.create(0, 0, -1), vector.create(0, 1, 0))
+local projection = camera.perspective(math.rad(60), 16 / 9, 0.1, 100)
+local mask = buffer.create(3)
+local visible = cull.spheres(bounds, 3, camera.multiply(projection, view), mask)
+print(visible, buffer.readu8(mask, 0), buffer.readu8(mask, 1), buffer.readu8(mask, 2))
+-- 1  1  0  0
+```
+
+With `local visibility = device:visibility(sets)` made once for the sets those spheres bound, `visibility:show(mask)` then shows and hides them.
+
 ]========]

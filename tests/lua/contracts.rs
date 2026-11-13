@@ -120,6 +120,7 @@ fn the_types_cover_exactly_the_kernel_s_modules() {
             "@jess/package",
             "@jess/render",
             "@jess/render/camera",
+            "@jess/render/cull",
             "@jess/shader",
             "@jess/sharedBuffer",
             "@jess/sse",

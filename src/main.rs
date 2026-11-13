@@ -10,6 +10,8 @@ use clap_complete::Shell;
 mod application;
 #[path = "cli/check.rs"]
 mod check;
+#[path = "cli/docs.rs"]
+mod docs;
 #[path = "cli/init.rs"]
 mod init;
 #[path = "cli/install.rs"]
@@ -31,6 +33,7 @@ mod workspace;
 const START_HERE: &str = "Start here:
   jess init my-scripts        Set up a folder for Luau scripts, with types for your editor
   jess run script.jsl        Run a Luau script with the jess API
+  jess docs                  Read the guide here, without the network
 
 Docs: https://DreamWeave-MP.github.io/jess";
 
@@ -88,6 +91,8 @@ enum Command {
     Init(Box<init::InitArgs>),
     /// Write jess's Luau types into a folder: jess.d.jsl and one stub module per require name.
     LuauTypes(Box<types::LuauTypesArgs>),
+    /// Read the guide this jess carries: the pages it has, or one of them.
+    Docs(Box<docs::DocsArgs>),
     /// Generate shell completion scripts.
     Completions(Box<CompletionsArgs>),
     /// Generate man pages: jess(1) to stdout, or one page per command into a folder.
@@ -260,6 +265,7 @@ fn run(cli: Cli) -> Result<u8, String> {
         }
         Command::Man(args) => man(args.output.as_deref(), cli.format.unwrap_or(output::Format::Yaml)).map(|()| 0),
         Command::LuauTypes(args) => types::run(&args, cli.format.unwrap_or(output::Format::Yaml)).map(|()| 0),
+        Command::Docs(args) => docs::run(&args).map(|()| 0),
         Command::Run(args) => run::run(&args),
         Command::Test(args) => test::run(&args, cli.format.unwrap_or(output::Format::Yaml)).map(|()| 0),
         Command::Check(args) => check::run(&args, cli.format.unwrap_or(output::Format::Yaml)).map(|()| 0),
@@ -325,6 +331,7 @@ mod tests {
             [
                 "check",
                 "completions",
+                "docs",
                 "init",
                 "install",
                 "luau-types",

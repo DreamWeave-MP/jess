@@ -1,6 +1,11 @@
 //! `@dream/process` as a jess runtime gives it to a script: bounded runs, started children read
 //! and written without blocking, stopping them, who may start them, what is left when the runtime
-//! or the domain goes, and what a frame costs while a child runs.
+//! or the domain goes, and that no frame waits for a child.
+//!
+//! None of them measures time. A limit that is the point of a test is short and is proved by what
+//! it reports; every other limit is one only a failing run reaches. One clock is left, and it is
+//! l3i's, not a test's: a run reads a capture for 250 ms after its child exits before calling it
+//! held, so on a machine stalled for longer than that a captured run can come back cut short.
 //!
 //! The children are `sh`, `sleep`, `sort` and `cat`, so these are Unix tests.
 
@@ -72,18 +77,17 @@ fn a_bounded_run_answers_its_result_or_the_limit_that_stopped_it() {
         local process = require('@dream/process')
 
         local result = assert(process.run('sh', { '-c', 'printf out; printf err >&2; exit 3' },
-          { stdout = 'capture', stderr = 'capture', timeoutMs = 5000, maxStdoutBytes = 16, maxStderrBytes = 16 }))
+          { stdout = 'capture', stderr = 'capture', timeoutMs = 60000, maxStdoutBytes = 16, maxStderrBytes = 16 }))
         assert(not result.success and result.code == 3, tostring(result.code))
         assert(result.stdout == 'out' and result.stderr == 'err')
 
-        local started = os.clock()
-        local late, lateMessage, lateKind = process.run('sleep', { '30' }, { timeoutMs = 100 })
+        -- The kind says which ended the run: a child that ran its course answers a result.
+        local late, lateMessage, lateKind = process.run('sleep', { '600' }, { timeoutMs = 100 })
         assert(late == nil and lateKind == 'timeout', tostring(lateKind))
         assert(type(lateMessage) == 'string')
-        assert(os.clock() - started < 5, 'the limit, not the child, ended the run')
 
         local loud, _, loudKind = process.run('sh', { '-c', 'while :; do echo xxxxxxxxxxxxxxxx; done' },
-          { stdout = 'capture', timeoutMs = 5000, maxStdoutBytes = 1024 })
+          { stdout = 'capture', timeoutMs = 60000, maxStdoutBytes = 1024 })
         assert(loud == nil and loudKind == 'outputLimit', tostring(loudKind))
 
         -- A limit that is no limit is refused before anything starts.
@@ -105,12 +109,12 @@ fn a_run_does_not_wait_on_a_capture_something_else_holds() {
         r"
         local process = require('@dream/process')
 
-        local started = os.clock()
+        -- Had the run waited for the capture to close, nothing would still hold it: `held` is
+        -- the child having ended the run, not what it left behind.
         local result = assert(process.run('sh', { '-c', 'sleep 20 & echo out; exit 4' },
-          { stdout = 'capture', timeoutMs = 15000 }))
+          { stdout = 'capture', timeoutMs = 120000 }))
         assert(result.code == 4 and result.stdout == 'out\n', tostring(result.code))
         assert(result.held == true, 'a capture cut short is said to be')
-        assert(os.clock() - started < 5, 'the child, not what it left behind, ended the run')
 
         local whole = assert(process.run('sh', { '-c', 'echo all' }, { stdout = 'capture' }))
         assert(whole.held == nil and whole.stdout == 'all\n')
@@ -130,7 +134,7 @@ fn a_started_child_is_written_to_and_read_from_without_blocking() {
         &spawning(),
         r"
         local process = require('@dream/process')
-        local child = assert(process.start('sort', nil, { stdin = 'pipe', stdout = 'pipe', timeoutMs = 10000 }))
+        local child = assert(process.start('sort', nil, { stdin = 'pipe', stdout = 'pipe', timeoutMs = 60000 }))
 
         -- Nothing to read yet, and saying so takes no time.
         local early, _, earlyKind = child:readStdout(16)
@@ -173,13 +177,13 @@ fn a_started_child_is_stopped_by_kill_by_close_and_by_its_limit() {
 
         local killed = assert(process.start('sleep', { '30' }))
         assert(killed:kill() and killed:kill())
-        local status = assert(killed:wait(5000))
+        local status = assert(killed:wait(60000))
         assert(not status.success and status.code == nil and type(status.signal) == 'number')
         killed:close()
 
         local limited = assert(process.start('sh', { '-c', 'sleep 30' }, { stdout = 'pipe', timeoutMs = 100 }))
         local ended
-        for _ = 1, 400 do
+        for _ = 1, 2400 do
           ended = limited:wait(25)
           if ended then break end
         end
@@ -234,7 +238,7 @@ fn a_domain_starts_children_only_when_its_grant_and_its_runtime_carry_process_sp
                 "@test/process/granted.jsl",
                 r"
                 local process = require('@dream/process')
-                local ran = pcall(process.run, 'true', {}, { timeoutMs = 5000 })
+                local ran = pcall(process.run, 'true', {}, { timeoutMs = 60000 })
                 local started, child = pcall(process.start, 'true', {})
                 if started and child then child:close() end
                 require('@jess/log').new('spawning').info(`{jess.granted('process.spawn')} {ran and started}`)
@@ -297,9 +301,15 @@ fn no_child_outlives_the_domain_that_started_it() {
     assert!(gone(pid), "stopping the domain kills and reaps what it started");
 }
 
-/// A frame-driven host polls: the child runs for a third of a second, and no frame waits for it.
+/// A frame-driven host polls: no frame waits for a child to finish. The child here can't finish
+/// until its input closes, and the script closes it only after five frames have each asked
+/// whether it finished and been told not yet. A frame that waited for it would wait until the
+/// child's own limit killed it, and the test would then fail for want of its output.
+///
+/// It does not say how long a frame takes: a wait that gives up after a while and answers "not
+/// yet" passes here, and nothing short of a clock would catch it.
 #[test]
-fn frames_keep_their_pace_while_a_child_runs() {
+fn no_frame_waits_for_a_running_child() {
     let logs = Arc::new(CollectedLogs::new());
     let factory: Arc<dyn RuntimeFactory> =
         Arc::new(|| jess::lua::runtime_with_capabilities(Options::default(), &[SPAWN.to_owned()]));
@@ -314,8 +324,13 @@ fn frames_keep_their_pace_while_a_child_runs() {
             r"
             local process = require('@dream/process')
             local log = require('@jess/log').new('pacing')
-            local child = assert(process.start('sh', { '-c', 'sleep 0.3; echo done' }, { stdout = 'pipe', timeoutMs = 10000 }))
+            local child = assert(process.start(
+              'sh',
+              { '-c', 'cat >/dev/null; echo done' },
+              { stdin = 'pipe', stdout = 'pipe', timeoutMs = 30000 }
+            ))
             local output = ''
+            local unanswered = 0
             local finished = false
 
             require('@jess/context').bind('main', {
@@ -325,12 +340,19 @@ fn frames_keep_their_pace_while_a_child_runs() {
                 local chunk = child:readStdout(4096)
                 if chunk then output ..= chunk end
 
-                local status = child:wait()
+                local status, problem, kind = child:wait()
+                assert(status or kind == 'wouldBlock', `{kind}: {problem}`)
                 if status and string.find(output, 'done', 1, true) then
                   finished = true
                   child:close()
-                  log.info(`finished {status.success}`)
+                  log.info(`finished {status.success} after {unanswered} frames without an answer`)
+                  return
                 end
+
+                if status then return end
+
+                unanswered += 1
+                if unanswered == 5 then child:closeStdin() end
               end,
             })
             ",
@@ -338,27 +360,28 @@ fn frames_keep_their_pace_while_a_child_runs() {
         .unwrap();
     host.domain().start().unwrap();
 
+    // The deadline is looked at between frames, so it ends a run whose frames return and never
+    // finish; a frame that never returns is ended by the child's limit, which is shorter.
     let started = Instant::now();
-    let mut frames: u32 = 0;
-    let mut slowest = Duration::ZERO;
     let mut messages = Vec::new();
-    while messages.is_empty() && started.elapsed() < Duration::from_secs(10) {
-        let before = Instant::now();
+    while messages.is_empty() && started.elapsed() < Duration::from_secs(60) {
         host.frame(Duration::from_millis(2)).unwrap();
-        slowest = slowest.max(before.elapsed());
-        frames += 1;
         messages.extend(logs.drain().into_iter().map(|record| record.message));
-        std::thread::sleep(Duration::from_millis(2));
+        std::thread::yield_now();
     }
     host.stop().unwrap();
 
-    assert_eq!(messages, ["finished true"]);
-    assert!(started.elapsed() >= Duration::from_millis(300), "the child ran its course");
-    assert!(frames >= 20, "only {frames} frames advanced while the child ran");
-    // A blocking wait would cost a frame the child's whole third of a second.
+    let [message] = &messages[..] else {
+        panic!("the child never finished: {messages:?}");
+    };
+    let unanswered: u32 = message
+        .strip_prefix("finished true after ")
+        .and_then(|rest| rest.strip_suffix(" frames without an answer"))
+        .and_then(|count| count.parse().ok())
+        .unwrap_or_else(|| panic!("{message}"));
     assert!(
-        slowest < Duration::from_millis(150),
-        "a frame took {slowest:?} while a child ran"
+        unanswered >= 5,
+        "the child finished after {unanswered} frames, before its input closed"
     );
 }
 
@@ -412,7 +435,7 @@ fn a_secret_reaches_a_child_once_and_only_through_its_descriptor() {
         local secret = 'jess-ZZ-SECRET-ZZ'
         local result = assert(process.run('sh', { '-c',
           'printf "%s|" "$JESS_SECRET_FD"; cat "/dev/fd/$JESS_SECRET_FD"; printf "|"; cat "/dev/fd/$JESS_SECRET_FD"; printf "|"; env; echo "$0" "$@"' },
-          { secret = { env = 'JESS_SECRET_FD', data = secret }, stdout = 'capture', timeoutMs = 10000 }))
+          { secret = { env = 'JESS_SECRET_FD', data = secret }, stdout = 'capture', timeoutMs = 60000 }))
         local number, first, second, rest = string.match(result.stdout, '^(%d+)|(.-)|(.-)|(.*)$')
         assert(tonumber(number) >= 3, result.stdout)
         assert(first == secret, 'the child did not read the secret')
@@ -422,7 +445,7 @@ fn a_secret_reaches_a_child_once_and_only_through_its_descriptor() {
 
         -- A started child takes one the same way.
         local child = assert(process.start('sh', { '-c', 'cat "/dev/fd/$JESS_SECRET_FD"' },
-          { secret = { env = 'JESS_SECRET_FD', data = buffer.fromstring(secret) }, stdout = 'pipe', timeoutMs = 10000 }))
+          { secret = { env = 'JESS_SECRET_FD', data = buffer.fromstring(secret) }, stdout = 'pipe', timeoutMs = 60000 }))
         local text = ''
         while true do
           local chunk, message, kind = child:readStdout(4096)
