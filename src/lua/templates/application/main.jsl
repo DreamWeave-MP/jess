@@ -1,0 +1,4 @@
+--!strict
+-- The target's entry: it runs once, before the first frame, with the command line's arguments.
+-- What the host calls every frame is in the managed module the manifest names, src/app.jsl.
+print(`__NAME__: close the window to stop (arguments: {select('#', ...)})`)

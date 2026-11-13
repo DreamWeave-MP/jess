@@ -429,9 +429,7 @@ pub fn check_scripts(
             }
         }
         if layers.is_empty() && roots.is_empty() {
-            return Err(error(
-                "a package path offers packages without choosing any: name a layer with --layer".to_owned(),
-            ));
+            return Err(error(package::unchosen(&runtime, &search.paths)));
         }
         let search = Search { roots, ..search.clone() };
         package::mount_with(&runtime, packages, &layers, None, &search)?;

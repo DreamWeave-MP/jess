@@ -18,7 +18,7 @@ Runs a Luau script with the whole jess API loaded. The second form, a `.jsl` pat
 | `[ARGS]...` | Everything after the script, passed to it as strings. Flags here belong to the script, not to jess: `jess run fix.jsl --verbose` hands `--verbose` to `fix.jsl`. |
 | `--package PACKAGE` | Activate a [package](@/docs/scripting/packages.md), a Package Source folder or a `.jpk`, before the script runs (repeatable). Its exports are then `require`-able by the script, and the activated layers' entrypoints have run. |
 | `--package-path FOLDER` | A folder of packages to find layers and dependencies in (repeatable): each Package Source folder and `.jpk` directly inside it, opened only when one is needed. A package named with `--package` is chosen over one found here; two found for one need are an error. |
-| `--layer ID` | Activate only this layer of the packages, and the layers it requires (repeatable). Without any, every layer they declare. Needs `--package`. |
+| `--layer ID` | Activate only this layer of the packages, and the layers it requires (repeatable). Without any, every layer the packages named with `--package` declare. A package path chooses nothing by itself: with only `--package-path`, name a layer, or the error lists what the path holds, `error: a package path offers packages without choosing any: name one with --package, or a layer with --layer; found packages/greeter.jpk (layers: example.greeter)`. |
 | `--capability NAME` | Grant the script a capability it doesn't hold by default (repeatable): `filesystem.read`, `network.transport`, and the rest of the [list](@/docs/reference/capabilities.md). A name no part of jess declares is an error, not a grant of nothing. |
 | `--trusted` | Grant the script every capability, the same as running it as a program with `jess script.jsl`. Can't be combined with `--capability`: it is all of them. |
 | `--profile` | After the script, print its call, sampling, and native-block statistics. |
@@ -148,7 +148,7 @@ $ jess run --capability filesystem.read read.jsl
 
 A script can ask instead of trying: [`jess.granted`](@/docs/api/jess.md#jess-granted) says whether it holds a capability, so a tool can explain which flag it wants rather than fail halfway. [Capabilities](@/docs/reference/capabilities.md) lists every name, what asks for it, and what grants it.
 
-There's no script domain under `jess run`, so `jess.worker.spawn` and `jess.context.bind` refuse: `worker.spawn: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and command targets run scripts outside one`. Those belong to [applications](@/docs/scripting/applications.md) and embedding hosts.
+There's no script domain under `jess run`, so `jess.worker.spawn` and `jess.context.bind` refuse: `worker.spawn: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and command targets run scripts outside one. An application target runs its code in one: jess init --application writes one, and jess package run runs it`. Those belong to [applications](@/docs/scripting/applications.md) and embedding hosts.
 
 ## Looking at the code
 

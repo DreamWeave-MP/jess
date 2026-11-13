@@ -10,13 +10,14 @@ The commands that run no Luau and open no package: they write things for your ed
 
 ## init
 
-{{ api_signature(value="jess init [--editor <EDITOR>] [--package <ID>] [--force] [DIR]") }}
+{{ api_signature(value="jess init [--editor <EDITOR>] [--package <ID> | --application <ID>] [--force] [DIR]") }}
 
 | Argument / option | Default | Does |
 | --- | --- | --- |
 | `[DIR]` | `.` | The folder to set up, created if missing. |
 | `--editor <EDITOR>` | `vscode` | Which editor's luau-lsp settings to write: `vscode`, `neovim`, `zed`, `helix`, or `none`. |
 | `--package <ID>` | off | Set the folder up as a Package Source with this id instead of a script folder: `jess.toml`, `src/init.jsl`, `tests/run.jsl`, and `tools/<name>.jsl`, where `<name>` is the id's last segment and the layer id is its last two. The target declares `process.environment`. No `main.jsl`. An id that isn't lowercase ASCII words joined by dots is refused: `error: failed to set up 'nope': package id 'Nope' is not lowercase ASCII words joined by dots (org.example.name)`. |
+| `--application <ID>` | off | Set the folder up as an application with this package id: `jess.toml` with an application target named for the id's last segment, its entry `src/main.jsl`, and the managed module `src/app.jsl`. The target declares `gpu.device`, `gpu.window`, and `worker.spawn`. No example script beside them. Not with `--package`. In a folder that already has a `jess.toml`, the manifest is kept, as every file already there is, and the first next step says so. |
 | `--force` | off | Replace files already there, after backing them up. |
 
 Sets up a folder for Luau scripts:
@@ -92,6 +93,21 @@ next_steps:
 ```
 
 `types/` and `.jessrc` sit beside the package without being in it: the payload is what `include` names, and `jess package check` skips the `types/` folder `init` writes, so the editor's copies of jess's types are never checked as the package's own code.
+
+With `--application`, the folder is an application: a target a host runs frame after frame, which is what a window, a worker, and a clean exit all need.
+
+```sh
+jess init walker --application com.example.walker --editor none
+jess package run --trusted walker
+```
+
+```text
+walker: close the window to stop (arguments: 0)
+hello, walker, from a worker
+walker: stopped
+```
+
+`src/main.jsl` is the target's entry, run once with the command line's arguments. `src/app.jsl` is the managed module the manifest names: it opens a window, shows a plan that draws one triangle, and returns the handlers the host calls, `startup` (which spawns a worker and sends it a name), `update` (which changes the triangle's color every frame and prints the worker's answer when it comes), `shutdown`, and one for the `jess.window` event, which exits when the window closes. `--trusted` grants what the target declares, `worker.spawn` among it; `--frames 600` stops after that many frames. It needs a display and a GPU adapter. [Applications](@/docs/scripting/applications.md) is the guide to all of it.
 
 ## luau-types
 

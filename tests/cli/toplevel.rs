@@ -476,7 +476,7 @@ fn packages_resolve_over_a_package_path_and_run_their_targets() {
         .output()
         .unwrap();
     assert!(!unchosen.status.success());
-    assert!(String::from_utf8_lossy(&unchosen.stderr).contains("name a layer with --layer"));
+    assert!(String::from_utf8_lossy(&unchosen.stderr).contains("or a layer with --layer; found "));
 
     let run = |extra: &[&str]| {
         jess()

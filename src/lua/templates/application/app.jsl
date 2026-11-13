@@ -1,0 +1,103 @@
+--!strict
+-- A managed module: the host loads it once, then calls the handlers it returns. This one shows a
+-- triangle in a window and asks a worker for a greeting.
+local application = require '@jess/application'
+local render = require '@jess/render'
+local shader = require '@jess/shader'
+local workers = require '@jess/worker'
+
+local program = shader.program {
+  attributes = { position = shader.vec2 },
+  pass = { tint = shader.vec4 },
+  vertex = function(input)
+    return { position = shader.vec4(input.attributes.position, 0, 1) }
+  end,
+  fragment = function(input) return input.pass.tint end,
+}
+
+local device = jess.gpu.device()
+local window = jess.gpu.window(device, { title = '__NAME__', width = 640, height = 480 })
+local format = assert(window.format)
+local pipeline = device:pipeline(program, { colors = { format } })
+
+-- The program's layout says where each attribute and uniform goes, so nothing here counts bytes.
+local corners = render.vertices(program.layout, 3)
+corners:set(1, 'position', { 0, 0.6 })
+corners:set(2, 'position', { -0.6, -0.6 })
+corners:set(3, 'position', { 0.6, -0.6 })
+
+local vertices = device:buffer(corners.stride * corners.count, 'vertex')
+corners:upload(vertices)
+
+-- A draw set is drawn by every pass that takes its tag, frame after frame, until it is removed.
+device:drawSet { pipeline = pipeline, vertices = vertices, count = 3, tags = { 'scene' } }
+
+local tint = render.block(program.layout, 'pass')
+local tintBuffer = device:buffer(tint.size, 'uniform')
+
+-- The window draws the plan itself from here on, whenever a frame changed something, and
+-- resizes it when the window is resized.
+window:show(
+  device:plan {
+    viewport = { width = window.width, height = window.height },
+    targets = { { name = 'screen', format = format, imported = true } },
+    passes = {
+      {
+        name = 'scene',
+        kind = 'draw',
+        tags = { 'scene' },
+        pass = pipeline:bind('pass', { [0] = tintBuffer }),
+        colors = { { target = 'screen', clear = { 0.05, 0.05, 0.08, 1 } } },
+      },
+    },
+  },
+  'screen'
+)
+
+local worker: Worker?
+local elapsed = 0
+
+return {
+  on = {
+    host = {
+      startup = function()
+        -- A worker holds what its spawner holds unless told otherwise: this one needs nothing.
+        worker = workers.spawn {
+          source = 'return function(name) return `hello, {name}, from a worker` end',
+          capabilities = {},
+        }
+        worker:send '__NAME__'
+      end,
+
+      update = function(deltaSeconds: number)
+        elapsed += deltaSeconds
+        tint:set('tint', {
+          0.5 + 0.5 * math.sin(elapsed),
+          0.5 + 0.5 * math.sin(elapsed + 2),
+          0.5 + 0.5 * math.sin(elapsed + 4),
+          1,
+        })
+        tint:upload(tintBuffer)
+        if not worker then return end
+
+        -- Without a timeout, receive never waits: nil until the worker has answered.
+        local reply = worker:receive()
+        if reply == nil then return end
+
+        print(reply)
+        worker:close()
+        worker = nil
+      end,
+
+      shutdown = function() print '__NAME__: stopped' end,
+    },
+
+    event = {
+      ['jess.window'] = function()
+        for _, event in window:events() do
+          if event.kind == 'closed' then application.exit(0) end
+        end
+      end,
+    },
+  },
+}

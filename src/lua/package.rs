@@ -904,6 +904,52 @@ pub fn inspect(runtime: &Runtime, location: &str) -> l3i::Result<Inspection> {
     inspect_with(runtime, location, None)
 }
 
+/// What to tell whoever named package paths and chose nothing from them: what would choose, and
+/// what each path holds, a few packages of it by file with their layers.
+#[must_use]
+pub fn unchosen(runtime: &Runtime, paths: &[String]) -> String {
+    /// More than this many packages are counted, not listed.
+    const LISTED: usize = 8;
+    let is_package = |entry: &Path| entry.join("jess.toml").is_file() || entry.extension().is_some_and(|kind| kind == "jpk");
+    let mut found = Vec::new();
+    for path in paths {
+        let folder = Path::new(path);
+        if is_package(folder) {
+            found.push(format!("{path} is itself a package: name it with --package"));
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(folder) else {
+            found.push(format!("{path} isn't a folder that can be read"));
+            continue;
+        };
+        let mut entries: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+        entries.retain(|entry| is_package(entry));
+        entries.sort();
+        if entries.is_empty() {
+            found.push(format!("{path} holds no package"));
+        }
+        for entry in entries.iter().take(LISTED) {
+            let shown = entry.display();
+            found.push(match inspect(runtime, &shown.to_string()) {
+                Ok(inspection) if inspection.layers.is_empty() => format!("{shown} (no layers)"),
+                Ok(inspection) => {
+                    let layers: Vec<String> = inspection.layers.into_iter().map(|layer| layer.id).collect();
+                    format!("{shown} (layers: {})", layers.join(", "))
+                }
+                Err(_) => format!("{shown} (unreadable as a package)"),
+            });
+        }
+        if entries.len() > LISTED {
+            found.push(format!("{} more in {path}", entries.len() - LISTED));
+        }
+    }
+    format!(
+        "a package path offers packages without choosing any: name one with --package, or a layer with --layer; \
+         found {}",
+        found.join("; ")
+    )
+}
+
 /// [`inspect`], with `location` one of the packages in `image` when there is one.
 ///
 /// # Errors

@@ -8,6 +8,8 @@ extra:
 
 The [first package](@/docs/getting-started/first-package.md) runs a command to completion. An application target has a host that advances frames and calls managed modules. This one counts three frames and exits. It needs no window or special capability, so you can see the lifecycle without needing a graphics setup.
 
+`jess init <folder> --application <id>` writes a larger application than this one, with a window, a triangle, and a worker, that runs as it stands on a machine with a display. This page builds the smallest one by hand.
+
 Create a folder named `counter` with these files:
 
 ```text

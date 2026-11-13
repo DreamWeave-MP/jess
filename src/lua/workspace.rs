@@ -376,12 +376,12 @@ pub fn test(
     test_with_jobs(options, at, names, scratch, 1)
 }
 
-/// [`test`], running up to `jobs` of a member's test modules at once, as
+/// [`test()`], running up to `jobs` of a member's test modules at once, as
 /// [`package::test_with_jobs`] does. Members are still tested one after another.
 ///
 /// # Errors
 ///
-/// As [`test`].
+/// As [`test()`].
 pub fn test_with_jobs(
     options: &crate::lua::Options,
     at: &Locate,

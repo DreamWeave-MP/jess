@@ -38,7 +38,7 @@ The function names itself and the capability. Under `jess run` and `jess test`, 
 
 A `--capability` name, or a target's declared one, that no part of jess knows. The message lists every name that exists. A misspelled grant is refused rather than granting nothing, which is the behaviour you want from a thing called a capability.
 
-**`error: worker.spawn: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and command targets run scripts outside one`**
+**`error: worker.spawn: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and command targets run scripts outside one. An application target runs its code in one: jess init --application writes one, and jess package run runs it`**
 
 `jess.worker.spawn` and `jess.context.bind` only mean something inside a [script domain](@/docs/contributing/script-domains.md), which an application target or an embedding host provides. A plain script, a test module, and a command target run in a single VM with no domain around it. Make it an application target, or do the work in the script.
 

@@ -180,3 +180,71 @@ fn scripts_touch_files_only_with_the_capability_for_it() {
     assert_eq!(String::from_utf8_lossy(&reader.stdout), "written\n");
     drop(fs::remove_dir_all(&root));
 }
+
+/// A test module requires a package's export once the command line names the package, as a
+/// script under `jess run` does; a package path that chooses nothing says what it holds.
+#[test]
+fn test_modules_require_the_packages_the_command_line_names() {
+    let root = temp_dir_path("luau-test-packages");
+    drop(fs::remove_dir_all(&root));
+    let packages = root.join("packages");
+    fs::create_dir_all(&packages).unwrap();
+    let greeter = packages.join("greeter");
+    let made = jess()
+        .args(["init", "--editor", "none", "--package", "org.example.greeter"])
+        .arg(&greeter)
+        .output()
+        .unwrap();
+    assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+    let greets = module(
+        &root,
+        "greets.jsl",
+        "local greeter = require('@greeter')\nlocal test = require('@jess/test')\nlocal suite = test.new()\n\
+         suite.it('greets', function() test.expect(greeter.greet('Ada')).toBe('Hello, Ada.') end)\nreturn suite\n",
+    );
+    // Twice: each module has a VM of its own unless `--shared`, and the package is in every one.
+    let test = |flags: &[&std::ffi::OsStr]| {
+        jess()
+            .args(["--format", "json", "test"])
+            .args(flags)
+            .args([&greets, &greets])
+            .output()
+            .unwrap()
+    };
+
+    let alone = test(&[]);
+    assert!(!alone.status.success(), "nothing exports @greeter until a package is named");
+    assert!(String::from_utf8_lossy(&alone.stdout).contains("module not found: @greeter"));
+
+    for flags in [
+        vec!["--package".as_ref(), greeter.as_os_str()],
+        vec!["--shared".as_ref(), "--package".as_ref(), greeter.as_os_str()],
+        vec![
+            "--package-path".as_ref(),
+            packages.as_os_str(),
+            "--layer".as_ref(),
+            "example.greeter".as_ref(),
+        ],
+    ] {
+        let output = test(&flags);
+        assert!(
+            output.status.success(),
+            "{flags:?}: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!((&report["passed"], &report["failed"]), (&2.into(), &0.into()), "{flags:?}");
+    }
+
+    let unchosen = test(&["--package-path".as_ref(), packages.as_os_str()]);
+    assert!(!unchosen.status.success());
+    let message = String::from_utf8_lossy(&unchosen.stderr).into_owned();
+    assert!(
+        message.contains("name one with --package, or a layer with --layer; found ")
+            && message.contains("(layers: example.greeter)"),
+        "{message}"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}

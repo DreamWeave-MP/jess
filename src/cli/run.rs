@@ -17,7 +17,8 @@ pub struct RunArgs {
     /// entrypoints have run.
     #[arg(long = "package", value_name = "PACKAGE")]
     packages: Vec<PathBuf>,
-    /// A layer to activate (repeatable). Without any, every layer the packages declare.
+    /// A layer to activate (repeatable). Without any, every layer the packages named with
+    /// --package declare.
     #[arg(long = "layer", value_name = "ID")]
     layers: Vec<String>,
     /// A folder of packages to find layers and dependencies in (repeatable): each Package Source
@@ -62,19 +63,27 @@ pub fn lua_default() -> Result<Runtime, String> {
     lua(&[])
 }
 
-/// Activates the packages `args` names in `lua`, if any, admitting entrypoints against
+/// The packages a command line names for a loose script or test module: `--package`, `--layer`,
+/// and `--package-path`.
+pub struct Named<'a> {
+    pub packages: &'a [PathBuf],
+    pub layers: &'a [String],
+    pub paths: &'a [PathBuf],
+}
+
+/// Activates the packages `named` in `lua`, if any, admitting entrypoints against
 /// `capabilities`, what the runtime was granted.
-fn activate(lua: &Runtime, args: &RunArgs, capabilities: &[String]) -> Result<(), String> {
-    if args.packages.is_empty() && args.package_paths.is_empty() {
-        return if args.layers.is_empty() {
+pub fn activate(lua: &Runtime, named: &Named<'_>, capabilities: &[String]) -> Result<(), String> {
+    if named.packages.is_empty() && named.paths.is_empty() {
+        return if named.layers.is_empty() {
             Ok(())
         } else {
             Err("--layer needs packages to resolve over: name them with --package or --package-path".to_owned())
         };
     }
     let text = |paths: &[PathBuf]| paths.iter().map(|path| path.display().to_string()).collect::<Vec<_>>();
-    let locations = text(&args.packages);
-    let mut layers = args.layers.clone();
+    let locations = text(named.packages);
+    let mut layers = named.layers.to_vec();
     let mut roots = Vec::new();
     // Without --layer, every layer the named packages declare, and the packages themselves, so
     // one with no layers still brings its dependencies' exports.
@@ -86,10 +95,10 @@ fn activate(lua: &Runtime, args: &RunArgs, capabilities: &[String]) -> Result<()
         }
     }
     if layers.is_empty() && roots.is_empty() {
-        return Err("a package path offers packages without choosing any: name a layer with --layer".to_owned());
+        return Err(jess::lua::package::unchosen(lua, &text(named.paths)));
     }
     let search = jess::lua::package::Search {
-        paths: text(&args.package_paths),
+        paths: text(named.paths),
         roots,
         ..Default::default()
     };
@@ -132,7 +141,12 @@ pub fn run(args: &RunArgs) -> Result<u8, String> {
         jess::lua::host_script_grant(&args.capabilities)
     };
     let lua = lua_with_profile(&capabilities, args.profile)?;
-    activate(&lua, args, &capabilities)?;
+    let named = Named {
+        packages: &args.packages,
+        layers: &args.layers,
+        paths: &args.package_paths,
+    };
+    activate(&lua, &named, &capabilities)?;
     let result = match (&args.emit_asm, &args.disassemble) {
         (Some(output), _) => emit_assembly(&lua, &args.script, output).map(|()| 0),
         (_, Some(output)) => disassemble(&lua, &args.script, output).map(|()| 0),

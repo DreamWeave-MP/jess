@@ -128,17 +128,18 @@ impl Bindings {
     fn worker(&self, function: &str) -> l3i::Result<WorkerLink> {
         match &*self.owner.borrow() {
             Owner::Worker(link) => Ok(link.clone()),
-            Owner::Domain(_) => Err(l3i::Error::runtime(format!(
+            // No domain's code and no worker's: the same answer, since no application makes it
+            // a worker's.
+            Owner::Domain(_) | Owner::Detached => Err(l3i::Error::runtime(format!(
                 "{function} is for a worker's own code; a domain sends through the handle worker.spawn returned"
             ))),
-            Owner::Detached => Err(detached(function)),
         }
     }
 }
 
 fn detached(function: &str) -> l3i::Error {
     l3i::Error::permission(format!(
-        "{function}: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and command targets run scripts outside one"
+        "{function}: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and command targets run scripts outside one. An application target runs its code in one: jess init --application writes one, and jess package run runs it"
     ))
 }
 
