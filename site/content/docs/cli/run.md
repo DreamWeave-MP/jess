@@ -97,6 +97,8 @@ Hello, world.
 
 With no `--package`, `--package-path`, or `--layer` on the command line, `jess run` reads the `[scripts]` table of the nearest `jess-workspace.toml` in the script's folder or above it and runs with what it names: `packages`, `package_path`, and `layers`, each as the flag of that name takes it, as paths below the workspace file. Name anything on the command line and the table is not read. No workspace file, or one without the table, and the script runs with no packages, as it always has. [`jess test`](@/docs/cli/test.md) and [`jess check`](@/docs/cli/check.md) read the same table.
 
+The table belongs to `jess run`. A script [run as a program](#running-a-script-as-a-program) holds everything and reads no table, and on Unix a workspace file somebody else could have written is passed over; [the workspace file](@/docs/cli/workspace.md#the-workspace-file) has both rules.
+
 ## Running a script as a program
 
 A `.jsl` file can be an executable. Put a shebang line at the top, make it executable, and run it like any other program:

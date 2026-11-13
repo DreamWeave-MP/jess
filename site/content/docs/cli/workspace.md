@@ -69,9 +69,14 @@ members = []
 packages = ["packages/greeter.jpk", "packages/words"]
 ```
 
-With a `[scripts]` table, [`jess run`](@/docs/cli/run.md#the-folder-s-packages), [`jess test`](@/docs/cli/test.md), and [`jess check`](@/docs/cli/check.md) given no `--package`, `--package-path`, or `--layer` behave as if they had been given the table's: `packages` is a list of `--package`, `package_path` of `--package-path`, `layers` of `--layer`. Each path is names joined by `/` below the workspace's root, with no `..`, no absolute paths, and no backslashes; a table that names no packages, or has a key that isn't one of the three, is an error naming the file. The table is the nearest workspace file's, looking up from the script's own folder, so a script runs the same from anywhere. A command line that names any package is the whole answer, and the table is not read.
+With a `[scripts]` table, [`jess run`](@/docs/cli/run.md#the-folder-s-packages), [`jess test`](@/docs/cli/test.md), and [`jess check`](@/docs/cli/check.md) given no `--package`, `--package-path`, or `--layer` behave as if they had been given the table's: `packages` is a list of `--package`, `package_path` of `--package-path`, `layers` of `--layer`. Each path is names joined by `/` below the workspace's root, with no `..`, no absolute paths, and no backslashes; a table that names no packages, or has a key that isn't one of the three, is an error naming the file. A package reached through a link must land inside the workspace, as a member must. The table is the nearest workspace file's, looking up from the folder the script itself is in, a link to it followed first, so a script runs the same from anywhere. A command line that names any package is the whole answer, and the table is not read.
 
-It is the only part of the file a loose script reads. The members, the `[dev-dependencies]`, and `jess.lock` are not its concern, and nothing has to be synced first: the packages are opened where the table says they are. A jess from before this table refuses a workspace file that has one, as it does any key it doesn't know.
+The file is held to its form, but its members, its `[dev-dependencies]`, and `jess.lock` are not read: they are not a loose script's concern, and nothing has to be synced first. The packages are opened where the table says they are. A jess from before this table refuses a workspace file that has one, as it does any key it doesn't know.
+
+The table chooses code, and that code runs with what the script was granted, so who may write the table matters:
+
+- **A script run as a program reads no table.** `jess hello.jsl`, and a script made executable with a `#!` line, hold every capability; they run with no packages whatever is above them. `jess run --trusted hello.jsl` does read it: `jess run` is how a folder's scripts are run.
+- **On Unix the workspace file must be yours, and writable by nobody else.** One another user owns, or that its group or everyone may write, is passed over as if no workspace file were there, and nothing above it is looked at. A shared folder such as `/tmp` can't hand your scripts a package this way. Windows has no such owner to compare, so there the nearest file is used.
 
 ## Which workspace
 
