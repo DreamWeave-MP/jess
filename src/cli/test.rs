@@ -39,8 +39,11 @@ pub struct TestArgs {
 /// What marks a file in a folder as a test module. A file named outright needs no mark.
 const TEST_SUFFIX: &str = ".test.jsl";
 
-/// The test modules `folder` holds: every `*.test.jsl` file in it and below it, by path, so a
-/// run is the same on every machine. Links are not followed, and a folder's own name is no mark.
+/// The test modules `folder` holds: every `*.test.jsl` file in it and below it, folder by folder
+/// and each in order of name, so a run is the same on every machine. A link to a file is the
+/// file; a link to a folder is not entered, which is what keeps a link back up the tree from
+/// never ending. A folder whose name starts with a dot is nobody's tests: version control's, a
+/// workspace's kept packages.
 fn modules_in(folder: &Path, found: &mut Vec<PathBuf>) -> Result<(), String> {
     let failed = |error: std::io::Error| format!("'{}': {error}", folder.display());
     let mut entries = fs::read_dir(folder)
@@ -49,33 +52,42 @@ fn modules_in(folder: &Path, found: &mut Vec<PathBuf>) -> Result<(), String> {
         .map_err(failed)?;
     entries.sort_by_key(fs::DirEntry::file_name);
     for entry in entries {
-        let kind = entry.file_type().map_err(failed)?;
-        if kind.is_dir() {
-            modules_in(&entry.path(), found)?;
-        } else if kind.is_file() && entry.file_name().to_string_lossy().ends_with(TEST_SUFFIX) {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if entry.file_type().map_err(failed)?.is_dir() {
+            if !name.starts_with('.') {
+                modules_in(&entry.path(), found)?;
+            }
+        } else if name.ends_with(TEST_SUFFIX) && entry.path().is_file() {
             found.push(entry.path());
         }
     }
     Ok(())
 }
 
-/// The modules a command line names: each file as given, each folder as the test modules it
-/// holds. A folder holding none is an error, since a run that tested nothing would pass.
+/// The modules a command line names: each file as given, as often as it is given, and each
+/// folder as the test modules it holds that nothing earlier on the line has named. A folder
+/// holding none at all is an error, since a run that tested nothing would pass.
 fn named_modules(named: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
     let mut modules = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
     for path in named {
         if !path.is_dir() {
+            seen.extend(fs::canonicalize(path));
             modules.push(path.clone());
             continue;
         }
-        let before = modules.len();
-        modules_in(path, &mut modules)?;
-        if modules.len() == before {
+        let mut held = Vec::new();
+        modules_in(path, &mut held)?;
+        if held.is_empty() {
             return Err(format!(
-                "'{}' holds no test modules: a folder's are its *{TEST_SUFFIX} files",
+                "'{}' holds no test modules: a folder's are its *{TEST_SUFFIX} files, and a package's are the ones its manifest lists, which jess package test runs",
                 path.display()
             ));
         }
+        // Two folders that overlap, or a link beside the file it names, are one module each.
+        held.retain(|module| fs::canonicalize(module).map_or(true, |real| seen.insert(real)));
+        modules.append(&mut held);
     }
     Ok(modules)
 }
