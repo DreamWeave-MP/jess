@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::shader::layout::{GroupLayout, MemberLayout, StructLayout};
+use crate::shader::layout::{GroupLayout, MemberLayout, StructLayout, VertexBufferLayout};
 use crate::shader::{
     Access, AtomicOp, AttributeId, BinaryOperator, Builtin, DataType, Element, Field, Frequency, Function as ShaderFunction,
     LocalId, Place, PlaceRoot, Program, ProgramBuilder, Rate, ResourceId, ResourceKind, Scalar, Site, SourceOrigin, Stage,
@@ -39,7 +39,16 @@ use crate::lua::plan::Functions;
 use crate::lua::{Jess, error, kind, push_table};
 
 /// What `shader.program` takes.
-const PROGRAM_KEYS: &[&str] = &["attributes", "draw", "fragment", "instance", "material", "pass", "vertex"];
+const PROGRAM_KEYS: &[&str] = &[
+    "attributes",
+    "draw",
+    "fragment",
+    "instance",
+    "material",
+    "pass",
+    "streams",
+    "vertex",
+];
 
 /// What `shader.compute` takes.
 const COMPUTE_KEYS: &[&str] = &["compute", "draw", "material", "pass", "workgroupSize"];
@@ -1628,6 +1637,42 @@ fn declarations(frame: &Frame<'_>, table: ValueView<'_>, what: &str) -> l3i::Res
         .collect()
 }
 
+/// A program spec's `streams`: a list of tables like `attributes`, one per stream.
+fn streams(frame: &Frame<'_>, listed: ValueView<'_>) -> l3i::Result<Vec<Vec<(String, Type)>>> {
+    if listed.is_nil() {
+        return Ok(Vec::new());
+    }
+    if !listed.is_table() {
+        return Err(error(format!(
+            "streams must be a list of tables of shader types, not {}",
+            kind(listed)
+        )));
+    }
+    let mut streams = Vec::new();
+    listed.as_table()?.for_each_array(frame, |frame, index, stream| {
+        let what = format!("streams[{index}]");
+        if !stream.is_table() {
+            return Err(error(format!("{what} must be a table of shader types, not {}", kind(stream))));
+        }
+        let declared = declarations(frame, stream, &what)?;
+        if declared.is_empty() {
+            return Err(error(format!(
+                "{what} declares nothing: a stream holds at least one attribute"
+            )));
+        }
+        streams.push(declared);
+        Ok(())
+    })?;
+    if streams.len() > crate::shader::layout::MAX_STREAMS {
+        return Err(error(format!(
+            "a program reads at most {} streams, not {}",
+            crate::shader::layout::MAX_STREAMS,
+            streams.len()
+        )));
+    }
+    Ok(streams)
+}
+
 /// A program spec's `pass`, `material`, or `draw` table, or its attributes: names to types,
 /// sorted by name.
 fn bindings(frame: &Frame<'_>, table: ValueView<'_>, what: &str) -> l3i::Result<Vec<(String, Descriptor)>> {
@@ -1747,6 +1792,8 @@ fn origin_of(builder: &ProgramBuilder, value: Value, fallback: &SourceOrigin) ->
 struct Spec {
     /// The `attributes` and `instance` declarations, by rate.
     attributes: [Vec<(String, Type)>; 2],
+    /// The `streams` declarations: each stream's per-vertex attributes, in the order given.
+    streams: Vec<Vec<(String, Type)>>,
     /// The `pass`, `material`, and `draw` declarations, by frequency.
     groups: [Vec<(String, Descriptor)>; 3],
     stages: Stages,
@@ -1927,6 +1974,7 @@ fn compute_stage(call: &Call<'_>, build: &Rc<RefCell<Build>>, compute: &Function
 fn construct_program(call: &Call<'_>, build: &Rc<RefCell<Build>>, spec: Spec) -> l3i::Result<Finished> {
     let Spec {
         attributes,
+        streams,
         groups,
         stages,
     } = spec;
@@ -1939,6 +1987,14 @@ fn construct_program(call: &Call<'_>, build: &Rc<RefCell<Build>>, spec: Spec) ->
             for (name, ty) in declared {
                 let attribute = site.attribute(rate, &name, ty).map_err(invalid)?;
                 info.attributes[rate as usize].insert(name, (attribute, None));
+            }
+        }
+        // A stream's attributes are per-vertex attributes like the rest, read by the same names:
+        // only the buffer that holds them differs.
+        for (stream, declared) in (1..).zip(streams) {
+            for (name, ty) in declared {
+                let attribute = site.stream_attribute(stream, &name, ty).map_err(invalid)?;
+                info.attributes[Rate::Vertex as usize].insert(name, (attribute, None));
             }
         }
         declare_groups(&mut site, info, groups)?;
@@ -2002,6 +2058,7 @@ fn program(shader: &Rc<Shader>, call: &Call<'_>, spec: ValueView<'_>) -> l3i::Re
         ];
         Ok(Spec {
             attributes,
+            streams: streams(frame, table.raw_get(frame, "streams")?)?,
             groups,
             stages: Stages::Render {
                 vertex: stage_function(table.raw_get(frame, "vertex")?, "shader.program", "vertex")?,
@@ -2029,6 +2086,7 @@ fn compute(shader: &Rc<Shader>, call: &Call<'_>, spec: ValueView<'_>) -> l3i::Re
         ];
         Ok(Spec {
             attributes: [Vec::new(), Vec::new()],
+            streams: Vec::new(),
             groups,
             stages: Stages::Compute {
                 workgroup_size: workgroup_size(frame, table.raw_get(frame, "workgroupSize")?)?,
@@ -2168,25 +2226,34 @@ fn push_layout(call: &Call<'_>, program: &Program) -> l3i::Result<StackResults> 
             table.raw_set(frame, group.frequency.name())?;
         }
         for (rate, buffer) in Rate::ALL.into_iter().zip(&layout.vertex_buffers) {
-            push_table(frame, 0, 2, |frame, row| {
-                row.raw_set_value(frame, "stride", &f64::from(buffer.stride))?;
-                l3i::stack::push_list(frame, buffer.attributes.iter(), |frame, attribute| {
-                    push_table(frame, 0, 5, |frame, row| {
-                        let name = program.attributes()[attribute.attribute.index()].name.as_str();
-                        row.raw_set_value(frame, "name", name)?;
-                        row.raw_set_value(frame, "offset", &f64::from(attribute.offset))?;
-                        row.raw_set_value(frame, "location", &f64::from(attribute.location))?;
-                        row.raw_set_value(frame, "locations", &f64::from(attribute.locations))?;
-                        row.raw_set_value(frame, "type", attribute.ty.name())
-                    })
-                })?;
-                row.raw_set(frame, "attributes")
-            })?;
+            push_vertex_buffer(frame, program, buffer)?;
             table.raw_set(frame, namespace_name(rate))?;
         }
+        l3i::stack::push_list(frame, layout.streams.iter(), |frame, buffer| {
+            push_vertex_buffer(frame, program, buffer)
+        })?;
+        table.raw_set(frame, "streams")?;
         Ok(())
     })?;
     Ok(StackResults)
+}
+
+/// One vertex buffer's layout: its stride, and each attribute's place in it.
+fn push_vertex_buffer(frame: &Frame<'_>, program: &Program, buffer: &VertexBufferLayout) -> l3i::Result<()> {
+    push_table(frame, 0, 2, |frame, row| {
+        row.raw_set_value(frame, "stride", &f64::from(buffer.stride))?;
+        l3i::stack::push_list(frame, buffer.attributes.iter(), |frame, attribute| {
+            push_table(frame, 0, 5, |frame, row| {
+                let name = program.attributes()[attribute.attribute.index()].name.as_str();
+                row.raw_set_value(frame, "name", name)?;
+                row.raw_set_value(frame, "offset", &f64::from(attribute.offset))?;
+                row.raw_set_value(frame, "location", &f64::from(attribute.location))?;
+                row.raw_set_value(frame, "locations", &f64::from(attribute.locations))?;
+                row.raw_set_value(frame, "type", attribute.ty.name())
+            })
+        })?;
+        row.raw_set(frame, "attributes")
+    })
 }
 
 /// One frequency's bind group: its uniform block, if it has one, and its other bindings.

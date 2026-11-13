@@ -59,6 +59,8 @@ pub struct DrawSetDesc {
     pub vertices: Option<Arc<Buffer>>,
     /// The per-instance attributes, if the program declares any.
     pub instances: Option<Arc<Buffer>>,
+    /// The program's streams, in order, as a [`Draw`]'s `streams` says.
+    pub streams: Vec<Arc<Buffer>>,
     /// The indices of the vertices to draw, if the draw is indexed.
     pub indices: Option<(Arc<Buffer>, IndexFormat)>,
     /// How much of them it draws, and from where.
@@ -77,6 +79,7 @@ pub struct DrawSet {
     draw: Option<Arc<BindGroup>>,
     vertices: Option<Arc<Buffer>>,
     instances: Option<Arc<Buffer>>,
+    streams: Box<[Arc<Buffer>]>,
     indices: Option<(Arc<Buffer>, IndexFormat)>,
     indirect: Option<(Arc<Buffer>, u64)>,
     tags: Box<[String]>,
@@ -99,6 +102,7 @@ impl DrawSet {
             draw: desc.draw,
             vertices: desc.vertices,
             instances: desc.instances,
+            streams: desc.streams.into_boxed_slice(),
             indices: desc.indices,
             indirect: desc.indirect,
             tags: desc.tags.into_boxed_slice(),
@@ -136,6 +140,7 @@ impl DrawSet {
             groups: [pass, self.material.as_deref(), self.draw.as_deref()],
             vertices: self.vertices.as_deref(),
             instances: self.instances.as_deref(),
+            streams: &self.streams,
             indices: self.indices.as_ref().map(|(buffer, format)| (&**buffer, *format)),
             count: range.count,
             instance_count: range.instance_count,

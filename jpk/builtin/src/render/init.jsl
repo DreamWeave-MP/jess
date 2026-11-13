@@ -253,11 +253,15 @@ function render.block(layout: ShaderLayout, frequency: Frequency): Block
   return block
 end
 
---- `count` vertices of `layout`'s per-vertex attributes, or with `rate` `instance`, instances of
---- its per-instance ones, all zeros.
-function render.vertices(layout: ShaderLayout, count: number, rate: ('vertex' | 'instance')?): Vertices
-  local buffers = if rate == 'instance' then layout.instance else layout.attributes
-  assert(buffers.stride > 0, `@jess/render: the program has no {rate or 'vertex'} attributes`)
+--- `count` vertices of `layout`'s per-vertex attributes, all zeros; or with `rate` `instance`,
+--- instances of its per-instance ones; or with a number, vertices of that stream's attributes.
+function render.vertices(layout: ShaderLayout, count: number, rate: ('vertex' | 'instance' | number)?): Vertices
+  local what = if type(rate) == 'number' then `stream {rate}` else rate or 'vertex'
+  local buffers = if type(rate) == 'number'
+    then layout.streams[rate]
+    elseif rate == 'instance' then layout.instance
+    else layout.attributes
+  assert(buffers and buffers.stride > 0, `@jess/render: the program has no {what} attributes`)
   local attributes: { [string]: Field } = {}
   for _, attribute in buffers.attributes do
     attributes[attribute.name] = { offset = attribute.offset, shape = shapeOf(attribute.type, {}, true, nil) }
@@ -270,7 +274,7 @@ function render.vertices(layout: ShaderLayout, count: number, rate: ('vertex' | 
 
   function vertices.set(self: Vertices, index: number, name: string, value: Value)
     local attribute = attributes[name]
-    assert(attribute, `@jess/render: the program has no {rate or 'vertex'} attribute {name}`)
+    assert(attribute, `@jess/render: the program has no {what} attribute {name}`)
     local inside = index >= 1 and index <= self.count and index % 1 == 0
     assert(inside, `@jess/render: vertex {index} isn't one of the {self.count}`)
     local offset = (index - 1) * self.stride + attribute.offset
@@ -336,7 +340,7 @@ The uniform block `frequency` declares, as bytes, all zeros. `block:set(name, va
 
 {{ api_symbol(value="@jess/render.Vertices") }}
 
-`count` vertices of the program's per-vertex attributes, or instances of its per-instance ones. `vertices:set(index, name, value)` writes vertex `index` (from 1); `stride`, `count`, `bytes`, and `upload` are a block's.
+`count` vertices of the program's per-vertex attributes, or instances of its per-instance ones (`rate` `'instance'`), or vertices of one of its streams (`rate` the stream's number, from 1). `vertices:set(index, name, value)` writes vertex `index` (from 1); `stride`, `count`, `bytes`, and `upload` are a block's.
 
 {{ api_symbol(value="@jess/render.elements") }}
 

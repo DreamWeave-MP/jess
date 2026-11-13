@@ -827,7 +827,7 @@ export type GpuDraw = {
   pass: GpuBindGroup?,
   material: GpuBindGroup?,
   draw: GpuBindGroup?,
-  vertices: GpuBuffer?,
+  vertices: (GpuBuffer | { GpuBuffer })?,
   instances: GpuBuffer?,
   indices: GpuBuffer?,
   indexFormat: ('u16' | 'u32')?,
@@ -909,7 +909,7 @@ export type GpuDrawSetDesc = {
   instancesOffset: number?,
   material: GpuBindGroup?,
   draw: GpuBindGroup?,
-  vertices: GpuBuffer?,
+  vertices: (GpuBuffer | { GpuBuffer })?,
   instances: GpuBuffer?,
   indices: GpuBuffer?,
   indexFormat: ('u16' | 'u32')?,
@@ -1282,6 +1282,7 @@ end
 --- `shader.program` runs.
 export type ShaderProgramSpec = {
   attributes: { [string]: ShaderType }?,
+  streams: { { [string]: ShaderType } }?,
   instance: { [string]: ShaderType }?,
   pass: { [string]: ShaderType }?,
   material: { [string]: ShaderType }?,
@@ -1335,6 +1336,7 @@ export type ShaderLayout = {
   draw: ShaderGroupLayout,
   attributes: ShaderVertexLayout,
   instance: ShaderVertexLayout,
+  streams: { ShaderVertexLayout },
 }
 
 --- What `shader.compute` takes.
@@ -2427,6 +2429,7 @@ A draw is a table:
 | `verticesOffset`, `instancesOffset` | How many bytes into `vertices` and `instances` the draw's first vertex and first instance are: a multiple of 4, 0 by default. Vertex 0 and instance 0 are whatever is there. |
 | `pass`, `material`, `draw` | A bind group for each frequency its program binds anything for, laid out as its program lays that frequency out. |
 | `vertices`, `instances` | The per-vertex and per-instance attributes, if the program has any, in vertex buffers holding every one drawn. |
+| `vertices`, as a list | For a program that declares [streams](@/docs/api/shader.md#attributes): the per-vertex buffer first, then a vertex buffer for each stream, in the order the program declares them. Each stream holds its attributes for the same vertices and is bound from its start, so a draw with streams names a range by `first` or `baseVertex`, never `verticesOffset`. |
 | `indices`, `indexFormat` | An index buffer, and how wide its indices are (`u32` by default). |
 | `indirect`, `indirectOffset` | Where the counts come from instead of `count` and `instanceCount`: an `indirect` buffer holding, from `indirectOffset` (0 by default, a multiple of 4), four `u32`s (vertex count, instance count, first vertex, first instance) or, for an indexed draw, five (index count, instance count, first index, base vertex, first instance). Whatever the GPU wrote there is drawn, a compute pass's count of what it kept, say; nothing checks it against the buffers, and the GPU keeps a draw past their ends inside them. The arguments hold the draw's first vertex and base vertex, so it gives no `first` or `baseVertex` of its own; its offsets still apply. A first instance other than 0 needs a device with `indirectFirstInstance`, which a pass checks when it draws, since the arguments are data: a draw set that draws from them is made and changed without it. |
 
@@ -3116,13 +3119,14 @@ Builds and validates a program.
 - **Parameters:** `spec`, a table:
   - `attributes`: names to [types](#types). What each vertex has, read from its vertex buffer: see [Attributes](#attributes).
   - `instance`: names to types. What each instance has, read from the instance buffer.
+  - `streams`: a list of tables like `attributes`, at most six. Each is a vertex buffer of its own beside the first, holding the attributes it names for the same vertices: see [Attributes](#attributes).
   - `pass`, `material`, `draw`: names to types. What each pass, material, and draw binds: values, structs, and arrays, textures, and samplers. See [Bindings](#bindings).
   - `vertex`: a function taking the vertex [input](#shaderinput). It returns a table: `position`, the clip-space `Vec4f`, and any other named values, which become the fragment stage's inputs.
   - `fragment`: a function taking the fragment input. It returns the color, or a table of named outputs, one per color target: `{ color = lit, id = input.draw.id }`. Each is a `Float`, `Int`, or `UInt`, or a vector of one, as the target behind it holds; a `Vec4f` for an ordinary color target. One value is the output `color`.
 - **Returns:** the [ShaderProgram](#shaderprogram).
 - **Order:** attributes are declared sorted by name, then instance attributes, then what the pass, the material, and the draw bind, each sorted by name; `vertex` runs; what it returned is passed along, sorted by name; `fragment` runs, and its outputs take color locations sorted by name; the whole program is validated. A Luau table has no order, so jess doesn't pretend yours does: the same module always builds the same program.
 - **Names:** every declaration lives under its own name (`input.attributes.uv`, `input.material.tint`), so names only clash within one table. A vertex output can't be named `attributes`, `instance`, `pass`, `material`, or `draw`, because the fragment input couldn't tell it apart from the namespace.
-- **Errors:** see [Errors](#errors). Also `unknown jess.shader.program option '<key>': expected attributes, draw, fragment, instance, material, pass, or vertex`, `shader.program needs a vertex function, not nil`, `material.<name> must be a shader type such as shader.vec4, not <kind>`, `attributes.<name> must be a value type such as shader.vec3, not Texture2D`, `the vertex function's table has no position`, `the fragment function returned <kind>: expected a shader value, the color, or a table of named outputs`, and, when the program finishes, `fragment output 0 is Mat4f: expected a Float, Int, or UInt, or a vector of one`.
+- **Errors:** see [Errors](#errors). Also `unknown jess.shader.program option '<key>': expected attributes, draw, fragment, instance, material, pass, streams, or vertex`, `shader.program needs a vertex function, not nil`, `material.<name> must be a shader type such as shader.vec4, not <kind>`, `attributes.<name> must be a value type such as shader.vec3, not Texture2D`, `the vertex function's table has no position`, `the fragment function returned <kind>: expected a shader value, the color, or a table of named outputs`, and, when the program finishes, `fragment output 0 is Mat4f: expected a Float, Int, or UInt, or a vector of one`.
 
 `shader.program` validates the program and leaves it as you wrote it. It doesn't fold constants: that rewrites the program, and rewriting is the consumer's decision.
 
@@ -3255,7 +3259,8 @@ shader.program {
 
 - **Types:** `float`, `int`, `uint`, their vectors, and `mat3` and `mat4`. A matrix takes one vertex location per column on the way in, and you read it whole.
 - **Layout:** jess packs each rate's attributes into one buffer record, in declaration order (sorted by name), with no padding, and reports where every one is. Whatever fills the vertex and instance buffers writes them from that, so nobody counts bytes by hand.
-- **Limit:** the attributes of both rates take at most 16 locations together.
+- **Streams:** per-vertex attributes needn't share one buffer. `streams = { { uv = shader.vec2 }, { tangent = shader.vec4 } }` declares two more, each packed and reported as the first is (`program.layout.streams[1]`, `[2]`), and a draw binds a buffer for each after its vertices: `vertices = { positions, uvs, tangents }`. The vertex function reads them all as `input.attributes`, so a name is declared once across the lot. A mesh that has no tangents is drawn by a program that declares no tangent stream; a stream a program declares is one every draw of it gives.
+- **Limit:** the attributes of both rates, streams included, take at most 16 locations together, and a program declares at most six streams.
 - **Errors:** `the attributes have no "normals": they have normal, position`; `the instance attributes have no "transform": the program declares none`; and, when the program finishes, `the attributes take 20 locations: at most 16`.
 
 ```luau

@@ -126,6 +126,7 @@ pub(super) fn rectangle(
         instances: None,
         indices: None,
         indirect: None,
+        streams: Vec::new(),
         range: DrawRange::new(6),
         tags: vec![tag.to_owned()],
     })
@@ -699,6 +700,7 @@ fn counted_by(gpu: &Gpu, pipeline: &Arc<RenderPipeline>, arguments: &Arc<Buffer>
         instances: None,
         indices: None,
         indirect: Some((arguments.clone(), 0)),
+        streams: Vec::new(),
         range: DrawRange::new(0),
         tags: vec!["opaque".to_owned()],
     });

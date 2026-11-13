@@ -2,7 +2,7 @@
   "errors": [
     "argument: shader.program takes a table, not number",
     "argument: shader.program needs a vertex function, not nil",
-    "argument: unknown jess.shader.program option 'parameters': expected attributes, draw, fragment, instance, material, pass, or vertex",
+    "argument: unknown jess.shader.program option 'parameters': expected attributes, draw, fragment, instance, material, pass, streams, or vertex",
     "argument: material must be a table of shader types, not number",
     "argument: material.tint must be a shader type such as shader.vec4, not number",
     "argument: the names in pass must be strings, not number",

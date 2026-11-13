@@ -58,6 +58,7 @@
         ],
         "group": 0
       },
+      "streams": {},
       "structs": [
         {
           "align": 16,
@@ -330,6 +331,7 @@
         ],
         "size": 288
       },
+      "streams": {},
       "structs": [
         {
           "align": 16,

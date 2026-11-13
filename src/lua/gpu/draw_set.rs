@@ -12,6 +12,7 @@ use l3i::userdata::{Owned, Userdata, receiver};
 use super::device::LuaGpuDevice;
 use super::pipeline::{
     Pipeline, base_vertex, buffer_field, gpu_error, groups, indirect_field, options, pipeline_field, range_fields, table,
+    vertex_buffers,
 };
 use super::resources::{choice, shown, whole, with_bytes};
 use crate::gpu::{DrawRange, DrawSet, DrawSetDesc, DrawSets, Gpu, GpuError, IndexFormat};
@@ -144,11 +145,13 @@ fn draw_set(this: &LuaGpuDevice, call: &Call<'_>, desc: ValueView<'_>) -> l3i::R
             })?;
         }
         let indirect = indirect_field(frame, FUNCTION, &fields)?;
+        let (vertices, streams) = vertex_buffers(frame, FUNCTION, &fields)?;
         let desc = DrawSetDesc {
             pipeline: pipeline.clone(),
             material,
             draw,
-            vertices: buffer_field(frame, FUNCTION, &fields, "vertices")?,
+            vertices,
+            streams,
             instances: buffer_field(frame, FUNCTION, &fields, "instances")?,
             indices: indices.map(|buffer| (buffer, index_format)),
             range: range_fields(frame, FUNCTION, &fields, indirect.as_ref().map(|_| DrawRange::new(0)))?,

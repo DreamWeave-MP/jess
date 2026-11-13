@@ -934,6 +934,144 @@ fn a_script_draws_indirectly_from_a_first_instance() {
     }
 }
 
+/// What `a_script_draws_from_vertex_streams` runs, and what its mistakes start from.
+#[cfg(feature = "gpu")]
+const STREAMS: &str = r"
+            local render = require('@jess/render')
+            local shader = require('@jess/shader')
+            local device = jess.gpu.device()
+            local program = shader.program({
+              attributes = { position = shader.vec2 },
+              streams = { { color = shader.vec3 }, { fade = shader.float } },
+              vertex = function(input)
+                return {
+                  position = shader.vec4(input.attributes.position, 0, 1),
+                  color = input.attributes.color * input.attributes.fade,
+                }
+              end,
+              fragment = function(input) return shader.vec4(input.color, 1) end,
+            })
+            local layout = program.layout
+            assert(layout.attributes.stride == 8 and #layout.streams == 2)
+            assert(layout.streams[1].stride == 12 and layout.streams[2].stride == 4)
+            assert(layout.streams[1].attributes[1].name == 'color' and layout.streams[1].attributes[1].location == 1)
+            assert(layout.streams[2].attributes[1].location == 2)
+
+            -- Two triangles, the left half then the right, in every buffer: red at full strength, then
+            -- green at half.
+            local function filled(stream: number?, name: string, values)
+              local vertices = render.vertices(layout, 6, stream)
+              for index = 1, 6 do
+                vertices:set(index, name, values(index))
+              end
+              local gpuBuffer = device:buffer(vertices.stride * vertices.count, 'vertex')
+              vertices:upload(gpuBuffer)
+              return gpuBuffer
+            end
+
+            local corners = { { -1, -1 }, { 0, -1 }, { -1, 3 }, { 0, -1 }, { 1, -1 }, { 0, 3 } }
+            local positions = filled(nil, 'position', function(index) return corners[index] end)
+            local colors = filled(1, 'color', function(index) return if index <= 3 then { 1, 0, 0 } else { 0, 1, 0 } end)
+            local fades = filled(2, 'fade', function(index) return if index <= 3 then 1 else 0.5 end)
+
+            local pipeline = device:pipeline(program, { colors = { 'rgba8Unorm' } })
+            local target = device:texture({ width = 16, height = 16, format = 'rgba8Unorm', usage = 'target' })
+            local function drawn(draw): string
+              draw.pipeline = pipeline
+              device:render({ colors = { { texture = target, clear = { 0, 0, 0, 1 } } }, draws = { draw } })
+              local pixels = target:read()
+              local seen = {}
+              for _, column in { 2, 13 } do
+                local at = (12 * 16 + column) * 4
+                table.insert(seen, `{buffer.readu8(pixels, at)},{buffer.readu8(pixels, at + 1)},{buffer.readu8(pixels, at + 2)}`)
+              end
+              return table.concat(seen, ' ')
+            end
+
+            local all = { positions, colors, fades }
+            assert(drawn({ vertices = all, count = 6 }) == '255,0,0 0,128,0', drawn({ vertices = all, count = 6 }))
+            -- A range of the vertices is a range of every stream.
+            assert(drawn({ vertices = all, count = 3, first = 3 }) == '0,0,0 0,128,0')
+
+            local set = device:drawSet({ pipeline = pipeline, vertices = all, count = 6, tags = { 'scene' } })
+            assert(set.count == 6)
+";
+
+/// A program's per-vertex attributes in three buffers: the vertex buffer and two streams, bound
+/// in the order the program declares them, drawn whole and as a range; a draw that gives too few,
+/// one too short, or its vertices from an offset is refused.
+#[cfg(feature = "gpu")]
+#[test]
+fn a_script_draws_from_vertex_streams() {
+    let Some(runtime) = gpu_runtime("a_script_draws_from_vertex_streams") else {
+        return;
+    };
+    runtime.exec(STREAMS).unwrap_or_else(|error| panic!("{error}"));
+
+    for (script, expected) in [
+        (
+            "drawn({ vertices = positions, count = 6 })",
+            "GpuDevice:render: draw 0 is invalid: its program reads 2 streams, and the draw gives 0",
+        ),
+        (
+            "drawn({ vertices = { positions, colors, fades, fades }, count = 6 })",
+            "draw 0 is invalid: its program reads 2 streams, and the draw gives 3",
+        ),
+        (
+            "drawn({ vertices = { positions, colors, device:buffer(16, 'vertex') }, count = 6 })",
+            "draw 0 is invalid: 6 vertices of 4 bytes run past its 16-byte stream 2",
+        ),
+        (
+            "drawn({ vertices = { positions, colors, device:buffer(24, 'uniform') }, count = 6 })",
+            "draw 0 is invalid: its stream 2 isn't a vertex buffer",
+        ),
+        (
+            "drawn({ vertices = all, count = 3, verticesOffset = 24 })",
+            "draw 0 is invalid: its vertices start 24 bytes in, and its streams at their starts: with streams, name \
+             a range by its first vertex or base vertex",
+        ),
+        (
+            "drawn({ vertices = { positions, 3 }, count = 6 })",
+            "GpuDevice:render: vertices is a GpuBuffer or a list of them, and the list holds number",
+        ),
+        (
+            "drawn({ vertices = {}, count = 6 })",
+            "GpuDevice:render: vertices is a GpuBuffer or a list of them, and the list is empty",
+        ),
+        (
+            "device:drawSet({ pipeline = pipeline, vertices = { positions, colors }, count = 6 })",
+            "GpuDevice:drawSet: the draw set is invalid: its program reads 2 streams, and the draw gives 1",
+        ),
+        (
+            "set.first = 1",
+            "GpuDrawSet.first: the draw set is invalid: 6 vertices of 8 bytes from vertex 1 run past its 48-byte vertex buffer",
+        ),
+        (
+            "shader.program({ attributes = { position = shader.vec2 }, streams = { { position = shader.vec2 } }, \
+             vertex = function(input) return { position = shader.vec4(input.attributes.position, 0, 1) } end, \
+             fragment = function() return shader.vec4(1) end })",
+            "position",
+        ),
+        (
+            "shader.program({ streams = { {} }, vertex = function() return { position = shader.vec4(0) } end, \
+             fragment = function() return shader.vec4(1) end })",
+            "streams[1] declares nothing: a stream holds at least one attribute",
+        ),
+        (
+            "shader.program({ streams = { 3 }, vertex = function() return { position = shader.vec4(0) } end, \
+             fragment = function() return shader.vec4(1) end })",
+            "streams[1] must be a table of shader types, not number",
+        ),
+        (
+            "render.vertices(layout, 3, 3)",
+            "@jess/render: the program has no stream 3 attributes",
+        ),
+    ] {
+        let error = runtime.exec(&format!("{STREAMS}\n{script}")).unwrap_err().to_string();
+        assert!(error.contains(expected), "{script}: {error}");
+    }
+}
+
 /// A plan described in Luau: opaque draw sets with depth, an overlay depth tested read-only, a
 /// fullscreen pass sampling the result into an imported target, and a copy of that into an
 /// imported buffer, run again after a set changes, and resized.

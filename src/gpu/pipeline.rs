@@ -8,7 +8,7 @@ use super::live::{Kind, Token};
 use super::texture::raw_format;
 use super::{Compare, Gpu, GpuError};
 use crate::render::{SampleKind, TextureFormat};
-use crate::shader::layout::{GroupLayout, VertexBufferLayout};
+use crate::shader::layout::{GroupLayout, MAX_STREAMS, VertexBufferLayout};
 use crate::shader::wgsl::{self, FRAGMENT_ENTRY_POINT, VERTEX_ENTRY_POINT, WgslModule};
 use crate::shader::{Access, Frequency, Program, ResourceId, ResourceKind, Scalar, StorageId, Type};
 
@@ -154,6 +154,8 @@ pub struct RenderPipeline {
     state: PipelineState,
     /// The bytes per vertex and per instance; 0 for a rate without attributes.
     pub(crate) strides: [u32; 2],
+    /// The bytes per vertex of each stream; 0 for one nothing was declared into.
+    pub(crate) stream_strides: Box<[u32]>,
     /// Whether its device adds a base vertex to an index.
     pub(crate) base_vertex: bool,
     _live: Token,
@@ -195,13 +197,21 @@ impl Gpu {
     ) -> Result<RenderPipeline, GpuError> {
         check_targets(&module.outputs, state)?;
         let groups = self.groups(program, &module.layout.groups, wgpu::ShaderStages::VERTEX_FRAGMENT)?;
-        let attributes: Vec<Vec<wgpu::VertexAttribute>> =
-            module.layout.vertex_buffers.iter().map(vertex_attributes).collect();
+        if module.layout.streams.len() > MAX_STREAMS {
+            return Err(GpuError::Invalid(format!(
+                "the program reads {} streams, and a draw binds {MAX_STREAMS} at most beside its vertices and instances",
+                module.layout.streams.len()
+            )));
+        }
+        let attributes: Vec<Vec<wgpu::VertexAttribute>> = module.layout.buffers().map(vertex_attributes).collect();
+        // Every stream advances with the vertices, as the first buffer does.
+        let steps = [wgpu::VertexStepMode::Vertex, wgpu::VertexStepMode::Instance]
+            .into_iter()
+            .chain(std::iter::repeat(wgpu::VertexStepMode::Vertex));
         let buffers: Vec<Option<wgpu::VertexBufferLayout<'_>>> = module
             .layout
-            .vertex_buffers
-            .iter()
-            .zip([wgpu::VertexStepMode::Vertex, wgpu::VertexStepMode::Instance])
+            .buffers()
+            .zip(steps)
             .zip(&attributes)
             .map(|((buffer, step_mode), attributes)| {
                 (!attributes.is_empty()).then_some(wgpu::VertexBufferLayout {
@@ -269,6 +279,7 @@ impl Gpu {
             groups,
             state: state.clone(),
             strides: module.layout.vertex_buffers.each_ref().map(|buffer| buffer.stride),
+            stream_strides: module.layout.streams.iter().map(|buffer| buffer.stride).collect(),
             base_vertex: self.info.base_vertex,
             _live: self.live.token(Kind::Pipeline),
         })
