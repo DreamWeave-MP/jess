@@ -217,6 +217,8 @@ plan:
 
 Runs the tests of the members named, by package id or path, or of every member that has tests: each as [`jess package test`](@/docs/cli/package.md#jess-package-test) runs one, from its source and then packed, with its `[dependencies]` and `[dev-dependencies]` resolved over the workspace. A member's dev-dependencies are its tests' alone: they never reach a target's plan. The report is a list, one entry per member, and any failure fails the command.
 
+Members are tested one after another; within a member, `--jobs <N>` runs that many test modules at once, as `jess package test` does, with the same default.
+
 ## jess workspace sync
 
 | Argument / option | Does |

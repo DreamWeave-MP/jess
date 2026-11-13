@@ -76,6 +76,11 @@ enum WorkspaceCommand {
     Test {
         /// The members to test, by package id or path. Without any, every member with tests.
         members: Vec<String>,
+        /// How many test modules run at once: by default one for every two processors, at
+        /// most four. With 1, a provider's modules run in order in one runtime; with more,
+        /// every module runs in a runtime and a scratch folder of its own.
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u16).range(1..=256))]
+        jobs: Option<u16>,
     },
     /// Freeze the workspace into a packed workspace, a .jsw: the targets its [pack] table names,
     /// or every member's, and every package they run, pinned. Runs offline from the one file:
@@ -219,9 +224,10 @@ pub fn run_standalone(image: Image, args: Vec<String>) -> Result<u8, String> {
     run_packed(image, target, args)
 }
 
-fn test(at: &Locate, members: &[String], format: Format) -> Result<(), String> {
+fn test(at: &Locate, members: &[String], jobs: Option<u16>, format: Format) -> Result<(), String> {
     let scratch = std::env::temp_dir().join(format!("jess-workspace-test-{}", std::process::id()));
-    let reports = workspace::test(&jess::lua::Options::default(), at, members, &scratch);
+    let jobs = jobs.map_or_else(jess::lua::package::default_test_jobs, usize::from);
+    let reports = workspace::test_with_jobs(&jess::lua::Options::default(), at, members, &scratch, jobs);
     drop(std::fs::remove_dir_all(&scratch));
     let reports = reports.map_err(|error| error.to_string())?;
     output::print(&reports, format)?;
@@ -243,7 +249,7 @@ pub fn run(args: &WorkspaceArgs, format: Format) -> Result<u8, String> {
             output::print(&resolved, format)?;
         }
         WorkspaceCommand::Run(run) => return run_target(at, run),
-        WorkspaceCommand::Test { members } => test(&at, members, format)?,
+        WorkspaceCommand::Test { members, jobs } => test(&at, members, *jobs, format)?,
         WorkspaceCommand::Pack {
             output,
             runtime,

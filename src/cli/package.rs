@@ -66,6 +66,11 @@ enum PackageCommand {
         /// package graph reads one.
         #[arg(long = "package-path", value_name = "FOLDER")]
         package_paths: Vec<PathBuf>,
+        /// How many test modules run at once: by default one for every two processors, at
+        /// most four. With 1, a provider's modules run in order in one runtime; with more,
+        /// every module runs in a runtime and a scratch folder of its own.
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u16).range(1..=256))]
+        jobs: Option<u16>,
     },
     /// Type-check a Package Source's Luau in strict mode, every .jsl file under it, with each
     /// require resolved as the runtime resolves it under the package's plan, its [dependencies]
@@ -261,9 +266,10 @@ pub fn run(args: &PackageArgs, format: Format) -> Result<u8, String> {
             package,
             packages,
             package_paths,
+            jobs,
         } => {
             let scratch = std::env::temp_dir().join(format!("jess-package-test-{}", std::process::id()));
-            let report = jess::lua::package::test_with(
+            let report = jess::lua::package::test_with_jobs(
                 &jess::lua::Options::default(),
                 package,
                 &scratch,
@@ -272,6 +278,7 @@ pub fn run(args: &PackageArgs, format: Format) -> Result<u8, String> {
                     paths: texts(package_paths),
                     ..Default::default()
                 },
+                jobs.map_or_else(jess::lua::package::default_test_jobs, usize::from),
             );
             drop(std::fs::remove_dir_all(&scratch));
             let report = report.map_err(|error| error.to_string())?;

@@ -1767,3 +1767,156 @@ fn a_source_packs_at_another_version_as_a_development_build() {
         "{refused}"
     );
 }
+
+/// A provider, a module's file name, its cases by name and whether each passed, and whether the
+/// module failed to run.
+type ModuleShape = (String, String, Vec<(String, bool)>, bool);
+
+/// What a package test reported, without what differs from run to run.
+fn shape(report: &package::PackageTest) -> Vec<ModuleShape> {
+    report
+        .providers
+        .iter()
+        .flat_map(|provider| {
+            provider.run.modules.iter().map(|module| {
+                let cases = module.report.as_ref().map_or_else(Vec::new, |suite| {
+                    suite.tests.iter().map(|case| (case.name.clone(), case.passed)).collect()
+                });
+                let input = module.input.file_name().unwrap().to_string_lossy().into_owned();
+                (provider.kind.clone(), input, cases, module.error.is_some())
+            })
+        })
+        .collect()
+}
+
+/// The package `org.example.subject` at `subject` with six test modules, and its manifest's list
+/// of them. The package counts how often it was asked, which is once a runtime if nothing shares
+/// one; the third module fails a case and the fifth never returns a suite.
+fn six_test_modules(subject: &Path) -> String {
+    let names = (1..=6).map(|index| format!("tests/m{index}.jsl")).collect::<Vec<_>>();
+    let listed = names.iter().map(|name| format!("\"{name}\"")).collect::<Vec<_>>().join(", ");
+    // The package counts how often it was asked: once a runtime, if nothing shares one.
+    library(
+        subject,
+        "subject",
+        &format!("tests = [{listed}]\n"),
+        "local asked = 0\nreturn { ask = function() asked += 1; return asked end }\n",
+    );
+    for (index, name) in names.iter().enumerate() {
+        let body = match index {
+            // One that fails a case, and one that never returns a suite.
+            2 => "suite.it('fails', function() expect(1).toBe(2) end)\n".to_owned(),
+            4 => "error('this module does not load')\n".to_owned(),
+            _ => {
+                "suite.it('is the first to ask in its runtime', function() expect(require('@subject').ask()).toBe(1) end)\n\
+              suite.it('has a scratch folder nobody wrote in', function()\n  \
+                local fs = require '@dream/fs'\n  \
+                local path = fs.join(scratchRoot, 'mark')\n  \
+                expect(fs.exists(path)).toBe(false)\n  \
+                expect((fs.writeFile(path, 'mine', { exclusive = true }))).toBe(4)\n\
+              end)\n"
+                    .to_owned()
+            }
+        };
+        write(
+            subject,
+            &[(
+                name.as_str(),
+                &format!(
+                    "local test = require '@jess/test'\nlocal suite, expect = test.new(), test.expect\n{body}return suite\n"
+                ),
+            )],
+        );
+    }
+    listed
+}
+
+/// With more than one job a package's test modules run side by side, each in a runtime and a
+/// scratch folder of its own, and the report is what one job gives: the same cases, in the
+/// manifest's order, source first.
+#[test]
+fn test_modules_run_at_once_share_nothing_and_report_in_order() {
+    let temp = tempfile::tempdir().unwrap();
+    let subject = temp.path().join("subject");
+    let listed = six_test_modules(&subject);
+    let options = jess::lua::Options::default();
+    for jobs in [2, 3, 12] {
+        let report = package::test_with_jobs(
+            &options,
+            &subject,
+            &temp.path().join(format!("scratch-{jobs}")),
+            &[],
+            &package::Search::default(),
+            jobs,
+        )
+        .unwrap();
+        assert_eq!(report.providers.len(), 2, "{report:#?}");
+        assert_eq!(report.providers[0].kind, "source");
+        assert_eq!(report.providers[1].kind, "jpk");
+        assert_eq!(report.providers[0].digest, report.providers[1].digest);
+        // Four modules of two passing cases, one failing case and one module that did not run,
+        // for each provider.
+        assert_eq!((report.passed, report.failed), (16, 4), "{jobs} jobs: {report:#?}");
+        let seen = shape(&report);
+        let order = seen
+            .iter()
+            .map(|(kind, input, ..)| format!("{kind} {input}"))
+            .collect::<Vec<_>>();
+        let expected = ["source", "jpk"]
+            .iter()
+            .flat_map(|kind| (1..=6).map(move |index| format!("{kind} m{index}.jsl")))
+            .collect::<Vec<_>>();
+        assert_eq!(order, expected, "{jobs} jobs");
+        for (kind, input, cases, errored) in &seen {
+            match input.as_str() {
+                "m3.jsl" => assert_eq!(cases, &[("fails".to_owned(), false)], "{kind} {input}"),
+                "m5.jsl" => assert!(*errored && cases.is_empty(), "{kind} {input}"),
+                _ => assert!(
+                    cases.len() == 2 && cases.iter().all(|case| case.1),
+                    "{kind} {input}: {cases:?}"
+                ),
+            }
+        }
+    }
+
+    // One job is the old run: a provider's modules in one runtime, so the package is asked again
+    // by each module after the first, and they share the provider's scratch folder.
+    let alone = package::test_with_jobs(
+        &options,
+        &subject,
+        &temp.path().join("scratch-1"),
+        &[],
+        &package::Search::default(),
+        1,
+    )
+    .unwrap();
+    assert_eq!((alone.passed, alone.failed), (4, 16), "{alone:#?}");
+    let same = package::test_with(
+        &options,
+        &subject,
+        &temp.path().join("scratch-0"),
+        &[],
+        &package::Search::default(),
+    )
+    .unwrap();
+    assert_eq!(shape(&alone), shape(&same));
+
+    // A provider that cannot be activated fails the run, as it does with one job.
+    library(
+        &subject,
+        "subject",
+        &format!("tests = [{listed}]\n[dependencies]\n\"org.example.absent\" = \"1\"\n"),
+        "return {}\n",
+    );
+    let refused = package::test_with_jobs(
+        &options,
+        &subject,
+        &temp.path().join("scratch-x"),
+        &[],
+        &package::Search::default(),
+        4,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(refused.contains("org.example.absent"), "{refused}");
+}
