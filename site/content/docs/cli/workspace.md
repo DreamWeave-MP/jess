@@ -6,7 +6,7 @@ extra:
   kind: reference
 ---
 
-{{ api_signature(value="jess workspace [--workspace FOLDER | FILE] info | targets | graph [TARGET] | run [TARGET] [--capability NAME]... [--trusted] [-- ARGS...] | test [MEMBER]... | sync [ARTIFACT]... [--package-path FOLDER]... [--publisher URL]... [--index URL]... [--locked] [--offline] | pack --output FILE [--runtime JESS | --runtimes FOLDER]") }}
+{{ api_signature(value="jess workspace [--workspace FOLDER | FILE] info | targets | graph [TARGET] | run [TARGET] [--capability NAME]... [--trusted] [-- ARGS...] | test [--jobs N] [MEMBER]... | sync [ARTIFACT]... [--package-path FOLDER]... [--publisher URL]... [--index URL]... [--locked] [--offline] | pack --output FILE [--runtime JESS | --runtimes FOLDER]") }}
 
 A **workspace** is a set of [Package Sources](@/docs/scripting/packages.md) developed together: a tool and the library it uses, an application and its editor. It saves you assembling `--package` and `--package-path` by hand for every command, and it makes what the members depend on beyond each other the same on every machine. It is a development arrangement and nothing more. A package's identity, its digest, and what its modules may `require` are its own manifest's business, in a workspace or out of one.
 
@@ -217,7 +217,7 @@ plan:
 
 Runs the tests of the members named, by package id or path, or of every member that has tests: each as [`jess package test`](@/docs/cli/package.md#jess-package-test) runs one, from its source and then packed, with its `[dependencies]` and `[dev-dependencies]` resolved over the workspace. A member's dev-dependencies are its tests' alone: they never reach a target's plan. The report is a list, one entry per member, and any failure fails the command.
 
-Members are tested one after another; within a member, `--jobs <N>` runs that many test modules at once, as `jess package test` does, with the same default.
+Members are tested one after another; within a member, `--jobs <N>` (1 to 256) runs that many test modules at once, as `jess package test` does, with the same default and the same rule: every module in a runtime and a scratch folder of its own, whatever the number.
 
 ## jess workspace sync
 

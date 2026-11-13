@@ -67,8 +67,9 @@ modules:
       logs: []
   error: null
   logs: []
+  seconds: 0.004
 ```
 
-A case's `logs` are what it wrote through `@jess/log`, captured instead of printed. A module that doesn't return a suite, or fails while loading, gets `error` set and `report: null`, counts as one failure, and doesn't stop the modules after it; what it logged while loading is in its `logs`.
+A case's `logs` are what it wrote through `@jess/log`, captured instead of printed. A module that doesn't return a suite, or fails while loading, gets `error` set and `report: null`, counts as one failure, and doesn't stop the modules after it; what it logged while loading is in its `logs`. Its `seconds` is how long it took by the wall clock, loading and every case.
 
 `--format json` prints the same document on one line, for a script or a CI step to read.

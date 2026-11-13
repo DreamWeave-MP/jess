@@ -1831,16 +1831,17 @@ fn six_test_modules(subject: &Path) -> String {
     listed
 }
 
-/// With more than one job a package's test modules run side by side, each in a runtime and a
-/// scratch folder of its own, and the report is what one job gives: the same cases, in the
-/// manifest's order, source first.
+/// A package's test modules each run in a runtime and a scratch folder of their own, whatever the
+/// number of jobs, and the report is the same for every number: the same cases, in the manifest's
+/// order, source first.
 #[test]
 fn test_modules_run_at_once_share_nothing_and_report_in_order() {
     let temp = tempfile::tempdir().unwrap();
     let subject = temp.path().join("subject");
     let listed = six_test_modules(&subject);
     let options = jess::lua::Options::default();
-    for jobs in [2, 3, 12] {
+    let mut shapes = Vec::new();
+    for jobs in [1, 2, 3, 12] {
         let report = package::test_with_jobs(
             &options,
             &subject,
@@ -1867,6 +1868,7 @@ fn test_modules_run_at_once_share_nothing_and_report_in_order() {
             .flat_map(|kind| (1..=6).map(move |index| format!("{kind} m{index}.jsl")))
             .collect::<Vec<_>>();
         assert_eq!(order, expected, "{jobs} jobs");
+        shapes.push(seen.clone());
         // Every module says how long it took, the one that did not load included.
         for provider in &report.providers {
             for module in &provider.run.modules {
@@ -1885,18 +1887,9 @@ fn test_modules_run_at_once_share_nothing_and_report_in_order() {
         }
     }
 
-    // One job is the old run: a provider's modules in one runtime, so the package is asked again
-    // by each module after the first, and they share the provider's scratch folder.
-    let alone = package::test_with_jobs(
-        &options,
-        &subject,
-        &temp.path().join("scratch-1"),
-        &[],
-        &package::Search::default(),
-        1,
-    )
-    .unwrap();
-    assert_eq!((alone.passed, alone.failed), (4, 16), "{alone:#?}");
+    // The verdict does not depend on the number of jobs, one included: a machine with one
+    // processor reports what a machine with sixteen does.
+    assert!(shapes.windows(2).all(|pair| pair[0] == pair[1]), "{shapes:#?}");
     let same = package::test_with(
         &options,
         &subject,
@@ -1905,7 +1898,7 @@ fn test_modules_run_at_once_share_nothing_and_report_in_order() {
         &package::Search::default(),
     )
     .unwrap();
-    assert_eq!(shape(&alone), shape(&same));
+    assert_eq!(shape(&same), shapes[0]);
 
     // A provider that cannot be activated fails the run, as it does with one job.
     library(
@@ -1925,4 +1918,69 @@ fn test_modules_run_at_once_share_nothing_and_report_in_order() {
     .unwrap_err()
     .to_string();
     assert!(refused.contains("org.example.absent"), "{refused}");
+}
+
+/// With two jobs, two modules really are running at the same moment: each leaves a mark and waits
+/// for the other's, which a run of one after the other could never find. With one job the same
+/// two modules never meet.
+#[test]
+fn two_jobs_run_two_test_modules_at_the_same_moment() {
+    let temp = tempfile::tempdir().unwrap();
+    let subject = temp.path().join("subject");
+    library(
+        &subject,
+        "subject",
+        "tests = [\"tests/first.jsl\", \"tests/second.jsl\"]\n",
+        "return {}\n",
+    );
+    // Scratch folders are siblings, named by the module's place in the manifest.
+    for (name, own, other) in [("tests/first.jsl", "0", "1"), ("tests/second.jsl", "1", "0")] {
+        write(
+            &subject,
+            &[(
+                name,
+                &format!(
+                    "local test = require '@jess/test'\nlocal fs = require '@dream/fs'\n\
+                     local suite, expect = test.new(), test.expect\n\
+                     suite.it('meets the other module', function()\n  \
+                       expect(fs.fileName(scratchRoot)).toBe('{own}')\n  \
+                       expect((fs.writeFile(fs.join(scratchRoot, 'here'), 'x'))).toBe(1)\n  \
+                       local there = fs.join(fs.parent(scratchRoot), '{other}', 'here')\n  \
+                       local limit = os.clock() + WAIT\n  \
+                       while not fs.exists(there) and os.clock() < limit do end\n  \
+                       expect(fs.exists(there)).toBe(MET)\n\
+                     end)\nreturn suite\n"
+                ),
+            )],
+        );
+    }
+    let options = jess::lua::Options::default();
+    let run = |jobs: usize, wait: &str, met: &str| {
+        for name in ["tests/first.jsl", "tests/second.jsl"] {
+            let path = subject.join(name);
+            let source = std::fs::read_to_string(&path).unwrap();
+            let source = source
+                .lines()
+                .map(|line| {
+                    if line.contains("local limit = os.clock() + ") {
+                        format!("  local limit = os.clock() + {wait}")
+                    } else if line.contains("expect(fs.exists(there)).toBe(") {
+                        format!("  expect(fs.exists(there)).toBe({met})")
+                    } else {
+                        line.to_owned()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            std::fs::write(&path, source + "\n").unwrap();
+        }
+        let scratch = temp.path().join(format!("scratch-{jobs}"));
+        package::test_with_jobs(&options, &subject, &scratch, &[], &package::Search::default(), jobs).unwrap()
+    };
+    // Side by side: each finds the other's mark well inside its wait.
+    let together = run(2, "30", "true");
+    assert_eq!((together.passed, together.failed), (4, 0), "{together:#?}");
+    // One after the other: the first waits its whole wait and finds nothing.
+    let apart = run(1, "0.2", "false");
+    assert_eq!((apart.passed, apart.failed), (2, 2), "{apart:#?}");
 }

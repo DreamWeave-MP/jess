@@ -76,9 +76,9 @@ enum WorkspaceCommand {
     Test {
         /// The members to test, by package id or path. Without any, every member with tests.
         members: Vec<String>,
-        /// How many test modules run at once: by default one for every two processors, at
-        /// most four. With 1, a provider's modules run in order in one runtime; with more,
-        /// every module runs in a runtime and a scratch folder of its own.
+        /// How many test modules run at once, 1 to 256: by default one for every two
+        /// processors, at most four. Whatever the number, every module runs in a runtime and
+        /// a scratch folder of its own, and the report is the same.
         #[arg(long, value_name = "N", value_parser = clap::value_parser!(u16).range(1..=256))]
         jobs: Option<u16>,
     },

@@ -1268,12 +1268,13 @@ pub fn default_test_jobs() -> usize {
 
 /// [`test_with`], running up to `jobs` test modules at once.
 ///
-/// With one job, each provider's modules run in order in one runtime, as [`test_with`] runs them.
-/// With more, the modules of both providers are shared out among that many threads, and every
-/// module runs in a runtime of its own, with the package activated in it afresh and a scratch
-/// folder of its own under the provider's: a module shares nothing with another, whichever thread
-/// runs it and whatever ran before, so what a test file sees does not depend on the schedule. The
-/// report is the same either way: providers source first, modules in the manifest's order.
+/// Whatever the number, every module runs in a runtime of its own, with the package activated in
+/// it afresh and a scratch folder of its own under its provider's: a module shares nothing with
+/// another, so what a test file sees depends neither on the schedule nor on how many processors
+/// the machine has. The modules of both providers are shared out among `jobs` threads, and the
+/// report has the providers source first and the modules in the manifest's order. What does
+/// differ with the number is what the machine allows: a window belongs to one thread of the
+/// process, so tests that open one want one job.
 ///
 /// # Errors
 ///
@@ -1326,44 +1327,18 @@ pub fn test_with_jobs(
     let providers = [display.clone(), packed_display.clone()];
     let result = (|| -> l3i::Result<()> {
         pack(&runtime, &display, &packed_display)?;
-        if jobs > 1 && modules.len() > 1 {
-            let shared = Shared {
-                options,
-                capabilities: &test_capabilities,
-                providers: &providers,
-                packages,
-                layers: &layers,
-                search: &search,
-                id: &inspection.id,
-                modules: &modules,
-                scratch,
-            };
-            for (run, package) in test_in_parallel(&shared, jobs)? {
-                report.passed += run.passed;
-                report.failed += run.failed;
-                report.providers.push(ProviderRun {
-                    kind: package.kind,
-                    location: package.location,
-                    digest: package.digest,
-                    run,
-                });
-            }
-            return Ok(());
-        }
-        for (index, provider) in [&display, &packed_display].into_iter().enumerate() {
-            let runtime = crate::lua::runtime_with_capabilities(options.clone(), &test_capabilities)?;
-            let mut locations = vec![provider.clone()];
-            locations.extend_from_slice(packages);
-            let plan = activate_with(&runtime, &locations, &layers, None, &search)?;
-            let package = plan
-                .packages
-                .into_iter()
-                .find(|package| package.id == inspection.id)
-                .ok_or_else(|| error(format!("{} activated without itself", inspection.id)))?;
-            let provider_scratch = scratch.join(if index == 0 { "source" } else { "jpk" });
-            std::fs::create_dir_all(&provider_scratch)
-                .map_err(|source| error(format!("failed to create '{}': {source}", provider_scratch.display())))?;
-            let run = crate::lua::testing::run_in_with_scratch(&runtime, &modules, &provider_scratch)?;
+        let shared = Shared {
+            options,
+            capabilities: &test_capabilities,
+            providers: &providers,
+            packages,
+            layers: &layers,
+            search: &search,
+            id: &inspection.id,
+            modules: &modules,
+            scratch,
+        };
+        for (run, package) in test_each_alone(&shared, jobs.max(1))? {
             report.passed += run.passed;
             report.failed += run.failed;
             report.providers.push(ProviderRun {
@@ -1411,14 +1386,14 @@ fn activate_for_tests(shared: &Shared<'_>, provider: usize) -> l3i::Result<(Runt
     Ok((runtime, package))
 }
 
-/// Runs every module against both providers on `jobs` threads, and answers each provider's run
-/// with its modules in the order given, source first.
+/// Runs every module against both providers on `jobs` threads, each module alone in a runtime,
+/// and answers each provider's run with its modules in the order given, source first.
 ///
 /// The work is a queue of (provider, module) pairs, in order, that the threads take from until it
 /// is empty. Each pair gets a runtime made for it and dropped after it. What a module raises is
 /// its report's; a runtime that cannot be made, or a thread that
 /// cannot be started, fails the run.
-fn test_in_parallel(shared: &Shared<'_>, jobs: usize) -> l3i::Result<Vec<(crate::lua::testing::TestRun, PlanPackage)>> {
+fn test_each_alone(shared: &Shared<'_>, jobs: usize) -> l3i::Result<Vec<(crate::lua::testing::TestRun, PlanPackage)>> {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     type Done = (usize, usize, Result<crate::lua::testing::ModuleReport, String>);
@@ -1432,7 +1407,8 @@ fn test_in_parallel(shared: &Shared<'_>, jobs: usize) -> l3i::Result<Vec<(crate:
     std::thread::scope(|scope| {
         for thread in 0..threads {
             let (sender, next) = (sender.clone(), &next);
-            // The stack of a main thread: a test may recurse as deeply here as it does there.
+            // One stack size on every platform and for every number of jobs, and no smaller than
+            // a main thread's anywhere: how deeply a test may recurse does not depend on either.
             let spawned = std::thread::Builder::new()
                 .name(format!("jess-test-{thread}"))
                 .stack_size(16 * 1024 * 1024)
@@ -1443,6 +1419,7 @@ fn test_in_parallel(shared: &Shared<'_>, jobs: usize) -> l3i::Result<Vec<(crate:
                             break;
                         }
                         let (provider, module) = (job / count, job % count);
+                        let began = std::time::Instant::now();
                         let ran = (|| -> l3i::Result<crate::lua::testing::ModuleReport> {
                             let (runtime, _) = activate_for_tests(shared, provider)?;
                             let folder = shared
@@ -1456,7 +1433,11 @@ fn test_in_parallel(shared: &Shared<'_>, jobs: usize) -> l3i::Result<Vec<(crate:
                                 std::slice::from_ref(&shared.modules[module]),
                                 &folder,
                             )?;
-                            run.modules.pop().ok_or_else(|| error("a module ran without a report"))
+                            let mut report = run.modules.pop().ok_or_else(|| error("a module ran without a report"))?;
+                            // The module's whole cost: its runtime and the package's activation in
+                            // it are made for this module and for nothing else.
+                            report.seconds = (began.elapsed().as_secs_f64() * 1000.0).round() / 1000.0;
+                            Ok(report)
                         })();
                         let ran = ran.map_err(|error| crate::lua::error_message(&error));
                         if sender.send((provider, module, ran)).is_err() {
