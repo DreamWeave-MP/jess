@@ -523,7 +523,7 @@ local function parseManifest(text: string): Manifest
       fail(`{Manifest}: [package] test_jobs must be a whole number from 1 to 256`)
     end
 
-    testJobs = most
+    testJobs = most :: number
   end
 
   local function requirements(value: unknown, section: string): { [string]: string }

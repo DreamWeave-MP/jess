@@ -2025,11 +2025,11 @@ fn a_manifest_caps_how_many_test_modules_run_at_once() {
     tested("test_jobs = 2\n", 1, "inspected").unwrap();
     assert_eq!(
         package::inspect(&common::runtime(), &text(&subject)).unwrap().test_jobs,
-        Some(2.0)
+        Some(2)
     );
 
     // Not a whole number from 1 to 256: the manifest is refused, and nothing runs.
-    for bad in ["0", "257", "1.5", "\"2\"", "-1", "true"] {
+    for bad in ["0", "257", "1.5", "\"2\"", "-1", "true", "nan", "inf", "1e300"] {
         let refused = tested(&format!("test_jobs = {bad}\n"), 2, "refused").unwrap_err().to_string();
         assert!(
             refused.contains("[package] test_jobs must be a whole number from 1 to 256"),

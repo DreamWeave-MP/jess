@@ -676,7 +676,7 @@ pub struct Inspection {
     pub tests: Vec<String>,
     /// The most of them that may run at once, when its manifest says (`test_jobs`).
     #[serde(default)]
-    pub test_jobs: Option<f64>,
+    pub test_jobs: Option<u16>,
 }
 
 /// What `jess pack` reports.
@@ -1217,8 +1217,8 @@ pub struct PackageTest {
     pub version: String,
     /// The test modules the manifest names, as given there.
     pub tests: Vec<String>,
-    /// How many of them ran at once at most: what was asked for, or the manifest's `test_jobs`
-    /// when that is fewer.
+    /// The most of them that may run at once: what was asked for, or the manifest's `test_jobs`
+    /// when that is fewer. Fewer run when there are fewer to run.
     pub jobs: usize,
     /// Each provider's run, source first; none for a JPK, whose tests run from its source.
     pub providers: Vec<ProviderRun>,
@@ -1308,7 +1308,7 @@ pub fn test_with_jobs(
     // What the package says its tests can stand is a ceiling on what was asked for: a package
     // whose tests open a window, or measure time, knows that better than whoever runs them.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let jobs = inspection.test_jobs.map_or(jobs, |most| jobs.min(most as usize)).max(1);
+    let jobs = inspection.test_jobs.map_or(jobs, |most| jobs.min(usize::from(most))).max(1);
     let mut report = PackageTest {
         id: inspection.id.clone(),
         version: inspection.version.clone(),
