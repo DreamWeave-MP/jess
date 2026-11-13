@@ -507,9 +507,16 @@ pub fn buffer_problem(draw: &Draw<'_>) -> Option<String> {
 fn stream_problem(draw: &Draw<'_>) -> Option<String> {
     let strides = &draw.pipeline.stream_strides;
     if draw.streams.len() != strides.len() {
+        let streams = |count: usize| {
+            if count == 1 {
+                "1 stream".to_owned()
+            } else {
+                format!("{count} streams")
+            }
+        };
         return Some(format!(
-            "its program reads {} streams, and the draw gives {}",
-            strides.len(),
+            "its program reads {}, and the draw gives {}",
+            streams(strides.len()),
             draw.streams.len()
         ));
     }

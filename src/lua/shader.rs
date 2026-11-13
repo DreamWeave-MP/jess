@@ -1649,6 +1649,11 @@ fn streams(frame: &Frame<'_>, listed: ValueView<'_>) -> l3i::Result<Vec<Vec<(Str
         )));
     }
     let mut streams = Vec::new();
+    let mut entries = 0;
+    listed.as_table()?.for_each(frame, |_, _, _| {
+        entries += 1;
+        Ok(())
+    })?;
     listed.as_table()?.for_each_array(frame, |frame, index, stream| {
         let what = format!("streams[{index}]");
         if !stream.is_table() {
@@ -1663,6 +1668,11 @@ fn streams(frame: &Frame<'_>, listed: ValueView<'_>) -> l3i::Result<Vec<Vec<(Str
         streams.push(declared);
         Ok(())
     })?;
+    if streams.len() != entries {
+        return Err(error(
+            "streams must be a list: a draw binds them in its order, so they are numbered, not named",
+        ));
+    }
     if streams.len() > crate::shader::layout::MAX_STREAMS {
         return Err(error(format!(
             "a program reads at most {} streams, not {}",
@@ -2056,9 +2066,16 @@ fn program(shader: &Rc<Shader>, call: &Call<'_>, spec: ValueView<'_>) -> l3i::Re
             bindings(frame, table.raw_get(frame, material)?, material)?,
             bindings(frame, table.raw_get(frame, draw)?, draw)?,
         ];
+        let streams = streams(frame, table.raw_get(frame, "streams")?)?;
+        if !streams.is_empty() && attributes[0].is_empty() {
+            return Err(error(
+                "streams sit beside attributes: a program with streams declares at least one attribute, which the \
+                 first of a draw's vertices holds",
+            ));
+        }
         Ok(Spec {
             attributes,
-            streams: streams(frame, table.raw_get(frame, "streams")?)?,
+            streams,
             groups,
             stages: Stages::Render {
                 vertex: stage_function(table.raw_get(frame, "vertex")?, "shader.program", "vertex")?,

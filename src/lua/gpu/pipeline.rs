@@ -682,6 +682,11 @@ pub fn vertex_buffers(frame: &Frame<'_>, function: &str, fields: &TableView<'_>)
         return Ok((buffer_field(frame, function, fields, "vertices")?, Vec::new()));
     }
     let mut listed = Vec::new();
+    let mut entries = 0;
+    view.as_table()?.for_each(frame, |_, _, _| {
+        entries += 1;
+        Ok(())
+    })?;
     view.as_table()?.for_each_array(frame, |_, _, buffer| {
         let Some(buffer) = receiver::<LuaGpuBuffer>(buffer) else {
             return Err(error(format!(
@@ -692,9 +697,10 @@ pub fn vertex_buffers(frame: &Frame<'_>, function: &str, fields: &TableView<'_>)
         listed.push(buffer.buffer.clone());
         Ok(())
     })?;
-    if listed.is_empty() {
+    if listed.is_empty() || listed.len() != entries {
         return Err(error(format!(
-            "{function}: vertices is a GpuBuffer or a list of them, and the list is empty"
+            "{function}: vertices is a GpuBuffer or a list of them, and this is {}",
+            if entries == 0 { "empty" } else { "not a list" }
         )));
     }
     let vertices = listed.remove(0);

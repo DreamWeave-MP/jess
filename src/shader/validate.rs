@@ -89,6 +89,17 @@ pub enum ValidationErrorKind {
         /// The name.
         name: String,
     },
+    /// An attribute is declared into a stream it cannot be in: a per-instance attribute into any,
+    /// a stream past [`MAX_STREAMS`](super::layout::MAX_STREAMS), or one with nothing declared
+    /// into the stream before it.
+    InvalidStream {
+        /// The attribute.
+        name: String,
+        /// The stream it names.
+        stream: u32,
+        /// Why it can't be in it.
+        reason: &'static str,
+    },
     /// A declaration has a type its kind cannot have, such as a `Bool` parameter or a `Mat4f`
     /// varying.
     UnsupportedDeclarationType {
@@ -457,6 +468,9 @@ impl fmt::Display for ValidationErrorKind {
             ),
             ValidationErrorKind::DuplicateName { kind, name } => {
                 write!(formatter, "{kind} {name:?} is declared twice")
+            }
+            ValidationErrorKind::InvalidStream { name, stream, reason } => {
+                write!(formatter, "attribute {name:?} is declared into stream {stream}: {reason}")
             }
             ValidationErrorKind::UnsupportedDeclarationType { kind, name, ty } => {
                 let expected = match kind {
@@ -880,6 +894,17 @@ fn check_declarations(program: &Program, errors: &mut Vec<ValidationError>) {
     }
     for (index, attribute) in program.attributes.iter().enumerate() {
         report(attribute_errors(&program.attributes[..index], attribute), &attribute.origin);
+        // Streams are numbered as a draw binds them, one after another: none is skipped.
+        let before = attribute.stream.saturating_sub(1);
+        let skipped = before > 0 && !program.attributes.iter().any(|other| other.stream == before);
+        if skipped && attribute.rate == Rate::Vertex {
+            let kind = ValidationErrorKind::InvalidStream {
+                name: attribute.name.clone(),
+                stream: attribute.stream,
+                reason: "nothing is declared into the stream before it",
+            };
+            report(vec![kind], &attribute.origin);
+        }
     }
     for (index, uniform) in program.uniforms.iter().enumerate() {
         let earlier = program.uniforms[..index]
@@ -1107,12 +1132,29 @@ pub fn attribute_errors(earlier: &[Attribute], attribute: &Attribute) -> Vec<Val
         .iter()
         .filter(|earlier| earlier.rate == attribute.rate)
         .map(|earlier| (earlier.name.as_str(), earlier.ty));
-    declaration_errors(
+    let mut errors = declaration_errors(
         DeclarationKind::Attribute(attribute.rate),
         earlier,
         &attribute.name,
         attribute.ty,
-    )
+    );
+    let reason = if attribute.stream == 0 {
+        None
+    } else if attribute.rate == Rate::Instance {
+        Some("a stream holds per-vertex attributes, and this one is per instance")
+    } else if attribute.stream as usize > super::layout::MAX_STREAMS {
+        Some("a program reads six streams at most")
+    } else {
+        None
+    };
+    if let Some(reason) = reason {
+        errors.push(ValidationErrorKind::InvalidStream {
+            name: attribute.name.clone(),
+            stream: attribute.stream,
+            reason,
+        });
+    }
+    errors
 }
 
 /// What is wrong with declaring `name` as `ty` after `earlier` declarations of the same `kind`:

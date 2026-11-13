@@ -328,7 +328,9 @@ impl ProgramLayout {
             .filter(|attribute| attribute.rate == Rate::Vertex)
             .map(|attribute| attribute.stream)
             .max()
-            .unwrap_or(0);
+            .unwrap_or(0)
+            // Validation refuses a stream past the last a draw binds; a layout never tries one.
+            .min(u32::try_from(MAX_STREAMS).unwrap_or(u32::MAX));
         let streams = (1..=last).map(|stream| buffer_of(Rate::Vertex, stream)).collect();
 
         ProgramLayout {
