@@ -25,3 +25,20 @@ pub fn gpu(test: &str) -> Option<Gpu> {
         Err(error) => panic!("{test}: {error}"),
     }
 }
+
+/// Probe, never merged: fails so the log shows which adapter this runner's GPU tests ran on.
+#[test]
+fn the_adapter_is_reported() {
+    let Some(gpu) = gpu("the_adapter_is_reported") else {
+        panic!("ADAPTER PROBE: none, so every GPU test on this runner skipped");
+    };
+    let info = gpu.info();
+    panic!(
+        "ADAPTER PROBE: {} through {} ({}), indirect first instance {}, base vertex {}",
+        info.name,
+        info.backend,
+        info.kind.name(),
+        info.indirect_first_instance,
+        info.base_vertex
+    );
+}
