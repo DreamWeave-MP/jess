@@ -380,7 +380,7 @@ return {
     ),
     unknownKey = oracle.raises(
       'argument',
-      "unknown jess.shader.program option 'parameters': expected attributes, draw, fragment, instance, material, pass, or vertex",
+      "unknown jess.shader.program option 'parameters': expected attributes, draw, fragment, instance, material, pass, streams, or vertex",
       shader.program,
       { parameters = { tint = shader.vec4 }, vertex = vertex, fragment = white } :: any
     ),

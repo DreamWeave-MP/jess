@@ -189,6 +189,10 @@ pub struct Attribute {
     pub name: String,
     /// Per vertex or per instance.
     pub rate: Rate,
+    /// Which per-vertex buffer holds it: 0, the vertex buffer every per-vertex attribute is in
+    /// unless told otherwise, or a stream, a buffer of its own beside that one, from 1. Always 0
+    /// for a per-instance attribute.
+    pub stream: u32,
     /// Its type: an `Int`, `UInt`, or `Float`, a vector of one, or a matrix, which takes one
     /// location per column.
     pub ty: Type,
@@ -203,6 +207,7 @@ impl Attribute {
         Attribute {
             name: name.to_owned(),
             rate,
+            stream: 0,
             ty,
             origin: None,
         }

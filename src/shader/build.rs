@@ -420,9 +420,26 @@ impl Site<'_> {
     /// The first problem with the declaration: an invalid name, a name already declared at its
     /// rate, or a type no vertex buffer holds.
     pub fn attribute(&mut self, rate: Rate, name: &str, ty: Type) -> Result<AttributeId, ValidationError> {
+        self.declare_attribute(rate, 0, name, ty)
+    }
+
+    /// Declares a per-vertex attribute held in stream `stream`, a vertex buffer of its own beside
+    /// the one [`Site::attribute`]'s per-vertex attributes share: streams count from 1, and each
+    /// holds the attributes declared into it, in order. The name is among the per-vertex
+    /// attributes' names, whichever buffer holds them.
+    ///
+    /// # Errors
+    ///
+    /// As [`Site::attribute`].
+    pub fn stream_attribute(&mut self, stream: u32, name: &str, ty: Type) -> Result<AttributeId, ValidationError> {
+        self.declare_attribute(Rate::Vertex, stream, name, ty)
+    }
+
+    fn declare_attribute(&mut self, rate: Rate, stream: u32, name: &str, ty: Type) -> Result<AttributeId, ValidationError> {
         let attribute = Attribute {
             name: name.to_owned(),
             rate,
+            stream,
             ty,
             origin: self.origin.clone(),
         };

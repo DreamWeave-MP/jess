@@ -192,3 +192,50 @@ fn attributes_pack_per_rate_and_number_locations_across_both() {
     assert_eq!(layout.vertex_buffers[1].stride, 80);
     assert_eq!(layout.attribute(ids[3]).unwrap().offset, 64);
 }
+
+/// A stream is a per-vertex buffer of its own: packed like the first, numbered after both of a
+/// program's usual buffers, so a program gains one without anything it had moving.
+#[test]
+fn streams_pack_apart_and_take_the_locations_after_the_rest() {
+    let mut program = Program::new();
+    let stream = |number: u32, name: &str, ty: Type| Attribute {
+        stream: number,
+        ..Attribute::new(Rate::Vertex, name, ty)
+    };
+    let ids = [
+        program.attribute(Attribute::new(Rate::Vertex, "position", Type::Vec3f)),
+        program.attribute(stream(2, "bones", Type::Vec4i)),
+        program.attribute(Attribute::new(Rate::Instance, "tint", Type::Vec4f)),
+        program.attribute(stream(1, "uv", Type::Vec2f)),
+        program.attribute(stream(2, "weight", Type::Float)),
+    ];
+    let layout = program.layout();
+    let placed = |attributes: &[jess::shader::layout::AttributeLayout]| -> Vec<(usize, u32, u32)> {
+        attributes
+            .iter()
+            .map(|attribute| (attribute.attribute.index(), attribute.offset, attribute.location))
+            .collect()
+    };
+    assert_eq!(placed(&layout.vertex_buffers[0].attributes), [(0, 0, 0)]);
+    assert_eq!(placed(&layout.vertex_buffers[1].attributes), [(2, 0, 1)]);
+    assert_eq!(layout.streams.len(), 2);
+    assert_eq!(placed(&layout.streams[0].attributes), [(3, 0, 2)]);
+    assert_eq!(placed(&layout.streams[1].attributes), [(1, 0, 3), (4, 16, 4)]);
+    assert_eq!(
+        (
+            layout.vertex_buffers[0].stride,
+            layout.streams[0].stride,
+            layout.streams[1].stride
+        ),
+        (12, 8, 20)
+    );
+    assert_eq!(layout.attribute(ids[4]).unwrap().offset, 16);
+    assert_eq!(layout.buffers().count(), 4);
+
+    let plain = {
+        let mut program = Program::new();
+        program.attribute(Attribute::new(Rate::Vertex, "position", Type::Vec3f));
+        program.layout()
+    };
+    assert!(plain.streams.is_empty(), "a program that declares no stream has none");
+}

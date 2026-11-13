@@ -586,3 +586,46 @@ fn fragment_outputs_are_capped() {
     }
     assert_eq!(messages(&program), ["the fragment stage has 9 outputs: at most 8"]);
 }
+
+/// A stream holds per-vertex attributes, there are six at most, and none is skipped: a program
+/// that says otherwise is refused before anything lays it out.
+#[test]
+fn an_attribute_is_declared_into_a_stream_a_draw_can_bind() {
+    let stream = |rate: Rate, number: u32, name: &str| Attribute {
+        stream: number,
+        ..Attribute::new(rate, name, Type::Float)
+    };
+    for (attribute, expected) in [
+        (
+            stream(Rate::Instance, 1, "tint"),
+            "attribute \"tint\" is declared into stream 1: a stream holds per-vertex attributes, and this one is per \
+             instance",
+        ),
+        (
+            stream(Rate::Vertex, u32::MAX, "far"),
+            "attribute \"far\" is declared into stream 4294967295: a program reads six streams at most",
+        ),
+        (
+            stream(Rate::Vertex, 2, "skipped"),
+            "attribute \"skipped\" is declared into stream 2: nothing is declared into the stream before it",
+        ),
+    ] {
+        let mut program = with_position();
+        program.attribute(attribute);
+        assert!(
+            messages(&program).iter().any(|message| message.contains(expected)),
+            "{:?}",
+            messages(&program)
+        );
+    }
+
+    // In any order, as long as none is missing.
+    let mut program = with_position();
+    program.attribute(stream(Rate::Vertex, 2, "weight"));
+    program.attribute(stream(Rate::Vertex, 1, "uv"));
+    let complaints = program.validate().err().unwrap_or_default();
+    assert!(
+        complaints.iter().all(|error| !error.to_string().contains("stream")),
+        "{complaints:?}"
+    );
+}

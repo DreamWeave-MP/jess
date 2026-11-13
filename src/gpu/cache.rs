@@ -2,7 +2,8 @@
 //! hands the same one to everyone who asks again while anyone still holds it.
 //!
 //! The key is the WGSL a program lowers to, which is deterministic and holds every binding and
-//! attribute the pipeline's layouts come from, plus the render state. A cached pipeline is held
+//! attribute location the pipeline's layouts come from, plus which vertex buffer holds each
+//! attribute, which the WGSL doesn't say, plus the render state. A cached pipeline is held
 //! weakly: once nothing uses it, the next request compiles it again.
 
 use std::collections::HashMap;
@@ -22,10 +23,14 @@ pub struct PipelineStats {
     pub reused: u64,
 }
 
+/// What tells one render pipeline from another: the WGSL, the locations each vertex buffer holds,
+/// and the state.
+type RenderKey = (String, Vec<Vec<u32>>, PipelineState);
+
 /// What a device's cache holds.
 #[derive(Debug, Default)]
 pub struct Cache {
-    render: HashMap<(String, PipelineState), Weak<RenderPipeline>>,
+    render: HashMap<RenderKey, Weak<RenderPipeline>>,
     compute: HashMap<String, Weak<ComputePipeline>>,
     stats: PipelineStats,
 }
@@ -42,7 +47,14 @@ impl Gpu {
             return self.render_pipeline(program, state).map(Arc::new);
         }
         let module = wgsl::lower(program).map_err(|errors| invalid_program(&errors))?;
-        let key = (module.source.clone(), state.clone());
+        // Two programs that read the same attributes at the same locations lower alike whether
+        // one buffer holds them or several: the locations each buffer holds tell them apart.
+        let buffers = module
+            .layout
+            .buffers()
+            .map(|buffer| buffer.attributes.iter().map(|attribute| attribute.location).collect())
+            .collect();
+        let key = (module.source.clone(), buffers, state.clone());
         let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(pipeline) = cache.render.get(&key).and_then(Weak::upgrade) {
             cache.stats.reused += 1;

@@ -1,5 +1,7 @@
 //! Render passes: draws into color and depth targets, each checked against its pipeline.
 
+use std::sync::Arc;
+
 use super::{BindGroup, Buffer, BufferUsage, Gpu, GpuError, RenderPipeline, Texture, TextureUsage};
 use crate::render::{ClearValue, LoadOp, StoreOp};
 use crate::shader::Frequency;
@@ -69,6 +71,9 @@ pub struct Draw<'a> {
     pub vertices: Option<&'a Buffer>,
     /// The per-instance attributes, if the program declares any.
     pub instances: Option<&'a Buffer>,
+    /// The program's streams, in order: a vertex buffer for each, holding its attributes for the
+    /// same vertices `vertices` holds, each bound from its start.
+    pub streams: &'a [Arc<Buffer>],
     /// The indices of the vertices to draw, if the draw is indexed.
     pub indices: Option<(&'a Buffer, IndexFormat)>,
     /// How many vertices, or indices, to draw.
@@ -102,6 +107,7 @@ impl<'a> Draw<'a> {
             groups: [None; 3],
             vertices: None,
             instances: None,
+            streams: &[],
             indices: None,
             count,
             instance_count: 1,
@@ -237,6 +243,9 @@ pub fn encode(
             if let Some(buffer) = buffer {
                 pass.set_vertex_buffer(slot, buffer.raw.slice(offset..));
             }
+        }
+        for (slot, stream) in (2..).zip(draw.streams) {
+            pass.set_vertex_buffer(slot, stream.raw.slice(..));
         }
         // The check kept `first + count` inside a `u32`.
         let range = draw.first..draw.first + draw.count;
@@ -489,7 +498,49 @@ pub fn buffer_problem(draw: &Draw<'_>) -> Option<String> {
             ));
         }
     }
-    index_problem(draw)
+    stream_problem(draw).or_else(|| index_problem(draw))
+}
+
+/// What is wrong with a draw's streams, if anything: one for each the program reads, each a
+/// vertex buffer holding the vertices drawn. A stream is bound from its start, so with streams
+/// the vertices are too, and a range of them is named by first vertex or base vertex.
+fn stream_problem(draw: &Draw<'_>) -> Option<String> {
+    let strides = &draw.pipeline.stream_strides;
+    if draw.streams.len() != strides.len() {
+        let streams = |count: usize| {
+            if count == 1 {
+                "1 stream".to_owned()
+            } else {
+                format!("{count} streams")
+            }
+        };
+        return Some(format!(
+            "its program reads {}, and the draw gives {}",
+            streams(strides.len()),
+            draw.streams.len()
+        ));
+    }
+    if !strides.is_empty() && draw.vertices_offset != 0 {
+        return Some(format!(
+            "its vertices start {} bytes in, and its streams at their starts: with streams, name a range by its \
+             first vertex or base vertex",
+            draw.vertices_offset
+        ));
+    }
+    let counted = draw.indirect.is_none() && draw.indices.is_none();
+    let vertices = u64::from(draw.first) + u64::from(draw.count);
+    for (number, (buffer, stride)) in (1..).zip(draw.streams.iter().zip(strides)) {
+        if !buffer.usage().contains(BufferUsage::VERTEX) {
+            return Some(format!("its stream {number} isn't a vertex buffer"));
+        }
+        if counted && buffer.size() < u64::from(*stride) * vertices {
+            return Some(format!(
+                "{vertices} vertices of {stride} bytes run past its {}-byte stream {number}",
+                buffer.size()
+            ));
+        }
+    }
+    None
 }
 
 /// What is wrong with the indices a draw draws, if it has any and anything is.

@@ -75,6 +75,7 @@ fn half(gpu: &Gpu, pipeline: &Arc<RenderPipeline>, right: bool, color: [f32; 4],
         instances: None,
         indices: None,
         indirect: None,
+        streams: Vec::new(),
         range: DrawRange::new(6),
         tags: vec![tag.to_owned()],
     })
@@ -170,6 +171,7 @@ fn draw_sets_are_checked_as_draws_are() {
         instances: None,
         indices: None,
         indirect: None,
+        streams: Vec::new(),
         range: DrawRange::new(3),
         tags: Vec::new(),
     });
@@ -202,6 +204,7 @@ fn a_draw_sets_range_changes_whole() {
             instances: None,
             indices: None,
             indirect: None,
+            streams: Vec::new(),
             range: DrawRange::new(6),
             tags: vec!["opaque".to_owned()],
         })

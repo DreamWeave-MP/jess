@@ -125,6 +125,37 @@ suite.describe('@jess/render', function()
   end)
 end)
 
+suite.describe('@jess/render streams', function()
+  local layout = shader.program({
+    attributes = { position = shader.vec3 },
+    streams = { { uv = shader.vec2 }, { bones = shader.vec4i, weight = shader.float } },
+    vertex = function(input)
+      return { position = shader.vec4(input.attributes.position, input.attributes.weight) }
+    end,
+    fragment = function() return shader.vec4(1) end,
+  }).layout
+
+  suite.it('writes each stream where the layout puts its attributes', function()
+    local positions, skin = render.vertices(layout, 2), render.vertices(layout, 2, 2)
+    expect({ positions.stride, render.vertices(layout, 2, 1).stride, skin.stride }).toEqual { 12, 8, 20 }
+    skin:set(2, 'weight', 0.5)
+    skin:set(2, 'bones', { 1, 2, 3, 4 })
+    expect(buffer.readf32(skin.bytes, 20 + 16)).toBe(0.5)
+    expect(buffer.readi32(skin.bytes, 20 + 12)).toBe(4)
+    expect(buffer.len(skin.bytes)).toBe(40)
+  end)
+
+  suite.it('names the stream a mistake is in', function()
+    expect(function() render.vertices(layout, 2, 3) end).toThrow 'the program has no stream 3 attributes'
+    expect(function() render.vertices(layout, 2, 1):set(1, 'weight', 1) end).toThrow(
+      'the program has no stream 1 attribute weight'
+    )
+    expect(function() render.vertices(layout, 2):set(1, 'uv', { 0, 0 }) end).toThrow(
+      'the program has no vertex attribute uv'
+    )
+  end)
+end)
+
 suite.describe('@jess/render/camera', function()
   suite.it('projects the near plane to depth 0 and the far plane to 1', function()
     local projection = camera.perspective(math.pi / 2, 2, 1, 10)

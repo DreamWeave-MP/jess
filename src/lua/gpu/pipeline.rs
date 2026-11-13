@@ -440,6 +440,7 @@ struct HeldDraw {
     groups: [Option<Arc<BindGroup>>; 3],
     vertices: Option<Arc<Buffer>>,
     instances: Option<Arc<Buffer>>,
+    streams: Vec<Arc<Buffer>>,
     indices: Option<(Arc<Buffer>, IndexFormat)>,
     range: DrawRange,
     indirect: Option<(Arc<Buffer>, u64)>,
@@ -670,6 +671,42 @@ pub fn buffer_field(
         .ok_or_else(|| error(format!("{function}: {key} is a GpuBuffer, not {}", kind(view))))
 }
 
+/// A draw's per-vertex buffer, if it has one, and its streams.
+pub type VertexBuffers = (Option<Arc<Buffer>>, Vec<Arc<Buffer>>);
+
+/// A draw's `vertices`: one buffer, or a list of them, the per-vertex buffer first and a buffer
+/// for each of the program's streams after it.
+pub fn vertex_buffers(frame: &Frame<'_>, function: &str, fields: &TableView<'_>) -> l3i::Result<VertexBuffers> {
+    let view = fields.raw_get(frame, "vertices")?;
+    if !view.is_table() {
+        return Ok((buffer_field(frame, function, fields, "vertices")?, Vec::new()));
+    }
+    let mut listed = Vec::new();
+    let mut entries = 0;
+    view.as_table()?.for_each(frame, |_, _, _| {
+        entries += 1;
+        Ok(())
+    })?;
+    view.as_table()?.for_each_array(frame, |_, _, buffer| {
+        let Some(buffer) = receiver::<LuaGpuBuffer>(buffer) else {
+            return Err(error(format!(
+                "{function}: vertices is a GpuBuffer or a list of them, and the list holds {}",
+                kind(buffer)
+            )));
+        };
+        listed.push(buffer.buffer.clone());
+        Ok(())
+    })?;
+    if listed.is_empty() || listed.len() != entries {
+        return Err(error(format!(
+            "{function}: vertices is a GpuBuffer or a list of them, and this is {}",
+            if entries == 0 { "empty" } else { "not a list" }
+        )));
+    }
+    let vertices = listed.remove(0);
+    Ok((Some(vertices), listed))
+}
+
 /// The pipeline a draw or dispatch runs.
 pub fn pipeline_field(frame: &Frame<'_>, function: &str, table: &TableView<'_>) -> l3i::Result<Rc<Pipeline>> {
     let view = table.raw_get(frame, "pipeline")?;
@@ -688,10 +725,12 @@ fn draw(frame: &Frame<'_>, function: &str, view: ValueView<'_>) -> l3i::Result<H
         _ => IndexFormat::U32,
     };
     let indirect = indirect_field(frame, function, &table)?;
+    let (vertices, streams) = vertex_buffers(frame, function, &table)?;
     Ok(HeldDraw {
         pipeline: pipeline_field(frame, function, &table)?,
         groups: groups(frame, function, &table)?,
-        vertices: buffer_field(frame, function, &table, "vertices")?,
+        vertices,
+        streams,
         instances: buffer_field(frame, function, &table, "instances")?,
         indices: indices.map(|buffer| (buffer, index_format)),
         range: range_fields(frame, function, &table, indirect.as_ref().map(|_| DrawRange::new(0)))?,
@@ -746,6 +785,7 @@ fn render(this: &LuaGpuDevice, call: &Call<'_>, pass: ValueView<'_>) -> l3i::Res
             groups: [0, 1, 2].map(|frequency| held.groups[frequency].as_deref()),
             vertices: held.vertices.as_deref(),
             instances: held.instances.as_deref(),
+            streams: &held.streams,
             indices: held.indices.as_ref().map(|(buffer, format)| (&**buffer, *format)),
             count: held.range.count,
             instance_count: held.range.instance_count,

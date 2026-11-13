@@ -248,7 +248,7 @@ impl Lowering<'_> {
         }
         emit!(self, "struct VertexInput {{\n");
         let layout = self.layout;
-        for attribute in layout.vertex_buffers.iter().flat_map(|buffer| &buffer.attributes) {
+        for attribute in layout.buffers().flat_map(|buffer| &buffer.attributes) {
             let declaration = &self.program.attributes[attribute.attribute.index()];
             let Some(column) = declaration.ty.column() else {
                 let name = attribute_name(declaration.rate, &declaration.name);
