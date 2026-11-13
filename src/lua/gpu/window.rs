@@ -12,10 +12,10 @@ use l3i::userdata::{Owned, Userdata, receiver};
 use super::device::LuaGpuDevice;
 use super::pipeline::{flag, options};
 use super::plan::{Given, LuaGpuPlan, given};
-use super::resources::{format_name, format_of, whole};
+use super::resources::{format_name, format_of, shown, whole};
 use crate::gpu::PresentMode;
 use crate::lua::{error, kind, push_table};
-use crate::window::{Imported, Showing, TextArea, Window, WindowDesc, WindowEvent};
+use crate::window::{CursorRequest, Imported, Showing, TextArea, Window, WindowDesc, WindowEvent};
 
 /// A window and the device its surface is on.
 #[derive(Debug)]
@@ -145,6 +145,29 @@ fn show(
         .map_err(|problem| error(format!("{FUNCTION}: {problem}")))
 }
 
+/// `window:cursor(mode?)`: how the window holds the pointer, after doing what `mode` asks.
+fn cursor(this: &LuaGpuWindow, mode: Option<ValueView<'_>>) -> l3i::Result<&'static str> {
+    const FUNCTION: &str = "GpuWindow:cursor";
+    let Some(mode) = mode.filter(|mode| !mode.is_nil()) else {
+        return Ok(this.window.cursor().name());
+    };
+    let wanted = match mode.is_string().then(|| mode.read::<&str>()).transpose()? {
+        Some("normal") => CursorRequest::Normal,
+        Some("hidden") => CursorRequest::Hidden,
+        Some("captured") => CursorRequest::Captured,
+        _ => {
+            return Err(error(format!(
+                "{FUNCTION}: the mode is 'normal', 'hidden', or 'captured', not {}",
+                shown(mode)
+            )));
+        }
+    };
+    this.window
+        .set_cursor(wanted)
+        .map(crate::window::Cursor::name)
+        .map_err(|problem| error(format!("{FUNCTION}: {problem}")))
+}
+
 /// Declares the window type.
 pub fn describe(d: &mut ExtensionDescriptor) {
     let mut window = d.userdata::<LuaGpuWindow>(LuaGpuWindow::NAME);
@@ -178,6 +201,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         })
         .untyped();
     window.method("close", |this: &LuaGpuWindow| this.window.close()).untyped();
+    window.method("cursor", cursor).untyped();
     window
         .method(
             "resize",
@@ -296,6 +320,15 @@ fn event_fields(frame: &Frame<'_>, table: &TableView<'_>, event: &WindowEvent) -
             table.raw_set_value(frame, "y", y)
         }
         WindowEvent::PointerLeft => table.raw_set_value(frame, "kind", "pointerLeft"),
+        WindowEvent::PointerDelta { dx, dy } => {
+            table.raw_set_value(frame, "kind", "pointerDelta")?;
+            table.raw_set_value(frame, "dx", dx)?;
+            table.raw_set_value(frame, "dy", dy)
+        }
+        WindowEvent::Cursor(cursor) => {
+            table.raw_set_value(frame, "kind", "cursor")?;
+            table.raw_set_value(frame, "mode", cursor.name())
+        }
         WindowEvent::PointerButton { button, pressed } => {
             table.raw_set_value(frame, "kind", "pointerButton")?;
             table.raw_set_value(frame, "button", button.name())?;

@@ -1151,6 +1151,10 @@ const WINDOW: &str = r"
             })
             assert(window.open and window.width > 0 and window.scale > 0, tostring(window))
             assert(string.find(tostring(window), 'GpuWindow(jess window test, ', 1, true) == 1, tostring(window))
+            -- The pointer is shown until the window is asked otherwise, and says how it is held.
+            assert(window:cursor() == 'normal')
+            assert(window:cursor('hidden') == 'hidden' and window:cursor() == 'hidden')
+            assert(window:cursor('normal') == 'normal' and window:cursor() == 'normal')
 
             local green = shader.program({
               vertex = function(input)
@@ -1249,6 +1253,14 @@ fn a_script_shows_a_plan_in_a_window() {
     let runtime = jess::lua::runtime_with_capabilities(jess::lua::Options::default(), &capabilities).unwrap();
     let refusal = runtime.exec(WINDOW).unwrap_err().to_string();
     assert!(refusal.contains("shown in another window"), "{refusal}");
+    let refusal = runtime
+        .exec("jess.gpu.window(jess.gpu.device(), { title = 'jess cursor test' }):cursor('grabbed')")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refusal.contains("GpuWindow:cursor: the mode is 'normal', 'hidden', or 'captured', not \"grabbed\""),
+        "{refusal}"
+    );
     jess::window::pump();
     let news = jess::window::news();
     assert!(!news.is_empty(), "the windows had news no one read");

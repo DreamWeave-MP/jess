@@ -1057,7 +1057,9 @@ export type GpuWindowDesc = {
 --- a key or an input method; an input method's composition so far (`preedit`, its cursor
 --- `text:sub(from, to)`), and whether one composes (`inputMethod`); the pointer entering, moving
 --- (to `x`, `y` physical pixels from the top left), and leaving; a pointer button; the `wheel`, in
---- lines; and the `modifiers` held.
+--- lines; and the `modifiers` held. While the window has the pointer captured, the mouse's own
+--- motion arrives as `pointerDelta` (`dx` to the right, `dy` down); `cursor` says the window let
+--- the pointer go without being asked, and how it holds it now.
 export type GpuWindowEvent =
   { kind: 'resized', width: number, height: number }
   | { kind: 'scaled', scale: number }
@@ -1071,6 +1073,8 @@ export type GpuWindowEvent =
   | { kind: 'pointerEntered' }
   | { kind: 'pointerMoved', x: number, y: number }
   | { kind: 'pointerLeft' }
+  | { kind: 'pointerDelta', dx: number, dy: number }
+  | { kind: 'cursor', mode: GpuCursor }
   | {
     kind: 'pointerButton',
     button: 'Primary' | 'Secondary' | 'Middle' | 'Back' | 'Forward',
@@ -1078,6 +1082,11 @@ export type GpuWindowEvent =
   }
   | { kind: 'wheel', x: number, y: number }
   | { kind: 'modifiers', shift: boolean, control: boolean, alt: boolean, meta: boolean }
+
+--- How a window holds the pointer: shown and free (`normal`), `hidden` while it is over the
+--- window, or captured, which is `locked` where the window system holds a pointer still and
+--- `confined` where it only keeps one inside the window. Either way a captured pointer is hidden.
+export type GpuCursor = 'normal' | 'hidden' | 'locked' | 'confined'
 
 --- Where in a window text goes, in physical pixels from its top left.
 export type GpuTextArea = { x: number, y: number, width: number, height: number }
@@ -1088,7 +1097,8 @@ export type GpuTextArea = { x: number, y: number, width: number, height: number 
 --- window; `hide` stops, `close` closes it, and `resize` asks for a size. `events` is what
 --- happened to it since the last call, oldest first: under an application's host, the named event
 --- `jess.window` announces that there is some. `textInput` asks for text, which lets an input
---- method compose for it beside `area`. `number` is its own, and names its input devices.
+--- method compose for it beside `area`. `cursor` shows, hides, or captures the pointer, and says
+--- how the window holds it. `number` is its own, and names its input devices.
 --- `tostring` gives `GpuWindow(title, 800×600)`.
 declare extern type GpuWindow with
   title: string
@@ -1112,6 +1122,7 @@ declare extern type GpuWindow with
   function resize(self, width: number, height: number): ()
   function events(self): { GpuWindowEvent }
   function textInput(self, enabled: boolean, area: GpuTextArea?): ()
+  function cursor(self, mode: ('normal' | 'hidden' | 'captured')?): GpuCursor
   __tostring: (self: GpuWindow) -> string
 end
 
@@ -2708,12 +2719,57 @@ Handles what the window system reported since the last call (sizes, closes, keys
 | `resize(width, height)` | Asks the window system for that inner size in physical pixels. It may give another, or none (a tiling window manager, say); what it gives arrives as a `resized` event, and the shown plan goes with it. |
 | `events()` | What happened to it since the last call, oldest first, the last 256 at most (a run of pointer moves is the last of them): `{ kind = 'resized', width, height }`, `{ kind = 'scaled', scale }`, `{ kind = 'focused', focused }`, `{ kind = 'closeRequested' }`, and `{ kind = 'closed' }`, and what the person did in it, below. A shown plan is resized already when its `resized` is read; this is for what the application does about it (a camera's aspect, say). |
 | `textInput(enabled, area?)` | Asks for text, or stops. While it asks, an input method (the one that writes Japanese, say) may compose for it, showing its candidates beside `area`, `{ x, y, width, height }` in physical pixels from the top left: where the text goes. Keys type `text` whether it asks or not. |
+| `cursor(mode?)` | Shows the pointer (`'normal'`), hides it while it is over the window (`'hidden'`), or captures it (`'captured'`), and says how the window holds it now; with no mode it only says. See [the pointer](#the-pointer). |
 
 Under an application's host, a window something happened to is announced: the host posts the [named event](@/docs/scripting/applications.md#named-events) [`jess.window`](@/docs/api/events.md#jess-window), `{ title, key }`, once until its events are read, and a handler of it (`on.event['jess.window']`) reads them with `events()`. Nothing runs while nothing happens to a window, and the handler runs in the frame the news came in. A script that drives its own frames reads `events()` when it likes.
 
 A window kept by a key outlives the code that opened it. When an application restarts with new code (its `restart`, a reload), its kept windows stay open through the load, each showing the last frame the old code drew, and the new code's `jess.gpu.window(device, { key = 'main' })` gets its window back, size, place, and all, with the title it asks for. Once the new code has loaded, the kept windows it didn't open again close; if it failed to load, none do, so the next load can take them back. A window the new code reclaims on another device has its surface made again on that one, and shows nothing until the new code gives it a plan. If that device can't present to it, opening it fails and the window stays as it was, on its old device, showing what it showed.
 
 `tostring(window)` is `GpuWindow(title, 800×600)`. Windows draw on a thread of their own, the presenter, never in Luau: when a commit changed something on a window's device, or it was shown a plan or resized, the presenter takes its next image, runs the plan into it with the draw sets as the commit left them, and presents it. A scene that doesn't change needs no new draw. The presenter sees a commit's changes together. An application host does not wait for presentation on each frame; a standalone script's `pump` can wait as described above. A draw that fails presents nothing and isn't counted in `frames`: the presenter tries the window again until it draws, giving it a new surface if its own was lost (the display changed, the driver restarted), and the failure is reported once, by the next `jess.gpu.pump` (`jess.gpu.pump: window Viewer: …`) or, under an application's host, in its log.
+
+### The pointer
+
+{{ api_symbol(value="GpuCursor") }}
+
+A window shows the pointer and lets it leave. `window:cursor('hidden')` hides it while it is over the window. `window:cursor('captured')` hides it and keeps it: a camera turns as far as the mouse goes, and no edge of the screen stops it.
+
+| `cursor()` gives | The pointer is |
+| --- | --- |
+| `normal` | Shown, and free to leave. |
+| `hidden` | Hidden over the window, and free to leave. |
+| `locked` | Captured, and held where it was. Wayland, macOS, and Windows do this. |
+| `confined` | Captured, and kept inside the window, where the window system holds no pointer still. X11 does this. |
+
+Asking for `'captured'` gives `locked` or `confined`, whichever the window system does, and the script needn't care which: either way the pointer's place says nothing, and the mouse's motion arrives among `events()` as `{ kind = 'pointerDelta', dx, dy }`, unaccelerated where the system offers that. A window system that does neither refuses, and the pointer stays as it was: `GpuWindow:cursor: the window system captured no pointer: …`. X11 refuses a window it hasn't put on the screen yet, so capture when the person clicks, not when the window opens.
+
+A window that loses the keyboard lets a captured pointer go, whatever the script wanted, and says so: `{ kind = 'cursor', mode = 'normal' }`. So does a kept window whose application restarts. Capture it again when the person comes back and clicks. Letting go of a confined pointer puts it back where it was captured.
+
+```luau
+--!strict
+local device = jess.gpu.device()
+local window = jess.gpu.window(device, { title = 'Look' })
+local yaw, pitch = 0, 0
+
+local function frame()
+  for _, event in window:events() do
+    if event.kind == 'pointerButton' and event.pressed then
+      window:cursor('captured')
+    elseif event.kind == 'key' and event.key == 'Escape' and event.pressed then
+      window:cursor('normal')
+    elseif event.kind == 'pointerDelta' then
+      yaw += event.dx * 0.002
+      pitch = math.clamp(pitch + event.dy * 0.002, -1.5, 1.5)
+    end
+  end
+end
+
+while window.open do
+  jess.gpu.pump()
+  frame()
+end
+```
+
+Under an application's host, the same motion is the pointer's `pointerAxis:DeltaX` and `pointerAxis:DeltaY` in [`@jess/input`](@/docs/api/input.md#windows), captured or not, so an action bound to them turns the camera and `cursor` only decides whether the pointer stays.
 
 What the person does in a window reaches a script two ways, for two kinds of code.
 
@@ -2729,6 +2785,8 @@ Among the window's `events()`, in the order it happened, which is what a text fi
 | `pointerMoved` | `x`, `y` | Where the pointer is now, in physical pixels from the window's top left. |
 | `pointerButton` | `button`, `pressed` | `Primary`, `Secondary`, `Middle`, `Back`, or `Forward`, pressed or released over the window. |
 | `wheel` | `x`, `y` | The wheel turned over the window, in lines, `y` positive away from the person. |
+| `pointerDelta` | `dx`, `dy` | The mouse's own motion while the window has the pointer captured, right and down positive: a run of it is its sum. |
+| `cursor` | `mode` | The window let a captured pointer go without being asked, and holds it as `mode` now. |
 | `modifiers` | `shift`, `control`, `alt`, `meta` | Which modifiers are held, on either side, whenever that changes. |
 
 Through [`@jess/input`](@/docs/api/input.md#windows), as devices, which is what bindings read: under the host of an application target that declares `gpu.window`, each window has a keyboard and a pointer of its own, which connect at its first input, disconnect when it closes, and say `backend = 'window:<number>'` in `runtime:devices()`. Keys, pointer buttons, position, motion, and the wheel are named as every jess backend names them (`key:KeyW`, `pointerButton:Primary`, `pointerAxis:DeltaX`). A binding to a control on any device, which is what a game binds, sees every window; one to a device sees one window. A window's pointer is at its place in that window, and at 0, 0 once the pointer leaves, so a binding to any pointer's position follows the window the pointer is over. The mouse's own motion goes to the pointer of the window that has the keyboard. The application is focused while any of its windows has the keyboard. A script you run takes the same from `jess.input.runtime { windows = true }`, its own headless runtime, which polls its windows at every `tick`.
