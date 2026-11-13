@@ -143,6 +143,34 @@ fn a_table_others_could_have_written_or_that_leaves_the_workspace_is_not_used() 
         assert!(!passed && stderr.contains("@greeter"), "{mode:o}: {stderr}");
     }
 
+    // A link to a workspace file is not that file: who wrote the link is who chose the folder.
+    let real = temp_dir_path("scripts-held-real");
+    drop(fs::remove_dir_all(&real));
+    fs::create_dir_all(&real).unwrap();
+    workspace_file(&real, NAMED);
+    fs::remove_file(&file).unwrap();
+    std::os::unix::fs::symlink(real.join("jess-workspace.toml"), &file).unwrap();
+    let (passed, _, stderr) = ran(&["run"], &script);
+    assert!(
+        !passed && stderr.contains("@greeter"),
+        "a linked workspace file was read: {stderr}"
+    );
+    fs::remove_file(&file).unwrap();
+    fs::remove_dir_all(real).unwrap();
+
+    // Nor is a file in a folder others may write, where it could be swapped for another.
+    workspace_file(&root, NAMED);
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o777)).unwrap();
+    let (passed, _, stderr) = ran(&["run"], &script);
+    assert!(
+        !passed && stderr.contains("@greeter"),
+        "a file in an open folder was read: {stderr}"
+    );
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o1777)).unwrap();
+    let (passed, _, stderr) = ran(&["run"], &script);
+    assert!(passed, "a sticky folder keeps its files their owners': {stderr}");
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+
     let outside = temp_dir_path("scripts-held-outside");
     drop(fs::remove_dir_all(&outside));
     fs::rename(root.join("packages/greeter"), &outside).unwrap();
@@ -150,6 +178,14 @@ fn a_table_others_could_have_written_or_that_leaves_the_workspace_is_not_used() 
     workspace_file(&root, NAMED);
     let (passed, _, stderr) = ran(&["run"], &script);
     assert!(!passed && stderr.contains("outside the workspace"), "{stderr}");
+
+    // The same link found in a folder of packages, not named itself, is refused too.
+    workspace_file(&root, "\n[scripts]\npackage_path = [\"packages\"]\nlayers = [\"any\"]\n");
+    let (passed, _, stderr) = ran(&["run"], &script);
+    assert!(
+        !passed && stderr.contains("package_path holds") && stderr.contains("outside the workspace"),
+        "{stderr}"
+    );
 
     fs::remove_dir_all(root).unwrap();
     fs::remove_dir_all(outside).unwrap();

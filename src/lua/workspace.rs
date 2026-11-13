@@ -167,61 +167,138 @@ pub struct Scripts {
 /// the file is read, so a workspace whose lock is stale still runs a loose script.
 ///
 /// The table chooses code that runs with what the script was granted, and a script does not
-/// choose the folders above it. So on Unix a workspace file counts only when the user running
-/// the script owns it and nobody else may write it: one another user left in a shared folder is
-/// passed over as if no file were there, and so is everything above it.
+/// choose the folders above it. So on Unix the nearest workspace file counts only when it is a
+/// plain file, never a link to one; the user running the script owns it and nobody else may
+/// write it; and its folder is that user's or root's, and not one others may write unless it is
+/// sticky, so the file cannot be swapped for another. Anything less is passed over as if no file
+/// were there, and so is everything above it. The file is opened once: what is judged is what is
+/// read.
+///
+/// Every package the table names, and every entry of a folder it names, must be inside the
+/// workspace once links are followed.
 ///
 /// # Errors
 ///
-/// Returns an error if that workspace file or its table is malformed.
+/// Returns an error if that workspace file can't be read or is malformed, or names something
+/// outside the workspace.
 pub fn scripts(runtime: &Runtime, script: &Path) -> l3i::Result<Option<Scripts>> {
-    let Some(root) = scripts_root(script) else {
+    let Some((root, text)) = scripts_file(script).map_err(crate::lua::error)? else {
         return Ok(None);
     };
     let shape = serde_json::json!({
         "found": false, "root": "", "packages": [""], "packagePaths": [""], "layers": [""],
     });
-    let scripts: Scripts = package::bootstrap(runtime, "workspaceScripts", &shape, (root.display().to_string(),))?;
-    Ok(scripts.found.then_some(scripts))
+    let scripts: Scripts = package::bootstrap(runtime, "workspaceScripts", &shape, (root.display().to_string(), text))?;
+    if !scripts.found {
+        return Ok(None);
+    }
+    for folder in &scripts.package_paths {
+        held_inside(Path::new(&scripts.root), Path::new(folder)).map_err(crate::lua::error)?;
+    }
+    Ok(Some(scripts))
 }
 
-/// The folder of the workspace file a loose script's packages come from, if there is one it may
-/// come from: the nearest at or above the script's own folder.
-fn scripts_root(script: &Path) -> Option<PathBuf> {
+/// The workspace file's name.
+const WORKSPACE_FILE: &str = "jess-workspace.toml";
+
+/// The folder and text of the workspace file a loose script's packages come from, if there is one
+/// they may come from: the nearest at or above the script's own folder.
+fn scripts_file(script: &Path) -> Result<Option<(PathBuf, String)>, String> {
     // The script's own place, not a link's: a program linked into a folder of programs still runs
     // with its own folder's packages. Windows is left its plain absolute path, whose canonical
     // form the workspace's own reader makes.
     #[cfg(unix)]
-    let script = std::fs::canonicalize(script).ok()?;
+    let script = std::fs::canonicalize(script);
     #[cfg(not(unix))]
-    let script = std::path::absolute(script).ok()?;
+    let script = std::path::absolute(script);
+    // A script that isn't there has nothing above it; running it says so better.
+    let Ok(script) = script else {
+        return Ok(None);
+    };
     let mut folder = script.parent();
     while let Some(at) = folder {
-        if let Ok(metadata) = std::fs::metadata(at.join("jess-workspace.toml"))
-            && metadata.is_file()
-        {
-            return written_by_the_user(&metadata).then(|| at.to_path_buf());
+        let file = at.join(WORKSPACE_FILE);
+        // Whatever has the name, other than a folder, is the nearest: it decides, even when the
+        // decision is that it may not be used.
+        if std::fs::symlink_metadata(&file).is_ok_and(|found| !found.is_dir()) {
+            return read_own(at, &file).map(|text| text.map(|text| (at.to_path_buf(), text)));
         }
         folder = at.parent();
     }
-    None
+    Ok(None)
 }
 
-/// Whether the file is the current user's and no one else may write it.
+/// The text of the workspace file `file` in `folder`, or `None` when it is not the current
+/// user's to have written.
 #[cfg(unix)]
-fn written_by_the_user(metadata: &std::fs::Metadata) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    /// Write permission for the group and for everyone else.
+fn read_own(folder: &Path, file: &Path) -> Result<Option<String>, String> {
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    /// Write permission for the group and for everyone else, and the sticky bit, under which a
+    /// folder's entries are their owners' alone to rename or remove.
     const OTHERS_WRITE: u32 = 0o022;
+    const STICKY: u32 = 0o1000;
     // SAFETY: `geteuid` takes nothing, touches no memory, and cannot fail.
     let user = unsafe { libc::geteuid() };
-    metadata.uid() == user && metadata.mode() & OTHERS_WRITE == 0
+    let Ok(around) = std::fs::metadata(folder) else {
+        return Ok(None);
+    };
+    let kept =
+        (around.uid() == user || around.uid() == 0) && (around.mode() & OTHERS_WRITE == 0 || around.mode() & STICKY != 0);
+    if !kept {
+        return Ok(None);
+    }
+    // Never through a link, and never waiting on a FIFO: the handle opened here is the one whose
+    // owner is asked and whose bytes are read.
+    let opened = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(file);
+    let Ok(mut opened) = opened else {
+        return Ok(None);
+    };
+    let Ok(metadata) = opened.metadata() else {
+        return Ok(None);
+    };
+    if !metadata.is_file() || metadata.uid() != user || metadata.mode() & OTHERS_WRITE != 0 {
+        return Ok(None);
+    }
+    let mut text = String::new();
+    opened
+        .read_to_string(&mut text)
+        .map(|_| Some(text))
+        .map_err(|error| format!("'{}': {error}", file.display()))
 }
 
-/// Whether the file is the current user's: not asked where files have no such owner to compare.
+/// The text of the workspace file `file`: whose it is isn't asked on a system this build has no
+/// way to ask it of.
 #[cfg(not(unix))]
-fn written_by_the_user(_: &std::fs::Metadata) -> bool {
-    true
+fn read_own(_: &Path, file: &Path) -> Result<Option<String>, String> {
+    std::fs::read_to_string(file)
+        .map(Some)
+        .map_err(|error| format!("'{}': {error}", file.display()))
+}
+
+/// Refuses an entry of `folder`, a folder of packages a `[scripts]` table names, that a link
+/// leads out of the workspace at `root`. A folder that isn't there has nothing to refuse.
+fn held_inside(root: &Path, folder: &Path) -> Result<(), String> {
+    let (Ok(root), Ok(entries)) = (std::fs::canonicalize(root), std::fs::read_dir(folder)) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if let Ok(resolved) = std::fs::canonicalize(&path)
+            && !resolved.starts_with(&root)
+        {
+            return Err(format!(
+                "'{}': [scripts] package_path holds '{}', which is '{}', outside the workspace",
+                root.join(WORKSPACE_FILE).display(),
+                path.display(),
+                resolved.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// A package id and the content digest a resolution holds it to.

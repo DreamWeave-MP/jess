@@ -480,19 +480,17 @@ local function listed(root: string): ({ string }, { [string]: string }, Packing)
 end
 
 --- What a loose script runs with when its command line names no packages: the `[scripts]` table
---- of the workspace file in `folder`, which the host found above the script, or nil when the file
---- has no such table. The file is held to what any reader holds it to, but its members and its
---- lock are not read: they are not a loose script's concern, and an unsynced workspace still runs
---- one. A package reached through a link must land inside the workspace, as a member must.
-local function scripts(folder: string): Scripts?
+--- of the workspace file in `folder`, or nil when the file has no such table. `text` is that
+--- file's, as the host read it: the host found the file above the script and judged whose it is,
+--- and what it judged is what is read here, not whatever has the name by now. The file is held to
+--- what any reader holds it to, but its members and its lock are not read: they are not a loose
+--- script's concern, and an unsynced workspace still runs one. A package reached through a link
+--- must land inside the workspace, as a member must.
+local function scripts(folder: string, text: string): Scripts?
   local root = host.canonical(folder) or fail(`'{folder}' is not there`)
   local path = `{root}/{WorkspaceFile}`
   local where = `'{path}'`
-  local text = host.readFile(path)
-
-  if not text then fail(`{where} is not there`) end
-
-  local document = readToml(path, text :: buffer)
+  local document = readToml(path, buffer.fromstring(text))
   checkKeys(document, WorkspaceKeys, where)
 
   if document.manifest_version ~= 1 then fail(`{where}: manifest_version must be 1`) end
@@ -511,6 +509,7 @@ local function scripts(folder: string): Scripts?
     end
   end
 
+  -- The entries of a package path are the host's to hold inside: this module lists no folders.
   inside(named.packages)
   inside(named.packagePaths)
 

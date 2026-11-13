@@ -51,7 +51,7 @@ type Offer = { read id: string }
 type WorkspaceModule = {
   read open: (folder: string) -> unknown,
   read discover: (start: string) -> unknown,
-  read scripts: (folder: string) -> { [string]: unknown }?,
+  read scripts: (folder: string, text: string) -> { [string]: unknown }?,
   read describe: (workspace: unknown) -> { [string]: unknown },
   read verify: (workspace: unknown) -> unknown,
   read target: (workspace: unknown, name: string?, cwd: string) -> { [string]: unknown },
@@ -345,9 +345,10 @@ local function workspace(start: string, explicit: boolean): { [string]: unknown 
 end
 
 --- What a loose script runs with when its command line names no packages, as the `[scripts]`
---- table of the workspace file in `folder` says; `found` is false when it has no such table.
-local function workspaceScripts(folder: string): { [string]: unknown }
-  local scripts = workspaces.scripts(folder)
+--- table of the workspace file in `folder` says, whose `text` the host read; `found` is false
+--- when it has no such table.
+local function workspaceScripts(folder: string, text: string): { [string]: unknown }
+  local scripts = workspaces.scripts(folder, text)
 
   if not scripts then
     return { found = false, root = '', packages = {}, packagePaths = {}, layers = {} }
