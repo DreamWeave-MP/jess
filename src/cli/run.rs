@@ -83,8 +83,9 @@ pub struct Chosen {
 impl Named<'_> {
     /// What `script` runs with. A command line that names anything is the whole answer. One that
     /// names nothing leaves it to the `[scripts]` table of the nearest `jess-workspace.toml` in
-    /// the script's folder or above it, and without one the script runs with no packages.
-    pub fn resolve(&self, lua: &Runtime, script: &Path) -> Result<Chosen, String> {
+    /// the script's folder or above it, and without one the script runs with no packages. The
+    /// table is read in `lua` when the caller has a runtime, else in one made for it.
+    pub fn resolve(&self, lua: Option<&Runtime>, script: &Path) -> Result<Chosen, String> {
         let text = |paths: &[PathBuf]| paths.iter().map(|path| path.display().to_string()).collect::<Vec<_>>();
         if !(self.packages.is_empty() && self.paths.is_empty() && self.layers.is_empty()) {
             return Ok(Chosen {
@@ -93,15 +94,14 @@ impl Named<'_> {
                 paths: text(self.paths),
             });
         }
-        let folder = match script.parent() {
-            Some(parent) if !parent.as_os_str().is_empty() => parent,
-            _ => Path::new("."),
+        let made;
+        let lua = if let Some(lua) = lua {
+            lua
+        } else {
+            made = lua_default()?;
+            &made
         };
-        // A script whose folder is gone names nothing to look above; running it says so better.
-        if !folder.is_dir() {
-            return Ok(Chosen::default());
-        }
-        let scripts = jess::lua::workspace::scripts(lua, folder).map_err(|error| error.to_string())?;
+        let scripts = jess::lua::workspace::scripts(lua, script).map_err(|error| error.to_string())?;
         Ok(scripts.map_or_else(Chosen::default, |scripts| Chosen {
             packages: scripts.packages,
             layers: scripts.layers,
@@ -147,22 +147,34 @@ pub fn activate(lua: &Runtime, named: &Chosen, capabilities: &[String]) -> Resul
 
 /// `jess <script>.jsl [ARGS]...`: the script run as a program, trusted, with no packages activated.
 /// It is what a shebang line, `#!/usr/bin/env jess`, makes an executable script into.
+///
+/// A program runs with no packages whatever is above it: it holds everything, and what it runs
+/// with is not for a file it never named to say.
 pub fn run_as_program(script: PathBuf, args: Vec<String>) -> Result<u8, String> {
-    run(&RunArgs {
-        script,
-        packages: Vec::new(),
-        layers: Vec::new(),
-        package_paths: Vec::new(),
-        capabilities: Vec::new(),
-        trusted: true,
-        profile: false,
-        emit_asm: None,
-        disassemble: None,
-        args,
-    })
+    run_with(
+        &RunArgs {
+            script,
+            packages: Vec::new(),
+            layers: Vec::new(),
+            package_paths: Vec::new(),
+            capabilities: Vec::new(),
+            trusted: true,
+            profile: false,
+            emit_asm: None,
+            disassemble: None,
+            args,
+        },
+        false,
+    )
 }
 
 pub fn run(args: &RunArgs) -> Result<u8, String> {
+    run_with(args, true)
+}
+
+/// Runs the script; `folder` is whether a command line that names no packages leaves them to the
+/// workspace file above the script.
+fn run_with(args: &RunArgs, folder: bool) -> Result<u8, String> {
     if !args.script.is_file() {
         return Err(format!("'{}' isn't a file", args.script.display()));
     }
@@ -183,8 +195,12 @@ pub fn run(args: &RunArgs) -> Result<u8, String> {
         packages: &args.packages,
         layers: &args.layers,
         paths: &args.package_paths,
-    }
-    .resolve(&lua, &args.script)?;
+    };
+    let named = if folder {
+        named.resolve(Some(&lua), &args.script)?
+    } else {
+        Chosen::default()
+    };
     activate(&lua, &named, &capabilities)?;
     let result = match (&args.emit_asm, &args.disassemble) {
         (Some(output), _) => emit_assembly(&lua, &args.script, output).map(|()| 0),

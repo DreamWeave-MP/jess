@@ -359,6 +359,9 @@ local function packing(document: { [string]: unknown }, where: string): Packing
   return table.freeze { targets = table.freeze(targets), default = default :: string? }
 end
 
+--- The tables a workspace file may have.
+local WorkspaceKeys = { 'manifest_version', 'workspace', 'dev-dependencies', 'pack', 'scripts' }
+
 --- One path of the workspace file's `[scripts]` table: names joined by `/`, below the workspace.
 local function checkScriptPath(path: unknown, where: string, key: string): string
   if type(path) ~= 'string' then fail(`{where}: [scripts] {key} is a list of paths, as strings`) end
@@ -442,7 +445,7 @@ local function listed(root: string): ({ string }, { [string]: string }, Packing)
   if not text then fail(`{where} is not there`) end
 
   local document = readToml(`{root}/{WorkspaceFile}`, text :: buffer)
-  checkKeys(document, { 'manifest_version', 'workspace', 'dev-dependencies', 'pack', 'scripts' }, where)
+  checkKeys(document, WorkspaceKeys, where)
 
   if document.manifest_version ~= 1 then fail(`{where}: manifest_version must be 1`) end
 
@@ -476,23 +479,42 @@ local function listed(root: string): ({ string }, { [string]: string }, Packing)
   return paths, tooling(document, where), packing(document, where)
 end
 
---- What a loose script in `start`, a folder, runs with when its command line names no packages:
---- the `[scripts]` table of the nearest workspace file in `start` or above it, or nil when there
---- is no such file or it has no such table. Only that table is read: the workspace's members and
---- its lock are not a loose script's concern, and an unsynced workspace still runs one.
-local function scripts(start: string): Scripts?
-  local folder: string? = host.canonical(start) or fail(`'{start}' is not there`)
+--- What a loose script runs with when its command line names no packages: the `[scripts]` table
+--- of the workspace file in `folder`, which the host found above the script, or nil when the file
+--- has no such table. The file is held to what any reader holds it to, but its members and its
+--- lock are not read: they are not a loose script's concern, and an unsynced workspace still runs
+--- one. A package reached through a link must land inside the workspace, as a member must.
+local function scripts(folder: string): Scripts?
+  local root = host.canonical(folder) or fail(`'{folder}' is not there`)
+  local path = `{root}/{WorkspaceFile}`
+  local where = `'{path}'`
+  local text = host.readFile(path)
 
-  while folder do
-    local path = `{folder}/{WorkspaceFile}`
-    local text = host.readFile(path)
+  if not text then fail(`{where} is not there`) end
 
-    if text then return scripting(readToml(path, text), folder, `'{path}'`) end
+  local document = readToml(path, text :: buffer)
+  checkKeys(document, WorkspaceKeys, where)
 
-    folder = host.parent(folder)
+  if document.manifest_version ~= 1 then fail(`{where}: manifest_version must be 1`) end
+
+  local named = scripting(document, root, where)
+
+  if not named then return nil end
+
+  local function inside(locations: { string })
+    for _, location in locations do
+      local resolved = host.canonical(location)
+
+      if resolved and not host.relative(root, resolved) then
+        fail(`{where}: [scripts] '{location}' is '{resolved}', outside the workspace`)
+      end
+    end
   end
 
-  return nil
+  inside(named.packages)
+  inside(named.packagePaths)
+
+  return named
 end
 
 --- Where member `path` of the workspace at `root` is, or nil when nothing is there.

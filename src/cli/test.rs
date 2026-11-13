@@ -42,7 +42,7 @@ pub fn run(args: &TestArgs, format: Format) -> Result<(), String> {
         layers: &args.layers,
         paths: &args.package_paths,
     }
-    .resolve(&crate::run::lua_default()?, &args.modules[0])?;
+    .resolve(None, &args.modules[0])?;
     let report = jess::lua::testing::run_prepared(
         &jess::lua::Options::default(),
         &grant,

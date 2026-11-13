@@ -28,12 +28,17 @@ fn folder(name: &str, scripts: &str) -> PathBuf {
 }
 
 fn workspace_file(root: &Path, scripts: &str) {
-    fs::write(
-        root.join("jess-workspace.toml"),
-        format!("manifest_version = 1\n\n[workspace]\nmembers = []\n{scripts}"),
-    )
-    .unwrap();
+    let path = root.join("jess-workspace.toml");
+    fs::write(&path, format!("manifest_version = 1\n\n[workspace]\nmembers = []\n{scripts}")).unwrap();
+    // Whatever umask the tests run under, the file is its owner's alone to write.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    }
 }
+
+const NAMED: &str = "\n[scripts]\npackages = [\"packages/greeter\"]\n";
 
 /// A command's success, standard output and standard error.
 fn ran(arguments: &[&str], script: &Path) -> (bool, String, String) {
@@ -75,6 +80,81 @@ fn a_loose_script_runs_tests_and_checks_with_the_packages_its_workspace_names() 
     fs::remove_dir_all(root).unwrap();
 }
 
+/// The nearest workspace file is the one that says, and it is found from where the script is,
+/// not from where the command was typed or from a link to the script.
+#[test]
+fn the_table_is_the_nearest_workspace_file_s_from_the_script_s_own_folder() {
+    let root = folder("scripts-nearest", NAMED);
+    let script = root.join("tools/deep/use.jsl");
+
+    let relative = jess()
+        .args(["run", "use.jsl"])
+        .current_dir(root.join("tools/deep"))
+        .output()
+        .unwrap();
+    assert!(relative.status.success(), "{}", String::from_utf8_lossy(&relative.stderr));
+
+    #[cfg(unix)]
+    {
+        let elsewhere = temp_dir_path("scripts-nearest-link");
+        drop(fs::remove_dir_all(&elsewhere));
+        fs::create_dir_all(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&script, elsewhere.join("linked.jsl")).unwrap();
+        let (passed, stdout, stderr) = ran(&["run"], &elsewhere.join("linked.jsl"));
+        assert!(passed && stdout.contains("world"), "{stderr}");
+        fs::remove_dir_all(elsewhere).unwrap();
+    }
+
+    // A nearer file with no table says the scripts below it run with nothing.
+    workspace_file(&root.join("tools"), "");
+    let (passed, _, stderr) = ran(&["run"], &script);
+    assert!(!passed && stderr.contains("@greeter"), "{stderr}");
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// A script run as a program holds everything, so no file it never named chooses code for it.
+#[test]
+fn a_script_run_as_a_program_reads_no_table() {
+    let root = folder("scripts-program", NAMED);
+    let script = root.join("tools/deep/use.jsl");
+
+    let (passed, _, stderr) = ran(&["run", "--trusted"], &script);
+    assert!(passed, "{stderr}");
+    let (passed, _, stderr) = ran(&[], &script);
+    assert!(!passed && stderr.contains("@greeter"), "{stderr}");
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// A workspace file anyone else may write is passed over, and a package a link leads out of the
+/// workspace to is refused.
+#[cfg(unix)]
+#[test]
+fn a_table_others_could_have_written_or_that_leaves_the_workspace_is_not_used() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = folder("scripts-held", NAMED);
+    let script = root.join("tools/deep/use.jsl");
+    let file = root.join("jess-workspace.toml");
+
+    for mode in [0o664, 0o646] {
+        fs::set_permissions(&file, fs::Permissions::from_mode(mode)).unwrap();
+        let (passed, _, stderr) = ran(&["run"], &script);
+        assert!(!passed && stderr.contains("@greeter"), "{mode:o}: {stderr}");
+    }
+
+    let outside = temp_dir_path("scripts-held-outside");
+    drop(fs::remove_dir_all(&outside));
+    fs::rename(root.join("packages/greeter"), &outside).unwrap();
+    std::os::unix::fs::symlink(&outside, root.join("packages/greeter")).unwrap();
+    workspace_file(&root, NAMED);
+    let (passed, _, stderr) = ran(&["run"], &script);
+    assert!(!passed && stderr.contains("outside the workspace"), "{stderr}");
+
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(outside).unwrap();
+}
+
 #[test]
 fn a_command_line_that_names_packages_is_the_whole_answer() {
     // The table names a package that isn't there, so reading it at all is an error.
@@ -88,6 +168,10 @@ fn a_command_line_that_names_packages_is_the_whole_answer() {
     let (passed, stdout, stderr) = ran(&["run", "--package", &greeter], &script);
     assert!(passed, "{stderr}");
     assert!(stdout.contains("world"), "{stdout}");
+
+    // A layer alone names something too, so it is the command line's error and not the table's.
+    let (passed, _, stderr) = ran(&["run", "--layer", "example.greeter"], &script);
+    assert!(!passed && stderr.contains("--layer needs packages"), "{stderr}");
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -140,6 +224,10 @@ fn a_scripts_table_nothing_could_use_is_refused() {
         (
             "[scripts]\npackages = [\"packages/greeter\"]\nextra = 1\n",
             "[scripts] has an unknown key 'extra'",
+        ),
+        (
+            "[scripts]\npackages = [\"packages/greeter\"]\n\n[later]\n",
+            "has an unknown key 'later'",
         ),
     ] {
         workspace_file(&root, &format!("\n{table}"));

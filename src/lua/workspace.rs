@@ -159,22 +159,69 @@ pub struct Scripts {
     pub layers: Vec<String>,
 }
 
-/// What a loose script in `folder` runs with when its command line names no packages.
+/// What the loose script `script` runs with when its command line names no packages.
 ///
-/// It is the `[scripts]` table of the nearest `jess-workspace.toml` in `folder` or above it, or
-/// `None` when there is no such file or it has no such table. Only the table is read, so a
-/// workspace whose lock is stale still runs a loose script.
+/// It is the `[scripts]` table of the nearest `jess-workspace.toml` in the script's own folder or
+/// above it, where the script is the file itself and not a link to it. `None` when there is no
+/// such file, it has no such table, or it is not the current user's to have written (below). Only
+/// the file is read, so a workspace whose lock is stale still runs a loose script.
+///
+/// The table chooses code that runs with what the script was granted, and a script does not
+/// choose the folders above it. So on Unix a workspace file counts only when the user running
+/// the script owns it and nobody else may write it: one another user left in a shared folder is
+/// passed over as if no file were there, and so is everything above it.
 ///
 /// # Errors
 ///
-/// Returns an error if `folder` isn't there, or the nearest workspace file or its table is
-/// malformed.
-pub fn scripts(runtime: &Runtime, folder: &Path) -> l3i::Result<Option<Scripts>> {
+/// Returns an error if that workspace file or its table is malformed.
+pub fn scripts(runtime: &Runtime, script: &Path) -> l3i::Result<Option<Scripts>> {
+    let Some(root) = scripts_root(script) else {
+        return Ok(None);
+    };
     let shape = serde_json::json!({
         "found": false, "root": "", "packages": [""], "packagePaths": [""], "layers": [""],
     });
-    let scripts: Scripts = package::bootstrap(runtime, "workspaceScripts", &shape, (folder.display().to_string(),))?;
+    let scripts: Scripts = package::bootstrap(runtime, "workspaceScripts", &shape, (root.display().to_string(),))?;
     Ok(scripts.found.then_some(scripts))
+}
+
+/// The folder of the workspace file a loose script's packages come from, if there is one it may
+/// come from: the nearest at or above the script's own folder.
+fn scripts_root(script: &Path) -> Option<PathBuf> {
+    // The script's own place, not a link's: a program linked into a folder of programs still runs
+    // with its own folder's packages. Windows is left its plain absolute path, whose canonical
+    // form the workspace's own reader makes.
+    #[cfg(unix)]
+    let script = std::fs::canonicalize(script).ok()?;
+    #[cfg(not(unix))]
+    let script = std::path::absolute(script).ok()?;
+    let mut folder = script.parent();
+    while let Some(at) = folder {
+        if let Ok(metadata) = std::fs::metadata(at.join("jess-workspace.toml"))
+            && metadata.is_file()
+        {
+            return written_by_the_user(&metadata).then(|| at.to_path_buf());
+        }
+        folder = at.parent();
+    }
+    None
+}
+
+/// Whether the file is the current user's and no one else may write it.
+#[cfg(unix)]
+fn written_by_the_user(metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    /// Write permission for the group and for everyone else.
+    const OTHERS_WRITE: u32 = 0o022;
+    // SAFETY: `geteuid` takes nothing, touches no memory, and cannot fail.
+    let user = unsafe { libc::geteuid() };
+    metadata.uid() == user && metadata.mode() & OTHERS_WRITE == 0
+}
+
+/// Whether the file is the current user's: not asked where files have no such owner to compare.
+#[cfg(not(unix))]
+fn written_by_the_user(_: &std::fs::Metadata) -> bool {
+    true
 }
 
 /// A package id and the content digest a resolution holds it to.

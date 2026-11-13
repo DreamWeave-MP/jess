@@ -35,7 +35,7 @@ pub fn run(args: &CheckArgs, format: Format) -> Result<(), String> {
         layers: &args.layers,
         paths: &args.package_paths,
     }
-    .resolve(&crate::run::lua_default()?, &args.scripts[0])?;
+    .resolve(None, &args.scripts[0])?;
     let report = jess::lua::check::check_scripts(
         &jess::lua::Options::default(),
         &args.scripts,
