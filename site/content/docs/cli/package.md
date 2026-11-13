@@ -149,7 +149,7 @@ Runs the test modules a Package Source's manifest names, twice: against the sour
 That second run is the reason this command exists. A package that passes from its folder and fails from its JPK is broken, and this is how you find out before anybody else does.
 
 ```text
-$ jess package test greeter
+$ jess package test --jobs 1 greeter
 id: com.example.greeter
 version: 1.0.0
 tests:
@@ -188,7 +188,7 @@ Every test module runs in a runtime of its own, with the package activated in it
 
 `--jobs <N>` (1 to 256) says how many modules run at once. Without it: one for every two processors, at least one and at most four. The report does not depend on the number: the source's modules, then the JPK's, each in the manifest's order, with the same cases and verdicts. Every module's entry carries `seconds`, what it cost by the wall clock, its runtime and the package's activation included; with several jobs that also counts time it spent waiting for a processor, so compare files at `--jobs 1`.
 
-A package can cap the number itself: `test_jobs = 1` under `[package]` in its [manifest](@/docs/reference/manifest.md) is a ceiling on `--jobs` and on the default, and whoever runs the tests need not know why. The report's `jobs` is how many modules ran at once at most, after that ceiling.
+A package can cap the number itself: `test_jobs = 1` under `[package]` in its [manifest](@/docs/reference/manifest.md) is a ceiling on `--jobs` and on the default, and whoever runs the tests need not know why. The report's `jobs` is the most modules that may run at once, after that ceiling: what `--jobs` or its default asked for, or the package's `test_jobs` when that is fewer.
 
 Two things do depend on the number. A window belongs to one thread of the process, so a package whose tests open one says `test_jobs = 1`. And a runtime for every module is not free: a package of hundreds of tiny test files can run slower with more jobs than with one, where a package of a few heavy files runs several times faster.
 
