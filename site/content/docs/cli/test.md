@@ -8,11 +8,11 @@ extra:
 
 {{ api_signature(value="jess test [--shared] [--capability NAME]... [--package PACKAGE]... [--package-path FOLDER]... [--layer ID]... <MODULES>...") }}
 
-Runs Luau test modules. Each is a file that returns a suite made with [`@jess/test`](@/docs/api/test.md); jess loads it with the whole API, runs the suite, and prints every case. The exit status is non-zero when any case failed or any module didn't run.
+Runs Luau test modules, named one by one or a folder at a time. Each is a file that returns a suite made with [`@jess/test`](@/docs/api/test.md); jess loads it with the whole API, runs the suite, and prints every case. The exit status is non-zero when any case failed or any module didn't run.
 
 | Argument / option | Does |
 | --- | --- |
-| `<MODULES>...` | The test modules, as filesystem paths, `.jsl` files. Each gets a fresh VM; one that isn't a `.jsl` file is reported as a module that didn't run. |
+| `<MODULES>...` | The test modules, as filesystem paths, `.jsl` files. Each gets a fresh VM; one that isn't a `.jsl` file is reported as a module that didn't run. A folder stands for every `*.test.jsl` file in it and in the folders below it, in order of path, so `jess test tests` runs a folder of tests and leaves the helpers beside them alone. A file named outright needs no such name, and a folder holding none is an error: `'tests' holds no test modules: a folder's are its *.test.jsl files`. |
 | `--shared` | One VM for every module, so they share the module cache and whatever state a module keeps. Faster for many small modules; isolation is the default because a test that depends on another module having run first is a bug. |
 | `--capability NAME` | Grant the modules a capability they don't hold by default (repeatable), as [`jess run`](@/docs/cli/run.md#capabilities) does: test modules hold the terminal and the input devices, and everything else, such as `filesystem.read` for a suite that reads files, is a flag away. |
 | `--package PACKAGE`, `--package-path FOLDER`, `--layer ID` | Activate packages before each module runs, exactly as [`jess run`](@/docs/cli/run.md) takes them, so a module can `require` what they export. They are activated in every module's VM, so a layer's entrypoint runs once a module, and what it prints lands before the report; with `--shared` they are activated once, in the one VM. A package's own tests belong to it instead: list them under `tests` in its manifest and [`jess package test`](@/docs/cli/package.md) runs them from source and packed, with its dependencies. |
