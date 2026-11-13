@@ -1767,3 +1767,220 @@ fn a_source_packs_at_another_version_as_a_development_build() {
         "{refused}"
     );
 }
+
+/// A provider, a module's file name, its cases by name and whether each passed, and whether the
+/// module failed to run.
+type ModuleShape = (String, String, Vec<(String, bool)>, bool);
+
+/// What a package test reported, without what differs from run to run.
+fn shape(report: &package::PackageTest) -> Vec<ModuleShape> {
+    report
+        .providers
+        .iter()
+        .flat_map(|provider| {
+            provider.run.modules.iter().map(|module| {
+                let cases = module.report.as_ref().map_or_else(Vec::new, |suite| {
+                    suite.tests.iter().map(|case| (case.name.clone(), case.passed)).collect()
+                });
+                let input = module.input.file_name().unwrap().to_string_lossy().into_owned();
+                (provider.kind.clone(), input, cases, module.error.is_some())
+            })
+        })
+        .collect()
+}
+
+/// The package `org.example.subject` at `subject` with six test modules, and its manifest's list
+/// of them. The package counts how often it was asked, which is once a runtime if nothing shares
+/// one; the third module fails a case and the fifth never returns a suite.
+fn six_test_modules(subject: &Path) -> String {
+    let names = (1..=6).map(|index| format!("tests/m{index}.jsl")).collect::<Vec<_>>();
+    let listed = names.iter().map(|name| format!("\"{name}\"")).collect::<Vec<_>>().join(", ");
+    // The package counts how often it was asked: once a runtime, if nothing shares one.
+    library(
+        subject,
+        "subject",
+        &format!("tests = [{listed}]\n"),
+        "local asked = 0\nreturn { ask = function() asked += 1; return asked end }\n",
+    );
+    for (index, name) in names.iter().enumerate() {
+        let body = match index {
+            // One that fails a case, and one that never returns a suite.
+            2 => "suite.it('fails', function() expect(1).toBe(2) end)\n".to_owned(),
+            4 => "error('this module does not load')\n".to_owned(),
+            _ => {
+                "suite.it('is the first to ask in its runtime', function() expect(require('@subject').ask()).toBe(1) end)\n\
+              suite.it('has a scratch folder nobody wrote in', function()\n  \
+                local fs = require '@dream/fs'\n  \
+                local path = fs.join(scratchRoot, 'mark')\n  \
+                expect(fs.exists(path)).toBe(false)\n  \
+                expect((fs.writeFile(path, 'mine', { exclusive = true }))).toBe(4)\n\
+              end)\n"
+                    .to_owned()
+            }
+        };
+        write(
+            subject,
+            &[(
+                name.as_str(),
+                &format!(
+                    "local test = require '@jess/test'\nlocal suite, expect = test.new(), test.expect\n{body}return suite\n"
+                ),
+            )],
+        );
+    }
+    listed
+}
+
+/// A package's test modules each run in a runtime and a scratch folder of their own, whatever the
+/// number of jobs, and the report is the same for every number: the same cases, in the manifest's
+/// order, source first.
+#[test]
+fn test_modules_run_at_once_share_nothing_and_report_in_order() {
+    let temp = tempfile::tempdir().unwrap();
+    let subject = temp.path().join("subject");
+    let listed = six_test_modules(&subject);
+    let options = jess::lua::Options::default();
+    let mut shapes = Vec::new();
+    for jobs in [1, 2, 3, 12] {
+        let report = package::test_with_jobs(
+            &options,
+            &subject,
+            &temp.path().join(format!("scratch-{jobs}")),
+            &[],
+            &package::Search::default(),
+            jobs,
+        )
+        .unwrap();
+        assert_eq!(report.providers.len(), 2, "{report:#?}");
+        assert_eq!(report.providers[0].kind, "source");
+        assert_eq!(report.providers[1].kind, "jpk");
+        assert_eq!(report.providers[0].digest, report.providers[1].digest);
+        // Four modules of two passing cases, one failing case and one module that did not run,
+        // for each provider.
+        assert_eq!((report.passed, report.failed), (16, 4), "{jobs} jobs: {report:#?}");
+        let seen = shape(&report);
+        let order = seen
+            .iter()
+            .map(|(kind, input, ..)| format!("{kind} {input}"))
+            .collect::<Vec<_>>();
+        let expected = ["source", "jpk"]
+            .iter()
+            .flat_map(|kind| (1..=6).map(move |index| format!("{kind} m{index}.jsl")))
+            .collect::<Vec<_>>();
+        assert_eq!(order, expected, "{jobs} jobs");
+        shapes.push(seen.clone());
+        // Every module says how long it took, the one that did not load included.
+        for provider in &report.providers {
+            for module in &provider.run.modules {
+                assert!(module.seconds.is_finite() && module.seconds >= 0.0, "{module:#?}");
+            }
+        }
+        for (kind, input, cases, errored) in &seen {
+            match input.as_str() {
+                "m3.jsl" => assert_eq!(cases, &[("fails".to_owned(), false)], "{kind} {input}"),
+                "m5.jsl" => assert!(*errored && cases.is_empty(), "{kind} {input}"),
+                _ => assert!(
+                    cases.len() == 2 && cases.iter().all(|case| case.1),
+                    "{kind} {input}: {cases:?}"
+                ),
+            }
+        }
+    }
+
+    // The verdict does not depend on the number of jobs, one included: a machine with one
+    // processor reports what a machine with sixteen does.
+    assert!(shapes.windows(2).all(|pair| pair[0] == pair[1]), "{shapes:#?}");
+    let same = package::test_with(
+        &options,
+        &subject,
+        &temp.path().join("scratch-0"),
+        &[],
+        &package::Search::default(),
+    )
+    .unwrap();
+    assert_eq!(shape(&same), shapes[0]);
+
+    // A provider that cannot be activated fails the run, as it does with one job.
+    library(
+        &subject,
+        "subject",
+        &format!("tests = [{listed}]\n[dependencies]\n\"org.example.absent\" = \"1\"\n"),
+        "return {}\n",
+    );
+    let refused = package::test_with_jobs(
+        &options,
+        &subject,
+        &temp.path().join("scratch-x"),
+        &[],
+        &package::Search::default(),
+        4,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(refused.contains("org.example.absent"), "{refused}");
+}
+
+/// With two jobs, two modules really are running at the same moment: each leaves a mark and waits
+/// for the other's, which a run of one after the other could never find. With one job the same
+/// two modules never meet.
+#[test]
+fn two_jobs_run_two_test_modules_at_the_same_moment() {
+    let temp = tempfile::tempdir().unwrap();
+    let subject = temp.path().join("subject");
+    library(
+        &subject,
+        "subject",
+        "tests = [\"tests/first.jsl\", \"tests/second.jsl\"]\n",
+        "return {}\n",
+    );
+    // Scratch folders are siblings, named by the module's place in the manifest.
+    for (name, own, other) in [("tests/first.jsl", "0", "1"), ("tests/second.jsl", "1", "0")] {
+        write(
+            &subject,
+            &[(
+                name,
+                &format!(
+                    "local test = require '@jess/test'\nlocal fs = require '@dream/fs'\n\
+                     local suite, expect = test.new(), test.expect\n\
+                     suite.it('meets the other module', function()\n  \
+                       expect(fs.fileName(scratchRoot)).toBe('{own}')\n  \
+                       expect((fs.writeFile(fs.join(scratchRoot, 'here'), 'x'))).toBe(1)\n  \
+                       local there = fs.join(fs.parent(scratchRoot), '{other}', 'here')\n  \
+                       local limit = os.clock() + WAIT\n  \
+                       while not fs.exists(there) and os.clock() < limit do end\n  \
+                       expect(fs.exists(there)).toBe(MET)\n\
+                     end)\nreturn suite\n"
+                ),
+            )],
+        );
+    }
+    let options = jess::lua::Options::default();
+    let run = |jobs: usize, wait: &str, met: &str| {
+        for name in ["tests/first.jsl", "tests/second.jsl"] {
+            let path = subject.join(name);
+            let source = std::fs::read_to_string(&path).unwrap();
+            let source = source
+                .lines()
+                .map(|line| {
+                    if line.contains("local limit = os.clock() + ") {
+                        format!("  local limit = os.clock() + {wait}")
+                    } else if line.contains("expect(fs.exists(there)).toBe(") {
+                        format!("  expect(fs.exists(there)).toBe({met})")
+                    } else {
+                        line.to_owned()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            std::fs::write(&path, source + "\n").unwrap();
+        }
+        let scratch = temp.path().join(format!("scratch-{jobs}"));
+        package::test_with_jobs(&options, &subject, &scratch, &[], &package::Search::default(), jobs).unwrap()
+    };
+    // Side by side: each finds the other's mark well inside its wait.
+    let together = run(2, "30", "true");
+    assert_eq!((together.passed, together.failed), (4, 0), "{together:#?}");
+    // One after the other: the first waits its whole wait and finds nothing.
+    let apart = run(1, "0.2", "false");
+    assert_eq!((apart.passed, apart.failed), (2, 2), "{apart:#?}");
+}

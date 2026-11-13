@@ -173,6 +173,7 @@ providers:
           logs: []
       error: null
       logs: []
+      seconds: 0.012
 - kind: jpk
   location: /tmp/jess-package-test-737072/com.example.greeter-1.0.0.jpk
   digest: 6fdd1a56f49cf9b23f2f9765b0cfce84836ba001cf57a602aa5ea47f7768e35b
@@ -181,6 +182,12 @@ providers:
 passed: 2
 failed: 0
 ```
+
+Every test module runs in a runtime of its own, with the package activated in it afresh, and a scratch folder of its own: a test file shares nothing with another, so what it sees depends neither on the order of the run nor on the machine. One file is one unit of work. Tests that must run in order, or share what they set up, belong in one file; a slow file split in two can use two processors.
+
+`--jobs <N>` (1 to 256) says how many modules run at once. Without it: one for every two processors, at least one and at most four. The report does not depend on the number: the source's modules, then the JPK's, each in the manifest's order, with the same cases and verdicts. Every module's entry carries `seconds`, what it cost by the wall clock, its runtime and the package's activation included; with several jobs that also counts time it spent waiting for a processor, so compare files at `--jobs 1`.
+
+Two things do depend on the number. A window belongs to one thread of the process, so a package whose tests open one needs `--jobs 1`. And a runtime for every module is not free: a package of hundreds of tiny test files can run slower with more jobs than with one, where a package of a few heavy files runs several times faster.
 
 Tests ship in the payload: a Package Source refuses to open when its manifest names a test its `include` doesn't cover, so every JPK carries its tests and their fixtures. They run from the source, though: given a `.jpk`, `jess package test` reports no providers, says so on stderr, and succeeds with nothing run:
 

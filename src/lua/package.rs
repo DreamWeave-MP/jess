@@ -1253,6 +1253,40 @@ pub fn test_with(
     packages: &[String],
     search: &Search,
 ) -> l3i::Result<PackageTest> {
+    test_with_jobs(options, location, scratch, packages, search, 1)
+}
+
+/// How many test modules [`test_with_jobs`] runs at once when the caller leaves it to the machine.
+///
+/// One for every two processors it may use, at least one and no more than four. Half, because a
+/// test run shares its machine with whoever started it, and each module running holds a runtime
+/// and whatever its tests allocate; a caller who knows the machine is free says so with a number.
+#[must_use]
+pub fn default_test_jobs() -> usize {
+    (std::thread::available_parallelism().map_or(1, std::num::NonZero::get) / 2).clamp(1, 4)
+}
+
+/// [`test_with`], running up to `jobs` test modules at once.
+///
+/// Whatever the number, every module runs in a runtime of its own, with the package activated in
+/// it afresh and a scratch folder of its own under its provider's: a module shares nothing with
+/// another, so what a test file sees depends neither on the schedule nor on how many processors
+/// the machine has. The modules of both providers are shared out among `jobs` threads, and the
+/// report has the providers source first and the modules in the manifest's order. What does
+/// differ with the number is what the machine allows: a window belongs to one thread of the
+/// process, so tests that open one want one job.
+///
+/// # Errors
+///
+/// As [`test_with`], and if a thread can't be started.
+pub fn test_with_jobs(
+    options: &crate::lua::Options,
+    location: &Path,
+    scratch: &Path,
+    packages: &[String],
+    search: &Search,
+    jobs: usize,
+) -> l3i::Result<PackageTest> {
     // Package tests are an explicit host action over a caller-chosen package, so their test code
     // gets scratch filesystem access and terminal/environment reporting. Process spawning remains
     // denied unless a host separately approves it.
@@ -1290,22 +1324,21 @@ pub fn test_with(
         .map_err(|source| error(format!("failed to create '{}': {source}", scratch.display())))?;
     let packed = scratch.join(format!("{}-{}.jpk", inspection.id, inspection.version));
     let packed_display = packed.display().to_string();
+    let providers = [display.clone(), packed_display.clone()];
     let result = (|| -> l3i::Result<()> {
         pack(&runtime, &display, &packed_display)?;
-        for (index, provider) in [&display, &packed_display].into_iter().enumerate() {
-            let runtime = crate::lua::runtime_with_capabilities(options.clone(), &test_capabilities)?;
-            let mut locations = vec![provider.clone()];
-            locations.extend_from_slice(packages);
-            let plan = activate_with(&runtime, &locations, &layers, None, &search)?;
-            let package = plan
-                .packages
-                .into_iter()
-                .find(|package| package.id == inspection.id)
-                .ok_or_else(|| error(format!("{} activated without itself", inspection.id)))?;
-            let provider_scratch = scratch.join(if index == 0 { "source" } else { "jpk" });
-            std::fs::create_dir_all(&provider_scratch)
-                .map_err(|source| error(format!("failed to create '{}': {source}", provider_scratch.display())))?;
-            let run = crate::lua::testing::run_in_with_scratch(&runtime, &modules, &provider_scratch)?;
+        let shared = Shared {
+            options,
+            capabilities: &test_capabilities,
+            providers: &providers,
+            packages,
+            layers: &layers,
+            search: &search,
+            id: &inspection.id,
+            modules: &modules,
+            scratch,
+        };
+        for (run, package) in test_each_alone(&shared, jobs.max(1))? {
             report.passed += run.passed;
             report.failed += run.failed;
             report.providers.push(ProviderRun {
@@ -1323,6 +1356,150 @@ pub fn test_with(
         report.failed += 1;
     }
     Ok(report)
+}
+
+/// What every thread of a parallel test run reads.
+struct Shared<'a> {
+    options: &'a crate::lua::Options,
+    capabilities: &'a [String],
+    /// The Package Source, then the JPK packed from it.
+    providers: &'a [String; 2],
+    packages: &'a [String],
+    layers: &'a [String],
+    search: &'a Search,
+    id: &'a str,
+    modules: &'a [PathBuf],
+    scratch: &'a Path,
+}
+
+/// The package under test as one provider activated it, in a runtime with every layer active.
+fn activate_for_tests(shared: &Shared<'_>, provider: usize) -> l3i::Result<(Runtime, PlanPackage)> {
+    let runtime = crate::lua::runtime_with_capabilities(shared.options.clone(), shared.capabilities)?;
+    let mut locations = vec![shared.providers[provider].clone()];
+    locations.extend_from_slice(shared.packages);
+    let plan = activate_with(&runtime, &locations, shared.layers, None, shared.search)?;
+    let package = plan
+        .packages
+        .into_iter()
+        .find(|package| package.id == shared.id)
+        .ok_or_else(|| error(format!("{} activated without itself", shared.id)))?;
+    Ok((runtime, package))
+}
+
+/// Runs every module against both providers on `jobs` threads, each module alone in a runtime,
+/// and answers each provider's run with its modules in the order given, source first.
+///
+/// The work is a queue of (provider, module) pairs, in order, that the threads take from until it
+/// is empty. Each pair gets a runtime made for it and dropped after it. What a module raises is
+/// its report's; a runtime that cannot be made, or a thread that
+/// cannot be started, fails the run.
+fn test_each_alone(shared: &Shared<'_>, jobs: usize) -> l3i::Result<Vec<(crate::lua::testing::TestRun, PlanPackage)>> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    type Done = (usize, usize, Result<crate::lua::testing::ModuleReport, String>);
+    let count = shared.modules.len();
+    let next = AtomicUsize::new(0);
+    let (sender, receiver) = std::sync::mpsc::channel::<Done>();
+    let threads = jobs.min(2 * count);
+    let mut packages: [Option<PlanPackage>; 2] = [None, None];
+    let mut reports: [Vec<Option<crate::lua::testing::ModuleReport>>; 2] = [vec![None; count], vec![None; count]];
+    let mut failure: Option<String> = None;
+    std::thread::scope(|scope| {
+        for thread in 0..threads {
+            let (sender, next) = (sender.clone(), &next);
+            // One stack size on every platform and for every number of jobs, and no smaller than
+            // a main thread's anywhere: how deeply a test may recurse does not depend on either.
+            let spawned = std::thread::Builder::new()
+                .name(format!("jess-test-{thread}"))
+                .stack_size(16 * 1024 * 1024)
+                .spawn_scoped(scope, move || {
+                    loop {
+                        let job = next.fetch_add(1, Ordering::SeqCst);
+                        if job >= 2 * count {
+                            break;
+                        }
+                        let (provider, module) = (job / count, job % count);
+                        let began = std::time::Instant::now();
+                        let ran = (|| -> l3i::Result<crate::lua::testing::ModuleReport> {
+                            let (runtime, _) = activate_for_tests(shared, provider)?;
+                            let folder = shared
+                                .scratch
+                                .join(if provider == 0 { "source" } else { "jpk" })
+                                .join(module.to_string());
+                            std::fs::create_dir_all(&folder)
+                                .map_err(|source| error(format!("failed to create '{}': {source}", folder.display())))?;
+                            let mut run = crate::lua::testing::run_in_with_scratch(
+                                &runtime,
+                                std::slice::from_ref(&shared.modules[module]),
+                                &folder,
+                            )?;
+                            let mut report = run.modules.pop().ok_or_else(|| error("a module ran without a report"))?;
+                            // The module's whole cost: its runtime and the package's activation in
+                            // it are made for this module and for nothing else.
+                            report.seconds = (began.elapsed().as_secs_f64() * 1000.0).round() / 1000.0;
+                            Ok(report)
+                        })();
+                        let ran = ran.map_err(|error| crate::lua::error_message(&error));
+                        if sender.send((provider, module, ran)).is_err() {
+                            break;
+                        }
+                    }
+                });
+            if let Err(source) = spawned {
+                failure.get_or_insert_with(|| format!("failed to start a test thread: {source}"));
+                break;
+            }
+        }
+        drop(sender);
+        // The digests and locations, from an activation of this thread's own: a provider that
+        // cannot be activated at all is said once, here, and not once a module.
+        for (provider, slot) in packages.iter_mut().enumerate() {
+            match activate_for_tests(shared, provider) {
+                Ok((_, package)) => *slot = Some(package),
+                Err(error) => {
+                    failure.get_or_insert_with(|| crate::lua::error_message(&error));
+                }
+            }
+        }
+        if failure.is_some() {
+            // Nothing more is started; what is running finishes its module.
+            next.store(2 * count, Ordering::SeqCst);
+        }
+        for (provider, module, ran) in receiver {
+            match ran {
+                Ok(report) => reports[provider][module] = Some(report),
+                Err(message) => {
+                    failure.get_or_insert(message);
+                    next.store(2 * count, Ordering::SeqCst);
+                }
+            }
+        }
+    });
+    if let Some(message) = failure {
+        return Err(error(message));
+    }
+    let mut runs = Vec::with_capacity(2);
+    for (provider, package) in packages.into_iter().enumerate() {
+        let package = package.ok_or_else(|| error("a provider was not activated"))?;
+        let mut run = crate::lua::testing::TestRun {
+            passed: 0,
+            failed: 0,
+            modules: Vec::with_capacity(count),
+        };
+        for report in std::mem::take(&mut reports[provider]) {
+            let report = report.ok_or_else(|| error("a test module did not report"))?;
+            match &report.report {
+                Some(suite) => {
+                    run.passed += suite.passed;
+                    run.failed += suite.failed;
+                }
+                None => run.failed += 1,
+            }
+            run.modules.push(report);
+        }
+        runs.push((run, package));
+    }
+    Ok(runs)
 }
 
 /// A request to run one of a package's command targets.

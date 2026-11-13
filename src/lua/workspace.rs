@@ -373,6 +373,22 @@ pub fn test(
     names: &[String],
     scratch: &Path,
 ) -> l3i::Result<Vec<package::PackageTest>> {
+    test_with_jobs(options, at, names, scratch, 1)
+}
+
+/// [`test`], running up to `jobs` of a member's test modules at once, as
+/// [`package::test_with_jobs`] does. Members are still tested one after another.
+///
+/// # Errors
+///
+/// As [`test`].
+pub fn test_with_jobs(
+    options: &crate::lua::Options,
+    at: &Locate,
+    names: &[String],
+    scratch: &Path,
+    jobs: usize,
+) -> l3i::Result<Vec<package::PackageTest>> {
     let shape = serde_json::json!([{
         "package": "", "location": "", "candidates": [""], "pins": [{ "id": "", "digest": "" }],
     }]);
@@ -388,12 +404,13 @@ pub fn test(
                 pins: pin_map(&member.pins),
                 ..Search::default()
             };
-            package::test_with(
+            package::test_with_jobs(
                 options,
                 Path::new(&member.location),
                 &scratch.join(&member.package),
                 &[],
                 &search,
+                jobs,
             )
         })
         .collect()
