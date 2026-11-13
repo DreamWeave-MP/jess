@@ -297,7 +297,9 @@ fn no_child_outlives_the_domain_that_started_it() {
     assert!(gone(pid), "stopping the domain kills and reaps what it started");
 }
 
-/// A frame-driven host polls: the child runs for a third of a second, and no frame waits for it.
+/// A frame-driven host polls: no frame waits for a child. The child here can't finish until its
+/// input closes, and the script closes it only after five frames have each asked whether it
+/// finished and been told not yet, so a frame that waited for the child would wait forever.
 #[test]
 fn frames_keep_their_pace_while_a_child_runs() {
     let logs = Arc::new(CollectedLogs::new());
@@ -314,8 +316,13 @@ fn frames_keep_their_pace_while_a_child_runs() {
             r"
             local process = require('@dream/process')
             local log = require('@jess/log').new('pacing')
-            local child = assert(process.start('sh', { '-c', 'sleep 0.3; echo done' }, { stdout = 'pipe', timeoutMs = 10000 }))
+            local child = assert(process.start(
+              'sh',
+              { '-c', 'cat >/dev/null; echo done' },
+              { stdin = 'pipe', stdout = 'pipe', timeoutMs = 120000 }
+            ))
             local output = ''
+            local unanswered = 0
             local finished = false
 
             require('@jess/context').bind('main', {
@@ -329,8 +336,13 @@ fn frames_keep_their_pace_while_a_child_runs() {
                 if status and string.find(output, 'done', 1, true) then
                   finished = true
                   child:close()
-                  log.info(`finished {status.success}`)
+                  log.info(`finished {status.success} after {unanswered} frames without an answer`)
+                  return
                 end
+                if status then return end
+
+                unanswered += 1
+                if unanswered == 5 then child:closeStdin() end
               end,
             })
             ",
@@ -338,27 +350,27 @@ fn frames_keep_their_pace_while_a_child_runs() {
         .unwrap();
     host.domain().start().unwrap();
 
+    // Only a run that has gone wrong reaches the deadline: frames are as fast as the host is.
     let started = Instant::now();
-    let mut frames: u32 = 0;
-    let mut slowest = Duration::ZERO;
     let mut messages = Vec::new();
-    while messages.is_empty() && started.elapsed() < Duration::from_secs(10) {
-        let before = Instant::now();
+    while messages.is_empty() && started.elapsed() < Duration::from_secs(60) {
         host.frame(Duration::from_millis(2)).unwrap();
-        slowest = slowest.max(before.elapsed());
-        frames += 1;
         messages.extend(logs.drain().into_iter().map(|record| record.message));
-        std::thread::sleep(Duration::from_millis(2));
+        std::thread::yield_now();
     }
     host.stop().unwrap();
 
-    assert_eq!(messages, ["finished true"]);
-    assert!(started.elapsed() >= Duration::from_millis(300), "the child ran its course");
-    assert!(frames >= 20, "only {frames} frames advanced while the child ran");
-    // A blocking wait would cost a frame the child's whole third of a second.
+    let [message] = &messages[..] else {
+        panic!("the child never finished: {messages:?}");
+    };
+    let unanswered: u32 = message
+        .strip_prefix("finished true after ")
+        .and_then(|rest| rest.strip_suffix(" frames without an answer"))
+        .and_then(|count| count.parse().ok())
+        .unwrap_or_else(|| panic!("{message}"));
     assert!(
-        slowest < Duration::from_millis(150),
-        "a frame took {slowest:?} while a child ran"
+        unanswered >= 5,
+        "the child finished after {unanswered} frames, before its input closed"
     );
 }
 
