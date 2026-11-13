@@ -320,6 +320,8 @@ struct Timing {
 pub struct PassStats {
     /// The pass.
     pub pass: String,
+    /// Whether the run recorded it: not a pass left out of it.
+    pub ran: bool,
     /// What it drew; nothing, for a pass the run didn't record or one that doesn't draw.
     pub drawn: Drawn,
 }
@@ -336,7 +338,8 @@ pub struct Drawn {
     pub instances: u64,
     /// Vertices, or indices: each draw's count times its instances.
     pub vertices: u64,
-    /// Triangles, lines, or points, by each draw's pipeline's topology.
+    /// Triangles, lines, or points, by each draw's pipeline's topology: at most, for a strip
+    /// drawn through indices, which may cut it short.
     pub primitives: u64,
 }
 
@@ -386,15 +389,19 @@ impl Plan {
     }
 
     /// What each pass of its last run gave the GPU to draw, in the order they run: nothing for a
-    /// pass that run left out, and for every pass of a plan that hasn't run.
+    /// pass that run left out, and for every pass of a plan that hasn't run. The last run is the
+    /// last one that was recorded: one refused before that leaves what the run before it drew.
     #[must_use]
     pub fn stats(&self) -> Vec<PassStats> {
+        let ran = lock(&self.ran).clone();
         let drew = lock(&self.drew);
         self.passes
             .iter()
+            .zip(ran)
             .zip(drew.iter())
-            .map(|(pass, drawn)| PassStats {
+            .map(|((pass, ran), drawn)| PassStats {
                 pass: self.graph.passes()[pass.index].name().to_owned(),
+                ran,
                 drawn: *drawn,
             })
             .collect()

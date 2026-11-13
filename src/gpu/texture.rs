@@ -100,15 +100,17 @@ pub struct TextureDesc {
 }
 
 impl TextureDesc {
-    /// How many bytes its texels take: every level, layer, and sample of them.
+    /// How many bytes its texels take: every level, layer, slice, and sample of them. A format
+    /// whose size is the device's to choose (`Depth24Plus`) counts the four bytes every device
+    /// gives it.
     #[must_use]
     pub fn bytes(&self) -> u64 {
-        let texel = u64::from(self.format.texel_bytes().unwrap_or(0));
+        let texel = u64::from(self.format.texel_bytes().unwrap_or(4));
         let layers = u64::from(self.shape.layers()) * u64::from(self.samples.max(1));
         (0..self.mips)
             .map(|level| {
-                let side = |size: u32| u64::from((size >> level).max(1));
-                side(self.width) * side(self.height) * layers * texel
+                let (width, height, depth) = self.level_size(level);
+                u64::from(width) * u64::from(height) * u64::from(depth) * layers * texel
             })
             .sum()
     }

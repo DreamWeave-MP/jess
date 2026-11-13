@@ -304,12 +304,16 @@ fn show_masked(this: &LuaGpuVisibility, mask: ValueView<'_>, from: Option<ValueV
     let mask = with_bytes(FUNCTION, mask, from, None, |bytes| {
         bytes.get(..count).map(<[u8]>::to_vec).ok_or_else(|| {
             error(format!(
-                "{FUNCTION}: the mask has {} bytes from where it starts, and there are {count} sets: expected a \
-                 byte for each",
+                "{FUNCTION}: the mask is {} bytes long from where it starts, and there are {count} sets: expected \
+                 a byte for each",
                 bytes.len()
             ))
         })
     })?;
+    // Nothing to show or hide is no change: a commit of it would draw a frame again for nothing.
+    if count == 0 {
+        return Ok(());
+    }
     let sets = Arc::clone(&this.sets);
     this.gpu
         .defer(count, move |_| {

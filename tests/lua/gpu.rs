@@ -787,7 +787,7 @@ fn a_script_masks_sets_and_counts_what_it_drew() {
     let script = format!(
         "{RANGES}
             local stats = plan:stats()
-            assert(#stats == 1 and stats[1].pass == 'scene', 'one pass')
+            assert(#stats == 1 and stats[1].pass == 'scene' and stats[1].ran, 'one pass')
             assert(stats[1].draws == 2 and stats[1].indirect == 0 and stats[1].instances == 2)
             assert(stats[1].vertices == 12 and stats[1].primitives == 4)
 
@@ -816,6 +816,31 @@ fn a_script_masks_sets_and_counts_what_it_drew() {
             assert(device.memory.buffers == before.buffers + 64, 'a buffer holds its size')
             assert(device.memory.textures == before.textures + (64 + 16) * 4, 'a texture holds every level')
             assert(more.size == 64 and mipped.width == 8)
+            -- Every slice of a volume, every face of a cube, and a depth of four bytes a texel.
+            for _, case in {{
+              {{ {{ shape = '3d', depth = 16, mips = 2 }}, (16 * 16 * 16 + 8 * 8 * 8) * 4 }},
+              {{ {{ shape = 'cube' }}, 16 * 16 * 6 * 4 }},
+              {{ {{ format = 'depth24Plus' }}, 16 * 16 * 4 }},
+            }} do
+              local desc = {{ width = 16, height = 16, format = 'rgba8Unorm', usage = 'sampled' }}
+              for key, value in case[1] do
+                desc[key] = value
+              end
+              local held = device.memory.textures
+              local texture = device:texture(desc)
+              assert(device.memory.textures == held + case[2], `{{texture}}: {{device.memory.textures - held}}`)
+            end
+
+            -- A pass left out of a run ran nothing, which is not the same as drawing nothing.
+            plan:setEnabled('scene', false)
+            plan:run()
+            assert(not plan:stats()[1].ran and plan:stats()[1].draws == 0)
+            plan:setEnabled('scene', true)
+            plan:run()
+            assert(plan:stats()[1].ran and plan:stats()[1].draws == 1)
+            local none = device:visibility({{}})
+            none:show('')
+            assert(none.count == 0 and not device:commit(), 'a mask of nothing is no change')
         "
     );
     runtime.exec(&script).unwrap_or_else(|error| panic!("{error}"));
@@ -823,8 +848,8 @@ fn a_script_masks_sets_and_counts_what_it_drew() {
     for (script, expected) in [
         (
             "device:visibility({ tall, short }):show(buffer.create(1))",
-            "GpuVisibility:show: the mask has 1 bytes from where it starts, and there are 2 sets: expected a byte \
-             for each",
+            "GpuVisibility:show: the mask is 1 bytes long from where it starts, and there are 2 sets: expected a \
+             byte for each",
         ),
         (
             "device:visibility({ tall, 3 })",

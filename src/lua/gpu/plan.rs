@@ -907,8 +907,9 @@ pub fn device_methods(device: &mut UserdataBuilder<'_, LuaGpuDevice>) {
 fn stats(this: &LuaGpuPlan, call: &Call<'_>) -> l3i::Result<StackResults> {
     let stats = this.current().stats();
     l3i::stack::push_list(call, stats.iter(), |frame, stats| {
-        push_table(frame, 0, 6, |frame, table| {
+        push_table(frame, 0, 7, |frame, table| {
             table.raw_set_value(frame, "pass", stats.pass.as_str())?;
+            table.raw_set_value(frame, "ran", &stats.ran)?;
             let drawn = stats.drawn;
             // What a frame draws is far below 2^53 of anything.
             #[allow(clippy::cast_precision_loss)]
