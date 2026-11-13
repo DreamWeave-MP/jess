@@ -66,11 +66,14 @@ run.txt	true
   and `fs.readFileString(path) or ''` is "use the config if it's there".
 - `writeFile(path, data, options)` writes a string or a `buffer`; `atomic` writes beside the file
   and renames it over, `createParents` makes the folders, `append` appends.
-- `mode` gives what a call creates its Unix permission bits, exactly and from the moment it
-  exists, whatever the umask: `fs.writeFile(path, secret, { atomic = true, mode = tonumber('600', 8) })`
-  is a file only its owner reads. `openWrite`, `createDurable`, `mkdir`, and `lock` take it too. A
-  file already there keeps its bits; `chmod(path, mode)` changes those, and `stat(path).mode` reads
-  them. Windows has no such bits: there `mode` does nothing and `chmod` answers `unsupported`.
+- `mode` gives what a call creates its Unix permission bits, exact whatever the umask, and nobody
+  but the owner is given more on the way there:
+  `fs.writeFile(path, secret, { atomic = true, mode = tonumber('600', 8) })` is a file only its
+  owner reads. `openWrite`, `createDurable`, `mkdir`, and `lock` take it too, and a parent
+  `recursive` creates also gets the owner's write and search bits. A file already there keeps its
+  bits, except under `atomic`, which replaces it with a new file that has the mode;
+  `chmod(path, mode)` changes a file that exists, and `stat(path).mode` reads its bits. Windows has
+  no such bits: there `mode` does nothing and `chmod` answers `unsupported`.
 - `mkdir` with `recursive` makes missing parents and doesn't mind a folder that exists; `remove`
   takes `recursive` for a folder; `copy`, `rename`, and `stat` do what they say.
 - `join(...)`, `parent(path)`, `fileName(path)`, and `extension(path)` handle paths and touch no
