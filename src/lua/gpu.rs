@@ -62,6 +62,19 @@ pub fn module(runtime: &Runtime, jess: &Rc<Jess>) -> l3i::Result<Table> {
             }
         },
     )?;
+    let state = jess.clone();
+    module.function("monitors", move |call: &l3i::bind::Call<'_>| {
+        guard(&state, "jess.gpu.monitors", WINDOW_CAPABILITY)?;
+        #[cfg(feature = "window")]
+        return window::monitors(call);
+        #[cfg(not(feature = "window"))]
+        {
+            let _ = call;
+            Err::<(), _>(crate::lua::error(
+                "jess.gpu.monitors: this jess has no windows: it was built without the window feature",
+            ))
+        }
+    })?;
     module.function("pump", || {
         #[cfg(feature = "window")]
         return window::pump();

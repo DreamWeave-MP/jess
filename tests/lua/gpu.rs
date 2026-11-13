@@ -218,6 +218,32 @@ fn resource_errors_name_the_mistake() {
     }
 }
 
+/// What a window is described as is checked before anything opens, and the displays are the
+/// window system's: asking for them needs `gpu.window`, as opening a window does.
+#[cfg(feature = "window")]
+#[test]
+fn a_window_is_checked_before_it_opens() {
+    let Some(runtime) = gpu_runtime("a_window_is_checked_before_it_opens") else {
+        return;
+    };
+    let denied = runtime.exec("jess.gpu.monitors()").unwrap_err().to_string();
+    assert!(
+        denied.contains("jess.gpu.monitors") && denied.contains("gpu.window"),
+        "{denied}"
+    );
+
+    let capabilities = ["gpu.device".to_owned(), "gpu.window".to_owned()];
+    let runtime = jess::lua::runtime_with_capabilities(jess::lua::Options::default(), &capabilities).unwrap();
+    let refusal = runtime
+        .exec("jess.gpu.window(jess.gpu.device(), { title = 'jess mode test', fullscreen = 'huge' })")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refusal.contains("jess.gpu.window: fullscreen is 'windowed', 'borderless', or 'exclusive', not \"huge\""),
+        "{refusal}"
+    );
+}
+
 /// A tinted, textured triangle drawn from Luau over a cleared target: a render pipeline, a
 /// material bind group by the binding numbers the program's layout reports, a vertex buffer, a
 /// depth target, and the pixels read back.
@@ -1472,6 +1498,19 @@ const WINDOW: &str = r"
             })
             assert(window.open and window.width > 0 and window.scale > 0, tostring(window))
             assert(string.find(tostring(window), 'GpuWindow(jess window test, ', 1, true) == 1, tostring(window))
+            -- It opened as a window, on one of the displays the window system lists.
+            assert(window:fullscreen() == 'windowed')
+            local monitors = jess.gpu.monitors()
+            assert(#monitors >= 1, 'a desktop has a display')
+            for _, monitor in monitors do
+              assert(monitor.width > 0 and monitor.height > 0 and monitor.scale > 0)
+              assert(type(monitor.primary) == 'boolean' and type(monitor.x) == 'number')
+              assert(monitor.refreshRate == nil or monitor.refreshRate > 0)
+            end
+            -- The pointer is shown until the window is asked otherwise, and says how it is held.
+            assert(window:cursor() == 'normal')
+            assert(window:cursor('hidden') == 'hidden' and window:cursor() == 'hidden')
+            assert(window:cursor('normal') == 'normal' and window:cursor() == 'normal')
 
             local green = shader.program({
               vertex = function(input)
@@ -1570,6 +1609,14 @@ fn a_script_shows_a_plan_in_a_window() {
     let runtime = jess::lua::runtime_with_capabilities(jess::lua::Options::default(), &capabilities).unwrap();
     let refusal = runtime.exec(WINDOW).unwrap_err().to_string();
     assert!(refusal.contains("shown in another window"), "{refusal}");
+    let refusal = runtime
+        .exec("jess.gpu.window(jess.gpu.device(), { title = 'jess cursor test' }):cursor('grabbed')")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refusal.contains("GpuWindow:cursor: the mode is 'normal', 'hidden', or 'captured', not \"grabbed\""),
+        "{refusal}"
+    );
     jess::window::pump();
     let news = jess::window::news();
     assert!(!news.is_empty(), "the windows had news no one read");

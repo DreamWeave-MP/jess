@@ -49,6 +49,16 @@
 //! wheel, and the modifiers. That is what a text field, an editor, or anything else that is about
 //! one window reads. An input method composes only for a window that asked for text
 //! ([`Window::text_input`]).
+//!
+//! # Holding the pointer
+//!
+//! A window shows the pointer and lets it go where it likes until it is asked otherwise
+//! ([`Window::set_cursor`]): to hide it, or to capture it, which hides it and keeps it in the
+//! window, held still where the window system can hold it and kept inside the window's edges
+//! where it can only do that. A captured pointer has no place worth reporting, so what the mouse
+//! does arrives as its own motion ([`WindowEvent::PointerDelta`]), which no edge of any screen
+//! stops. A window that loses the keyboard lets the pointer go and says so
+//! ([`WindowEvent::Cursor`]): the person went elsewhere, and takes the pointer with them.
 
 #![warn(missing_docs)]
 
@@ -68,8 +78,10 @@ use winit::event::{
 };
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::monitor::MonitorHandle;
 use winit::platform::pump_events::EventLoopExtPumpEvents;
-use winit::window::{Window as RawWindow, WindowAttributes, WindowId};
+use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use winit::window::{CursorGrabMode, Fullscreen as RawFullscreen, Window as RawWindow, WindowAttributes, WindowId};
 
 use crate::gpu::{Buffer, DrawSets, Gpu, GpuError, PresentMode, SharedPlan, Surface, Texture};
 use crate::input::{
@@ -131,6 +143,108 @@ pub struct WindowDesc {
     /// instead of opening another. That is how a window outlives the generation of code that
     /// opened it: see [`reclaim`].
     pub key: Option<String>,
+    /// Whether it opens over a whole display, and how.
+    pub fullscreen: Fullscreen,
+}
+
+/// How much of a display a window takes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Fullscreen {
+    /// A window among windows.
+    #[default]
+    Windowed,
+    /// The whole of the display it is on, as a window without edges: the display keeps its mode,
+    /// and other windows come and go over it as the window system likes.
+    Borderless,
+    /// The display itself, in its own mode at its fastest rate, for as long as the window has it.
+    Exclusive,
+}
+
+impl Fullscreen {
+    /// Its name, as `GpuWindow:fullscreen` gives it.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Fullscreen::Windowed => "windowed",
+            Fullscreen::Borderless => "borderless",
+            Fullscreen::Exclusive => "exclusive",
+        }
+    }
+}
+
+/// A display the window system has.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Monitor {
+    /// What the window system calls it, if it calls it anything.
+    pub name: Option<String>,
+    /// Its width in physical pixels, in the mode it is in.
+    pub width: u32,
+    /// Its height in physical pixels.
+    pub height: u32,
+    /// Where its left edge is among the displays, in physical pixels.
+    pub x: i32,
+    /// Where its top edge is.
+    pub y: i32,
+    /// How many physical pixels a logical one is on it.
+    pub scale: f64,
+    /// How many images a second it shows, where the window system says.
+    pub refresh: Option<f64>,
+    /// Whether it is the one the window system calls primary, where it calls one that.
+    pub primary: bool,
+}
+
+impl Monitor {
+    fn of(raw: &MonitorHandle, primary: Option<&MonitorHandle>) -> Monitor {
+        let (size, position) = (raw.size(), raw.position());
+        Monitor {
+            name: raw.name(),
+            width: size.width,
+            height: size.height,
+            x: position.x,
+            y: position.y,
+            scale: raw.scale_factor(),
+            refresh: raw.refresh_rate_millihertz().map(|millihertz| f64::from(millihertz) / 1000.0),
+            primary: primary == Some(raw),
+        }
+    }
+}
+
+/// The display `raw` is on taken whole in its own mode at its fastest rate, where the window
+/// system gives a display to a window at all: Wayland doesn't, and winit says nothing when asked.
+fn exclusive(raw: &RawWindow) -> Option<RawFullscreen> {
+    if matches!(
+        raw.window_handle().map(|handle| handle.as_raw()),
+        Ok(RawWindowHandle::Wayland(_))
+    ) {
+        return None;
+    }
+    // Taking a display on macOS changes its mode through calls winit asserts on, and lists
+    // modes through one that panics on encodings it doesn't know: borderless is what a Mac
+    // application wants anyway.
+    if cfg!(target_os = "macos") {
+        return None;
+    }
+    let monitor = raw.current_monitor()?;
+    let size = monitor.size();
+    let modes: Vec<_> = monitor.video_modes().collect();
+    let chosen = fastest(
+        (size.width, size.height),
+        modes.iter().map(|mode| {
+            let size = mode.size();
+            ((size.width, size.height), mode.refresh_rate_millihertz(), mode.bit_depth())
+        }),
+    )?;
+    modes.into_iter().nth(chosen).map(RawFullscreen::Exclusive)
+}
+
+/// Which of a display's `modes` (each a size, a rate in millihertz, and bits a pixel) shows
+/// `size` fastest, the deepest of those that tie.
+fn fastest(size: (u32, u32), modes: impl Iterator<Item = ((u32, u32), u32, u16)>) -> Option<usize> {
+    modes
+        .enumerate()
+        .filter(|(_, (offered, ..))| *offered == size)
+        .max_by_key(|(_, (_, rate, depth))| (*rate, *depth))
+        .map(|(index, _)| index)
 }
 
 /// What happened to a window, in the order it happened, for whoever drives it to read.
@@ -180,6 +294,17 @@ pub enum WindowEvent {
     },
     /// The pointer left it.
     PointerLeft,
+    /// The mouse moved while the window had the pointer captured: its own motion since the last
+    /// such event, unaccelerated where the window system offers that, in no particular unit.
+    PointerDelta {
+        /// Motion to the right.
+        dx: f64,
+        /// Motion down.
+        dy: f64,
+    },
+    /// How it holds the pointer changed without its being asked: it lost the keyboard, or the
+    /// code that captured the pointer was replaced, and the pointer was let go.
+    Cursor(Cursor),
     /// A pointer button was pressed or released over it.
     PointerButton {
         /// The button.
@@ -196,6 +321,125 @@ pub enum WindowEvent {
     },
     /// The modifier keys held changed.
     Modifiers(Modifiers),
+}
+
+/// How a window holds the pointer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Cursor {
+    /// Shown, and free to leave.
+    #[default]
+    Normal,
+    /// Hidden while it is over the window, and free to leave.
+    Hidden,
+    /// Captured: hidden, and held where it was.
+    Locked,
+    /// Captured where the window system holds no pointer still: hidden, and kept inside the
+    /// window.
+    Confined,
+}
+
+impl Cursor {
+    /// Its name, as `GpuWindow:cursor` gives it.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Cursor::Normal => "normal",
+            Cursor::Hidden => "hidden",
+            Cursor::Locked => "locked",
+            Cursor::Confined => "confined",
+        }
+    }
+
+    /// Whether the window has the pointer captured, one way or the other.
+    #[must_use]
+    pub fn is_captured(self) -> bool {
+        matches!(self, Cursor::Locked | Cursor::Confined)
+    }
+}
+
+/// What a window is asked to do with the pointer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CursorRequest {
+    /// Show it and let it go.
+    Normal,
+    /// Hide it over the window.
+    Hidden,
+    /// Capture it: [`Cursor::Locked`] where the window system can, [`Cursor::Confined`] where it
+    /// can only do that.
+    Captured,
+}
+
+/// What holding the pointer asks of a window: winit's window, or a test's.
+trait Pointer {
+    fn grab(&self, mode: CursorGrabMode) -> Result<(), String>;
+    fn show(&self, visible: bool);
+    fn place(&self, x: f64, y: f64);
+}
+
+impl Pointer for RawWindow {
+    fn grab(&self, mode: CursorGrabMode) -> Result<(), String> {
+        self.set_cursor_grab(mode).map_err(|problem| match problem {
+            // winit's own text for this names the line of its source that failed.
+            winit::error::ExternalError::Os(problem) => {
+                let text = problem.to_string();
+                text.split_once(": ").map_or(text.as_str(), |(_, reason)| reason).to_owned()
+            }
+            other => other.to_string(),
+        })
+    }
+
+    fn show(&self, visible: bool) {
+        self.set_cursor_visible(visible);
+    }
+
+    fn place(&self, x: f64, y: f64) {
+        // Not every window system places a pointer (Wayland places only a locked one): where it
+        // can't, the pointer stays where it ended up.
+        drop(self.set_cursor_position(PhysicalPosition::new(x, y)));
+    }
+}
+
+/// Has `pointer`, held as `held`, do what `wanted` asks; how it is held afterwards. A confined
+/// pointer wandered while it was hidden, so letting it go puts it back at `home`, where it was
+/// captured.
+fn hold(
+    pointer: &impl Pointer,
+    held: Cursor,
+    wanted: CursorRequest,
+    home: Option<(f64, f64)>,
+) -> Result<Cursor, WindowError> {
+    if wanted == CursorRequest::Captured {
+        if held.is_captured() {
+            return Ok(held);
+        }
+        let captured = match pointer.grab(CursorGrabMode::Locked) {
+            Ok(()) => Cursor::Locked,
+            Err(locking) => match pointer.grab(CursorGrabMode::Confined) {
+                Ok(()) => Cursor::Confined,
+                Err(confining) => {
+                    return Err(WindowError::System(format!(
+                        "the window system captured no pointer: it holds none still ({locking}) and keeps none \
+                         inside a window ({confining})"
+                    )));
+                }
+            },
+        };
+        pointer.show(false);
+        return Ok(captured);
+    }
+    if held.is_captured() {
+        // Letting go of a pointer is never refused where capturing it wasn't.
+        drop(pointer.grab(CursorGrabMode::None));
+        if let (Cursor::Confined, Some((x, y))) = (held, home) {
+            pointer.place(x, y);
+        }
+    }
+    pointer.show(wanted == CursorRequest::Normal);
+    Ok(if wanted == CursorRequest::Normal {
+        Cursor::Normal
+    } else {
+        Cursor::Hidden
+    })
 }
 
 /// Which modifier keys are held, on either side.
@@ -244,6 +488,7 @@ impl Default for WindowDesc {
             format: None,
             closes: true,
             key: None,
+            fullscreen: Fullscreen::Windowed,
         }
     }
 }
@@ -312,6 +557,15 @@ struct State {
     closes: bool,
     key: Option<String>,
     present: PresentMode,
+    /// How it holds the pointer.
+    cursor: Cursor,
+    /// Where the pointer last was in it, while it is over it.
+    pointer: Option<(f64, f64)>,
+    /// Where the pointer was when it was captured, which a confined one goes back to.
+    home: Option<(f64, f64)>,
+    /// How it was held before it was captured, shown or hidden, which it is again when the
+    /// window lets it go by itself.
+    before: CursorRequest,
 }
 
 impl Drop for State {
@@ -326,6 +580,43 @@ impl State {
     fn happened(&mut self, event: WindowEvent) {
         happen(&mut self.events, event);
     }
+
+    /// The pointer moved over it to `place`, or left it.
+    fn pointed(&mut self, place: Option<(f64, f64)>) {
+        self.pointer = place;
+        self.happened(match place {
+            Some((x, y)) => WindowEvent::PointerMoved { x, y },
+            None => WindowEvent::PointerLeft,
+        });
+    }
+
+    /// Lets a captured pointer go, saying so in its events: nobody asked it to.
+    fn let_go(&mut self) {
+        if self.cursor.is_captured() {
+            self.release(self.before);
+        }
+    }
+
+    /// Has the pointer, however it is held, shown or hidden as `wanted` says, saying so in its
+    /// events if that changes anything: nobody asked it to.
+    fn release(&mut self, wanted: CursorRequest) {
+        let held = self.cursor;
+        self.cursor = if wanted == CursorRequest::Hidden {
+            Cursor::Hidden
+        } else {
+            Cursor::Normal
+        };
+        self.before = CursorRequest::Normal;
+        if self.cursor == held {
+            return;
+        }
+        if let Some(raw) = &self.raw {
+            // Showing and hiding a pointer, and letting one go, are never refused.
+            drop(hold(&**raw, held, wanted, self.home));
+        }
+        self.home = None;
+        self.happened(WindowEvent::Cursor(self.cursor));
+    }
 }
 
 /// Adds `event` to a window's `events`, the oldest going when there are [`EVENTS`].
@@ -335,6 +626,14 @@ fn happen(events: &mut Vec<WindowEvent>, event: WindowEvent) {
         && let Some(last @ WindowEvent::PointerMoved { .. }) = events.last_mut()
     {
         *last = event;
+        return;
+    }
+    // How far the mouse went is all a run of its motion says: the sum.
+    if let WindowEvent::PointerDelta { dx, dy } = event
+        && let Some(WindowEvent::PointerDelta { dx: x, dy: y }) = events.last_mut()
+    {
+        *x += dx;
+        *y += dy;
         return;
     }
     if events.len() == EVENTS {
@@ -390,6 +689,9 @@ struct Handler<'a> {
     /// A window to open at the first callback that can, and what opening it gave.
     opening: Option<WindowAttributes>,
     opened: Option<Result<Arc<RawWindow>, String>>,
+    /// The displays, listed at the first callback that can if they are asked for.
+    listing: bool,
+    listed: Option<Vec<Monitor>>,
 }
 
 impl Handler<'_> {
@@ -400,6 +702,15 @@ impl Handler<'_> {
                     .create_window(attributes)
                     .map(Arc::new)
                     .map_err(|problem| problem.to_string()),
+            );
+        }
+        if std::mem::take(&mut self.listing) {
+            let primary = event_loop.primary_monitor();
+            self.listed = Some(
+                event_loop
+                    .available_monitors()
+                    .map(|monitor| Monitor::of(&monitor, primary.as_ref()))
+                    .collect(),
             );
         }
     }
@@ -449,7 +760,11 @@ impl ApplicationHandler for Handler<'_> {
                 }
             }
             RawEvent::Focused(focused) => {
-                state.borrow_mut().happened(WindowEvent::Focused(focused));
+                let mut state = state.borrow_mut();
+                state.happened(WindowEvent::Focused(focused));
+                if !focused {
+                    state.let_go();
+                }
                 queue(Raw::Focus(number, focused));
             }
             RawEvent::KeyboardInput { event, .. } => {
@@ -492,16 +807,19 @@ impl ApplicationHandler for Handler<'_> {
             }
             RawEvent::CursorEntered { .. } => state.borrow_mut().happened(WindowEvent::PointerEntered),
             RawEvent::CursorMoved { position, .. } => {
-                state.borrow_mut().happened(WindowEvent::PointerMoved {
-                    x: position.x,
-                    y: position.y,
-                });
+                // A confined pointer still moves, under the mouse's own motion: its place says
+                // nothing while it is captured, and would crowd out what does.
+                let mut state = state.borrow_mut();
+                if !state.cursor.is_captured() {
+                    state.pointed(Some((position.x, position.y)));
+                }
+                drop(state);
                 // Positions are pixels: a window wider than f32 counts exactly is no window.
                 #[allow(clippy::cast_possible_truncation)]
                 queue(Raw::Position(number, position.x as f32, position.y as f32));
             }
             RawEvent::CursorLeft { .. } => {
-                state.borrow_mut().happened(WindowEvent::PointerLeft);
+                state.borrow_mut().pointed(None);
                 queue(Raw::Left(number));
             }
             RawEvent::MouseWheel { delta, .. } => {
@@ -523,6 +841,13 @@ impl ApplicationHandler for Handler<'_> {
             // Motion is pixels since the last event: small numbers.
             #[allow(clippy::cast_possible_truncation)]
             queue(Raw::Motion(x as f32, y as f32));
+            // The mouse belongs to no window; its motion is news to the one that captured it.
+            for state in self.windows.iter().filter_map(|(_, state)| state.upgrade()) {
+                let mut state = state.borrow_mut();
+                if state.cursor.is_captured() {
+                    state.happened(WindowEvent::PointerDelta { dx: x, dy: y });
+                }
+            }
         }
     }
 }
@@ -559,7 +884,13 @@ fn resized(state: &mut State, size: PhysicalSize<u32>) {
 fn close(state: &mut State) {
     if let Some(raw) = &state.raw {
         queue(Raw::Closed(u64::from(raw.id())));
+        // What holds a pointer is the process's on some window systems, not the window's, and
+        // would outlive it.
+        drop(hold(&**raw, state.cursor, CursorRequest::Normal, state.home));
     }
+    state.cursor = Cursor::Normal;
+    state.before = CursorRequest::Normal;
+    state.home = None;
     state.shared.arrive(Incoming::Hide);
     {
         // The surface goes before the window it was made from.
@@ -598,6 +929,8 @@ pub fn open(gpu: &Arc<Gpu>, desc: &WindowDesc) -> Result<Window, WindowError> {
             windows: &system.windows,
             opening: Some(attributes),
             opened: None,
+            listing: false,
+            listed: None,
         };
         // The first pump of a loop resumes it, which opens the window; later ones open it before
         // they wait. Either way one pump does it, and a few more only cover a slow compositor.
@@ -643,9 +976,16 @@ pub fn open(gpu: &Arc<Gpu>, desc: &WindowDesc) -> Result<Window, WindowError> {
             closes: desc.closes,
             key: desc.key.clone(),
             present: desc.present,
+            cursor: Cursor::Normal,
+            pointer: None,
+            home: None,
+            before: CursorRequest::Normal,
         }));
         system.windows.push((id, Rc::downgrade(&state)));
         let window = Window { id, state };
+        if desc.fullscreen != Fullscreen::Windowed {
+            let _ = window.set_fullscreen(desc.fullscreen);
+        }
         if let Some(key) = &desc.key {
             system.kept.push(Kept {
                 key: key.clone(),
@@ -666,6 +1006,10 @@ pub fn open(gpu: &Arc<Gpu>, desc: &WindowDesc) -> Result<Window, WindowError> {
 /// A load that fails closes nothing: the windows keep showing the last code that worked, for
 /// the next load to take back.
 ///
+/// The code that captured or hid a pointer is the code being replaced, so every kept window
+/// shows its pointer and lets it go first: nothing is left holding it if the new code fails to
+/// load, and code that loads hides or captures it again when it wants to.
+///
 /// # Errors
 ///
 /// What `load` returns.
@@ -673,6 +1017,7 @@ pub fn reclaim<T, E>(load: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
     SYSTEM.with_borrow_mut(|system| {
         for kept in system.iter_mut().flat_map(|system| &mut system.kept) {
             kept.claimed = false;
+            kept.window.state.borrow_mut().release(CursorRequest::Normal);
         }
     });
     let loaded = load();
@@ -838,9 +1183,44 @@ pub fn pump() {
             windows: &system.windows,
             opening: None,
             opened: None,
+            listing: false,
+            listed: None,
         };
         system.event_loop.pump_app_events(Some(Duration::ZERO), &mut handler);
     });
+}
+
+/// The displays the window system has, making the event loop on this thread if nothing has yet.
+///
+/// # Errors
+///
+/// No window system, or an event loop another thread made.
+pub fn monitors() -> Result<Vec<Monitor>, WindowError> {
+    SYSTEM.with_borrow_mut(|system| {
+        if system.is_none() {
+            *system = Some(System::new()?);
+        }
+        let Some(system) = system else {
+            unreachable!("made above");
+        };
+        let mut handler = Handler {
+            windows: &system.windows,
+            opening: None,
+            opened: None,
+            listing: true,
+            listed: None,
+        };
+        // As a window opens: one pump does it, and a few more cover a slow compositor.
+        for _ in 0..8 {
+            system.event_loop.pump_app_events(Some(Duration::ZERO), &mut handler);
+            if handler.listed.is_some() {
+                break;
+            }
+        }
+        handler
+            .listed
+            .ok_or_else(|| WindowError::System("the window system never listed its displays".to_owned()))
+    })
 }
 
 /// Ends a frame for the windows, without waiting for them to draw it.
@@ -1107,6 +1487,96 @@ impl Window {
     #[must_use]
     pub fn number(&self) -> u64 {
         u64::from(self.id)
+    }
+
+    /// How much of a display it takes now, as the window system has it: `Windowed` once it is
+    /// closed.
+    #[must_use]
+    pub fn fullscreen(&self) -> Fullscreen {
+        match self.state.borrow().raw.as_ref().and_then(|raw| raw.fullscreen()) {
+            None => Fullscreen::Windowed,
+            Some(RawFullscreen::Borderless(_)) => Fullscreen::Borderless,
+            Some(RawFullscreen::Exclusive(_)) => Fullscreen::Exclusive,
+        }
+    }
+
+    /// Asks the window system to give it the whole display it is on, or to make it a window
+    /// again; what was asked of it, which for `Exclusive` is `Borderless` where the window system
+    /// gives no window a display of its own (Wayland) or the display lists no mode. Its new size
+    /// arrives as a [`WindowEvent::Resized`] when the window system has done it.
+    #[must_use]
+    pub fn set_fullscreen(&self, wanted: Fullscreen) -> Fullscreen {
+        let Some(raw) = self.state.borrow().raw.clone() else {
+            return Fullscreen::Windowed;
+        };
+        let (asked, mode) = match wanted {
+            Fullscreen::Windowed => (wanted, None),
+            Fullscreen::Borderless => (wanted, Some(RawFullscreen::Borderless(None))),
+            Fullscreen::Exclusive => exclusive(&raw).map_or_else(
+                || (Fullscreen::Borderless, Some(RawFullscreen::Borderless(None))),
+                |mode| (wanted, Some(mode)),
+            ),
+        };
+        raw.set_fullscreen(mode);
+        asked
+    }
+
+    /// The display most of it is on, if the window system says: `None` once it is closed.
+    #[must_use]
+    pub fn monitor(&self) -> Option<Monitor> {
+        let raw = self.state.borrow().raw.clone()?;
+        let primary = raw.primary_monitor();
+        raw.current_monitor().map(|monitor| Monitor::of(&monitor, primary.as_ref()))
+    }
+
+    /// How it holds the pointer.
+    #[must_use]
+    pub fn cursor(&self) -> Cursor {
+        self.state.borrow().cursor
+    }
+
+    /// Shows the pointer, hides it over the window, or captures it; how the window holds it
+    /// afterwards, which for a capture is [`Cursor::Locked`] where the window system holds a
+    /// pointer still and [`Cursor::Confined`] where it only keeps one inside a window. While it
+    /// is captured the mouse's motion arrives as [`WindowEvent::PointerDelta`], and the window
+    /// losing the keyboard lets it go ([`WindowEvent::Cursor`]). A closed window holds nothing.
+    ///
+    /// # Errors
+    ///
+    /// A window system that captures no pointer either way: the pointer is left as it was.
+    pub fn set_cursor(&self, wanted: CursorRequest) -> Result<Cursor, WindowError> {
+        let Some(raw) = self.state.borrow().raw.clone() else {
+            return Ok(Cursor::Normal);
+        };
+        if wanted == CursorRequest::Captured && !self.state.borrow().cursor.is_captured() {
+            if !raw.has_focus() {
+                return Err(WindowError::Invalid(format!(
+                    "the window {} hasn't the keyboard, and would never know to let the pointer go: capture it when \
+                     the person clicks in the window",
+                    self.state.borrow().title
+                )));
+            }
+            // What holds a pointer is the process's on some window systems: one window has it.
+            for other in open_states() {
+                if !Rc::ptr_eq(&other, &self.state) {
+                    other.borrow_mut().let_go();
+                }
+            }
+        }
+        let mut state = self.state.borrow_mut();
+        let held = state.cursor;
+        let home = if held.is_captured() { state.home } else { state.pointer };
+        let cursor = hold(&*raw, held, wanted, home)?;
+        if cursor.is_captured() && !held.is_captured() {
+            state.before = if held == Cursor::Hidden {
+                CursorRequest::Hidden
+            } else {
+                CursorRequest::Normal
+            };
+        }
+        state.home = cursor.is_captured().then_some(home).flatten();
+        state.cursor = cursor;
+        Ok(cursor)
     }
 
     /// Asks for text, or stops: while it is `enabled`, an input method may compose for it, and
@@ -1786,6 +2256,127 @@ mod tests {
             }
         );
         assert_eq!(composed(Ime::Enabled), WindowEvent::InputMethod(true));
+    }
+
+    /// A window system that holds a pointer still, keeps one inside a window, or neither, and
+    /// what it was asked to do.
+    struct Fake {
+        locks: bool,
+        confines: bool,
+        asked: RefCell<Vec<String>>,
+    }
+
+    impl Fake {
+        fn new(locks: bool, confines: bool) -> Fake {
+            Fake {
+                locks,
+                confines,
+                asked: RefCell::default(),
+            }
+        }
+
+        fn asked(&self) -> Vec<String> {
+            std::mem::take(&mut self.asked.borrow_mut())
+        }
+    }
+
+    impl Pointer for Fake {
+        fn grab(&self, mode: CursorGrabMode) -> Result<(), String> {
+            let supported = match mode {
+                CursorGrabMode::None => true,
+                CursorGrabMode::Locked => self.locks,
+                CursorGrabMode::Confined => self.confines,
+            };
+            if !supported {
+                return Err(format!("no {mode:?}"));
+            }
+            self.asked.borrow_mut().push(format!("grab {mode:?}"));
+            Ok(())
+        }
+
+        fn show(&self, visible: bool) {
+            self.asked.borrow_mut().push(format!("show {visible}"));
+        }
+
+        fn place(&self, x: f64, y: f64) {
+            self.asked.borrow_mut().push(format!("place {x} {y}"));
+        }
+    }
+
+    #[test]
+    fn a_captured_pointer_is_locked_where_it_can_be_and_confined_where_it_cannot() {
+        let home = Some((3.0, 4.0));
+        let locking = Fake::new(true, true);
+        let held = hold(&locking, Cursor::Normal, CursorRequest::Captured, home).unwrap();
+        assert_eq!(held, Cursor::Locked);
+        assert_eq!(locking.asked(), ["grab Locked", "show false"]);
+        assert_eq!(hold(&locking, held, CursorRequest::Captured, home).unwrap(), Cursor::Locked);
+        assert!(locking.asked().is_empty(), "a captured pointer is captured once");
+        assert_eq!(hold(&locking, held, CursorRequest::Normal, home).unwrap(), Cursor::Normal);
+        assert_eq!(
+            locking.asked(),
+            ["grab None", "show true"],
+            "a locked pointer never left where it was"
+        );
+
+        let confining = Fake::new(false, true);
+        let held = hold(&confining, Cursor::Hidden, CursorRequest::Captured, home).unwrap();
+        assert_eq!(held, Cursor::Confined);
+        assert_eq!(confining.asked(), ["grab Confined", "show false"]);
+        assert_eq!(hold(&confining, held, CursorRequest::Hidden, home).unwrap(), Cursor::Hidden);
+        assert_eq!(
+            confining.asked(),
+            ["grab None", "place 3 4", "show false"],
+            "a confined pointer goes back where it was captured, and stays hidden if asked"
+        );
+
+        let neither = Fake::new(false, false);
+        let refused = hold(&neither, Cursor::Normal, CursorRequest::Captured, home).unwrap_err();
+        assert_eq!(
+            refused.to_string(),
+            "the window system captured no pointer: it holds none still (no Locked) and keeps none inside a window \
+             (no Confined)"
+        );
+        assert!(neither.asked().is_empty(), "a refused capture leaves the pointer as it was");
+        assert_eq!(
+            hold(&neither, Cursor::Normal, CursorRequest::Hidden, None).unwrap(),
+            Cursor::Hidden
+        );
+        assert_eq!(neither.asked(), ["show false"]);
+    }
+
+    #[test]
+    fn a_display_taken_whole_shows_its_own_size_fastest_and_deepest() {
+        let (full, half) = ((1920, 1080), (960, 540));
+        let modes = [
+            (half, 240_000, 32),
+            (full, 60_000, 32),
+            (full, 120_000, 32),
+            (full, 120_000, 16),
+            (full, 120_000, 8),
+            (full, 59_940, 32),
+        ];
+        assert_eq!(fastest(full, modes.into_iter()), Some(2));
+        assert_eq!(fastest(full, modes.into_iter().rev()), Some(3), "whatever order they come in");
+        assert_eq!(
+            fastest((1280, 720), modes.into_iter()),
+            None,
+            "a display in a mode it doesn't list"
+        );
+    }
+
+    #[test]
+    fn a_run_of_mouse_motion_is_its_sum() {
+        let moved = |dx: f64, dy: f64| WindowEvent::PointerDelta { dx, dy };
+        let mut events = Vec::new();
+        happen(&mut events, moved(1.0, -2.0));
+        happen(&mut events, moved(0.5, 0.5));
+        happen(&mut events, WindowEvent::Cursor(Cursor::Normal));
+        happen(&mut events, moved(4.0, 0.0));
+        assert_eq!(
+            events,
+            [moved(1.5, -1.5), WindowEvent::Cursor(Cursor::Normal), moved(4.0, 0.0)]
+        );
     }
 
     #[test]
