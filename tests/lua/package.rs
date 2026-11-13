@@ -1984,3 +1984,56 @@ fn two_jobs_run_two_test_modules_at_the_same_moment() {
     let apart = run(1, "0.2", "false");
     assert_eq!((apart.passed, apart.failed), (2, 2), "{apart:#?}");
 }
+
+/// A package says how many of its test modules may run at once with `test_jobs`, and that is a
+/// ceiling on what is asked for. The report says how many ran at once.
+#[test]
+fn a_manifest_caps_how_many_test_modules_run_at_once() {
+    let temp = tempfile::tempdir().unwrap();
+    let subject = temp.path().join("subject");
+    let module = "local test = require '@jess/test'\nlocal suite = test.new()\n\
+                  suite.it('runs', function() test.expect(1).toBe(1) end)\nreturn suite\n";
+    let options = jess::lua::Options::default();
+    let tested = |extra: &str, jobs: usize, scratch: &str| {
+        library(
+            &subject,
+            "subject",
+            &format!("tests = [\"tests/first.jsl\", \"tests/second.jsl\"]\n{extra}"),
+            "return {}\n",
+        );
+        write(&subject, &[("tests/first.jsl", module), ("tests/second.jsl", module)]);
+        package::test_with_jobs(
+            &options,
+            &subject,
+            &temp.path().join(scratch),
+            &[],
+            &package::Search::default(),
+            jobs,
+        )
+    };
+
+    // Asked for eight, capped at one by the package; asked for one, a larger cap changes nothing.
+    let capped = tested("test_jobs = 1\n", 8, "capped").unwrap();
+    assert_eq!((capped.jobs, capped.passed, capped.failed), (1, 4, 0), "{capped:#?}");
+    let asked = tested("test_jobs = 4\n", 1, "asked").unwrap();
+    assert_eq!(asked.jobs, 1);
+    let both = tested("test_jobs = 4\n", 8, "both").unwrap();
+    assert_eq!(both.jobs, 4);
+    let unsaid = tested("", 3, "unsaid").unwrap();
+    assert_eq!(unsaid.jobs, 3);
+    assert_eq!(package::inspect(&common::runtime(), &text(&subject)).unwrap().test_jobs, None);
+    tested("test_jobs = 2\n", 1, "inspected").unwrap();
+    assert_eq!(
+        package::inspect(&common::runtime(), &text(&subject)).unwrap().test_jobs,
+        Some(2)
+    );
+
+    // Not a whole number from 1 to 256: the manifest is refused, and nothing runs.
+    for bad in ["0", "257", "1.5", "\"2\"", "-1", "true", "nan", "inf", "1e300"] {
+        let refused = tested(&format!("test_jobs = {bad}\n"), 2, "refused").unwrap_err().to_string();
+        assert!(
+            refused.contains("[package] test_jobs must be a whole number from 1 to 256"),
+            "{bad}: {refused}"
+        );
+    }
+}

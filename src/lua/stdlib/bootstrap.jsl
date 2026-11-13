@@ -243,6 +243,7 @@ local function inspect(location: string, ref: ImageRef?)
     devDependencies = devDependencies,
     capabilities = capabilities,
     tests = manifest.tests,
+    testJobs = manifest.testJobs,
   }
 end
 

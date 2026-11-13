@@ -674,6 +674,9 @@ pub struct Inspection {
     pub capabilities: Vec<LayerCapability>,
     /// Its source-only test modules.
     pub tests: Vec<String>,
+    /// The most of them that may run at once, when its manifest says (`test_jobs`).
+    #[serde(default)]
+    pub test_jobs: Option<u16>,
 }
 
 /// What `jess pack` reports.
@@ -967,6 +970,7 @@ pub fn inspect_with(runtime: &Runtime, location: &str, image: Option<&crate::lua
         "devDependencies": [{ "id": "", "requirement": "" }],
         "capabilities": [{ "capability": "", "layer": "", "entrypoint": "" }],
         "tests": [""],
+        "testJobs": null,
     });
     let image = image.map(|image| image.table(&runtime.stack())).transpose()?;
     bootstrap(runtime, "inspect", &shape, (location, image))
@@ -1259,6 +1263,9 @@ pub struct PackageTest {
     pub version: String,
     /// The test modules the manifest names, as given there.
     pub tests: Vec<String>,
+    /// The most of them that may run at once: what was asked for, or the manifest's `test_jobs`
+    /// when that is fewer. Fewer run when there are fewer to run.
+    pub jobs: usize,
     /// Each provider's run, source first; none for a JPK, whose tests run from its source.
     pub providers: Vec<ProviderRun>,
     /// Cases that passed, over every provider.
@@ -1344,10 +1351,15 @@ pub fn test_with_jobs(
     let runtime = crate::lua::runtime_with_capabilities(options.clone(), &test_capabilities)?;
     let display = location.display().to_string();
     let inspection = inspect(&runtime, &display)?;
+    // What the package says its tests can stand is a ceiling on what was asked for: a package
+    // whose tests open a window, or measure time, knows that better than whoever runs them.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let jobs = inspection.test_jobs.map_or(jobs, |most| jobs.min(usize::from(most))).max(1);
     let mut report = PackageTest {
         id: inspection.id.clone(),
         version: inspection.version.clone(),
         tests: inspection.tests.clone(),
+        jobs,
         providers: Vec::new(),
         passed: 0,
         failed: 0,
@@ -1384,7 +1396,7 @@ pub fn test_with_jobs(
             modules: &modules,
             scratch,
         };
-        for (run, package) in test_each_alone(&shared, jobs.max(1))? {
+        for (run, package) in test_each_alone(&shared, jobs)? {
             report.passed += run.passed;
             report.failed += run.failed;
             report.providers.push(ProviderRun {

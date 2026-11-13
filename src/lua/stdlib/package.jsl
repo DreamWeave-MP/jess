@@ -91,6 +91,9 @@ export type Manifest = {
   read defaultTarget: string?,
   read include: { string },
   read tests: { string },
+  --- The most test modules that may run at once, when the package says: tests that open a window
+  --- or measure time say 1.
+  read testJobs: number?,
   read dependencies: { [string]: string },
   --- Packages only the package's own tests need: selected when its tests run, never otherwise.
   read devDependencies: { [string]: string },
@@ -470,7 +473,7 @@ local function parseManifest(text: string): Manifest
   local fields = package :: { [string]: unknown }
   checkKeys(
     fields,
-    { 'id', 'version', 'jess_api', 'default_target', 'include', 'tests' },
+    { 'id', 'version', 'jess_api', 'default_target', 'include', 'tests', 'test_jobs' },
     `{Manifest} [package]`
   )
 
@@ -509,6 +512,18 @@ local function parseManifest(text: string): Manifest
 
   for _, path in tests do
     checkPayloadPath(path, `{Manifest} [package] tests`)
+  end
+
+  local testJobs: number?
+
+  if fields.test_jobs ~= nil then
+    local most = fields.test_jobs
+
+    if type(most) ~= 'number' or most ~= math.floor(most) or most < 1 or most > 256 then
+      fail(`{Manifest}: [package] test_jobs must be a whole number from 1 to 256`)
+    end
+
+    testJobs = most :: number
   end
 
   local function requirements(value: unknown, section: string): { [string]: string }
@@ -756,6 +771,7 @@ local function parseManifest(text: string): Manifest
     defaultTarget = defaultTarget,
     include = table.freeze(include),
     tests = table.freeze(tests),
+    testJobs = testJobs,
     dependencies = table.freeze(dependencies),
     devDependencies = table.freeze(devDependencies),
     modules = table.freeze(modules),
@@ -1588,7 +1604,7 @@ Opens the package at `location`: a Package Source folder (the folder holding `je
 
 | Field | Is |
 | --- | --- |
-| `manifest` | The checked [manifest](@/docs/scripting/packages.md#the-manifest): `manifestVersion`, `id`, `version`, `jessApi`, `defaultTarget`, `include`, `tests`, `dependencies`, `devDependencies`, `modules`, `layers`, `managed`, and `targets`. |
+| `manifest` | The checked [manifest](@/docs/scripting/packages.md#the-manifest): `manifestVersion`, `id`, `version`, `jessApi`, `defaultTarget`, `include`, `tests`, `testJobs`, `dependencies`, `devDependencies`, `modules`, `layers`, `managed`, and `targets`. |
 | `id`, `version` | The manifest's. |
 | `digest` | The [content digest](#the-content-digest), hex. |
 | `kind` | `'source'` or `'jpk'`. Ordinary code has no business branching on it. |
