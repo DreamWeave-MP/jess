@@ -142,6 +142,41 @@ pub struct Lock {
     pub packages: Vec<Locked>,
 }
 
+/// What a loose script runs with when its command line names no packages: the `[scripts]` table
+/// of the workspace file above it.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Scripts {
+    /// Whether a workspace file above the script has the table.
+    found: bool,
+    /// The folder that file is in.
+    pub root: String,
+    /// The packages to activate, each a Package Source folder or a JPK, as `--package` names one.
+    pub packages: Vec<String>,
+    /// The folders to find layers and dependencies in, as `--package-path` names one.
+    pub package_paths: Vec<String>,
+    /// The layers to activate, as `--layer` names one; every layer the packages declare when
+    /// empty.
+    pub layers: Vec<String>,
+}
+
+/// What a loose script in `folder` runs with when its command line names no packages.
+///
+/// It is the `[scripts]` table of the nearest `jess-workspace.toml` in `folder` or above it, or
+/// `None` when there is no such file or it has no such table. Only the table is read, so a
+/// workspace whose lock is stale still runs a loose script.
+///
+/// # Errors
+///
+/// Returns an error if `folder` isn't there, or the nearest workspace file or its table is
+/// malformed.
+pub fn scripts(runtime: &Runtime, folder: &Path) -> l3i::Result<Option<Scripts>> {
+    let shape = serde_json::json!({
+        "found": false, "root": "", "packages": [""], "packagePaths": [""], "layers": [""],
+    });
+    let scripts: Scripts = package::bootstrap(runtime, "workspaceScripts", &shape, (folder.display().to_string(),))?;
+    Ok(scripts.found.then_some(scripts))
+}
+
 /// A package id and the content digest a resolution holds it to.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Pin {

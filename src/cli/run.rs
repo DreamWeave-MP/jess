@@ -71,9 +71,48 @@ pub struct Named<'a> {
     pub paths: &'a [PathBuf],
 }
 
+/// The packages a loose script runs with: what its command line named, or what the workspace
+/// file above it says its scripts run with.
+#[derive(Default)]
+pub struct Chosen {
+    pub packages: Vec<String>,
+    pub layers: Vec<String>,
+    pub paths: Vec<String>,
+}
+
+impl Named<'_> {
+    /// What `script` runs with. A command line that names anything is the whole answer. One that
+    /// names nothing leaves it to the `[scripts]` table of the nearest `jess-workspace.toml` in
+    /// the script's folder or above it, and without one the script runs with no packages.
+    pub fn resolve(&self, lua: &Runtime, script: &Path) -> Result<Chosen, String> {
+        let text = |paths: &[PathBuf]| paths.iter().map(|path| path.display().to_string()).collect::<Vec<_>>();
+        if !(self.packages.is_empty() && self.paths.is_empty() && self.layers.is_empty()) {
+            return Ok(Chosen {
+                packages: text(self.packages),
+                layers: self.layers.to_vec(),
+                paths: text(self.paths),
+            });
+        }
+        let folder = match script.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent,
+            _ => Path::new("."),
+        };
+        // A script whose folder is gone names nothing to look above; running it says so better.
+        if !folder.is_dir() {
+            return Ok(Chosen::default());
+        }
+        let scripts = jess::lua::workspace::scripts(lua, folder).map_err(|error| error.to_string())?;
+        Ok(scripts.map_or_else(Chosen::default, |scripts| Chosen {
+            packages: scripts.packages,
+            layers: scripts.layers,
+            paths: scripts.package_paths,
+        }))
+    }
+}
+
 /// Activates the packages `named` in `lua`, if any, admitting entrypoints against
 /// `capabilities`, what the runtime was granted.
-pub fn activate(lua: &Runtime, named: &Named<'_>, capabilities: &[String]) -> Result<(), String> {
+pub fn activate(lua: &Runtime, named: &Chosen, capabilities: &[String]) -> Result<(), String> {
     if named.packages.is_empty() && named.paths.is_empty() {
         return if named.layers.is_empty() {
             Ok(())
@@ -81,9 +120,8 @@ pub fn activate(lua: &Runtime, named: &Named<'_>, capabilities: &[String]) -> Re
             Err("--layer needs packages to resolve over: name them with --package or --package-path".to_owned())
         };
     }
-    let text = |paths: &[PathBuf]| paths.iter().map(|path| path.display().to_string()).collect::<Vec<_>>();
-    let locations = text(named.packages);
-    let mut layers = named.layers.to_vec();
+    let locations = named.packages.clone();
+    let mut layers = named.layers.clone();
     let mut roots = Vec::new();
     // Without --layer, every layer the named packages declare, and the packages themselves, so
     // one with no layers still brings its dependencies' exports.
@@ -95,10 +133,10 @@ pub fn activate(lua: &Runtime, named: &Named<'_>, capabilities: &[String]) -> Re
         }
     }
     if layers.is_empty() && roots.is_empty() {
-        return Err(jess::lua::package::unchosen(lua, &text(named.paths)));
+        return Err(jess::lua::package::unchosen(lua, &named.paths));
     }
     let search = jess::lua::package::Search {
-        paths: text(named.paths),
+        paths: named.paths.clone(),
         roots,
         ..Default::default()
     };
@@ -145,7 +183,8 @@ pub fn run(args: &RunArgs) -> Result<u8, String> {
         packages: &args.packages,
         layers: &args.layers,
         paths: &args.package_paths,
-    };
+    }
+    .resolve(&lua, &args.script)?;
     activate(&lua, &named, &capabilities)?;
     let result = match (&args.emit_asm, &args.disassemble) {
         (Some(output), _) => emit_assembly(&lua, &args.script, output).map(|()| 0),
