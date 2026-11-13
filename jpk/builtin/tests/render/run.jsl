@@ -2,6 +2,7 @@
 -- @jess/render's cases: blocks, vertices, and elements written where program.layout puts each
 -- member, and the standard camera's matrices.
 local camera = require '@jess/render/camera'
+local cull = require '@jess/render/cull'
 local render = require '@jess/render'
 local test = require '@jess/test'
 local expect = test.expect
@@ -187,6 +188,141 @@ suite.describe('@jess/render/camera', function()
     end
 
     expect(function() camera.with { view = shader.mat4 } end).toThrow 'view is a camera member already'
+  end)
+end)
+
+suite.describe('@jess/render/cull', function()
+  local view = camera.lookAt(vector.create(3, 2, 8), vector.create(0, 0, -4), vector.create(0, 1, 0))
+  local viewProjection = camera.multiply(camera.perspective(math.rad(60), 16 / 9, 0.5, 60), view)
+
+  -- Points scattered through a cube far wider than the view, by a generator that needs no seed.
+  local function scattered(count: number, radius: number): buffer
+    local bounds, state = buffer.create(count * 16), 12345
+    local function coordinate(): number
+      state = (state * 1103515245 + 12345) % 2147483648
+
+      return state / 2147483648 * 160 - 80
+    end
+
+    for index = 0, count - 1 do
+      buffer.writef32(bounds, index * 16, coordinate())
+      buffer.writef32(bounds, index * 16 + 4, coordinate())
+      buffer.writef32(bounds, index * 16 + 8, coordinate())
+      buffer.writef32(bounds, index * 16 + 12, radius)
+    end
+
+    return bounds
+  end
+
+  suite.it('marks exactly the points the camera puts inside clip space', function()
+    local count = 4000
+    local bounds, mask = scattered(count, 0), buffer.create(count)
+    local visible = cull.spheres(bounds, count, viewProjection, mask)
+    local inside, behind = 0, 0
+    for index = 0, count - 1 do
+      local point = vector.create(
+        buffer.readf32(bounds, index * 16),
+        buffer.readf32(bounds, index * 16 + 4),
+        buffer.readf32(bounds, index * 16 + 8)
+      )
+      -- What clip space divides by is the last row's dot with the point: behind the camera it
+      -- is negative, where dividing by it would flip a point back into the box.
+      local divisor = viewProjection[4] * point.x
+        + viewProjection[8] * point.y
+        + viewProjection[12] * point.z
+        + viewProjection[16]
+      local clip = camera.transform(viewProjection, point)
+      local seen = divisor > 0
+        and math.abs(clip.x) <= 1
+        and math.abs(clip.y) <= 1
+        and clip.z >= 0
+        and clip.z <= 1
+      behind += if divisor <= 0 then 1 else 0
+      inside += if seen then 1 else 0
+      expect(buffer.readu8(mask, index)).toBe(if seen then 1 else 0)
+    end
+
+    expect(visible).toBe(inside)
+    expect(inside > 50 and inside < count / 2).toBe(true)
+    expect(behind > 500).toBe(true)
+  end)
+
+  suite.it('keeps a sphere that only reaches into the view, and writes from an offset', function()
+    local count = 4000
+    local points, spheres = scattered(count, 0), scattered(count, 6)
+    local narrow, wide = buffer.create(count), buffer.create(count + 8)
+    local few = cull.spheres(points, count, viewProjection, narrow)
+    local more = cull.spheres(spheres, count, viewProjection, wide, 8)
+    expect(more > few).toBe(true)
+    for index = 0, count - 1 do
+      -- A point the view holds is the centre of a sphere it holds.
+      expect(buffer.readu8(wide, index + 8) >= buffer.readu8(narrow, index)).toBe(true)
+    end
+
+    expect(buffer.readu32(wide, 0) + buffer.readu32(wide, 4)).toBe(0)
+    expect(cull.spheres(spheres, 0, viewProjection, wide)).toBe(0)
+  end)
+
+  -- One sphere of radius 0.5, by where its centre is.
+  local function seen(matrix: camera.Matrix, center: vector): number
+    local bounds, mask = buffer.create(16), buffer.create(1)
+    buffer.writef32(bounds, 0, center.x)
+    buffer.writef32(bounds, 4, center.y)
+    buffer.writef32(bounds, 8, center.z)
+    buffer.writef32(bounds, 12, 0.5)
+
+    return cull.spheres(bounds, 1, matrix, mask)
+  end
+
+  suite.it('keeps what reaches across each of the six planes, and nothing past them', function()
+    -- A box from -2 to 2 across, -1 to 1 up, and 1 to 10 ahead of a camera looking down -Z:
+    -- each plane is one coordinate, so a sphere 0.4 outside it reaches in and one 0.6 out does not.
+    local box = camera.orthographic(-2, 2, -1, 1, 1, 10)
+    local planes = {
+      { name = 'left', inside = vector.create(-2.4, 0, -5), outside = vector.create(-2.6, 0, -5) },
+      { name = 'right', inside = vector.create(2.4, 0, -5), outside = vector.create(2.6, 0, -5) },
+      { name = 'bottom', inside = vector.create(0, -1.4, -5), outside = vector.create(0, -1.6, -5) },
+      { name = 'top', inside = vector.create(0, 1.4, -5), outside = vector.create(0, 1.6, -5) },
+      { name = 'near', inside = vector.create(0, 0, -0.6), outside = vector.create(0, 0, -0.4) },
+      { name = 'far', inside = vector.create(0, 0, -10.4), outside = vector.create(0, 0, -10.6) },
+    }
+
+    for _, plane in planes do
+      expect({ plane.name, seen(box, plane.inside), seen(box, plane.outside) }).toEqual { plane.name, 1, 0 }
+    end
+
+    -- In perspective the side planes meet at the eye, so only the near plane keeps out what is
+    -- ahead of the camera and closer than it: near is 2 here.
+    local lens = camera.perspective(math.rad(90), 1, 2, 50)
+    expect({ seen(lens, vector.create(0, 0, -1.4)), seen(lens, vector.create(0, 0, -1.6)) }).toEqual { 0, 1 }
+    expect({ seen(lens, vector.create(0, 0, -50.4)), seen(lens, vector.create(0, 0, -50.6)) }).toEqual { 1, 0 }
+    -- At 45 degrees a side plane is 0.5 from a centre 0.5 * sqrt(2) beyond it: 20 ahead, that is
+    -- x = 20.707, and the planes are unit length or this boundary would sit elsewhere.
+    expect({ seen(lens, vector.create(20.6, 0, -20)), seen(lens, vector.create(20.8, 0, -20)) }).toEqual { 1, 0 }
+  end)
+
+  suite.it('treats a far plane that is nowhere as holding everything', function()
+    -- Depth that never reaches 1: the far plane's row is the last row, and has no direction.
+    local focal = 1 / math.tan(math.rad(30))
+    local endless = { focal, 0, 0, 0, 0, focal, 0, 0, 0, 0, -1, -1, 0, 0, -0.1, 0 }
+    expect({ seen(endless, vector.create(0, 0, -1e6)), seen(endless, vector.create(0, 0, 10)) }).toEqual { 1, 0 }
+  end)
+
+  suite.it('refuses what its buffers do not hold', function()
+    local bounds, mask = buffer.create(32), buffer.create(2)
+    expect(function() cull.spheres(bounds, 3, viewProjection, mask) end).toThrow(
+      '3 spheres of 16 bytes run past the 32 given'
+    )
+    expect(function() cull.spheres(bounds, 2, viewProjection, mask, 1) end).toThrow(
+      '2 bytes from 1 run past a mask of 2'
+    )
+    expect(function() cull.spheres(bounds, 2, { 1, 0, 0 }, mask) end).toThrow('a matrix is 16 numbers, not 3')
+    expect(function() cull.spheres(bounds, 1.5, viewProjection, mask) end).toThrow(
+      'a count is a whole number, not 1.5'
+    )
+    expect(function() cull.spheres(bounds, 1, viewProjection, mask, 0.5) end).toThrow(
+      'a mask offset is a whole number, not 0.5'
+    )
   end)
 end)
 

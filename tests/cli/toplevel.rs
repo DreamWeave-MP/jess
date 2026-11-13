@@ -738,3 +738,38 @@ fn a_script_run_as_a_program_is_trusted_and_jess_run_is_not() {
 
     fs::remove_dir_all(root).unwrap();
 }
+
+/// The binary carries the guide: `jess docs` lists its pages, prints one, and says which page a
+/// near miss meant.
+#[test]
+fn docs_prints_the_guide_the_binary_carries() {
+    let list = jess().arg("docs").output().unwrap();
+    assert!(list.status.success(), "{}", String::from_utf8_lossy(&list.stderr));
+    let listed = String::from_utf8_lossy(&list.stdout).into_owned();
+    for page in ["scripting/applications", "cookbook/worker", "reference/manifest", "cli/run"] {
+        assert!(listed.lines().any(|line| line == page), "{page} is not listed:\n{listed}");
+    }
+    assert!(
+        !listed.lines().any(|line| line == "api/gpu"),
+        "the API reference is in the types"
+    );
+
+    let page = jess().args(["docs", "scripting/applications"]).output().unwrap();
+    assert!(page.status.success(), "{}", String::from_utf8_lossy(&page.stderr));
+    let text = String::from_utf8_lossy(&page.stdout).into_owned();
+    assert!(text.starts_with("# Applications\n"), "{text}");
+    assert!(text.contains("kind = \"application\""), "the manifest an application needs");
+    assert!(
+        !text.contains("@/docs/") && !text.contains("{{ "),
+        "nothing only the site's generator reads"
+    );
+
+    let missed = jess().args(["docs", "applications"]).output().unwrap();
+    assert!(!missed.status.success());
+    assert!(
+        String::from_utf8_lossy(&missed.stderr)
+            .contains("no page called applications: did you mean scripting/applications?"),
+        "{}",
+        String::from_utf8_lossy(&missed.stderr)
+    );
+}

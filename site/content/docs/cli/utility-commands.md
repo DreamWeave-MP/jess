@@ -6,7 +6,7 @@ extra:
   kind: reference
 ---
 
-The commands that run no Luau and open no package: they write things for your editor and your shell. They take the [global options](@/docs/cli/global-options.md), but only `init`, `luau-types`, and `man --output` print a document that `--format` shapes.
+The commands that run no Luau and open no package: they write things for your editor and your shell. They take the [global options](@/docs/cli/global-options.md), but only `init`, `luau-types`, and `man --output` print a document that `--format` shapes; `docs` prints the guide.
 
 ## init
 
@@ -108,6 +108,24 @@ walker: stopped
 ```
 
 `src/main.jsl` is the target's entry, run once with the command line's arguments. `src/app.jsl` is the managed module the manifest names: it opens a window, shows a plan that draws one triangle, and returns the handlers the host calls, `startup` (which spawns a worker and sends it a name), `update` (which changes the triangle's color every frame and prints the worker's answer when it comes), `shutdown`, and one for the `jess.window` event, which exits when the window closes. `--trusted` grants what the target declares, `worker.spawn` among it; `--frames 600` stops after that many frames. It needs a display and a GPU adapter. [Applications](@/docs/scripting/applications.md) is the guide to all of it.
+
+## docs
+
+{{ api_signature(value="jess docs [PAGE]") }}
+
+Prints the guide this jess carries, for a machine with no route to the site: every page under Getting Started, Scripting, the cookbook, the CLI, the reference, and Contributing, as it was when the binary was built. Without a page it lists them, each with its description; with one, it prints that page as Markdown, each link to another page of the guide rewritten as the command that prints it, and code left exactly as written.
+
+```sh
+jess docs
+jess docs scripting/applications
+jess docs cookbook/worker
+```
+
+```text
+error: no page called applications: did you mean scripting/applications?
+```
+
+The API reference isn't among the pages, and a link to it says so. It is generated from jess's source documentation, which `jess luau-types <folder>` (or `jess init`) writes beside the types: jess's own in `<folder>/jess.d.jsl`, and each module's with its stub under `<folder>/jess` and `<folder>/dream`. That is where to read it offline. `--format` doesn't shape what `docs` prints: it is prose.
 
 ## luau-types
 

@@ -26,6 +26,7 @@ local Commands = {
   { args = { 'uninstall' }, page = 'install' },
   { args = { 'init' }, page = 'utility-commands' },
   { args = { 'luau-types' }, page = 'utility-commands' },
+  { args = { 'docs' }, page = 'utility-commands' },
   { args = { 'completions' }, page = 'utility-commands' },
   { args = { 'man' }, page = 'utility-commands' },
 }

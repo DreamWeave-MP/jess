@@ -65,6 +65,7 @@ pub const FILES: &[(&str, &str)] = &[
         "src/render/camera.jsl",
         include_str!("../../jpk/builtin/src/render/camera.jsl"),
     ),
+    ("src/render/cull.jsl", include_str!("../../jpk/builtin/src/render/cull.jsl")),
     ("src/render/init.jsl", include_str!("../../jpk/builtin/src/render/init.jsl")),
     ("src/sse/init.jsl", include_str!("../../jpk/builtin/src/sse/init.jsl")),
     ("src/style/check.jsl", include_str!("../../jpk/builtin/src/style/check.jsl")),

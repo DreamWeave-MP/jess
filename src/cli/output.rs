@@ -29,6 +29,12 @@ impl Stdout {
     }
 }
 
+/// Stdout for a command that writes prose, ending quietly as [`print`]'s does when its reader
+/// goes away.
+pub fn stdout() -> impl Write {
+    Stdout::new()
+}
+
 fn end_on_broken_pipe<T>(result: io::Result<T>) -> io::Result<T> {
     if matches!(&result, Err(error) if error.kind() == io::ErrorKind::BrokenPipe) {
         std::process::exit(1);

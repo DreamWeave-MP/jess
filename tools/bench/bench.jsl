@@ -44,6 +44,7 @@ local Canaries: { Canary } = {
   require './canaries/audio-churn' :: Canary,
   require './canaries/audio-render' :: Canary,
   require './canaries/buffer' :: Canary,
+  require './canaries/cull' :: Canary,
   require './canaries/shared-buffer-read' :: Canary,
   require './canaries/ordinary-buffer-read' :: Canary,
   require './canaries/math' :: Canary,
