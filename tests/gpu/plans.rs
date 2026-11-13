@@ -7,8 +7,8 @@ use std::sync::Arc;
 use super::gpu;
 
 use jess::gpu::{
-    Binding, Buffer, BufferUsage, ColorState, Compare, ComputePipeline, DepthState, DrawSet, DrawSetDesc, DrawSets, Gpu,
-    Import, PipelineState, Plan, PlanBinding, PlanGroup, RenderPipeline, TextureDesc, TextureUsage, Work,
+    Binding, Buffer, BufferUsage, ColorState, Compare, ComputePipeline, DepthState, DrawRange, DrawSet, DrawSetDesc,
+    DrawSets, Gpu, Import, PipelineState, Plan, PlanBinding, PlanGroup, RenderPipeline, TextureDesc, TextureUsage, Work,
 };
 use jess::render::{
     ClearValue, Extent, LoadOp, Pass, PassKind, PassMetadata, PassOutput, ReadUsage, RenderGraph, StoreOp, TargetSize,
@@ -126,8 +126,7 @@ pub(super) fn rectangle(
         instances: None,
         indices: None,
         indirect: None,
-        count: 6,
-        instance_count: 1,
+        range: DrawRange::new(6),
         tags: vec![tag.to_owned()],
     })
     .unwrap();

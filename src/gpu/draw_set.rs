@@ -3,15 +3,48 @@
 //!
 //! A draw set binds its own material and draw groups; its pass group is the pass's, so one camera
 //! block serves every set a pass draws. A draw set is checked once, when it is made, as a pass
-//! checks a draw. What changes afterwards (how many vertices and instances, whether it is drawn at
-//! all) changes through atomics, so whatever draws the frame never waits on whoever changes it.
+//! checks a draw. What changes afterwards is its range (how many vertices and instances, and
+//! where in its buffers they start), which changes whole, so a frame never draws half of one
+//! change, and whether it is drawn at all.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use super::pass::{buffer_problem, group_problem};
 use super::{BindGroup, Buffer, Draw, GpuError, IndexFormat, RenderPipeline};
 use crate::shader::Frequency;
+
+/// How much of its buffers a draw set draws, and from where: what changes in place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DrawRange {
+    /// How many vertices, or indices, to draw.
+    pub count: u32,
+    /// How many instances; none draws nothing.
+    pub instance_count: u32,
+    /// The first vertex drawn, or the first index of an indexed draw.
+    pub first: u32,
+    /// What is added to every index before it names a vertex; an indexed draw's only.
+    pub base_vertex: i32,
+    /// How many bytes into its vertex buffer its first vertex is: a multiple of 4.
+    pub vertices_offset: u64,
+    /// How many bytes into its instance buffer its first instance is: a multiple of 4.
+    pub instances_offset: u64,
+}
+
+impl DrawRange {
+    /// `count` vertices, or indices, of one instance, from the start of every buffer.
+    #[must_use]
+    pub fn new(count: u32) -> DrawRange {
+        DrawRange {
+            count,
+            instance_count: 1,
+            first: 0,
+            base_vertex: 0,
+            vertices_offset: 0,
+            instances_offset: 0,
+        }
+    }
+}
 
 /// What a draw set draws.
 #[derive(Clone, Debug)]
@@ -28,10 +61,8 @@ pub struct DrawSetDesc {
     pub instances: Option<Arc<Buffer>>,
     /// The indices of the vertices to draw, if the draw is indexed.
     pub indices: Option<(Arc<Buffer>, IndexFormat)>,
-    /// How many vertices, or indices, to draw.
-    pub count: u32,
-    /// How many instances.
-    pub instance_count: u32,
+    /// How much of them it draws, and from where.
+    pub range: DrawRange,
     /// Where the counts come from instead, written by the GPU, as a [`Draw`]'s `indirect` says.
     pub indirect: Option<(Arc<Buffer>, u64)>,
     /// What the passes that take it look for.
@@ -49,8 +80,7 @@ pub struct DrawSet {
     indices: Option<(Arc<Buffer>, IndexFormat)>,
     indirect: Option<(Arc<Buffer>, u64)>,
     tags: Box<[String]>,
-    count: AtomicU32,
-    instance_count: AtomicU32,
+    range: Mutex<DrawRange>,
     visible: AtomicBool,
 }
 
@@ -61,7 +91,7 @@ impl DrawSet {
     ///
     /// What a pass refuses in a draw: a material or draw group missing where the program binds
     /// one, given where it doesn't, or laid out for another program; a buffer missing, unneeded,
-    /// of the wrong usage, or too small for the count; no instances.
+    /// of the wrong usage, or too small for the range drawn from it.
     pub fn new(desc: DrawSetDesc) -> Result<DrawSet, GpuError> {
         let set = DrawSet {
             pipeline: desc.pipeline,
@@ -72,47 +102,47 @@ impl DrawSet {
             indices: desc.indices,
             indirect: desc.indirect,
             tags: desc.tags.into_boxed_slice(),
-            count: AtomicU32::new(desc.count),
-            instance_count: AtomicU32::new(desc.instance_count),
+            range: Mutex::new(desc.range),
             visible: AtomicBool::new(true),
         };
-        set.check(desc.count, desc.instance_count)?;
+        set.check(desc.range)?;
         Ok(set)
     }
 
-    /// Whether `count` vertices, or indices, of `instance_count` instances of it can be drawn:
-    /// what [`DrawSet::set_count`] and [`DrawSet::set_instance_count`] check.
+    /// Whether it can draw `range`: what [`DrawSet::set_range`] checks.
     ///
     /// # Errors
     ///
-    /// As those.
-    pub fn check(&self, count: u32, instance_count: u32) -> Result<(), GpuError> {
-        let draw = Draw {
-            count,
-            instance_count,
-            ..self.draw(None)
-        };
-        let problem = if instance_count == 0 && self.indirect.is_none() {
-            Some("at least one instance".to_owned())
-        } else {
-            group_problem(&draw, &[Frequency::Material, Frequency::Draw]).or_else(|| buffer_problem(&draw))
-        };
-        problem.map_or(Ok(()), |problem| {
-            Err(GpuError::Invalid(format!("the draw set is invalid: {problem}")))
-        })
+    /// As that.
+    pub fn check(&self, range: DrawRange) -> Result<(), GpuError> {
+        let draw = self.drawing(None, range);
+        group_problem(&draw, &[Frequency::Material, Frequency::Draw])
+            .or_else(|| buffer_problem(&draw))
+            .map_or(Ok(()), |problem| {
+                Err(GpuError::Invalid(format!("the draw set is invalid: {problem}")))
+            })
     }
 
     /// The draw it is now, in a pass whose pass group is `pass`.
     #[must_use]
     pub fn draw<'a>(&'a self, pass: Option<&'a BindGroup>) -> Draw<'a> {
+        self.drawing(pass, self.range())
+    }
+
+    /// The draw of `range` of it, in a pass whose pass group is `pass`.
+    fn drawing<'a>(&'a self, pass: Option<&'a BindGroup>, range: DrawRange) -> Draw<'a> {
         Draw {
             pipeline: &self.pipeline,
             groups: [pass, self.material.as_deref(), self.draw.as_deref()],
             vertices: self.vertices.as_deref(),
             instances: self.instances.as_deref(),
             indices: self.indices.as_ref().map(|(buffer, format)| (&**buffer, *format)),
-            count: self.count(),
-            instance_count: self.instance_count(),
+            count: range.count,
+            instance_count: range.instance_count,
+            first: range.first,
+            base_vertex: range.base_vertex,
+            vertices_offset: range.vertices_offset,
+            instances_offset: range.instances_offset,
             indirect: self.indirect.as_ref().map(|(buffer, offset)| (&**buffer, *offset)),
         }
     }
@@ -135,10 +165,29 @@ impl DrawSet {
         self.tags.iter().any(|tag| tags.contains(tag))
     }
 
+    /// How much of its buffers it draws, and from where.
+    #[must_use]
+    pub fn range(&self) -> DrawRange {
+        *self.range.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Draws `range` from the next frame on: every part of it at once.
+    ///
+    /// # Errors
+    ///
+    /// A range that runs past its vertex, instance, or index buffer, an offset that isn't a
+    /// multiple of 4 inside its buffer, a base vertex without indices, or a first vertex or base
+    /// vertex on an indirect draw, whose arguments hold them.
+    pub fn set_range(&self, range: DrawRange) -> Result<(), GpuError> {
+        self.check(range)?;
+        *self.range.lock().unwrap_or_else(PoisonError::into_inner) = range;
+        Ok(())
+    }
+
     /// How many vertices, or indices, it draws.
     #[must_use]
     pub fn count(&self) -> u32 {
-        self.count.load(Ordering::Relaxed)
+        self.range().count
     }
 
     /// Draws `count` vertices, or indices, from the next frame on.
@@ -147,26 +196,25 @@ impl DrawSet {
     ///
     /// A count that runs past its vertex or index buffer.
     pub fn set_count(&self, count: u32) -> Result<(), GpuError> {
-        self.check(count, self.instance_count())?;
-        self.count.store(count, Ordering::Relaxed);
-        Ok(())
+        self.set_range(DrawRange { count, ..self.range() })
     }
 
     /// How many instances it draws.
     #[must_use]
     pub fn instance_count(&self) -> u32 {
-        self.instance_count.load(Ordering::Relaxed)
+        self.range().instance_count
     }
 
-    /// Draws `instance_count` instances from the next frame on.
+    /// Draws `instance_count` instances from the next frame on; none draws nothing.
     ///
     /// # Errors
     ///
-    /// None, or more than its instance buffer holds.
+    /// More than its instance buffer holds.
     pub fn set_instance_count(&self, instance_count: u32) -> Result<(), GpuError> {
-        self.check(self.count(), instance_count)?;
-        self.instance_count.store(instance_count, Ordering::Relaxed);
-        Ok(())
+        self.set_range(DrawRange {
+            instance_count,
+            ..self.range()
+        })
     }
 
     /// Whether the passes that take it draw it.

@@ -576,13 +576,202 @@ fn a_script_keeps_draw_sets() {
             "set.count = 7",
             "GpuDrawSet.count: the draw set is invalid: 7 vertices of 8 bytes run past its 48-byte vertex buffer",
         ),
-        (
-            "set.instanceCount = 0",
-            "GpuDrawSet.instanceCount: the draw set is invalid: at least one instance",
-        ),
         ("set.visible = 1", "GpuDrawSet.visible: visible is a boolean, not 1"),
     ] {
         let error = runtime.exec(&format!("{prelude}\n{script}")).unwrap_err().to_string();
+        assert!(error.contains(expected), "{script}: {error}");
+    }
+}
+
+/// What `a_script_draws_ranges_of_shared_buffers` runs, and what its mistakes start from.
+#[cfg(feature = "gpu")]
+const RANGES: &str = r"
+            local shader = require('@jess/shader')
+            local device = jess.gpu.device()
+            local program = shader.program({
+              attributes = { position = shader.vec2 },
+              instance = { offset = shader.vec2, tint = shader.vec4 },
+              vertex = function(input)
+                return {
+                  position = shader.vec4(input.attributes.position + input.instance.offset, 0, 1),
+                  tint = input.instance.tint,
+                }
+              end,
+              fragment = function(input) return input.tint end,
+            })
+            local pipeline = device:pipeline(program, { colors = { 'rgba8Unorm' } })
+
+            local function floats(usage: string, values: { number })
+              local bytes = buffer.create(#values * 4)
+              for index, value in values do
+                buffer.writef32(bytes, (index - 1) * 4, value)
+              end
+              local made = device:buffer(#values * 4, usage)
+              made:write(0, bytes)
+              return made
+            end
+
+            -- A bar as tall as the target, then a short one: two meshes in one vertex buffer, each
+            -- indexed from its own first vertex, in one index buffer.
+            local vertices = floats('vertex', {
+              -0.5, -1, 0.5, -1, 0.5, 1, -0.5, 1,
+              -0.5, -0.25, 0.5, -0.25, 0.5, 0.25, -0.5, 0.25,
+            })
+            local listed = buffer.create(48)
+            for index, vertex in { 0, 1, 2, 0, 2, 3, 0, 1, 2, 0, 2, 3 } do
+              buffer.writeu32(listed, (index - 1) * 4, vertex)
+            end
+            local indices = device:buffer(48, 'index')
+            indices:write(0, listed)
+            -- Two groups of one instance: white on the left, red on the right.
+            local instances = floats('vertex', { -0.5, 0, 1, 1, 1, 1, 0.5, 0, 1, 0, 0, 1 })
+            assert(program.layout.instance.stride == 24)
+
+            local tall = device:drawSet({
+              pipeline = pipeline,
+              vertices = vertices,
+              indices = indices,
+              instances = instances,
+              count = 6,
+              tags = { 'scene' },
+            })
+            local short = device:drawSet({
+              pipeline = pipeline,
+              vertices = vertices,
+              indices = indices,
+              instances = instances,
+              count = 6,
+              first = 6,
+              baseVertex = 4,
+              instancesOffset = 24,
+              tags = { 'scene' },
+            })
+            local plan = device:plan({
+              name = 'ranges',
+              viewport = { width = 16, height = 16 },
+              targets = { { name = 'color', format = 'rgba8Unorm', kept = true } },
+              passes = {
+                { name = 'scene', kind = 'draw', tags = { 'scene' }, colors = { { target = 'color', clear = { 0, 0, 0, 1 } } } },
+              },
+            })
+
+            local function drawn(): string
+              device:commit()
+              plan:run()
+              local pixels = plan:read('color')
+              local seen = {}
+              for _, at in { { 4, 8 }, { 4, 1 }, { 12, 8 }, { 12, 1 } } do
+                local start = (at[2] * 16 + at[1]) * 4
+                local red, green = buffer.readu8(pixels, start), buffer.readu8(pixels, start + 1)
+                table.insert(seen, if red == 0 then 'black' elseif green == 0 then 'red' else 'white')
+              end
+              return table.concat(seen, ' ')
+            end
+
+            assert(drawn() == 'white white red black', drawn())
+            assert(short.first == 6 and short.baseVertex == 4 and short.instancesOffset == 24 and short.verticesOffset == 0)
+
+";
+
+/// What `RANGES` goes on to do with its sets.
+#[cfg(feature = "gpu")]
+const RANGE_CHANGES: &str = r"
+            -- The same set draws the other mesh from the next commit on: nothing is made again.
+            local made = device.made
+            short:change({ first = 0, baseVertex = 0 })
+            assert(short.first == 6, 'not yet committed')
+            assert(device.room.changes == 65536 - 1, 'one change')
+            assert(drawn() == 'white white red red', drawn())
+            assert(short.first == 0 and short.baseVertex == 0)
+            short.baseVertex = 4
+            assert(drawn() == 'white white red black', drawn())
+            short.verticesOffset = 32
+            short.baseVertex = 0
+            assert(drawn() == 'white white red black', drawn())
+            assert(device.made.buffers == made.buffers and device.made.pipelines == made.pipelines)
+
+            -- Changes made between two commits add up: the count asked for is the one `first` is checked with.
+            tall.count = 3
+            tall.first = 9
+            assert(tall.count == 6 and tall.first == 0)
+            device:commit()
+            assert(tall.count == 3 and tall.first == 9)
+            tall:change({ count = 6, first = 0 })
+
+            -- No instances draw nothing, as no vertices do.
+            short.instanceCount = 0
+            assert(drawn() == 'white white black black', drawn())
+            short.instanceCount = 1
+            tall.count = 0
+            assert(drawn() == 'black black red black', drawn())
+";
+
+/// Two meshes in one vertex buffer and one index buffer, two groups of instances in one instance
+/// buffer, and two draw sets that each draw one mesh with one group; a set's range changes what it
+/// draws without anything being made again, and a range its buffers don't hold is refused.
+#[cfg(feature = "gpu")]
+#[test]
+fn a_script_draws_ranges_of_shared_buffers() {
+    let Some(runtime) = gpu_runtime("a_script_draws_ranges_of_shared_buffers") else {
+        return;
+    };
+    runtime
+        .exec(&format!("{RANGES}{RANGE_CHANGES}"))
+        .unwrap_or_else(|error| panic!("{error}"));
+
+    for (script, expected) in [
+        (
+            "short.first = 7",
+            "GpuDrawSet.first: the draw set is invalid: 6 indices of 4 bytes from index 7 run past its 48-byte index \
+             buffer",
+        ),
+        (
+            "short:change({ count = 12, first = 6 })",
+            "GpuDrawSet:change: the draw set is invalid: 12 indices of 4 bytes from index 6 run past its 48-byte index \
+             buffer",
+        ),
+        (
+            "short.instancesOffset = 48",
+            "GpuDrawSet.instancesOffset: the draw set is invalid: its instances start 48 bytes into its 48-byte \
+             instance buffer: expected a multiple of 4 inside it",
+        ),
+        (
+            "short.instanceCount = 2",
+            "GpuDrawSet.instanceCount: the draw set is invalid: 2 instances of 24 bytes, 24 bytes in, run past its \
+             48-byte instance buffer",
+        ),
+        (
+            "short.verticesOffset = 6",
+            "GpuDrawSet.verticesOffset: the draw set is invalid: its vertices start 6 bytes into its 64-byte vertex \
+             buffer: expected a multiple of 4 inside it",
+        ),
+        (
+            "short.baseVertex = 0.5",
+            "GpuDrawSet.baseVertex: the base vertex is a whole number from -2147483648 to 2147483647, not 0.5",
+        ),
+        (
+            "short.first = -1",
+            "GpuDrawSet.first: the first vertex is a whole number from 0 to 4294967295, not -1",
+        ),
+        ("short:change(6)", "GpuDrawSet:change takes a table, not number"),
+        (
+            "short:change({ visible = false })",
+            "unknown GpuDrawSet:change option 'visible'",
+        ),
+        (
+            "device:drawSet({ pipeline = pipeline, vertices = vertices, instances = instances, count = 3, \
+             baseVertex = 4 })",
+            "GpuDevice:drawSet: the draw set is invalid: its base vertex is added to indices, and the draw has none",
+        ),
+        (
+            "device:render({ colors = { { texture = device:texture({ width = 16, height = 16, format = 'rgba8Unorm', \
+             usage = 'target' }), clear = { 0, 0, 0, 1 } } }, draws = { { pipeline = pipeline, vertices = vertices, \
+             instances = instances, count = 6, first = 3 } } })",
+            "GpuDevice:render: draw 0 is invalid: 6 vertices of 8 bytes from vertex 3 run past its 64-byte vertex \
+             buffer",
+        ),
+    ] {
+        let error = runtime.exec(&format!("{RANGES}\n{script}")).unwrap_err().to_string();
         assert!(error.contains(expected), "{script}: {error}");
     }
 }

@@ -1,6 +1,7 @@
 //! Draw sets from Luau: draws kept on the device, which every plan's draw passes take by their
 //! tags, frame after frame, until they are removed.
 
+use std::cell::Cell;
 use std::sync::Arc;
 
 use l3i::bind::{Call, StackResults};
@@ -10,10 +11,10 @@ use l3i::userdata::{Owned, Userdata, receiver};
 
 use super::device::LuaGpuDevice;
 use super::pipeline::{
-    Pipeline, buffer_field, count_field, gpu_error, groups, indirect_field, options, pipeline_field, table,
+    Pipeline, base_vertex, buffer_field, gpu_error, groups, indirect_field, options, pipeline_field, range_fields, table,
 };
 use super::resources::{choice, shown, whole};
-use crate::gpu::{DrawSet, DrawSetDesc, DrawSets, Gpu, GpuError, IndexFormat};
+use crate::gpu::{DrawRange, DrawSet, DrawSetDesc, DrawSets, Gpu, GpuError, IndexFormat};
 use crate::lua::{error, kind};
 
 /// A draw kept on a device, and the collection it was made into, which `add` and `remove` put it
@@ -24,6 +25,20 @@ pub struct LuaGpuDrawSet {
     sets: Arc<DrawSets>,
     /// The device whose next commit applies what the script changes about it.
     gpu: Arc<Gpu>,
+    /// The range the script last asked for, which the next commit makes the set's: what a
+    /// change to part of it is checked with, so changes made between two commits add up.
+    asked: Cell<DrawRange>,
+}
+
+impl LuaGpuDrawSet {
+    /// Asks for `range`, for `function`: checked now, and drawn from the next commit on.
+    fn ask(&self, function: &str, range: DrawRange) -> l3i::Result<()> {
+        self.set.check(range).map_err(|problem| gpu_error(function, &problem))?;
+        let set = Arc::clone(&self.set);
+        later(&self.gpu, function, move || set.set_range(range))?;
+        self.asked.set(range);
+        Ok(())
+    }
 }
 
 // SAFETY: plain Rust state; the destructor never touches the Lua API.
@@ -65,23 +80,37 @@ pub fn collection(
         .ok_or_else(|| error(format!("{function}: {what} is a GpuDrawSets, not {}", kind(view))))
 }
 
-const DRAW_SET_KEYS: [&str; 13] = [
+const DRAW_SET_KEYS: [&str; 17] = [
+    "baseVertex",
     "count",
     "draw",
+    "first",
     "indexFormat",
     "indices",
     "indirect",
     "indirectOffset",
     "instanceCount",
     "instances",
+    "instancesOffset",
     "material",
     "pipeline",
     "sets",
     "tags",
     "vertices",
+    "verticesOffset",
+];
+
+const RANGE_KEYS: [&str; 6] = [
+    "baseVertex",
+    "count",
+    "first",
+    "instanceCount",
+    "instancesOffset",
+    "verticesOffset",
 ];
 
 /// `device:drawSet { pipeline, material, draw, vertices, instances, indices, indexFormat, count,
+/// first, baseVertex, verticesOffset, instancesOffset,
 /// instanceCount, tags }`: a draw set, drawn from the next frame on.
 fn draw_set(this: &LuaGpuDevice, call: &Call<'_>, desc: ValueView<'_>) -> l3i::Result<Owned<LuaGpuDrawSet>> {
     const FUNCTION: &str = "GpuDevice:drawSet";
@@ -122,18 +151,13 @@ fn draw_set(this: &LuaGpuDevice, call: &Call<'_>, desc: ValueView<'_>) -> l3i::R
             vertices: buffer_field(frame, FUNCTION, &fields, "vertices")?,
             instances: buffer_field(frame, FUNCTION, &fields, "instances")?,
             indices: indices.map(|buffer| (buffer, index_format)),
-            count: count_field(frame, FUNCTION, &fields, indirect.is_some())?,
-            instance_count: whole(
-                FUNCTION,
-                "the instance count",
-                Some(fields.raw_get(frame, "instanceCount")?),
-                Some(1),
-            )?,
+            range: range_fields(frame, FUNCTION, &fields, indirect.as_ref().map(|_| DrawRange::new(0)))?,
             indirect,
             tags,
         };
         Ok((desc, sets))
     })?;
+    let asked = Cell::new(desc.range);
     let set = Arc::new(DrawSet::new(desc).map_err(|problem| gpu_error(FUNCTION, &problem))?);
     let (adding, into) = (Arc::clone(&set), Arc::clone(&sets));
     later(&this.gpu, FUNCTION, move || {
@@ -144,7 +168,103 @@ fn draw_set(this: &LuaGpuDevice, call: &Call<'_>, desc: ValueView<'_>) -> l3i::R
         set,
         sets,
         gpu: this.gpu.clone(),
+        asked,
     }))
+}
+
+/// `set:change { count, instanceCount, first, baseVertex, verticesOffset, instancesOffset }`:
+/// those of its range the table names, changed together as one change.
+fn change(this: &LuaGpuDrawSet, call: &Call<'_>, range: ValueView<'_>) -> l3i::Result<()> {
+    const FUNCTION: &str = "GpuDrawSet:change";
+    if !range.is_table() {
+        return Err(error(format!("{FUNCTION} takes a table, not {}", kind(range))));
+    }
+    let range = call.with_frame(|frame| {
+        let fields = options(frame, FUNCTION, "the range", range, &RANGE_KEYS)?;
+        range_fields(frame, FUNCTION, &fields, Some(this.asked.get()))
+    })?;
+    this.ask(FUNCTION, range)
+}
+
+/// Declares the members of a draw set that are whole numbers of its range, each read from what
+/// it draws now and asked for with the rest of what the script last asked.
+fn describe_range(set: &mut UserdataBuilder<'_, LuaGpuDrawSet>) {
+    /// A member: its name, what an error calls it, what it reads, and the range with it changed.
+    type Member = (
+        &'static str,
+        &'static str,
+        fn(DrawRange) -> f64,
+        fn(DrawRange, u32) -> DrawRange,
+    );
+    // Offsets come from `whole` numbers, so a Luau number holds them exactly.
+    #[allow(clippy::cast_precision_loss)]
+    const MEMBERS: [Member; 5] = [
+        (
+            "count",
+            "the count",
+            |range| f64::from(range.count),
+            |range, count| DrawRange { count, ..range },
+        ),
+        (
+            "instanceCount",
+            "the instance count",
+            |range| f64::from(range.instance_count),
+            |range, instance_count| DrawRange { instance_count, ..range },
+        ),
+        (
+            "first",
+            "the first vertex",
+            |range| f64::from(range.first),
+            |range, first| DrawRange { first, ..range },
+        ),
+        (
+            "verticesOffset",
+            "the vertices' offset",
+            |range| range.vertices_offset as f64,
+            |range, offset| DrawRange {
+                vertices_offset: u64::from(offset),
+                ..range
+            },
+        ),
+        (
+            "instancesOffset",
+            "the instances' offset",
+            |range| range.instances_offset as f64,
+            |range, offset| DrawRange {
+                instances_offset: u64::from(offset),
+                ..range
+            },
+        ),
+    ];
+    for (name, what, read, with) in MEMBERS {
+        let function = format!("GpuDrawSet.{name}");
+        set.property(
+            name,
+            move |this: &LuaGpuDrawSet| read(this.set.range()),
+            move |this: &LuaGpuDrawSet, value: ValueView<'_>| -> l3i::Result<()> {
+                let value = whole(&function, what, Some(value), None)?;
+                this.ask(&function, with(this.asked.get(), value))
+            },
+        )
+        .untyped();
+    }
+    set.property(
+        "baseVertex",
+        |this: &LuaGpuDrawSet| this.set.range().base_vertex,
+        |this: &LuaGpuDrawSet, value: ValueView<'_>| -> l3i::Result<()> {
+            const FUNCTION: &str = "GpuDrawSet.baseVertex";
+            let base_vertex = base_vertex(FUNCTION, value)?;
+            this.ask(
+                FUNCTION,
+                DrawRange {
+                    base_vertex,
+                    ..this.asked.get()
+                },
+            )
+        },
+    )
+    .untyped();
+    set.method("change", change).untyped();
 }
 
 /// Declares the device's methods that make draw sets and collections of them.
@@ -220,34 +340,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
     let mut set = d.userdata::<LuaGpuDrawSet>(LuaGpuDrawSet::NAME);
     set.tag(TagPolicy::Never)
         .doc("A draw kept on its device, which plans' draw passes take by its tags every frame.");
-    set.property(
-        "count",
-        |this: &LuaGpuDrawSet| this.set.count(),
-        |this: &LuaGpuDrawSet, count: ValueView<'_>| -> l3i::Result<()> {
-            const FUNCTION: &str = "GpuDrawSet.count";
-            let count = whole(FUNCTION, "the count", Some(count), None)?;
-            this.set
-                .check(count, this.set.instance_count())
-                .map_err(|problem| gpu_error(FUNCTION, &problem))?;
-            let set = Arc::clone(&this.set);
-            later(&this.gpu, FUNCTION, move || set.set_count(count))
-        },
-    )
-    .untyped();
-    set.property(
-        "instanceCount",
-        |this: &LuaGpuDrawSet| this.set.instance_count(),
-        |this: &LuaGpuDrawSet, count: ValueView<'_>| -> l3i::Result<()> {
-            const FUNCTION: &str = "GpuDrawSet.instanceCount";
-            let count = whole(FUNCTION, "the instance count", Some(count), None)?;
-            this.set
-                .check(this.set.count(), count)
-                .map_err(|problem| gpu_error(FUNCTION, &problem))?;
-            let set = Arc::clone(&this.set);
-            later(&this.gpu, FUNCTION, move || set.set_instance_count(count))
-        },
-    )
-    .untyped();
+    describe_range(&mut set);
     set.property(
         "visible",
         |this: &LuaGpuDrawSet| this.set.visible(),

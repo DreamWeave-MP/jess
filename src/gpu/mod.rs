@@ -39,7 +39,7 @@ pub use buffer::{Buffer, BufferUsage};
 pub use cache::PipelineStats;
 pub use commit::{BYTES, CHANGES, Room};
 pub use compute::ComputePipeline;
-pub use draw_set::{DrawSet, DrawSetDesc, DrawSets};
+pub use draw_set::{DrawRange, DrawSet, DrawSetDesc, DrawSets};
 pub use live::LiveCounts;
 pub use pass::{Draw, IndexFormat, Resolve, Target};
 pub use pipeline::{Blend, ColorState, Cull, DepthState, PipelineState, RenderPipeline, Topology};

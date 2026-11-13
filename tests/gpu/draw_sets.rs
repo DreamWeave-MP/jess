@@ -6,8 +6,8 @@ use std::sync::Arc;
 use super::gpu;
 
 use jess::gpu::{
-    BindGroup, Binding, Buffer, BufferUsage, ColorState, DrawSet, DrawSetDesc, DrawSets, Gpu, GpuError, PipelineState,
-    RenderPipeline, Target, TextureDesc, TextureUsage,
+    BindGroup, Binding, Buffer, BufferUsage, ColorState, DrawRange, DrawSet, DrawSetDesc, DrawSets, Gpu, GpuError,
+    PipelineState, RenderPipeline, Target, TextureDesc, TextureUsage,
 };
 use jess::render::{ClearValue, TextureFormat};
 use jess::shader::{DataType, Frequency, Place, PlaceRoot, ProgramBuilder, Rate, Step, Type};
@@ -75,8 +75,7 @@ fn half(gpu: &Gpu, pipeline: &Arc<RenderPipeline>, right: bool, color: [f32; 4],
         instances: None,
         indices: None,
         indirect: None,
-        count: 6,
-        instance_count: 1,
+        range: DrawRange::new(6),
         tags: vec![tag.to_owned()],
     })
     .unwrap();
@@ -162,7 +161,6 @@ fn draw_sets_are_checked_as_draws_are() {
         Err(invalid("7 vertices of 8 bytes run past its 48-byte vertex buffer")),
     );
     assert_eq!(set.count(), 6, "a refused count changes nothing");
-    assert_eq!(set.set_instance_count(0), Err(invalid("at least one instance")));
 
     let unbound = DrawSet::new(DrawSetDesc {
         pipeline,
@@ -172,12 +170,87 @@ fn draw_sets_are_checked_as_draws_are() {
         instances: None,
         indices: None,
         indirect: None,
-        count: 3,
-        instance_count: 1,
+        range: DrawRange::new(3),
         tags: Vec::new(),
     });
     assert_eq!(
         unbound.unwrap_err(),
         invalid("its program binds a material group, and the draw gives none")
+    );
+}
+
+#[test]
+fn a_draw_sets_range_changes_whole() {
+    let Some(gpu) = gpu("a_draw_sets_range_changes_whole") else {
+        return;
+    };
+    let pipeline = flat(&gpu);
+    // The left half's two triangles, then the right half's, in one vertex buffer.
+    let both = vertices(
+        &gpu,
+        &[
+            -1.0, -1.0, 0.0, -1.0, -1.0, 1.0, 0.0, -1.0, 0.0, 1.0, -1.0, 1.0, 0.0, -1.0, 1.0, -1.0, 0.0, 1.0, 1.0, -1.0,
+            1.0, 1.0, 0.0, 1.0,
+        ],
+    );
+    let set = Arc::new(
+        DrawSet::new(DrawSetDesc {
+            pipeline: pipeline.clone(),
+            material: Some(material(&gpu, &pipeline, [0.0, 1.0, 0.0, 1.0])),
+            draw: None,
+            vertices: Some(both),
+            instances: None,
+            indices: None,
+            indirect: None,
+            range: DrawRange::new(6),
+            tags: vec!["opaque".to_owned()],
+        })
+        .unwrap(),
+    );
+    let sets = DrawSets::new();
+    sets.add(&set);
+    assert_eq!(drawn(&gpu, &sets, "opaque"), (GREEN, BLACK, GREEN));
+
+    let right = DrawRange {
+        first: 6,
+        ..DrawRange::new(6)
+    };
+    set.set_range(right).unwrap();
+    assert_eq!(set.range(), right);
+    assert_eq!(
+        drawn(&gpu, &sets, "opaque"),
+        (BLACK, GREEN, BLACK),
+        "the same set, another range"
+    );
+
+    set.set_range(DrawRange {
+        vertices_offset: 48,
+        ..DrawRange::new(3)
+    })
+    .unwrap();
+    assert_eq!(
+        drawn(&gpu, &sets, "opaque"),
+        (BLACK, GREEN, BLACK),
+        "the right half's first triangle is its lower left corner"
+    );
+
+    let invalid = |message: &str| GpuError::Invalid(format!("the draw set is invalid: {message}"));
+    assert_eq!(
+        set.set_range(DrawRange {
+            first: 7,
+            ..DrawRange::new(6)
+        }),
+        Err(invalid(
+            "6 vertices of 8 bytes from vertex 7 run past its 96-byte vertex buffer"
+        )),
+    );
+    assert_eq!(set.range().vertices_offset, 48, "a refused range changes nothing");
+
+    set.set_range(right).unwrap();
+    set.set_instance_count(0).unwrap();
+    assert_eq!(
+        drawn(&gpu, &sets, "opaque"),
+        (BLACK, BLACK, BLACK),
+        "no instances draw nothing"
     );
 }
