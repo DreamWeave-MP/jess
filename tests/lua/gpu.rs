@@ -218,6 +218,32 @@ fn resource_errors_name_the_mistake() {
     }
 }
 
+/// What a window is described as is checked before anything opens, and the displays are the
+/// window system's: asking for them needs `gpu.window`, as opening a window does.
+#[cfg(feature = "window")]
+#[test]
+fn a_window_is_checked_before_it_opens() {
+    let Some(runtime) = gpu_runtime("a_window_is_checked_before_it_opens") else {
+        return;
+    };
+    let denied = runtime.exec("jess.gpu.monitors()").unwrap_err().to_string();
+    assert!(
+        denied.contains("jess.gpu.monitors") && denied.contains("gpu.window"),
+        "{denied}"
+    );
+
+    let capabilities = ["gpu.device".to_owned(), "gpu.window".to_owned()];
+    let runtime = jess::lua::runtime_with_capabilities(jess::lua::Options::default(), &capabilities).unwrap();
+    let refusal = runtime
+        .exec("jess.gpu.window(jess.gpu.device(), { title = 'jess mode test', fullscreen = 'huge' })")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refusal.contains("jess.gpu.window: fullscreen is 'windowed', 'borderless', or 'exclusive', not \"huge\""),
+        "{refusal}"
+    );
+}
+
 /// A tinted, textured triangle drawn from Luau over a cleared target: a render pipeline, a
 /// material bind group by the binding numbers the program's layout reports, a vertex buffer, a
 /// depth target, and the pixels read back.
@@ -1262,14 +1288,6 @@ fn a_script_shows_a_plan_in_a_window() {
     let runtime = jess::lua::runtime_with_capabilities(jess::lua::Options::default(), &capabilities).unwrap();
     let refusal = runtime.exec(WINDOW).unwrap_err().to_string();
     assert!(refusal.contains("shown in another window"), "{refusal}");
-    let refusal = runtime
-        .exec("jess.gpu.window(jess.gpu.device(), { title = 'jess mode test', fullscreen = 'huge' })")
-        .unwrap_err()
-        .to_string();
-    assert!(
-        refusal.contains("jess.gpu.window: fullscreen is 'windowed', 'borderless', or 'exclusive', not \"huge\""),
-        "{refusal}"
-    );
     let refusal = runtime
         .exec("jess.gpu.window(jess.gpu.device(), { title = 'jess cursor test' }):cursor('grabbed')")
         .unwrap_err()

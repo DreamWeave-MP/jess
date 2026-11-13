@@ -28,7 +28,7 @@ There are seventeen names. Jess knows all of them up front, so a misspelled gran
 | `input.actions` | Reading action state and action events from the runtime. | `jess.input` |
 | `input.observe` | Observing the devices themselves. | `jess.input` |
 | `gpu.device` | Opening the GPU: drawing and computing with it, and reading back what it made. | [`jess.gpu`](@/docs/api/gpu.md) |
-| `gpu.window` | Opening a window on the screen, drawing into it, and hearing its keyboard and pointer. | [`jess.gpu.window`](@/docs/api/gpu.md#windows) |
+| `gpu.window` | Opening a window on the screen, drawing into it, and hearing its keyboard and pointer. | [`jess.gpu.window`](@/docs/api/gpu.md#windows), `jess.gpu.monitors` |
 | `audio.output` | Opening an output device and playing through it. Mixing offline, into a buffer, needs nothing. | [`@jess/audio`](@/docs/api/audio.md#contexts)'s `output` |
 | `worker.spawn` | Spawning an isolated Luau worker beside a script domain. | [`jess.worker.spawn`](@/docs/api/worker.md) |
 | `shared-buffer.create` | Allocating shared buffer storage, which counts against a process-wide limit rather than the Luau heap. Receiving and reading a shared buffer need nothing. | [`@jess/sharedBuffer`](@/docs/contributing/script-domains.md)'s `create` |

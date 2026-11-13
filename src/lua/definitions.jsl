@@ -2732,13 +2732,13 @@ The displays the window system has, in its order, for a benchmark to state what 
 | --- | --- |
 | `name` | What the window system calls it (`DP-1`, `eDP-1`), where it calls it anything. |
 | `width`, `height` | Its size in physical pixels, in the mode it is in. |
-| `x`, `y` | Where its top left is among the displays, in physical pixels. |
+| `x`, `y` | Where its top left is among the displays, in physical pixels; on macOS each display counts in its own scale, so displays of different scales don't share one space. |
 | `scale` | How many physical pixels a logical one is on it. |
 | `refreshRate` | How many images a second it shows, to a thousandth, where the window system says. |
 | `primary` | Whether it is the display the window system calls primary. Wayland calls none that. |
 
-- **Needs:** `gpu.window`.
-- **Errors:** `jess.gpu.monitors: no window system: …` on a machine without a display.
+- **Capability:** `gpu.window`.
+- **Errors:** `jess.gpu.monitors: no window system: …` on a machine without a display. Asking makes the window system's event loop if nothing has yet, so it is asked on the thread that opens the windows, as they are.
 
 {{ api_symbol(value="jess.gpu.pump") }}
 
@@ -2759,7 +2759,7 @@ Handles what the window system reported since the last call (sizes, closes, keys
 | `format` | What its images are; `nil` once it's closed. |
 | `open` | Whether it's open: neither closed by the person nor by `close`. |
 | `monitor` | The [display](#jess-gpu-monitors) most of it is on, where the window system says; `nil` once it's closed. |
-| `fullscreen(mode?)` | Gives it the whole display it is on (`'borderless'`, a window without edges, or `'exclusive'`, the display itself in its own mode at its fastest rate), or makes it a window again (`'windowed'`), and says what it asked for; with no mode, what the window system has it as now. `'exclusive'` is `'borderless'` where the window system gives no window a display of its own, as Wayland doesn't. The window system does it in its own time, and the new size arrives as a `resized` event. A window opens that way with `fullscreen` in its description. |
+| `fullscreen(mode?)` | Gives it the whole display it is on (`'borderless'`, a window without edges, or `'exclusive'`, the display itself in its own mode at its fastest rate), or makes it a window again (`'windowed'`), and says what it asked for; with no mode, what it is now, which on Wayland is what the compositor last confirmed and elsewhere what was last asked. `'exclusive'` is `'borderless'` on Wayland, which gives no window a display of its own, and on macOS, where a borderless window is what fullscreen is. A kept window handed back keeps the mode it has, whatever the description says. The window system does it in its own time, and the new size arrives as a `resized` event. A window opens that way with `fullscreen` in its description. |
 | `show(plan, target, imports?, sets?)` | Draws `plan` into it from the next [commit](#commits) on, its image as the plan's imported target `target`, which must have the window's format, with `imports` for the plan's other imported targets and buffers, drawing from `sets` or the device's own. The plan goes with the window: resized with it, so `plan` itself runs, reads back, and reports its size at the window's size from then on, and what it keeps is what the window drew. A plan is shown in one window at a time; showing it in another is refused (`the plan is shown in another window, whose size it takes`), and `plan:resized` makes one of its own. |
 | `hide()`, `close()` | Stops drawing from the next commit on, or closes it now. |
 | `resize(width, height)` | Asks the window system for that inner size in physical pixels. It may give another, or none (a tiling window manager, say); what it gives arrives as a `resized` event, and the shown plan goes with it. |
@@ -2786,9 +2786,9 @@ A window shows the pointer and lets it leave. `window:cursor('hidden')` hides it
 | `locked` | Captured, and held where it was. Wayland, macOS, and Windows do this. |
 | `confined` | Captured, and kept inside the window, where the window system holds no pointer still. X11 does this. |
 
-Asking for `'captured'` gives `locked` or `confined`, whichever the window system does, and the script needn't care which: either way the pointer's place says nothing, and the mouse's motion arrives among `events()` as `{ kind = 'pointerDelta', dx, dy }`, unaccelerated where the system offers that. A window system that does neither refuses, and the pointer stays as it was: `GpuWindow:cursor: the window system captured no pointer: …`. X11 refuses a window it hasn't put on the screen yet, so capture when the person clicks, not when the window opens.
+Asking for `'captured'` gives `locked` or `confined`, whichever the window system does, and the script needn't care which: either way the pointer's place says nothing, and the mouse's motion arrives among `events()` as `{ kind = 'pointerDelta', dx, dy }`, unaccelerated where the system offers that. A window's own `pointerMoved` stops while it is captured. One window has the pointer at a time: capturing it in one lets it go in any other. A window without the keyboard is refused (`GpuWindow:cursor: the window Look hasn't the keyboard, …`), since losing the keyboard is how a window knows to let go, and so is a window system that neither locks nor confines; either way the pointer stays as it was. So capture when the person clicks in the window, not when it opens.
 
-A window that loses the keyboard lets a captured pointer go, whatever the script wanted, and says so: `{ kind = 'cursor', mode = 'normal' }`. So does a kept window whose application restarts. Capture it again when the person comes back and clicks. Letting go of a confined pointer puts it back where it was captured.
+A window that loses the keyboard lets a captured pointer go, whatever the script wanted, and says so: `{ kind = 'cursor', mode = 'normal' }`, or `'hidden'` if the pointer was hidden when it was captured. On X11 a window manager's own key bindings can take the keyboard for a moment, and that counts. A kept window whose application restarts shows its pointer and lets it go, and closing a window does too. Capture it again when the person comes back and clicks. Letting go of a confined pointer puts it back where it was captured.
 
 ```luau
 --!strict
