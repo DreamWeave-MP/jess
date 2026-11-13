@@ -209,6 +209,97 @@ fn a_table_others_could_have_written_or_that_leaves_the_workspace_is_not_used() 
     fs::remove_dir_all(outside).unwrap();
 }
 
+/// A folder named to `jess test` stands for the `*.test.jsl` files in it and below it, folder by
+/// folder and each in order of name, and for nothing else beside them; with the folder's
+/// packages, that is a folder of tests run with no flags at all.
+#[test]
+fn a_folder_of_tests_runs_its_test_modules_and_leaves_what_is_beside_them() {
+    /// The modules a report says ran, as `/`-joined paths below `under`.
+    fn inputs(report: &serde_json::Value, under: &Path) -> Vec<String> {
+        let below = |module: &serde_json::Value| {
+            let path = PathBuf::from(module["input"].as_str().unwrap());
+            let parts = path.strip_prefix(under).unwrap().components();
+            parts
+                .map(|part| part.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/")
+        };
+        report["modules"].as_array().unwrap().iter().map(below).collect()
+    }
+    let root = folder("scripts-folder", NAMED);
+    let tools = root.join("tools");
+    fs::create_dir_all(tools.join("deep/more")).unwrap();
+    fs::write(tools.join("deep/more/again.test.jsl"), SUITE).unwrap();
+    // A file and a folder that differ only past the name the folder has: the folder's own name
+    // sorts first, as names do, and what is in it runs before the file.
+    fs::create_dir_all(tools.join("a")).unwrap();
+    fs::write(tools.join("a/inner.test.jsl"), SUITE).unwrap();
+    fs::write(tools.join("a.test.jsl"), SUITE).unwrap();
+    // Neither a suite nor named one: run as a module it fails the run.
+    let helper = tools.join("deep/helper.jsl");
+    fs::write(&helper, "return 'not a suite'\n").unwrap();
+    // Nobody's tests: a folder whose name starts with a dot.
+    fs::create_dir_all(tools.join(".kept")).unwrap();
+    fs::write(tools.join(".kept/other.test.jsl"), "return 'not a suite'\n").unwrap();
+    #[cfg(unix)]
+    {
+        // A link to a test module is one; a link to a folder is not entered.
+        std::os::unix::fs::symlink(tools.join("a.test.jsl"), tools.join("deep/more/linked.test.jsl")).unwrap();
+        std::os::unix::fs::symlink(&tools, tools.join("deep/more/up")).unwrap();
+    }
+    let mut expected = vec![
+        "a/inner.test.jsl",
+        "a.test.jsl",
+        "deep/more/again.test.jsl",
+        "deep/more/linked.test.jsl",
+        "deep/use.test.jsl",
+    ];
+    if cfg!(not(unix)) {
+        expected.retain(|path| !path.ends_with("linked.test.jsl"));
+    }
+    // The link names a module the walk has already met, so it is run once and under the first name.
+    let once: Vec<&str> = expected
+        .iter()
+        .copied()
+        .filter(|path| !path.ends_with("linked.test.jsl"))
+        .collect();
+
+    let (passed, stdout, stderr) = ran(&["--format", "json", "test"], &tools);
+    assert!(passed, "{stderr}");
+    let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(inputs(&report, &tools), once);
+    assert_eq!(report["passed"], once.len(), "{report}");
+
+    // A folder adds only what nothing earlier on the line has named, so folders that overlap
+    // run a module once; a file named outright runs as often as it is named, as it always has.
+    let again = jess()
+        .args(["--format", "json", "test"])
+        .arg(tools.join("deep/more"))
+        .arg(tools.join("a.test.jsl"))
+        .arg(&tools)
+        .arg(tools.join("a.test.jsl"))
+        .output()
+        .unwrap();
+    assert!(again.status.success(), "{}", String::from_utf8_lossy(&again.stderr));
+    let report: serde_json::Value = serde_json::from_slice(&again.stdout).unwrap();
+    // The four modules once each, `a.test.jsl` for each of the two times it is named outright
+    // after a folder had it, and on Unix once more through the link the first folder holds.
+    assert_eq!(report["passed"], once.len() + if cfg!(unix) { 2 } else { 1 }, "{report}");
+
+    // A file named outright needs no such name: the helper is run, and is not a suite.
+    let (passed, stdout, _) = ran(&["--format", "json", "test"], &helper);
+    let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert!(!passed && report["failed"] == 1, "{report}");
+
+    let (passed, _, stderr) = ran(&["test"], &root.join("packages"));
+    assert!(
+        !passed && stderr.contains("holds no test modules") && stderr.contains("jess package test"),
+        "{stderr}"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn a_command_line_that_names_packages_is_the_whole_answer() {
     // The table names a package that isn't there, so reading it at all is an error.
