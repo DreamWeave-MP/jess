@@ -23,6 +23,16 @@ pub struct LiveCounts {
     pub pipelines: usize,
 }
 
+/// How many bytes a device's live buffers and textures hold.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LiveBytes {
+    /// The sizes of its buffers.
+    pub buffers: u64,
+    /// The texels of its textures, every level, layer, and sample of them. A window's images are
+    /// the window system's, and count nothing.
+    pub textures: u64,
+}
+
 /// A kind of object counted.
 #[derive(Clone, Copy, Debug)]
 pub enum Kind {
@@ -33,19 +43,46 @@ pub enum Kind {
     Pipeline,
 }
 
-/// A device's counts: of each kind alive, and of each kind ever made.
+/// A device's counts: of each kind alive, of each kind ever made, and of the bytes its live
+/// buffers and textures hold.
 #[derive(Debug, Default)]
-pub struct Live([AtomicUsize; 5], [AtomicUsize; 5]);
+pub struct Live([AtomicUsize; 5], [AtomicUsize; 5], [AtomicU64; 2]);
 
 impl Live {
     /// A token counting one object of `kind` while it lives.
     pub fn token(self: &Arc<Live>, kind: Kind) -> Token {
+        self.sized(kind, 0)
+    }
+
+    /// A token counting one buffer or texture of `bytes` bytes while it lives.
+    pub fn sized(self: &Arc<Live>, kind: Kind, bytes: u64) -> Token {
         self.0[kind as usize].fetch_add(1, Ordering::Relaxed);
         self.1[kind as usize].fetch_add(1, Ordering::Relaxed);
+        if let Some(held) = self.held(kind) {
+            held.fetch_add(bytes, Ordering::Relaxed);
+        }
         Token {
             live: Arc::clone(self),
             kind,
+            bytes,
             id: NEXT.fetch_add(1, Ordering::Relaxed),
+        }
+    }
+
+    /// Where the bytes of `kind` are counted, if it is a kind that holds any.
+    fn held(&self, kind: Kind) -> Option<&AtomicU64> {
+        match kind {
+            Kind::Buffer => Some(&self.2[0]),
+            Kind::Texture => Some(&self.2[1]),
+            Kind::Sampler | Kind::BindGroup | Kind::Pipeline => None,
+        }
+    }
+
+    /// How many bytes its live buffers and textures hold.
+    pub fn bytes(&self) -> LiveBytes {
+        LiveBytes {
+            buffers: self.2[0].load(Ordering::Relaxed),
+            textures: self.2[1].load(Ordering::Relaxed),
         }
     }
 
@@ -75,6 +112,7 @@ impl Live {
 pub struct Token {
     live: Arc<Live>,
     kind: Kind,
+    bytes: u64,
     id: u64,
 }
 
@@ -89,5 +127,8 @@ impl Token {
 impl Drop for Token {
     fn drop(&mut self) {
         self.live.0[self.kind as usize].fetch_sub(1, Ordering::Relaxed);
+        if let Some(held) = self.live.held(self.kind) {
+            held.fetch_sub(self.bytes, Ordering::Relaxed);
+        }
     }
 }

@@ -16,7 +16,7 @@ use super::bind::{BindGroup, Binding};
 use super::compute::{self, ComputePipeline};
 use super::draw_set::{DrawSet, DrawSets};
 use super::pass::{check_pass, encode};
-use super::pipeline::Slot;
+use super::pipeline::{Slot, Topology};
 use super::texture::{TextureDesc, TextureShape, TextureUsage};
 use super::{Buffer, BufferUsage, Draw, Gpu, GpuError, Group, RenderPipeline, Resolve, Sampler, Target, Texture};
 use crate::render::{
@@ -232,6 +232,8 @@ pub struct Plan {
     timing: Option<Timing>,
     /// Which passes the last run recorded, in order.
     ran: Mutex<Vec<bool>>,
+    /// What each pass of the last run drew.
+    drew: Mutex<Vec<Drawn>>,
     controls: Arc<Controls>,
 }
 
@@ -313,6 +315,62 @@ struct Timing {
     count: u32,
 }
 
+/// What one pass of a plan's last run gave the GPU to draw.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PassStats {
+    /// The pass.
+    pub pass: String,
+    /// Whether the run recorded it: not a pass left out of it.
+    pub ran: bool,
+    /// What it drew; nothing, for a pass the run didn't record or one that doesn't draw.
+    pub drawn: Drawn,
+}
+
+/// What a pass gave the GPU to draw: its draws that drew something, counted as they were
+/// recorded.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Drawn {
+    /// Draws whose counts the CPU gave.
+    pub draws: u64,
+    /// Indirect draws, whose counts are the GPU's: nothing else here counts them.
+    pub indirect: u64,
+    /// Instances, over every draw.
+    pub instances: u64,
+    /// Vertices, or indices: each draw's count times its instances.
+    pub vertices: u64,
+    /// Triangles, lines, or points, by each draw's pipeline's topology: at most, for a strip
+    /// drawn through indices, which may cut it short.
+    pub primitives: u64,
+}
+
+impl Drawn {
+    fn of(draws: &[Draw<'_>]) -> Drawn {
+        let mut total = Drawn::default();
+        for draw in draws {
+            if draw.indirect.is_some() {
+                total.indirect += 1;
+                continue;
+            }
+            let (count, instances) = (u64::from(draw.count), u64::from(draw.instance_count));
+            if count == 0 || instances == 0 {
+                continue;
+            }
+            let primitives = match draw.pipeline.state().topology {
+                Topology::Triangles => count / 3,
+                Topology::TriangleStrip => count.saturating_sub(2),
+                Topology::Lines => count / 2,
+                Topology::LineStrip => count - 1,
+                Topology::Points => count,
+            };
+            total.draws += 1;
+            total.instances += instances;
+            total.vertices += count * instances;
+            total.primitives += primitives * instances;
+        }
+        total
+    }
+}
+
 /// How long one pass of a plan's last run took on the GPU.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PassTiming {
@@ -328,6 +386,25 @@ impl Plan {
     #[must_use]
     pub fn graph(&self) -> &RenderGraph {
         &self.graph
+    }
+
+    /// What each pass of its last run gave the GPU to draw, in the order they run: nothing for a
+    /// pass that run left out, and for every pass of a plan that hasn't run. The last run is the
+    /// last one that was recorded: one refused before that leaves what the run before it drew.
+    #[must_use]
+    pub fn stats(&self) -> Vec<PassStats> {
+        let ran = lock(&self.ran).clone();
+        let drew = lock(&self.drew);
+        self.passes
+            .iter()
+            .zip(ran)
+            .zip(drew.iter())
+            .map(|((pass, ran), drawn)| PassStats {
+                pass: self.graph.passes()[pass.index].name().to_owned(),
+                ran,
+                drawn: *drawn,
+            })
+            .collect()
     }
 
     /// The viewport its relative targets are sized for.
@@ -707,6 +784,7 @@ impl Gpu {
             viewport,
             allocations,
             ran: Mutex::new(vec![false; passes.len()]),
+            drew: Mutex::new(vec![Drawn::default(); passes.len()]),
             passes,
             timing,
         })
@@ -1046,9 +1124,16 @@ impl Gpu {
         {
             let mut ran = lock(&plan.ran);
             ran.fill(false);
-            for &position in &running {
+            let mut drew = lock(&plan.drew);
+            drew.fill(Drawn::default());
+            for (&position, recording) in running.iter().zip(&recorded) {
                 ran[position] = true;
+                if let Recording::Draw { draws, .. } = recording {
+                    drew[position] = Drawn::of(draws);
+                }
             }
+            drop(drew);
+            drop(ran);
         }
         self.checked(|| {
             let mut encoder = self

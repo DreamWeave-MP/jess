@@ -776,6 +776,96 @@ fn a_script_draws_ranges_of_shared_buffers() {
     }
 }
 
+/// A mask shows and hides many sets as one change; a plan says what each pass of its last run
+/// drew; and the device says how many bytes its buffers and textures hold.
+#[cfg(feature = "gpu")]
+#[test]
+fn a_script_masks_sets_and_counts_what_it_drew() {
+    let Some(runtime) = gpu_runtime("a_script_masks_sets_and_counts_what_it_drew") else {
+        return;
+    };
+    let script = format!(
+        "{RANGES}
+            local stats = plan:stats()
+            assert(#stats == 1 and stats[1].pass == 'scene' and stats[1].ran, 'one pass')
+            assert(stats[1].draws == 2 and stats[1].indirect == 0 and stats[1].instances == 2)
+            assert(stats[1].vertices == 12 and stats[1].primitives == 4)
+
+            local both = device:visibility({{ tall, short }})
+            assert(both.count == 2 and tostring(both) == 'GpuVisibility(2 sets)', tostring(both))
+            local room = device.room.bytes
+            both:show(buffer.fromstring('\\0\\1'))
+            assert(tall.visible, 'not yet committed')
+            assert(device.room.changes == 65536 - 1 and device.room.bytes == room - 2)
+            assert(drawn() == 'black black red black', drawn())
+            assert(not tall.visible and short.visible)
+            assert(plan:stats()[1].draws == 1 and plan:stats()[1].vertices == 6)
+            -- A mask may be part of a longer one; a set's own `visible` still works after it.
+            both:show('\\1\\1\\0', 1)
+            tall.visible = true
+            assert(drawn() == 'white white black black', drawn())
+            short:change({{ instanceCount = 0 }})
+            short.visible = true
+            assert(drawn() == 'white white black black', drawn())
+            assert(plan:stats()[1].draws == 1, 'a draw of nothing is not a draw')
+
+            local before = device.memory
+            assert(before.buffers >= 64 + 48 + 48 and before.textures >= 16 * 16 * 4)
+            local more = device:buffer(64, 'vertex')
+            local mipped = device:texture({{ width = 8, height = 8, format = 'rgba8Unorm', mips = 2, usage = 'sampled' }})
+            assert(device.memory.buffers == before.buffers + 64, 'a buffer holds its size')
+            assert(device.memory.textures == before.textures + (64 + 16) * 4, 'a texture holds every level')
+            assert(more.size == 64 and mipped.width == 8)
+            -- Every slice of a volume, every face of a cube, and a depth of four bytes a texel.
+            for _, case in {{
+              {{ {{ shape = '3d', depth = 16, mips = 2 }}, (16 * 16 * 16 + 8 * 8 * 8) * 4 }},
+              {{ {{ shape = 'cube' }}, 16 * 16 * 6 * 4 }},
+              {{ {{ format = 'depth24Plus' }}, 16 * 16 * 4 }},
+            }} do
+              local desc = {{ width = 16, height = 16, format = 'rgba8Unorm', usage = 'sampled' }}
+              for key, value in case[1] do
+                desc[key] = value
+              end
+              local held = device.memory.textures
+              local texture = device:texture(desc)
+              assert(device.memory.textures == held + case[2], `{{texture}}: {{device.memory.textures - held}}`)
+            end
+
+            -- A pass left out of a run ran nothing, which is not the same as drawing nothing.
+            plan:setEnabled('scene', false)
+            plan:run()
+            assert(not plan:stats()[1].ran and plan:stats()[1].draws == 0)
+            plan:setEnabled('scene', true)
+            plan:run()
+            assert(plan:stats()[1].ran and plan:stats()[1].draws == 1)
+            local none = device:visibility({{}})
+            none:show('')
+            assert(none.count == 0 and not device:commit(), 'a mask of nothing is no change')
+        "
+    );
+    runtime.exec(&script).unwrap_or_else(|error| panic!("{error}"));
+
+    for (script, expected) in [
+        (
+            "device:visibility({ tall, short }):show(buffer.create(1))",
+            "GpuVisibility:show: the mask is 1 bytes long from where it starts, and there are 2 sets: expected a \
+             byte for each",
+        ),
+        (
+            "device:visibility({ tall, 3 })",
+            "GpuDevice:visibility takes a GpuDrawSet, not number",
+        ),
+        ("device:visibility(tall)", "GpuDevice:visibility: the sets"),
+        (
+            "device:visibility({ tall }):show(4)",
+            "GpuVisibility:show: expected a buffer or string, not number",
+        ),
+    ] {
+        let error = runtime.exec(&format!("{RANGES}\n{script}")).unwrap_err().to_string();
+        assert!(error.contains(expected), "{script}: {error}");
+    }
+}
+
 /// An indexed indirect draw whose arguments start at the second instance draws that instance, on
 /// a device that can; one that can't refuses it by name. It never draws nothing and says nothing.
 #[cfg(feature = "gpu")]

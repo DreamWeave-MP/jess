@@ -81,6 +81,20 @@ impl Opened {
     }
 }
 
+/// `device.memory`: the bytes its live buffers and textures hold.
+fn memory(this: &LuaGpuDevice, call: &Call<'_>) -> l3i::Result<StackResults> {
+    let held = this.gpu.memory();
+    push_table(call, 0, 2, |frame, table| {
+        // A device holds far fewer than 2^53 bytes.
+        #[allow(clippy::cast_precision_loss)]
+        {
+            table.raw_set_value(frame, "buffers", &(held.buffers as f64))?;
+            table.raw_set_value(frame, "textures", &(held.textures as f64))
+        }
+    })?;
+    Ok(StackResults)
+}
+
 /// Declares the device type, the resources it makes, and its pipelines.
 pub fn describe(d: &mut ExtensionDescriptor) {
     let mut device = d.userdata::<LuaGpuDevice>(LuaGpuDevice::NAME);
@@ -130,6 +144,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
     device
         .getter("made", |this: &LuaGpuDevice, call: &Call<'_>| counts(call, this.gpu.made()))
         .untyped();
+    device.getter("memory", memory).untyped();
     device
         .method("commit", |this: &LuaGpuDevice| -> l3i::Result<bool> {
             this.gpu

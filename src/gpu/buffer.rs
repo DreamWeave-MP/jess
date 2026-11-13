@@ -185,7 +185,7 @@ impl Gpu {
             size,
             usage,
             written,
-            token: self.live.token(Kind::Buffer),
+            token: self.live.sized(Kind::Buffer, size),
         })
     }
 

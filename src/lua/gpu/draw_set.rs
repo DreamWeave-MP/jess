@@ -13,7 +13,7 @@ use super::device::LuaGpuDevice;
 use super::pipeline::{
     Pipeline, base_vertex, buffer_field, gpu_error, groups, indirect_field, options, pipeline_field, range_fields, table,
 };
-use super::resources::{choice, shown, whole};
+use super::resources::{choice, shown, whole, with_bytes};
 use crate::gpu::{DrawRange, DrawSet, DrawSetDesc, DrawSets, Gpu, GpuError, IndexFormat};
 use crate::lua::{error, kind};
 
@@ -267,8 +267,85 @@ fn describe_range(set: &mut UserdataBuilder<'_, LuaGpuDrawSet>) {
     set.method("change", change).untyped();
 }
 
+/// Draw sets in an order of the script's, shown and hidden together by a mask.
+#[derive(Debug)]
+pub struct LuaGpuVisibility {
+    sets: Arc<[Arc<DrawSet>]>,
+    /// The device whose next commit applies a mask.
+    gpu: Arc<Gpu>,
+}
+
+// SAFETY: plain Rust state; the destructor never touches the Lua API.
+unsafe impl Userdata for LuaGpuVisibility {
+    const NAME: &'static str = "jess.gpu.Visibility";
+}
+
+/// `device:visibility({ set, ... })`: those sets, in that order, for a mask to show and hide.
+fn visibility(this: &LuaGpuDevice, call: &Call<'_>, sets: ValueView<'_>) -> l3i::Result<Owned<LuaGpuVisibility>> {
+    const FUNCTION: &str = "GpuDevice:visibility";
+    let mut listed = Vec::new();
+    call.with_frame(|frame| {
+        table(FUNCTION, "the sets", sets)?.for_each_array(frame, |_, _, set| {
+            listed.push(draw_set_of(FUNCTION, set)?);
+            Ok(())
+        })
+    })?;
+    Ok(Owned(LuaGpuVisibility {
+        sets: listed.into(),
+        gpu: this.gpu.clone(),
+    }))
+}
+
+/// `visibility:show(mask, from?)`: each set shown if its byte of `mask` isn't 0 and hidden if it
+/// is, all of them as one change.
+fn show_masked(this: &LuaGpuVisibility, mask: ValueView<'_>, from: Option<ValueView<'_>>) -> l3i::Result<()> {
+    const FUNCTION: &str = "GpuVisibility:show";
+    let count = this.sets.len();
+    let mask = with_bytes(FUNCTION, mask, from, None, |bytes| {
+        bytes.get(..count).map(<[u8]>::to_vec).ok_or_else(|| {
+            error(format!(
+                "{FUNCTION}: the mask is {} bytes long from where it starts, and there are {count} sets: expected \
+                 a byte for each",
+                bytes.len()
+            ))
+        })
+    })?;
+    // Nothing to show or hide is no change: a commit of it would draw a frame again for nothing.
+    if count == 0 {
+        return Ok(());
+    }
+    let sets = Arc::clone(&this.sets);
+    this.gpu
+        .defer(count, move |_| {
+            for (set, shown) in sets.iter().zip(mask) {
+                set.set_visible(shown != 0);
+            }
+            Ok(())
+        })
+        .map_err(|problem| gpu_error(FUNCTION, &problem))
+}
+
+/// Declares the type a mask shows and hides sets through.
+fn describe_visibility(d: &mut ExtensionDescriptor) {
+    let mut visibility = d.userdata::<LuaGpuVisibility>(LuaGpuVisibility::NAME);
+    visibility
+        .tag(TagPolicy::Never)
+        .doc("Draw sets in a fixed order, shown and hidden together by a mask of a byte each.");
+    visibility
+        .getter("count", |this: &LuaGpuVisibility| {
+            u32::try_from(this.sets.len()).unwrap_or(u32::MAX)
+        })
+        .untyped();
+    visibility.method("show", show_masked).untyped();
+    crate::lua::plan::metamethod(&mut visibility, "__tostring", |this: &LuaGpuVisibility| {
+        let count = this.sets.len();
+        format!("GpuVisibility({count} {})", if count == 1 { "set" } else { "sets" })
+    });
+}
+
 /// Declares the device's methods that make draw sets and collections of them.
 pub fn device_methods(device: &mut UserdataBuilder<'_, LuaGpuDevice>) {
+    device.method("visibility", visibility).untyped();
     device.method("drawSet", draw_set).untyped();
     device
         .method("drawSets", |this: &LuaGpuDevice| {
@@ -337,6 +414,7 @@ fn describe_collection(d: &mut ExtensionDescriptor) {
 /// Declares the draw set and collection types.
 pub fn describe(d: &mut ExtensionDescriptor) {
     describe_collection(d);
+    describe_visibility(d);
     let mut set = d.userdata::<LuaGpuDrawSet>(LuaGpuDrawSet::NAME);
     set.tag(TagPolicy::Never)
         .doc("A draw kept on its device, which plans' draw passes take by its tags every frame.");
