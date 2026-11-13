@@ -57,6 +57,22 @@ members = []
 
 A workspace's `[dev-dependencies]` are package ids and [version requirements](@/docs/api/package.md#package-satisfies), as a manifest states them. `sync` pins them in `jess.lock` and keeps them in `.jess/packages` like anything a member needs, and `run` runs their targets over the workspace. No member depends on them: they are the workspace's, so no package's manifest or digest says what built it. A workspace may have them and no members at all, as this one does: a folder of content that a tool it doesn't write turns into something.
 
+And it may say what the loose scripts under it run with:
+
+```toml
+manifest_version = 1
+
+[workspace]
+members = []
+
+[scripts]
+packages = ["packages/greeter.jpk", "packages/words"]
+```
+
+With a `[scripts]` table, [`jess run`](@/docs/cli/run.md#the-folder-s-packages), [`jess test`](@/docs/cli/test.md), and [`jess check`](@/docs/cli/check.md) given no `--package`, `--package-path`, or `--layer` behave as if they had been given the table's: `packages` is a list of `--package`, `package_path` of `--package-path`, `layers` of `--layer`. Each path is names joined by `/` below the workspace's root, with no `..`, no absolute paths, and no backslashes; a table that names no packages, or has a key that isn't one of the three, is an error naming the file. The table is the nearest workspace file's, looking up from the script's own folder, so a script runs the same from anywhere. A command line that names any package is the whole answer, and the table is not read.
+
+It is the only part of the file a loose script reads. The members, the `[dev-dependencies]`, and `jess.lock` are not its concern, and nothing has to be synced first: the packages are opened where the table says they are. A jess from before this table refuses a workspace file that has one, as it does any key it doesn't know.
+
 ## Which workspace
 
 Without `--workspace`, each command starts from the current folder, finds the package it is in, and uses the workspace above that lists it. A folder inside a workspace but outside any package belongs to the nearest workspace above it. A package that no workspace lists is a workspace of one, its own root, whatever is above it, and `info` says which workspace file passed it over. Two workspaces listing one package is an error.

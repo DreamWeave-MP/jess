@@ -17,6 +17,8 @@ Type-checks `.jsl` scripts the way an editor in a folder `jess init` set up chec
 | `--layer ID` | Resolve only this layer of the packages, and the layers it requires (repeatable). Without any, every layer they declare. Needs packages. |
 | `--package-path FOLDER` | A folder of packages to find layers and dependencies in (repeatable), as `jess run --package-path` reads one. |
 
+With none of the three, the scripts are typed against what the `[scripts]` table of the workspace file above them names, as [`jess run`](@/docs/cli/run.md#the-folder-s-packages) runs with it; the table is found from the first script's folder.
+
 Plus the [global options](@/docs/cli/global-options.md). The report is one document in the `--format` you ask for, and the exit status is `1` when any error was found, with `error: N type errors` on stderr.
 
 ## What it resolves
