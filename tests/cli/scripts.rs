@@ -209,6 +209,54 @@ fn a_table_others_could_have_written_or_that_leaves_the_workspace_is_not_used() 
     fs::remove_dir_all(outside).unwrap();
 }
 
+/// A folder named to `jess test` stands for the `*.test.jsl` files in it and below it, in order
+/// of path, and for nothing else beside them; with the folder's packages, that is a folder of
+/// tests run with no flags at all.
+#[test]
+fn a_folder_of_tests_runs_its_test_modules_and_leaves_what_is_beside_them() {
+    let root = folder("scripts-folder", NAMED);
+    fs::create_dir_all(root.join("tools/deep/more")).unwrap();
+    fs::write(root.join("tools/deep/more/again.test.jsl"), SUITE).unwrap();
+    fs::write(root.join("tools/a.test.jsl"), SUITE).unwrap();
+    // Neither a suite nor named one: run as a module it would fail the run.
+    fs::write(root.join("tools/deep/helper.jsl"), "return 'not a suite'\n").unwrap();
+
+    let (passed, stdout, stderr) = ran(&["--format", "json", "test"], &root.join("tools"));
+    assert!(passed, "{stderr}");
+    let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(report["passed"], 3, "{report}");
+    let ran_modules: Vec<String> = report["modules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|module| {
+            let path = PathBuf::from(module["input"].as_str().unwrap());
+            path.strip_prefix(root.join("tools"))
+                .unwrap()
+                .components()
+                .map(|part| part.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/")
+        })
+        .collect();
+    assert_eq!(ran_modules, ["a.test.jsl", "deep/more/again.test.jsl", "deep/use.test.jsl"]);
+
+    // A file named outright needs no such name, and a folder beside files is one more of them.
+    let both = jess()
+        .args(["--format", "json", "test"])
+        .arg(root.join("tools/deep/more"))
+        .arg(root.join("tools/a.test.jsl"))
+        .output()
+        .unwrap();
+    let report: serde_json::Value = serde_json::from_slice(&both.stdout).unwrap();
+    assert_eq!(report["passed"], 2, "{report}");
+
+    let (passed, _, stderr) = ran(&["test"], &root.join("packages"));
+    assert!(!passed && stderr.contains("holds no test modules"), "{stderr}");
+
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn a_command_line_that_names_packages_is_the_whole_answer() {
     // The table names a package that isn't there, so reading it at all is an error.
