@@ -1867,6 +1867,12 @@ fn test_modules_run_at_once_share_nothing_and_report_in_order() {
             .flat_map(|kind| (1..=6).map(move |index| format!("{kind} m{index}.jsl")))
             .collect::<Vec<_>>();
         assert_eq!(order, expected, "{jobs} jobs");
+        // Every module says how long it took, the one that did not load included.
+        for provider in &report.providers {
+            for module in &provider.run.modules {
+                assert!(module.seconds.is_finite() && module.seconds >= 0.0, "{module:#?}");
+            }
+        }
         for (kind, input, cases, errored) in &seen {
             match input.as_str() {
                 "m3.jsl" => assert_eq!(cases, &[("fails".to_owned(), false)], "{kind} {input}"),

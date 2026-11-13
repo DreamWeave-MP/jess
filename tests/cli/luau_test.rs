@@ -38,6 +38,11 @@ fn test_reports_every_case_and_fails_when_one_does() {
     assert_eq!(case["passed"], true);
     assert_eq!(case["logs"][0]["message"], "adding");
     assert_eq!(case["logs"][0]["fields"]["left"], 1.0);
+    // The module says how long it took, in the report a tool reads.
+    assert!(
+        report["modules"][0]["seconds"].as_f64().is_some_and(|seconds| seconds >= 0.0),
+        "{report}"
+    );
 
     let output = jess()
         .args(["--format", "json", "test"])

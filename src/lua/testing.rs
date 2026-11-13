@@ -62,6 +62,10 @@ pub struct ModuleReport {
     pub error: Option<String>,
     /// What the module logged outside its cases, while loading.
     pub logs: Vec<LogRecord>,
+    /// How long the module took, loading and every case, in seconds by the wall clock. It says
+    /// which files a run waits for; beside other modules running at once it also counts the
+    /// time this one waited for a processor.
+    pub seconds: f64,
 }
 
 /// A test run over several modules. A module that didn't run counts as one failure.
@@ -145,6 +149,7 @@ fn run_module(runtime: &Runtime, path: &Path, run: &mut TestRun) -> l3i::Result<
     let logs = Rc::new(RefCell::new(Vec::new()));
     let captured = logs.clone();
     crate::lua::stdlib::set_log_sink(runtime, move |record| captured.borrow_mut().push(record.clone()))?;
+    let started = std::time::Instant::now();
     let (report, error) = match run_suite(runtime, path) {
         Ok(report) => {
             run.passed += report.passed;
@@ -161,6 +166,8 @@ fn run_module(runtime: &Runtime, path: &Path, run: &mut TestRun) -> l3i::Result<
         report,
         error,
         logs: logs.take(),
+        // To the millisecond: finer than that is the machine's noise, not the module's cost.
+        seconds: (started.elapsed().as_secs_f64() * 1000.0).round() / 1000.0,
     });
     Ok(())
 }
