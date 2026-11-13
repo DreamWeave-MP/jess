@@ -3,9 +3,10 @@
 //! or the domain goes, and that no frame waits for a child.
 //!
 //! None of them measures time. A limit that is the point of a test is short and is proved by what
-//! it reports; every other limit is one only a failing run reaches. One clock is left, and it is
-//! l3i's, not a test's: a run reads a capture for 250 ms after its child exits before calling it
-//! held, so on a machine stalled for longer than that a captured run can come back cut short.
+//! it reports; every other limit is one only a failing run reaches. l3i's own clocks are no
+//! test's either (2.11.0): once a child has exited a run asks the pipe whether anything still
+//! holds its capture, and times only a holder it has seen, so a stalled machine never cuts short
+//! a run whose capture nothing holds.
 //!
 //! The children are `sh`, `sleep`, `sort` and `cat`, so these are Unix tests.
 
