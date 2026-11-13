@@ -202,11 +202,12 @@ fn test_modules_require_the_packages_the_command_line_names() {
         "local greeter = require('@greeter')\nlocal test = require('@jess/test')\nlocal suite = test.new()\n\
          suite.it('greets', function() test.expect(greeter.greet('Ada')).toBe('Hello, Ada.') end)\nreturn suite\n",
     );
+    // Twice: each module has a VM of its own unless `--shared`, and the package is in every one.
     let test = |flags: &[&std::ffi::OsStr]| {
         jess()
             .args(["--format", "json", "test"])
             .args(flags)
-            .arg(&greets)
+            .args([&greets, &greets])
             .output()
             .unwrap()
     };
@@ -233,7 +234,7 @@ fn test_modules_require_the_packages_the_command_line_names() {
             String::from_utf8_lossy(&output.stderr)
         );
         let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!((&report["passed"], &report["failed"]), (&1.into(), &0.into()), "{flags:?}");
+        assert_eq!((&report["passed"], &report["failed"]), (&2.into(), &0.into()), "{flags:?}");
     }
 
     let unchosen = test(&["--package-path".as_ref(), packages.as_os_str()]);

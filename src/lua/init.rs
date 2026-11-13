@@ -231,10 +231,12 @@ pub fn init(dir: &Path, options: &InitOptions) -> io::Result<InitReport> {
 
 const MAIN: &str = include_str!("templates/main.jsl");
 
-/// The package skeleton, with `__ID__`, `__NAME__`, and `__LAYER__` for [`PackageNames`] to fill.
+/// The application skeleton, with `__ID__` and `__NAME__` for [`PackageNames`] to fill.
 const APPLICATION_MANIFEST: &str = include_str!("templates/application/jess.toml");
 const APPLICATION_ENTRY: &str = include_str!("templates/application/main.jsl");
 const APPLICATION_MODULE: &str = include_str!("templates/application/app.jsl");
+
+/// The package skeleton, with `__ID__`, `__NAME__`, and `__LAYER__` for [`PackageNames`] to fill.
 const PACKAGE_MANIFEST: &str = include_str!("templates/package/jess.toml");
 const PACKAGE_MODULE: &str = include_str!("templates/package/init.jsl");
 const PACKAGE_TEST: &str = include_str!("templates/package/run.jsl");

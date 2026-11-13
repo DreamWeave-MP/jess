@@ -257,7 +257,7 @@ fn a_runtime_no_domain_owns_has_the_modules_and_refuses_to_use_them() {
     let send = runtime.exec("require('@jess/worker').send(1)").unwrap_err();
     assert_eq!(
         send.to_string(),
-        "worker.send: needs a ScriptDomain, and none owns this runtime; jess run, jess test, and command targets run scripts outside one. An application target runs its code in one: jess init --application writes one, and jess package run runs it"
+        "worker.send is for a worker's own code; a domain sends through the handle worker.spawn returned"
     );
 }
 

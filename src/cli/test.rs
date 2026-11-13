@@ -24,7 +24,8 @@ pub struct TestArgs {
     /// Source folder or a .jpk, whose exports the modules can then require.
     #[arg(long = "package", value_name = "PACKAGE")]
     packages: Vec<PathBuf>,
-    /// A layer to activate (repeatable). Without any, every layer the packages declare.
+    /// A layer to activate (repeatable). Without any, every layer the packages named with
+    /// --package declare.
     #[arg(long = "layer", value_name = "ID")]
     layers: Vec<String>,
     /// A folder of packages to find layers and dependencies in (repeatable), as jess run takes

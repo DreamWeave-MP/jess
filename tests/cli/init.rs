@@ -155,10 +155,24 @@ fn init_application_writes_an_application_that_checks_and_runs() {
         .output()
         .unwrap();
     assert!(!both.status.success(), "a folder is a package or an application");
+    assert!(
+        String::from_utf8_lossy(&both.stderr).contains("cannot be used with"),
+        "{}",
+        String::from_utf8_lossy(&both.stderr)
+    );
+
+    // In a folder that is already a package, the manifest stays, and the steps say so first.
+    let again = init(&dir, &["--editor", "none", "--application", "org.example.other"]);
+    assert!(
+        again["next_steps"][0]
+            .as_str()
+            .is_some_and(|step| step.contains("was already there and was kept")),
+        "{again}"
+    );
 
     if std::env::var_os("JESS_WINDOW_TESTS").is_some() {
         let run = jess()
-            .args(["package", "run", "--trusted", "--frames", "60"])
+            .args(["package", "run", "--trusted", "--frames", "300"])
             .arg(&dir)
             .args(["--", "one"])
             .output()
@@ -167,7 +181,7 @@ fn init_application_writes_an_application_that_checks_and_runs() {
         assert_eq!(
             String::from_utf8_lossy(&run.stdout).lines().collect::<Vec<_>>(),
             [
-                "walker: 1 arguments; close the window to stop",
+                "walker: close the window to stop (arguments: 1)",
                 "hello, walker, from a worker",
                 "walker: stopped"
             ]

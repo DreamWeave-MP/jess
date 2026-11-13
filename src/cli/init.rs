@@ -26,9 +26,9 @@ pub struct InitArgs {
     #[arg(long, value_name = "ID", conflicts_with = "application")]
     package: Option<String>,
     /// Set the folder up as an application with this package id (org.example.name): a jess.toml
-    /// with an application target, and a module the host runs every frame that opens a window,
-    /// draws a triangle in it, and asks a worker for a greeting. It runs as it stands, with
-    /// jess package run --trusted.
+    /// with an application target, and a module that opens a window, draws a triangle in it,
+    /// asks a worker for a greeting, and gives the host the handlers it calls every frame. It
+    /// runs as it stands, with jess package run --trusted.
     #[arg(long, value_name = "ID")]
     application: Option<String>,
 }
@@ -86,9 +86,10 @@ pub fn run(args: &InitArgs, format: Format) -> Result<(), String> {
             format!("run it; close its window to stop: jess package run --trusted {dir}"),
             format!("type-check it: jess package check {dir}"),
             format!(
-                "what runs every frame is {}; what the host calls in it, and when, is in types/jess.d.jsl under \
-                 jess.application and jess.context",
-                args.dir.join("src/app.jsl").display()
+                "the handlers the host calls every frame are in {}; their names and order are in {}, under \
+                 HostHandlers",
+                args.dir.join("src/app.jsl").display(),
+                args.dir.join("types/jess.d.jsl").display()
             ),
         ]
     } else if args.package.is_some() {
@@ -104,6 +105,18 @@ pub fn run(args: &InitArgs, format: Format) -> Result<(), String> {
             format!("type-check it: jess check {main}"),
         ]
     };
+    // A manifest already there was kept, and is the one those commands would read.
+    let manifest = args.dir.join("jess.toml");
+    if (args.application.is_some() || args.package.is_some()) && report.skipped.contains(&manifest) {
+        next_steps.insert(
+            0,
+            format!(
+                "{} was already there and was kept, so the steps below may not fit it: --force replaces it, after \
+                 a backup",
+                manifest.display()
+            ),
+        );
+    }
     if let Some(hint) = editor.hint() {
         next_steps.push(format!("{}: {hint}", editor.name()));
     }

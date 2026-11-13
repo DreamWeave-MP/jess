@@ -17,7 +17,8 @@ pub struct RunArgs {
     /// entrypoints have run.
     #[arg(long = "package", value_name = "PACKAGE")]
     packages: Vec<PathBuf>,
-    /// A layer to activate (repeatable). Without any, every layer the packages declare.
+    /// A layer to activate (repeatable). Without any, every layer the packages named with
+    /// --package declare.
     #[arg(long = "layer", value_name = "ID")]
     layers: Vec<String>,
     /// A folder of packages to find layers and dependencies in (repeatable): each Package Source
@@ -70,38 +71,6 @@ pub struct Named<'a> {
     pub paths: &'a [PathBuf],
 }
 
-/// What the package paths hold, for whoever named a path and chose nothing from it: each
-/// package's file, and its layers.
-fn offered(lua: &Runtime, paths: &[PathBuf]) -> String {
-    let mut found = Vec::new();
-    for path in paths {
-        let Ok(entries) = fs::read_dir(path) else {
-            continue;
-        };
-        let mut entries: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
-        entries.sort();
-        for entry in entries {
-            let is_package = entry.join("jess.toml").is_file() || entry.extension().is_some_and(|kind| kind == "jpk");
-            if !is_package {
-                continue;
-            }
-            let Ok(inspection) = jess::lua::package::inspect(lua, &entry.display().to_string()) else {
-                continue;
-            };
-            let layers: Vec<String> = inspection.layers.into_iter().map(|layer| layer.id).collect();
-            found.push(if layers.is_empty() {
-                format!("{} (no layers)", entry.display())
-            } else {
-                format!("{} (layers: {})", entry.display(), layers.join(", "))
-            });
-        }
-    }
-    if found.is_empty() {
-        return "no package was found there".to_owned();
-    }
-    format!("found {}", found.join("; "))
-}
-
 /// Activates the packages `named` in `lua`, if any, admitting entrypoints against
 /// `capabilities`, what the runtime was granted.
 pub fn activate(lua: &Runtime, named: &Named<'_>, capabilities: &[String]) -> Result<(), String> {
@@ -126,11 +95,7 @@ pub fn activate(lua: &Runtime, named: &Named<'_>, capabilities: &[String]) -> Re
         }
     }
     if layers.is_empty() && roots.is_empty() {
-        return Err(format!(
-            "a package path offers packages without choosing any: name one with --package, or a layer with --layer; \
-             {}",
-            offered(lua, named.paths)
-        ));
+        return Err(jess::lua::package::unchosen(lua, &text(named.paths)));
     }
     let search = jess::lua::package::Search {
         paths: text(named.paths),
