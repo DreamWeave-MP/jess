@@ -29,6 +29,7 @@ type Package = {
     read managed: { [string]: Managed },
     read targets: { [string]: Target },
     read tests: { string },
+    read testJobs: number?,
   },
   read id: string,
   read version: string,
