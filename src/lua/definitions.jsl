@@ -2722,6 +2722,8 @@ Opens a native window with a surface on `device`. The window is what a person se
 - **Capability:** `gpu.window`. A script you run holds it, as it holds the GPU; a package target declares it.
 - **Errors:** `jess.gpu.window: no window system: …` on a machine without a display (over SSH, say, or in a container), which a later call tries again, as the display may have come back; `windows belong to the thread that opened the first one`, since a process has one window system loop; on macOS, `jess.gpu.window: on macOS, windows open on the process's main thread`, so a worker can't open one there; and a jess built without the `window` feature says so: `jess.gpu.window: this jess has no windows: it was built without the window feature`.
 
+### jess.gpu.monitors
+
 {{ api_symbol(value="jess.gpu.monitors") }}
 
 The displays the window system has, in its order, for a benchmark to state what it ran on or an application to choose where it opens:
