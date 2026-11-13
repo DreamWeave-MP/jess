@@ -56,7 +56,7 @@ The manifest is `jpk/builtin/jess.toml`; `jess luau-types` copies these sources 
 | `@jess/net` | `src/net/` | [network loop](@/docs/api/net.md) | `net/`, `tests/lua/network_capability/`; sockets and DNS require the corresponding grants. |
 | `@jess/websocket` | `src/websocket/` | [WebSocket](@/docs/api/websocket.md) | `tests/lua/network_capability/websocket.rs`; TLS requires a usable trust store. |
 | `@jess/sse` | `src/sse/` | [event streams](@/docs/api/sse.md) | `sse/`, `tests/lua/network_capability/sse.rs`; a live stream requires network access. |
-| `@jess/render`, `@jess/render/camera` | `src/render/` | [render](@/docs/api/render.md) | `render/`; actual presentation requires a compatible GPU and, for windows, a display. |
+| `@jess/render`, `@jess/render/camera`, `@jess/render/cull` | `src/render/` | [render](@/docs/api/render.md) | `render/`; actual presentation requires a compatible GPU and, for windows, a display. |
 
 ### Public Rust modules
 

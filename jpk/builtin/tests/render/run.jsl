@@ -2,6 +2,7 @@
 -- @jess/render's cases: blocks, vertices, and elements written where program.layout puts each
 -- member, and the standard camera's matrices.
 local camera = require '@jess/render/camera'
+local cull = require '@jess/render/cull'
 local render = require '@jess/render'
 local test = require '@jess/test'
 local expect = test.expect
@@ -187,6 +188,90 @@ suite.describe('@jess/render/camera', function()
     end
 
     expect(function() camera.with { view = shader.mat4 } end).toThrow 'view is a camera member already'
+  end)
+end)
+
+suite.describe('@jess/render/cull', function()
+  local view = camera.lookAt(vector.create(3, 2, 8), vector.create(0, 0, -4), vector.create(0, 1, 0))
+  local viewProjection = camera.multiply(camera.perspective(math.rad(60), 16 / 9, 0.5, 60), view)
+
+  -- Points scattered through a cube far wider than the view, by a generator that needs no seed.
+  local function scattered(count: number, radius: number): buffer
+    local bounds, state = buffer.create(count * 16), 12345
+    local function next(): number
+      state = (state * 1103515245 + 12345) % 2147483648
+
+      return state / 2147483648 * 160 - 80
+    end
+
+    for index = 0, count - 1 do
+      buffer.writef32(bounds, index * 16, next())
+      buffer.writef32(bounds, index * 16 + 4, next())
+      buffer.writef32(bounds, index * 16 + 8, next())
+      buffer.writef32(bounds, index * 16 + 12, radius)
+    end
+
+    return bounds
+  end
+
+  suite.it('marks exactly the points the camera puts inside clip space', function()
+    local count = 4000
+    local bounds, mask = scattered(count, 0), buffer.create(count)
+    local visible = cull.spheres(bounds, count, viewProjection, mask)
+    local inside, behind = 0, 0
+    for index = 0, count - 1 do
+      local point = vector.create(
+        buffer.readf32(bounds, index * 16),
+        buffer.readf32(bounds, index * 16 + 4),
+        buffer.readf32(bounds, index * 16 + 8)
+      )
+      -- What clip space divides by is the last row's dot with the point: behind the camera it
+      -- is negative, where dividing by it would flip a point back into the box.
+      local divisor = viewProjection[4] * point.x
+        + viewProjection[8] * point.y
+        + viewProjection[12] * point.z
+        + viewProjection[16]
+      local clip = camera.transform(viewProjection, point)
+      local seen = divisor > 0
+        and math.abs(clip.x) <= 1
+        and math.abs(clip.y) <= 1
+        and clip.z >= 0
+        and clip.z <= 1
+      behind += if divisor <= 0 then 1 else 0
+      inside += if seen then 1 else 0
+      expect(buffer.readu8(mask, index)).toBe(if seen then 1 else 0)
+    end
+
+    expect(visible).toBe(inside)
+    expect(inside > 50 and inside < count / 2).toBe(true)
+    expect(behind > 500).toBe(true)
+  end)
+
+  suite.it('keeps a sphere that only reaches into the view, and writes from an offset', function()
+    local count = 4000
+    local points, spheres = scattered(count, 0), scattered(count, 6)
+    local narrow, wide = buffer.create(count), buffer.create(count + 8)
+    local few = cull.spheres(points, count, viewProjection, narrow)
+    local more = cull.spheres(spheres, count, viewProjection, wide, 8)
+    expect(more > few).toBe(true)
+    for index = 0, count - 1 do
+      -- A point the view holds is the centre of a sphere it holds.
+      expect(buffer.readu8(wide, index + 8) >= buffer.readu8(narrow, index)).toBe(true)
+    end
+
+    expect(buffer.readu32(wide, 0) + buffer.readu32(wide, 4)).toBe(0)
+    expect(cull.spheres(spheres, 0, viewProjection, wide)).toBe(0)
+  end)
+
+  suite.it('refuses what its buffers do not hold', function()
+    local bounds, mask = buffer.create(32), buffer.create(2)
+    expect(function() cull.spheres(bounds, 3, viewProjection, mask) end).toThrow(
+      '3 spheres of 16 bytes run past the 32 given'
+    )
+    expect(function() cull.spheres(bounds, 2, viewProjection, mask, 1) end).toThrow(
+      '2 bytes from 1 run past a mask of 2'
+    )
+    expect(function() cull.spheres(bounds, 2, { 1, 0, 0 }, mask) end).toThrow('a matrix is 16 numbers, not 3')
   end)
 end)
 

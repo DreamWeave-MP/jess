@@ -180,7 +180,7 @@ jess app.jsw                                   # anywhere, offline, no workspace
 - `jess.backup`: [`@jess/backup`](@/docs/api/backup.md).
 - `jess.http`: [`@jess/http`](@/docs/api/http.md) and [`@jess/sse`](@/docs/api/sse.md).
 - `jess.net`: [`@jess/net`](@/docs/api/net.md) and [`@jess/websocket`](@/docs/api/websocket.md).
-- `jess.render`: [`@jess/render`](@/docs/api/render.md) and `@jess/render/camera`.
+- `jess.render`: [`@jess/render`](@/docs/api/render.md), `@jess/render/camera`, and `@jess/render/cull`.
 
 Its tests ship in it.
 
