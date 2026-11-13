@@ -6,7 +6,7 @@ extra:
   kind: guide
 ---
 
-The [first package](@/docs/getting-started/first-package.md) runs a command to completion. An application target has a host that advances frames and calls managed modules. This one counts three frames and exits. It needs no window or special capability, so you can see the lifecycle without needing a graphics setup.
+The [first package](@/docs/getting-started/first-package.md) runs a command to completion. An application target has a host that advances frames and calls managed modules. This one counts three frames and exits. (`jess init <folder> --application <id>` writes a larger one, with a window, a triangle, and a worker, that runs as it stands.) It needs no window or special capability, so you can see the lifecycle without needing a graphics setup.
 
 Create a folder named `counter` with these files:
 

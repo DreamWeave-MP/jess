@@ -1,0 +1,16 @@
+manifest_version = 1
+
+[package]
+id = "__ID__"
+version = "0.1.0"
+jess_api = "1"
+include = ["src"]
+default_target = "__NAME__"
+
+[managed.app]
+module = "src/app.jsl"
+
+[targets.__NAME__]
+kind = "application"
+entry = "src/main.jsl"
+capabilities = ["gpu.device", "gpu.window", "worker.spawn"]

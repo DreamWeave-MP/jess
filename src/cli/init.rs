@@ -23,8 +23,14 @@ pub struct InitArgs {
     /// Set the folder up as a Package Source with this id (org.example.name) instead of a script
     /// folder: a jess.toml, a module, a test, and a command target, ready for jess package test,
     /// check, run, and pack.
-    #[arg(long, value_name = "ID")]
+    #[arg(long, value_name = "ID", conflicts_with = "application")]
     package: Option<String>,
+    /// Set the folder up as an application with this package id (org.example.name): a jess.toml
+    /// with an application target, and a module the host runs every frame that opens a window,
+    /// draws a triangle in it, and asks a worker for a greeting. It runs as it stands, with
+    /// jess package run --trusted.
+    #[arg(long, value_name = "ID")]
+    application: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -70,11 +76,22 @@ pub fn run(args: &InitArgs, format: Format) -> Result<(), String> {
         editor,
         force: args.force,
         package: args.package.clone(),
+        application: args.application.clone(),
     };
     let report = jess::lua::init::init(&args.dir, &options)
         .map_err(|error| format!("failed to set up '{}': {error}", args.dir.display()))?;
     let dir = args.dir.display();
-    let mut next_steps = if args.package.is_some() {
+    let mut next_steps = if args.application.is_some() {
+        vec![
+            format!("run it; close its window to stop: jess package run --trusted {dir}"),
+            format!("type-check it: jess package check {dir}"),
+            format!(
+                "what runs every frame is {}; what the host calls in it, and when, is in types/jess.d.jsl under \
+                 jess.application and jess.context",
+                args.dir.join("src/app.jsl").display()
+            ),
+        ]
+    } else if args.package.is_some() {
         vec![
             format!("test the package, from its source and packed: jess package test {dir}"),
             format!("type-check it: jess package check {dir}"),

@@ -91,6 +91,10 @@ pub struct InitOptions {
     /// Set the folder up as a Package Source with this id instead of a script folder: a
     /// `jess.toml`, a module, a test, and a command target, in place of `main.jsl`.
     pub package: Option<String>,
+    /// Set the folder up as an application with this package id instead: a `jess.toml` with an
+    /// application target, its entry, and a managed module that opens a window, draws in it, and
+    /// asks a worker something. Chosen over [`InitOptions::package`] if both are given.
+    pub application: Option<String>,
 }
 
 /// The pieces of a package id `jess init --package` writes a skeleton for: the id, its last
@@ -152,16 +156,24 @@ pub struct InitReport {
 ///
 /// They are the `.jessrc` aliasing `types`' modules, the example script or, with
 /// [`InitOptions::package`], the package skeleton (`jess.toml`, `src/init.jsl`, `tests/run.jsl`, and
-/// the target's entry under `tools/`), and the editor's settings.
+/// the target's entry under `tools/`) or, with [`InitOptions::application`], the application's
+/// (`jess.toml`, `src/main.jsl`, `src/app.jsl`), and the editor's settings.
 ///
 /// # Errors
 ///
-/// Returns an error if [`InitOptions::package`] isn't a well-formed package id.
+/// Returns an error if [`InitOptions::package`] or [`InitOptions::application`] isn't a
+/// well-formed package id.
 pub fn files(options: &InitOptions, types: &crate::lua::types::Types) -> io::Result<Vec<(String, String)>> {
     let mut files = vec![(".jessrc".to_owned(), types.jessrc(TYPES_FOLDER))];
-    match &options.package {
-        None => files.push(("main.jsl".to_owned(), MAIN.to_owned())),
-        Some(id) => {
+    match (&options.application, &options.package) {
+        (Some(id), _) => {
+            let names = PackageNames::parse(id)?;
+            files.push(("jess.toml".to_owned(), names.fill(APPLICATION_MANIFEST)));
+            files.push(("src/main.jsl".to_owned(), names.fill(APPLICATION_ENTRY)));
+            files.push(("src/app.jsl".to_owned(), names.fill(APPLICATION_MODULE)));
+        }
+        (None, None) => files.push(("main.jsl".to_owned(), MAIN.to_owned())),
+        (None, Some(id)) => {
             let names = PackageNames::parse(id)?;
             files.push(("jess.toml".to_owned(), names.fill(PACKAGE_MANIFEST)));
             files.push(("src/init.jsl".to_owned(), names.fill(PACKAGE_MODULE)));
@@ -220,6 +232,9 @@ pub fn init(dir: &Path, options: &InitOptions) -> io::Result<InitReport> {
 const MAIN: &str = include_str!("templates/main.jsl");
 
 /// The package skeleton, with `__ID__`, `__NAME__`, and `__LAYER__` for [`PackageNames`] to fill.
+const APPLICATION_MANIFEST: &str = include_str!("templates/application/jess.toml");
+const APPLICATION_ENTRY: &str = include_str!("templates/application/main.jsl");
+const APPLICATION_MODULE: &str = include_str!("templates/application/app.jsl");
 const PACKAGE_MANIFEST: &str = include_str!("templates/package/jess.toml");
 const PACKAGE_MODULE: &str = include_str!("templates/package/init.jsl");
 const PACKAGE_TEST: &str = include_str!("templates/package/run.jsl");
@@ -317,6 +332,7 @@ mod tests {
             editor: Editor::Helix,
             force: false,
             package: None,
+            application: None,
         };
         let first = init(&folder, &options).unwrap();
         assert_eq!(first.written.len(), 3);

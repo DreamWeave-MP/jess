@@ -116,6 +116,69 @@ fn rerunning_init_refreshes_the_types_and_keeps_your_files() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+/// The application skeleton type-checks as it stands, and runs: a window, a triangle, a worker's
+/// answer, and a clean stop. Running it opens a window, so that part needs `JESS_WINDOW_TESTS`
+/// on a desktop.
+#[test]
+fn init_application_writes_an_application_that_checks_and_runs() {
+    let dir = temp_dir_path("init-application");
+    drop(fs::remove_dir_all(&dir));
+    let report = init(&dir, &["--editor", "none", "--application", "org.example.walker"]);
+    let mut paths = written(&report);
+    paths.sort();
+    let expected = [".jessrc", "jess.toml", "src/app.jsl", "src/main.jsl"]
+        .iter()
+        .map(|name| dir.join(name).display().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(paths, expected, "{report}");
+    assert!(
+        report["next_steps"].to_string().contains("jess package run --trusted"),
+        "{report}"
+    );
+    let manifest = fs::read_to_string(dir.join("jess.toml")).unwrap();
+    assert!(manifest.contains("id = \"org.example.walker\""), "{manifest}");
+    assert!(
+        manifest.contains("[targets.walker]") && manifest.contains("kind = \"application\""),
+        "{manifest}"
+    );
+
+    let check = jess()
+        .args(["--format", "json", "package", "check"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(check.status.success(), "{}", String::from_utf8_lossy(&check.stderr));
+
+    let both = jess()
+        .args(["init", "--package", "org.example.a", "--application", "org.example.b"])
+        .arg(dir.join("both"))
+        .output()
+        .unwrap();
+    assert!(!both.status.success(), "a folder is a package or an application");
+
+    if std::env::var_os("JESS_WINDOW_TESTS").is_some() {
+        let run = jess()
+            .args(["package", "run", "--trusted", "--frames", "60"])
+            .arg(&dir)
+            .args(["--", "one"])
+            .output()
+            .unwrap();
+        assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+        assert_eq!(
+            String::from_utf8_lossy(&run.stdout).lines().collect::<Vec<_>>(),
+            [
+                "walker: 1 arguments; close the window to stop",
+                "hello, walker, from a worker",
+                "walker: stopped"
+            ]
+        );
+    } else {
+        eprintln!("SKIPPED running the application: set JESS_WINDOW_TESTS on a desktop to open its window");
+    }
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn init_package_writes_a_skeleton_that_tests_checks_and_runs() {
     let dir = temp_dir_path("init-package");
