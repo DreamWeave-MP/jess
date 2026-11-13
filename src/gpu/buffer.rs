@@ -75,7 +75,6 @@ impl fmt::Display for BufferUsage {
 }
 
 /// Bytes on the GPU.
-#[derive(Debug)]
 pub struct Buffer {
     pub(crate) raw: wgpu::Buffer,
     size: u64,
@@ -86,6 +85,16 @@ pub struct Buffer {
     /// storage buffer is the GPU's to write at any time.
     written: Option<Mutex<Option<Box<[u8]>>>>,
     token: Token,
+}
+
+impl fmt::Debug for Buffer {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Buffer")
+            .field("size", &self.size)
+            .field("usage", &self.usage)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Buffer {
@@ -188,9 +197,10 @@ impl Gpu {
     pub fn write_buffer(&self, buffer: &Buffer, offset: u64, bytes: &[u8]) -> Result<(), GpuError> {
         let length = bytes.len() as u64;
         check_range(buffer, offset, length)?;
-        self.checked(|| self.queue.write_buffer(&buffer.raw, offset, bytes))?;
+        // Before the GPU has them: a draw checked from another thread in between is checked
+        // against what it will draw with.
         buffer.cpu_wrote(offset, bytes);
-        Ok(())
+        self.checked(|| self.queue.write_buffer(&buffer.raw, offset, bytes))
     }
 
     /// Writes `bytes` into `buffer` at `offset`, as [`Gpu::write_buffer`] does, at the next

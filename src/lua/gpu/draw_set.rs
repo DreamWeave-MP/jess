@@ -213,7 +213,7 @@ fn describe_range(set: &mut UserdataBuilder<'_, LuaGpuDrawSet>) {
         ),
         (
             "first",
-            "the first vertex",
+            "first",
             |range| f64::from(range.first),
             |range, first| DrawRange { first, ..range },
         ),

@@ -675,7 +675,7 @@ fn a_range_past_a_buffers_end_is_refused() {
                 first: u32::MAX,
                 ..shared.draw()
             },
-            "6 from 4294967295 is more than a draw counts",
+            "6 from 4294967295 pass 4294967295, the most a draw counts to",
         ),
         (
             Draw { first: 3, ..plain },
@@ -709,14 +709,14 @@ fn a_range_past_a_buffers_end_is_refused() {
                 vertices_offset: 6,
                 ..shared.draw()
             },
-            "its vertices start 6 bytes into its 64-byte vertex buffer: expected a multiple of 4 inside it",
+            "its vertices start 6 bytes into its 64-byte vertex buffer: expected a multiple of 4 before its end",
         ),
         (
             Draw {
                 instances_offset: 128,
                 ..shared.draw()
             },
-            "its instances start 128 bytes into its 128-byte instance buffer: expected a multiple of 4 inside it",
+            "its instances start 128 bytes into its 128-byte instance buffer: expected a multiple of 4 before its end",
         ),
         (
             Draw {
@@ -724,7 +724,7 @@ fn a_range_past_a_buffers_end_is_refused() {
                 count: 0,
                 ..shared.draw()
             },
-            "its vertices start 68 bytes into its 64-byte vertex buffer: expected a multiple of 4 inside it",
+            "its vertices start 68 bytes into its 64-byte vertex buffer: expected a multiple of 4 before its end",
         ),
         (
             Draw { base_vertex: 4, ..plain },
@@ -849,6 +849,16 @@ fn a_first_instance_the_device_cannot_draw_is_refused() {
         gpu.render(&[clear], None, &[draw]).unwrap_err().to_string(),
         "draw 0 is invalid: its indirect arguments start at instance 1, and this device draws an indirect draw from \
          instance 0 only: bind its instances from an offset instead"
+    );
+
+    let based = Draw {
+        base_vertex: 4,
+        ..shared.draw()
+    };
+    assert!(!gpu.info().base_vertex);
+    assert_eq!(
+        gpu.render(&[clear], None, &[based]).unwrap_err().to_string(),
+        "draw 0 is invalid: its base vertex is 4, and this device adds none to an index"
     );
 
     gpu.write_buffer(&arguments, 16, &0u32.to_le_bytes()).unwrap();

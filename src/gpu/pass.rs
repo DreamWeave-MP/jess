@@ -335,7 +335,9 @@ fn check_draw(index: usize, draw: &Draw<'_>, colors: &[Target<'_>], depth: Optio
             target.texture.desc().samples
         ))
     } else {
-        group_problem(draw, &Frequency::ALL).or_else(|| buffer_problem(draw))
+        group_problem(draw, &Frequency::ALL)
+            .or_else(|| buffer_problem(draw))
+            .or_else(|| first_instance_problem(draw))
     };
     let Some(problem) = problem else {
         return Ok(());
@@ -378,7 +380,16 @@ fn arguments_problem(draw: &Draw<'_>, buffer: &Buffer, offset: u64) -> Option<St
     if draw.first != 0 || draw.base_vertex != 0 {
         return Some("its first vertex and base vertex are its indirect arguments', and the draw gives them too".to_owned());
     }
-    buffer.first_instance(offset + needed - 4).map(|first| {
+    None
+}
+
+/// What is wrong with the instance an indirect draw starts at, where the device starts at 0 only
+/// and the CPU wrote the arguments. They are data, like the counts beside them, so this is a
+/// pass's check of a draw it is about to record, never a draw set's of what it may draw later.
+fn first_instance_problem(draw: &Draw<'_>) -> Option<String> {
+    let (buffer, offset) = draw.indirect?;
+    let last = if draw.indices.is_some() { 16 } else { 12 };
+    buffer.first_instance(offset + last).map(|first| {
         format!(
             "its indirect arguments start at instance {first}, and this device draws an indirect draw from instance \
              0 only: bind its instances from an offset instead"
@@ -388,7 +399,7 @@ fn arguments_problem(draw: &Draw<'_>, buffer: &Buffer, offset: u64) -> Option<St
 
 /// What is wrong with a draw's buffers and the range of them it draws, if anything. An indirect
 /// draw's counts are the GPU's, so only its buffers' usages and offsets and its argument buffer's
-/// size are checked, and its first instance where the device can't draw one and the CPU wrote it.
+/// size are checked. A range of nothing fits wherever it ends inside its buffers.
 pub fn buffer_problem(draw: &Draw<'_>) -> Option<String> {
     let counted = draw.indirect.is_none();
     let indexed = draw.indices.is_some();
@@ -399,7 +410,17 @@ pub fn buffer_problem(draw: &Draw<'_>) -> Option<String> {
     } else if draw.base_vertex != 0 && !indexed {
         return Some("its base vertex is added to indices, and the draw has none".to_owned());
     } else if draw.first.checked_add(draw.count).is_none() {
-        return Some(format!("{} from {} is more than a draw counts", draw.count, draw.first));
+        return Some(format!(
+            "{} from {} pass {}, the most a draw counts to",
+            draw.count,
+            draw.first,
+            u32::MAX
+        ));
+    } else if draw.base_vertex != 0 && !draw.pipeline.base_vertex {
+        return Some(format!(
+            "its base vertex is {}, and this device adds none to an index",
+            draw.base_vertex
+        ));
     }
     let [vertex_stride, instance_stride] = draw.pipeline.strides;
     // What each buffer holds from its offset on: the vertices a draw without indices names, and
@@ -450,7 +471,7 @@ pub fn buffer_problem(draw: &Draw<'_>) -> Option<String> {
         let Some(left) = left.filter(|_| offset.is_multiple_of(4)) else {
             return Some(format!(
                 "its {plural} start {offset} bytes into its {}-byte {name} buffer: expected a multiple of 4 \
-                 inside it",
+                 before its end",
                 buffer.size()
             ));
         };
@@ -468,6 +489,12 @@ pub fn buffer_problem(draw: &Draw<'_>) -> Option<String> {
             ));
         }
     }
+    index_problem(draw)
+}
+
+/// What is wrong with the indices a draw draws, if it has any and anything is.
+fn index_problem(draw: &Draw<'_>) -> Option<String> {
+    let counted = draw.indirect.is_none();
     let (buffer, format) = draw.indices?;
     let width = match format {
         IndexFormat::U16 => 2,

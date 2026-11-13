@@ -683,3 +683,81 @@ fn draw_passes_are_checked_against_their_sets() {
         "pass overlay is invalid: draw 0 is invalid: its program binds a pass group, and the draw gives none"
     );
 }
+
+/// A set of `pipeline` drawing a rectangle's six vertices, tagged `opaque`, with the counts in
+/// `arguments`.
+fn counted_by(gpu: &Gpu, pipeline: &Arc<RenderPipeline>, arguments: &Arc<Buffer>) -> Arc<DrawSet> {
+    let vertices = gpu.buffer(72, BufferUsage::VERTEX).unwrap();
+    let material = gpu
+        .bind_group(pipeline, Frequency::Material, &[Binding::Uniform(&uniform(gpu, &[1.0; 4]))])
+        .unwrap();
+    let set = DrawSet::new(DrawSetDesc {
+        pipeline: pipeline.clone(),
+        material: Some(Arc::new(material)),
+        draw: None,
+        vertices: Some(Arc::new(vertices)),
+        instances: None,
+        indices: None,
+        indirect: Some((arguments.clone(), 0)),
+        range: DrawRange::new(0),
+        tags: vec!["opaque".to_owned()],
+    });
+    Arc::new(set.expect("a draw set is made whatever its arguments hold: they are data"))
+}
+
+/// On a device that starts an indirect draw at instance 0 only, a run refuses arguments the CPU
+/// wrote to start elsewhere, and never judges by them a buffer one of its own passes writes.
+#[test]
+fn a_run_judges_arguments_by_who_wrote_them_last() {
+    if gpu("a_run_judges_arguments_by_who_wrote_them_last").is_none() {
+        return;
+    }
+    let gpu = Gpu::headless_plain().unwrap();
+    let scene = scene(&gpu);
+    let plan = gpu.plan(&scene.graph, scene.work.clone(), VIEWPORT).unwrap();
+    let solid = lit(&gpu, true);
+    let target = output(&gpu);
+    let from_second: Vec<u8> = [6u32, 1, 0, 1].iter().flat_map(|word| word.to_le_bytes()).collect();
+    let arguments = |size: u32| {
+        let buffer = Arc::new(gpu.buffer(u64::from(size), BufferUsage::INDIRECT).unwrap());
+        gpu.write_buffer(&buffer, 0, &from_second).unwrap();
+        buffer
+    };
+
+    // The copy the plan ends with goes into `pixels`, which these runs give as another buffer.
+    let (written, pixels) = (arguments(16), arguments(ROW * SIZE));
+    let stale = counted_by(&gpu, &solid, &written);
+    scene.sets.add(&stale);
+    let spare = gpu.buffer(u64::from(ROW * SIZE), BufferUsage::default()).unwrap();
+    let error = refused(gpu.run(
+        &plan,
+        &scene.sets,
+        &[Import::Texture("output", &target), Import::Buffer("pixels", &spare)],
+    ));
+    assert!(
+        error.starts_with("pass opaque is invalid: draw ")
+            && error.ends_with(
+                "its indirect arguments start at instance 1, and this device draws an indirect draw from instance 0 \
+                 only: bind its instances from an offset instead"
+            ),
+        "{error}"
+    );
+    gpu.write_buffer(&written, 12, &0u32.to_le_bytes()).unwrap();
+    gpu.run(
+        &plan,
+        &scene.sets,
+        &[Import::Texture("output", &target), Import::Buffer("pixels", &spare)],
+    )
+    .expect("arguments written again to start at instance 0");
+
+    scene.sets.remove(&stale);
+    scene.sets.add(&counted_by(&gpu, &solid, &pixels));
+    for _ in 0..2 {
+        gpu.run(
+            &plan,
+            &scene.sets,
+            &[Import::Texture("output", &target), Import::Buffer("pixels", &pixels)],
+        )
+        .expect("what the CPU wrote says nothing about a buffer the run's copy writes");
+    }
+}

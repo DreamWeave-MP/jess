@@ -122,6 +122,9 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         })
         .untyped();
     device
+        .getter("baseVertex", |this: &LuaGpuDevice| this.gpu.info().base_vertex)
+        .untyped();
+    device
         .getter("live", |this: &LuaGpuDevice, call: &Call<'_>| counts(call, this.gpu.live()))
         .untyped();
     device

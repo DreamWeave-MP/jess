@@ -733,7 +733,7 @@ fn a_script_draws_ranges_of_shared_buffers() {
         (
             "short.instancesOffset = 48",
             "GpuDrawSet.instancesOffset: the draw set is invalid: its instances start 48 bytes into its 48-byte \
-             instance buffer: expected a multiple of 4 inside it",
+             instance buffer: expected a multiple of 4 before its end",
         ),
         (
             "short.instanceCount = 2",
@@ -743,7 +743,7 @@ fn a_script_draws_ranges_of_shared_buffers() {
         (
             "short.verticesOffset = 6",
             "GpuDrawSet.verticesOffset: the draw set is invalid: its vertices start 6 bytes into its 64-byte vertex \
-             buffer: expected a multiple of 4 inside it",
+             buffer: expected a multiple of 4 before its end",
         ),
         (
             "short.baseVertex = 0.5",
@@ -751,7 +751,7 @@ fn a_script_draws_ranges_of_shared_buffers() {
         ),
         (
             "short.first = -1",
-            "GpuDrawSet.first: the first vertex is a whole number from 0 to 4294967295, not -1",
+            "GpuDrawSet.first: first is a whole number from 0 to 4294967295, not -1",
         ),
         ("short:change(6)", "GpuDrawSet:change takes a table, not number"),
         (
@@ -803,6 +803,7 @@ fn a_script_draws_indirectly_from_a_first_instance() {
               tags = {{ 'scene' }},
             }})
             assert(drawn() == 'black black red red', drawn())
+            assert(device.indirectFirstInstance and device.baseVertex)
         "
     );
     match runtime.exec(&script) {
@@ -810,6 +811,9 @@ fn a_script_draws_indirectly_from_a_first_instance() {
         Err(error) => {
             let error = error.to_string();
             assert!(error.contains("its indirect arguments start at instance 1"), "{error}");
+            runtime
+                .exec("assert(not jess.gpu.device().indirectFirstInstance, 'a device that can was refused')")
+                .unwrap_or_else(|error| panic!("{error}"));
         }
     }
 }

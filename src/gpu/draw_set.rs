@@ -179,8 +179,17 @@ impl DrawSet {
     /// multiple of 4 inside its buffer, a base vertex without indices, or a first vertex or base
     /// vertex on an indirect draw, whose arguments hold them.
     pub fn set_range(&self, range: DrawRange) -> Result<(), GpuError> {
-        self.check(range)?;
-        *self.range.lock().unwrap_or_else(PoisonError::into_inner) = range;
+        self.change(|_| range)
+    }
+
+    /// Draws what `change` makes of its range, read and replaced as one step, so two changes to
+    /// different parts of it from two threads both happen.
+    fn change(&self, change: impl FnOnce(DrawRange) -> DrawRange) -> Result<(), GpuError> {
+        let mut range = self.range.lock().unwrap_or_else(PoisonError::into_inner);
+        let changed = change(*range);
+        self.check(changed)?;
+        *range = changed;
+        drop(range);
         Ok(())
     }
 
@@ -196,7 +205,7 @@ impl DrawSet {
     ///
     /// A count that runs past its vertex or index buffer.
     pub fn set_count(&self, count: u32) -> Result<(), GpuError> {
-        self.set_range(DrawRange { count, ..self.range() })
+        self.change(|range| DrawRange { count, ..range })
     }
 
     /// How many instances it draws.
@@ -211,10 +220,7 @@ impl DrawSet {
     ///
     /// More than its instance buffer holds.
     pub fn set_instance_count(&self, instance_count: u32) -> Result<(), GpuError> {
-        self.set_range(DrawRange {
-            instance_count,
-            ..self.range()
-        })
+        self.change(|range| DrawRange { instance_count, ..range })
     }
 
     /// Whether the passes that take it draw it.

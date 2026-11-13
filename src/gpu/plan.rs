@@ -1028,6 +1028,16 @@ impl Gpu {
             held.push(self.hold(plan, sets, &live, position)?);
         }
 
+        // What a pass of this run writes into a buffer, a draw of a later one may take its
+        // arguments from: what the CPU last wrote there says nothing once the run is checked.
+        for &position in &running {
+            for output in &graph.passes()[plan.passes[position].index].outputs {
+                if let Some(Live::Buffer(buffer)) = live[output.resource.index()] {
+                    buffer.gpu_wrote();
+                }
+            }
+        }
+
         let mut recorded = Vec::with_capacity(running.len());
         for (&position, held) in running.iter().zip(&held) {
             let pass = &graph.passes()[plan.passes[position].index];
@@ -1307,11 +1317,7 @@ impl Recording<'_> {
         timed: Option<(&wgpu::QuerySet, u32)>,
     ) {
         for output in &pass.outputs {
-            let Some(Live::Buffer(buffer)) = live[output.resource.index()] else {
-                continue;
-            };
-            buffer.gpu_wrote();
-            if let LoadOp::Clear(_) = output.load {
+            if let (LoadOp::Clear(_), Some(Live::Buffer(buffer))) = (output.load, live[output.resource.index()]) {
                 encoder.clear_buffer(&buffer.raw, 0, None);
             }
         }

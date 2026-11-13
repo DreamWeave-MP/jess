@@ -130,6 +130,9 @@ pub struct GpuInfo {
     /// before 4.2, OpenGL ES), such a draw is refused when the CPU wrote its arguments, and
     /// draws nothing when the GPU did.
     pub indirect_first_instance: bool,
+    /// Whether an indexed draw may add a base vertex to its indices: everything but OpenGL ES
+    /// before 3.2. Where it can't, a draw that gives one is refused.
+    pub base_vertex: bool,
 }
 
 /// The process's wgpu instances: one of the primary backends (Vulkan, Metal, Direct3D 12), and one
@@ -191,22 +194,29 @@ impl Gpu {
     ///
     /// No adapter at all, or one that opens no device.
     pub fn headless() -> Result<Gpu, GpuError> {
-        Gpu::open(wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::INDIRECT_FIRST_INSTANCE)
+        Gpu::open(false)
     }
 
-    /// As [`Gpu::headless`], asking the adapter for nothing it could do without: the device the
-    /// least able backend gives, which neither times passes nor starts an indirect draw past
-    /// instance 0, for testing what a script meets there.
+    /// As [`Gpu::headless`], on the same adapter, with everything a device may lack left off: it
+    /// times no pass, starts no indirect draw past instance 0, and adds no base vertex to an
+    /// index. Tests open it to meet, on any machine, what a script meets on a device that can't.
     ///
     /// # Errors
     ///
     /// As [`Gpu::headless`].
+    #[doc(hidden)]
     pub fn headless_plain() -> Result<Gpu, GpuError> {
-        Gpu::open(wgpu::Features::empty())
+        Gpu::open(true)
     }
 
-    /// A device on whatever adapter the machine has, with those of `wanted` it offers.
-    fn open(wanted: wgpu::Features) -> Result<Gpu, GpuError> {
+    /// A device on whatever adapter the machine has, with what it offers of what jess uses, or
+    /// none of it for a `plain` one.
+    fn open(plain: bool) -> Result<Gpu, GpuError> {
+        let wanted = if plain {
+            wgpu::Features::empty()
+        } else {
+            wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::INDIRECT_FIRST_INSTANCE
+        };
         let _opening = OPENING.lock().unwrap_or_else(PoisonError::into_inner);
         let mut found = None;
         'search: for (instance, backends) in [(&PRIMARY, wgpu::Backends::PRIMARY), (&FALLBACK, wgpu::Backends::GL)] {
@@ -253,6 +263,11 @@ impl Gpu {
             max_workgroups: limits.max_compute_workgroups_per_dimension,
             timestamps: features.contains(wgpu::Features::TIMESTAMP_QUERY),
             indirect_first_instance: features.contains(wgpu::Features::INDIRECT_FIRST_INSTANCE),
+            base_vertex: !plain
+                && adapter
+                    .get_downlevel_capabilities()
+                    .flags
+                    .contains(wgpu::DownlevelFlags::BASE_VERTEX),
         };
         Ok(Gpu {
             instance,

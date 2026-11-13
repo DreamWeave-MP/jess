@@ -500,7 +500,7 @@ pub fn range_fields(
     Ok(DrawRange {
         count: field("count", "the count", from.map(|range| range.count))?,
         instance_count: field("instanceCount", "the instance count", Some(range.instance_count))?,
-        first: field("first", "the first vertex", Some(range.first))?,
+        first: field("first", "first", Some(range.first))?,
         base_vertex,
         vertices_offset: field(
             "verticesOffset",
