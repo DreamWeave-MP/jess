@@ -169,10 +169,10 @@ pub struct Scripts {
 /// The table chooses code that runs with what the script was granted, and a script does not
 /// choose the folders above it. So on Unix the nearest workspace file counts only when it is a
 /// plain file, never a link to one; the user running the script owns it and nobody else may
-/// write it; and its folder is that user's or root's, and not one others may write unless it is
-/// sticky, so the file cannot be swapped for another. Anything less is passed over as if no file
-/// were there, and so is everything above it. The file is opened once: what is judged is what is
-/// read.
+/// write it; and the same is true of the folder it is in, so that nobody else can swap the file,
+/// link another user's into its place, or put packages beside it. Anything less is passed over as
+/// if no file were there, and so is everything above it. The file is opened once: what is judged
+/// is what is read.
 ///
 /// Every package the table names, and every entry of a folder it names, must be inside the
 /// workspace once links are followed.
@@ -234,40 +234,35 @@ fn scripts_file(script: &Path) -> Result<Option<(PathBuf, String)>, String> {
 fn read_own(folder: &Path, file: &Path) -> Result<Option<String>, String> {
     use std::io::Read;
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-    /// Write permission for the group and for everyone else, and the sticky bit, under which a
-    /// folder's entries are their owners' alone to rename or remove.
+    /// Write permission for the group and for everyone else.
     const OTHERS_WRITE: u32 = 0o022;
-    const STICKY: u32 = 0o1000;
     // SAFETY: `geteuid` takes nothing, touches no memory, and cannot fail.
     let user = unsafe { libc::geteuid() };
-    let Ok(around) = std::fs::metadata(folder) else {
-        return Ok(None);
-    };
-    let kept =
-        (around.uid() == user || around.uid() == 0) && (around.mode() & OTHERS_WRITE == 0 || around.mode() & STICKY != 0);
-    if !kept {
+    let own = |metadata: &std::fs::Metadata| metadata.uid() == user && metadata.mode() & OTHERS_WRITE == 0;
+    // The folder first: in one that is the user's alone, nobody else made what has the name, and
+    // nobody else can change which file has it from here on.
+    if !std::fs::metadata(folder).is_ok_and(|around| own(&around)) {
         return Ok(None);
     }
+    // The user's own link is still not the file it names: the table's paths are below this folder.
+    if std::fs::symlink_metadata(file).is_ok_and(|found| found.is_symlink()) {
+        return Ok(None);
+    }
+    let failed = |error: std::io::Error| format!("'{}': {error}", file.display());
     // Never through a link, and never waiting on a FIFO: the handle opened here is the one whose
-    // owner is asked and whose bytes are read.
-    let opened = std::fs::OpenOptions::new()
+    // owner is asked and whose bytes are read. A file of the user's that will not open is theirs
+    // to hear about.
+    let mut opened = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(file);
-    let Ok(mut opened) = opened else {
-        return Ok(None);
-    };
-    let Ok(metadata) = opened.metadata() else {
-        return Ok(None);
-    };
-    if !metadata.is_file() || metadata.uid() != user || metadata.mode() & OTHERS_WRITE != 0 {
+        .open(file)
+        .map_err(failed)?;
+    let metadata = opened.metadata().map_err(failed)?;
+    if !metadata.is_file() || !own(&metadata) {
         return Ok(None);
     }
     let mut text = String::new();
-    opened
-        .read_to_string(&mut text)
-        .map(|_| Some(text))
-        .map_err(|error| format!("'{}': {error}", file.display()))
+    opened.read_to_string(&mut text).map(|_| Some(text)).map_err(failed)
 }
 
 /// The text of the workspace file `file`: whose it is isn't asked on a system this build has no

@@ -30,11 +30,13 @@ fn folder(name: &str, scripts: &str) -> PathBuf {
 fn workspace_file(root: &Path, scripts: &str) {
     let path = root.join("jess-workspace.toml");
     fs::write(&path, format!("manifest_version = 1\n\n[workspace]\nmembers = []\n{scripts}")).unwrap();
-    // Whatever umask the tests run under, the file is its owner's alone to write.
+    // Whatever umask the tests run under, the file and its folder are their owner's alone to
+    // write.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        fs::set_permissions(root, fs::Permissions::from_mode(0o755)).unwrap();
     }
 }
 
@@ -166,10 +168,26 @@ fn a_table_others_could_have_written_or_that_leaves_the_workspace_is_not_used() 
         !passed && stderr.contains("@greeter"),
         "a file in an open folder was read: {stderr}"
     );
+    // Sticky or not: others could put the packages it names beside it.
     fs::set_permissions(&root, fs::Permissions::from_mode(0o1777)).unwrap();
     let (passed, _, stderr) = ran(&["run"], &script);
-    assert!(passed, "a sticky folder keeps its files their owners': {stderr}");
+    assert!(
+        !passed && stderr.contains("@greeter"),
+        "a file in a shared folder was read: {stderr}"
+    );
     fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+
+    // A file of the user's own that can't be read is said, not passed over. Root reads anything,
+    // so there the file is simply read.
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
+    let (passed, _, stderr) = ran(&["run"], &script);
+    if fs::read(&file).is_err() {
+        assert!(
+            !passed && stderr.contains("jess-workspace.toml") && !stderr.contains("@greeter"),
+            "{stderr}"
+        );
+    }
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
 
     let outside = temp_dir_path("scripts-held-outside");
     drop(fs::remove_dir_all(&outside));
