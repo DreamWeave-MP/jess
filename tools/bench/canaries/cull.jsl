@@ -1,0 +1,43 @@
+--!strict
+-- `@jess/render/cull` over a scene's worth of bounding spheres: the workload its `--!native`
+-- answers to. The module is measured as it ships; its bytecode figure is the same run with the
+-- directive taken off the module.
+local camera = require '@jess/render/camera'
+local cull = require '@jess/render/cull'
+
+local Spheres = 20000
+
+local function run(scale: number): number
+  local bounds, mask = buffer.create(Spheres * 16), buffer.create(Spheres)
+  local state = 12345
+  local function scattered(span: number): number
+    state = (state * 1103515245 + 12345) % 2147483648
+
+    return (state / 2147483648 - 0.5) * span
+  end
+
+  for index = 0, Spheres - 1 do
+    buffer.writef32(bounds, index * 16, scattered(400))
+    buffer.writef32(bounds, index * 16 + 4, scattered(40))
+    buffer.writef32(bounds, index * 16 + 8, scattered(400))
+    buffer.writef32(bounds, index * 16 + 12, 3 + scattered(4))
+  end
+
+  local view = camera.lookAt(vector.zero, vector.create(0, 0, -1), vector.create(0, 1, 0))
+  local viewProjection = camera.multiply(camera.perspective(math.rad(60), 16 / 9, 0.1, 300), view)
+  local frames = math.max(1, math.floor(2000 * scale))
+
+  local started, visible = os.clock(), 0
+  for _ = 1, frames do
+    visible += cull.spheres(bounds, Spheres, viewProjection, mask)
+  end
+
+  assert(visible > 0 and visible < frames * Spheres)
+  return os.clock() - started
+end
+
+return table.freeze {
+  name = 'cull',
+  path = 'tools/bench/canaries/cull.jsl',
+  run = run,
+}

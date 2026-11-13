@@ -113,7 +113,7 @@ walker: stopped
 
 {{ api_signature(value="jess docs [PAGE]") }}
 
-Prints the guide this jess carries, for a machine with no route to the site: every page under Getting Started, Scripting, the cookbook, the CLI, the reference, and Contributing, as it was when the binary was built. Without a page it lists them, each with its description; with one, it prints that page as Markdown, links to other pages rewritten as the command that prints them.
+Prints the guide this jess carries, for a machine with no route to the site: every page under Getting Started, Scripting, the cookbook, the CLI, the reference, and Contributing, as it was when the binary was built. Without a page it lists them, each with its description; with one, it prints that page as Markdown, each link to another page of the guide rewritten as the command that prints it, and code left exactly as written.
 
 ```sh
 jess docs
@@ -125,7 +125,7 @@ jess docs cookbook/worker
 error: no page called applications: did you mean scripting/applications?
 ```
 
-The API reference isn't among the pages. It is generated from jess's source documentation, and `jess luau-types <folder>` (or `jess init`) writes that documentation into `<folder>/jess.d.jsl` beside the types, which is where to read it offline. `--format` doesn't shape what `docs` prints: it is prose.
+The API reference isn't among the pages, and a link to it says so. It is generated from jess's source documentation, which `jess luau-types <folder>` (or `jess init`) writes beside the types: jess's own in `<folder>/jess.d.jsl`, and each module's with its stub under `<folder>/jess` and `<folder>/dream`. That is where to read it offline. `--format` doesn't shape what `docs` prints: it is prose.
 
 ## luau-types
 

@@ -426,6 +426,7 @@ print(pass.size, string.format('%.3f', origin.z))
 ```
 
 `pass:upload(cameraBuffer)` then writes the block into a uniform buffer of `pass.size` bytes, which `pipeline:bind('pass', { [0] = cameraBuffer })` binds. The [windowed application](@/docs/scripting/applications.md#a-window) does exactly that every frame.
+
 ## Culling
 
 `@jess/render/cull` says which of a scene's bounding spheres the camera may see, so a script hides the rest. It is a loop over every sphere, every frame, which is why it is one of the few modules compiled natively.

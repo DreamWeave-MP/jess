@@ -2,11 +2,13 @@
 --!native
 -- @jess/render/cull: which bounding spheres the standard camera may see.
 --
--- Native whole: its one function is a loop over every sphere of a scene, every frame. On a
--- verified build, 20,000 spheres against the six planes took about 1.8 ms as bytecode and 0.4 ms
--- native. The conventions are the camera's: column-order matrices, and clip-space depth from 0
--- to 1.
-local camera = require './camera'
+-- Native whole: its one function is a loop over every sphere of a scene, every frame. The
+-- workload is tools/bench/canaries/cull.jsl in jess's repository: on a verified build, 20,000
+-- spheres against the six planes took about 1.8 ms as bytecode and 0.4 ms native. The
+-- conventions are the camera's: column-order matrices, and clip-space depth from 0 to 1.
+
+--- A 4×4 matrix: 16 numbers, column by column, as `@jess/render/camera` makes them.
+export type Matrix = { number }
 
 local cull = {}
 
@@ -15,20 +17,23 @@ local cull = {}
 --- `viewProjection` is projection after view, as `camera.multiply(projection, view)` gives it;
 --- and `mask` gets a byte a sphere from `maskOffset` (0 by default): 1 where any of the sphere is
 --- inside all six planes of the view, 0 where it is wholly outside one. A sphere near a corner
---- of the view may be marked though no part of it shows: the test errs toward drawing.
+--- of the view may be marked though no part of it shows: the test errs toward drawing. A sphere
+--- whose centre or radius isn't a number is never marked.
 function cull.spheres(
   bounds: buffer,
   count: number,
-  viewProjection: camera.Matrix,
+  viewProjection: Matrix,
   mask: buffer,
   maskOffset: number?
 ): number
   assert(#viewProjection == 16, `@jess/render/cull: a matrix is 16 numbers, not {#viewProjection}`)
+  assert(count % 1 == 0, `@jess/render/cull: a count is a whole number, not {count}`)
   assert(
     count >= 0 and count * 16 <= buffer.len(bounds),
     `@jess/render/cull: {count} spheres of 16 bytes run past the {buffer.len(bounds)} given`
   )
   local first = maskOffset or 0
+  assert(first % 1 == 0, `@jess/render/cull: a mask offset is a whole number, not {first}`)
   assert(
     first >= 0 and first + count <= buffer.len(mask),
     `@jess/render/cull: {count} bytes from {first} run past a mask of {buffer.len(mask)}`
@@ -41,9 +46,12 @@ function cull.spheres(
     local normalY = last * viewProjection[8] + sign * viewProjection[row + 4]
     local normalZ = last * viewProjection[12] + sign * viewProjection[row + 8]
     local offset = last * viewProjection[16] + sign * viewProjection[row + 12]
-    local scale = 1 / math.sqrt(normalX * normalX + normalY * normalY + normalZ * normalZ)
+    local length = math.sqrt(normalX * normalX + normalY * normalY + normalZ * normalZ)
+    -- A plane with no direction is no plane: a projection whose far plane is infinitely far
+    -- has one. Everything is inside it, unless the matrix puts nothing inside at all.
+    if length == 0 then return 0, 0, 0, if offset >= 0 then math.huge else -math.huge end
 
-    return normalX * scale, normalY * scale, normalZ * scale, offset * scale
+    return normalX / length, normalY / length, normalZ / length, offset / length
   end
 
   local leftX, leftY, leftZ, leftW = plane(1, 1, 1)
