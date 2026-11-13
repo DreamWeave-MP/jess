@@ -95,6 +95,35 @@ fn a_bounded_run_answers_its_result_or_the_limit_that_stopped_it() {
     );
 }
 
+/// l3i 2.10.0: a run answers by its child once a capture is only held by something the child
+/// started, says so, and gives a capture that names no ceiling one all the same.
+#[cfg(unix)]
+#[test]
+fn a_run_does_not_wait_on_a_capture_something_else_holds() {
+    common::run(
+        &spawning(),
+        r"
+        local process = require('@dream/process')
+
+        local started = os.clock()
+        local result = assert(process.run('sh', { '-c', 'sleep 20 & echo out; exit 4' },
+          { stdout = 'capture', timeoutMs = 15000 }))
+        assert(result.code == 4 and result.stdout == 'out\n', tostring(result.code))
+        assert(result.held == true, 'a capture cut short is said to be')
+        assert(os.clock() - started < 5, 'the child, not what it left behind, ended the run')
+
+        local whole = assert(process.run('sh', { '-c', 'echo all' }, { stdout = 'capture' }))
+        assert(whole.held == nil and whole.stdout == 'all\n')
+
+        local big, _, kind = process.run('head', { '-c', tostring(64 * 1024 * 1024 + 1), '/dev/zero' }, { stdout = 'capture' })
+        assert(big == nil and kind == 'outputLimit', tostring(kind))
+
+        local nowhere, message, missing = process.run('true', {}, { cwd = '/no/such/jess/directory' })
+        assert(nowhere == nil and missing == 'notFound' and string.find(message, 'cwd', 1, true), tostring(message))
+    ",
+    );
+}
+
 #[test]
 fn a_started_child_is_written_to_and_read_from_without_blocking() {
     common::run(
