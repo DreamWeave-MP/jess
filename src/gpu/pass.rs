@@ -73,13 +73,23 @@ pub struct Draw<'a> {
     pub indices: Option<(&'a Buffer, IndexFormat)>,
     /// How many vertices, or indices, to draw.
     pub count: u32,
-    /// How many instances.
+    /// How many instances; none draws nothing.
     pub instance_count: u32,
+    /// The first vertex drawn, or the first index of an indexed draw.
+    pub first: u32,
+    /// What is added to every index before it names a vertex; an indexed draw's only.
+    pub base_vertex: i32,
+    /// How many bytes into `vertices` its first vertex is: a multiple of 4.
+    pub vertices_offset: u64,
+    /// How many bytes into `instances` its first instance is: a multiple of 4.
+    pub instances_offset: u64,
     /// Where the counts come from instead, written by the GPU: the buffer, and the offset of
     /// four `u32`s in it (vertex count, instance count, first vertex, first instance) or, for an
     /// indexed draw, five (index count, instance count, first index, base vertex, first instance).
-    /// `count` and `instance_count` are then ignored, and nothing checks the counts against the
-    /// buffers: the GPU keeps a draw past their ends inside them.
+    /// `count`, `instance_count`, `first`, and `base_vertex` are then the buffer's, and nothing
+    /// checks the counts against the buffers: the GPU keeps a draw past their ends inside them.
+    /// A first instance that isn't 0 needs a device with
+    /// [`indirect_first_instance`](super::GpuInfo::indirect_first_instance).
     pub indirect: Option<(&'a Buffer, u64)>,
 }
 
@@ -95,8 +105,17 @@ impl<'a> Draw<'a> {
             indices: None,
             count,
             instance_count: 1,
+            first: 0,
+            base_vertex: 0,
+            vertices_offset: 0,
+            instances_offset: 0,
             indirect: None,
         }
+    }
+
+    /// Whether it draws nothing at all: no vertices, or no instances, by its own counts.
+    fn is_empty(&self) -> bool {
+        self.indirect.is_none() && (self.count == 0 || self.instance_count == 0)
     }
 }
 
@@ -203,18 +222,24 @@ pub fn encode(
         occlusion_query_set: None,
         multiview_mask: None,
     });
-    for draw in draws {
+    // A draw of nothing binds nothing: its offsets may leave its buffers no bytes to bind.
+    for draw in draws.iter().filter(|draw| !draw.is_empty()) {
         pass.set_pipeline(&draw.pipeline.raw);
         for (group, bound) in (0..).zip(draw.groups) {
             if let Some(bound) = bound {
                 pass.set_bind_group(group, &bound.raw, &[]);
             }
         }
-        for (slot, buffer) in (0..).zip([draw.vertices, draw.instances]) {
+        for (slot, buffer, offset) in [
+            (0, draw.vertices, draw.vertices_offset),
+            (1, draw.instances, draw.instances_offset),
+        ] {
             if let Some(buffer) = buffer {
-                pass.set_vertex_buffer(slot, buffer.raw.slice(..));
+                pass.set_vertex_buffer(slot, buffer.raw.slice(offset..));
             }
         }
+        // The check kept `first + count` inside a `u32`.
+        let range = draw.first..draw.first + draw.count;
         match draw.indices {
             Some((buffer, format)) => {
                 let format = match format {
@@ -224,12 +249,12 @@ pub fn encode(
                 pass.set_index_buffer(buffer.raw.slice(..), format);
                 match draw.indirect {
                     Some((arguments, offset)) => pass.draw_indexed_indirect(&arguments.raw, offset),
-                    None => pass.draw_indexed(0..draw.count, 0, 0..draw.instance_count),
+                    None => pass.draw_indexed(range, draw.base_vertex, 0..draw.instance_count),
                 }
             }
             None => match draw.indirect {
                 Some((arguments, offset)) => pass.draw_indirect(&arguments.raw, offset),
-                None => pass.draw(0..draw.count, 0..draw.instance_count),
+                None => pass.draw(range, 0..draw.instance_count),
             },
         }
     }
@@ -309,10 +334,10 @@ fn check_draw(index: usize, draw: &Draw<'_>, colors: &[Target<'_>], depth: Optio
             state.samples(),
             target.texture.desc().samples
         ))
-    } else if draw.instance_count == 0 && draw.indirect.is_none() {
-        Some("at least one instance".to_owned())
     } else {
-        group_problem(draw, &Frequency::ALL).or_else(|| buffer_problem(draw))
+        group_problem(draw, &Frequency::ALL)
+            .or_else(|| buffer_problem(draw))
+            .or_else(|| first_instance_problem(draw))
     };
     let Some(problem) = problem else {
         return Ok(());
@@ -340,57 +365,136 @@ pub fn group_problem(draw: &Draw<'_>, frequencies: &[Frequency]) -> Option<Strin
     None
 }
 
-/// What is wrong with a draw's buffers, if anything. An indirect draw's counts are the GPU's, so
-/// only its buffers' usages and its argument buffer's size are checked.
+/// What is wrong with an indirect draw's arguments, in `buffer` at `offset`, if anything.
+fn arguments_problem(draw: &Draw<'_>, buffer: &Buffer, offset: u64) -> Option<String> {
+    let needed = if draw.indices.is_some() { 20 } else { 16 };
+    if !buffer.usage().contains(BufferUsage::INDIRECT) {
+        return Some("its indirect buffer isn't one".to_owned());
+    }
+    if !offset.is_multiple_of(4) || buffer.size().checked_sub(needed).is_none_or(|last| last < offset) {
+        return Some(format!(
+            "its indirect arguments take {needed} bytes from {offset}, a multiple of 4, in its {}-byte buffer",
+            buffer.size()
+        ));
+    }
+    if draw.first != 0 || draw.base_vertex != 0 {
+        return Some("its first vertex and base vertex are its indirect arguments', and the draw gives them too".to_owned());
+    }
+    None
+}
+
+/// What is wrong with the instance an indirect draw starts at, where the device starts at 0 only
+/// and the CPU wrote the arguments. They are data, like the counts beside them, so this is a
+/// pass's check of a draw it is about to record, never a draw set's of what it may draw later.
+fn first_instance_problem(draw: &Draw<'_>) -> Option<String> {
+    let (buffer, offset) = draw.indirect?;
+    let last = if draw.indices.is_some() { 16 } else { 12 };
+    buffer.first_instance(offset + last).map(|first| {
+        format!(
+            "its indirect arguments start at instance {first}, and this device draws an indirect draw from instance \
+             0 only: bind its instances from an offset instead"
+        )
+    })
+}
+
+/// What is wrong with a draw's buffers and the range of them it draws, if anything. An indirect
+/// draw's counts are the GPU's, so only its buffers' usages and offsets and its argument buffer's
+/// size are checked. A range of nothing fits wherever it ends inside its buffers.
 pub fn buffer_problem(draw: &Draw<'_>) -> Option<String> {
     let counted = draw.indirect.is_none();
+    let indexed = draw.indices.is_some();
     if let Some((buffer, offset)) = draw.indirect {
-        let needed = if draw.indices.is_some() { 20 } else { 16 };
-        if !buffer.usage().contains(BufferUsage::INDIRECT) {
-            return Some("its indirect buffer isn't one".to_owned());
+        if let Some(problem) = arguments_problem(draw, buffer, offset) {
+            return Some(problem);
         }
-        if !offset.is_multiple_of(4) || buffer.size() < offset + needed {
-            return Some(format!(
-                "its indirect arguments take {needed} bytes from {offset}, a multiple of 4, in its {}-byte \
-                 buffer",
-                buffer.size()
-            ));
-        }
+    } else if draw.base_vertex != 0 && !indexed {
+        return Some("its base vertex is added to indices, and the draw has none".to_owned());
+    } else if draw.first.checked_add(draw.count).is_none() {
+        return Some(format!(
+            "{} from {} pass {}, the most a draw counts to",
+            draw.count,
+            draw.first,
+            u32::MAX
+        ));
+    } else if draw.base_vertex != 0 && !draw.pipeline.base_vertex {
+        return Some(format!(
+            "its base vertex is {}, and this device adds none to an index",
+            draw.base_vertex
+        ));
     }
     let [vertex_stride, instance_stride] = draw.pipeline.strides;
-    for (name, plural, buffer, stride, count) in [
+    // What each buffer holds from its offset on: the vertices a draw without indices names, and
+    // its instances. Indices name whichever vertices they like, so theirs aren't counted.
+    let vertex_count = if indexed {
+        0
+    } else {
+        u64::from(draw.first) + u64::from(draw.count)
+    };
+    for (name, plural, buffer, stride, offset, count, first) in [
         (
             "vertex",
             "vertices",
             draw.vertices,
             vertex_stride,
-            if draw.indices.is_some() { 0 } else { draw.count },
+            draw.vertices_offset,
+            vertex_count,
+            if indexed { 0 } else { draw.first },
         ),
-        ("instance", "instances", draw.instances, instance_stride, draw.instance_count),
+        (
+            "instance",
+            "instances",
+            draw.instances,
+            instance_stride,
+            draw.instances_offset,
+            u64::from(draw.instance_count),
+            0,
+        ),
     ] {
-        match buffer {
-            None if stride > 0 => {
+        let Some(buffer) = buffer else {
+            if stride > 0 {
                 return Some(format!(
                     "its program has {name} attributes, and the draw gives no {name} buffer"
                 ));
             }
-            Some(_) if stride == 0 => {
-                return Some(format!(
-                    "its program has no {name} attributes, and the draw gives a {name} buffer"
-                ));
-            }
-            Some(buffer) if !buffer.usage().contains(BufferUsage::VERTEX) => {
-                return Some(format!("its {name} buffer isn't a vertex buffer"));
-            }
-            Some(buffer) if counted && buffer.size() < u64::from(stride) * u64::from(count) => {
-                return Some(format!(
-                    "{count} {plural} of {stride} bytes run past its {}-byte {name} buffer",
-                    buffer.size()
-                ));
-            }
-            _ => {}
+            continue;
+        };
+        if stride == 0 {
+            return Some(format!(
+                "its program has no {name} attributes, and the draw gives a {name} buffer"
+            ));
+        }
+        if !buffer.usage().contains(BufferUsage::VERTEX) {
+            return Some(format!("its {name} buffer isn't a vertex buffer"));
+        }
+        // A draw of something binds the buffer from its offset, which must leave it bytes to bind.
+        let left = buffer.size().checked_sub(offset).filter(|left| *left > 0 || draw.is_empty());
+        let Some(left) = left.filter(|_| offset.is_multiple_of(4)) else {
+            return Some(format!(
+                "its {plural} start {offset} bytes into its {}-byte {name} buffer: expected a multiple of 4 \
+                 before its end",
+                buffer.size()
+            ));
+        };
+        if counted && left < u64::from(stride) * count {
+            let drawn = count - u64::from(first);
+            let from = match (first, offset) {
+                (0, 0) => String::new(),
+                (0, _) => format!(", {offset} bytes in,"),
+                (_, 0) => format!(" from {name} {first}"),
+                _ => format!(" from {name} {first}, {offset} bytes in,"),
+            };
+            return Some(format!(
+                "{drawn} {plural} of {stride} bytes{from} run past its {}-byte {name} buffer",
+                buffer.size()
+            ));
         }
     }
+    index_problem(draw)
+}
+
+/// What is wrong with the indices a draw draws, if it has any and anything is.
+fn index_problem(draw: &Draw<'_>) -> Option<String> {
+    let counted = draw.indirect.is_none();
     let (buffer, format) = draw.indices?;
     let width = match format {
         IndexFormat::U16 => 2,
@@ -399,9 +503,13 @@ pub fn buffer_problem(draw: &Draw<'_>) -> Option<String> {
     if !buffer.usage().contains(BufferUsage::INDEX) {
         return Some("its index buffer isn't one".to_owned());
     }
-    (counted && buffer.size() < width * u64::from(draw.count)).then(|| {
+    (counted && buffer.size() < width * (u64::from(draw.first) + u64::from(draw.count))).then(|| {
+        let from = match draw.first {
+            0 => String::new(),
+            first => format!(" from index {first}"),
+        };
         format!(
-            "{} indices of {width} bytes run past its {}-byte index buffer",
+            "{} indices of {width} bytes{from} run past its {}-byte index buffer",
             draw.count,
             buffer.size()
         )

@@ -39,7 +39,7 @@ pub use buffer::{Buffer, BufferUsage};
 pub use cache::PipelineStats;
 pub use commit::{BYTES, CHANGES, Room};
 pub use compute::ComputePipeline;
-pub use draw_set::{DrawSet, DrawSetDesc, DrawSets};
+pub use draw_set::{DrawRange, DrawSet, DrawSetDesc, DrawSets};
 pub use live::LiveCounts;
 pub use pass::{Draw, IndexFormat, Resolve, Target};
 pub use pipeline::{Blend, ColorState, Cull, DepthState, PipelineState, RenderPipeline, Topology};
@@ -126,6 +126,13 @@ pub struct GpuInfo {
     pub max_workgroups: u32,
     /// Whether it times passes: a plan's [`Gpu::timings`] say how long each took.
     pub timestamps: bool,
+    /// Whether an indirect draw may start at an instance other than 0. Where it can't (OpenGL
+    /// before 4.2, OpenGL ES), such a draw is refused when the CPU wrote its arguments, and
+    /// draws nothing when the GPU did.
+    pub indirect_first_instance: bool,
+    /// Whether an indexed draw may add a base vertex to its indices: everything but OpenGL ES
+    /// before 3.2. Where it can't, a draw that gives one is refused.
+    pub base_vertex: bool,
 }
 
 /// The process's wgpu instances: one of the primary backends (Vulkan, Metal, Direct3D 12), and one
@@ -187,6 +194,29 @@ impl Gpu {
     ///
     /// No adapter at all, or one that opens no device.
     pub fn headless() -> Result<Gpu, GpuError> {
+        Gpu::open(false)
+    }
+
+    /// As [`Gpu::headless`], on the same adapter, with everything a device may lack left off: it
+    /// times no pass, starts no indirect draw past instance 0, and adds no base vertex to an
+    /// index. Tests open it to meet, on any machine, what a script meets on a device that can't.
+    ///
+    /// # Errors
+    ///
+    /// As [`Gpu::headless`].
+    #[doc(hidden)]
+    pub fn headless_plain() -> Result<Gpu, GpuError> {
+        Gpu::open(true)
+    }
+
+    /// A device on whatever adapter the machine has, with what it offers of what jess uses, or
+    /// none of it for a `plain` one.
+    fn open(plain: bool) -> Result<Gpu, GpuError> {
+        let wanted = if plain {
+            wgpu::Features::empty()
+        } else {
+            wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::INDIRECT_FIRST_INSTANCE
+        };
         let _opening = OPENING.lock().unwrap_or_else(PoisonError::into_inner);
         let mut found = None;
         'search: for (instance, backends) in [(&PRIMARY, wgpu::Backends::PRIMARY), (&FALLBACK, wgpu::Backends::GL)] {
@@ -205,13 +235,9 @@ impl Gpu {
             }
         }
         let (instance, adapter) = found.ok_or(GpuError::NoAdapter)?;
-        let timestamps = adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
+        let features = adapter.features() & wanted;
         let descriptor = wgpu::DeviceDescriptor {
-            required_features: if timestamps {
-                wgpu::Features::TIMESTAMP_QUERY
-            } else {
-                wgpu::Features::empty()
-            },
+            required_features: features,
             ..wgpu::DeviceDescriptor::default()
         };
         let (device, queue) =
@@ -235,7 +261,13 @@ impl Gpu {
             max_texture_layers: limits.max_texture_array_layers,
             max_buffer_size: limits.max_buffer_size,
             max_workgroups: limits.max_compute_workgroups_per_dimension,
-            timestamps,
+            timestamps: features.contains(wgpu::Features::TIMESTAMP_QUERY),
+            indirect_first_instance: features.contains(wgpu::Features::INDIRECT_FIRST_INSTANCE),
+            base_vertex: !plain
+                && adapter
+                    .get_downlevel_capabilities()
+                    .flags
+                    .contains(wgpu::DownlevelFlags::BASE_VERTEX),
         };
         Ok(Gpu {
             instance,

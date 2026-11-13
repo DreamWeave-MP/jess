@@ -13,8 +13,8 @@ use l3i::userdata::{Owned, Userdata, receiver};
 use super::device::LuaGpuDevice;
 use super::resources::{LuaGpuBuffer, LuaGpuSampler, LuaGpuTexture, choice, compare_of, format_of, shown, whole};
 use crate::gpu::{
-    BindGroup, Binding, Blend, Buffer, ColorState, Compare, ComputePipeline, Cull, DepthState, Draw, Gpu, GpuError, Group,
-    IndexFormat, PipelineState, RenderPipeline, Resolve, Sampler, Slot, Target, Texture, Topology,
+    BindGroup, Binding, Blend, Buffer, ColorState, Compare, ComputePipeline, Cull, DepthState, Draw, DrawRange, Gpu,
+    GpuError, Group, IndexFormat, PipelineState, RenderPipeline, Resolve, Sampler, Slot, Target, Texture, Topology,
 };
 use crate::lua::shader::LuaShaderProgram;
 use crate::lua::{check_options, error, kind};
@@ -74,19 +74,23 @@ const RESOLVE_KEYS: [&str; 3] = ["layer", "level", "texture"];
 
 const RENDER_KEYS: [&str; 3] = ["colors", "depth", "draws"];
 
-const DRAW_KEYS: [&str; 12] = [
+const DRAW_KEYS: [&str; 16] = [
+    "baseVertex",
     "count",
     "draw",
+    "first",
     "indexFormat",
     "indices",
     "indirect",
     "indirectOffset",
     "instanceCount",
     "instances",
+    "instancesOffset",
     "material",
     "pass",
     "pipeline",
     "vertices",
+    "verticesOffset",
 ];
 
 const DISPATCH_KEYS: [&str; 5] = ["draw", "material", "pass", "pipeline", "workgroups"];
@@ -437,8 +441,7 @@ struct HeldDraw {
     vertices: Option<Arc<Buffer>>,
     instances: Option<Arc<Buffer>>,
     indices: Option<(Arc<Buffer>, IndexFormat)>,
-    count: u32,
-    instance_count: u32,
+    range: DrawRange,
     indirect: Option<(Arc<Buffer>, u64)>,
 }
 
@@ -456,14 +459,62 @@ pub fn indirect_field(frame: &Frame<'_>, function: &str, table: &TableView<'_>) 
     Ok(Some((buffer, u64::from(offset))))
 }
 
-/// A draw's `count`, which an indirect draw leaves to the GPU.
-pub fn count_field(frame: &Frame<'_>, function: &str, table: &TableView<'_>, indirect: bool) -> l3i::Result<u32> {
-    whole(
-        function,
-        "the count",
-        Some(table.raw_get(frame, "count")?),
-        indirect.then_some(0),
-    )
+/// A draw's base vertex: a whole number an `i32` holds, which may be negative.
+pub fn base_vertex(function: &str, view: ValueView<'_>) -> l3i::Result<i32> {
+    let number = Some(view)
+        .filter(|view| view.is_number() || view.is_integer())
+        .and_then(|view| view.read::<f64>().ok())
+        .filter(|number| number.fract() == 0.0 && (f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(number));
+    // Whole and in range, checked above.
+    #[allow(clippy::cast_possible_truncation)]
+    number.map(|number| number as i32).ok_or_else(|| {
+        error(format!(
+            "{function}: the base vertex is a whole number from {} to {}, not {}",
+            i32::MIN,
+            i32::MAX,
+            shown(view)
+        ))
+    })
+}
+
+/// The range of its buffers a draw draws (`count`, `instanceCount`, `first`, `baseVertex`,
+/// `verticesOffset`, `instancesOffset`), each `from`'s where `table` doesn't say; `count` is
+/// needed where `from` is `None`, and a new draw's range otherwise starts as one instance from the
+/// start of every buffer.
+pub fn range_fields(
+    frame: &Frame<'_>,
+    function: &str,
+    table: &TableView<'_>,
+    from: Option<DrawRange>,
+) -> l3i::Result<DrawRange> {
+    let field = |key: &str, what: &str, default: Option<u32>| -> l3i::Result<u32> {
+        whole(function, what, Some(table.raw_get(frame, key)?), default)
+    };
+    let range = from.unwrap_or_else(|| DrawRange::new(0));
+    let base = table.raw_get(frame, "baseVertex")?;
+    let base_vertex = if base.is_nil() {
+        range.base_vertex
+    } else {
+        base_vertex(function, base)?
+    };
+    Ok(DrawRange {
+        count: field("count", "the count", from.map(|range| range.count))?,
+        instance_count: field("instanceCount", "the instance count", Some(range.instance_count))?,
+        first: field("first", "first", Some(range.first))?,
+        base_vertex,
+        vertices_offset: field(
+            "verticesOffset",
+            "the vertices' offset",
+            u32::try_from(range.vertices_offset).ok(),
+        )
+        .map(u64::from)?,
+        instances_offset: field(
+            "instancesOffset",
+            "the instances' offset",
+            u32::try_from(range.instances_offset).ok(),
+        )
+        .map(u64::from)?,
+    })
 }
 
 /// A target: a texture, loaded and stored, or `{ texture, clear, level, layer, store }`.
@@ -628,7 +679,7 @@ pub fn pipeline_field(frame: &Frame<'_>, function: &str, table: &TableView<'_>) 
 }
 
 /// One draw: `{ pipeline, pass, material, draw, vertices, instances, indices, indexFormat, count,
-/// instanceCount }`.
+/// instanceCount, first, baseVertex, verticesOffset, instancesOffset }`.
 fn draw(frame: &Frame<'_>, function: &str, view: ValueView<'_>) -> l3i::Result<HeldDraw> {
     let table = options(frame, function, "a draw", view, &DRAW_KEYS)?;
     let indices = buffer_field(frame, function, &table, "indices")?;
@@ -643,14 +694,8 @@ fn draw(frame: &Frame<'_>, function: &str, view: ValueView<'_>) -> l3i::Result<H
         vertices: buffer_field(frame, function, &table, "vertices")?,
         instances: buffer_field(frame, function, &table, "instances")?,
         indices: indices.map(|buffer| (buffer, index_format)),
-        count: count_field(frame, function, &table, indirect.is_some())?,
+        range: range_fields(frame, function, &table, indirect.as_ref().map(|_| DrawRange::new(0)))?,
         indirect,
-        instance_count: whole(
-            function,
-            "the instance count",
-            Some(table.raw_get(frame, "instanceCount")?),
-            Some(1),
-        )?,
     })
 }
 
@@ -702,8 +747,12 @@ fn render(this: &LuaGpuDevice, call: &Call<'_>, pass: ValueView<'_>) -> l3i::Res
             vertices: held.vertices.as_deref(),
             instances: held.instances.as_deref(),
             indices: held.indices.as_ref().map(|(buffer, format)| (&**buffer, *format)),
-            count: held.count,
-            instance_count: held.instance_count,
+            count: held.range.count,
+            instance_count: held.range.instance_count,
+            first: held.range.first,
+            base_vertex: held.range.base_vertex,
+            vertices_offset: held.range.vertices_offset,
+            instances_offset: held.range.instances_offset,
             indirect: held.indirect.as_ref().map(|(buffer, offset)| (&**buffer, *offset)),
         });
     }

@@ -492,3 +492,383 @@ fn indirect_draws_take_their_counts_from_a_buffer() {
         assert_eq!(gpu.render(&[clear], None, &[draw]).unwrap_err().to_string(), message);
     }
 }
+
+/// Two meshes in one vertex buffer and one index buffer, two groups of instances in one instance
+/// buffer, and the pipeline and material that draw them in green.
+struct Shared {
+    pipeline: jess::gpu::RenderPipeline,
+    material: BindGroup,
+    vertices: jess::gpu::Buffer,
+    indices: jess::gpu::Buffer,
+    instances: jess::gpu::Buffer,
+}
+
+/// A big quad (the whole of clip space) then a small one (its middle quarter) as vertices 0 to 3
+/// and 4 to 7; six indices of nothing then a quad's six, of its own first four vertices; and an
+/// instance drawing at half size on the left, then one on the right.
+fn shared(gpu: &Gpu) -> Shared {
+    let program = instanced();
+    let state = PipelineState {
+        colors: vec![ColorState::new(TextureFormat::Rgba8Unorm)],
+        ..PipelineState::default()
+    };
+    let pipeline = gpu.render_pipeline(&program, &state).unwrap();
+    let uniforms = gpu.buffer(16, BufferUsage::UNIFORM).unwrap();
+    gpu.write_buffer(&uniforms, 0, &bytes(&[0.0, 1.0, 0.0, 1.0])).unwrap();
+    let material = gpu
+        .bind_group(&pipeline, Frequency::Material, &[Binding::Uniform(&uniforms)])
+        .unwrap();
+
+    let quad = |half: f32| [-half, -half, half, -half, half, half, -half, half];
+    let corners: Vec<f32> = [quad(1.0), quad(0.25)].concat();
+    let vertices = gpu.buffer(64, BufferUsage::VERTEX).unwrap();
+    gpu.write_buffer(&vertices, 0, &bytes(&corners)).unwrap();
+    let listed: Vec<u8> = [0u32, 0, 0, 0, 0, 0, 0, 1, 2, 0, 2, 3]
+        .iter()
+        .flat_map(|index| index.to_le_bytes())
+        .collect();
+    let indices = gpu.buffer(48, BufferUsage::INDEX).unwrap();
+    gpu.write_buffer(&indices, 0, &listed).unwrap();
+    let transforms: Vec<f32> = [-0.5f32, 0.5]
+        .into_iter()
+        .flat_map(|offset| {
+            [
+                0.5, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, offset, 0.0, 0.0, 1.0,
+            ]
+        })
+        .collect();
+    let instances = gpu.buffer(128, BufferUsage::VERTEX).unwrap();
+    gpu.write_buffer(&instances, 0, &bytes(&transforms)).unwrap();
+    Shared {
+        pipeline,
+        material,
+        vertices,
+        indices,
+        instances,
+    }
+}
+
+impl Shared {
+    /// An indexed draw of the quad's six indices, of one instance, with every buffer bound.
+    fn draw(&self) -> Draw<'_> {
+        Draw {
+            groups: [None, Some(&self.material), None],
+            vertices: Some(&self.vertices),
+            instances: Some(&self.instances),
+            indices: Some((&self.indices, jess::gpu::IndexFormat::U32)),
+            first: 6,
+            ..Draw::new(&self.pipeline, 6)
+        }
+    }
+}
+
+/// What a draw left at the middle of the left half, the middle of the right half, and near the
+/// right half's edge, where only the big quad reaches.
+fn halves(gpu: &Gpu, draw: Draw<'_>) -> [[u8; 4]; 3] {
+    let pixels = draw_one(gpu, TextureFormat::Rgba8Unorm, ClearValue::Color([0.0, 0.0, 1.0, 1.0]), draw);
+    [SIZE / 4, SIZE * 3 / 4, SIZE * 15 / 16].map(|x| texel(&pixels, x, SIZE / 2))
+}
+
+#[test]
+fn a_draw_names_a_range_of_its_buffers() {
+    let Some(gpu) = gpu("a_draw_names_a_range_of_its_buffers") else {
+        return;
+    };
+    let shared = shared(&gpu);
+    assert_eq!(
+        halves(&gpu, shared.draw()),
+        [GREEN, BLUE, BLUE],
+        "the first mesh with the first instance"
+    );
+    assert_eq!(
+        halves(
+            &gpu,
+            Draw {
+                first: 0,
+                ..shared.draw()
+            }
+        ),
+        [BLUE, BLUE, BLUE],
+        "the six indices before the quad's draw nothing"
+    );
+    assert_eq!(
+        halves(
+            &gpu,
+            Draw {
+                instances_offset: 64,
+                ..shared.draw()
+            }
+        ),
+        [BLUE, GREEN, GREEN],
+        "the first mesh with the second group of instances"
+    );
+    let second = Draw {
+        base_vertex: 4,
+        instances_offset: 64,
+        ..shared.draw()
+    };
+    assert_eq!(
+        halves(&gpu, second),
+        [BLUE, GREEN, BLUE],
+        "the second mesh with the second group"
+    );
+    assert_eq!(
+        halves(
+            &gpu,
+            Draw {
+                vertices_offset: 32,
+                instances_offset: 64,
+                ..shared.draw()
+            }
+        ),
+        [BLUE, GREEN, BLUE],
+        "the second mesh again, its vertices bound from where they start"
+    );
+    // Without indices: the small quad's first three corners, by first vertex and by offset.
+    for (first, vertices_offset) in [(4, 0), (0, 32), (2, 16)] {
+        let triangle = Draw {
+            indices: None,
+            first,
+            vertices_offset,
+            ..shared.draw()
+        };
+        let pixels = draw_one(
+            &gpu,
+            TextureFormat::Rgba8Unorm,
+            ClearValue::Color([0.0, 0.0, 1.0, 1.0]),
+            Draw { count: 3, ..triangle },
+        );
+        // Its corners are the quad's bottom left, bottom right, and top right, at half size on
+        // the left: right of its middle is inside it, and the big quad's reach is not.
+        assert_eq!(
+            texel(&pixels, SIZE / 4 + 2, SIZE / 2),
+            GREEN,
+            "{first} from {vertices_offset}"
+        );
+        assert_eq!(texel(&pixels, SIZE / 8, SIZE / 2), BLUE, "{first} from {vertices_offset}");
+    }
+}
+
+#[test]
+fn a_range_past_a_buffers_end_is_refused() {
+    let Some(gpu) = gpu("a_range_past_a_buffers_end_is_refused") else {
+        return;
+    };
+    let shared = shared(&gpu);
+    let color = target(&gpu, TextureFormat::Rgba8Unorm);
+    let clear = Target::cleared(&color, ClearValue::Color([0.0; 4]));
+    let plain = Draw {
+        indices: None,
+        first: 0,
+        ..shared.draw()
+    };
+    for (draw, message) in [
+        (
+            Draw {
+                first: 7,
+                ..shared.draw()
+            },
+            "6 indices of 4 bytes from index 7 run past its 48-byte index buffer",
+        ),
+        (
+            Draw {
+                first: u32::MAX,
+                ..shared.draw()
+            },
+            "6 from 4294967295 pass 4294967295, the most a draw counts to",
+        ),
+        (
+            Draw { first: 3, ..plain },
+            "6 vertices of 8 bytes from vertex 3 run past its 64-byte vertex buffer",
+        ),
+        (
+            Draw {
+                vertices_offset: 24,
+                ..plain
+            },
+            "6 vertices of 8 bytes, 24 bytes in, run past its 64-byte vertex buffer",
+        ),
+        (
+            Draw {
+                first: 1,
+                vertices_offset: 24,
+                ..plain
+            },
+            "6 vertices of 8 bytes from vertex 1, 24 bytes in, run past its 64-byte vertex buffer",
+        ),
+        (
+            Draw {
+                instance_count: 2,
+                instances_offset: 64,
+                ..shared.draw()
+            },
+            "2 instances of 64 bytes, 64 bytes in, run past its 128-byte instance buffer",
+        ),
+        (
+            Draw {
+                vertices_offset: 6,
+                ..shared.draw()
+            },
+            "its vertices start 6 bytes into its 64-byte vertex buffer: expected a multiple of 4 before its end",
+        ),
+        (
+            Draw {
+                instances_offset: 128,
+                ..shared.draw()
+            },
+            "its instances start 128 bytes into its 128-byte instance buffer: expected a multiple of 4 before its end",
+        ),
+        (
+            Draw {
+                vertices_offset: 68,
+                count: 0,
+                ..shared.draw()
+            },
+            "its vertices start 68 bytes into its 64-byte vertex buffer: expected a multiple of 4 before its end",
+        ),
+        (
+            Draw { base_vertex: 4, ..plain },
+            "its base vertex is added to indices, and the draw has none",
+        ),
+    ] {
+        assert_eq!(
+            gpu.render(&[clear], None, &[draw]).unwrap_err().to_string(),
+            format!("draw 0 is invalid: {message}")
+        );
+    }
+}
+
+#[test]
+fn a_draw_of_nothing_draws_nothing() {
+    let Some(gpu) = gpu("a_draw_of_nothing_draws_nothing") else {
+        return;
+    };
+    let shared = shared(&gpu);
+    for (name, draw) in [
+        (
+            "no instances",
+            Draw {
+                instance_count: 0,
+                ..shared.draw()
+            },
+        ),
+        (
+            "no indices",
+            Draw {
+                count: 0,
+                ..shared.draw()
+            },
+        ),
+        (
+            "no instances, from its buffers' ends",
+            Draw {
+                instance_count: 0,
+                vertices_offset: 64,
+                instances_offset: 128,
+                ..shared.draw()
+            },
+        ),
+    ] {
+        assert_eq!(halves(&gpu, draw), [BLUE, BLUE, BLUE], "{name}");
+    }
+}
+
+/// A buffer of an indexed indirect draw's arguments: the quad's six indices of one instance, the
+/// one at `first_instance`.
+fn quad_arguments(gpu: &Gpu, first_instance: u32) -> jess::gpu::Buffer {
+    let buffer = gpu.buffer(20, BufferUsage::INDIRECT).unwrap();
+    let words: Vec<u8> = [6u32, 1, 6, 0, first_instance]
+        .iter()
+        .flat_map(|word| word.to_le_bytes())
+        .collect();
+    gpu.write_buffer(&buffer, 0, &words).unwrap();
+    buffer
+}
+
+#[test]
+fn an_indirect_draw_starts_at_its_first_instance() {
+    let Some(gpu) = gpu("an_indirect_draw_starts_at_its_first_instance") else {
+        return;
+    };
+    let shared = shared(&gpu);
+    let (first, second) = (quad_arguments(&gpu, 0), quad_arguments(&gpu, 1));
+    let indirect = |arguments| Draw {
+        first: 0,
+        indirect: Some((arguments, 0)),
+        ..shared.draw()
+    };
+    assert_eq!(halves(&gpu, indirect(&first)), [GREEN, BLUE, BLUE]);
+    assert_eq!(
+        halves(
+            &gpu,
+            Draw {
+                instances_offset: 64,
+                ..indirect(&first)
+            }
+        ),
+        [BLUE, GREEN, GREEN],
+        "an indirect draw's instances are bound from an offset on every device"
+    );
+    if gpu.info().indirect_first_instance {
+        assert_eq!(halves(&gpu, indirect(&second)), [BLUE, GREEN, GREEN]);
+    } else {
+        eprintln!("an_indirect_draw_starts_at_its_first_instance: this device draws from instance 0 only");
+    }
+
+    let color = target(&gpu, TextureFormat::Rgba8Unorm);
+    let clear = Target::cleared(&color, ClearValue::Color([0.0; 4]));
+    let ranged = Draw {
+        first: 6,
+        ..indirect(&first)
+    };
+    assert_eq!(
+        gpu.render(&[clear], None, &[ranged]).unwrap_err().to_string(),
+        "draw 0 is invalid: its first vertex and base vertex are its indirect arguments', and the draw gives them too"
+    );
+}
+
+/// A device that can't start an indirect draw past instance 0 refuses one whose arguments the CPU
+/// wrote to, where the GPU would draw nothing and say nothing.
+#[test]
+fn a_first_instance_the_device_cannot_draw_is_refused() {
+    if gpu("a_first_instance_the_device_cannot_draw_is_refused").is_none() {
+        return;
+    }
+    let gpu = Gpu::headless_plain().unwrap();
+    assert!(!gpu.info().indirect_first_instance && !gpu.info().timestamps);
+    let shared = shared(&gpu);
+    let arguments = quad_arguments(&gpu, 1);
+    let draw = Draw {
+        first: 0,
+        indirect: Some((&arguments, 0)),
+        ..shared.draw()
+    };
+    let color = target(&gpu, TextureFormat::Rgba8Unorm);
+    let clear = Target::cleared(&color, ClearValue::Color([0.0; 4]));
+    assert_eq!(
+        gpu.render(&[clear], None, &[draw]).unwrap_err().to_string(),
+        "draw 0 is invalid: its indirect arguments start at instance 1, and this device draws an indirect draw from \
+         instance 0 only: bind its instances from an offset instead"
+    );
+
+    let based = Draw {
+        base_vertex: 4,
+        ..shared.draw()
+    };
+    assert!(!gpu.info().base_vertex);
+    assert_eq!(
+        gpu.render(&[clear], None, &[based]).unwrap_err().to_string(),
+        "draw 0 is invalid: its base vertex is 4, and this device adds none to an index"
+    );
+
+    gpu.write_buffer(&arguments, 16, &0u32.to_le_bytes()).unwrap();
+    let rebound = Draw {
+        instances_offset: 64,
+        ..draw
+    };
+    assert_eq!(
+        halves(&gpu, rebound),
+        [BLUE, GREEN, GREEN],
+        "the same instance, bound from its offset"
+    );
+}

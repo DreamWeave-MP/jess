@@ -117,6 +117,14 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .getter("timestamps", |this: &LuaGpuDevice| this.gpu.info().timestamps)
         .untyped();
     device
+        .getter("indirectFirstInstance", |this: &LuaGpuDevice| {
+            this.gpu.info().indirect_first_instance
+        })
+        .untyped();
+    device
+        .getter("baseVertex", |this: &LuaGpuDevice| this.gpu.info().base_vertex)
+        .untyped();
+    device
         .getter("live", |this: &LuaGpuDevice, call: &Call<'_>| counts(call, this.gpu.live()))
         .untyped();
     device

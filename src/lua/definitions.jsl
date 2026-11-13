@@ -812,11 +812,18 @@ export type GpuTarget = GpuTexture | {
 
 --- One draw: `count` vertices (or indices, with `indices`) of `instanceCount` instances, or the
 --- counts the GPU wrote into `indirect`, its pipeline's bind groups by frequency, and its vertex,
---- instance, and index buffers. `count` is needed unless the draw is indirect.
+--- instance, and index buffers. `count` is needed unless the draw is indirect. A draw names a
+--- range of its buffers: it starts at vertex `first` (index `first`, with `indices`, each index
+--- then counting from vertex `baseVertex`), in a vertex buffer bound `verticesOffset` bytes in,
+--- with instances bound `instancesOffset` bytes in.
 export type GpuDraw = {
   pipeline: GpuPipeline,
   count: number?,
   instanceCount: number?,
+  first: number?,
+  baseVertex: number?,
+  verticesOffset: number?,
+  instancesOffset: number?,
   pass: GpuBindGroup?,
   material: GpuBindGroup?,
   draw: GpuBindGroup?,
@@ -845,13 +852,31 @@ export type GpuDispatch = {
   draw: GpuBindGroup?,
 }
 
+--- The parts of a draw set's range `GpuDrawSet:change` changes together; what it leaves out
+--- stays as it was last asked for.
+export type GpuDrawRange = {
+  count: number?,
+  instanceCount: number?,
+  first: number?,
+  baseVertex: number?,
+  verticesOffset: number?,
+  instancesOffset: number?,
+}
+
 --- A draw kept in a collection of draw sets, which a plan's draw passes take by its `tags`, frame
---- after frame, with the pass's own pass group. `count`, `instanceCount`, and `visible` change it
---- in place, from the next frame on; `remove` takes it out of the collection it was made into,
---- `add` puts it back, and `added` says which. `tostring` gives `GpuDrawSet(6 vertices, opaque)`.
+--- after frame, with the pass's own pass group. Its range (`count`, `instanceCount`, `first`,
+--- `baseVertex`, `verticesOffset`, `instancesOffset`) and `visible` change it in place, from the
+--- next frame on, and `change` changes several parts of its range as one change; `remove` takes
+--- it out of the collection it was made into, `add` puts it back, and `added` says which.
+--- `tostring` gives `GpuDrawSet(6 vertices, opaque)`.
 declare extern type GpuDrawSet with
   count: number
   instanceCount: number
+  first: number
+  baseVertex: number
+  verticesOffset: number
+  instancesOffset: number
+  function change(self, range: GpuDrawRange): ()
   visible: boolean
   tags: { string }
   added: boolean
@@ -878,6 +903,10 @@ export type GpuDrawSetDesc = {
   pipeline: GpuPipeline,
   count: number?,
   instanceCount: number?,
+  first: number?,
+  baseVertex: number?,
+  verticesOffset: number?,
+  instancesOffset: number?,
   material: GpuBindGroup?,
   draw: GpuBindGroup?,
   vertices: GpuBuffer?,
@@ -1131,6 +1160,8 @@ declare extern type GpuDevice with
   limits: { textureSize: number, textureLayers: number, bufferSize: number, workgroups: number }
   pipelines: { compiled: number, reused: number }
   timestamps: boolean
+  indirectFirstInstance: boolean
+  baseVertex: boolean
   live: { buffers: number, textures: number, samplers: number, bindGroups: number, pipelines: number }
   made: { buffers: number, textures: number, samplers: number, bindGroups: number, pipelines: number }
   function buffer(self, size: number, usage: GpuBufferUsage | { GpuBufferUsage }): GpuBuffer
@@ -2094,6 +2125,8 @@ The runtime's device. The first call asks the backend for a low-power adapter an
 | `limits` | The widest or tallest 2D texture, the most layers an array texture has, the largest buffer in bytes, and the most workgroups a dispatch has on one axis. |
 | `pipelines` | How many pipelines the device compiled, and how many times `GpuDevice:pipeline` gave back one it already had. |
 | `timestamps` | Whether the device times passes, which `GpuPlan:timings` reports. |
+| `indirectFirstInstance` | Whether an indirect draw may start at an instance other than 0: nearly every Vulkan, Metal, and Direct3D 12 device can, OpenGL can from 4.2 with `ARB_shader_draw_parameters`, and OpenGL ES can't. Where it can't, a pass refuses a draw whose arguments a script wrote to start past instance 0; arguments the GPU wrote (a storage buffer, or a buffer a plan's pass writes) can't be read first, and such a draw is dropped or starts at instance 0, as the driver likes. Binding the instances from `instancesOffset` does the same job on every device. |
+| `baseVertex` | Whether an indexed draw may give a `baseVertex`: everything but OpenGL ES before 3.2. Where it can't, a draw that gives one is refused. |
 | `live` | How many of each the device has alive: made, and not yet let go of. A count that only grows is a leak. |
 | `made` | How many of each the device ever made, let go of or not. A count that grows every frame of a scene that doesn't change is churn: a run of a plan makes nothing the run before it made. |
 | `sets` | The device's own [draw sets](#draw-sets), which a draw set joins unless told otherwise and a run draws from unless given others. |
@@ -2320,11 +2353,16 @@ A draw is a table:
 | --- | --- |
 | `pipeline` | A render pipeline whose targets are the pass's. |
 | `count` | How many vertices, or with `indices`, how many indices. |
-| `instanceCount` | How many instances; 1 by default. |
+| `instanceCount` | How many instances; 1 by default. None draws nothing, as no vertices do. |
+| `first` | The first vertex drawn or, with `indices`, the first index; 0 by default. |
+| `baseVertex` | What is added to every index before it names a vertex, which may be negative; 0 by default, only for a draw with `indices`, and only on a device with `baseVertex`. |
+| `verticesOffset`, `instancesOffset` | How many bytes into `vertices` and `instances` the draw's first vertex and first instance are: a multiple of 4, 0 by default. Vertex 0 and instance 0 are whatever is there. |
 | `pass`, `material`, `draw` | A bind group for each frequency its program binds anything for, laid out as its program lays that frequency out. |
 | `vertices`, `instances` | The per-vertex and per-instance attributes, if the program has any, in vertex buffers holding every one drawn. |
 | `indices`, `indexFormat` | An index buffer, and how wide its indices are (`u32` by default). |
-| `indirect`, `indirectOffset` | Where the counts come from instead of `count` and `instanceCount`: an `indirect` buffer holding, from `indirectOffset` (0 by default, a multiple of 4), four `u32`s (vertex count, instance count, first vertex, first instance) or, for an indexed draw, five (index count, instance count, first index, base vertex, first instance). Whatever the GPU wrote there is drawn, a compute pass's count of what it kept, say; nothing checks it against the buffers, and the GPU keeps a draw past their ends inside them. |
+| `indirect`, `indirectOffset` | Where the counts come from instead of `count` and `instanceCount`: an `indirect` buffer holding, from `indirectOffset` (0 by default, a multiple of 4), four `u32`s (vertex count, instance count, first vertex, first instance) or, for an indexed draw, five (index count, instance count, first index, base vertex, first instance). Whatever the GPU wrote there is drawn, a compute pass's count of what it kept, say; nothing checks it against the buffers, and the GPU keeps a draw past their ends inside them. The arguments hold the draw's first vertex and base vertex, so it gives no `first` or `baseVertex` of its own; its offsets still apply. A first instance other than 0 needs a device with `indirectFirstInstance`, which a pass checks when it draws, since the arguments are data: a draw set that draws from them is made and changed without it. |
+
+With these, many meshes share buffers: one vertex buffer and one index buffer hold every mesh of a scene, one instance buffer every group of instances, and each draw names its own part. A draw's range is checked against its buffers like its counts: `draw 1 is invalid: 6 indices of 4 bytes from index 7 run past its 48-byte index buffer`.
 
 Everything is checked before anything is submitted, and each mistake names its draw: `draw 0 is invalid: its program binds a material group, and the draw gives none`. A pass reads its draws one at a time, so a pass of ten thousand draws holds no more of the Luau stack than a pass of one.
 
@@ -2420,7 +2458,7 @@ The last number is `string.unpack`'s: where it stopped reading.
 
 {{ api_symbol(value="GpuDevice.drawSet") }}
 
-Keeps a draw in a collection of draw sets, the device's own (`device.sets`) unless `sets` names another: a render pipeline, its `material` and `draw` bind groups, its `vertices`, `instances`, and `indices` (with `indexFormat`), `count` and `instanceCount` (or the `indirect` buffer the GPU writes them into), and the `tags` passes choose it by. The fields are a draw's, as `GpuDevice:render` takes them, without `pass`: a draw set is drawn with the pass group of whichever pass takes it, so one camera block serves every set a pass draws. It is checked when it is made, the way a pass checks a draw, and drawn from the next frame on by every draw pass whose tags it carries, until it is removed.
+Keeps a draw in a collection of draw sets, the device's own (`device.sets`) unless `sets` names another: a render pipeline, its `material` and `draw` bind groups, its `vertices`, `instances`, and `indices` (with `indexFormat`), `count` and `instanceCount` (or the `indirect` buffer the GPU writes them into), the range of its buffers it draws (`first`, `baseVertex`, `verticesOffset`, `instancesOffset`), and the `tags` passes choose it by. The fields are a draw's, as `GpuDevice:render` takes them, without `pass`: a draw set is drawn with the pass group of whichever pass takes it, so one camera block serves every set a pass draws. It is checked when it is made, the way a pass checks a draw, and drawn from the next frame on by every draw pass whose tags it carries, until it is removed.
 
 ## GpuDrawSet
 
@@ -2429,13 +2467,47 @@ Keeps a draw in a collection of draw sets, the device's own (`device.sets`) unle
 | Member | Holds |
 | --- | --- |
 | `count` | How many vertices, or indices, it draws. Setting it checks it fits the buffers. |
-| `instanceCount` | How many instances; at least 1, and no more than its instance buffer holds. |
+| `instanceCount` | How many instances: no more than its instance buffer holds, and none draws nothing. |
+| `first`, `baseVertex` | Its first vertex, or first index, and what is added to every index: which of the meshes its buffers hold it draws. |
+| `verticesOffset`, `instancesOffset` | How many bytes into its vertex and instance buffers it starts: which group of instances it draws. |
+| `change(range)` | Changes the parts of its range the table names, together: one change, checked as a whole. |
 | `visible` | Whether passes draw it. |
 | `tags` | What the passes that take it look for. |
 | `added` | Whether it is in the collection it was made into. |
 | `add()`, `remove()` | Puts it back in that collection, or takes it out, saying whether it was there. Both are harmless twice. |
 
-Changing a set changes nothing else: what it draws is read again at every frame, so nothing is rebuilt.
+Changing a set changes nothing else: what it draws is read again at every frame, so nothing is rebuilt. A member reads what the set draws now, which an assignment changes at the next commit. An assignment is checked at once, against the rest of what the script last asked for, so changes made between two commits add up; each is still a range the buffers hold on its own. A switch between two meshes that share buffers moves `first` and `count` together, and no order of two assignments is sure to fit in between, which is what `change` is for:
+
+{{ api_symbol(value="GpuDrawRange") }}
+
+```luau
+--!strict
+local shader = require '@jess/shader'
+
+local program = shader.program {
+  attributes = { position = shader.vec2 },
+  vertex = function(input)
+    return { position = shader.vec4(input.attributes.position, 0, 1) }
+  end,
+  fragment = function() return shader.vec4(1, 1, 1, 1) end,
+}
+
+local device = jess.gpu.device()
+local pipeline = device:pipeline(program, { colors = { 'rgba8Unorm' } })
+-- Two levels of detail in one pair of buffers: 12 indices of 8 vertices, then 6 of 4.
+local mesh = device:drawSet {
+  pipeline = pipeline,
+  vertices = device:buffer(96, 'vertex'),
+  indices = device:buffer(72, 'index'),
+  count = 12,
+  tags = { 'opaque' },
+}
+
+mesh:change { first = 12, count = 6, baseVertex = 8 }
+device:commit()
+print(mesh.first, mesh.count, mesh.baseVertex)
+-- 12  6  8
+```
 
 ### GpuDevice:drawSets
 

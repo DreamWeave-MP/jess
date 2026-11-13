@@ -1028,6 +1028,16 @@ impl Gpu {
             held.push(self.hold(plan, sets, &live, position)?);
         }
 
+        // What a pass of this run writes into a buffer, a draw of a later one may take its
+        // arguments from: what the CPU last wrote there says nothing once the run is checked.
+        for &position in &running {
+            for output in &graph.passes()[plan.passes[position].index].outputs {
+                if let Some(Live::Buffer(buffer)) = live[output.resource.index()] {
+                    buffer.gpu_wrote();
+                }
+            }
+        }
+
         let mut recorded = Vec::with_capacity(running.len());
         for (&position, held) in running.iter().zip(&held) {
             let pass = &graph.passes()[plan.passes[position].index];

@@ -154,6 +154,8 @@ pub struct RenderPipeline {
     state: PipelineState,
     /// The bytes per vertex and per instance; 0 for a rate without attributes.
     pub(crate) strides: [u32; 2],
+    /// Whether its device adds a base vertex to an index.
+    pub(crate) base_vertex: bool,
     _live: Token,
 }
 
@@ -267,6 +269,7 @@ impl Gpu {
             groups,
             state: state.clone(),
             strides: module.layout.vertex_buffers.each_ref().map(|buffer| buffer.stride),
+            base_vertex: self.info.base_vertex,
             _live: self.live.token(Kind::Pipeline),
         })
     }
