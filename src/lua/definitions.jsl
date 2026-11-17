@@ -1556,9 +1556,19 @@ declare jess: {
   granted: (capability: string) -> boolean,
   --- The calling module's own package payload: every file's path in canonical order
   --- (`jess.toml` first), and a read of one file's bytes, nil for a path the payload lacks. A
-  --- package shares its files by exporting a module that hands them out. A script belongs to no
-  --- package and raises.
-  payload: () -> { files: { string }, read: (path: string) -> buffer? },
+  --- package shares its files by exporting a module that hands them out. `identity` is its frozen
+  --- admitted ID, version, content digest and declared dependency IDs; only the implicit built-in
+  --- package, when no accepted plan mounted it, omits it. A script belongs to no package and raises.
+  payload: () -> {
+    files: { string },
+    read: (path: string) -> buffer?,
+    identity: {
+      read id: string,
+      read version: string,
+      read digest: string,
+      read dependencies: { string },
+    }?,
+  },
   --- Typed shader construction; `require("@jess/shader")` is the same table.
   shader: ShaderModule,
 
@@ -4152,7 +4162,9 @@ end
 
 The calling module's own package payload: `files`, every path in canonical order (`jess.toml` first, then the rest bytewise), and `read`, one file's bytes or `nil` for a path the payload lacks. It is how a package ships things that aren't Luau, templates, stylesheets, fonts, and hands them to whoever depends on it: the package exports a module that returns what `jess.payload()` gave it, and a dependent requires that module. Nothing reads another package's payload uninvited, and the same code answers the same from a Package Source and from the JPK packed from it.
 
-- **Returns:** a fresh table each call. `read` answers from the package's provider, the folder or the archive, so it needs no capability of its own.
+`identity` is the calling package's admitted `{id, version, digest, dependencies}`: the content digest and declared dependency IDs from the accepted mount, without its location or whether it came from a folder or an archive. The identity and its dependency list are frozen, and workers see the same identity as the application whose plan they inherit. The implicit built-in package has no `identity` when it runs without being selected by an accepted plan; its embedded bytes remain available.
+
+- **Returns:** a fresh table each call. `read` answers from the package's provider, the folder or the archive, so it needs no capability of its own. Admitted identity is a snapshot; reads still reject package bytes changed since admission.
 - **Errors:** `jess.payload: <chunk> is a script, not a package's module, so it has no payload` outside a package.
 
 ```luau

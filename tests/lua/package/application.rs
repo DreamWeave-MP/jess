@@ -321,7 +321,7 @@ fn workers_import_the_application_plan_with_isolated_module_state() {
             ),
             (
                 "src/counter.jsl",
-                "local count = 0\nreturn { next = function() count += 1; return count end }\n",
+                "local count = 0\nreturn { identity = jess.payload().identity, next = function() count += 1; return count end }\n",
             ),
             ("src/main.jsl", "assert(require('@example/counter').next() == 1)\n"),
             ("src/private.jsl", "return 1\n"),
@@ -348,6 +348,7 @@ fn workers_import_the_application_plan_with_isolated_module_state() {
     let source = r"
 local counter = require('@example/counter')
 assert(not jess.granted('filesystem.read'))
+assert(counter.identity.id == 'org.example.workers' and counter.identity.version == '1.0.0')
 return function() return counter.next() end
 ";
     let workers = [

@@ -52,6 +52,7 @@ pub(crate) struct SharedMount {
 
 struct SharedPackage {
     id: String,
+    version: String,
     dependencies: Vec<usize>,
     managed: Vec<Managed>,
     digest: String,
@@ -67,6 +68,7 @@ pub(crate) struct ProviderRead {
 
 struct MountedPackage {
     id: String,
+    version: String,
     /// The mounted packages whose exports its modules may require: its declared dependencies.
     dependencies: Vec<usize>,
     /// Its `[managed]` declarations, sorted by id.
@@ -94,6 +96,7 @@ impl Mounted {
                 .iter()
                 .map(|package| SharedPackage {
                     id: package.id.clone(),
+                    version: package.version.clone(),
                     dependencies: package.dependencies.clone(),
                     managed: package.managed.clone(),
                     digest: package.digest.clone(),
@@ -143,6 +146,26 @@ impl Mounted {
     fn payload(&self, index: usize) -> (&[String], &Function) {
         let package = &self.packages[index];
         (&package.files, &package.read)
+    }
+
+    /// Package `index`'s admitted identity, without its provider's physical location or form.
+    fn identity(&self, scope: &impl Scope, index: usize) -> l3i::Result<Table> {
+        let package = &self.packages[index];
+        let dependencies = package
+            .dependencies
+            .iter()
+            .map(|index| self.packages[*index].id.clone())
+            .collect::<Vec<_>>();
+        let dependencies = string_list(scope, &dependencies)?;
+        scope.with_frame(|frame| dependencies.push_to(frame)?.set_read_only(true))?;
+        crate::lua::lua::stored_table(scope, |frame| {
+            let identity = frame.push_table(0, 4)?;
+            identity.raw_set_value(frame, "id", &package.id)?;
+            identity.raw_set_value(frame, "version", &package.version)?;
+            identity.raw_set_value(frame, "digest", &package.digest)?;
+            identity.raw_set_value(frame, "dependencies", &dependencies)?;
+            identity.set_read_only(true)
+        })
     }
 
     /// Where the package with `id` is mounted.
@@ -224,6 +247,7 @@ impl SharedMount {
             )?;
             packages.push(MountedPackage {
                 id: package.id.clone(),
+                version: package.version.clone(),
                 dependencies: package.dependencies.clone(),
                 managed: package.managed.clone(),
                 digest: package.digest.clone(),
@@ -266,10 +290,10 @@ pub(crate) fn serve_provider(runtime: &Runtime, requests: &Receiver<ProviderRead
     Ok(())
 }
 
-/// `jess.payload()`: the calling module's own package payload, as `{ files, read }`: every path
-/// in canonical order, and a read of one's bytes (nil for a path the payload lacks). A package
-/// shares its files by exporting a module that hands them out; nothing reads another package's
-/// payload uninvited, and a script, which belongs to no package, has none.
+/// `jess.payload()`: the calling module's own package payload and its admitted identity. A
+/// package shares its files by exporting a module that hands them out; nothing reads another
+/// package's payload uninvited, and a script, which belongs to no package, has none. The implicit
+/// built-in package has bytes but no admitted identity until an accepted plan mounts it.
 pub(crate) fn payload(call: &Call<'_>, jess: &Jess, builtin_read: &Function) -> l3i::Result<StackResults> {
     let Some(caller) = crate::lua::require::caller_chunk(call) else {
         return Err(error(
@@ -281,10 +305,16 @@ pub(crate) fn payload(call: &Call<'_>, jess: &Jess, builtin_read: &Function) -> 
         && let Some((index, _)) = mounted.owner(&caller)
     {
         let (files, read) = mounted.payload(index);
-        return push_payload(call, files.iter().map(String::as_str), read);
+        let identity = mounted.identity(call, index)?;
+        return push_payload(call, files.iter().map(String::as_str), read, Some(&identity));
     }
     if caller.starts_with(&format!("@{}@", crate::lua::builtin::ID)) {
-        return push_payload(call, crate::lua::builtin::FILES.iter().map(|(path, _)| *path), builtin_read);
+        return push_payload(
+            call,
+            crate::lua::builtin::FILES.iter().map(|(path, _)| *path),
+            builtin_read,
+            None,
+        );
     }
     Err(error(format!(
         "jess.payload: {caller} is a script, not a package's module, so it has no payload"
@@ -295,12 +325,14 @@ fn push_payload(
     call: &Call<'_>,
     files: impl Iterator<Item = impl AsRef<str>>,
     read: &Function,
+    identity: Option<&Table>,
 ) -> l3i::Result<StackResults> {
     let files: Vec<String> = files.map(|file| file.as_ref().to_owned()).collect();
     let list = string_list(call, &files)?;
-    crate::lua::push_table(call, 0, 2, |frame, table| {
+    crate::lua::push_table(call, 0, 3, |frame, table| {
         table.raw_set_value(frame, "files", &list)?;
-        table.raw_set_value(frame, "read", read)
+        table.raw_set_value(frame, "read", read)?;
+        table.raw_set_value(frame, "identity", &identity)
     })?;
     Ok(StackResults)
 }
@@ -1095,6 +1127,7 @@ fn mounted_package(frame: &Frame<'_>, row: ValueView<'_>) -> l3i::Result<(Mounte
     let package = MountedPackage {
         prefix: format!("@{id}@{version}/"),
         id,
+        version,
         dependencies: Vec::new(),
         managed,
         digest,

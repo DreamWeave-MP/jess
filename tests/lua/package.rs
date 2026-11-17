@@ -1584,9 +1584,9 @@ fn a_check_reports_a_package_s_own_type_errors_with_its_requires_resolved() {
     }
 }
 
-/// A package's module can hand out its own payload with `jess.payload()`: every path and a read
-/// of each, from a Package Source and from the same package packed. A script has none, and
-/// nothing reads another package's payload uninvited.
+/// A package's module can hand out its own payload and admitted identity with `jess.payload()`,
+/// from a Package Source and from the same package packed. A script has none, and nothing reads
+/// another package's payload uninvited.
 #[test]
 fn a_package_hands_out_its_own_payload() {
     let root = tempfile::tempdir().unwrap();
@@ -1604,6 +1604,9 @@ version = "1.0.0"
 jess_api = "1"
 include = ["src", "templates"]
 
+[dependencies]
+"org.example.alpha" = "^1.0"
+
 [modules]
 "@theme" = "src/init.jsl"
 
@@ -1612,31 +1615,43 @@ id = "example.theme"
 exports = ["@theme"]
 "#,
             ),
-            (
-                "src/init.jsl",
-                "local payload = jess.payload()\nreturn { files = payload.files, read = payload.read }\n",
-            ),
+            ("src/init.jsl", "return jess.payload()\n"),
             ("templates/base.html", "<html>{{ body }}</html>\n"),
         ],
     );
+    let dependency = root.join("alpha");
+    alpha(&dependency);
     let check = "local theme = require('@theme')\n\
                  assert(theme.files[1] == 'jess.toml', theme.files[1])\n\
                  assert(table.find(theme.files, 'templates/base.html'), 'the template is in the payload')\n\
                  assert(buffer.tostring(theme.read('templates/base.html')) == '<html>{{ body }}</html>\\n')\n\
                  assert(theme.read('templates/missing.html') == nil)\n\
+                 local identity = theme.identity\n\
+                 assert(identity.id == 'org.example.theme' and identity.version == '1.0.0')\n\
+                 assert(identity.digest == expectedDigest)\n\
+                 assert(#identity.dependencies == 1 and identity.dependencies[1] == 'org.example.alpha')\n\
+                 assert(table.isfrozen(identity) and table.isfrozen(identity.dependencies))\n\
+                 assert(not pcall(function() identity.digest = 'changed' end))\n\
+                 assert(not pcall(function() identity.dependencies[1] = 'changed' end))\n\
                  local ok, message = pcall(function() return jess.payload() end)\n\
                  assert(not ok and string.find(message, 'not a package', 1, true), message)\n\
                  local direct, reason = pcall(jess.payload)\n\
                  assert(not direct and string.find(reason, 'through no module', 1, true), reason)";
     let runtime = common::runtime();
-    package::activate_with(
+    let plan = package::activate_with(
         &runtime,
-        &[text(root)],
+        &[text(root), text(&dependency)],
         &strings(&["example.theme"]),
         None,
         &package::Search::default(),
     )
     .unwrap_or_else(|error| panic!("{error}"));
+    let identity = plan
+        .packages
+        .iter()
+        .find(|package| package.id == "org.example.theme")
+        .unwrap();
+    common::set_global(&runtime, "expectedDigest", &identity.digest);
     common::run(&runtime, check);
 
     let packed = root.join("theme.jpk");
@@ -1644,12 +1659,13 @@ exports = ["@theme"]
     let runtime = common::runtime();
     package::activate_with(
         &runtime,
-        &[text(&packed)],
+        &[text(&packed), text(&dependency)],
         &strings(&["example.theme"]),
         None,
         &package::Search::default(),
     )
     .unwrap_or_else(|error| panic!("{error}"));
+    common::set_global(&runtime, "expectedDigest", &identity.digest);
     common::run(&runtime, check);
 
     let script = common::runtime();
