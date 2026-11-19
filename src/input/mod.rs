@@ -92,7 +92,7 @@ mod state;
 mod synthetic;
 mod time;
 
-pub use backend::{Backend, BackendError, StubBackend, platform_backend};
+pub use backend::{Backend, BackendError, StubBackend, gamepad_backend, platform_backend};
 pub use control::{
     AxisRange, Control, ControlKind, ControlParseError, GamepadAxis, GamepadButton, Key, PointerAxis, PointerButton,
     TouchAxis,

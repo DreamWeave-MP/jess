@@ -20,7 +20,7 @@
 //! `/dev/input` needs permission (the `input` group, or a seat's ACLs); a device that can't be
 //! opened is skipped, and a machine where none can be is a machine with no devices, not an error.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -304,6 +304,18 @@ struct AxisInfo {
     maximum: i32,
 }
 
+/// What opening a node came to.
+enum Opened {
+    /// A device this backend reads, announced.
+    Device(Box<OpenDevice>),
+    /// A device of a kind this backend leaves alone, or of no use to jess: never opened again
+    /// while its node lasts.
+    Unwanted,
+    /// A node that couldn't be opened now (no permission yet, a device mid-setup): tried again
+    /// at the next scan.
+    Unavailable,
+}
+
 #[derive(Debug)]
 struct OpenDevice {
     device: Device,
@@ -316,9 +328,12 @@ struct OpenDevice {
 }
 
 impl OpenDevice {
-    /// Opens and announces the device at `path`, if jess has a use for it.
-    fn open(path: &Path, sender: &EventSender, now: Timestamp) -> Option<Self> {
-        let device = Device::open(path).ok()?;
+    /// Opens and announces the device at `path`, if it is of a kind `wanted` accepts. A device of
+    /// another kind is dropped having read nothing but what it says it has.
+    fn open(path: &Path, wanted: Kinds, sender: &EventSender, now: Timestamp) -> Opened {
+        let Ok(device) = Device::open(path) else {
+            return Opened::Unavailable;
+        };
         let has_key = |code: u16| device.supported_keys().is_some_and(|keys| keys.contains(KeyCode::new(code)));
         let has_absolute = |code: u16| {
             device
@@ -330,8 +345,12 @@ impl OpenDevice {
                 .supported_relative_axes()
                 .is_some_and(|axes| axes.contains(RelativeAxisCode(code)))
         };
-        let kind = classify(has_key, has_absolute, has_relative)?;
-        device.set_nonblocking(true).ok()?;
+        let Some(kind) = classify(has_key, has_absolute, has_relative).filter(|kind| wanted.accepts(*kind)) else {
+            return Opened::Unwanted;
+        };
+        if device.set_nonblocking(true).is_err() {
+            return Opened::Unavailable;
+        }
 
         let input_id = device.input_id();
         let (vendor, product) = (input_id.vendor(), input_id.product());
@@ -367,14 +386,14 @@ impl OpenDevice {
         let has_hats = has_absolute(ABS_HAT0X) && has_absolute(ABS_HAT0Y);
         let identity = identity(kind, device.unique_name(), device.physical_path(), vendor, product, &name);
         let id = sender.connect(&identity, descriptor, now);
-        Some(Self {
+        Opened::Device(Box::new(Self {
             device,
             id,
             kind,
             axes,
             has_hats,
             hat: [0, 0],
-        })
+        }))
     }
 
     /// Pushes everything the device has queued. `Err` is the device being gone.
@@ -466,17 +485,57 @@ const fn hat_button(axis: usize, value: i32) -> Option<GamepadButton> {
     }
 }
 
-/// The evdev backend: every keyboard, pointer, and gamepad under `/dev/input` this process may
-/// open.
-#[derive(Debug, Default)]
+/// Which kinds of device a backend reads.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Kinds {
+    /// Keyboards, pointers, and gamepads: a host with no window system of its own.
+    All,
+    /// Gamepads alone: beside a window, which already hears the keyboard and the pointer it has
+    /// the focus of. Reading keyboards here would hear keys typed into other programs.
+    Gamepads,
+}
+
+impl Kinds {
+    fn accepts(self, kind: DeviceKind) -> bool {
+        self == Kinds::All || kind == DeviceKind::Gamepad
+    }
+}
+
+/// The evdev backend: the keyboards, pointers, and gamepads (or the gamepads alone) under
+/// `/dev/input` this process may open.
+#[derive(Debug)]
 pub struct EvdevBackend {
+    wanted: Kinds,
     devices: BTreeMap<PathBuf, OpenDevice>,
+    /// Nodes of a kind this backend leaves alone, forgotten when they go.
+    unwanted: BTreeSet<PathBuf>,
     last_scan: Option<Timestamp>,
 }
 
+impl Default for EvdevBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EvdevBackend {
+    /// Every keyboard, pointer, and gamepad.
     pub fn new() -> Self {
-        Self::default()
+        Self::reading(Kinds::All)
+    }
+
+    /// Gamepads alone.
+    pub fn gamepads() -> Self {
+        Self::reading(Kinds::Gamepads)
+    }
+
+    fn reading(wanted: Kinds) -> Self {
+        Self {
+            wanted,
+            devices: BTreeMap::new(),
+            unwanted: BTreeSet::new(),
+            last_scan: None,
+        }
     }
 
     /// The `eventN` nodes in the device folder, sorted.
@@ -506,11 +565,19 @@ impl EvdevBackend {
                 sender.disconnect(open.id, now);
             }
         }
+        self.unwanted.retain(|path| paths.contains(path));
         for path in paths {
-            if !self.devices.contains_key(&path)
-                && let Some(open) = OpenDevice::open(&path, sender, now)
-            {
-                self.devices.insert(path, open);
+            if self.devices.contains_key(&path) || self.unwanted.contains(&path) {
+                continue;
+            }
+            match OpenDevice::open(&path, self.wanted, sender, now) {
+                Opened::Device(open) => {
+                    self.devices.insert(path, *open);
+                }
+                Opened::Unwanted => {
+                    self.unwanted.insert(path);
+                }
+                Opened::Unavailable => {}
             }
         }
         self.last_scan = Some(now);
@@ -543,6 +610,17 @@ impl Backend for EvdevBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gamepads_alone_leave_keyboards_and_pointers_unread() {
+        assert!(Kinds::Gamepads.accepts(DeviceKind::Gamepad));
+        assert!(!Kinds::Gamepads.accepts(DeviceKind::Keyboard));
+        assert!(!Kinds::Gamepads.accepts(DeviceKind::Pointer));
+        assert!(Kinds::All.accepts(DeviceKind::Keyboard));
+        assert!(Kinds::All.accepts(DeviceKind::Pointer));
+        assert_eq!(EvdevBackend::gamepads().wanted, Kinds::Gamepads);
+        assert_eq!(EvdevBackend::new().wanted, Kinds::All);
+    }
 
     #[test]
     fn a_pad_with_sticks_or_a_hat_or_dpad_keys_is_a_gamepad() {

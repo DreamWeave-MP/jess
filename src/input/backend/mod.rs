@@ -5,7 +5,7 @@
 //! runs a callback. Nothing a backend is made of appears in its public face, so the choice of
 //! crate behind one is free to change.
 //!
-//! Which backend exists depends on the target and on features, all off by default:
+//! Which backend exists depends on the target and on features, both on by default:
 //!
 //! | Target | Feature | Backend | Devices |
 //! | --- | --- | --- | --- |
@@ -89,6 +89,26 @@ impl Backend for StubBackend {
 
     fn poll(&mut self, _sender: &EventSender, _now: Timestamp) -> Result<(), BackendError> {
         Ok(())
+    }
+}
+
+/// The gamepads alone, for a host whose windows already hear their keyboard and pointer.
+///
+/// Evdev reading only gamepads on Linux with `linux-evdev`, gilrs (which reads nothing else) on
+/// macOS and Windows with `gilrs`, and [`StubBackend`] otherwise. Evdev opens no device until
+/// the first poll.
+///
+/// # Errors
+///
+/// The platform's device layer couldn't be opened.
+pub fn gamepad_backend() -> Result<Box<dyn Backend>, BackendError> {
+    #[cfg(all(feature = "linux-evdev", target_os = "linux"))]
+    {
+        Ok(Box::new(evdev::EvdevBackend::gamepads()))
+    }
+    #[cfg(not(all(feature = "linux-evdev", target_os = "linux")))]
+    {
+        platform_backend()
     }
 }
 
