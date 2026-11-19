@@ -222,7 +222,8 @@ fn run_target(args: &RunTargetArgs) -> Result<u8, String> {
         crate::application::check_frames(args.frames, target, &inspection.id)?;
     }
     let launched =
-        jess::lua::package::launch(&jess::lua::Options::default(), &request).map_err(|error| error.to_string())?;
+        jess::lua::package::launch_with(&jess::lua::Options::default(), &request, crate::application::launch_options())
+            .map_err(|error| error.to_string())?;
     crate::application::finish(launched, args.frames)
 }
 

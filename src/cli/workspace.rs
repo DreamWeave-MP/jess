@@ -184,7 +184,8 @@ fn run_target(at: Locate, args: &RunArgs) -> Result<u8, String> {
         let target = jess::lua::package::target(&inspection, Some(&chosen.target)).map_err(|error| error.to_string())?;
         crate::application::check_frames(args.frames, target, &inspection.id)?;
     }
-    let launched = workspace::launch(&jess::lua::Options::default(), &request).map_err(|error| error.to_string())?;
+    let launched = workspace::launch_with(&jess::lua::Options::default(), &request, crate::application::launch_options())
+        .map_err(|error| error.to_string())?;
     crate::application::finish(launched, args.frames)
 }
 
@@ -198,7 +199,8 @@ pub fn run_packed(image: Image, target: Option<String>, args: Vec<String>) -> Re
         grant: None,
         args,
     };
-    let launched = workspace::launch(&jess::lua::Options::default(), &request).map_err(|error| error.to_string())?;
+    let launched = workspace::launch_with(&jess::lua::Options::default(), &request, crate::application::launch_options())
+        .map_err(|error| error.to_string())?;
     crate::application::finish(launched, None)
 }
 

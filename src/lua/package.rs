@@ -1683,6 +1683,11 @@ pub struct LaunchOptions {
     /// The application's input. Without one the application runs headless, as the command line
     /// runs it: the host never polls a device, and no `on.host.input` handler runs.
     pub input: Option<crate::host::InputSource>,
+    /// The platform's gamepads ([`crate::input::gamepad_backend`]), for an application target that
+    /// declares `gpu.window` to hear beside its windows' keyboard and pointer, when `input` names
+    /// nothing else. A target that opens no window drops it unpolled, so a headless application
+    /// never reads a device. The command line passes the platform's.
+    pub gamepads: Option<Box<dyn crate::input::Backend>>,
 }
 
 /// [`launch`], with an application target's host set up as `launch` says. A command target
@@ -1700,7 +1705,7 @@ pub fn launch_with(options: &crate::lua::Options, request: &TargetRequest, launc
     let target = target(&inspection, request.target.as_deref())?;
     check_grant(&inspection, target, request.grant.as_deref())?;
     if target.kind == "application" {
-        return crate::lua::application::launch(options, request, &inspection, target, launch.input)
+        return crate::lua::application::launch(options, request, &inspection, target, launch.input, launch.gamepads)
             .map(Launched::Application);
     }
     run_command(options, request, &inspection, target).map(Launched::Command)

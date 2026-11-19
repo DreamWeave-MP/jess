@@ -646,6 +646,7 @@ pub(crate) fn launch(
     inspection: &Inspection,
     target: &Target,
     input: Option<InputSource>,
+    gamepads: Option<Box<dyn crate::input::Backend>>,
 ) -> l3i::Result<Application> {
     let layers = inspection.layers.iter().map(|layer| layer.id.clone()).collect::<Vec<_>>();
     let mut locations = vec![request.package.clone()];
@@ -691,7 +692,10 @@ pub(crate) fn launch(
     #[cfg(feature = "gpu")]
     let spec = spec.service(Arc::clone(&device));
     // A target that may open windows hears their keyboard and pointer, whatever else its host
-    // polls; one that may not stays as headless as it was asked to be.
+    // polls, and the gamepads when its host offers them; one that may not stays as headless as it
+    // was asked to be, and the gamepads are dropped unpolled.
+    #[cfg(not(feature = "window"))]
+    drop(gamepads);
     #[cfg(feature = "window")]
     let input = if target
         .capabilities
@@ -703,7 +707,7 @@ pub(crate) fn launch(
                 Some(InputSource::Backend(Box::new(crate::window::WindowInput::new(Some(backend)))))
             }
             Some(InputSource::Synthetic) => Some(InputSource::Synthetic),
-            None => Some(InputSource::Backend(Box::new(crate::window::WindowInput::new(None)))),
+            None => Some(InputSource::Backend(Box::new(crate::window::WindowInput::new(gamepads)))),
         }
     } else {
         input

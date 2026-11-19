@@ -1559,6 +1559,7 @@ return {
         &request(&root, "app", &[]),
         package::LaunchOptions {
             input: Some(InputSource::Synthetic),
+            ..package::LaunchOptions::default()
         },
     )
     .unwrap();
@@ -1711,4 +1712,71 @@ fn a_restart_keeps_the_gpu_device_and_releases_what_the_old_generation_made() {
         jess::gpu::LiveCounts::default(),
         "teardown leaves nothing behind"
     );
+}
+
+/// A backend that counts how often it is polled, standing in for the platform's gamepads.
+#[derive(Debug)]
+struct CountingPads(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl jess::input::Backend for CountingPads {
+    fn name(&self) -> &'static str {
+        "counting"
+    }
+
+    fn poll(
+        &mut self,
+        _sender: &jess::input::EventSender,
+        _now: jess::input::Timestamp,
+    ) -> Result<(), jess::input::BackendError> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+/// Runs `frames` frames of an application whose target declares `capabilities`, offered the
+/// counting gamepads as the command line offers the platform's, and returns how often they were
+/// polled.
+fn gamepad_polls(capabilities: &[&str], frames: usize) -> usize {
+    let polls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("pads");
+    single(
+        &root,
+        &[("idle", "return { on = { host = { update = function() end } } }\n", None)],
+        "return nil\n",
+        capabilities,
+    );
+    let launched = package::launch_with(
+        &Options::default(),
+        &request(&root, "app", &[]),
+        package::LaunchOptions {
+            input: None,
+            gamepads: Some(Box::new(CountingPads(std::sync::Arc::clone(&polls)))),
+        },
+    )
+    .unwrap();
+    let Launched::Application(mut application) = launched else {
+        panic!("an application target launches an application");
+    };
+    application.start().unwrap();
+    for _ in 0..frames {
+        application.frame(Duration::from_millis(16)).unwrap();
+    }
+    application.stop().unwrap();
+    polls.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// A headless application offered the gamepads never polls them: an application that opens no
+/// window reads no device.
+#[test]
+fn a_headless_application_never_polls_the_gamepads_it_is_offered() {
+    assert_eq!(gamepad_polls(&[], 3), 0);
+}
+
+/// An application that may open windows hears the gamepads beside its windows' keyboard and
+/// pointer, every frame, as `jess package run` gives it the platform's.
+#[cfg(feature = "window")]
+#[test]
+fn a_windowed_application_polls_the_gamepads_every_frame() {
+    assert_eq!(gamepad_polls(&["gpu.device", "gpu.window"], 3), 3);
 }

@@ -28,7 +28,7 @@ semantic actions           ActionState, ActionEvent
 intents                    @jess/input's router, in Luau          (names in, names out)
 ```
 
-`InputRuntime` ties the top four together for one application: a queue backends push to, the device state those events add up to, the installed graph, and one `tick` that drains, applies, evaluates, and returns the tick's action events. The default build has no platform dependencies; it's headless, and the tests drive it with a `SyntheticSource` whose clock moves only when told to.
+`InputRuntime` ties the top four together for one application: a queue backends push to, the device state those events add up to, the installed graph, and one `tick` that drains, applies, evaluates, and returns the tick's action events. The runtime itself polls no device: whoever hosts it attaches a backend, and the tests drive it with a `SyntheticSource` whose clock moves only when told to.
 
 ## What It Is Not
 
@@ -146,6 +146,8 @@ An action is interpreted input; an intent is what it means to a target; a comman
 | Linux | `linux-evdev` | `/dev/input` through evdev | keyboards, pointers, gamepads |
 | macOS, Windows | `gilrs` | gilrs | gamepads |
 | anything else, or no feature | | `StubBackend` | none |
+
+Both features are on by default; each brings its crate in only on its own platforms. `platform_backend()` reads every device the platform has, for a host with no window system of its own; `gamepad_backend()` reads gamepads alone (evdev skips keyboards and pointers, having read nothing of them but what they say they are), which is what the command line gives a windowed application beside its windows' own keyboard and pointer. Reading every keyboard there would hear keys typed into other programs, and hear the window's keys twice.
 
 Linux reads evdev directly rather than through gilrs, which would pull libudev and pkg-config into every build. On macOS and Windows the window system owns keyboards and pointers, and whoever owns the window pushes those through the same `EventSender`.
 

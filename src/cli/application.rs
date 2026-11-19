@@ -5,10 +5,24 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use jess::lua::application::Application;
-use jess::lua::package::{Launched, Target};
+use jess::lua::package::{LaunchOptions, Launched, Target};
 
 /// Set when the person running the application asks it to stop.
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+/// How the command line launches a target: an application that opens windows also hears the
+/// platform's gamepads. Gamepads that can't be had (a platform layer that won't start) are said
+/// once on stderr, and the application runs with its windows' keyboard and pointer alone.
+pub fn launch_options() -> LaunchOptions {
+    let gamepads = match jess::input::gamepad_backend() {
+        Ok(backend) => Some(backend),
+        Err(error) => {
+            eprintln!("jess: no gamepads: {error}");
+            None
+        }
+    };
+    LaunchOptions { input: None, gamepads }
+}
 
 /// Refuses `--frames` for a target that isn't an application, before anything of it runs.
 pub fn check_frames(frames: Option<u64>, target: &Target, package: &str) -> Result<(), String> {
