@@ -379,7 +379,7 @@ impl Gpu {
         size: u64,
         copy: impl FnOnce(&mut wgpu::CommandEncoder, &wgpu::Buffer),
     ) -> Result<Vec<u8>, GpuError> {
-        self.read_later(size, None, copy)?.wait().map(<[u8]>::to_vec)
+        self.read_later(size, None, copy)?.into_bytes()
     }
 }
 

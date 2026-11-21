@@ -314,7 +314,7 @@ impl Gpu {
     /// A level or layer the texture doesn't have, or `Depth24Plus`, whose layout is the
     /// backend's.
     pub fn read_texture(&self, texture: &Texture, level: u32, layer: u32) -> Result<Vec<u8>, GpuError> {
-        read_later(self, texture, level, layer)?.wait().map(<[u8]>::to_vec)
+        read_later(self, texture, level, layer)?.into_bytes()
     }
 }
 
