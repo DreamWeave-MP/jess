@@ -35,8 +35,6 @@ type Line = { text: string, start: number, finish: number, indent: number, ended
 
 local Null = Common.null
 local Huge = math.huge
-local SafeIntegerMax = integer.fromstring('9007199254740991')
-local SafeIntegerMin = integer.fromstring('-9007199254740991')
 
 local source = ''
 local length = 0
@@ -324,30 +322,11 @@ local function foldLines(lines: { string }): string
   return table.concat(out)
 end
 
--- The largest magnitudes a signed 64-bit integer holds, by base, without leading zeros. l3i's
--- integer.fromstring saturates a decimal and wraps a hexadecimal past them, so the digits are
--- compared before it sees them.
-local IntegerLimits: { [number]: { positive: string, negative: string } } = {
-  [8] = { positive = '777777777777777777777', negative = '1000000000000000000000' },
-  [10] = { positive = '9223372036854775807', negative = '9223372036854775808' },
-  [16] = { positive = '7fffffffffffffff', negative = '8000000000000000' },
-}
-
-local function fitsSigned(text: string, base: number): boolean
-  local sign, digits = string.match(text, '^([-+]?)0*(.*)$')
-  local magnitude = string.lower(digits or '')
-  local limits = IntegerLimits[base]
-  local limit = if sign == '-' then limits.negative else limits.positive
-  if #magnitude ~= #limit then return #magnitude < #limit end
-
-  return magnitude <= limit
-end
-
 local function parseSignedInteger(text: string, base: number, position: number): Value
-  if not fitsSigned(text, base) then failAt(position, 'integer is outside the signed 64-bit Luau range') end
-  local value = integer.fromstring(text, base)
+  local sign, digits = string.match(text, '^([-+]?)(.*)$')
+  local value = Common.integer(digits or '', base, sign == '-')
   if value == nil then failAt(position, 'integer is outside the signed 64-bit Luau range') end
-  if integer.ge(value, SafeIntegerMin) and integer.le(value, SafeIntegerMax) then return integer.tonumber(value) end
+
   return value
 end
 
@@ -1737,7 +1716,7 @@ note: null
 | --- | --- |
 | Plain `~`, `null`, `Null`, `NULL`, or an empty value | `jess.null` |
 | Plain `true`, `false` (and `True`, `TRUE`, ...) | `boolean` |
-| Plain decimal, `0o` octal, `0x` hexadecimal integer | `number` within ±2^53, beyond it an exact `integer` (`typeof(value) == 'integer'`) |
+| Plain decimal, `0o` octal, `0x` hexadecimal integer | `number` within ±(2^53 - 1), beyond it a `Bits64` holding the signed 64-bit integer's two's complement (`typeof(value) == 'Bits64'`) |
 | Plain float, `.inf`, `-.inf`, `.nan` | `number` |
 | Any other plain scalar, and every quoted scalar | `string` |
 | `!!str`, `!!null`, `!!bool`, `!!int`, `!!float`, `!!seq`, `!!map` | The Core type, checked: `!!int abc` is an error, not a string |

@@ -55,10 +55,105 @@ local function hex(text: string, at: number, digits: number): number?
   return value
 end
 
+-- Whole numbers past 2^53 -------------------------------------------------------------------------
+--
+-- A Luau number holds a whole number exactly only up to 2^53, and Luau has no integer type, so a
+-- document's integer beyond that is a Bits64 holding the two's complement of the signed 64-bit
+-- value. The arithmetic runs on 32-bit halves, each step exact in a double.
+
+local Half = 2 ^ 32
+local SignBit = 2 ^ 31
+local SafeMagnitude = 2 ^ 53 - 1
+
+type Bits64Module = {
+  fromParts: (hi: number, lo: number) -> Bits64,
+  parts: (value: Bits64) -> (number, number),
+}
+
+--- @dream/bits64, looked up on first use: jess reads manifests through this module before l3i
+--- registers its modules for `require`, and only a document holding such an integer needs it.
+local cachedBits64: Bits64Module?
+
+local function bits64(): Bits64Module
+  if not cachedBits64 then cachedBits64 = (require :: (string) -> Bits64Module) '@dream/bits64' end
+
+  return cachedBits64 :: Bits64Module
+end
+
+--- The integer `digits` spell in `base` (2 to 16, no sign, no separators), negated when `negative`:
+--- a number within ±(2^53 - 1), a Bits64 beyond, and nil outside the signed 64-bit range.
+local function integer(digits: string, base: number, negative: boolean): (number | Bits64)?
+  local hi, lo = 0, 0
+
+  for position = 1, #digits do
+    local digit = hexDigit(string.byte(digits, position))
+    if not digit or digit >= base then return nil end
+
+    lo = lo * base + digit
+    local carry = math.floor(lo / Half)
+    lo -= carry * Half
+    hi = hi * base + carry
+    if hi >= Half then return nil end
+  end
+
+  if hi > SignBit or (hi == SignBit and (lo > 0 or not negative)) then return nil end
+
+  local magnitude = hi * Half + lo
+  -- An integer has no negative zero.
+  if magnitude <= SafeMagnitude then return if negative and magnitude > 0 then -magnitude else magnitude end
+
+  if negative and lo > 0 then
+    lo = Half - lo
+    hi = Half - 1 - hi
+  elseif negative then
+    hi = (Half - hi) % Half
+  end
+
+  return bits64().fromParts(hi, lo)
+end
+
+--- The sign and the magnitude's halves of the signed integer a Bits64 holds.
+local function magnitudeOf(value: Bits64): (boolean, number, number)
+  local hi, lo = bits64().parts(value)
+  if hi < SignBit then return false, hi, lo end
+
+  if lo > 0 then return true, Half - 1 - hi, Half - lo end
+
+  return true, (Half - hi) % Half, 0
+end
+
+--- The signed integer a Bits64 holds, in decimal.
+local function integerText(value: Bits64): string
+  local negative, hi, lo = magnitudeOf(value)
+  local digits = {}
+
+  repeat
+    local remainder = hi % 10
+    hi = (hi - remainder) / 10
+    local low = remainder * Half + lo
+    local digit = low % 10
+    lo = (low - digit) / 10
+    table.insert(digits, 1, string.char(48 + digit))
+  until hi == 0 and lo == 0
+
+  return (if negative then '-' else '') .. table.concat(digits)
+end
+
+--- The signed integer a Bits64 holds, as the nearest number.
+local function integerNumber(value: Bits64): number
+  local negative, hi, lo = magnitudeOf(value)
+  local magnitude = hi * Half + lo
+
+  return if negative then -magnitude else magnitude
+end
+
 return table.freeze {
   null = Null,
   fail = fail,
   validateUtf8 = validateUtf8,
   hexDigit = hexDigit,
   hex = hex,
+  integer = integer,
+  integerText = integerText,
+  integerNumber = integerNumber,
 }

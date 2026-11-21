@@ -1,16 +1,14 @@
 --!strict
 --!native
 -- TOML 1.1.0, decoded directly into Luau values. Integers in Luau's exact-number range remain
--- numbers; larger signed 64-bit values use l3i's exact `integer` type, and datetimes are strings.
+-- numbers; larger signed 64-bit values are Bits64 holding their two's complement, and datetimes
+-- are strings.
 -- The second result is a layout side channel: each table's keys in document order, and which
 -- values of each table or array were written as floats and which as datetimes.
 --
 -- It requires nothing but ./common, so jess can load it to read package manifests before any
 -- package, this one included, is resolved.
 local Common = require './common'
-
-local SafeIntegerMax = integer.fromstring('9007199254740991')
-local SafeIntegerMin = integer.fromstring('-9007199254740991')
 
 export type Value = unknown
 export type Table = { [string]: Value }
@@ -432,9 +430,9 @@ local function decimalInteger(text: string): Value
   if not string.find(digits, '^%d+$') then return nil end
   if #digits > 1 and string.byte(digits, 1) == 48 then fail('leading zero in integer') end
 
-  local value = integer.fromstring(clean)
-  if not value then fail('integer is outside signed 64-bit range') end
-  if integer.ge(value, SafeIntegerMin) and integer.le(value, SafeIntegerMax) then return integer.tonumber(value) end
+  local value = Common.integer(digits, 10, first == 45)
+  if value == nil then fail('integer is outside signed 64-bit range') end
+
   return value
 end
 
@@ -472,9 +470,9 @@ local function radixInteger(text: string): Value
 
   local clean = string.gsub(text, '_', '')
   local base = if prefix == 120 then 16 elseif prefix == 111 then 8 else 2
-  local value = integer.fromstring(string.sub(clean, 3), base)
-  if not value or integer.lt(value, 0i) then fail('radix integer is outside signed 64-bit range') end
-  if integer.le(value, SafeIntegerMax) then return integer.tonumber(value) end
+  local value = Common.integer(string.sub(clean, 3), base, false)
+  if value == nil then fail('radix integer is outside signed 64-bit range') end
+
   return value
 end
 
