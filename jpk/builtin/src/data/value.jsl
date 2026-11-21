@@ -14,7 +14,8 @@
 -- The value model ----------------------------------------------------------------------------------
 
 --- A serde value: `Null` (unit), `None` (an absent option: null in JSON and YAML, left out of
---- TOML tables), booleans, numbers (whole ones below 2^53 are integers, Luau integers always are),
+--- TOML tables), booleans, numbers (whole ones below 2^53 are integers, and a Bits64 is the signed
+--- 64-bit integer whose two's complement it holds),
 --- strings, arrays, ordered maps, and enum variants (`!tag` in YAML, `{ tag = value }` elsewhere).
 export type Value = unknown
 
@@ -83,7 +84,7 @@ local function kindOf(value: Value): string
     return 'float'
   end
 
-  if typeof(value) == 'integer' then return 'int' end
+  if typeof(value) == 'Bits64' then return 'int' end
 
   if value == Null then return 'null' end
 
@@ -100,7 +101,7 @@ local function kindOf(value: Value): string
 end
 
 local function intText(value: Value): string
-  if typeof(value) == 'integer' then return tostring(value) end
+  if typeof(value) == 'Bits64' then return Common.integerText(value :: Bits64) end
 
   return string.format('%.0f', value :: number)
 end
@@ -1263,8 +1264,8 @@ local function toml(value: Value): string
       { null = 'unit', boolean = 'bool', float = 'f64', string = 'str', array = 'array' }
     local named = names[kind]
     if kind == 'int' then
-      local number = if typeof(value) == 'integer'
-        then integer.tonumber(value :: integer)
+      local number = if typeof(value) == 'Bits64'
+        then Common.integerNumber(value :: Bits64)
         else value :: number
       named = if number < 0 then 'i64' else 'u64'
     end
@@ -1346,7 +1347,7 @@ The text the writers produce is byte for byte what a Rust program's serializer w
 | `null` | [`jess.null`](@/docs/api/jess.md#jess-null), also `value.Null` | `null` | `null` | an error: TOML has no null |
 | `none` | `value.None`, or `nil` in a `struct` field | `null` | `null` | left out of a table, an error inside an array |
 | `boolean`, `string` | the Luau value | as themselves | as themselves, quoted when a reader would take them for something else | as themselves |
-| `int` | a whole `number` below 2^53, or an `integer` | `3` | `3` | `3` |
+| `int` | a whole `number` below 2^53, or a `Bits64`, the signed integer whose two's complement it holds | `3` | `3` | `3` |
 | `float` | a fractional `number`, or `value.float(n)` | `1.0` | `1.0` | `1.0` |
 | `array` | `value.array { ... }` | `[...]` | one item per line | `[...]` |
 | `map` | `value.map()` and `value.set`, or `value.struct` | `{...}`, keys in order | keys in order | values first, then tables |

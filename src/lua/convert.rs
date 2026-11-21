@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use l3i::convert::Vector3;
+use l3i::convert::{Bits64, FromView, Vector3};
 use l3i::memory::LightUserdata;
 use l3i::stack::{Frame, TableView, ValueView};
 use serde::Serialize;
@@ -25,9 +25,20 @@ pub const NULL: LightUserdata = LightUserdata {
     tag: 0,
 };
 
-/// Whether `value` is `jess.null`.
+/// Whether `value` is `jess.null`. The tag matters: a zero `Bits64` is a light userdata with a null
+/// payload too, under its own tag.
 pub fn is_null(value: ValueView<'_>) -> bool {
-    value.is_light_userdata() && value.read::<LightUserdata>().is_ok_and(|light| light.pointer.is_null())
+    value.is_light_userdata()
+        && value
+            .read::<LightUserdata>()
+            .is_ok_and(|light| light.pointer.is_null() && light.tag == NULL.tag)
+}
+
+/// A `Bits64` as the signed 64-bit integer whose two's complement it holds: how a document's
+/// integer beyond 2^53 reaches a script, and how one goes back.
+#[allow(clippy::cast_possible_wrap)] // The bit pattern is the point.
+fn signed(bits: Bits64) -> i64 {
+    bits.0 as i64
 }
 
 /// Whether a tree value stands for a missing value: `None`, or nothing.
@@ -58,8 +69,8 @@ pub fn read_tree(frame: &Frame<'_>, jess: &Jess, value: ValueView<'_>, shape: Op
     if value.is_boolean() {
         return Ok(Tree::Bool(value.read::<bool>()?));
     }
-    if value.is_integer() {
-        return Ok(Tree::I64(value.read::<l3i::convert::Integer>()?.0));
+    if <Bits64 as FromView>::matches(value) {
+        return Ok(Tree::I64(signed(value.read::<Bits64>()?)));
     }
     if value.is_number() {
         return Ok(number_tree(value.read::<f64>()?));
@@ -116,8 +127,8 @@ fn table_tree(frame: &Frame<'_>, jess: &Jess, table: &TableView<'_>, shape: Opti
     table.for_each(frame, |frame, key, value| {
         let key = if key.is_string() {
             rename(key.read::<&str>()?, snake_case)
-        } else if key.is_integer() {
-            key.read::<l3i::convert::Integer>()?.0.to_string()
+        } else if <Bits64 as FromView>::matches(key) {
+            signed(key.read::<Bits64>()?).to_string()
         } else if key.is_number() {
             lua::number_text(key.read::<f64>()?)
         } else {

@@ -169,7 +169,7 @@ pub fn shown(view: ValueView<'_>) -> String {
             .read::<&str>()
             .map_or_else(|_| "a string".to_owned(), |text| format!("{text:?}"));
     }
-    if view.is_number() || view.is_integer() {
+    if view.is_number() {
         return view
             .read::<f64>()
             .map_or_else(|_| "a number".to_owned(), crate::lua::lua::number_text);
@@ -186,7 +186,7 @@ pub fn whole(function: &str, what: &str, view: Option<ValueView<'_>>, default: O
         return Ok(default);
     }
     let number = view
-        .filter(|view| view.is_number() || view.is_integer())
+        .filter(ValueView::is_number)
         .and_then(|view| view.read::<f64>().ok())
         .filter(|number| number.fract() == 0.0 && (0.0..=f64::from(u32::MAX)).contains(number));
     // Whole and in range, checked above.

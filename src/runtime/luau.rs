@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use l3i::Runtime;
 use l3i::bind::{Call, StackResults};
-use l3i::convert::{BufferView, Exact, Integer, Push};
+use l3i::convert::{Bits64, BufferView, Exact, Push};
 use l3i::extension::{CompilerTypePolicy, Extension, ExtensionDescriptor, InstallContext, TagPolicy};
 use l3i::stack::{Scope, Type, ValueView};
 use l3i::userdata::{Owned, Userdata};
@@ -634,10 +634,10 @@ impl Extension for RuntimeExtension {
         handle
             .getter("kind", |this: &ResourceHandle| this.kind.clone())
             .signature("string");
-        #[allow(clippy::cast_possible_wrap)] // The id's bit pattern, as the minting service wrote it.
+        // The id's bit pattern, as the minting service wrote it.
         handle
-            .getter("id", |this: &ResourceHandle| Integer(this.id as i64))
-            .signature("integer");
+            .getter("id", |this: &ResourceHandle| Bits64(this.id))
+            .signature("Bits64");
         Ok(())
     }
 

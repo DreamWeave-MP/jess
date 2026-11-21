@@ -407,7 +407,7 @@ pub(crate) fn option_value<'v, T: l3i::convert::FromView<'v>>(
 pub(crate) fn unknown_option(function: &str, key: ValueView<'_>, keys: &[&str]) -> l3i::Error {
     let key = if key.is_string() {
         format!("'{}'", String::from_utf8_lossy(key.read::<&[u8]>().unwrap_or_default()))
-    } else if key.is_number() || key.is_integer() {
+    } else if key.is_number() {
         lua::number_text(key.read::<f64>().unwrap_or_default())
     } else {
         kind(key).to_owned()

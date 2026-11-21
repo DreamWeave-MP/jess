@@ -95,7 +95,10 @@ impl Builder {
                 #[allow(clippy::cast_precision_loss)] // Within 2^53, exactly.
                 return stored(scope, |frame| frame.push(&(whole as f64)).map(drop));
             }
-            return stored(scope, |frame| frame.push(&l3i::convert::Integer(whole)).map(drop));
+            // Past 2^53 a whole number is the value model's `Bits64`, its two's complement.
+            #[allow(clippy::cast_sign_loss)] // The bit pattern is the point.
+            let bits = l3i::convert::Bits64(whole as u64);
+            return stored(scope, |frame| frame.push(&bits).map(drop));
         }
         let value = number.as_f64().unwrap_or(f64::NAN);
         if number.is_u64() {

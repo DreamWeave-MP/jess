@@ -30,8 +30,13 @@ rustflags = ["-Clinker=clang", "-Clink-arg=-fuse-ld=lld"]
 [target.aarch64-apple-darwin]
 rustflags = ["-Clinker=clang", "-Clink-arg=-fuse-ld=lld"]
 
+# Doctests link through rustdoc, which takes rustdocflags. Under the explicit --target CI builds
+# Windows with (StroggForge pins CARGO_BUILD_TARGET), rustdoc linked them with link.exe, which
+# cannot read the bitcode -Clinker-plugin-lto leaves in the rlibs (LNK1107).
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-Clinker-plugin-lto", "-Clinker=lld-link"]
+rustdocflags = ["-Clinker-plugin-lto", "-Clinker=lld-link"]
 
 [target.aarch64-pc-windows-msvc]
 rustflags = ["-Clinker-plugin-lto", "-Clinker=lld-link"]
+rustdocflags = ["-Clinker-plugin-lto", "-Clinker=lld-link"]

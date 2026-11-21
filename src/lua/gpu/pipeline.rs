@@ -151,7 +151,8 @@ pub fn flag(frame: &Frame<'_>, function: &str, table: &TableView<'_>, key: &str,
 
 /// A finite number.
 pub fn number(function: &str, what: &str, view: ValueView<'_>) -> l3i::Result<f64> {
-    let value = (view.is_number() || view.is_integer())
+    let value = view
+        .is_number()
         .then(|| view.read::<f64>().ok())
         .flatten()
         .filter(|value| value.is_finite());
@@ -463,7 +464,7 @@ pub fn indirect_field(frame: &Frame<'_>, function: &str, table: &TableView<'_>) 
 /// A draw's base vertex: a whole number an `i32` holds, which may be negative.
 pub fn base_vertex(function: &str, view: ValueView<'_>) -> l3i::Result<i32> {
     let number = Some(view)
-        .filter(|view| view.is_number() || view.is_integer())
+        .filter(ValueView::is_number)
         .and_then(|view| view.read::<f64>().ok())
         .filter(|number| number.fract() == 0.0 && (f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(number));
     // Whole and in range, checked above.

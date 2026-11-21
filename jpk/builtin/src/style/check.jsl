@@ -70,7 +70,6 @@ local Builtins: { [string]: boolean } = {
 -- Luau's named types that are never false; tables and functions are their own syntax.
 local ValueTypes: { [string]: boolean } = {
   buffer = true,
-  integer = true,
   ['nil'] = true,
   number = true,
   string = true,

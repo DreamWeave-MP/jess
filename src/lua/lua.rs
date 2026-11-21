@@ -1,17 +1,17 @@
 //! The shapes jess's bindings share: option tables, coerced text, and pushing tables and values
 //! onto a call's stack.
 
-use l3i::convert::{FromView, Integer};
+use l3i::convert::FromView;
 use l3i::stack::{Frame, Scope, TableView, Type, ValueView};
 use l3i::value::Table;
 
 use crate::lua::error;
 
-/// A value's type as Luau's `type()` names it, for messages: a whole number is a `number` and
-/// `jess.null` a `userdata`, which is what scripts see.
+/// A value's type as Luau's `type()` names it, for messages: `jess.null` and a `Bits64` are a
+/// `userdata`, which is what scripts see.
 pub fn kind(value: ValueView<'_>) -> &'static str {
     match value.type_of() {
-        Type::Integer | Type::Number => "number",
+        Type::Number => "number",
         Type::LightUserdata | Type::Userdata => "userdata",
         Type::None | Type::Nil => "nil",
         other => other.name(),
@@ -64,9 +64,6 @@ impl<'v> FromView<'v> for Text {
         if view.is_string() {
             return view.read::<&str>().map(|text| Self(text.to_owned()));
         }
-        if view.is_integer() {
-            return view.read::<Integer>().map(|integer| Self(integer.0.to_string()));
-        }
         if view.is_number() {
             return view.read::<f64>().map(|number| Self(number_text(number)));
         }
@@ -74,7 +71,7 @@ impl<'v> FromView<'v> for Text {
     }
 
     fn matches(view: ValueView<'v>) -> bool {
-        view.is_string() || view.is_number() || view.is_integer()
+        view.is_string() || view.is_number()
     }
 }
 

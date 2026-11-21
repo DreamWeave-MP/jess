@@ -357,16 +357,14 @@ local function variables(bundle: string, id: string, given: unknown): { [string]
       error(`variables for message '{id}' of bundle '{bundle}' are named by strings, not {typeof(key)}`, 0)
     end
 
-    if typeof(value) == 'integer' then
-      values[key] = integer.tonumber(value :: integer)
-    elseif type(value) == 'string' or type(value) == 'number' or type(value) == 'boolean' then
-      values[key] = value :: Value
-    else
+    if type(value) ~= 'string' and type(value) ~= 'number' and type(value) ~= 'boolean' then
       error(
         `variable '{key}' of message '{id}' in bundle '{bundle}' must be a string, number, or boolean, not {typeof(value)}`,
         0
       )
     end
+
+    values[key] = value :: Value
   end
 
   return values

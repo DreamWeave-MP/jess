@@ -3,6 +3,7 @@
 
 use jess::lua::Options;
 use jess::lua::l3i::Runtime;
+use jess::lua::l3i::convert::Bits64;
 
 fn runtime(capabilities: &[&str]) -> Runtime {
     let capabilities: Vec<String> = capabilities.iter().map(|name| (*name).to_owned()).collect();
@@ -77,16 +78,15 @@ const LET_GO: &str = r"
 
 /// The stream an output still plays, or `None` once its engine is gone.
 #[cfg(feature = "audio-device")]
-fn playing(id: f64) -> Option<std::sync::Arc<jess::audio::Stream>> {
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // An id from `handle().id`.
-    jess::audio::Stream::find(id as u64)
+fn playing(id: Bits64) -> Option<std::sync::Arc<jess::audio::Stream>> {
+    jess::audio::Stream::find(id.0)
 }
 
 #[cfg(feature = "audio-device")]
 #[test]
 fn an_output_plays_on_when_the_script_lets_go_of_it_and_through_a_stall() {
     let runtime = runtime(&["audio.output"]);
-    let id: f64 = runtime.eval(LET_GO).unwrap_or_else(|error| panic!("{error}"));
+    let id: Bits64 = runtime.eval(LET_GO).unwrap_or_else(|error| panic!("{error}"));
     // A stall: no Luau runs, and the device plays what was written ahead.
     std::thread::sleep(std::time::Duration::from_millis(300));
     let stream = playing(id).expect("the output let go of its stream when the script did");
@@ -110,7 +110,7 @@ fn a_domain_restart_stops_the_outputs_its_generation_opened() {
     let grant = RootAuthority::new().grant(CapabilitySet::from_names(["audio.output"]).unwrap());
     let domain = ScriptDomain::create(factory, DomainSpec::new("audio", grant)).unwrap();
     domain.load_source("=audio", "").unwrap();
-    let id: f64 = domain
+    let id: Bits64 = domain
         .with_runtime(|runtime| runtime.eval(LET_GO))
         .unwrap()
         .unwrap_or_else(|error| panic!("{error}"));

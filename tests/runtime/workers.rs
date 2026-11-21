@@ -244,7 +244,7 @@ fn every_transferable_value_crosses_and_nothing_else_does() {
     let values = [
         Message::Boolean(false),
         Message::Number(-0.5),
-        Message::Integer(i64::MIN),
+        Message::Bits64(1 << 63),
         Message::String(vec![0, 159, 146, 150, 255]),
         Message::Vector([1.0, -2.0, 3.5]),
         Message::Bytes(Arc::clone(&megabyte)),

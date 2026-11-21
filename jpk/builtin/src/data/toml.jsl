@@ -107,7 +107,7 @@ The document root must be a map or variant, and TOML cannot represent `jess.null
 | TOML | Luau |
 | --- | --- |
 | String | `string` |
-| Integer | `number` within ±2^53, beyond it an exact `integer` (`typeof(value) == 'integer'`) |
+| Integer | `number` within ±(2^53 - 1), beyond it a `Bits64` holding the signed 64-bit integer's two's complement (`typeof(value) == 'Bits64'`) |
 | Float | `number`. `layout[table].floats[key]` is `true`, so you can tell `1.0` from `1`. |
 | Boolean | `boolean` |
 | Offset date-time, local date-time, local date, local time | `string`, in RFC 3339 form (`"1979-05-27T07:32Z"`). `layout[table].datetimes[key]` is `true`. |

@@ -132,7 +132,7 @@ folder = "out"
 1	true	2	out
 ```
 
-Decoded values could be any TOML type, so check each with `type(...)` before using it. That's also your validation: a value of the wrong type falls back to the default instead of blowing up three functions later. Dates come back as strings, and integers past 2^53 as exact `integer`s.
+Decoded values could be any TOML type, so check each with `type(...)` before using it. That's also your validation: a value of the wrong type falls back to the default instead of blowing up three functions later. Dates come back as strings, and integers past 2^53 as a `Bits64` holding the signed 64-bit value's two's complement.
 
 ### Key order and floats
 
