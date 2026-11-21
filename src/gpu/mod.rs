@@ -107,6 +107,39 @@ impl DeviceKind {
     }
 }
 
+/// Which adapter a device asks for, on a machine with more than one: an integrated GPU beside a
+/// discrete one, say. Where there is one adapter, both get it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Power {
+    /// The adapter that draws the least power, usually an integrated GPU: what jess asks for
+    /// unless told otherwise.
+    #[default]
+    Low,
+    /// The adapter that draws the fastest, usually a discrete GPU.
+    High,
+}
+
+impl Power {
+    /// The preference's name, as `jess.gpu` takes and reports it.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Power::Low => "low",
+            Power::High => "high",
+        }
+    }
+
+    /// The preference a name gives, if it names one.
+    #[must_use]
+    pub fn named(name: &str) -> Option<Power> {
+        match name {
+            "low" => Some(Power::Low),
+            "high" => Some(Power::High),
+            _ => None,
+        }
+    }
+}
+
 /// The adapter a [`Gpu`] runs on, and what it allows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GpuInfo {
@@ -116,6 +149,8 @@ pub struct GpuInfo {
     pub backend: &'static str,
     /// What kind of device it is.
     pub kind: DeviceKind,
+    /// The adapter it was asked for: low power or high performance.
+    pub power: Power,
     /// The widest or tallest a 2D texture may be.
     pub max_texture_size: u32,
     /// The most layers an array texture may have.
@@ -188,13 +223,23 @@ impl fmt::Debug for Gpu {
 
 impl Gpu {
     /// Opens a device on whatever adapter the machine has: a hardware one if there is one, else
-    /// a software one. Nothing is drawn to a window; everything is offscreen.
+    /// a software one, and of several hardware ones the one that draws the least power. Nothing
+    /// is drawn to a window; everything is offscreen.
     ///
     /// # Errors
     ///
     /// No adapter at all, or one that opens no device.
     pub fn headless() -> Result<Gpu, GpuError> {
-        Gpu::open(false)
+        Gpu::open(false, Power::Low)
+    }
+
+    /// As [`Gpu::headless`], on the adapter `power` prefers.
+    ///
+    /// # Errors
+    ///
+    /// As [`Gpu::headless`].
+    pub fn headless_with(power: Power) -> Result<Gpu, GpuError> {
+        Gpu::open(false, power)
     }
 
     /// As [`Gpu::headless`], on the same adapter, with everything a device may lack left off: it
@@ -206,12 +251,12 @@ impl Gpu {
     /// As [`Gpu::headless`].
     #[doc(hidden)]
     pub fn headless_plain() -> Result<Gpu, GpuError> {
-        Gpu::open(true)
+        Gpu::open(true, Power::Low)
     }
 
-    /// A device on whatever adapter the machine has, with what it offers of what jess uses, or
-    /// none of it for a `plain` one.
-    fn open(plain: bool) -> Result<Gpu, GpuError> {
+    /// A device on whatever adapter the machine has that `power` prefers, with what it offers of
+    /// what jess uses, or none of it for a `plain` one.
+    fn open(plain: bool, power: Power) -> Result<Gpu, GpuError> {
         let wanted = if plain {
             wgpu::Features::empty()
         } else {
@@ -223,7 +268,10 @@ impl Gpu {
             let instance: &'static wgpu::Instance = instance.get_or_init(|| self::instance(backends));
             for force_fallback_adapter in [false, true] {
                 let options = wgpu::RequestAdapterOptions {
-                    power_preference: wgpu::PowerPreference::LowPower,
+                    power_preference: match power {
+                        Power::Low => wgpu::PowerPreference::LowPower,
+                        Power::High => wgpu::PowerPreference::HighPerformance,
+                    },
                     force_fallback_adapter,
                     compatible_surface: None,
                     ..Default::default()
@@ -257,6 +305,7 @@ impl Gpu {
                 wgpu::DeviceType::Cpu => DeviceKind::Cpu,
                 wgpu::DeviceType::Other => DeviceKind::Other,
             },
+            power,
             max_texture_size: limits.max_texture_dimension_2d,
             max_texture_layers: limits.max_texture_array_layers,
             max_buffer_size: limits.max_buffer_size,
@@ -330,7 +379,7 @@ impl Gpu {
         size: u64,
         copy: impl FnOnce(&mut wgpu::CommandEncoder, &wgpu::Buffer),
     ) -> Result<Vec<u8>, GpuError> {
-        self.read_later(size, None, copy)?.wait().map(<[u8]>::to_vec)
+        self.read_later(size, None, copy)?.into_bytes()
     }
 }
 

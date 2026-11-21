@@ -11,9 +11,12 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use l3i::bind::{Call, StackResults};
 use l3i::extension::{ExtensionDescriptor, TagPolicy};
+use l3i::stack::{Scope, ValueView};
 use l3i::userdata::{Owned, Userdata};
 
-use crate::gpu::{DrawSets, Gpu};
+use super::pipeline::options;
+use super::resources::shown;
+use crate::gpu::{DrawSets, Gpu, Power};
 use crate::lua::{error, push_table};
 
 /// The GPU a runtime opened, shared by every handle to it, and the draw sets made on it.
@@ -34,17 +37,18 @@ unsafe impl Userdata for LuaGpuDevice {
 pub struct SharedDevice(Mutex<Option<Arc<Gpu>>>);
 
 impl SharedDevice {
-    /// The domain's device, opened now if no generation has yet.
+    /// The domain's device, opened now on the adapter `power` prefers if no generation has opened
+    /// it yet. Once it is open, whichever adapter it is on is the one every generation gets.
     ///
     /// # Errors
     ///
     /// As [`Gpu::headless`].
-    pub fn device(&self) -> Result<Arc<Gpu>, crate::gpu::GpuError> {
+    pub fn device(&self, power: Power) -> Result<Arc<Gpu>, crate::gpu::GpuError> {
         let mut shared = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(gpu) = &*shared {
             return Ok(Arc::clone(gpu));
         }
-        let gpu = Arc::new(Gpu::headless()?);
+        let gpu = Arc::new(Gpu::headless_with(power)?);
         *shared = Some(Arc::clone(&gpu));
         drop(shared);
         Ok(gpu)
@@ -62,22 +66,61 @@ impl SharedDevice {
 pub struct Opened(Rc<RefCell<Option<LuaGpuDevice>>>);
 
 impl Opened {
-    /// The runtime's device, opened on the first call: the domain's, under a domain that shares
-    /// one, and the runtime's own otherwise. Its draw sets are the runtime's either way.
-    pub fn device(&self) -> l3i::Result<Owned<LuaGpuDevice>> {
+    /// The runtime's device, opened on the first call on the adapter `power` prefers (low power
+    /// without one): the domain's, under a domain that shares one, and the runtime's own
+    /// otherwise. Its draw sets are the runtime's either way. Asking an open device for another
+    /// adapter than it was opened on is an error, not a quiet second best.
+    pub fn device(&self, power: Option<Power>) -> l3i::Result<Owned<LuaGpuDevice>> {
         let mut opened = self.0.borrow_mut();
         if let Some(device) = &*opened {
-            return Ok(Owned(device.clone()));
+            return same(device.gpu.as_ref(), power).map(|()| Owned(device.clone()));
         }
+        let wanted = power.unwrap_or_default();
         let gpu = crate::runtime::service::<SharedDevice>()
-            .map_or_else(|| Gpu::headless().map(Arc::new), |shared| shared.device())
+            .map_or_else(|| Gpu::headless_with(wanted).map(Arc::new), |shared| shared.device(wanted))
             .map_err(|problem| error(format!("jess.gpu.device: {problem}")))?;
+        // A domain's device may have been opened by an earlier generation, on another adapter.
+        same(gpu.as_ref(), power)?;
         let device = LuaGpuDevice {
             gpu,
             sets: Arc::new(DrawSets::new()),
         };
         *opened = Some(device.clone());
         Ok(Owned(device))
+    }
+}
+
+/// The adapter `jess.gpu.device`'s options ask for, if they ask: `{ power = 'low' | 'high' }`.
+pub fn power(call: &Call<'_>, given: Option<ValueView<'_>>) -> l3i::Result<Option<Power>> {
+    const FUNCTION: &str = "jess.gpu.device";
+    let Some(given) = given.filter(|given| !given.is_nil()) else {
+        return Ok(None);
+    };
+    call.with_frame(|frame| {
+        let fields = options(frame, FUNCTION, "its argument", given, &["power"])?;
+        let power = fields.raw_get(frame, "power")?;
+        if power.is_nil() {
+            return Ok(None);
+        }
+        let name = if power.is_string() { power.read::<&str>().ok() } else { None };
+        name.and_then(Power::named)
+            .map(Some)
+            .ok_or_else(|| error(format!("{FUNCTION}: power is 'low' or 'high', not {}", shown(power))))
+    })
+}
+
+/// Whether `gpu` is on the adapter `power` asks for: nothing asked is always so.
+fn same(gpu: &Gpu, power: Option<Power>) -> l3i::Result<()> {
+    let info = gpu.info();
+    match power {
+        Some(power) if power != info.power => Err(error(format!(
+            "jess.gpu.device: the device is already open on the {}-power adapter ({}), so it can't be {}-power: \
+             ask for power on the first call, before anything opens it",
+            info.power.name(),
+            info.name,
+            power.name()
+        ))),
+        _ => Ok(()),
     }
 }
 
@@ -109,6 +152,9 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .untyped();
     device
         .getter("kind", |this: &LuaGpuDevice| this.gpu.info().kind.name())
+        .untyped();
+    device
+        .getter("power", |this: &LuaGpuDevice| this.gpu.info().power.name())
         .untyped();
     device
         .getter(

@@ -54,6 +54,57 @@ fn the_device_describes_its_adapter() {
         .unwrap_or_else(|error| panic!("{error}"));
 }
 
+/// The device opens on the low-power adapter unless asked for the high-performance one, says
+/// which it was asked for, and refuses to be asked for the other once it is open.
+#[cfg(feature = "gpu")]
+#[test]
+fn the_device_opens_on_the_adapter_asked_for() {
+    let Some(low) = gpu_runtime("the_device_opens_on_the_adapter_asked_for") else {
+        return;
+    };
+    low.exec(
+        r"
+        local device = jess.gpu.device()
+        assert(device.power == 'low', device.power)
+        assert(jess.gpu.device { power = 'low' }.name == device.name)
+        local ok, problem = pcall(jess.gpu.device, { power = 'high' })
+        assert(not ok and string.find(problem, 'already open on the low-power adapter', 1, true), problem)
+        -- asked for nothing, a later call gets the device as it is
+        assert(jess.gpu.device().power == device.power)
+        ",
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+
+    let high = device_runtime();
+    high.exec(
+        r"
+        local device = jess.gpu.device { power = 'high' }
+        assert(device.power == 'high', device.power)
+        assert(jess.gpu.device().power == device.power)
+        local ok, problem = pcall(jess.gpu.device, { power = 'low' })
+        assert(not ok and string.find(problem, 'already open on the high-power adapter', 1, true), problem)
+        ",
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+}
+
+/// `jess.gpu.device`'s options are checked before anything opens: a power it doesn't know and a
+/// key it doesn't take are errors.
+#[cfg(feature = "gpu")]
+#[test]
+fn the_device_refuses_options_it_does_not_take() {
+    let runtime = device_runtime();
+    for (options, expected) in [
+        ("{ power = 'medium' }", "power is 'low' or 'high'"),
+        ("{ power = 1 }", "power is 'low' or 'high'"),
+        ("{ powr = 'high' }", "unknown jess.gpu.device option 'powr'"),
+        ("'high'", "is a table"),
+    ] {
+        let error = runtime.exec(&format!("jess.gpu.device({options})")).unwrap_err().to_string();
+        assert!(error.contains(expected), "{options}: {error}");
+    }
+}
+
 /// A buffer takes bytes from a Luau `buffer` or a string, whole or a range of them, and reads back
 /// what it holds, whole or a range.
 #[cfg(feature = "gpu")]

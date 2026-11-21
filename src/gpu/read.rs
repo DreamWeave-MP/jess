@@ -57,6 +57,18 @@ impl PendingRead {
             .ok_or_else(|| GpuError::Backend("the GPU finished without mapping the read".to_owned()))
     }
 
+    /// The bytes, as [`PendingRead::wait`] gives them, moved out rather than copied.
+    ///
+    /// # Errors
+    ///
+    /// As [`PendingRead::wait`].
+    pub fn into_bytes(mut self) -> Result<Vec<u8>, GpuError> {
+        self.wait()?;
+        self.bytes
+            .take()
+            .ok_or_else(|| GpuError::Backend("the GPU finished without mapping the read".to_owned()))
+    }
+
     /// Whether the bytes are here, as of the last poll or wait.
     #[must_use]
     pub fn is_ready(&self) -> bool {
@@ -75,9 +87,17 @@ impl PendingRead {
             .slice(..)
             .get_mapped_range()
             .map_err(|error| GpuError::Backend(error.to_string()))?;
+        // A row at a time, or all at once where rows aren't padded: copied byte by byte, a frame's
+        // worth of pixels took longer to come back than to draw.
         let bytes = match self.rows {
-            Some((row, padded)) => mapped.chunks(padded).flat_map(|line| &line[..row]).copied().collect(),
-            None => mapped.to_vec(),
+            Some((row, padded)) if row != padded => {
+                let mut bytes = Vec::with_capacity(mapped.len() / padded.max(1) * row);
+                for line in mapped.chunks(padded) {
+                    bytes.extend_from_slice(&line[..row.min(line.len())]);
+                }
+                bytes
+            }
+            Some(_) | None => mapped.to_vec(),
         };
         drop(mapped);
         self.staging.unmap();
@@ -179,6 +199,6 @@ impl Gpu {
     ///
     /// As [`Gpu::read_kept_later`].
     pub fn read_kept(&self, plan: &Plan, name: &str, level: u32, layer: u32) -> Result<Vec<u8>, GpuError> {
-        self.read_kept_later(plan, name, level, layer)?.wait().map(<[u8]>::to_vec)
+        self.read_kept_later(plan, name, level, layer)?.into_bytes()
     }
 }
