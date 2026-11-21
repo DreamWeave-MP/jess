@@ -171,7 +171,7 @@ jess app.jsw                                   # anywhere, offline, no workspace
 
 ## The built-in package
 
-`jpk/builtin` is jess's own package, `org.dreamweave.jess`: the Luau libraries and tools every runtime can require, shipped the way any Luau ships. Its version tracks the Jess runtime (`0.3.0` for this release); `jess_api` is a separate API generation number. Its layers are:
+`jpk/builtin` is jess's own package, `org.dreamweave.jess`: the Luau libraries and tools every runtime can require, shipped the way any Luau ships. Its version tracks the Jess runtime (`0.4.0` for this release); `jess_api` is a separate API generation number. Its layers are:
 
 - `jess.style`: [`@jess/style`](@/docs/api/style.md), the [style checker](@/docs/contributing/luau-style.md#the-checker), and [`@jess/analysis`](@/docs/api/analysis.md).
 - `jess.data`: the codecs [`@jess/json`](@/docs/api/json.md), [`@jess/data/toml`](@/docs/api/toml.md), [`@jess/data/value`](@/docs/api/value.md), and [`@jess/yaml`](@/docs/api/yaml.md).
