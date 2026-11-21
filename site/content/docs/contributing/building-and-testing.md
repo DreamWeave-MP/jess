@@ -54,7 +54,7 @@ Every push and pull request goes through [StroggForge](https://github.com/DreamW
 | --- | --- |
 | Format | `cargo fmt --all --check` |
 | Clippy | `cargo clippy --workspace --all-targets --all-features -- -W clippy::pedantic -D warnings` |
-| Tests | `cargo test --workspace --all-targets --all-features` |
+| Tests | `cargo test --workspace --all-features` |
 | MSRV | `L3I_UNVERIFIED_TOOLCHAIN=1 cargo +1.95 check --workspace --all-features --all-targets` |
 | Docs | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps` |
 | The built-in package | `jess package test jpk/builtin` |

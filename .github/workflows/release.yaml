@@ -17,7 +17,7 @@ jobs:
       contents: write
       pages: write
       id-token: write
-    uses: DreamWeave-MP/StroggForge/.github/workflows/rustGlobalBuild.yml@v70
+    uses: DreamWeave-MP/StroggForge/.github/workflows/rustGlobalBuild.yml@v73
     secrets: inherit
     with:
       binary_names: '["jess"]'
@@ -46,6 +46,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-    uses: DreamWeave-MP/StroggForge/.github/workflows/publishJessImage.yml@v70
+    uses: DreamWeave-MP/StroggForge/.github/workflows/publishJessImage.yml@v73
     with:
       version: ${{ github.ref_name }}
