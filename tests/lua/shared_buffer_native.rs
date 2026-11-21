@@ -4,7 +4,7 @@
 use jess::lua::Options;
 use std::fmt::Write;
 
-use jess::lua::l3i::convert::Integer;
+use jess::lua::l3i::convert::Bits64;
 use jess::lua::l3i::native_code::{AssemblyOptions, AssemblyTarget};
 use jess::lua::l3i::source::{LoadScope, compile};
 use jess::lua::l3i::value::{Table, Value};
@@ -187,7 +187,7 @@ fn message(error: &impl ToString) -> String {
 #[test]
 fn failed_guards_raise_what_the_method_raises() {
     let (runtime, _) = fixture();
-    set_global(&runtime, "whole", &Integer(8));
+    set_global(&runtime, "bits", &Bits64(8));
     let offsets = [
         "-1",
         "-0.5",
@@ -212,6 +212,7 @@ fn failed_guards_raise_what_the_method_raises() {
         "nil",
         "true",
         "{}",
+        "bits",
     ];
     for reader in ["f64", "u32"] {
         for offset in offsets {
@@ -229,16 +230,10 @@ fn failed_guards_raise_what_the_method_raises() {
         }
     }
 
-    // What the guards pass to the method rather than reject: a Luau integer and a negative zero.
-    for offset in ["whole", "-0"] {
-        let native: f64 = runtime
-            .eval(&format!("return state.native_f64(state.view, {offset})"))
-            .unwrap();
-        let plain: f64 = runtime
-            .eval(&format!("return state.plain_f64(state.view, {offset})"))
-            .unwrap();
-        assert_eq!(native.to_bits(), plain.to_bits(), "{offset}");
-    }
+    // What the guards pass to the method rather than reject: a negative zero.
+    let native: f64 = runtime.eval("return state.native_f64(state.view, -0)").unwrap();
+    let plain: f64 = runtime.eval("return state.plain_f64(state.view, -0)").unwrap();
+    assert_eq!(native.to_bits(), plain.to_bits(), "-0");
 
     for receiver in ["state.unsealed", "{}", "nil", "8", "'text'"] {
         let native = runtime.exec(&format!("state.native_f64({receiver}, 0)")).unwrap_err();

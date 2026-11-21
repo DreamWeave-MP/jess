@@ -6,7 +6,7 @@
 //! with libmp3lame (44.1 kHz), libvorbis (44.1 kHz) and libopus (48 kHz).
 
 use jess::lua::l3i::Runtime;
-use jess::lua::l3i::convert::NewBuffer;
+use jess::lua::l3i::convert::{Bits64, NewBuffer};
 
 use super::common;
 
@@ -159,7 +159,7 @@ fn a_feed_says_what_it_cannot_read() {
 #[test]
 fn a_runtimes_end_stops_its_feeds() {
     let runtime = runtime();
-    let id: f64 = runtime
+    let id: Bits64 = runtime
         .eval(
             r"
             local feed = jess.audio.feed(opus, { loop = true })
@@ -167,8 +167,7 @@ fn a_runtimes_end_stops_its_feeds() {
             ",
         )
         .unwrap_or_else(|error| panic!("{error}"));
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // An id from `handle().id`.
-    let id = id as u64;
+    let id = id.0;
     // Held here, the stream keeps the feed running: only the runtime's end can stop it.
     let stream = jess::audio::Stream::find(id).expect("the feed's stream");
     drop(runtime);

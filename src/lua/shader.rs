@@ -478,7 +478,7 @@ fn operand_of(site: &mut Site<'_>, operation: &str, view: ValueView<'_>, scalar:
     if view.is_boolean() {
         return Ok(site.bool(view.read::<bool>()?));
     }
-    if !(view.is_number() || view.is_integer()) {
+    if !view.is_number() {
         return Err(error(format!(
             "{operation}: expected a shader value or a number, not {}",
             shader_kind(view)
@@ -661,9 +661,7 @@ fn arithmetic(
         .find_map(|side| l3i::userdata::receiver::<LuaShaderExpr>(side))
         .map(|expression| expression.build.clone())
         .ok_or_else(|| {
-            let other = [left, right]
-                .into_iter()
-                .find(|side| !(side.is_number() || side.is_integer()));
+            let other = [left, right].into_iter().find(|side| !side.is_number());
             let found = other.map_or_else(|| "two numbers".to_owned(), shader_kind);
             error(format!("{}: expected a shader value, not {found}", operation.name()))
         })?;
@@ -1032,7 +1030,7 @@ fn construct(this: &LuaShaderType, call: &Call<'_>, args: ArgView<'_>) -> l3i::R
     let value = at_site(call, &build, |site, _| {
         if ty.is_numeric_scalar()
             && let [only] = views.as_slice()
-            && (only.is_number() || only.is_integer())
+            && only.is_number()
         {
             return operand_of(site, &operation, *only, scalar);
         }
@@ -1116,15 +1114,11 @@ fn array(shader: &Rc<Shader>, element: ValueView<'_>, length: ValueView<'_>) -> 
             unreachable!("data_descriptor refused it")
         }
     };
-    let count = if length.is_number() || length.is_integer() {
-        length.read::<f64>()?
-    } else {
-        -1.0
-    };
+    let count = if length.is_number() { length.read::<f64>()? } else { -1.0 };
     if count.fract() != 0.0 || !(1.0..=f64::from(u32::MAX)).contains(&count) {
         return Err(error(format!(
             "shader.array's length must be a whole number of at least 1, not {}",
-            if length.is_number() || length.is_integer() {
+            if length.is_number() {
                 count.to_string()
             } else {
                 kind(length).to_owned()
@@ -1502,7 +1496,7 @@ fn element_index(site: &mut Site<'_>, this: &LuaShaderPlace, key: ValueView<'_>,
         return Ok(expression.value);
     }
     let name = place_name(this);
-    if !(key.is_number() || key.is_integer()) {
+    if !key.is_number() {
         return Err(error(format!(
             "{name} is indexed by a number or a shader value, not {}",
             kind(key)
@@ -2132,7 +2126,7 @@ fn workgroup_size(frame: &Frame<'_>, size: ValueView<'_>) -> l3i::Result<[u32; 3
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         number.map(|number| number.min(f64::from(u32::MAX)) as u32).ok_or_else(refuse)
     };
-    if size.is_number() || size.is_integer() {
+    if size.is_number() {
         return Ok([whole(size)?, 1, 1]);
     }
     if !size.is_table() {

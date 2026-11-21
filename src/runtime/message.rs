@@ -1,7 +1,7 @@
 //! Transferable values: what may cross a worker or event boundary, and how it converts to and
 //! from Luau.
 //!
-//! The set is deliberately small: nil, booleans, numbers, Luau integers, strings (bytes),
+//! The set is deliberately small: nil, booleans, numbers, `Bits64` values, strings (bytes),
 //! vectors, byte buffers, lists and maps of those, and an explicit [`ResourceHandle`]. Nothing
 //! else converts, and nothing unsupported is dropped quietly: [`TransferError`] names the path to
 //! the offending value and what it was.
@@ -13,7 +13,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::runtime::shared_buffer::SharedBuffer;
-use l3i::convert::{BufferView, Integer, Push, Vector3, new_buffer};
+use l3i::convert::{Bits64, BufferView, FromView, Push, Vector3, new_buffer};
 use l3i::stack::{Frame, Scope, Type, ValueView};
 use l3i::userdata::Userdata;
 
@@ -56,8 +56,8 @@ pub enum Message {
     Boolean(bool),
     /// A Luau number.
     Number(f64),
-    /// A Luau integer (`42i`), distinct from a number as Luau keeps it.
-    Integer(i64),
+    /// A `Bits64`: 64 opaque bits, never a number.
+    Bits64(u64),
     /// A Luau string: bytes, not necessarily UTF-8.
     String(Vec<u8>),
     /// A Luau vector.
@@ -111,14 +111,11 @@ impl Message {
         }
     }
 
-    /// The number, if this is one (an integer converts when exact).
+    /// The number, if this is one.
     #[must_use]
     pub fn as_number(&self) -> Option<f64> {
         match self {
             Message::Number(number) => Some(*number),
-            // Exactness is checked by the round trip: an integer that survives it is a number.
-            #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
-            Message::Integer(integer) if (*integer as f64) as i64 == *integer => Some(*integer as f64),
             _ => None,
         }
     }
@@ -130,7 +127,7 @@ impl Message {
     pub fn size_hint(&self) -> usize {
         match self {
             Message::Nil => 0,
-            Message::Boolean(_) | Message::Number(_) | Message::Integer(_) | Message::SharedBuffer(_) => 8,
+            Message::Boolean(_) | Message::Number(_) | Message::Bits64(_) | Message::SharedBuffer(_) => 8,
             Message::Vector(_) => 12,
             Message::String(bytes) => bytes.len(),
             Message::Bytes(bytes) => bytes.len(),
@@ -173,7 +170,7 @@ impl Message {
             Message::Nil
             | Message::Boolean(_)
             | Message::Number(_)
-            | Message::Integer(_)
+            | Message::Bits64(_)
             | Message::Vector(_)
             | Message::SharedBuffer(_) => 0,
             Message::String(bytes) => bytes.len(),
@@ -292,10 +289,14 @@ fn read_at(frame: &Frame<'_>, view: ValueView<'_>, depth: usize, budget: &mut Bu
     }
     budget.charge(NODE)?;
     let read_failed = |error: l3i::Error| unsupported(format!("a value l3i couldn't read ({error})"));
+    // A Bits64 is a light userdata on most targets and a boxed one on the rest, so it is asked
+    // for by kind before the type decides.
+    if <Bits64 as FromView>::matches(view) {
+        return Ok(Message::Bits64(view.read::<Bits64>().map_err(read_failed)?.0));
+    }
     match view.type_of() {
         Type::None | Type::Nil => Ok(Message::Nil),
         Type::Boolean => Ok(Message::Boolean(view.read::<bool>().map_err(read_failed)?)),
-        Type::Integer => Ok(Message::Integer(view.read::<Integer>().map_err(read_failed)?.0)),
         Type::Number => Ok(Message::Number(view.read::<f64>().map_err(read_failed)?)),
         Type::String => {
             let bytes = view.read::<&[u8]>().map_err(read_failed)?;
@@ -461,8 +462,8 @@ fn push(frame: &Frame<'_>, message: &Message, frozen: bool) -> l3i::Result<()> {
         Message::Number(value) => {
             frame.push_number(*value)?;
         }
-        Message::Integer(value) => {
-            frame.push(&Integer(*value))?;
+        Message::Bits64(value) => {
+            frame.push(&Bits64(*value))?;
         }
         Message::String(bytes) => {
             frame.push(bytes.as_slice())?;
@@ -536,9 +537,10 @@ mod tests {
     #[test]
     fn supported_values_convert_both_ways() {
         let runtime = Runtime::new().unwrap();
+        runtime.set_global("bits", &Bits64(42)).unwrap();
         let message = round_trip(
             &runtime,
-            "{ 1, 2.5, 'two', true, buffer.fromstring('abc'), vector.create(1, 2, 3), { a = 1, b = { 'x' } }, [10] = 42i }",
+            "{ 1, 2.5, 'two', true, buffer.fromstring('abc'), vector.create(1, 2, 3), { a = 1, b = { 'x' } }, [10] = bits }",
         )
         .unwrap();
         let Message::Map(entries) = &message else {
@@ -553,7 +555,7 @@ mod tests {
         assert_eq!(entries[5].1, Message::Vector([1.0, 2.0, 3.0]));
         assert_eq!(entries[6].1.get("a"), Some(&Message::Number(1.0)));
         assert_eq!(entries[6].1.get("b"), Some(&Message::List(vec![Message::text("x")])));
-        assert_eq!(entries[7], (MessageKey::Number(10.0), Message::Integer(42)));
+        assert_eq!(entries[7], (MessageKey::Number(10.0), Message::Bits64(42)));
 
         // Pushed back, everything reads the same, with the buffer a fresh buffer.
         let again = runtime
@@ -610,7 +612,7 @@ mod tests {
         ]);
         assert_eq!(message.size_hint(), 5 + 100 + 4 + 3);
         assert_eq!(Message::List(vec![Message::Number(1.0); 3]).size_hint(), 24);
-        assert_eq!(Message::Integer(3).as_number(), Some(3.0));
+        assert_eq!(Message::Bits64(3).as_number(), None);
         assert_eq!(Message::text("x").as_text(), Some("x"));
     }
 
