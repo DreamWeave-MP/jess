@@ -37,15 +37,20 @@ pub fn module(runtime: &Runtime, jess: &Rc<Jess>) -> l3i::Result<Table> {
     let state = jess.clone();
     #[cfg(feature = "gpu")]
     let opened = device::Opened::default();
-    module.function("device", move || {
-        guard(&state, "jess.gpu.device", DEVICE_CAPABILITY)?;
-        #[cfg(feature = "gpu")]
-        return opened.device();
-        #[cfg(not(feature = "gpu"))]
-        Err::<(), _>(crate::lua::error(
-            "jess.gpu.device: this jess has no GPU: it was built without the gpu feature",
-        ))
-    })?;
+    module.function(
+        "device",
+        move |call: &l3i::bind::Call<'_>, given: Option<l3i::stack::ValueView<'_>>| {
+            guard(&state, "jess.gpu.device", DEVICE_CAPABILITY)?;
+            #[cfg(feature = "gpu")]
+            return opened.device(device::power(call, given)?);
+            #[cfg(not(feature = "gpu"))]
+            let _ = (call, given);
+            #[cfg(not(feature = "gpu"))]
+            Err::<(), _>(crate::lua::error(
+                "jess.gpu.device: this jess has no GPU: it was built without the gpu feature",
+            ))
+        },
+    )?;
     let state = jess.clone();
     module.function(
         "window",

@@ -1216,10 +1216,15 @@ end
 --- to run every frame. What a script changes about
 --- what the GPU draws waits for the next `commit`, which applies it all at once; `room` is how
 --- much more fits before it. `tostring` gives `GpuDevice(name, backend)`.
+--- Which adapter `jess.gpu.device` asks for where a machine has several: the one that draws the
+--- least power (usually integrated), or the one that draws fastest (usually discrete).
+export type GpuPower = 'low' | 'high'
+
 declare extern type GpuDevice with
   name: string
   backend: string
   kind: string
+  power: GpuPower
   limits: { textureSize: number, textureLayers: number, bufferSize: number, workgroups: number }
   pipelines: { compiled: number, reused: number }
   timestamps: boolean
@@ -1675,9 +1680,10 @@ declare jess: {
   --- table. See `@jess/render` for what drawing with it means.
   gpu: {
     --- The runtime's device, opened on the first call on whatever adapter the machine has, a
-    --- software one included. Needs `gpu.device`; a jess built without the `gpu` feature says
-    --- it has no GPU.
-    device: () -> GpuDevice,
+    --- software one included: of several, the low-power one, or the high-performance one with
+    --- `power = 'high'`. Needs `gpu.device`; a jess built without the `gpu` feature says it has
+    --- no GPU.
+    device: (options: { power: GpuPower? }?) -> GpuDevice,
     --- A native window with a surface on `device`, which `GpuWindow:show` gives a plan to draw
     --- every frame. Needs `gpu.window`; a jess built without the `window` feature says it has no
     --- windows.
@@ -2186,11 +2192,13 @@ A release has the GPU and windows, and loads the machine's GPU API and window sy
 
 {{ api_symbol(value="jess.gpu.device") }}
 
-The runtime's device. The first call asks the backend for a low-power adapter and, if that fails, tries a fallback adapter. The backend and machine determine which adapter is available; a fallback may be a software adapter. Every later call is the same device.
+The runtime's device. The first call asks the backend for an adapter and, if that fails, tries a fallback adapter. The backend and machine determine which adapters are available; a fallback may be a software adapter. Every later call is the same device.
+
+- **`power`:** which adapter to ask for on a machine with more than one, such as a laptop or desktop with an integrated GPU beside a discrete one. `'low'` (the default) is the one that draws the least power, usually the integrated GPU; `'high'` is the one that draws fastest, usually the discrete GPU. Where there is one adapter, both get it. The device's `power` says which was asked for and its `kind` what it got. Only the first call opens the device, so ask on that one: a later call asking for the other is an error, not a quiet second best. Without options, a later call gets the device as it is.
 
 - **Capability:** `gpu.device`. A script you run holds it, as it holds the input devices in front of you; a package target declares it ([Capabilities](@/docs/reference/capabilities.md) has the rest). Without it: `jess.gpu.device: needs the 'gpu.device' capability, which this runtime does not grant`.
 - **Generations:** in an application, the device is the application's: the first generation to ask opens it, and every later one gets the same device, so a restart reloads code without opening the GPU again. Everything a generation made on it (buffers, textures, pipelines, draw sets, plans, windows) goes with that generation's runtime, and no handle of one generation can reach the next.
-- **Errors:** `jess.gpu.device: no GPU adapter, not even a software one`, and an adapter that opens no device, `jess.gpu.device: the GPU adapter opened no device: …` with the driver's reason.
+- **Errors:** `jess.gpu.device: no GPU adapter, not even a software one`, and an adapter that opens no device, `jess.gpu.device: the GPU adapter opened no device: …` with the driver's reason; `jess.gpu.device: power is 'low' or 'high', not …`; `unknown jess.gpu.device option '…'`; and, once the device is open, `jess.gpu.device: the device is already open on the low-power adapter (…), so it can't be high-power: ask for power on the first call, before anything opens it`.
 
 ## GpuDevice
 
@@ -2201,6 +2209,7 @@ The runtime's device. The first call asks the backend for a low-power adapter an
 | `name` | The adapter's name, as its driver gives it. |
 | `backend` | The API wgpu reaches it through: `vulkan`, `metal`, `dx12`, or `gl`. |
 | `kind` | `discrete`, `integrated`, `virtual`, `cpu` (a software adapter), or `other`. |
+| `power` | The adapter `jess.gpu.device` asked for: `low` or `high`. |
 | `limits` | The widest or tallest 2D texture, the most layers an array texture has, the largest buffer in bytes, and the most workgroups a dispatch has on one axis. |
 | `pipelines` | How many pipelines the device compiled, and how many times `GpuDevice:pipeline` gave back one it already had. |
 | `timestamps` | Whether the device times passes, which `GpuPlan:timings` reports. |

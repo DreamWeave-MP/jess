@@ -130,6 +130,10 @@ jess looked through Vulkan, Metal, and Direct3D 12, then OpenGL, and found no ad
 
 Not an error. With no hardware adapter it can reach, jess opens a software one (lavapipe, llvmpipe, WARP), which draws everything correctly and none of it quickly. That's what an offscreen render on a server wants, and not what a desktop with a GPU should get: check that the GPU's own Vulkan driver is installed, then that `WGPU_BACKEND` (below) isn't steering jess away from it.
 
+**`device.kind` is `integrated`, and the machine has a discrete GPU too**
+
+As asked: `jess.gpu.device()` opens the adapter that draws the least power, which on a machine with both is the integrated one. Ask for the other on the first call, before anything else opens the device: `jess.gpu.device { power = 'high' }`.
+
 **`error: jess.gpu.device: the GPU adapter opened no device: …`**
 
 An adapter answered, and its driver refused to open a device, with the driver's reason after the colon. Try another API with `WGPU_BACKEND`, and update the driver.
