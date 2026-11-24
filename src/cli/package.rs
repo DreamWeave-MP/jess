@@ -109,10 +109,8 @@ pub struct RunTargetArgs {
     package_paths: Vec<PathBuf>,
     #[command(flatten)]
     grant: GrantArgs,
-    /// For an application target: stop after N frames, shutdown handlers and all, unless it
-    /// stops itself first.
-    #[arg(long, value_name = "N")]
-    frames: Option<u64>,
+    #[command(flatten)]
+    run: crate::application::RunOptions,
     /// Arguments for the target, which gets them as ... and in the global arg table.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     args: Vec<String>,
@@ -215,15 +213,15 @@ fn run_target(args: &RunTargetArgs) -> Result<u8, String> {
         args: args.args.clone(),
         ..Default::default()
     };
-    if args.frames.is_some() {
+    if args.run.any() {
         let inspection = jess::lua::package::inspect(&runtime()?, &request.package).map_err(|error| error.to_string())?;
         let target =
             jess::lua::package::target(&inspection, request.target.as_deref()).map_err(|error| error.to_string())?;
-        crate::application::check_frames(args.frames, target, &inspection.id)?;
+        args.run.check(target, &inspection.id)?;
     }
-    let launched =
-        jess::lua::package::launch(&jess::lua::Options::default(), &request).map_err(|error| error.to_string())?;
-    crate::application::finish(launched, args.frames)
+    let launched = jess::lua::package::launch_with(&jess::lua::Options::default(), &request, args.run.launch())
+        .map_err(|error| error.to_string())?;
+    crate::application::finish(launched, args.run.frames)
 }
 
 pub fn run(args: &PackageArgs, format: Format) -> Result<u8, String> {
