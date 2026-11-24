@@ -87,6 +87,9 @@ export type Target = {
   --- The most fixed steps one of an application target's frames catches up on, when its manifest
   --- says.
   read maxCatchUp: number?,
+  --- How often an application target's frames run unless its code or whoever runs it says
+  --- otherwise, when its manifest says: `display`, `unpaced`, or frames a second.
+  read pace: string?,
 }
 
 export type Manifest = {
@@ -480,6 +483,24 @@ local function applicationCount(
   return value :: number
 end
 
+--- A target's `pace`, as a pace's name (`display`, `unpaced`, or a whole number of frames a
+--- second from 1 to 1000), or nil when it doesn't say. Only an application has frames to pace.
+local function applicationPace(declared: { [string]: unknown }, kind: unknown, where: string): string?
+  local value = declared.pace
+
+  if value == nil then return nil end
+
+  if kind ~= 'application' then fail(`{where} pace is only valid when kind = "application"`) end
+
+  if value == 'display' or value == 'unpaced' then return value :: string end
+
+  if type(value) ~= 'number' or value ~= math.floor(value) or value < 1 or value > 1000 then
+    fail(`{where} pace must be "display", "unpaced", or a whole number of frames a second from 1 to 1000`)
+  end
+
+  return tostring(value)
+end
+
 local function parseManifest(text: string): Manifest
   local document = host.decodeToml(text)
   checkKeys(document, {
@@ -639,7 +660,7 @@ local function parseManifest(text: string): Manifest
       local where = `{Manifest} [targets.{id}]`
       checkKeys(
         declared,
-        { 'kind', 'entry', 'capabilities', 'command', 'fixed_rate', 'max_catch_up' },
+        { 'kind', 'entry', 'capabilities', 'command', 'fixed_rate', 'max_catch_up', 'pace' },
         where
       )
 
@@ -689,6 +710,7 @@ local function parseManifest(text: string): Manifest
         command = command,
         fixedRate = applicationCount(declared, kind, 'fixed_rate', 1000, where),
         maxCatchUp = applicationCount(declared, kind, 'max_catch_up', 100, where),
+        pace = applicationPace(declared, kind, where),
       }
     end
   end

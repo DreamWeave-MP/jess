@@ -1,26 +1,31 @@
-//! The presenter: a thread of its own that draws every shown window, so presenting never waits on
-//! whoever drives the frames, and they never wait on the display.
+//! The presenter: a thread for each window that draws it, so presenting never waits on whoever
+//! drives the frames, they never wait on a display, and no window waits on another's.
 //!
 //! A window draws when there is something new to draw: a commit applied changes on its device
-//! since it last drew, it was shown a plan or resized, or its last try didn't present. A scene
-//! nothing changes costs nothing. It records under its device's frame lock, so a commit's changes
-//! are drawn whole or not at all, then presents outside it. A try that fails presents nothing and
-//! counts no frame: the image goes back unshown, the failure is reported once, and the window is
-//! tried again until it draws.
+//! since it last drew, it was shown a plan or resized, its present mode changed, or its last try
+//! didn't present. A scene nothing changes costs nothing. It records under its device's frame
+//! lock, so a commit's changes are drawn whole or not at all, then presents outside it. A try that
+//! fails presents nothing and counts no frame: the image goes back unshown, the failure is
+//! reported once, and the window is tried again until it draws.
+//!
+//! Each window has its own thread because taking a surface's next image waits: a refresh for a
+//! window that waits on its display, and up to the driver's timeout for one that can't draw
+//! (minimized, covered). One thread serving every window in turn made each wait on the slowest.
 //!
 //! Locks are taken in one order: a window's screen, then what is coming to it, then its device's
 //! frame lock. A commit takes the frame lock, then what is coming, and never a screen. Which device
-//! a window draws with and what went wrong drawing it are locked apart, last, and never across a
-//! wait, so the frames' driver, which reads them every frame, never waits on a display.
+//! a window draws with, what went wrong drawing it, what is asked of it next, and how far it has
+//! got are locked apart, last, and never across a wait, so whoever drives the frames, which reads
+//! them every frame, never waits on a display.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError, Weak};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, TryLockError, Weak};
 use std::time::{Duration, Instant};
 
-use super::{Imported, Showing, WindowError};
-use crate::gpu::{Gpu, GpuError, Import, Surface};
+use super::{Extent, Imported, Showing, WindowError};
+use crate::gpu::{Gpu, GpuError, Import, PresentMode, Surface};
 
-/// What the presenter draws a window with, shared by the window's handle and the presenter.
+/// What the presenter draws a window with, shared by the window's handle and its presenter.
 pub(super) struct Screen {
     pub(super) surface: Option<Surface>,
     pub(super) showing: Option<Showing>,
@@ -28,12 +33,8 @@ pub(super) struct Screen {
     pub(super) drawn: u64,
     /// Whether it must draw again, whatever the commits say.
     pub(super) stale: bool,
-    /// How many frames it presented.
-    pub(super) frames: u64,
     /// Whether its last try failed, so a failure that lasts is reported once, not every retry.
     pub(super) failing: bool,
-    /// Whether presenting to it waits for its display, which makes what it draws a host's pace.
-    pub(super) waits: bool,
 }
 
 /// What a commit shows on a window next.
@@ -42,12 +43,32 @@ pub(super) enum Incoming {
     Hide,
 }
 
-/// A window as the presenter sees it: its screen, what a commit shows on it next, the device it
-/// draws with, and what went wrong drawing it.
+/// What the window asks of its surface, applied by its presenter before it next draws, with the
+/// screen held, so no image is ever outstanding while the surface changes.
+#[derive(Default)]
+pub(super) struct Asked {
+    /// A new size.
+    pub(super) size: Option<Extent>,
+    /// A new present mode.
+    pub(super) present: Option<PresentMode>,
+}
+
+/// How far the window's presenter has got, which waiters wait on.
+#[derive(Default)]
+struct Progress {
+    /// How many times it was asked to look for something to draw.
+    asked: u64,
+    /// How many times it looked.
+    rounds: u64,
+    /// Whether its window is gone, so its thread ends.
+    closed: bool,
+}
+
+/// A window as its presenter sees it: its screen, what a commit shows on it next, the device it
+/// draws with, what went wrong drawing it, what it asks of its surface, and how far it has got.
 ///
-/// The screen is held while the presenter waits for the surface's next image, which can be a whole
-/// refresh or, for a window that can't draw, much longer; whoever drives the frames reads only
-/// the device and the problem, which nobody holds across a wait, so it never waits on a display.
+/// The screen is held while the presenter waits for the surface's next image; nothing else is
+/// held across a wait, and everything the frames' driver reads is outside the screen.
 pub(super) struct Shared {
     pub(super) screen: Mutex<Screen>,
     /// The device it draws with: swapped, with the surface, only while the screen is held.
@@ -56,25 +77,55 @@ pub(super) struct Shared {
     pub(super) problem: Mutex<Option<WindowError>>,
     /// What a commit shows on it, taken when it next draws.
     pub(super) incoming: Mutex<Option<Incoming>>,
+    /// What it asks of its surface next.
+    pub(super) asked: Mutex<Asked>,
+    /// How many frames it presented.
+    frames: AtomicU64,
+    /// Whether presenting to it waits for its display, as its present mode in effect says.
+    waits: AtomicBool,
+    progress: Mutex<Progress>,
+    /// Signalled when it is asked to look, when it has looked, and when it presented.
+    changed: Condvar,
 }
 
 impl Shared {
+    /// A window's shared part, drawing on `surface` with `gpu`.
+    pub(super) fn new(surface: Option<Surface>, gpu: Arc<Gpu>, waits: bool) -> Shared {
+        Shared {
+            screen: Mutex::new(Screen {
+                surface,
+                showing: None,
+                drawn: 0,
+                stale: false,
+                failing: false,
+            }),
+            device: Mutex::new(gpu),
+            problem: Mutex::default(),
+            incoming: Mutex::default(),
+            asked: Mutex::default(),
+            frames: AtomicU64::new(0),
+            waits: AtomicBool::new(waits),
+            progress: Mutex::default(),
+            changed: Condvar::new(),
+        }
+    }
+
     pub(super) fn screen(&self) -> MutexGuard<'_, Screen> {
-        self.screen.lock().unwrap_or_else(PoisonError::into_inner)
+        lock(&self.screen)
     }
 
     fn incoming(&self) -> MutexGuard<'_, Option<Incoming>> {
-        self.incoming.lock().unwrap_or_else(PoisonError::into_inner)
+        lock(&self.incoming)
     }
 
     /// The device it draws with.
     pub(super) fn device(&self) -> Arc<Gpu> {
-        Arc::clone(&self.device.lock().unwrap_or_else(PoisonError::into_inner))
+        Arc::clone(&lock(&self.device))
     }
 
     /// What went wrong drawing or resizing it since this was last asked.
     pub(super) fn problem(&self) -> MutexGuard<'_, Option<WindowError>> {
-        self.problem.lock().unwrap_or_else(PoisonError::into_inner)
+        lock(&self.problem)
     }
 
     /// Shows `incoming` when the presenter next draws it: what a commit does.
@@ -82,10 +133,46 @@ impl Shared {
         *self.incoming() = Some(incoming);
     }
 
+    /// Has its presenter apply `size` to the surface and the shown plan before it next draws.
+    pub(super) fn ask_size(&self, size: Extent) {
+        lock(&self.asked).size = Some(size);
+        self.wake();
+    }
+
+    /// Has its presenter configure its surface for `present` before it next draws. `waits` is
+    /// whether presenting will wait for the display once it has, as the surface's modes say.
+    pub(super) fn ask_present(&self, present: PresentMode, waits: bool) {
+        lock(&self.asked).present = Some(present);
+        self.waits.store(waits, Ordering::Release);
+        self.wake();
+    }
+
+    /// How many frames it presented.
+    pub(super) fn frames(&self) -> u64 {
+        self.frames.load(Ordering::Acquire)
+    }
+
+    /// Whether presenting to it waits for its display.
+    pub(super) fn waits(&self) -> bool {
+        self.waits.load(Ordering::Acquire)
+    }
+
+    /// Asks its presenter to look for something to draw.
+    pub(super) fn wake(&self) {
+        lock(&self.progress).asked += 1;
+        self.changed.notify_all();
+    }
+
+    /// Ends its presenter's thread: the window is closed.
+    pub(super) fn retire(&self) {
+        lock(&self.progress).closed = true;
+        self.changed.notify_all();
+    }
+
     /// Whether it has drawn everything there is: nothing waiting, nothing stale, every commit. A
     /// screen the presenter holds is being drawn, or waiting for an image, so it isn't, and asking
     /// never waits for it.
-    fn settled(&self) -> bool {
+    pub(super) fn settled(&self) -> bool {
         let screen = match self.screen.try_lock() {
             Ok(screen) => screen,
             Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
@@ -94,37 +181,65 @@ impl Shared {
         if screen.surface.is_none() {
             return true;
         }
+        let asked = {
+            let asked = lock(&self.asked);
+            asked.size.is_some() || asked.present.is_some()
+        };
         let incoming = self.incoming().is_some();
         let Some(_) = &screen.showing else {
-            return !incoming;
+            return !incoming && !asked;
         };
-        !incoming && !screen.stale && screen.drawn == self.device().commits()
+        !incoming && !asked && !screen.stale && screen.drawn == self.device().commits()
+    }
+
+    /// Waits until it has presented more than `frames` frames, or `deadline` passes: whether it
+    /// did.
+    pub(super) fn wait_presented(&self, frames: u64, deadline: Instant) -> bool {
+        let mut progress = lock(&self.progress);
+        loop {
+            if self.frames() > frames {
+                return true;
+            }
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            progress = self
+                .changed
+                .wait_timeout(progress, left)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+    }
+
+    /// Waits until it is settled or `deadline` passes: a window whose image never comes ready
+    /// (covered, minimized) is not waited on forever.
+    fn wait_settled(&self, deadline: Instant) {
+        while !self.settled() {
+            let progress = lock(&self.progress);
+            let seen = progress.rounds;
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                return;
+            };
+            // A round that finishes between the look and the wait is caught a moment later.
+            drop(
+                self.changed
+                    .wait_timeout_while(progress, left.min(RETRY), |progress| progress.rounds == seen)
+                    .unwrap_or_else(PoisonError::into_inner),
+            );
+        }
+    }
+
+    /// How many times its presenter has looked for something to draw.
+    #[cfg(test)]
+    fn rounds(&self) -> u64 {
+        lock(&self.progress).rounds
     }
 }
 
-/// The presenter's thread and what it serves.
-struct Presenter {
-    screens: Mutex<Vec<Weak<Shared>>>,
-    /// How many times it was asked to draw.
-    asked: Mutex<u64>,
-    asking: Condvar,
-    /// How many rounds it finished.
-    rounds: Mutex<u64>,
-    finished: Condvar,
-}
+/// Every window a presenter serves, to wake them all.
+static SERVED: Mutex<Vec<Weak<Shared>>> = Mutex::new(Vec::new());
 
-static PRESENTER: OnceLock<Arc<Presenter>> = OnceLock::new();
-
-/// How many frames windows whose presenting waits for their display have presented, all of them.
-static DISPLAYED: AtomicU64 = AtomicU64::new(0);
-
-/// How many frames windows whose presenting waits for their display have presented, all of them:
-/// what a host paced by the display reads before and after a frame.
-pub(super) fn displayed() -> u64 {
-    DISPLAYED.load(Ordering::Acquire)
-}
-
-/// How long the presenter waits before trying a window whose image wasn't ready again.
+/// How long a presenter waits before trying a window whose image wasn't ready again.
 const RETRY: Duration = Duration::from_millis(8);
 
 /// How long it waits before trying a window that failed to draw again: long enough not to spin on
@@ -135,55 +250,33 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The presenter, its thread started the first time a window needs it.
-fn presenter() -> &'static Arc<Presenter> {
-    PRESENTER.get_or_init(|| {
-        let presenter = Arc::new(Presenter {
-            screens: Mutex::default(),
-            asked: Mutex::default(),
-            asking: Condvar::new(),
-            rounds: Mutex::default(),
-            finished: Condvar::new(),
-        });
-        let serving = Arc::clone(&presenter);
-        std::thread::Builder::new()
-            .name("jess presenter".to_owned())
-            .spawn(move || serving.run())
-            .expect("the system starts a thread");
-        presenter
-    })
-}
-
-/// Has the presenter draw `shared` from now on, for as long as it lives.
+/// Starts a presenter for `shared`, which draws it until it is retired or dropped.
 pub(super) fn serve(shared: &Arc<Shared>) {
-    lock(&presenter().screens).push(Arc::downgrade(shared));
+    {
+        let mut served = lock(&SERVED);
+        served.retain(|served| served.strong_count() > 0);
+        served.push(Arc::downgrade(shared));
+    }
+    let serving = Arc::downgrade(shared);
+    std::thread::Builder::new()
+        .name("jess presenter".to_owned())
+        .spawn(move || run(&serving))
+        .expect("the system starts a thread");
 }
 
-/// Asks the presenter to look for something to draw.
+/// Asks every window's presenter to look for something to draw.
 pub(super) fn wake() {
-    let presenter = presenter();
-    *lock(&presenter.asked) += 1;
-    presenter.asking.notify_one();
+    let served: Vec<Arc<Shared>> = lock(&SERVED).iter().filter_map(Weak::upgrade).collect();
+    for shared in served {
+        shared.wake();
+    }
 }
 
-/// Waits until the presenter has drawn everything there is to draw on `shared`, or `timeout`
-/// passes: a window whose image never comes ready (covered, minimized) is not waited on forever.
+/// Waits until every one of `shared` has drawn everything there is to draw, or `timeout` passes.
 pub(super) fn wait(shared: &[Arc<Shared>], timeout: Duration) {
-    let presenter = presenter();
     let deadline = Instant::now() + timeout;
-    while !shared.iter().all(|shared| shared.settled()) {
-        let Some(left) = deadline.checked_duration_since(Instant::now()) else {
-            return;
-        };
-        // A round that finishes between the look and the wait is caught a moment later.
-        let rounds = lock(&presenter.rounds);
-        let seen = *rounds;
-        drop(
-            presenter
-                .finished
-                .wait_timeout_while(rounds, left.min(RETRY), |rounds| *rounds == seen)
-                .unwrap_or_else(PoisonError::into_inner),
-        );
+    for shared in shared {
+        shared.wait_settled(deadline);
     }
 }
 
@@ -205,41 +298,68 @@ enum Drawing {
     Failed,
 }
 
-impl Presenter {
-    fn run(&self) {
-        let mut seen = *lock(&self.asked);
-        loop {
-            let screens: Vec<Arc<Shared>> = {
-                let mut screens = lock(&self.screens);
-                screens.retain(|screen| screen.strong_count() > 0);
-                screens.iter().filter_map(Weak::upgrade).collect()
-            };
-            let mut retry = None;
-            for shared in &screens {
-                let after = match draw(shared) {
-                    Drawing::NotReady => RETRY,
-                    Drawing::Failed => RECOVER,
-                    Drawing::Nothing | Drawing::Drew => continue,
-                };
-                retry = Some(retry.map_or(after, |sooner: Duration| sooner.min(after)));
+/// A window's presenter: draws it whenever asked, and again while a try didn't present.
+fn run(serving: &Weak<Shared>) {
+    let mut seen = 0;
+    loop {
+        let Some(shared) = serving.upgrade() else {
+            return;
+        };
+        let retry = match draw(&shared) {
+            Drawing::NotReady => Some(RETRY),
+            Drawing::Failed => Some(RECOVER),
+            Drawing::Nothing | Drawing::Drew => None,
+        };
+        let mut progress = lock(&shared.progress);
+        progress.rounds += 1;
+        shared.changed.notify_all();
+        while progress.asked == seen && !progress.closed {
+            // Without a retry it still looks now and then, so a window dropped without being
+            // closed ends its thread.
+            let (waited, timeout) = shared
+                .changed
+                .wait_timeout(progress, retry.unwrap_or(Duration::from_secs(1)))
+                .unwrap_or_else(PoisonError::into_inner);
+            progress = waited;
+            if timeout.timed_out() {
+                break;
             }
-            drop(screens);
-            *lock(&self.rounds) += 1;
-            self.finished.notify_all();
-            let mut asked = lock(&self.asked);
-            while *asked == seen {
-                if let Some(retry) = retry {
-                    asked = self
-                        .asking
-                        .wait_timeout(asked, retry)
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .0;
-                    break;
-                }
-                asked = self.asking.wait(asked).unwrap_or_else(PoisonError::into_inner);
-            }
-            seen = *asked;
         }
+        if progress.closed {
+            return;
+        }
+        seen = progress.asked;
+    }
+}
+
+/// Applies what the window asked of its surface: a size, and a present mode.
+fn apply(shared: &Shared, screen: &mut Screen, gpu: &Gpu) {
+    let asked = std::mem::take(&mut *lock(&shared.asked));
+    if asked.size.is_none() && asked.present.is_none() {
+        return;
+    }
+    screen.stale = true;
+    let mut problems = Vec::new();
+    if let Some(surface) = &mut screen.surface {
+        if let Some(present) = asked.present
+            && let Err(problem) = surface.set_present(gpu, present)
+        {
+            problems.push(problem);
+        }
+        if let Some(size) = asked.size
+            && let Err(problem) = surface.resize(gpu, size.width, size.height)
+        {
+            problems.push(problem);
+        }
+    }
+    if let (Some(size), Some(showing)) = (asked.size, &screen.showing) {
+        match showing.plan.get().resized(gpu, size) {
+            Ok(plan) => showing.plan.set(plan),
+            Err(problem) => problems.push(problem),
+        }
+    }
+    if let Some(problem) = problems.pop() {
+        *shared.problem() = Some(problem.into());
     }
 }
 
@@ -258,6 +378,7 @@ fn draw(shared: &Shared) -> Drawing {
         screen.stale = true;
     }
     let gpu = shared.device();
+    apply(shared, &mut screen, &gpu);
     let commits = gpu.commits();
     if !screen.stale && screen.drawn == commits {
         return Drawing::Nothing;
@@ -267,10 +388,7 @@ fn draw(shared: &Shared) -> Drawing {
         showing,
         stale,
         drawn,
-        frames,
         failing,
-        waits,
-        ..
     } = &mut *screen;
     let (Some(surface), Some(showing)) = (surface, showing.as_ref()) else {
         return Drawing::Nothing;
@@ -302,10 +420,12 @@ fn draw(shared: &Shared) -> Drawing {
     *drawn = commits;
     *stale = false;
     *failing = false;
-    *frames += 1;
-    if *waits {
-        DISPLAYED.fetch_add(1, Ordering::AcqRel);
+    // Counted under the progress lock, so a waiter that looked and found none can't miss it.
+    {
+        let _progress = lock(&shared.progress);
+        shared.frames.fetch_add(1, Ordering::AcqRel);
     }
+    shared.changed.notify_all();
     Drawing::Drew
 }
 
@@ -322,39 +442,38 @@ fn fail(problem: &mut Option<WindowError>, failing: &mut bool, stale: &mut bool,
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use std::sync::mpsc::channel;
-    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
-    use super::{Drawing, Gpu, GpuError, Screen, Shared, WindowError, ending, fail};
+    use super::{Drawing, Gpu, GpuError, Shared, WindowError, ending, fail, serve};
+
+    fn gpu(test: &str) -> Option<Arc<Gpu>> {
+        match Gpu::headless() {
+            Ok(gpu) => Some(Arc::new(gpu)),
+            Err(GpuError::NoAdapter) => {
+                eprintln!("SKIPPED {test}: no adapter");
+                None
+            }
+            Err(problem) => panic!("{problem}"),
+        }
+    }
+
+    /// Generous: only a failing run waits this long.
+    const LONG: Duration = Duration::from_secs(30);
 
     /// A frame ends while the presenter holds a window's screen, as it does all the while it
     /// waits for the display to give it an image: the frame's end reads what it needs past it,
-    /// and Display pacing sees a window still being drawn without waiting either. The presenter
+    /// and display pacing sees a window still being drawn without waiting either. The presenter
     /// here lets go only once the frame has ended, so a frame that waited on it never ends.
     #[test]
     fn a_frame_ends_without_waiting_on_a_window_the_presenter_holds() {
-        let gpu = match Gpu::headless() {
-            Ok(gpu) => Arc::new(gpu),
-            Err(GpuError::NoAdapter) => {
-                eprintln!("SKIPPED a_frame_ends_without_waiting_on_a_window_the_presenter_holds: no adapter");
-                return;
-            }
-            Err(problem) => panic!("{problem}"),
+        let Some(gpu) = gpu("a_frame_ends_without_waiting_on_a_window_the_presenter_holds") else {
+            return;
         };
-        let shared = Arc::new(Shared {
-            screen: Mutex::new(Screen {
-                surface: None,
-                showing: None,
-                drawn: 0,
-                stale: true,
-                frames: 0,
-                failing: false,
-                waits: true,
-            }),
-            device: Mutex::new(Arc::clone(&gpu)),
-            problem: Mutex::new(Some(WindowError::System("lost".to_owned()))),
-            incoming: Mutex::default(),
-        });
+        let shared = Arc::new(Shared::new(None, Arc::clone(&gpu), true));
+        *shared.problem() = Some(WindowError::System("lost".to_owned()));
+        shared.screen().stale = true;
         let (held, holding) = channel();
         let (ended, waiting) = channel::<()>();
         let presenter = {
@@ -371,10 +490,66 @@ mod tests {
         assert!(problem.is_some_and(|problem| problem.to_string() == "lost"));
         assert!(Arc::ptr_eq(&device, &gpu));
         assert!(!shared.settled(), "a window the presenter holds is still being drawn");
+        assert_eq!(shared.frames(), 0, "how far it got is read past the screen");
+        assert!(shared.waits(), "and so is whether it waits on its display");
 
         ended.send(()).unwrap();
         presenter.join().unwrap();
         assert!(shared.settled(), "a window with no surface has nothing to draw");
+    }
+
+    /// A window whose presenter is stuck waiting for an image (covered, minimized: its screen
+    /// held) holds no other window up: the other's presenter keeps looking, and waiting for the
+    /// other to settle doesn't wait on the stuck one. The stuck one is let go only once the other
+    /// has been served, so a presenter that served them in turn never gets there.
+    #[test]
+    fn a_window_that_cannot_draw_holds_no_other_up() {
+        let Some(gpu) = gpu("a_window_that_cannot_draw_holds_no_other_up") else {
+            return;
+        };
+        let stuck = Arc::new(Shared::new(None, Arc::clone(&gpu), true));
+        let primary = Arc::new(Shared::new(None, Arc::clone(&gpu), true));
+        let (held, holding) = channel();
+        let (release, released) = channel::<()>();
+        let holder = {
+            let stuck = Arc::clone(&stuck);
+            std::thread::spawn(move || {
+                let _screen = stuck.screen();
+                held.send(()).unwrap();
+                released.recv().unwrap();
+            })
+        };
+        holding.recv().unwrap();
+        serve(&stuck);
+        serve(&primary);
+        let before = primary.rounds();
+        super::wake();
+        let deadline = Instant::now() + LONG;
+        while primary.rounds() <= before {
+            assert!(Instant::now() < deadline, "the primary window's presenter never looked");
+            std::thread::yield_now();
+        }
+        super::wait(std::slice::from_ref(&primary), LONG);
+        assert!(primary.settled());
+        assert!(!stuck.settled(), "the stuck window is still held");
+
+        release.send(()).unwrap();
+        holder.join().unwrap();
+        stuck.retire();
+        primary.retire();
+    }
+
+    /// Waiting for a window to present returns once it has presented past what the waiter saw,
+    /// and at the deadline when it never does: a frame's driver never waits longer than it said.
+    #[test]
+    fn waiting_for_a_present_ends_at_the_deadline() {
+        let Some(gpu) = gpu("waiting_for_a_present_ends_at_the_deadline") else {
+            return;
+        };
+        let shared = Shared::new(None, gpu, true);
+        assert!(!shared.wait_presented(0, Instant::now()));
+        shared.frames.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        assert!(shared.wait_presented(0, Instant::now() + LONG));
     }
 
     #[test]

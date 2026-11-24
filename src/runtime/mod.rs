@@ -86,7 +86,7 @@ pub use capability::{
     Authority, CapabilityDenied, CapabilitySet, Grant, Grantor, RootAuthority, SHARED_BUFFER_CREATE, WORKER_SPAWN,
     current_authority, require_capability, service,
 };
-pub use context::{Budget, ContextInfo, ContextSpec, FixedStep, Phase};
+pub use context::{Budget, ContextInfo, ContextSpec, FixedProgress, FixedStep, Phase};
 pub use diagnostics::{
     Attribution, CollectedDiagnostics, Diagnostic, DiagnosticKind, DiagnosticSink, DiscardDiagnostics, Severity,
 };

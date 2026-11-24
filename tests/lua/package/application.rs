@@ -1780,7 +1780,7 @@ fn a_target_declares_its_fixed_rate_and_catch_up() {
     let application = launch(&request(&root, "app", &[]));
     let fixed = application.fixed_step();
     assert_eq!((fixed.step, fixed.max_catch_up), (Duration::from_secs(1) / 60, 5));
-    assert_eq!(application.pace(), Pace::Fixed(Duration::from_secs(1) / 60));
+    assert_eq!(application.pacing().chosen(), Pace::Capped(60));
     application.stop().unwrap();
     let declared = package::inspect(&super::common::runtime(), &text(&temp.path().join("thirty"))).unwrap();
     assert_eq!(
@@ -1820,7 +1820,7 @@ fn every_pace_counts_its_frames() {
     paced(&root, "");
     for pace in [
         Pace::Unpaced,
-        Pace::Fixed(Duration::from_millis(1)),
+        Pace::Capped(1000),
         // No window is open, so the display's pace is the fixed step's.
         Pace::Display,
     ] {
@@ -1838,7 +1838,7 @@ fn a_target_that_may_open_windows_is_paced_by_the_display() {
     let root = temp.path().join("windowed");
     paced(&root, "capabilities = [\"gpu.window\"]\nfixed_rate = 120\n");
     let application = launch(&request(&root, "app", &[]));
-    assert_eq!(application.pace(), Pace::Display);
+    assert_eq!(application.pacing().chosen(), Pace::Display);
     assert_eq!(application.fixed_step().step, Duration::from_secs(1) / 120);
     application.stop().unwrap();
     let launched = package::launch_with(
@@ -1853,6 +1853,201 @@ fn a_target_that_may_open_windows_is_paced_by_the_display() {
     let Launched::Application(application) = launched else {
         panic!("an application target launches an application");
     };
-    assert_eq!(application.pace(), Pace::Unpaced);
+    assert_eq!(application.pacing().chosen(), Pace::Unpaced);
+    assert_eq!(
+        application.pacing().requested().0,
+        Pace::Display,
+        "what it asks for is kept under the override"
+    );
+    application.stop().unwrap();
+}
+
+/// A one-package application whose managed module runs `body` on each update, numbered `frame`
+/// from 1, with `application` and `journal` in scope; `[targets.app]` says `lines` too.
+fn pacing_app(root: &Path, lines: &str, body: &str) {
+    let manifest = manifest(
+        "org.example.pacing",
+        &format!(
+            "[dependencies]\n\"org.example.journal\" = \"^1.0\"\n\n[managed.pacer]\nmodule = \"src/pacer.jsl\"\n\n\
+             [targets.app]\nkind = \"application\"\nentry = \"src/main.jsl\"\n{lines}"
+        ),
+    );
+    let module = format!(
+        "local application = require('@jess/application')
+local journal = require('@example/journal')
+local frame = 0
+local function said(pace: any): string
+  return if pace == nil then '-' else tostring(pace)
+end
+local function report()
+  local pacing = application.pace()
+  journal.write(`{{frame}} {{said(pacing.requested)}} {{pacing.origin}} {{said(pacing.override)}} {{said(pacing.effective)}}`)
+end
+return {{
+  on = {{
+    host = {{
+      update = function()
+        frame += 1
+        {body}
+      end,
+    }},
+  }},
+}}
+"
+    );
+    write(
+        root,
+        &[
+            ("jess.toml", &manifest),
+            ("src/main.jsl", "return nil\n"),
+            ("src/pacer.jsl", &module),
+        ],
+    );
+}
+
+/// The application's code changes its pace at run time: each request is what it asks for from
+/// that frame's end on, the next frame's report says it is in effect, display pacing with no
+/// window to pace by is a timer at the fixed rate and says so, and a request that names no pace
+/// is refused with what a pace is.
+#[test]
+fn an_application_changes_its_pace_while_it_runs() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("changing");
+    pacing_app(
+        &root,
+        "pace = \"unpaced\"\n",
+        r"report()
+        if frame == 2 then application.setPace(1000) end
+        if frame == 4 then application.setPace('display') end
+        if frame == 6 then application.setPace('unpaced') end
+        if frame == 1 then
+          for _, bad in { 0, 1001, 1.5, 'fast', true } do
+            -- setPace raises on a value that is no pace.
+            local ok, problem = pcall(application.setPace, bad :: any)
+            journal.write(if ok then 'accepted' else tostring(problem))
+          end
+        end
+        if frame == 8 then application.exit(0) end",
+    );
+    let launched = package::launch(&Options::default(), &request(&root, "app", &[])).unwrap();
+    let Launched::Application(application) = launched else {
+        panic!("an application target launches an application");
+    };
+    let pacing = std::sync::Arc::clone(application.pacing());
+    let lines = std::cell::RefCell::new(Vec::new());
+    let status = application
+        .run(None, &std::sync::atomic::AtomicBool::new(false), |line| {
+            lines.borrow_mut().push(line.to_owned());
+        })
+        .unwrap();
+    assert_eq!(status, 0, "{:?}", lines.borrow());
+    assert_eq!(pacing.requested(), (Pace::Unpaced, jess::host::pacing::Origin::Application));
+    // The journal went with the runtime; the diagnostics would say if a handler raised.
+    assert!(lines.borrow().is_empty(), "{:?}", lines.borrow());
+}
+
+/// What `an_application_changes_its_pace_while_it_runs` journals, read before the application
+/// stops: frame by frame, the pace asked for, where from, the override, and the pace in effect.
+#[test]
+fn every_change_of_pace_is_reported_frame_by_frame() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("reported");
+    pacing_app(
+        &root,
+        "pace = \"unpaced\"\nfixed_rate = 50\n",
+        r"report()
+        if frame == 2 then application.setPace(1000) end
+        if frame == 4 then application.setPace('display') end
+        if frame == 6 then application.setPace('unpaced') end
+        if frame == 1 then
+          for _, bad in { 0, 1001, 1.5, 'fast', true } do
+            -- setPace raises on a value that is no pace.
+            local ok, problem = pcall(application.setPace, bad :: any)
+            journal.write(if ok then 'accepted' else tostring(problem))
+          end
+        end
+        if frame == 8 then application.exit(0) end",
+    );
+    let mut application = launch(&request(&root, "app", &[]));
+    // Driven as the command line drives it, one frame at a time, so the journal can be read
+    // before teardown takes the runtime.
+    application.start().unwrap();
+    let pacing = std::sync::Arc::clone(application.pacing());
+    for _ in 0..8 {
+        application
+            .step(Duration::from_millis(1), &mut |line| panic!("{line}"))
+            .unwrap();
+        // What the host's loop does at a frame's end with no window: resolve what is chosen.
+        let effective = jess::host::pacing::resolve(
+            pacing.chosen(),
+            &jess::host::pacing::Presentation::default(),
+            application.fixed_step().step,
+        );
+        pacing.ended(Duration::ZERO, effective.pace());
+    }
+    let refused =
+        "application.setPace: the pace is 'display', 'unpaced', or a whole number of frames a second from 1 to 1000, not";
+    let mut expected = vec![
+        "1 unpaced manifest - unpaced".to_owned(),
+        format!("{refused} 0"),
+        format!("{refused} 1001"),
+        format!("{refused} 1.5"),
+        format!("{refused} 'fast'"),
+        format!("{refused} boolean"),
+    ];
+    expected.extend(
+        [
+            "2 unpaced manifest - unpaced",
+            "3 1000 application - 1000",
+            "4 1000 application - 1000",
+            // No window: display pacing is a timer at the fixed rate, and says so.
+            "5 display application - 50",
+            "6 display application - 50",
+            "7 unpaced application - unpaced",
+            "8 unpaced application - unpaced",
+        ]
+        .map(str::to_owned),
+    );
+    let journal = journal(&application);
+    assert_eq!(journal.len(), expected.len(), "{journal:#?}");
+    for (line, expected) in journal.iter().zip(&expected) {
+        assert!(line.starts_with(expected.as_str()), "{line:?} is not {expected:?}");
+    }
+
+    // An override wins over what the code asks for, which is kept; lifted, the request paces.
+    pacing.set_override(Some(Pace::Capped(30)));
+    assert_eq!(pacing.chosen(), Pace::Capped(30));
+    assert_eq!(pacing.requested().0, Pace::Unpaced);
+    pacing.set_override(None);
+    assert_eq!(pacing.chosen(), Pace::Unpaced);
+
+    // A restart forgets what the old code asked for; the manifest's pace is asked for again.
+    application.restart().unwrap();
+    assert_eq!(pacing.requested(), (Pace::Unpaced, jess::host::pacing::Origin::Manifest));
+    application.stop().unwrap();
+}
+
+/// The fixed step's interpolation is there for an update handler to draw between the last two
+/// steps: a frame of a quarter second at ten steps a second runs two and leaves half of the next.
+#[test]
+fn an_update_reads_how_far_it_is_into_the_next_fixed_step() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("interpolated");
+    pacing_app(
+        &root,
+        "fixed_rate = 10\n",
+        r"local stats = application.frameStats()
+        journal.write(string.format('%.3f %.3f', stats.fixedStep, stats.interpolation))",
+    );
+    let mut application = launch(&request(&root, "app", &[]));
+    application.start().unwrap();
+    let report = application
+        .step(Duration::from_millis(250), &mut |line| panic!("{line}"))
+        .unwrap();
+    assert_eq!(report.tick.fixed_steps, 2);
+    application
+        .step(Duration::from_millis(30), &mut |line| panic!("{line}"))
+        .unwrap();
+    assert_eq!(journal(&application), vec!["0.100 0.500", "0.100 0.800"]);
     application.stop().unwrap();
 }

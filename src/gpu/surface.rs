@@ -34,6 +34,8 @@ pub struct Surface {
     raw: Option<wgpu::Surface<'static>>,
     config: wgpu::SurfaceConfiguration,
     format: TextureFormat,
+    /// The present modes the surface offers, as it said when it was made.
+    modes: Vec<wgpu::PresentMode>,
     /// The window again, for a surface made anew when the old one is lost.
     window: Box<dyn Fn() -> wgpu::SurfaceTarget<'static> + Send>,
 }
@@ -105,10 +107,7 @@ impl Gpu {
                 .find(|format| offered.contains(format))
                 .ok_or_else(|| GpuError::Invalid(format!("the window's surface offers only {offered:?}")))?,
         };
-        let present_mode = match mode {
-            PresentMode::Vsync => wgpu::PresentMode::AutoVsync,
-            PresentMode::Immediate => wgpu::PresentMode::AutoNoVsync,
-        };
+        let present_mode = concrete(&capabilities.present_modes, mode);
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | (capabilities.usages & wgpu::TextureUsages::COPY_SRC),
             format: super::texture::raw_format(chosen),
@@ -125,6 +124,7 @@ impl Gpu {
             raw: Some(raw),
             config,
             format: chosen,
+            modes: capabilities.present_modes,
             window: Box::new(move || window.clone().into()),
         })
     }
@@ -146,6 +146,39 @@ impl Surface {
     #[must_use]
     pub fn format(&self) -> TextureFormat {
         self.format
+    }
+
+    /// Whether presenting waits for the display: what its present mode in effect does.
+    #[must_use]
+    pub fn vsync(&self) -> bool {
+        waits(self.config.present_mode)
+    }
+
+    /// Whether presenting would wait for the display if it were asked for `mode`: a surface that
+    /// offers no mode that doesn't wait (every surface offers one that does) waits whatever is
+    /// asked.
+    #[must_use]
+    pub fn waits_for(&self, mode: PresentMode) -> bool {
+        waits(concrete(&self.modes, mode))
+    }
+
+    /// Configures it to present as `mode` asks, as far as it can: see [`Surface::waits_for`].
+    /// Call it only with none of its images taken; the presenter does, before it takes the next.
+    ///
+    /// # Errors
+    ///
+    /// What the device refuses.
+    pub fn set_present(&mut self, gpu: &Gpu, mode: PresentMode) -> Result<(), GpuError> {
+        let present_mode = concrete(&self.modes, mode);
+        if present_mode == self.config.present_mode {
+            return Ok(());
+        }
+        self.config.present_mode = present_mode;
+        let Some(raw) = &self.raw else {
+            // Made again in this mode when it next draws.
+            return Ok(());
+        };
+        gpu.checked(|| raw.configure(&gpu.device, &self.config))
     }
 
     /// Its size in pixels.
@@ -228,5 +261,46 @@ impl Surface {
         gpu.checked(|| raw.configure(&gpu.device, &self.config)).map_err(lost)?;
         self.raw = Some(raw);
         Ok(())
+    }
+}
+
+/// The mode a surface offering `offered` presents in when asked for `mode`: one that waits for the
+/// display, preferring one that doesn't hold a late frame back a whole refresh; or one that doesn't
+/// wait, preferring one that may tear to one that drops frames, and one that waits if it offers
+/// neither.
+fn concrete(offered: &[wgpu::PresentMode], mode: PresentMode) -> wgpu::PresentMode {
+    let preferred: &[wgpu::PresentMode] = match mode {
+        PresentMode::Vsync => &[wgpu::PresentMode::FifoRelaxed],
+        PresentMode::Immediate => &[wgpu::PresentMode::Immediate, wgpu::PresentMode::Mailbox],
+    };
+    preferred
+        .iter()
+        .copied()
+        .find(|preferred| offered.contains(preferred))
+        .unwrap_or(wgpu::PresentMode::Fifo)
+}
+
+/// Whether presenting in `mode` waits for the display.
+fn waits(mode: wgpu::PresentMode) -> bool {
+    matches!(mode, wgpu::PresentMode::Fifo | wgpu::PresentMode::FifoRelaxed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PresentMode, concrete, waits};
+
+    /// Asking a surface not to wait for its display is answered truthfully: a surface that offers
+    /// only the mode every surface must still waits, and says so.
+    #[test]
+    fn a_present_mode_resolves_to_what_the_surface_offers() {
+        use wgpu::PresentMode::{Fifo, FifoRelaxed, Immediate, Mailbox};
+        assert_eq!(concrete(&[Fifo], PresentMode::Immediate), Fifo);
+        assert!(waits(concrete(&[Fifo], PresentMode::Immediate)));
+        assert_eq!(concrete(&[Fifo, Mailbox], PresentMode::Immediate), Mailbox);
+        assert_eq!(concrete(&[Fifo, Mailbox, Immediate], PresentMode::Immediate), Immediate);
+        assert!(!waits(Mailbox) && !waits(Immediate));
+        assert_eq!(concrete(&[Fifo, Immediate], PresentMode::Vsync), Fifo);
+        assert_eq!(concrete(&[Fifo, FifoRelaxed], PresentMode::Vsync), FifoRelaxed);
+        assert!(waits(FifoRelaxed));
     }
 }

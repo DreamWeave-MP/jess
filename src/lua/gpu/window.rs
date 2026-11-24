@@ -272,6 +272,46 @@ fn describe_modes(window: &mut UserdataBuilder<'_, LuaGpuWindow>) {
             },
         )
         .untyped();
+    describe_presenting(window);
+    describe_rest(window);
+}
+
+/// Declares how a window presents: whether it waits for its display, and whether it paces the
+/// application's frames.
+fn describe_presenting(window: &mut UserdataBuilder<'_, LuaGpuWindow>) {
+    window
+        .method(
+            "vsync",
+            |this: &LuaGpuWindow, vsync: Option<ValueView<'_>>| -> l3i::Result<bool> {
+                let Some(vsync) = vsync.filter(|vsync| !vsync.is_nil()) else {
+                    return Ok(this.window.vsync());
+                };
+                if !vsync.is_boolean() {
+                    return Err(error(format!("GpuWindow:vsync: vsync is a boolean, not {}", kind(vsync))));
+                }
+                Ok(this.window.set_vsync(vsync.read::<bool>()?))
+            },
+        )
+        .untyped();
+    window
+        .method(
+            "paces",
+            |this: &LuaGpuWindow, paces: Option<ValueView<'_>>| -> l3i::Result<bool> {
+                let Some(paces) = paces.filter(|paces| !paces.is_nil()) else {
+                    return Ok(this.window.paces());
+                };
+                if !paces.is_boolean() {
+                    return Err(error(format!("GpuWindow:paces: paces is a boolean, not {}", kind(paces))));
+                }
+                this.window.set_paces(paces.read::<bool>()?);
+                Ok(this.window.paces())
+            },
+        )
+        .untyped();
+}
+
+/// Declares the rest: where it is, its size, text input, its events, and how it prints.
+fn describe_rest(window: &mut UserdataBuilder<'_, LuaGpuWindow>) {
     window
         .getter(
             "monitor",

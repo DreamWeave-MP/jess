@@ -270,12 +270,13 @@ fn the_stub_backend_is_a_real_poll_loop_over_nothing() {
 }
 
 #[test]
-fn a_host_without_services_carries_only_its_exit_request() {
+fn a_host_without_services_carries_only_its_exit_request_and_fixed_progress() {
     let grant = RootAuthority::new().grant(CapabilitySet::empty());
     let mut host = Host::create(factory(), HostSpec::new(DomainSpec::new("bare", grant))).unwrap();
     assert!(host.input().is_none());
-    assert_eq!(host.domain().services().len(), 1);
+    assert_eq!(host.domain().services().len(), 2);
     assert!(host.domain().service::<ExitRequest>().is_some());
+    assert!(host.domain().service::<jess::runtime::FixedProgress>().is_some());
     assert_eq!(host.exit_requested(), None);
     host.domain().load_source("=main", "").unwrap();
     host.domain().start().unwrap();

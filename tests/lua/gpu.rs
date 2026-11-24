@@ -2202,20 +2202,19 @@ fn a_shown_scene_that_does_not_change_runs_no_luau() {
     else {
         panic!("still is an application");
     };
-    assert_eq!(application.pace(), jess::lua::application::Pace::Display);
+    assert_eq!(application.pacing().chosen(), jess::lua::application::Pace::Display);
     let window = jess::window::windows()
         .into_iter()
         .find(|window| window.title() == "still")
         .expect("the application's window is open");
-    let (displayed, drawn) = (jess::window::displayed(), window.frames());
     let status = application
         .run(Some(60), &std::sync::atomic::AtomicBool::new(false), |line| panic!("{line}"))
         .unwrap();
     assert_eq!(status, 0, "the run ran out of frames");
     assert!(window.frames() >= 1, "the scene was drawn");
     assert!(
-        jess::window::displayed() - displayed >= window.frames() - drawn,
-        "what a window waiting on its display draws is counted"
+        jess::window::pacer().is_some_and(|pacer| pacer.frames() == window.frames() && pacer.waits()),
+        "its one window, which waits on its display, is the one that paces"
     );
     assert!(
         window.frames() < 10,

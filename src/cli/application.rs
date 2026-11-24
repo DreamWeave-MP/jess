@@ -3,7 +3,6 @@
 //! running it presses Ctrl+C, and the application's diagnostics on stderr as they happen.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 use clap::Args;
 use jess::lua::application::{Application, Pace};
@@ -19,9 +18,10 @@ pub struct RunOptions {
     /// stops itself first.
     #[arg(long, value_name = "N")]
     pub frames: Option<u64>,
-    /// For an application target: how often frames run: display follows its windows' displays,
-    /// unpaced runs them as fast as they finish, and a number runs that many a second (1 to
-    /// 1000). By default, display for a target that may open windows, and its fixed rate for one
+    /// For an application target: how often frames run, over its manifest's pace and whatever its
+    /// code asks for: display follows its pacing window's display, unpaced runs them as fast as
+    /// they finish, and a number runs at most that many a second (1 to 1000). Without it, the
+    /// manifest's pace, or display for a target that may open windows and its fixed rate for one
     /// that may not. Its fixed steps are its own whatever the pace.
     #[arg(long, value_name = "PACE", value_parser = pace)]
     pub pace: Option<Pace>,
@@ -57,17 +57,7 @@ impl RunOptions {
 
 /// `--pace`: `display`, `unpaced`, or frames a second.
 fn pace(text: &str) -> Result<Pace, String> {
-    match text {
-        "display" => return Ok(Pace::Display),
-        "unpaced" => return Ok(Pace::Unpaced),
-        _ => {}
-    }
-    match text.parse::<u32>() {
-        Ok(rate @ 1..=1000) => Ok(Pace::Fixed(Duration::from_secs(1) / rate)),
-        _ => Err(format!(
-            "'{text}' is no pace: display, unpaced, or frames a second from 1 to 1000"
-        )),
-    }
+    Pace::parse(text).ok_or_else(|| format!("'{text}' is no pace: display, unpaced, or frames a second from 1 to 1000"))
 }
 
 /// Runs what a launch started: a command target's status from what its entry returned, an

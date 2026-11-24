@@ -33,7 +33,9 @@ use l3i::value::{Function, Value};
 use crate::runtime::capability::{
     Authority, AuthorityGuard, CapabilitySet, Grant, Observer, WORKER_SPAWN, current_authority,
 };
-use crate::runtime::context::{Budget, ContextInfo, ContextRecord, ContextSpec, ContextStats, FixedStep, Phase};
+use crate::runtime::context::{
+    Budget, ContextInfo, ContextRecord, ContextSpec, ContextStats, FixedProgress, FixedStep, Phase,
+};
 use crate::runtime::diagnostics::{Attribution, Diagnostic, DiagnosticKind, DiagnosticSink, DiscardDiagnostics, Severity};
 use crate::runtime::error::{RuntimeError, script_message};
 use crate::runtime::ids::{CapabilityId, ContextId, DomainId, Generation, ResourceId, WorkerId};
@@ -1711,6 +1713,9 @@ impl ScriptDomain {
                 report.dropped_steps += 1;
             }
             self.core.accumulator.set(accumulator);
+            if let Some(progress) = self.core.services.get::<FixedProgress>() {
+                progress.set(accumulator);
+            }
         }
         let seconds = Message::Number(delta.as_secs_f64());
         Counters::add(&self.core.counters.updates, 1);

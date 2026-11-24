@@ -69,7 +69,7 @@ use std::fmt;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
@@ -89,7 +89,7 @@ use crate::input::{
     PointerButton, Timestamp,
 };
 use crate::render::{Extent, ResourceOrigin, TargetDesc, TextureFormat};
-use presenter::{Incoming, Screen, Shared};
+use presenter::{Incoming, Shared};
 
 /// Why a window couldn't open or draw.
 #[derive(Debug)]
@@ -544,6 +544,10 @@ impl Drop for Showing {
 
 /// One window's state, shared by its handle and the event loop; what it draws with is the
 /// presenter's too.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each is its own fact about the window, not a mode"
+)]
 struct State {
     raw: Option<Arc<RawWindow>>,
     shared: Arc<Shared>,
@@ -556,7 +560,16 @@ struct State {
     announced: bool,
     closes: bool,
     key: Option<String>,
+    /// The present mode asked for, which a surface made again is made in.
     present: PresentMode,
+    /// Whether its surface offers a present mode that doesn't wait for the display.
+    offers_immediate: bool,
+    /// The format its surface draws in, `None` once it is closed.
+    format: Option<TextureFormat>,
+    /// Whether it asked to pace the application's frames.
+    paces: bool,
+    /// When it opened among the process's windows: the first open one paces when none asks to.
+    opened: u64,
     /// How long a refresh of the display it is on is, where the window system says.
     refresh: Option<Duration>,
     /// How it holds the pointer.
@@ -884,22 +897,9 @@ fn resized(state: &mut State, size: PhysicalSize<u32>) {
     }
     state.size = size;
     state.happened(WindowEvent::Resized(size));
-    let mut screen = state.shared.screen();
-    let gpu = state.shared.device();
-    if let Some(surface) = &mut screen.surface
-        && let Err(problem) = surface.resize(&gpu, size.width, size.height)
-    {
-        *state.shared.problem() = Some(problem.into());
-    }
-    if let Some(showing) = &screen.showing {
-        match showing.plan.get().resized(&gpu, size) {
-            Ok(plan) => showing.plan.set(plan),
-            Err(problem) => *state.shared.problem() = Some(problem.into()),
-        }
-    }
-    screen.stale = true;
-    drop(screen);
-    presenter::wake();
+    // Its presenter sizes the surface and the plan before it next draws: the screen may be held
+    // for a refresh while it waits for an image, and the event loop doesn't wait on that.
+    state.shared.ask_size(size);
 }
 
 fn close(state: &mut State) {
@@ -919,6 +919,8 @@ fn close(state: &mut State) {
         screen.showing = None;
         screen.surface = None;
     }
+    state.shared.retire();
+    state.format = None;
     state.raw = None;
 }
 
@@ -970,20 +972,13 @@ pub fn open(gpu: &Arc<Gpu>, desc: &WindowDesc) -> Result<Window, WindowError> {
         let refresh = refresh_of(&raw);
         let surface = gpu.surface(Arc::clone(&raw), size.width, size.height, desc.format, desc.present)?;
         let id = raw.id();
-        let shared = Arc::new(Shared {
-            screen: Mutex::new(Screen {
-                surface: Some(surface),
-                showing: None,
-                drawn: 0,
-                stale: false,
-                frames: 0,
-                failing: false,
-                waits: desc.present == PresentMode::Vsync,
-            }),
-            device: Mutex::new(Arc::clone(gpu)),
-            problem: Mutex::default(),
-            incoming: Mutex::default(),
-        });
+        let offers_immediate = !surface.waits_for(PresentMode::Immediate);
+        let format = Some(surface.format());
+        let shared = Arc::new(Shared::new(
+            Some(surface),
+            Arc::clone(gpu),
+            waits(desc.present, offers_immediate),
+        ));
         presenter::serve(&shared);
         let state = Rc::new(RefCell::new(State {
             scale: raw.scale_factor(),
@@ -999,6 +994,10 @@ pub fn open(gpu: &Arc<Gpu>, desc: &WindowDesc) -> Result<Window, WindowError> {
             closes: desc.closes,
             key: desc.key.clone(),
             present: desc.present,
+            offers_immediate,
+            format,
+            paces: false,
+            opened: OPENED.fetch_add(1, Ordering::Relaxed),
             refresh,
             cursor: Cursor::Normal,
             pointer: None,
@@ -1167,8 +1166,9 @@ impl System {
             self.kept.remove(position);
             return Ok(None);
         };
-        let mut screen = state.shared.screen();
-        let before = state.shared.device();
+        let shared = Arc::clone(&state.shared);
+        let mut screen = shared.screen();
+        let before = shared.device();
         if !Arc::ptr_eq(&before, gpu) {
             let format = screen.surface.as_ref().map(Surface::format);
             let (width, height, present) = (state.size.width, state.size.height, state.present);
@@ -1180,9 +1180,13 @@ impl System {
             // Either way the surface is new and has drawn nothing yet.
             screen.stale = true;
             replaced?;
-            *state.shared.device.lock().unwrap_or_else(PoisonError::into_inner) = Arc::clone(gpu);
+            *shared.device.lock().unwrap_or_else(PoisonError::into_inner) = Arc::clone(gpu);
+            if let Some(surface) = &screen.surface {
+                state.offers_immediate = !surface.waits_for(PresentMode::Immediate);
+                shared.ask_present(state.present, waits(state.present, state.offers_immediate));
+            }
             screen.showing = None;
-            state.shared.arrive(Incoming::Hide);
+            shared.arrive(Incoming::Hide);
         }
         drop(screen);
         if state.title != title {
@@ -1286,24 +1290,82 @@ pub fn wait_presented(timeout: Duration) {
     presenter::wait(&shared, timeout);
 }
 
-/// How many frames the windows that wait on their display have presented, all together.
+/// The window that paces an application's frames under display pacing.
 ///
-/// A window waits on its display when it presents with [`PresentMode::Vsync`]. A host paced by
-/// the display reads this before a frame and after [`wait_presented`]: a frame one of them drew
-/// was paced by its display.
-#[must_use]
-pub fn displayed() -> u64 {
-    presenter::displayed()
+/// It is the open window that asked to ([`Window::set_paces`]), or else the first of this
+/// thread's open windows to open. Only it is waited on; no other window's display, or its failing to draw, holds frames up.
+#[derive(Clone)]
+pub struct Pacer {
+    shared: Arc<Shared>,
+    refresh: Option<Duration>,
 }
 
-/// How long a refresh is of the fastest display one of this thread's open windows is on.
-///
-/// `None` when no window is open or the window system says how fast none of their displays is.
-/// A host paced by the display waits this long between frames no display paced.
-#[must_use]
-pub fn refresh() -> Option<Duration> {
-    open_states().iter().filter_map(|state| state.borrow().refresh).min()
+impl fmt::Debug for Pacer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Pacer")
+            .field("refresh", &self.refresh)
+            .field("waits", &self.waits())
+            .finish_non_exhaustive()
+    }
 }
+
+impl Pacer {
+    /// How long a refresh of its display is, where the window system says.
+    #[must_use]
+    pub fn refresh(&self) -> Option<Duration> {
+        self.refresh
+    }
+
+    /// Whether its presenting waits for its display: its present mode in effect.
+    #[must_use]
+    pub fn waits(&self) -> bool {
+        self.shared.waits()
+    }
+
+    /// How many frames it has presented.
+    #[must_use]
+    pub fn frames(&self) -> u64 {
+        self.shared.frames()
+    }
+
+    /// Whether it has something to draw that it hasn't presented. Never waits: a window its
+    /// presenter holds is drawing, so it has.
+    #[must_use]
+    pub fn pending(&self) -> bool {
+        !self.shared.settled()
+    }
+
+    /// Waits until it has presented more than `frames` frames, or `deadline` passes: whether it
+    /// did. Waits on nothing but it.
+    #[must_use]
+    pub fn wait_presented(&self, frames: u64, deadline: Instant) -> bool {
+        self.shared.wait_presented(frames, deadline)
+    }
+}
+
+/// The window that paces frames now, if one is open: see [`Pacer`].
+#[must_use]
+pub fn pacer() -> Option<Pacer> {
+    let states = open_states();
+    let chosen = states
+        .iter()
+        .find(|state| state.borrow().paces)
+        .or_else(|| states.iter().min_by_key(|state| state.borrow().opened))?;
+    let state = chosen.borrow();
+    Some(Pacer {
+        shared: Arc::clone(&state.shared),
+        refresh: state.refresh,
+    })
+}
+
+/// Whether presenting in `mode` waits for the display, on a surface that does or doesn't offer a
+/// mode that doesn't.
+fn waits(mode: PresentMode, offers_immediate: bool) -> bool {
+    mode == PresentMode::Vsync || !offers_immediate
+}
+
+/// How many windows have opened in the process, which orders them.
+static OPENED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The windows with events nobody has read or heard of yet, by title and key, each once until
 /// its events are read: what an application's host posts as [`NEWS`].
@@ -1376,14 +1438,14 @@ impl Window {
     /// `None` once it is closed.
     #[must_use]
     pub fn format(&self) -> Option<TextureFormat> {
-        self.state.borrow().shared.screen().surface.as_ref().map(Surface::format)
+        self.state.borrow().format
     }
 
     /// How many frames it presented: one for each commit, show, and resize there was something
     /// new to draw for, so a scene nothing changes adds none.
     #[must_use]
     pub fn frames(&self) -> u64 {
-        self.state.borrow().shared.screen().frames
+        self.state.borrow().shared.frames()
     }
 
     /// Asks the window system for an inner size of `width` by `height` physical pixels. It may
@@ -1429,11 +1491,8 @@ impl Window {
     pub fn show(&self, showing: Showing) -> Result<(), WindowError> {
         let showing = self.prepared(showing)?;
         let state = self.state.borrow();
-        let mut screen = state.shared.screen();
-        screen.showing = Some(showing);
-        screen.stale = true;
-        drop(screen);
-        presenter::wake();
+        state.shared.arrive(Incoming::Show(Box::new(showing)));
+        state.shared.wake();
         Ok(())
     }
 
@@ -1473,13 +1532,10 @@ impl Window {
     /// `showing`, checked against the window, resized to it, and marked shown in it.
     fn prepared(&self, mut showing: Showing) -> Result<Showing, WindowError> {
         let state = self.state.borrow();
-        let screen = state.shared.screen();
-        let Some(surface) = &screen.surface else {
+        let Some(format) = state.format else {
             return Err(WindowError::Invalid(format!("the window {} is closed", state.title)));
         };
-        let format = surface.format();
         let gpu = state.shared.device();
-        drop(screen);
         let plan = showing.plan.get();
         let graph = plan.graph();
         let declared = graph
@@ -1510,7 +1566,7 @@ impl Window {
     pub fn hide(&self) {
         let state = self.state.borrow();
         state.shared.arrive(Incoming::Hide);
-        state.shared.screen().showing = None;
+        state.shared.wake();
     }
 
     /// Closes it.
@@ -1530,6 +1586,49 @@ impl Window {
     #[must_use]
     pub fn number(&self) -> u64 {
         u64::from(self.id)
+    }
+
+    /// Whether presenting to it waits for its display: its present mode in effect, which is
+    /// what was asked for as far as its surface offers it.
+    #[must_use]
+    pub fn vsync(&self) -> bool {
+        self.state.borrow().shared.waits()
+    }
+
+    /// Asks for presenting to it to wait for its display, or not, from its next drawing on;
+    /// whether it will. A surface that offers no mode that doesn't wait waits whatever is asked,
+    /// and says so. Its surface is configured again by its presenter, before it takes its next
+    /// image, not while one is taken; a surface made again (lost, or moved to another device) is
+    /// made in the mode asked for.
+    #[must_use]
+    pub fn set_vsync(&self, vsync: bool) -> bool {
+        let mut state = self.state.borrow_mut();
+        let present = if vsync { PresentMode::Vsync } else { PresentMode::Immediate };
+        let waits = waits(present, state.offers_immediate);
+        state.present = present;
+        if state.raw.is_some() {
+            state.shared.ask_present(present, waits);
+        }
+        waits
+    }
+
+    /// Whether it asked to pace the application's frames under display pacing ([`pacer`]).
+    #[must_use]
+    pub fn paces(&self) -> bool {
+        self.state.borrow().paces
+    }
+
+    /// Asks for it to pace the application's frames, or stops asking. One window at a time asks:
+    /// asking takes it from any other of this thread's windows.
+    pub fn set_paces(&self, paces: bool) {
+        if paces {
+            for state in open_states() {
+                if let Ok(mut state) = state.try_borrow_mut() {
+                    state.paces = false;
+                }
+            }
+        }
+        self.state.borrow_mut().paces = paces;
     }
 
     /// How much of a display it takes now, as the window system has it: `Windowed` once it is
@@ -2044,6 +2143,53 @@ mod tests {
         drop(frame);
         drop(screen);
         drop(state);
+        window.close();
+        vsync_changes_on_an_open_window_and_survives_a_lost_surface(&gpu);
+    }
+
+    /// A window's vsync changes while it is open, without making it or its surface again: its
+    /// presenter configures the surface before its next image, the window says what is in effect
+    /// (all a surface that offers only waiting can say is that it waits), and a surface lost and
+    /// made again is made in the mode asked for. Part of `a_lost_surface_is_made_again_on_its_window`,
+    /// on the thread its windows are on.
+    fn vsync_changes_on_an_open_window_and_survives_a_lost_surface(gpu: &Arc<Gpu>) {
+        let gpu = Arc::clone(gpu);
+        let window = open(&gpu, &WindowDesc::default()).expect("a window");
+        assert!(window.vsync(), "a window waits on its display by default");
+        let id = window.number();
+        let effective = window.set_vsync(false);
+        assert_eq!(window.vsync(), effective);
+        let shared = Arc::clone(&window.state.borrow().shared);
+        presenter::wait(std::slice::from_ref(&shared), Duration::from_secs(30));
+        {
+            let mut screen = shared.screen();
+            let surface = screen.surface.as_mut().expect("the same surface");
+            assert_eq!(surface.vsync(), effective, "the surface presents as the window says");
+            surface.lose();
+            assert!(surface.frame(&gpu).expect("made again").is_none());
+            assert_eq!(surface.vsync(), effective, "made again in the mode asked for");
+            drop(screen);
+        }
+        assert!(window.set_vsync(true));
+        presenter::wait(std::slice::from_ref(&shared), Duration::from_secs(30));
+        assert!(shared.screen().surface.as_ref().expect("a surface").vsync());
+        assert_eq!(window.number(), id, "the window was never made again");
+        assert!(pacer().is_some_and(|pacer| pacer.waits()), "it paces, being the only window");
+        // A second window paces only when it asks to, and holds nothing up while it can't draw.
+        let second = open(&gpu, &WindowDesc::default()).expect("a second window");
+        let paced_by =
+            |window: &Window| pacer().is_some_and(|pacer| Arc::ptr_eq(&pacer.shared, &window.state.borrow().shared));
+        assert!(paced_by(&window), "the first window to open paces");
+        second.set_paces(true);
+        assert!(paced_by(&second) && !window.paces());
+        let effective = second.set_vsync(false);
+        assert_eq!(
+            pacer().map(|pacer| pacer.waits()),
+            Some(effective),
+            "display pacing goes by the pacing window's own vsync"
+        );
+        second.close();
+        assert!(paced_by(&window), "with the one that asked closed, the first paces again");
         window.close();
     }
 

@@ -32,8 +32,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use l3i::Runtime;
+use l3i::bind::{Call, StackResults};
 use l3i::debug::DebugScope;
-use l3i::stack::{Frame, ValueView};
+use l3i::stack::{Frame, TableView, ValueView};
 use l3i::value::{Function, Table, Value};
 
 use crate::host::{ExitRequest, FrameReport, Host, HostSpec, InputSource};
@@ -74,10 +75,124 @@ fn exit(status: Option<f64>) -> l3i::Result<()> {
     Ok(())
 }
 
+/// The pacing of the application the calling code is: its host's, for the domain's own code.
+fn pacing(function: &str) -> l3i::Result<Arc<Pacing>> {
+    let no_host = || {
+        error(format!(
+            "application.{function}: needs an application host; jess run, jess test, and command targets drive no frames"
+        ))
+    };
+    let authority = crate::runtime::current_authority().ok_or_else(no_host)?;
+    if authority.attribution().worker.is_some() {
+        return Err(error(format!(
+            "application.{function} is for the domain's own code; a worker asks the domain in a message"
+        )));
+    }
+    authority.service::<Pacing>().ok_or_else(no_host)
+}
+
+/// Sets `key` of `table` to `pace` as Luau has it: `'display'`, `'unpaced'`, or frames a second.
+fn pace_field(frame: &Frame<'_>, table: &TableView<'_>, key: &str, pace: Pace) -> l3i::Result<()> {
+    match pace {
+        Pace::Capped(rate) => table.raw_set_value(frame, key, &f64::from(rate)),
+        Pace::Display => table.raw_set_value(frame, key, "display"),
+        Pace::Unpaced => table.raw_set_value(frame, key, "unpaced"),
+    }
+}
+
+/// `application.pace()`: what the application asks for, where that came from, what overrides
+/// it, and what is in effect.
+fn pace(call: &Call<'_>) -> l3i::Result<StackResults> {
+    let pacing = pacing("pace")?;
+    let (requested, origin) = pacing.requested();
+    crate::lua::push_table(call, 0, 4, |frame, table| {
+        pace_field(frame, table, "requested", requested)?;
+        pace_field(frame, table, "effective", pacing.effective())?;
+        if let Some(overridden) = pacing.overridden() {
+            pace_field(frame, table, "override", overridden)?;
+        }
+        let origin = match origin {
+            Origin::Default => "default",
+            Origin::Manifest => "manifest",
+            Origin::Application => "application",
+        };
+        table.raw_set_value(frame, "origin", origin)
+    })?;
+    Ok(StackResults)
+}
+
+/// `application.setPace(pace)`: asks for `pace` from the end of this frame on.
+fn set_pace(pace: ValueView<'_>) -> l3i::Result<()> {
+    const FUNCTION: &str = "application.setPace";
+    let wanted = if pace.is_string() {
+        match pace.read::<&str>()? {
+            "display" => Some(Pace::Display),
+            "unpaced" => Some(Pace::Unpaced),
+            _ => None,
+        }
+    } else if pace.is_number() {
+        let rate = pace.read::<f64>()?;
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the guard requires an integral value in 1..=MAX_RATE"
+        )]
+        (rate.fract() == 0.0 && (1.0..=f64::from(crate::host::pacing::MAX_RATE)).contains(&rate))
+            .then_some(Pace::Capped(rate as u32))
+    } else {
+        None
+    };
+    let Some(wanted) = wanted else {
+        return Err(error(format!(
+            "{FUNCTION}: the pace is 'display', 'unpaced', or a whole number of frames a second from 1 to {}, not {}",
+            crate::host::pacing::MAX_RATE,
+            if pace.is_string() {
+                format!("'{}'", pace.read::<&str>()?)
+            } else if pace.is_number() {
+                pace.read::<f64>()?.to_string()
+            } else {
+                kind(pace).to_owned()
+            }
+        )));
+    };
+    pacing("setPace")?.request(wanted);
+    Ok(())
+}
+
+/// `application.frameStats()`: how the frames are going, and where the domain's time is between
+/// fixed steps. Waits on nothing.
+fn frame_stats(call: &Call<'_>) -> l3i::Result<StackResults> {
+    let pacing = pacing("frameStats")?;
+    let stats = pacing.stats();
+    let step = pacing.fixed_step();
+    let remainder = crate::runtime::current_authority()
+        .and_then(|authority| authority.service::<crate::runtime::FixedProgress>())
+        .map_or(Duration::ZERO, |progress| progress.remainder());
+    crate::lua::push_table(call, 0, 8, |frame, table| {
+        #[expect(clippy::cast_precision_loss, reason = "a count of frames is far below 2^53")]
+        table.raw_set_value(frame, "frames", &(stats.frames as f64))?;
+        table.raw_set_value(frame, "delta", &stats.delta.as_secs_f64())?;
+        table.raw_set_value(frame, "work", &stats.work.as_secs_f64())?;
+        table.raw_set_value(frame, "waited", &stats.waited.as_secs_f64())?;
+        table.raw_set_value(frame, "rate", &stats.rate)?;
+        table.raw_set_value(frame, "fixedStep", &step.as_secs_f64())?;
+        let interpolation = if step.is_zero() {
+            0.0
+        } else {
+            (remainder.as_secs_f64() / step.as_secs_f64()).clamp(0.0, 1.0)
+        };
+        table.raw_set_value(frame, "interpolation", &interpolation)
+    })?;
+    Ok(StackResults)
+}
+
 /// The `jess.application` table.
 pub(crate) fn module(runtime: &Runtime) -> l3i::Result<Table> {
     let module = crate::lua::plan::Functions::module(runtime, "application")?;
     module.function("exit", exit)?;
+    module.function("pace", pace)?;
+    module.function("setPace", set_pace)?;
+    module.function("frameStats", frame_stats)?;
     module.finish()
 }
 
@@ -103,26 +218,8 @@ pub const DEFAULT_FIXED_RATE: u32 = 60;
 /// (`max_catch_up`).
 pub const DEFAULT_MAX_CATCH_UP: u32 = 5;
 
-/// How [`Application::run`] paces frames: the run's choice, not the application's, whose fixed
-/// step is its own whatever the pace.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Pace {
-    /// A frame every interval, on a timer. A frame that runs late is followed at once, and the
-    /// fixed step catches up what it may.
-    Fixed(Duration),
-    /// As the application's windows' displays take frames. After each frame the host waits for the
-    /// windows to draw what it changed. If a window that waits on its display drew it, the
-    /// display's own wait was the pace, and the next frame begins at once (but never sooner than
-    /// half a refresh after the last began, or a thousandth of a second where the display doesn't
-    /// say how fast it is, so a driver that doesn't wait can't make a spin of it). After any other frame (nothing changed, no window waits on its display, a window
-    /// couldn't draw), the next begins one refresh after the last began: a refresh of the fastest
-    /// display an open window is on, or one fixed step with no window open or none whose display
-    /// says how fast it is. A window that can't draw (minimized, covered) holds a frame back at
-    /// most two refreshes.
-    Display,
-    /// As fast as frames finish, waiting on nothing.
-    Unpaced,
-}
+pub use crate::host::pacing::Pace;
+use crate::host::pacing::{Effective, Origin, Pacing, Presentation, Scheduler, Wait};
 
 /// A managed module that has run and passed its checks: what it declared, ready to bind.
 struct Declared {
@@ -565,7 +662,7 @@ pub struct Application {
     /// Context names by id, kept past teardown for the diagnostics it reports.
     names: BTreeMap<ContextId, String>,
     step: FixedStep,
-    pace: Pace,
+    pacing: Arc<Pacing>,
     /// The GPU device the application's generations share, committed at the end of each frame.
     #[cfg(feature = "gpu")]
     device: Arc<crate::lua::SharedDevice>,
@@ -687,7 +784,7 @@ pub(crate) fn launch(
         .capabilities
         .iter()
         .any(|capability| capability == crate::lua::gpu::WINDOW_CAPABILITY);
-    let pace = pace.unwrap_or(if windowed { Pace::Display } else { Pace::Fixed(step.step) });
+    let pacing = Arc::new(pacing_of(target, windowed, step, pace)?);
     let layers = inspection.layers.iter().map(|layer| layer.id.clone()).collect::<Vec<_>>();
     let mut locations = vec![request.package.clone()];
     locations.extend_from_slice(&request.packages);
@@ -722,7 +819,8 @@ pub(crate) fn launch(
     let spec = DomainSpec::new(format!("{}:{}", inspection.id, target.id), grant)
         .worker_setup(worker_setup)
         .diagnostics(diagnostics.clone())
-        .fixed_step(step);
+        .fixed_step(step)
+        .service(Arc::clone(&pacing));
     // One GPU device for every generation, so a restart reloads code without reopening it.
     #[cfg(feature = "gpu")]
     let device = Arc::new(crate::lua::SharedDevice::default());
@@ -779,7 +877,7 @@ pub(crate) fn launch(
         diagnostics,
         names: BTreeMap::new(),
         step,
-        pace,
+        pacing,
         #[cfg(feature = "gpu")]
         device,
     };
@@ -800,10 +898,11 @@ impl Application {
         self.step
     }
 
-    /// How [`Application::run`] paces its frames.
+    /// Its pacing: what it asks for, what overrides that, what is in effect, and how its frames
+    /// are going. An embedder overrides the pace here, at any time, as `--pace` does at launch.
     #[must_use]
-    pub fn pace(&self) -> Pace {
-        self.pace
+    pub fn pacing(&self) -> &Arc<Pacing> {
+        &self.pacing
     }
 
     /// The application's domain.
@@ -851,6 +950,8 @@ impl Application {
     /// As [`Host::restart`]; a failed load leaves nothing running.
     pub fn restart(&mut self) -> Result<Generation, RuntimeError> {
         let loading = Rc::clone(&self.setup);
+        // What the old code asked for goes with it; an override, whoever runs it, stays.
+        self.pacing.reset();
         // Windows the new code opens again by key stay open through the load, showing the last.
         #[cfg(feature = "window")]
         let generation = crate::window::reclaim(|| self.host.restart(|runtime| loading.load(runtime)));
@@ -939,10 +1040,8 @@ impl Application {
         self.flush(report);
         started.map_err(l3i::Error::from)?;
         let mut ran = 0u64;
-        let mut next = Instant::now();
-        let mut last = Instant::now();
-        // Whether a window waiting on its display drew the last frame, so that wait paced it.
-        let mut displayed = false;
+        let mut scheduler = Scheduler::new(Instant::now());
+        let mut wait = (Wait::Now, None);
         loop {
             if let Some(status) = self.exit_requested() {
                 return Ok(status);
@@ -953,53 +1052,20 @@ impl Application {
             if interrupt.load(Ordering::Acquire) {
                 return Ok(130);
             }
-            match self.pace {
-                Pace::Fixed(interval) => next += interval,
-                Pace::Display if displayed => next = last + least_displayed(),
-                Pace::Display => next = last + self.refresh(),
-                Pace::Unpaced => next = Instant::now(),
-            }
-            if let Some(wait) = next.checked_duration_since(Instant::now()) {
-                std::thread::sleep(wait);
-            } else {
-                // Behind: frames resume from now, and the fixed step catches up what it may.
-                next = Instant::now();
-            }
-            let now = Instant::now();
-            let before = displayed_frames();
-            let outcome = self.step(now - last, report);
-            last = now;
-            if self.pace == Pace::Display {
-                displayed = self.wait_displayed(before);
-            }
+            let waited = waited(wait);
+            let began = Instant::now();
+            let delta = scheduler.begin(began);
+            self.pacing.began(began, delta, waited);
+            let pacer = Pacer::now();
+            let outcome = self.step(delta, report);
+            let presentation = pacer.as_ref().map(Pacer::presentation).unwrap_or_default();
+            let effective = crate::host::pacing::resolve(self.pacing.chosen(), &presentation, self.step.step);
+            let worked = Instant::now();
+            self.pacing.ended(worked - began, effective.pace());
+            wait = (scheduler.wait(worked, effective, &presentation), pacer);
             self.flush(report);
             outcome.map_err(|problem| error(problem.to_string()))?;
             ran += 1;
-        }
-    }
-
-    /// How long a refresh is for [`Pace::Display`]: of the fastest display an open window is on,
-    /// or the fixed step with no window open, or none on a display that says how fast it is.
-    fn refresh(&self) -> Duration {
-        #[cfg(feature = "window")]
-        if let Some(refresh) = crate::window::refresh() {
-            return refresh;
-        }
-        self.step.step
-    }
-
-    /// Waits, at most two refreshes, for the windows to draw what the frame just driven changed;
-    /// whether a window waiting on its display drew since [`displayed_frames`] said `before`.
-    fn wait_displayed(&self, before: u64) -> bool {
-        #[cfg(feature = "window")]
-        {
-            crate::window::wait_presented(self.refresh() * 2);
-            crate::window::displayed() > before
-        }
-        #[cfg(not(feature = "window"))]
-        {
-            let _ = before;
-            false
         }
     }
 
@@ -1070,24 +1136,86 @@ impl Application {
     }
 }
 
-/// The least time between two frames a display paced: half a refresh where the window system says
-/// how fast the display is, and a thousandth of a second where it doesn't. A display that waited
-/// took longer than that; it only keeps a driver that never waits from making a spin of frames.
-fn least_displayed() -> Duration {
+/// The pacing window as a frame began: how many frames it had presented then, which display
+/// pacing waits for it to pass.
+struct Pacer {
     #[cfg(feature = "window")]
-    if let Some(refresh) = crate::window::refresh() {
-        return refresh / 2;
-    }
-    Duration::from_millis(1)
+    window: crate::window::Pacer,
+    #[cfg(feature = "window")]
+    presented: u64,
 }
 
-/// How many frames windows waiting on their display have drawn, for [`Pace::Display`] to tell
-/// whether the last frame was one of them: none without windows.
-fn displayed_frames() -> u64 {
-    #[cfg(feature = "window")]
-    return crate::window::displayed();
-    #[cfg(not(feature = "window"))]
-    0
+impl Pacer {
+    /// The window pacing frames now, if there is one.
+    fn now() -> Option<Pacer> {
+        #[cfg(feature = "window")]
+        return crate::window::pacer().map(|window| Pacer {
+            presented: window.frames(),
+            window,
+        });
+        #[cfg(not(feature = "window"))]
+        None
+    }
+
+    /// What display pacing needs of it at a frame's end: never waits on it.
+    fn presentation(&self) -> Presentation {
+        #[cfg(feature = "window")]
+        return Presentation {
+            refresh: self.window.refresh(),
+            waits: self.window.waits(),
+            pending: self.window.pending(),
+        };
+        #[cfg(not(feature = "window"))]
+        Presentation::default()
+    }
+
+    /// Waits until it has presented the frame it was given, or `deadline`.
+    fn wait_presented(&self, deadline: Instant) {
+        #[cfg(feature = "window")]
+        {
+            let _presented = self.window.wait_presented(self.presented, deadline);
+        }
+        #[cfg(not(feature = "window"))]
+        let _ = deadline;
+    }
+}
+
+/// Waits as `wait` says, on the pacing window it was decided with: how long it waited.
+fn waited(wait: (Wait, Option<Pacer>)) -> Duration {
+    let started = Instant::now();
+    let sleep_until = |at: Instant| {
+        if let Some(left) = at.checked_duration_since(Instant::now()) {
+            std::thread::sleep(left);
+        }
+    };
+    match wait {
+        (Wait::Now, _) => {}
+        (Wait::Until(at), _) => sleep_until(at),
+        (Wait::Presented { not_before, give_up }, pacer) => {
+            if let Some(pacer) = pacer {
+                pacer.wait_presented(give_up);
+            }
+            sleep_until(not_before);
+        }
+    }
+    started.elapsed()
+}
+
+/// The pacing an application target starts with: its manifest's pace, or by default the display
+/// for one that may open windows and its fixed rate for one that may not; overridden by
+/// `overridden`, whoever runs it.
+fn pacing_of(target: &Target, windowed: bool, step: FixedStep, overridden: Option<Pace>) -> l3i::Result<Pacing> {
+    let (requested, origin) = match &target.pace {
+        Some(text) => (
+            Pace::parse(text).ok_or_else(|| error(format!("target {}: '{text}' is no pace", target.id)))?,
+            Origin::Manifest,
+        ),
+        None if windowed => (Pace::Display, Origin::Default),
+        None => (Effective::Timer(step.step).pace(), Origin::Default),
+    };
+    let pacing = Pacing::new(requested, origin, step.step);
+    pacing.set_override(overridden);
+    Ok(pacing)
 }
 
 /// `diagnostic` as a line for people: the context it happened in by name (the application's

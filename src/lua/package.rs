@@ -677,6 +677,10 @@ pub struct Target {
     /// without one, [`crate::lua::application::DEFAULT_MAX_CATCH_UP`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_catch_up: Option<u32>,
+    /// For an application target, the pace its manifest asks for (`pace`): `display`, `unpaced`, or
+    /// frames a second, as [`crate::host::pacing::Pace::parse`] reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pace: Option<String>,
 }
 
 /// What `jess package inspect` reports: a package's manifest and identity, read without running it.
@@ -1006,7 +1010,7 @@ pub fn inspect_with(runtime: &Runtime, location: &str, image: Option<&crate::lua
         "layers": [{ "id": "", "requires": [""], "exports": [""], "entrypoints": [{ "module": "", "capabilities": [""] }] }],
         "managed": [{ "id": "", "module": "", "interface": null }],
         "targets": [{
-            "id": "", "kind": "", "entry": "", "capabilities": [""], "command": null, "fixedRate": null, "maxCatchUp": null,
+            "id": "", "kind": "", "entry": "", "capabilities": [""], "command": null, "fixedRate": null, "maxCatchUp": null, "pace": null,
         }],
         "dependencies": [{ "id": "", "requirement": "" }],
         "devDependencies": [{ "id": "", "requirement": "" }],

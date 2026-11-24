@@ -311,7 +311,7 @@ fn pin_map(pins: &[Pin]) -> BTreeMap<String, String> {
 
 fn target_shape() -> serde_json::Value {
     serde_json::json!({
-        "id": "", "kind": "", "entry": "", "capabilities": [""], "command": null, "fixedRate": null, "maxCatchUp": null,
+        "id": "", "kind": "", "entry": "", "capabilities": [""], "command": null, "fixedRate": null, "maxCatchUp": null, "pace": null,
     })
 }
 
