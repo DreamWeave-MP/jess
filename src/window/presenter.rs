@@ -9,10 +9,12 @@
 //! tried again until it draws.
 //!
 //! Locks are taken in one order: a window's screen, then what is coming to it, then its device's
-//! frame lock. A commit takes the frame lock, then what is coming, and never a screen.
+//! frame lock. A commit takes the frame lock, then what is coming, and never a screen. Which device
+//! a window draws with and what went wrong drawing it are locked apart, last, and never across a
+//! wait, so the frames' driver, which reads them every frame, never waits on a display.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError, Weak};
 use std::time::{Duration, Instant};
 
 use super::{Imported, Showing, WindowError};
@@ -21,10 +23,7 @@ use crate::gpu::{Gpu, GpuError, Import, Surface};
 /// What the presenter draws a window with, shared by the window's handle and the presenter.
 pub(super) struct Screen {
     pub(super) surface: Option<Surface>,
-    pub(super) gpu: Arc<Gpu>,
     pub(super) showing: Option<Showing>,
-    /// What went wrong drawing or resizing it, reported at the next present.
-    pub(super) problem: Option<WindowError>,
     /// The device's commit count when it last drew.
     pub(super) drawn: u64,
     /// Whether it must draw again, whatever the commits say.
@@ -43,9 +42,18 @@ pub(super) enum Incoming {
     Hide,
 }
 
-/// A window as the presenter sees it: its screen, and what a commit shows on it next.
+/// A window as the presenter sees it: its screen, what a commit shows on it next, the device it
+/// draws with, and what went wrong drawing it.
+///
+/// The screen is held while the presenter waits for the surface's next image, which can be a whole
+/// refresh or, for a window that can't draw, much longer; whoever drives the frames reads only
+/// the device and the problem, which nobody holds across a wait, so it never waits on a display.
 pub(super) struct Shared {
     pub(super) screen: Mutex<Screen>,
+    /// The device it draws with: swapped, with the surface, only while the screen is held.
+    pub(super) device: Mutex<Arc<Gpu>>,
+    /// What went wrong drawing or resizing it, reported at the next present.
+    pub(super) problem: Mutex<Option<WindowError>>,
     /// What a commit shows on it, taken when it next draws.
     pub(super) incoming: Mutex<Option<Incoming>>,
 }
@@ -59,14 +67,30 @@ impl Shared {
         self.incoming.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// The device it draws with.
+    pub(super) fn device(&self) -> Arc<Gpu> {
+        Arc::clone(&self.device.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// What went wrong drawing or resizing it since this was last asked.
+    pub(super) fn problem(&self) -> MutexGuard<'_, Option<WindowError>> {
+        self.problem.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Shows `incoming` when the presenter next draws it: what a commit does.
     pub(super) fn arrive(&self, incoming: Incoming) {
         *self.incoming() = Some(incoming);
     }
 
-    /// Whether it has drawn everything there is: nothing waiting, nothing stale, every commit.
+    /// Whether it has drawn everything there is: nothing waiting, nothing stale, every commit. A
+    /// screen the presenter holds is being drawn, or waiting for an image, so it isn't, and asking
+    /// never waits for it.
     fn settled(&self) -> bool {
-        let screen = self.screen();
+        let screen = match self.screen.try_lock() {
+            Ok(screen) => screen,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return false,
+        };
         if screen.surface.is_none() {
             return true;
         }
@@ -74,7 +98,7 @@ impl Shared {
         let Some(_) = &screen.showing else {
             return !incoming;
         };
-        !incoming && !screen.stale && screen.drawn == screen.gpu.commits()
+        !incoming && !screen.stale && screen.drawn == self.device().commits()
     }
 }
 
@@ -163,6 +187,12 @@ pub(super) fn wait(shared: &[Arc<Shared>], timeout: Duration) {
     }
 }
 
+/// What ending a frame needs of `shared`: what went wrong drawing it since the last frame, and
+/// the device whose commit it draws. Neither waits on the presenter, whatever it is waiting for.
+pub(super) fn ending(shared: &Shared) -> (Option<WindowError>, Arc<Gpu>) {
+    (shared.problem().take(), shared.device())
+}
+
 /// What one try at drawing a window came to.
 enum Drawing {
     /// Nothing new to draw, or nothing to draw it with.
@@ -227,7 +257,7 @@ fn draw(shared: &Shared) -> Drawing {
         };
         screen.stale = true;
     }
-    let gpu = Arc::clone(&screen.gpu);
+    let gpu = shared.device();
     let commits = gpu.commits();
     if !screen.stale && screen.drawn == commits {
         return Drawing::Nothing;
@@ -235,7 +265,6 @@ fn draw(shared: &Shared) -> Drawing {
     let Screen {
         surface,
         showing,
-        problem,
         stale,
         drawn,
         frames,
@@ -252,7 +281,7 @@ fn draw(shared: &Shared) -> Drawing {
             *stale = true;
             return Drawing::NotReady;
         }
-        Err(failure) => return fail(problem, failing, stale, failure),
+        Err(failure) => return fail(&mut shared.problem(), failing, stale, failure),
     };
     let mut imports = vec![Import::Texture(&showing.target, frame.texture())];
     imports.extend(showing.imports.iter().map(|imported| match imported {
@@ -267,7 +296,7 @@ fn draw(shared: &Shared) -> Drawing {
     if let Err(failure) = ran {
         // The image goes back to the surface unpresented: a frame that failed isn't one.
         drop(frame);
-        return fail(problem, failing, stale, failure);
+        return fail(&mut shared.problem(), failing, stale, failure);
     }
     gpu.present(frame);
     *drawn = commits;
@@ -293,7 +322,60 @@ fn fail(problem: &mut Option<WindowError>, failing: &mut bool, stale: &mut bool,
 
 #[cfg(test)]
 mod tests {
-    use super::{Drawing, GpuError, fail};
+    use std::sync::mpsc::channel;
+    use std::sync::{Arc, Mutex};
+
+    use super::{Drawing, Gpu, GpuError, Screen, Shared, WindowError, ending, fail};
+
+    /// A frame ends while the presenter holds a window's screen, as it does all the while it
+    /// waits for the display to give it an image: the frame's end reads what it needs past it,
+    /// and Display pacing sees a window still being drawn without waiting either. The presenter
+    /// here lets go only once the frame has ended, so a frame that waited on it never ends.
+    #[test]
+    fn a_frame_ends_without_waiting_on_a_window_the_presenter_holds() {
+        let gpu = match Gpu::headless() {
+            Ok(gpu) => Arc::new(gpu),
+            Err(GpuError::NoAdapter) => {
+                eprintln!("SKIPPED a_frame_ends_without_waiting_on_a_window_the_presenter_holds: no adapter");
+                return;
+            }
+            Err(problem) => panic!("{problem}"),
+        };
+        let shared = Arc::new(Shared {
+            screen: Mutex::new(Screen {
+                surface: None,
+                showing: None,
+                drawn: 0,
+                stale: true,
+                frames: 0,
+                failing: false,
+                waits: true,
+            }),
+            device: Mutex::new(Arc::clone(&gpu)),
+            problem: Mutex::new(Some(WindowError::System("lost".to_owned()))),
+            incoming: Mutex::default(),
+        });
+        let (held, holding) = channel();
+        let (ended, waiting) = channel::<()>();
+        let presenter = {
+            let shared = Arc::clone(&shared);
+            std::thread::spawn(move || {
+                let _screen = shared.screen();
+                held.send(()).unwrap();
+                waiting.recv().unwrap();
+            })
+        };
+        holding.recv().unwrap();
+
+        let (problem, device) = ending(&shared);
+        assert!(problem.is_some_and(|problem| problem.to_string() == "lost"));
+        assert!(Arc::ptr_eq(&device, &gpu));
+        assert!(!shared.settled(), "a window the presenter holds is still being drawn");
+
+        ended.send(()).unwrap();
+        presenter.join().unwrap();
+        assert!(shared.settled(), "a window with no surface has nothing to draw");
+    }
 
     #[test]
     fn a_failure_that_lasts_is_reported_once_and_tried_again() {

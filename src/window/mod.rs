@@ -885,16 +885,16 @@ fn resized(state: &mut State, size: PhysicalSize<u32>) {
     state.size = size;
     state.happened(WindowEvent::Resized(size));
     let mut screen = state.shared.screen();
-    let gpu = Arc::clone(&screen.gpu);
+    let gpu = state.shared.device();
     if let Some(surface) = &mut screen.surface
         && let Err(problem) = surface.resize(&gpu, size.width, size.height)
     {
-        screen.problem = Some(problem.into());
+        *state.shared.problem() = Some(problem.into());
     }
     if let Some(showing) = &screen.showing {
         match showing.plan.get().resized(&gpu, size) {
             Ok(plan) => showing.plan.set(plan),
-            Err(problem) => screen.problem = Some(problem.into()),
+            Err(problem) => *state.shared.problem() = Some(problem.into()),
         }
     }
     screen.stale = true;
@@ -973,15 +973,15 @@ pub fn open(gpu: &Arc<Gpu>, desc: &WindowDesc) -> Result<Window, WindowError> {
         let shared = Arc::new(Shared {
             screen: Mutex::new(Screen {
                 surface: Some(surface),
-                gpu: Arc::clone(gpu),
                 showing: None,
-                problem: None,
                 drawn: 0,
                 stale: false,
                 frames: 0,
                 failing: false,
                 waits: desc.present == PresentMode::Vsync,
             }),
+            device: Mutex::new(Arc::clone(gpu)),
+            problem: Mutex::default(),
             incoming: Mutex::default(),
         });
         presenter::serve(&shared);
@@ -1168,10 +1168,10 @@ impl System {
             return Ok(None);
         };
         let mut screen = state.shared.screen();
-        if !Arc::ptr_eq(&screen.gpu, gpu) {
+        let before = state.shared.device();
+        if !Arc::ptr_eq(&before, gpu) {
             let format = screen.surface.as_ref().map(Surface::format);
             let (width, height, present) = (state.size.width, state.size.height, state.present);
-            let before = Arc::clone(&screen.gpu);
             let replaced = replace(
                 &mut screen.surface,
                 || gpu.surface(raw.clone(), width, height, format, present),
@@ -1180,7 +1180,7 @@ impl System {
             // Either way the surface is new and has drawn nothing yet.
             screen.stale = true;
             replaced?;
-            screen.gpu = Arc::clone(gpu);
+            *state.shared.device.lock().unwrap_or_else(PoisonError::into_inner) = Arc::clone(gpu);
             screen.showing = None;
             state.shared.arrive(Incoming::Hide);
         }
@@ -1261,12 +1261,12 @@ pub fn present() -> Result<(), Vec<(String, WindowError)>> {
     let mut devices: Vec<(String, Arc<Gpu>)> = Vec::new();
     for state in open_states() {
         let state = state.borrow();
-        let mut screen = state.shared.screen();
-        if let Some(problem) = screen.problem.take() {
+        let (problem, device) = presenter::ending(&state.shared);
+        if let Some(problem) = problem {
             failures.push((state.title.clone(), problem));
         }
-        if !devices.iter().any(|(_, gpu)| Arc::ptr_eq(gpu, &screen.gpu)) {
-            devices.push((state.title.clone(), Arc::clone(&screen.gpu)));
+        if !devices.iter().any(|(_, gpu)| Arc::ptr_eq(gpu, &device)) {
+            devices.push((state.title.clone(), device));
         }
     }
     // What the frame changed, all of it, before the presenter draws it.
@@ -1447,7 +1447,7 @@ impl Window {
         let showing = self.prepared(showing)?;
         let state = self.state.borrow();
         let shared = Arc::clone(&state.shared);
-        let gpu = Arc::clone(&shared.screen().gpu);
+        let gpu = shared.device();
         gpu.defer(0, move |_| {
             shared.arrive(Incoming::Show(Box::new(showing)));
             Ok(())
@@ -1462,7 +1462,7 @@ impl Window {
     /// No room before the next commit.
     pub fn hide_later(&self) -> Result<(), WindowError> {
         let shared = Arc::clone(&self.state.borrow().shared);
-        let gpu = Arc::clone(&shared.screen().gpu);
+        let gpu = shared.device();
         gpu.defer(0, move |_| {
             shared.arrive(Incoming::Hide);
             Ok(())
@@ -1478,7 +1478,7 @@ impl Window {
             return Err(WindowError::Invalid(format!("the window {} is closed", state.title)));
         };
         let format = surface.format();
-        let gpu = Arc::clone(&screen.gpu);
+        let gpu = state.shared.device();
         drop(screen);
         let plan = showing.plan.get();
         let graph = plan.graph();
