@@ -298,46 +298,29 @@ max_catch_up = 4       # most steps one frame runs, 1 to 100; 5 if unsaid
 
 `fixedUpdate` is handed the step in seconds, so nothing needs to hard-code it. `update` and `lateUpdate` get the real time since the last frame, however long that was.
 
-**The pace is the run's.** How often frames run (input, `update`, the event drain, the commit a window draws) is up to whoever runs the application, with `--pace`, and changes nothing about the fixed step:
+**The pace is the application's to ask for and the run's to overrule.** How often frames run (input, `update`, the event drain, the commit a window draws) changes nothing about the fixed step. Three paces:
 
-| `--pace` | Frames |
+| Pace | Frames |
 | --- | --- |
-| `display` | As the application's windows' displays take them. The default for a target that declares `gpu.window`. |
-| a number, 1 to 1000 | That many a second, on a timer. The default for one that doesn't is its `fixed_rate`, so a headless application's frames and steps line up. |
+| `display` | As the pacing window's display takes them. The default for a target that declares `gpu.window`. |
+| a number, 1 to 1000 | At most that many a second, on a timer. The default for one that doesn't is its `fixed_rate`, so a headless application's frames and steps line up. |
 | `unpaced` | As fast as they finish. For benchmarks and tooling. |
 
-Paced by the display, the host waits after each frame for the windows to draw what it changed. A window that waits on its display (the default; `vsync = false` opts out) can't take a new image until the display has shown one, so when it draws, the display's refresh is the pace, and on a 144 Hz monitor that's 144 frames a second. When nothing waits on a display (the scene didn't change, every window has `vsync = false`, or the window can't draw because it's minimized or covered), the next frame begins one refresh after the last did: a refresh of the fastest display any of its windows is on, or one fixed step when no window is open or the window system doesn't say how fast its display is. A window that can't draw holds a frame back at most two refreshes, so a minimized application keeps running, at half its pace or so, instead of stopping or spinning. With several windows on displays of different speeds, frames follow the slowest window that is drawing.
+Three parties can say which, and the last one wins:
 
-Pacing never makes a window draw. A frame that changed nothing commits nothing, and its windows present nothing new, at any pace.
+1. The target's manifest, with `pace = "display"`, `pace = "unpaced"`, or `pace = 144`. Without it, the default above.
+2. The application's code, at any time, with [`application.setPace`](@/docs/api/application.md#jess-application-setpace): a settings menu's frame limit. It takes effect at the end of the frame that asks, and a restart forgets it.
+3. Whoever runs it, with `--pace` (or an embedder, through `Application::pacing`). This overrides the other two for as long as it holds; what the code asks for meanwhile is kept, and [`application.pace`](@/docs/api/application.md#jess-application-pace) reports both, so a settings menu can show the player's choice and say it's overridden.
 
-## The example
+A change of pace never loses or invents time: the next frame's deadline is counted from when the last one began, `update` still gets the real time since the last frame, and the fixed step's accumulated time carries over. Changing it in a burst of frames does nothing worse than change it once.
 
-`tests/lua/application` in the jess repository is a small application you can copy: four packages and a workspace that holds them.
+**Display pacing follows one window.** That is the pacing window: the one that asked with [`window:paces(true)`](@/docs/api/gpu.md#windows), or else the first of the application's windows to open. After a frame that gave it something to draw, the host waits for it to present that, and a window that waits on its display (vsync, the default) can't take a new image until the display has shown one, so the display's refresh is the pace; on a 144 Hz monitor that's 144 frames a second. The wait is never shorter than half a refresh, so a driver whose presenting doesn't wait can't turn it into a spin, and never longer than two, so a minimized or covered pacing window slows the application rather than stopping it. A frame that gave the pacing window nothing to draw is followed a refresh after it began. No other window is waited on, and each window draws on a thread of its own, so a second window that can't draw, or sits on a slower display, holds nothing up.
 
-- `org.example.journal` exports `@example/journal`, which the others write what they did to;
-- `org.example.inventory` provides `game.inventory`: light armor, real weights;
-- `org.example.armor` depends on the inventory and overrides `game.inventory`: heavy armor, keeping the weights through `interfaceOverride`;
-- `org.example.game` is the application: a director that looks the inventory up, reports a death on frame 2 and stops on frame 4, and a scoreboard that answers each death with a `gameOver` event.
+**Vsync is each window's, and can change while it is open.** [`window:vsync(false)`](@/docs/api/gpu.md#windows) has the window present without waiting for its display, from its next image on; the surface is reconfigured in place, and the window isn't made again. It returns what is in effect: a surface that offers only waiting (some compositors do) still waits, and says `true`. Vsync and the pace are separate settings: with the pacing window's vsync off, nothing waits on a display, and display pacing becomes a timer at the display's refresh (or the fixed step, where the window system doesn't say how fast its display is). `application.pace().effective` says which: `'display'`, or the rate the timer runs at.
 
-```text
-$ jess workspace --workspace tests/lua/application run org.example.game:game -- print
-armor replaces light armor, keeping its weights
-entry: heavy helm, weighs 5
-director load
-inventory startup
-director startup: heavy cuirass, weighs 30
-director update 1 (number)
-director update 2 (number)
-inventory drops Rowan's loot
-armor dents for Rowan
-scoreboard: death 1, Rowan on frame 2
-director update 3 (number)
-director game over: Rowan died
-director update 4 (number)
-director shutdown
-```
+**Frame statistics cost nothing to ask for.** [`application.frameStats()`](@/docs/api/application.md#jess-application-framestats) reports frames begun, the last frame's delta, its work, how long the host waited before it, the measured rate, the fixed step, and `interpolation`, how far the domain's time is into the next fixed step (0 to 1), for drawing between the last two. It reads what the host recorded and waits on nothing.
 
-Read it top to bottom and it's the whole contract: the override ran once, during load; the entry saw the composed interface; `load` before `startup`; three subscribers to `playerDied` in load order; the scoreboard's `gameOver` a frame later; shutdown last. Pack the four packages into JPKs and run `game.jpk` with `--package-path` pointing at them, and the output is the same, byte for byte.
+Pacing never makes a window draw. A frame that changed nothing commits nothing, and its windows present nothing new, at any pace. [Graphics settings](@/docs/cookbook/graphics-settings.md) is a whole application that changes its pace and vsync from the keyboard.
 
 ## A window
 
@@ -653,6 +636,8 @@ game.stop()?;
 `package::launch_with` takes `LaunchOptions`; its `input` is the application's input source (`InputSource::Synthetic` for tests and replays, a platform backend for devices). With one, every frame polls it first and runs the `input` handlers on the action events it produced; `application.host().input()` is the service, for the host to configure.
 
 `frame` is the domain's frame alone. `Application::step(delta, report)` is the whole of one as the command line runs it: the window system's news first (and, for each window something happened to, the named event [`jess.window`](@/docs/api/events.md#jess-window)), then the frame, then the frame's changes to what the GPU draws committed together and the windows told to draw them, with what a window or the GPU refused passed to `report`. A host with windows steps; one without can do either.
+
+A host that drives its own frames paces them too. `Application::pacing()` is the application's [`Pacing`](#frames-and-steps): `set_override` is the embedder's `--pace`, authoritative and changeable at any time, `chosen` is the pace to follow, and `began` and `ended` record each frame for `frameStats`. The decision itself is `jess::host::pacing::Scheduler`, which reads no clock and never waits: given when a frame began and when its work ended, it says what to wait for (nothing, an instant, or the pacing window presenting, between two instants), so a driver that blocks, like the command line's, waits for that, and one the platform calls back once a frame (a browser's animation frame, Android's choreographer) asks the same questions and schedules its next callback instead. `jess::window::pacer()` is the pacing window, whose `frames`, `pending`, and `wait_presented` never wait on any other.
 
 `Application::restart` loads everything again in a new generation: a new runtime, new module tables, new handlers, new interfaces, and queued events for the old generation dropped. Two applications are two domains; they share nothing, not even an interface id.
 

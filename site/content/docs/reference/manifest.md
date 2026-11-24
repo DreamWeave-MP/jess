@@ -123,6 +123,7 @@ kind = "application"
 entry = "src/main.jsl"
 capabilities = ["filesystem.read", "worker.spawn"]
 fixed_rate = 30
+pace = "display"
 ```
 
 | Key | Required | Is |
@@ -133,6 +134,7 @@ fixed_rate = 30
 | `command` | no | Command targets only: the name a [workspace](@/docs/cli/workspace.md) runs it by. A lowercase word, unique across the manifest's targets: `jess.toml: command 'greet' is declared by both targets 'a' and 'b'`. On an application target: `jess.toml [targets.game] command is only valid when kind = "command"`. |
 | `fixed_rate` | no | Application targets only: how many `fixedUpdate` steps a second it runs, a whole number from 1 to 1000; 60 if unsaid. The step is part of what the application's simulation means, so it's the application's to say; how often its frames run is the run's (`--pace`, see [Frames and steps](@/docs/scripting/applications.md#frames-and-steps)). Wrong: `jess.toml [targets.game] fixed_rate must be a whole number from 1 to 1000`; on a command target: `jess.toml [targets.greet] fixed_rate is only valid when kind = "application"`. A jess from before this key refuses a manifest that has it. |
 | `max_catch_up` | no | Application targets only: the most fixed steps one frame runs after a stall, a whole number from 1 to 100; 5 if unsaid. Time past that is dropped, not owed. Refused as `fixed_rate` is: `jess.toml [targets.game] max_catch_up must be a whole number from 1 to 100`. |
+| `pace` | no | Application targets only: how often its frames run unless its code ([`application.setPace`](@/docs/api/application.md#jess-application-setpace)) or whoever runs it (`--pace`) says otherwise: `"display"`, `"unpaced"`, or a whole number of frames a second from 1 to 1000. Unsaid, `"display"` for a target that declares `gpu.window` and its `fixed_rate` for one that doesn't. See [Frames and steps](@/docs/scripting/applications.md#frames-and-steps). Wrong: `jess.toml [targets.game] pace must be "display", "unpaced", or a whole number of frames a second from 1 to 1000`; on a command target: `jess.toml [targets.greet] pace is only valid when kind = "application"`. |
 
 ## `[managed.<id>]`
 

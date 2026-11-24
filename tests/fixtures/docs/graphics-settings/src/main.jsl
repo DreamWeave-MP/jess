@@ -1,0 +1,2 @@
+--!strict
+print 'V: vsync, 1: display, 2: 30 a second, 3: 120 a second, 4: unpaced, S: stats'

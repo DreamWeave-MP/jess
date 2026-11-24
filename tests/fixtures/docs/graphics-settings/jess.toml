@@ -1,0 +1,17 @@
+manifest_version = 1
+
+[package]
+id = "com.example.settings"
+version = "0.1.0"
+jess_api = "1"
+include = ["src"]
+default_target = "settings"
+
+[managed.settings]
+module = "src/settings.jsl"
+
+[targets.settings]
+kind = "application"
+entry = "src/main.jsl"
+capabilities = ["gpu.device", "gpu.window"]
+pace = "display"

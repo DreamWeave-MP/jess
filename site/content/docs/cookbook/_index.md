@@ -22,3 +22,4 @@ These recipes start with a job and point to the reference for its full contract.
 - [Mix audio offline](@/docs/cookbook/offline-audio.md): render sample frames without an audio device.
 - [Compose two packages](@/docs/cookbook/multi-package.md): run a command over a library and pack both into a workspace.
 - [Open a window](@/docs/cookbook/window.md): present a static pass and handle its close event.
+- [Graphics settings](@/docs/cookbook/graphics-settings.md): change the frame limit and vsync while the application runs.
