@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use super::gpu;
 
-use jess::gpu::{ColorState, PipelineState, PipelineStats};
+use jess::gpu::{ColorState, Compare, DepthBias, DepthState, PipelineState, PipelineStats};
 use jess::render::TextureFormat;
 use jess::shader::{Program, ProgramBuilder, Type};
 
@@ -51,4 +51,39 @@ fn the_same_program_and_state_compile_once() {
         PipelineStats { compiled: 4, reused: 1 },
         "nothing held it, so it was compiled again"
     );
+}
+
+/// Coverage and bias are state like the rest: pipelines that differ only there are two, and a
+/// bias of the same numbers is the same pipeline, a zero of either sign being zero.
+#[test]
+fn coverage_and_bias_tell_pipelines_apart() {
+    let Some(gpu) = gpu("coverage_and_bias_tell_pipelines_apart") else {
+        return;
+    };
+    let state = |alpha_to_coverage, slope_scale| PipelineState {
+        colors: vec![ColorState::new(TextureFormat::Rgba8Unorm)],
+        depth: Some(DepthState {
+            format: TextureFormat::Depth32Float,
+            compare: Compare::Less,
+            write: true,
+            bias: DepthBias {
+                slope_scale,
+                ..DepthBias::default()
+            },
+        }),
+        multisampled: true,
+        alpha_to_coverage,
+        ..PipelineState::default()
+    };
+    let program = point(1.0);
+    let plain = gpu.cached_render_pipeline(&program, &state(false, 0.0)).unwrap();
+    let covering = gpu.cached_render_pipeline(&program, &state(true, 0.0)).unwrap();
+    let biased = gpu.cached_render_pipeline(&program, &state(false, 1.5)).unwrap();
+    assert!(!Arc::ptr_eq(&plain, &covering) && !Arc::ptr_eq(&plain, &biased));
+    assert_eq!(gpu.pipeline_stats(), PipelineStats { compiled: 3, reused: 0 });
+
+    let again = gpu.cached_render_pipeline(&program, &state(false, 1.5)).unwrap();
+    let negative = gpu.cached_render_pipeline(&program, &state(false, -0.0)).unwrap();
+    assert!(Arc::ptr_eq(&biased, &again) && Arc::ptr_eq(&plain, &negative));
+    assert_eq!(gpu.pipeline_stats(), PipelineStats { compiled: 3, reused: 2 });
 }

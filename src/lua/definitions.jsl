@@ -783,18 +783,37 @@ end
 --- How a pipeline combines a fragment's color with what its target holds.
 export type GpuBlend = 'replace' | 'alpha' | 'premultiplied' | 'additive'
 
+--- What a pipeline adds to a triangle's depth before the depth test: `constant` of the depth
+--- format's smallest steps, a whole number, plus `slopeScale` times the triangle's depth slope,
+--- the two limited by `clamp` (above 0 a bias moving a depth further, below 0 one bringing it
+--- nearer; 0 for no limit, and anything else needs a device with `depthBiasClamp`). Each is 0 by
+--- default, and only triangles are biased.
+export type GpuDepthBias = {
+  constant: number?,
+  slopeScale: number?,
+  clamp: number?,
+}
+
 --- A render pipeline's fixed-function state: a color target per fragment output (a format's name,
 --- or one with a `blend`), the depth target it tests against (a format's name tests `less` and
 --- writes), and how it assembles and culls primitives. A triangle facing the camera runs
 --- counter-clockwise unless `clockwise` says otherwise. A `multisampled` pipeline draws into
---- targets of 4 samples a texel.
+--- targets of 4 samples a texel, and with `alphaToCoverage` the alpha of its first color output
+--- is how many of them a fragment covers. A depth target's `bias` moves a triangle's depth before
+--- the test.
 export type GpuPipelineState = {
   colors: { GpuTextureFormat | { format: GpuTextureFormat, blend: GpuBlend? } },
-  depth: (GpuTextureFormat | { format: GpuTextureFormat, compare: GpuCompare?, write: boolean? })?,
+  depth: (GpuTextureFormat | {
+    format: GpuTextureFormat,
+    compare: GpuCompare?,
+    write: boolean?,
+    bias: GpuDepthBias?,
+  })?,
   topology: ('triangles' | 'triangleStrip' | 'lines' | 'lineStrip' | 'points')?,
   cull: ('none' | 'front' | 'back')?,
   clockwise: boolean?,
   multisampled: boolean?,
+  alphaToCoverage: boolean?,
 }
 
 --- A level of a layer of a texture a pass draws into: a texture alone keeps what it holds, and a
@@ -1230,6 +1249,7 @@ declare extern type GpuDevice with
   timestamps: boolean
   indirectFirstInstance: boolean
   baseVertex: boolean
+  depthBiasClamp: boolean
   live: { buffers: number, textures: number, samplers: number, bindGroups: number, pipelines: number }
   made: { buffers: number, textures: number, samplers: number, bindGroups: number, pipelines: number }
   memory: { buffers: number, textures: number }
@@ -2215,6 +2235,7 @@ The runtime's device. The first call asks the backend for an adapter and, if tha
 | `timestamps` | Whether the device times passes, which `GpuPlan:timings` reports. |
 | `indirectFirstInstance` | Whether an indirect draw may start at an instance other than 0: nearly every Vulkan, Metal, and Direct3D 12 device can, OpenGL can from 4.2 with `ARB_shader_draw_parameters`, and OpenGL ES can't. Where it can't, a pass refuses a draw whose arguments a script wrote to start past instance 0; arguments the GPU wrote (a storage buffer, or a buffer a plan's pass writes) can't be read first, and such a draw is dropped or starts at instance 0, as the driver likes. Binding the instances from `instancesOffset` does the same job on every device. |
 | `baseVertex` | Whether an indexed draw may give a `baseVertex`: everything but OpenGL ES before 3.2. Where it can't, a draw that gives one is refused. |
+| `depthBiasClamp` | Whether a pipeline's [depth bias](#depth-bias) may have a `clamp`: nearly every Vulkan, Metal, and Direct3D 12 device, and no OpenGL one. Where it can't, a pipeline that gives one is refused. |
 | `live` | How many of each the device has alive: made, and not yet let go of. A count that only grows is a leak. |
 | `memory` | How many bytes its live `buffers` and `textures` hold: what was asked of the GPU (every level, layer, slice, and sample of a texture; `depth24Plus` as the four bytes a texel every device gives it), not what a driver spends on it. A plan's targets and buffers count; a window's own images, the buffer a plan's timings are read from, and the staging a read uses don't. |
 | `made` | How many of each the device ever made, let go of or not. A count that grows every frame of a scene that doesn't change is churn: a run of a plan makes nothing the run before it made. |
@@ -2383,15 +2404,57 @@ A [shader program](@/docs/api/shader.md), lowered, validated by the backend, and
 | Field | Holds |
 | --- | --- |
 | `colors` | A color target per fragment output, by location, each of a format the output fits. `blend` is `replace` (the default), `alpha`, `premultiplied`, or `additive`; an integer target only replaces. |
-| `depth` | The depth target it tests against. A format's name alone tests `less` and writes; `compare` is a `GpuCompare` and `write` a boolean. |
+| `depth` | The depth target it tests against. A format's name alone tests `less` and writes; `compare` is a `GpuCompare`, `write` a boolean, and `bias` a [depth bias](#depth-bias). |
 | `topology` | `triangles` (the default), `triangleStrip`, `lines`, `lineStrip`, or `points`. |
 | `cull` | Which triangles it throws away: `none` (the default), `front`, or `back`. |
 | `clockwise` | Whether a triangle running clockwise faces the camera; by default a counter-clockwise one does. |
 | `multisampled` | Whether it draws into targets of 4 samples a texel; single-sample ones by default. A pass's targets and its pipelines agree on it. |
+| `alphaToCoverage` | Whether a fragment's alpha is how many of a texel's samples it covers ([below](#alpha-to-coverage)); `false` by default, and only for a `multisampled` pipeline. |
 
 The program's own layout decides everything else: its bind groups, its vertex buffers' strides and attributes. A pipeline can't disagree with its program.
 
 The device compiles a pipeline once. Asking again for a program that lowers to the same shader, with the same state, gives back the pipeline it already has, for as long as anything holds it; `device.pipelines` counts how often it compiled and how often it reused one. Writing a material's buffer changes what a pipeline draws, not the pipeline, so it compiles nothing.
+
+### Alpha to coverage
+
+A cut-out (a leaf, a fence, a strand of hair) is a rectangle whose texture says where it isn't. Discarding the fragments it isn't leaves an edge multisampling does nothing for, since every sample of a texel gets the same answer, and blending the edge instead means sorting everything behind it and writing no depth. With `alphaToCoverage`, the alpha of the fragment's first color output decides how many of the texel's 4 samples it covers: none at 0, all of them at 1, some in between. Each covered sample is an ordinary opaque one, depth written and all, so the edge is antialiased when the target resolves and nothing is sorted.
+
+```luau
+local leaves = device:pipeline(program, {
+  colors = { 'rgba8Unorm' },
+  depth = 'depth32Float',
+  multisampled = true,
+  alphaToCoverage = true,
+})
+```
+
+It needs samples to cover and an alpha to read, and a pipeline with neither says so: `alpha-to-coverage needs more than one sample a texel to cover: make the pipeline multisampled`. The first color target is a four-channel format that isn't an integer one. The alpha is still written to the target as a color's alpha is, and how many samples a given alpha covers between 0 and 1 is the device's to decide.
+
+### Depth bias
+
+{{ api_symbol(value="GpuDepthBias") }}
+
+| Field | Holds |
+| --- | --- |
+| `constant` | How many of the depth format's smallest steps are added to a triangle's depth: a whole number, negative to bring it nearer; 0 by default. |
+| `slopeScale` | How many times the triangle's depth slope is added, so a surface seen edge-on moves further than one seen face-on; 0 by default. |
+| `clamp` | The most the two may add: above 0, a limit on a bias that moves a depth further; below 0, on one that brings it nearer; 0, the default, for no limit. Anything else needs a device with `depthBiasClamp`. |
+
+Two things need a triangle's depth to be other than where its vertices put it. A shadow map compared against the surface it was drawn from shadows that surface in stripes unless the map was drawn a little further away, and a surface drawn in the plane of another (a decal, an outline) wins the depth test texel by texel, as rounding falls, unless it is drawn a little nearer. The bias is added before the test and to what the test writes.
+
+```luau
+local caster = device:pipeline(program, {
+  colors = {},
+  depth = { format = 'depth32Float', bias = { constant = 2, slopeScale = 1.5 } },
+})
+
+local decal = device:pipeline(program, {
+  colors = { 'rgba8Unorm' },
+  depth = { format = 'depth32Float', compare = 'lessEqual', write = false, bias = { constant = -8 } },
+})
+```
+
+Only triangles are biased, so a pipeline of lines or points with one is refused: `the depth bias moves triangles, and the pipeline draws lines: leave it out of a pipeline of lines or points`. So is a `clamp` on a device that doesn't clamp one.
 
 ## GpuPipeline
 

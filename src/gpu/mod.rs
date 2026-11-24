@@ -42,7 +42,7 @@ pub use compute::ComputePipeline;
 pub use draw_set::{DrawRange, DrawSet, DrawSetDesc, DrawSets};
 pub use live::{LiveBytes, LiveCounts};
 pub use pass::{Draw, IndexFormat, Resolve, Target};
-pub use pipeline::{Blend, ColorState, Cull, DepthState, PipelineState, RenderPipeline, Topology};
+pub use pipeline::{Blend, ColorState, Cull, DepthBias, DepthState, PipelineState, RenderPipeline, Topology};
 pub(crate) use pipeline::{Group, Slot};
 pub use plan::{Import, PassStats, PassTiming, Plan, PlanBinding, PlanGroup, SharedPlan, Work};
 pub use read::PendingRead;
@@ -142,6 +142,7 @@ impl Power {
 
 /// The adapter a [`Gpu`] runs on, and what it allows.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)] // Capabilities, each independent of the others.
 pub struct GpuInfo {
     /// The adapter's name, as its driver gives it.
     pub name: String,
@@ -168,6 +169,9 @@ pub struct GpuInfo {
     /// Whether an indexed draw may add a base vertex to its indices: everything but OpenGL ES
     /// before 3.2. Where it can't, a draw that gives one is refused.
     pub base_vertex: bool,
+    /// Whether a pipeline's depth bias may be clamped: nearly every Vulkan, Metal, and Direct3D
+    /// 12 device, and no OpenGL one. Where it can't, a pipeline whose bias has a clamp is refused.
+    pub depth_bias_clamp: bool,
 }
 
 /// The process's wgpu instances: one of the primary backends (Vulkan, Metal, Direct3D 12), and one
@@ -243,8 +247,8 @@ impl Gpu {
     }
 
     /// As [`Gpu::headless`], on the same adapter, with everything a device may lack left off: it
-    /// times no pass, starts no indirect draw past instance 0, and adds no base vertex to an
-    /// index. Tests open it to meet, on any machine, what a script meets on a device that can't.
+    /// times no pass, starts no indirect draw past instance 0, adds no base vertex to an index,
+    /// and clamps no depth bias. Tests open it to meet, on any machine, what a script meets on a device that can't.
     ///
     /// # Errors
     ///
@@ -317,6 +321,11 @@ impl Gpu {
                     .get_downlevel_capabilities()
                     .flags
                     .contains(wgpu::DownlevelFlags::BASE_VERTEX),
+            depth_bias_clamp: !plain
+                && adapter
+                    .get_downlevel_capabilities()
+                    .flags
+                    .contains(wgpu::DownlevelFlags::DEPTH_BIAS_CLAMP),
         };
         Ok(Gpu {
             instance,

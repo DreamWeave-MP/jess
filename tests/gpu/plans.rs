@@ -7,8 +7,9 @@ use std::sync::Arc;
 use super::gpu;
 
 use jess::gpu::{
-    Binding, Buffer, BufferUsage, ColorState, Compare, ComputePipeline, DepthState, DrawRange, DrawSet, DrawSetDesc,
-    DrawSets, Gpu, Import, PipelineState, Plan, PlanBinding, PlanGroup, RenderPipeline, TextureDesc, TextureUsage, Work,
+    Binding, Buffer, BufferUsage, ColorState, Compare, ComputePipeline, DepthBias, DepthState, DrawRange, DrawSet,
+    DrawSetDesc, DrawSets, Gpu, Import, PipelineState, Plan, PlanBinding, PlanGroup, RenderPipeline, TextureDesc,
+    TextureUsage, Work,
 };
 use jess::render::{
     ClearValue, Extent, LoadOp, Pass, PassKind, PassMetadata, PassOutput, ReadUsage, RenderGraph, StoreOp, TargetSize,
@@ -89,6 +90,7 @@ pub(super) fn lit(gpu: &Gpu, write: bool) -> Arc<RenderPipeline> {
             format: TextureFormat::Depth32Float,
             compare: Compare::Less,
             write,
+            bias: DepthBias::default(),
         }),
         ..PipelineState::default()
     };

@@ -434,7 +434,7 @@ fn a_script_dispatches_a_compute_program() {
 
 /// Each mistake [`pipeline_errors_name_the_mistake`] makes, and what its error says.
 #[cfg(feature = "gpu")]
-const PIPELINE_MISTAKES: [(&str, &str); 20] = [
+const PIPELINE_MISTAKES: [(&str, &str); 30] = [
     (
         "device:pipeline('shader')",
         "GpuDevice:pipeline takes a shader program, not string",
@@ -515,6 +515,46 @@ const PIPELINE_MISTAKES: [(&str, &str); 20] = [
         "device:dispatch({ pipeline = computing, workgroups = { 1, 1, 1, 1 } })",
         "GpuDevice:dispatch: workgroups is a count, or one to three of them, not 4",
     ),
+    (
+        "device:pipeline(draw, { colors = { 'rgba8Unorm' }, alphaToCoverage = 1 })",
+        "GpuDevice:pipeline: alphaToCoverage is a boolean, not 1",
+    ),
+    (
+        "device:pipeline(draw, { colors = { 'rgba8Unorm' }, alphaToCoverage = true })",
+        "GpuDevice:pipeline: alpha-to-coverage needs more than one sample a texel to cover: make the pipeline multisampled",
+    ),
+    (
+        "device:pipeline(draw, { colors = { 'rg8Unorm' }, multisampled = true, alphaToCoverage = true })",
+        "alpha-to-coverage reads the alpha of color output 0, and a Rg8Unorm target has no alpha it can read",
+    ),
+    (
+        "device:pipeline(draw, { colors = { 'rgba8Unorm' }, depth = { format = 'depth32Float', bias = 2 } })",
+        "GpuDevice:pipeline: the depth bias is a table, not 2",
+    ),
+    (
+        "device:pipeline(draw, { colors = { 'rgba8Unorm' }, depth = { format = 'depth32Float', bias = { slope = 2 } } })",
+        "unknown GpuDevice:pipeline option 'slope'",
+    ),
+    (
+        "device:pipeline(draw, { colors = { 'rgba8Unorm' }, depth = { format = 'depth32Float', bias = { constant = 0.5 } } })",
+        "GpuDevice:pipeline: the depth bias's constant is a whole number from -2147483648 to 2147483647, not 0.5",
+    ),
+    (
+        "device:pipeline(draw, { colors = { 'rgba8Unorm' }, depth = { format = 'depth32Float', bias = { slopeScale = 'steep' } } })",
+        "GpuDevice:pipeline: the depth bias's slopeScale is a number, not \"steep\"",
+    ),
+    (
+        "device:pipeline(draw, { colors = { 'rgba8Unorm' }, depth = { format = 'depth32Float', bias = { clamp = 1e39, constant = 1 } } })",
+        "the depth bias has a slope scale of 0 and a clamp of inf: expected finite numbers",
+    ),
+    (
+        "device:pipeline(draw, { colors = { 'rgba8Unorm' }, depth = { format = 'depth32Float', bias = { slopeScale = -math.huge } } })",
+        "GpuDevice:pipeline: the depth bias's slopeScale is a number, not -inf",
+    ),
+    (
+        "device:pipeline(draw, { colors = { 'rgba8Unorm' }, topology = 'lineStrip', depth = { format = 'depth32Float', bias = { constant = 1 } } })",
+        "the depth bias moves triangles, and the pipeline draws lines: leave it out of a pipeline of lines or points",
+    ),
 ];
 
 /// What a script gets wrong about pipelines, bind groups, passes, and dispatches is named.
@@ -547,6 +587,98 @@ fn pipeline_errors_name_the_mistake() {
         let error = runtime.exec(&format!("{prelude}\n{script}")).unwrap_err().to_string();
         assert!(error.contains(expected), "{script}: {error}");
     }
+}
+
+/// A script's pipeline covers samples by alpha and biases depth: half-transparent red over blue
+/// resolves to some of each, nothing at all is drawn at alpha 0, and of two surfaces at one depth
+/// the biased one wins.
+#[cfg(feature = "gpu")]
+#[test]
+fn a_script_covers_samples_by_alpha_and_biases_depth() {
+    let Some(runtime) = gpu_runtime("a_script_covers_samples_by_alpha_and_biases_depth") else {
+        return;
+    };
+    runtime
+        .exec(
+            r"
+            local shader = require('@jess/shader')
+            local device = jess.gpu.device()
+            assert(type(device.depthBiasClamp) == 'boolean')
+            local flat = shader.program({
+              material = { color = shader.vec4 },
+              vertex = function(input)
+                local index = input.builtin.vertexIndex
+                local corner = shader.vec2(
+                  shader.float(shader.bitAnd(shader.shiftLeft(index, shader.uint(1)), shader.uint(2))),
+                  shader.float(shader.bitAnd(index, shader.uint(2)))
+                )
+                return { position = shader.vec4(corner * 2 - 1, 0.5, 1) }
+              end,
+              fragment = function(input) return input.material.color end,
+            })
+            local function draw(pipeline, values: { number })
+              local bytes = buffer.create(16)
+              for index, value in values do
+                buffer.writef32(bytes, (index - 1) * 4, value)
+              end
+              local block = device:buffer(16, 'uniform')
+              block:write(0, bytes)
+              return { pipeline = pipeline, material = pipeline:bind('material', { [0] = block }), count = 3 }
+            end
+            local function image(format: string, samples: number?)
+              return device:texture({ width = 4, height = 4, format = format, usage = 'target', samples = samples })
+            end
+
+            local covering = device:pipeline(flat, {
+              colors = { 'rgba8Unorm' },
+              multisampled = true,
+              alphaToCoverage = true,
+            })
+            local function resolved(alpha: number)
+              local screen = image('rgba8Unorm')
+              device:render({
+                colors = { { texture = image('rgba8Unorm', 4), clear = { 0, 0, 1, 1 }, store = false, resolve = screen } },
+                draws = { draw(covering, { 1, 0, 0, alpha }) },
+              })
+              local pixels = screen:read()
+              return buffer.readu8(pixels, 0), buffer.readu8(pixels, 2)
+            end
+            local red, blue = resolved(0)
+            assert(red == 0 and blue == 255, `alpha 0 covers nothing, not {red} red and {blue} blue`)
+            red, blue = resolved(1)
+            assert(red == 255 and blue == 0, `alpha 1 covers everything, not {red} red and {blue} blue`)
+            red, blue = resolved(0.5)
+            assert(red > 0 and red < 255 and blue > 0 and blue < 255, `{red} red and {blue} blue`)
+
+            local function tested(bias)
+              return device:pipeline(flat, {
+                colors = { 'rgba8Unorm' },
+                depth = { format = 'depth32Float', bias = bias },
+              })
+            end
+            local plain, nearer = tested(nil), tested({ constant = -1024, slopeScale = -1 })
+            local function winner(over)
+              local screen = image('rgba8Unorm')
+              device:render({
+                colors = { { texture = screen, clear = { 0, 0, 0, 1 } } },
+                depth = { texture = image('depth32Float'), clear = 1 },
+                draws = { draw(plain, { 1, 0, 0, 1 }), draw(over, { 0, 1, 0, 1 }) },
+              })
+              return buffer.readu32(screen:read(), 0)
+            end
+            assert(winner(plain) == 0xff0000ff, 'the first drawn keeps a depth it ties for')
+            assert(winner(nearer) == 0xff00ff00, 'the nearer one wins')
+
+            -- A bias of nothing is the state without one, and a bias is part of the state.
+            local before = device.pipelines
+            assert(tested({}) ~= nil and tested({ constant = 0, clamp = 0 }) ~= nil)
+            assert(tested({ slopeScale = -1, constant = -1024 }) ~= nil)
+            local after = device.pipelines
+            assert(after.compiled == before.compiled and after.reused == before.reused + 3)
+            assert(tostring(nearer) == 'GpuPipeline(render, 1 color target, depth)', tostring(nearer))
+        ",
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
 }
 
 /// What `a_script_keeps_draw_sets` runs first.
