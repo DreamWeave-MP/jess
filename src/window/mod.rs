@@ -557,6 +557,8 @@ struct State {
     closes: bool,
     key: Option<String>,
     present: PresentMode,
+    /// How long a refresh of the display it is on is, where the window system says.
+    refresh: Option<Duration>,
     /// How it holds the pointer.
     cursor: Cursor,
     /// Where the pointer last was in it, while it is over it.
@@ -579,6 +581,13 @@ impl Drop for State {
 impl State {
     fn happened(&mut self, event: WindowEvent) {
         happen(&mut self.events, event);
+    }
+
+    /// Asks the window system again how fast the display it is on is: it may be on another.
+    fn measure_refresh(&mut self) {
+        if let Some(raw) = &self.raw {
+            self.refresh = refresh_of(raw);
+        }
     }
 
     /// The pointer moved over it to `place`, or left it.
@@ -617,6 +626,15 @@ impl State {
         self.home = None;
         self.happened(WindowEvent::Cursor(self.cursor));
     }
+}
+
+/// How long a refresh of the display `raw` is on is, where the window system says: nothing for a
+/// rate outside 1 to 1000 a second, which is no display's.
+fn refresh_of(raw: &RawWindow) -> Option<Duration> {
+    let millihertz = raw.current_monitor()?.refresh_rate_millihertz()?;
+    (1_000..=1_000_000)
+        .contains(&millihertz)
+        .then(|| Duration::from_secs(1000) / millihertz)
 }
 
 /// Adds `event` to a window's `events`, the oldest going when there are [`EVENTS`].
@@ -739,6 +757,7 @@ impl ApplicationHandler for Handler<'_> {
         let number = u64::from(id);
         match event {
             RawEvent::Resized(size) => resized(&mut state.borrow_mut(), size),
+            RawEvent::Moved(_) => state.borrow_mut().measure_refresh(),
             RawEvent::ScaleFactorChanged { scale_factor, .. } => {
                 let mut state = state.borrow_mut();
                 state.scale = scale_factor;
@@ -854,6 +873,8 @@ impl ApplicationHandler for Handler<'_> {
 
 /// `state` at its new `size`: its surface, and the plan it shows, sized again.
 fn resized(state: &mut State, size: PhysicalSize<u32>) {
+    // Going fullscreen or back resizes it, and may change the display's mode.
+    state.measure_refresh();
     let size = Extent {
         width: size.width.max(1),
         height: size.height.max(1),
@@ -946,6 +967,7 @@ pub fn open(gpu: &Arc<Gpu>, desc: &WindowDesc) -> Result<Window, WindowError> {
             .ok_or_else(|| WindowError::System("the window system never opened the window".to_owned()))?
             .map_err(|problem| WindowError::System(format!("the window system refused the window: {problem}")))?;
         let size = raw.inner_size();
+        let refresh = refresh_of(&raw);
         let surface = gpu.surface(Arc::clone(&raw), size.width, size.height, desc.format, desc.present)?;
         let id = raw.id();
         let shared = Arc::new(Shared {
@@ -958,6 +980,7 @@ pub fn open(gpu: &Arc<Gpu>, desc: &WindowDesc) -> Result<Window, WindowError> {
                 stale: false,
                 frames: 0,
                 failing: false,
+                waits: desc.present == PresentMode::Vsync,
             }),
             incoming: Mutex::default(),
         });
@@ -976,6 +999,7 @@ pub fn open(gpu: &Arc<Gpu>, desc: &WindowDesc) -> Result<Window, WindowError> {
             closes: desc.closes,
             key: desc.key.clone(),
             present: desc.present,
+            refresh,
             cursor: Cursor::Normal,
             pointer: None,
             home: None,
@@ -1260,6 +1284,25 @@ pub fn present() -> Result<(), Vec<(String, WindowError)>> {
 pub fn wait_presented(timeout: Duration) {
     let shared: Vec<Arc<Shared>> = open_states().iter().map(|state| Arc::clone(&state.borrow().shared)).collect();
     presenter::wait(&shared, timeout);
+}
+
+/// How many frames the windows that wait on their display have presented, all together.
+///
+/// A window waits on its display when it presents with [`PresentMode::Vsync`]. A host paced by
+/// the display reads this before a frame and after [`wait_presented`]: a frame one of them drew
+/// was paced by its display.
+#[must_use]
+pub fn displayed() -> u64 {
+    presenter::displayed()
+}
+
+/// How long a refresh is of the fastest display one of this thread's open windows is on.
+///
+/// `None` when no window is open or the window system says how fast none of their displays is.
+/// A host paced by the display waits this long between frames no display paced.
+#[must_use]
+pub fn refresh() -> Option<Duration> {
+    open_states().iter().filter_map(|state| state.borrow().refresh).min()
 }
 
 /// The windows with events nobody has read or heard of yet, by title and key, each once until

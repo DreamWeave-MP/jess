@@ -480,7 +480,21 @@ pub fn run_target(options: &crate::lua::Options, request: &RunRequest) -> l3i::R
 ///
 /// As [`choose`] and [`package::launch`].
 pub fn launch(options: &crate::lua::Options, request: &RunRequest) -> l3i::Result<Launched> {
-    package::launch(options, &target_request(options, request)?)
+    launch_with(options, request, package::LaunchOptions::default())
+}
+
+/// [`launch`], with an application target's host set up as `launch` says, as
+/// [`package::launch_with`] sets one up.
+///
+/// # Errors
+///
+/// As [`launch`].
+pub fn launch_with(
+    options: &crate::lua::Options,
+    request: &RunRequest,
+    launch: package::LaunchOptions,
+) -> l3i::Result<Launched> {
+    package::launch_with(options, &target_request(options, request)?, launch)
 }
 
 /// The package request a workspace target resolves to: its package, the workspace's members and

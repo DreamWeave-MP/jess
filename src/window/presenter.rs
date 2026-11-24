@@ -11,6 +11,7 @@
 //! Locks are taken in one order: a window's screen, then what is coming to it, then its device's
 //! frame lock. A commit takes the frame lock, then what is coming, and never a screen.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
@@ -32,6 +33,8 @@ pub(super) struct Screen {
     pub(super) frames: u64,
     /// Whether its last try failed, so a failure that lasts is reported once, not every retry.
     pub(super) failing: bool,
+    /// Whether presenting to it waits for its display, which makes what it draws a host's pace.
+    pub(super) waits: bool,
 }
 
 /// What a commit shows on a window next.
@@ -87,6 +90,15 @@ struct Presenter {
 }
 
 static PRESENTER: OnceLock<Arc<Presenter>> = OnceLock::new();
+
+/// How many frames windows whose presenting waits for their display have presented, all of them.
+static DISPLAYED: AtomicU64 = AtomicU64::new(0);
+
+/// How many frames windows whose presenting waits for their display have presented, all of them:
+/// what a host paced by the display reads before and after a frame.
+pub(super) fn displayed() -> u64 {
+    DISPLAYED.load(Ordering::Acquire)
+}
 
 /// How long the presenter waits before trying a window whose image wasn't ready again.
 const RETRY: Duration = Duration::from_millis(8);
@@ -228,6 +240,7 @@ fn draw(shared: &Shared) -> Drawing {
         drawn,
         frames,
         failing,
+        waits,
         ..
     } = &mut *screen;
     let (Some(surface), Some(showing)) = (surface, showing.as_ref()) else {
@@ -261,6 +274,9 @@ fn draw(shared: &Shared) -> Drawing {
     *stale = false;
     *failing = false;
     *frames += 1;
+    if *waits {
+        DISPLAYED.fetch_add(1, Ordering::AcqRel);
+    }
     Drawing::Drew
 }
 

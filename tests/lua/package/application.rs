@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use jess::lua::Options;
-use jess::lua::application::Application;
+use jess::lua::application::{Application, Pace};
 use jess::lua::l3i;
 use jess::lua::package::{self, Launched, TargetRequest};
 use jess::runtime::{CapabilitySet, DiagnosticKind, Message, Phase, WorkerSpec};
@@ -1560,6 +1560,7 @@ return {
         &request(&root, "app", &[]),
         package::LaunchOptions {
             input: Some(InputSource::Synthetic),
+            ..package::LaunchOptions::default()
         },
     )
     .unwrap();
@@ -1773,16 +1774,85 @@ fn a_target_declares_its_fixed_rate_and_catch_up() {
     assert_eq!(journal(&application), vec![format!("fixed {step}"); 7]);
     application.stop().unwrap();
 
-    // Saying nothing is sixty a second, five at most a frame.
+    // Saying nothing is sixty a second, five at most a frame, paced every step headless.
     let root = temp.path().join("unsaid");
     paced(&root, "");
     let application = launch(&request(&root, "app", &[]));
     let fixed = application.fixed_step();
     assert_eq!((fixed.step, fixed.max_catch_up), (Duration::from_secs(1) / 60, 5));
+    assert_eq!(application.pace(), Pace::Fixed(Duration::from_secs(1) / 60));
     application.stop().unwrap();
     let declared = package::inspect(&super::common::runtime(), &text(&temp.path().join("thirty"))).unwrap();
     assert_eq!(
         (declared.targets[0].fixed_rate, declared.targets[0].max_catch_up),
         (Some(30), Some(4))
     );
+}
+
+/// The application `paced` writes, launched with `pace`, run for at most `frames` frames: the
+/// status the run ended with.
+fn run_paced(root: &Path, pace: Option<Pace>, frames: u64) -> u8 {
+    let launched = package::launch_with(
+        &Options::default(),
+        &request(root, "app", &[]),
+        package::LaunchOptions {
+            pace,
+            ..package::LaunchOptions::default()
+        },
+    )
+    .unwrap();
+    let Launched::Application(application) = launched else {
+        panic!("an application target launches an application");
+    };
+    application
+        .run(Some(frames), &std::sync::atomic::AtomicBool::new(false), |line| {
+            panic!("{line}")
+        })
+        .unwrap()
+}
+
+/// However frames are paced, a run counts them: the application asks to stop on its seventh, so a
+/// run of six ends for running out (0) and one of seven or more for its asking (7).
+#[test]
+fn every_pace_counts_its_frames() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("paced");
+    paced(&root, "");
+    for pace in [
+        Pace::Unpaced,
+        Pace::Fixed(Duration::from_millis(1)),
+        // No window is open, so the display's pace is the fixed step's.
+        Pace::Display,
+    ] {
+        assert_eq!(run_paced(&root, Some(pace), 6), 0, "{pace:?}");
+        assert_eq!(run_paced(&root, Some(pace), 7), 7, "{pace:?}");
+        assert_eq!(run_paced(&root, Some(pace), 100), 7, "{pace:?}");
+    }
+}
+
+/// A target that may open windows is paced by the display unless the launch says otherwise, and
+/// its windows' displays pace nothing about its simulation.
+#[test]
+fn a_target_that_may_open_windows_is_paced_by_the_display() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("windowed");
+    paced(&root, "capabilities = [\"gpu.window\"]\nfixed_rate = 120\n");
+    let application = launch(&request(&root, "app", &[]));
+    assert_eq!(application.pace(), Pace::Display);
+    assert_eq!(application.fixed_step().step, Duration::from_secs(1) / 120);
+    application.stop().unwrap();
+    let launched = package::launch_with(
+        &Options::default(),
+        &request(&root, "app", &[]),
+        package::LaunchOptions {
+            pace: Some(Pace::Unpaced),
+            ..package::LaunchOptions::default()
+        },
+    )
+    .unwrap();
+    let Launched::Application(application) = launched else {
+        panic!("an application target launches an application");
+    };
+    assert_eq!(application.pace(), Pace::Unpaced);
+    application.stop().unwrap();
 }

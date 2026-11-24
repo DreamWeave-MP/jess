@@ -103,6 +103,27 @@ pub const DEFAULT_FIXED_RATE: u32 = 60;
 /// (`max_catch_up`).
 pub const DEFAULT_MAX_CATCH_UP: u32 = 5;
 
+/// How [`Application::run`] paces frames: the run's choice, not the application's, whose fixed
+/// step is its own whatever the pace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pace {
+    /// A frame every interval, on a timer. A frame that runs late is followed at once, and the
+    /// fixed step catches up what it may.
+    Fixed(Duration),
+    /// As the application's windows' displays take frames. After each frame the host waits for the
+    /// windows to draw what it changed. If a window that waits on its display drew it, the
+    /// display's own wait was the pace, and the next frame begins at once (but never sooner than
+    /// half a refresh after the last began, or a thousandth of a second where the display doesn't
+    /// say how fast it is, so a driver that doesn't wait can't make a spin of it). After any other frame (nothing changed, no window waits on its display, a window
+    /// couldn't draw), the next begins one refresh after the last began: a refresh of the fastest
+    /// display an open window is on, or one fixed step with no window open or none whose display
+    /// says how fast it is. A window that can't draw (minimized, covered) holds a frame back at
+    /// most two refreshes.
+    Display,
+    /// As fast as frames finish, waiting on nothing.
+    Unpaced,
+}
+
 /// A managed module that has run and passed its checks: what it declared, ready to bind.
 struct Declared {
     /// `managed '<id>' of <package> (<chunk>)`, for messages.
@@ -544,6 +565,7 @@ pub struct Application {
     /// Context names by id, kept past teardown for the diagnostics it reports.
     names: BTreeMap<ContextId, String>,
     step: FixedStep,
+    pace: Pace,
     /// The GPU device the application's generations share, committed at the end of each frame.
     #[cfg(feature = "gpu")]
     device: Arc<crate::lua::SharedDevice>,
@@ -643,7 +665,9 @@ fn fixed_step(target: &Target) -> FixedStep {
 /// Loads the application target `target` of the package `inspection` describes, as `request`
 /// asks, into a host of its own. The domain's load resolves the package's plan and admits every
 /// entrypoint against the target's capabilities before anything a package holds runs. With `input`
-/// the host polls it every frame and runs the `input` handlers on what it produces.
+/// the host polls it every frame and runs the `input` handlers on what it produces. Its frames are
+/// paced as `pace` says, or without one by the display for a target that may open windows and
+/// every fixed step for one that may not.
 ///
 /// # Errors
 ///
@@ -656,8 +680,14 @@ pub(crate) fn launch(
     inspection: &Inspection,
     target: &Target,
     input: Option<InputSource>,
+    pace: Option<Pace>,
 ) -> l3i::Result<Application> {
     let step = fixed_step(target);
+    let windowed = target
+        .capabilities
+        .iter()
+        .any(|capability| capability == crate::lua::gpu::WINDOW_CAPABILITY);
+    let pace = pace.unwrap_or(if windowed { Pace::Display } else { Pace::Fixed(step.step) });
     let layers = inspection.layers.iter().map(|layer| layer.id.clone()).collect::<Vec<_>>();
     let mut locations = vec![request.package.clone()];
     locations.extend_from_slice(&request.packages);
@@ -701,11 +731,7 @@ pub(crate) fn launch(
     // A target that may open windows hears their keyboard and pointer, whatever else its host
     // polls; one that may not stays as headless as it was asked to be.
     #[cfg(feature = "window")]
-    let input = if target
-        .capabilities
-        .iter()
-        .any(|capability| capability == crate::lua::gpu::WINDOW_CAPABILITY)
-    {
+    let input = if windowed {
         match input {
             Some(InputSource::Backend(backend)) => {
                 Some(InputSource::Backend(Box::new(crate::window::WindowInput::new(Some(backend)))))
@@ -753,6 +779,7 @@ pub(crate) fn launch(
         diagnostics,
         names: BTreeMap::new(),
         step,
+        pace,
         #[cfg(feature = "gpu")]
         device,
     };
@@ -771,6 +798,12 @@ impl Application {
     #[must_use]
     pub fn fixed_step(&self) -> FixedStep {
         self.step
+    }
+
+    /// How [`Application::run`] paces its frames.
+    #[must_use]
+    pub fn pace(&self) -> Pace {
+        self.pace
     }
 
     /// The application's domain.
@@ -873,8 +906,8 @@ impl Application {
         stopped
     }
 
-    /// Runs the application to the end: starts it, drives frames one fixed step apart until its
-    /// code asks to stop, `frames` frames have run, or `interrupt` is set, and stops it,
+    /// Runs the application to the end: starts it, drives frames at its [`Pace`] until its code
+    /// asks to stop, `frames` frames have run, or `interrupt` is set, and stops it,
     /// passing each diagnostic line to `report` as it comes. The status is the one the code asked
     /// for, 0 when it ran out of frames, and 130 when interrupted.
     ///
@@ -908,6 +941,8 @@ impl Application {
         let mut ran = 0u64;
         let mut next = Instant::now();
         let mut last = Instant::now();
+        // Whether a window waiting on its display drew the last frame, so that wait paced it.
+        let mut displayed = false;
         loop {
             if let Some(status) = self.exit_requested() {
                 return Ok(status);
@@ -918,7 +953,12 @@ impl Application {
             if interrupt.load(Ordering::Acquire) {
                 return Ok(130);
             }
-            next += self.step.step;
+            match self.pace {
+                Pace::Fixed(interval) => next += interval,
+                Pace::Display if displayed => next = last + least_displayed(),
+                Pace::Display => next = last + self.refresh(),
+                Pace::Unpaced => next = Instant::now(),
+            }
             if let Some(wait) = next.checked_duration_since(Instant::now()) {
                 std::thread::sleep(wait);
             } else {
@@ -926,11 +966,40 @@ impl Application {
                 next = Instant::now();
             }
             let now = Instant::now();
+            let before = displayed_frames();
             let outcome = self.step(now - last, report);
             last = now;
+            if self.pace == Pace::Display {
+                displayed = self.wait_displayed(before);
+            }
             self.flush(report);
             outcome.map_err(|problem| error(problem.to_string()))?;
             ran += 1;
+        }
+    }
+
+    /// How long a refresh is for [`Pace::Display`]: of the fastest display an open window is on,
+    /// or the fixed step with no window open, or none on a display that says how fast it is.
+    fn refresh(&self) -> Duration {
+        #[cfg(feature = "window")]
+        if let Some(refresh) = crate::window::refresh() {
+            return refresh;
+        }
+        self.step.step
+    }
+
+    /// Waits, at most two refreshes, for the windows to draw what the frame just driven changed;
+    /// whether a window waiting on its display drew since [`displayed_frames`] said `before`.
+    fn wait_displayed(&self, before: u64) -> bool {
+        #[cfg(feature = "window")]
+        {
+            crate::window::wait_presented(self.refresh() * 2);
+            crate::window::displayed() > before
+        }
+        #[cfg(not(feature = "window"))]
+        {
+            let _ = before;
+            false
         }
     }
 
@@ -999,6 +1068,26 @@ impl Application {
             report(&line);
         }
     }
+}
+
+/// The least time between two frames a display paced: half a refresh where the window system says
+/// how fast the display is, and a thousandth of a second where it doesn't. A display that waited
+/// took longer than that; it only keeps a driver that never waits from making a spin of frames.
+fn least_displayed() -> Duration {
+    #[cfg(feature = "window")]
+    if let Some(refresh) = crate::window::refresh() {
+        return refresh / 2;
+    }
+    Duration::from_millis(1)
+}
+
+/// How many frames windows waiting on their display have drawn, for [`Pace::Display`] to tell
+/// whether the last frame was one of them: none without windows.
+fn displayed_frames() -> u64 {
+    #[cfg(feature = "window")]
+    return crate::window::displayed();
+    #[cfg(not(feature = "window"))]
+    0
 }
 
 /// `diagnostic` as a line for people: the context it happened in by name (the application's
