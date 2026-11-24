@@ -249,7 +249,7 @@ fn resource_errors_name_the_mistake() {
         ),
         (
             "device:texture({ width = 1, height = 1, format = 'rgba8Unorm', usage = 'sampled', layer = 2 })",
-            "unknown GpuDevice:texture option 'layer': expected depth, format, height, layers, mips, shape, usage, or width",
+            "unknown GpuDevice:texture option 'layer': expected depth, format, height, layers, mips, samples, shape, usage, or width",
         ),
         (
             "device:texture({ width = 1, height = 1, usage = 'sampled' })",
