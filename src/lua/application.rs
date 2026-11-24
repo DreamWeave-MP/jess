@@ -96,12 +96,12 @@ const HOST_CALLBACKS: [(&str, Option<Phase>); 10] = [
     ("interfaceOverride", None),
 ];
 
-/// How long one frame of [`Application::run`] is: the fixed step, and the pace frames are driven
-/// at.
-pub const FRAME: Duration = Duration::from_micros(16_667);
+/// An application target's fixed steps a second when its manifest doesn't say (`fixed_rate`).
+pub const DEFAULT_FIXED_RATE: u32 = 60;
 
-/// The most fixed steps one frame catches up on.
-const MAX_CATCH_UP: u32 = 5;
+/// The most fixed steps one of its frames catches up on when its manifest doesn't say
+/// (`max_catch_up`).
+pub const DEFAULT_MAX_CATCH_UP: u32 = 5;
 
 /// A managed module that has run and passed its checks: what it declared, ready to bind.
 struct Declared {
@@ -543,6 +543,7 @@ pub struct Application {
     diagnostics: Arc<Diagnostics>,
     /// Context names by id, kept past teardown for the diagnostics it reports.
     names: BTreeMap<ContextId, String>,
+    step: FixedStep,
     /// The GPU device the application's generations share, committed at the end of each frame.
     #[cfg(feature = "gpu")]
     device: Arc<crate::lua::SharedDevice>,
@@ -630,6 +631,15 @@ fn target_search(request: &TargetRequest, inspection: &Inspection) -> Search {
     }
 }
 
+/// The fixed step `target` declares, or the default one.
+fn fixed_step(target: &Target) -> FixedStep {
+    let rate = target.fixed_rate.unwrap_or(DEFAULT_FIXED_RATE).max(1);
+    FixedStep {
+        step: Duration::from_secs(1) / rate,
+        max_catch_up: target.max_catch_up.unwrap_or(DEFAULT_MAX_CATCH_UP),
+    }
+}
+
 /// Loads the application target `target` of the package `inspection` describes, as `request`
 /// asks, into a host of its own. The domain's load resolves the package's plan and admits every
 /// entrypoint against the target's capabilities before anything a package holds runs. With `input`
@@ -647,6 +657,7 @@ pub(crate) fn launch(
     target: &Target,
     input: Option<InputSource>,
 ) -> l3i::Result<Application> {
+    let step = fixed_step(target);
     let layers = inspection.layers.iter().map(|layer| layer.id.clone()).collect::<Vec<_>>();
     let mut locations = vec![request.package.clone()];
     locations.extend_from_slice(&request.packages);
@@ -681,10 +692,7 @@ pub(crate) fn launch(
     let spec = DomainSpec::new(format!("{}:{}", inspection.id, target.id), grant)
         .worker_setup(worker_setup)
         .diagnostics(diagnostics.clone())
-        .fixed_step(FixedStep {
-            step: FRAME,
-            max_catch_up: MAX_CATCH_UP,
-        });
+        .fixed_step(step);
     // One GPU device for every generation, so a restart reloads code without reopening it.
     #[cfg(feature = "gpu")]
     let device = Arc::new(crate::lua::SharedDevice::default());
@@ -744,6 +752,7 @@ pub(crate) fn launch(
         setup,
         diagnostics,
         names: BTreeMap::new(),
+        step,
         #[cfg(feature = "gpu")]
         device,
     };
@@ -756,6 +765,12 @@ impl Application {
     #[must_use]
     pub fn host(&self) -> &Host {
         &self.host
+    }
+
+    /// Its fixed step: how long each `fixedUpdate` step is, and how many one frame catches up on.
+    #[must_use]
+    pub fn fixed_step(&self) -> FixedStep {
+        self.step
     }
 
     /// The application's domain.
@@ -858,8 +873,8 @@ impl Application {
         stopped
     }
 
-    /// Runs the application to the end: starts it, drives frames of [`FRAME`] at that pace until
-    /// its code asks to stop, `frames` frames have run, or `interrupt` is set, and stops it,
+    /// Runs the application to the end: starts it, drives frames one fixed step apart until its
+    /// code asks to stop, `frames` frames have run, or `interrupt` is set, and stops it,
     /// passing each diagnostic line to `report` as it comes. The status is the one the code asked
     /// for, 0 when it ran out of frames, and 130 when interrupted.
     ///
@@ -903,7 +918,7 @@ impl Application {
             if interrupt.load(Ordering::Acquire) {
                 return Ok(130);
             }
-            next += FRAME;
+            next += self.step.step;
             if let Some(wait) = next.checked_duration_since(Instant::now()) {
                 std::thread::sleep(wait);
             } else {

@@ -81,6 +81,12 @@ export type Target = {
   read entry: string,
   read capabilities: { string },
   read command: string?,
+  --- An application target's fixed steps a second, when its manifest says: the host's default
+  --- otherwise.
+  read fixedRate: number?,
+  --- The most fixed steps one of an application target's frames catches up on, when its manifest
+  --- says.
+  read maxCatchUp: number?,
 }
 
 export type Manifest = {
@@ -451,6 +457,29 @@ local function checkModuleName(name: string, where: string, package: string)
   end
 end
 
+--- A target's `field`, a whole number from 1 to `most`, or nil when it doesn't say. How an
+--- application simulates is part of what it means, so it is the manifest's to say, and only an
+--- application's; how often its frames run is the host's.
+local function applicationCount(
+  declared: { [string]: unknown },
+  kind: unknown,
+  field: string,
+  most: number,
+  where: string
+): number?
+  local value = declared[field]
+
+  if value == nil then return nil end
+
+  if kind ~= 'application' then fail(`{where} {field} is only valid when kind = "application"`) end
+
+  if type(value) ~= 'number' or value ~= math.floor(value) or value < 1 or value > most then
+    fail(`{where} {field} must be a whole number from 1 to {most}`)
+  end
+
+  return value :: number
+end
+
 local function parseManifest(text: string): Manifest
   local document = host.decodeToml(text)
   checkKeys(document, {
@@ -608,7 +637,11 @@ local function parseManifest(text: string): Manifest
 
       local declared = value :: { [string]: unknown }
       local where = `{Manifest} [targets.{id}]`
-      checkKeys(declared, { 'kind', 'entry', 'capabilities', 'command' }, where)
+      checkKeys(
+        declared,
+        { 'kind', 'entry', 'capabilities', 'command', 'fixed_rate', 'max_catch_up' },
+        where
+      )
 
       local kind = declared.kind
 
@@ -654,6 +687,8 @@ local function parseManifest(text: string): Manifest
         entry = entry,
         capabilities = table.freeze(capabilities),
         command = command,
+        fixedRate = applicationCount(declared, kind, 'fixed_rate', 1000, where),
+        maxCatchUp = applicationCount(declared, kind, 'max_catch_up', 100, where),
       }
     end
   end

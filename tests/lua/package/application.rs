@@ -1713,3 +1713,76 @@ fn a_restart_keeps_the_gpu_device_and_releases_what_the_old_generation_made() {
         "teardown leaves nothing behind"
     );
 }
+
+/// A one-package application whose `[targets.app]` says `lines` besides its kind and entry: its
+/// one managed module journals each fixed step, and asks to stop with status 7 on its seventh
+/// update.
+fn paced(root: &Path, lines: &str) {
+    let manifest = manifest(
+        "org.example.paced",
+        &format!(
+            "[dependencies]\n\"org.example.journal\" = \"^1.0\"\n\n[managed.clock]\nmodule = \"src/clock.jsl\"\n\n\
+             [targets.app]\nkind = \"application\"\nentry = \"src/main.jsl\"\n{lines}"
+        ),
+    );
+    write(
+        root,
+        &[
+            ("jess.toml", &manifest),
+            ("src/main.jsl", "return nil\n"),
+            (
+                "src/clock.jsl",
+                r"local application = require('@jess/application')
+local journal = require('@example/journal')
+local updates = 0
+return {
+  on = {
+    host = {
+      fixedUpdate = function(step) journal.write(`fixed {step}`) end,
+      update = function()
+        updates += 1
+        if updates == 7 then application.exit(7) end
+      end,
+    },
+  },
+}
+",
+            ),
+        ],
+    );
+}
+
+/// A target's `fixed_rate` and `max_catch_up` are its fixed step, whatever pace drives it: a
+/// frame of a tenth of a second runs three thirtieths, and one of a whole second catches up four.
+#[test]
+fn a_target_declares_its_fixed_rate_and_catch_up() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("thirty");
+    paced(&root, "fixed_rate = 30\nmax_catch_up = 4\n");
+    let mut application = launch(&request(&root, "app", &[]));
+    let fixed = application.fixed_step();
+    assert_eq!((fixed.step, fixed.max_catch_up), (Duration::from_secs(1) / 30, 4));
+    application.start().unwrap();
+    let mut report = |delta| application.step(delta, &mut |line| panic!("{line}")).unwrap();
+    // A hair over a tenth, so three steps of a thirtieth fit whatever the rounding.
+    let tenth = report(Duration::from_millis(101));
+    assert_eq!((tenth.tick.fixed_steps, tenth.tick.dropped_steps), (3, 0));
+    let second = report(Duration::from_secs(1));
+    assert_eq!((second.tick.fixed_steps, second.tick.dropped_steps), (4, 26));
+    let step = (Duration::from_secs(1) / 30).as_secs_f64();
+    assert_eq!(journal(&application), vec![format!("fixed {step}"); 7]);
+    application.stop().unwrap();
+
+    // Saying nothing is sixty a second, five at most a frame.
+    let root = temp.path().join("unsaid");
+    paced(&root, "");
+    let application = launch(&request(&root, "app", &[]));
+    let fixed = application.fixed_step();
+    assert_eq!((fixed.step, fixed.max_catch_up), (Duration::from_secs(1) / 60, 5));
+    application.stop().unwrap();
+    let declared = package::inspect(&super::common::runtime(), &text(&temp.path().join("thirty"))).unwrap();
+    assert_eq!(
+        (declared.targets[0].fixed_rate, declared.targets[0].max_catch_up),
+        (Some(30), Some(4))
+    );
+}

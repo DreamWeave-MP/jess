@@ -669,6 +669,14 @@ pub struct Target {
     pub capabilities: Vec<String>,
     /// Its requested CLI alias, for command targets.
     pub command: Option<String>,
+    /// For an application target, the fixed steps a second its manifest declares (`fixed_rate`);
+    /// without one, [`crate::lua::application::DEFAULT_FIXED_RATE`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixed_rate: Option<u32>,
+    /// For an application target, the most fixed steps one frame catches up on (`max_catch_up`);
+    /// without one, [`crate::lua::application::DEFAULT_MAX_CATCH_UP`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_catch_up: Option<u32>,
 }
 
 /// What `jess package inspect` reports: a package's manifest and identity, read without running it.
@@ -997,7 +1005,9 @@ pub fn inspect_with(runtime: &Runtime, location: &str, image: Option<&crate::lua
         "modules": [{ "name": "", "path": "" }],
         "layers": [{ "id": "", "requires": [""], "exports": [""], "entrypoints": [{ "module": "", "capabilities": [""] }] }],
         "managed": [{ "id": "", "module": "", "interface": null }],
-        "targets": [{ "id": "", "kind": "", "entry": "", "capabilities": [""], "command": null }],
+        "targets": [{
+            "id": "", "kind": "", "entry": "", "capabilities": [""], "command": null, "fixedRate": null, "maxCatchUp": null,
+        }],
         "dependencies": [{ "id": "", "requirement": "" }],
         "devDependencies": [{ "id": "", "requirement": "" }],
         "capabilities": [{ "capability": "", "layer": "", "entrypoint": "" }],
