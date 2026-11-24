@@ -1609,6 +1609,18 @@ declare jess: {
     --- one's timing.
     collect: () -> (),
   },
+  --- The frame's share of the garbage collector: what an application host runs after every
+  --- frame, for code that drives frames of its own.
+  gc: {
+    --- Runs incremental collector steps for at most `milliseconds` (the budget when omitted),
+    --- paced as the host paces them: between cycles, nothing until the heap has grown by half
+    --- since the last one finished. The milliseconds spent, and whether a cycle finished.
+    step: (milliseconds: number?) -> (number, boolean),
+    --- The milliseconds a frame's collection spends at most.
+    budget: () -> number,
+    --- Sets the budget, from 0 (no frame collection) to 100 milliseconds.
+    setBudget: (milliseconds: number) -> (),
+  },
   --- A missing value inside an array (such as an empty link in a node's children), where `nil`
   --- would shift everything after it.
   null: JessNull,

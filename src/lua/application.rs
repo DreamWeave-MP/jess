@@ -1081,7 +1081,8 @@ impl Application {
 
     /// One frame of `delta` as [`Application::run`] runs it: the window system's news, the frame
     /// ([`Application::frame`]), the frame's changes to what the GPU draws committed together,
-    /// and the windows told to draw them. What windows and the GPU refused goes to `report`.
+    /// and the windows told to draw them; then, while they draw, the frame's collection
+    /// ([`Host::collect`]). What windows and the GPU refused goes to `report`.
     ///
     /// Every step is a frame of the application's statistics (`application.frameStats`), however
     /// it is driven: it begins when the step does, with `delta` as its delta, and its work is the
@@ -1119,6 +1120,8 @@ impl Application {
                 report(&format!("window {title}: {problem}"));
             }
         }
+        // The windows draw on the presenter's thread: this is time the frame would otherwise wait.
+        self.host.collect();
         self.end_frame(began);
         outcome
     }

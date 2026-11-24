@@ -29,6 +29,7 @@ pub mod check;
 mod convert;
 pub mod document;
 mod files;
+mod gc;
 mod gpu;
 pub mod image;
 pub mod init;
