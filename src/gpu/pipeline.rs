@@ -83,6 +83,50 @@ pub struct DepthState {
     pub compare: Compare,
     /// Whether a passing fragment writes its depth.
     pub write: bool,
+    /// What is added to a triangle's depth before the test.
+    pub bias: DepthBias,
+}
+
+/// What a pipeline adds to a triangle's depth before the depth test: what keeps a surface from
+/// shadowing itself in a shadow map, and lets one of two coplanar surfaces win.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DepthBias {
+    /// How many of the depth format's smallest steps are added.
+    pub constant: i32,
+    /// How many times the triangle's depth slope is added.
+    pub slope_scale: f32,
+    /// The most the two may add: above 0, a limit on a bias that moves a depth further; below 0,
+    /// on one that brings it nearer; 0 for no limit. Anything else needs a device with [`depth_bias_clamp`](super::GpuInfo::depth_bias_clamp).
+    pub clamp: f32,
+}
+
+impl DepthBias {
+    /// Whether it moves any depth.
+    #[must_use]
+    pub fn is_enabled(&self) -> bool {
+        self.constant != 0 || self.slope_scale != 0.0
+    }
+
+    /// Its numbers as a pipeline cache's key holds them: bit for bit, a zero of either sign the
+    /// same zero.
+    fn key(self) -> (i32, u32, u32) {
+        let bits = |value: f32| if value == 0.0 { 0 } else { value.to_bits() };
+        (self.constant, bits(self.slope_scale), bits(self.clamp))
+    }
+}
+
+impl PartialEq for DepthBias {
+    fn eq(&self, other: &DepthBias) -> bool {
+        self.key() == other.key()
+    }
+}
+
+impl Eq for DepthBias {}
+
+impl std::hash::Hash for DepthBias {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.key().hash(state);
+    }
 }
 
 /// Everything about a pipeline besides its program.
@@ -101,6 +145,10 @@ pub struct PipelineState {
     pub depth: Option<DepthState>,
     /// Whether it draws into multisampled targets, 4 samples a texel.
     pub multisampled: bool,
+    /// Whether the alpha of color output 0 becomes how many of a texel's samples a fragment
+    /// covers: cut-out edges antialiased without sorting or blending. Only for a `multisampled`
+    /// pipeline.
+    pub alpha_to_coverage: bool,
 }
 
 impl PipelineState {
@@ -196,6 +244,8 @@ impl Gpu {
         state: &PipelineState,
     ) -> Result<RenderPipeline, GpuError> {
         check_targets(&module.outputs, state)?;
+        check_coverage(state)?;
+        check_bias(state, self.info.depth_bias_clamp)?;
         let groups = self.groups(program, &module.layout.groups, wgpu::ShaderStages::VERTEX_FRAGMENT)?;
         if module.layout.streams.len() > MAX_STREAMS {
             return Err(GpuError::Invalid(format!(
@@ -258,10 +308,15 @@ impl Gpu {
                     depth_write_enabled: Some(depth.write),
                     depth_compare: Some(depth.compare.raw()),
                     stencil: wgpu::StencilState::default(),
-                    bias: wgpu::DepthBiasState::default(),
+                    bias: wgpu::DepthBiasState {
+                        constant: depth.bias.constant,
+                        slope_scale: depth.bias.slope_scale,
+                        clamp: depth.bias.clamp,
+                    },
                 }),
                 multisample: wgpu::MultisampleState {
                     count: state.samples(),
+                    alpha_to_coverage_enabled: state.alpha_to_coverage,
                     ..Default::default()
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -394,6 +449,64 @@ fn check_targets(outputs: &[Type], state: &PipelineState) -> Result<(), GpuError
         return Err(GpuError::Invalid(format!(
             "the depth target is {}: expected a depth format",
             depth.format
+        )));
+    }
+    Ok(())
+}
+
+/// Whether alpha-to-coverage, if asked for, has samples to cover and an alpha to read.
+fn check_coverage(state: &PipelineState) -> Result<(), GpuError> {
+    if !state.alpha_to_coverage {
+        return Ok(());
+    }
+    if !state.multisampled {
+        return Err(GpuError::Invalid(
+            "alpha-to-coverage needs more than one sample a texel to cover: make the pipeline multisampled".to_owned(),
+        ));
+    }
+    let Some(first) = state.colors.first() else {
+        return Err(GpuError::Invalid(
+            "alpha-to-coverage reads the alpha of color output 0, and the pipeline has no color target: give it one \
+             of a four-channel format that isn't an integer one"
+                .to_owned(),
+        ));
+    };
+    let format = first.format;
+    if format.channels() < 4 || format.is_uint() || format.is_sint() {
+        return Err(GpuError::Invalid(format!(
+            "alpha-to-coverage reads the alpha of color output 0, and a {format} target has no alpha it can read: \
+             expected a four-channel format that isn't an integer one"
+        )));
+    }
+    Ok(())
+}
+
+/// Whether the depth bias, if there is one, is of numbers, biases triangles, and is clamped only
+/// where the device clamps.
+fn check_bias(state: &PipelineState, clamps: bool) -> Result<(), GpuError> {
+    let Some(bias) = state.depth.map(|depth| depth.bias) else {
+        return Ok(());
+    };
+    if !bias.slope_scale.is_finite() || !bias.clamp.is_finite() {
+        return Err(GpuError::Invalid(format!(
+            "the depth bias has a slope scale of {} and a clamp of {}: expected finite numbers",
+            bias.slope_scale, bias.clamp
+        )));
+    }
+    if (bias.is_enabled() || bias.clamp != 0.0) && !matches!(state.topology, Topology::Triangles | Topology::TriangleStrip) {
+        return Err(GpuError::Invalid(format!(
+            "the depth bias moves triangles, and the pipeline draws {}: leave it out of a pipeline of lines or points",
+            match state.topology {
+                Topology::Lines | Topology::LineStrip => "lines",
+                _ => "points",
+            }
+        )));
+    }
+    if bias.clamp != 0.0 && !clamps {
+        return Err(GpuError::Invalid(format!(
+            "the depth bias is clamped to {}, and this device doesn't clamp one: leave the clamp at 0 where the \
+             device has no depthBiasClamp",
+            bias.clamp
         )));
     }
     Ok(())

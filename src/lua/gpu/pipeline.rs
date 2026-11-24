@@ -13,8 +13,8 @@ use l3i::userdata::{Owned, Userdata, receiver};
 use super::device::LuaGpuDevice;
 use super::resources::{LuaGpuBuffer, LuaGpuSampler, LuaGpuTexture, choice, compare_of, format_of, shown, whole};
 use crate::gpu::{
-    BindGroup, Binding, Blend, Buffer, ColorState, Compare, ComputePipeline, Cull, DepthState, Draw, DrawRange, Gpu,
-    GpuError, Group, IndexFormat, PipelineState, RenderPipeline, Resolve, Sampler, Slot, Target, Texture, Topology,
+    BindGroup, Binding, Blend, Buffer, ColorState, Compare, ComputePipeline, Cull, DepthBias, DepthState, Draw, DrawRange,
+    Gpu, GpuError, Group, IndexFormat, PipelineState, RenderPipeline, Resolve, Sampler, Slot, Target, Texture, Topology,
 };
 use crate::lua::shader::LuaShaderProgram;
 use crate::lua::{check_options, error, kind};
@@ -62,11 +62,21 @@ unsafe impl Userdata for LuaGpuBindGroup {
     const NAME: &'static str = "jess.gpu.BindGroup";
 }
 
-const STATE_KEYS: [&str; 6] = ["clockwise", "colors", "cull", "depth", "multisampled", "topology"];
+const STATE_KEYS: [&str; 7] = [
+    "alphaToCoverage",
+    "clockwise",
+    "colors",
+    "cull",
+    "depth",
+    "multisampled",
+    "topology",
+];
 
 const COLOR_KEYS: [&str; 2] = ["blend", "format"];
 
-const DEPTH_KEYS: [&str; 3] = ["compare", "format", "write"];
+const DEPTH_KEYS: [&str; 4] = ["bias", "compare", "format", "write"];
+
+const BIAS_KEYS: [&str; 3] = ["clamp", "constant", "slopeScale"];
 
 const TARGET_KEYS: [&str; 6] = ["clear", "layer", "level", "resolve", "store", "texture"];
 
@@ -203,7 +213,7 @@ fn pipeline(
     }))
 }
 
-/// A render pipeline's state: `{ colors, depth, topology, cull, clockwise }`.
+/// A render pipeline's state: `{ colors, depth, topology, cull, clockwise, multisampled, alphaToCoverage }`.
 fn pipeline_state(frame: &Frame<'_>, function: &str, state: ValueView<'_>) -> l3i::Result<PipelineState> {
     let state = options(frame, function, "the state", state, &STATE_KEYS)?;
     let topology = match choice(
@@ -246,6 +256,7 @@ fn pipeline_state(frame: &Frame<'_>, function: &str, state: ValueView<'_>) -> l3
         colors,
         depth,
         multisampled: flag(frame, function, &state, "multisampled", false)?,
+        alpha_to_coverage: flag(frame, function, &state, "alphaToCoverage", false)?,
     })
 }
 
@@ -274,20 +285,53 @@ fn color_state(frame: &Frame<'_>, function: &str, color: ValueView<'_>) -> l3i::
     })
 }
 
-/// The depth target: a format's name, or `{ format, compare, write }`.
+/// The depth target: a format's name, or `{ format, compare, write, bias }`.
 fn depth_state(frame: &Frame<'_>, function: &str, depth: ValueView<'_>) -> l3i::Result<DepthState> {
     if depth.is_string() {
         return Ok(DepthState {
             format: format_of(function, depth.read::<&str>()?)?,
             compare: Compare::Less,
             write: true,
+            bias: DepthBias::default(),
         });
     }
     let depth = options(frame, function, "the depth target", depth, &DEPTH_KEYS)?;
+    let bias = depth.raw_get(frame, "bias")?;
+    let bias = if bias.is_nil() {
+        DepthBias::default()
+    } else {
+        depth_bias(frame, function, bias)?
+    };
     Ok(DepthState {
         format: named_format(frame, function, &depth)?,
         compare: compare_of(choice(frame, function, &depth, "compare", &COMPARES, "less")?),
         write: flag(frame, function, &depth, "write", true)?,
+        bias,
+    })
+}
+
+/// A depth bias: `{ constant, slopeScale, clamp }`, each 0 where it is nil.
+fn depth_bias(frame: &Frame<'_>, function: &str, bias: ValueView<'_>) -> l3i::Result<DepthBias> {
+    let bias = options(frame, function, "the depth bias", bias, &BIAS_KEYS)?;
+    let constant = bias.raw_get(frame, "constant")?;
+    let constant = if constant.is_nil() {
+        0
+    } else {
+        signed(function, "the depth bias's constant", constant)?
+    };
+    let scale = |key: &str, what: &str| -> l3i::Result<f32> {
+        let view = bias.raw_get(frame, key)?;
+        if view.is_nil() {
+            return Ok(0.0);
+        }
+        // A bias is an `f32` on the GPU; one too large for it is infinite, which the pipeline refuses.
+        #[allow(clippy::cast_possible_truncation)]
+        number(function, what, view).map(|value| value as f32)
+    };
+    Ok(DepthBias {
+        constant,
+        slope_scale: scale("slopeScale", "the depth bias's slopeScale")?,
+        clamp: scale("clamp", "the depth bias's clamp")?,
     })
 }
 
@@ -463,6 +507,11 @@ pub fn indirect_field(frame: &Frame<'_>, function: &str, table: &TableView<'_>) 
 
 /// A draw's base vertex: a whole number an `i32` holds, which may be negative.
 pub fn base_vertex(function: &str, view: ValueView<'_>) -> l3i::Result<i32> {
+    signed(function, "the base vertex", view)
+}
+
+/// A whole number an `i32` holds, which may be negative.
+fn signed(function: &str, what: &str, view: ValueView<'_>) -> l3i::Result<i32> {
     let number = Some(view)
         .filter(ValueView::is_number)
         .and_then(|view| view.read::<f64>().ok())
@@ -471,7 +520,7 @@ pub fn base_vertex(function: &str, view: ValueView<'_>) -> l3i::Result<i32> {
     #[allow(clippy::cast_possible_truncation)]
     number.map(|number| number as i32).ok_or_else(|| {
         error(format!(
-            "{function}: the base vertex is a whole number from {} to {}, not {}",
+            "{function}: {what} is a whole number from {} to {}, not {}",
             i32::MIN,
             i32::MAX,
             shown(view)

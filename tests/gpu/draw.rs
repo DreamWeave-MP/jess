@@ -4,8 +4,8 @@
 use super::gpu;
 
 use jess::gpu::{
-    AddressMode, BindGroup, Binding, BufferUsage, ColorState, Compare, DepthState, Draw, Filter, Gpu, GpuError,
-    PipelineState, SamplerDesc, Target, Texture, TextureDesc, TextureUsage,
+    AddressMode, BindGroup, Binding, BufferUsage, ColorState, Compare, DepthBias, DepthState, Draw, Filter, Gpu, GpuError,
+    PipelineState, Resolve, SamplerDesc, Target, Texture, TextureDesc, TextureUsage, Topology,
 };
 use jess::render::{ClearValue, TextureFormat};
 use jess::shader::{
@@ -236,6 +236,7 @@ fn depth_keeps_the_nearest_whatever_the_order() {
             format: TextureFormat::Depth32Float,
             compare: Compare::Less,
             write: true,
+            bias: DepthBias::default(),
         }),
         ..PipelineState::default()
     };
@@ -870,5 +871,250 @@ fn a_first_instance_the_device_cannot_draw_is_refused() {
         halves(&gpu, rebound),
         [BLUE, GREEN, GREEN],
         "the same instance, bound from its offset"
+    );
+}
+
+/// With alpha-to-coverage, a fragment's alpha is how many of a texel's four samples it covers:
+/// none of them at 0, every one at 1, and some between, which the resolve averages. Without it
+/// the alpha is only a channel, and every sample is covered.
+#[test]
+fn alpha_covers_a_texels_samples() {
+    let Some(gpu) = gpu("alpha_covers_a_texels_samples") else {
+        return;
+    };
+    let resolved = |alpha_to_coverage: bool, alpha: f32| {
+        let state = PipelineState {
+            colors: vec![ColorState::new(TextureFormat::Rgba8Unorm)],
+            multisampled: true,
+            alpha_to_coverage,
+            ..PipelineState::default()
+        };
+        let pipeline = gpu.render_pipeline(&flat(0.5), &state).unwrap();
+        let (_buffer, group) = colored(&gpu, &pipeline, [1.0, 0.0, 0.0, alpha]);
+        let samples = gpu
+            .texture(&TextureDesc {
+                samples: 4,
+                ..TextureDesc::d2(SIZE, SIZE, TextureFormat::Rgba8Unorm, TextureUsage::TARGET)
+            })
+            .unwrap();
+        let single = target(&gpu, TextureFormat::Rgba8Unorm);
+        let color = Target {
+            resolve: Some(Resolve {
+                texture: &single,
+                level: 0,
+                layer: 0,
+            }),
+            ..Target::cleared(&samples, ClearValue::Color([0.0, 0.0, 1.0, 1.0]))
+        };
+        let draw = Draw {
+            groups: [None, Some(&group), None],
+            ..Draw::new(&pipeline, 3)
+        };
+        gpu.render(&[color], None, &[draw]).unwrap();
+        texel(&gpu.read_texture(&single, 0, 0).unwrap(), 20, 30)
+    };
+    assert_eq!(resolved(false, 0.0), [255, 0, 0, 0], "alpha is only a channel");
+    assert_eq!(resolved(true, 0.0), BLUE, "no sample is covered");
+    assert_eq!(resolved(true, 1.0), RED, "every sample is covered");
+    let [red, _, blue, _] = resolved(true, 0.5);
+    assert!(
+        (1..255).contains(&red) && (1..255).contains(&blue),
+        "some samples are covered and some aren't, not {red} red and {blue} blue"
+    );
+}
+
+/// Two surfaces at one depth: the second loses a `less` test unless its pipeline's bias brings it
+/// nearer, and the depth it then writes is the biased one.
+#[test]
+fn a_depth_bias_decides_between_coplanar_surfaces() {
+    let Some(gpu) = gpu("a_depth_bias_decides_between_coplanar_surfaces") else {
+        return;
+    };
+    let state = |constant| PipelineState {
+        colors: vec![ColorState::new(TextureFormat::Rgba8Unorm)],
+        depth: Some(DepthState {
+            format: TextureFormat::Depth32Float,
+            compare: Compare::Less,
+            write: true,
+            bias: DepthBias {
+                constant,
+                ..DepthBias::default()
+            },
+        }),
+        ..PipelineState::default()
+    };
+    let program = flat(0.5);
+    let drawn = |constant| {
+        let under = gpu.render_pipeline(&program, &state(0)).unwrap();
+        let over = gpu.render_pipeline(&program, &state(constant)).unwrap();
+        let (_red, red) = colored(&gpu, &under, [1.0, 0.0, 0.0, 1.0]);
+        let (_green, green) = colored(&gpu, &over, [0.0, 1.0, 0.0, 1.0]);
+        let draws = [
+            Draw {
+                groups: [None, Some(&red), None],
+                ..Draw::new(&under, 3)
+            },
+            Draw {
+                groups: [None, Some(&green), None],
+                ..Draw::new(&over, 3)
+            },
+        ];
+        let color = target(&gpu, TextureFormat::Rgba8Unorm);
+        let depth = target(&gpu, TextureFormat::Depth32Float);
+        gpu.render(
+            &[Target::cleared(&color, ClearValue::Color([0.0; 4]))],
+            Some(&Target::cleared(&depth, ClearValue::Depth(1.0))),
+            &draws,
+        )
+        .unwrap();
+        let depths = gpu.read_texture(&depth, 0, 0).unwrap();
+        (
+            texel(&gpu.read_texture(&color, 0, 0).unwrap(), 10, 10),
+            f32::from_le_bytes(texel(&depths, 10, 10)),
+        )
+    };
+    assert_eq!(drawn(0), (RED, 0.5), "the first drawn keeps a depth it ties for");
+    let (color, depth) = drawn(-1024);
+    assert_eq!(color, GREEN);
+    assert!(depth < 0.5 && depth > 0.49, "a little nearer than 0.5, not {depth}");
+    assert_eq!(drawn(1024), (RED, 0.5), "a bias away loses as no bias does");
+}
+
+/// Coverage with nothing to cover or no alpha to read, and a bias on what isn't triangles, of
+/// what isn't a number, or clamped where the device clamps none, are refused when the pipeline is
+/// made.
+#[test]
+fn coverage_and_bias_that_cannot_work_are_refused() {
+    let Some(gpu) = gpu("coverage_and_bias_that_cannot_work_are_refused") else {
+        return;
+    };
+    let program = flat(0.5);
+    let colors = |format| vec![ColorState::new(format)];
+    let biased = |topology, bias| PipelineState {
+        topology,
+        colors: colors(TextureFormat::Rgba8Unorm),
+        depth: Some(DepthState {
+            format: TextureFormat::Depth32Float,
+            compare: Compare::Less,
+            write: true,
+            bias,
+        }),
+        ..PipelineState::default()
+    };
+    let slope = |slope_scale| DepthBias {
+        slope_scale,
+        ..DepthBias::default()
+    };
+    let clamped = DepthBias {
+        constant: 2,
+        slope_scale: 1.5,
+        clamp: 0.01,
+    };
+    let refusals = [
+        (
+            PipelineState {
+                colors: colors(TextureFormat::Rgba8Unorm),
+                alpha_to_coverage: true,
+                ..PipelineState::default()
+            },
+            "alpha-to-coverage needs more than one sample a texel to cover: make the pipeline multisampled",
+        ),
+        (
+            PipelineState {
+                colors: colors(TextureFormat::Rg8Unorm),
+                multisampled: true,
+                alpha_to_coverage: true,
+                ..PipelineState::default()
+            },
+            "alpha-to-coverage reads the alpha of color output 0, and a Rg8Unorm target has no alpha it can read: \
+             expected a four-channel format that isn't an integer one",
+        ),
+        (
+            biased(Topology::Lines, slope(1.0)),
+            "the depth bias moves triangles, and the pipeline draws lines: leave it out of a pipeline of lines or points",
+        ),
+        (
+            biased(
+                Topology::Points,
+                DepthBias {
+                    clamp: 0.5,
+                    ..DepthBias::default()
+                },
+            ),
+            "the depth bias moves triangles, and the pipeline draws points: leave it out of a pipeline of lines or \
+             points",
+        ),
+        (
+            biased(Topology::Triangles, slope(f32::NAN)),
+            "the depth bias has a slope scale of NaN and a clamp of 0: expected finite numbers",
+        ),
+    ];
+    for (state, expected) in refusals {
+        assert_eq!(gpu.render_pipeline(&program, &state).unwrap_err().to_string(), expected);
+    }
+    // Lines and points take a bias of nothing, and triangles in a strip are triangles.
+    gpu.render_pipeline(&program, &biased(Topology::Lines, DepthBias::default()))
+        .unwrap();
+    gpu.render_pipeline(&program, &biased(Topology::TriangleStrip, slope(1.0)))
+        .unwrap();
+
+    let state = biased(Topology::Triangles, clamped);
+    if gpu.info().depth_bias_clamp {
+        gpu.render_pipeline(&program, &state).unwrap();
+    }
+    let plain = Gpu::headless_plain().unwrap();
+    assert!(!plain.info().depth_bias_clamp);
+    assert_eq!(
+        plain.render_pipeline(&program, &state).unwrap_err().to_string(),
+        "the depth bias is clamped to 0.01, and this device doesn't clamp one: leave the clamp at 0 where the \
+         device has no depthBiasClamp"
+    );
+}
+
+/// An integer target's alpha isn't a share of anything, and a pipeline that writes no color has
+/// no alpha at all: neither covers by alpha.
+#[test]
+fn coverage_without_an_alpha_to_read_is_refused() {
+    let Some(gpu) = gpu("coverage_without_an_alpha_to_read_is_refused") else {
+        return;
+    };
+    let covering_state = |colors| PipelineState {
+        colors,
+        multisampled: true,
+        alpha_to_coverage: true,
+        ..PipelineState::default()
+    };
+    let mut builder = ProgramBuilder::new();
+    let mut site = builder.site();
+    site.uniform(Frequency::Material, "id", jess::shader::DataType::Value(Type::Vec4u))
+        .unwrap();
+    let position = covering(&mut site, 0.5);
+    site.set_position(position).unwrap();
+    let place = jess::shader::Place::new(
+        jess::shader::PlaceRoot::Uniform(Frequency::Material),
+        &[jess::shader::Step::Field(0)],
+    )
+    .unwrap();
+    let id = site.load(place, &[]).unwrap();
+    site.output(id).unwrap();
+    let ids = builder.finish().unwrap();
+    assert_eq!(
+        gpu.render_pipeline(&ids, &covering_state(vec![ColorState::new(TextureFormat::Rgba8Uint)]))
+            .unwrap_err()
+            .to_string(),
+        "alpha-to-coverage reads the alpha of color output 0, and a Rgba8Uint target has no alpha it can read: \
+         expected a four-channel format that isn't an integer one"
+    );
+    let mut builder = ProgramBuilder::new();
+    let mut site = builder.site();
+    let position = covering(&mut site, 0.5);
+    site.set_position(position).unwrap();
+    let depth_only = builder.finish().unwrap();
+    assert_eq!(
+        gpu.render_pipeline(&depth_only, &covering_state(Vec::new()))
+            .unwrap_err()
+            .to_string(),
+        "alpha-to-coverage reads the alpha of color output 0, and the pipeline has no color target: give it one of \
+         a four-channel format that isn't an integer one"
     );
 }

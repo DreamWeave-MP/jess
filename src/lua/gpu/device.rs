@@ -138,6 +138,20 @@ fn memory(this: &LuaGpuDevice, call: &Call<'_>) -> l3i::Result<StackResults> {
     Ok(StackResults)
 }
 
+/// `device.limits`: the largest textures, buffers, and dispatches the device takes.
+fn limits(this: &LuaGpuDevice, call: &Call<'_>) -> l3i::Result<StackResults> {
+    let info = this.gpu.info();
+    push_table(call, 0, 4, |frame, table| {
+        table.raw_set_value(frame, "textureSize", &f64::from(info.max_texture_size))?;
+        table.raw_set_value(frame, "textureLayers", &f64::from(info.max_texture_layers))?;
+        // Buffer sizes are far below 2^53: a Luau number holds them exactly.
+        #[allow(clippy::cast_precision_loss)]
+        table.raw_set_value(frame, "bufferSize", &(info.max_buffer_size as f64))?;
+        table.raw_set_value(frame, "workgroups", &f64::from(info.max_workgroups))
+    })?;
+    Ok(StackResults)
+}
+
 /// Declares the device type, the resources it makes, and its pipelines.
 pub fn describe(d: &mut ExtensionDescriptor) {
     let mut device = d.userdata::<LuaGpuDevice>(LuaGpuDevice::NAME);
@@ -156,23 +170,7 @@ pub fn describe(d: &mut ExtensionDescriptor) {
     device
         .getter("power", |this: &LuaGpuDevice| this.gpu.info().power.name())
         .untyped();
-    device
-        .getter(
-            "limits",
-            |this: &LuaGpuDevice, call: &Call<'_>| -> l3i::Result<StackResults> {
-                let info = this.gpu.info();
-                push_table(call, 0, 4, |frame, table| {
-                    table.raw_set_value(frame, "textureSize", &f64::from(info.max_texture_size))?;
-                    table.raw_set_value(frame, "textureLayers", &f64::from(info.max_texture_layers))?;
-                    // Buffer sizes are far below 2^53: a Luau number holds them exactly.
-                    #[allow(clippy::cast_precision_loss)]
-                    table.raw_set_value(frame, "bufferSize", &(info.max_buffer_size as f64))?;
-                    table.raw_set_value(frame, "workgroups", &f64::from(info.max_workgroups))
-                })?;
-                Ok(StackResults)
-            },
-        )
-        .untyped();
+    device.getter("limits", limits).untyped();
     device
         .getter("timestamps", |this: &LuaGpuDevice| this.gpu.info().timestamps)
         .untyped();
@@ -183,6 +181,9 @@ pub fn describe(d: &mut ExtensionDescriptor) {
         .untyped();
     device
         .getter("baseVertex", |this: &LuaGpuDevice| this.gpu.info().base_vertex)
+        .untyped();
+    device
+        .getter("depthBiasClamp", |this: &LuaGpuDevice| this.gpu.info().depth_bias_clamp)
         .untyped();
     device
         .getter("live", |this: &LuaGpuDevice, call: &Call<'_>| counts(call, this.gpu.live()))

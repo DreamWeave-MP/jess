@@ -100,7 +100,9 @@ const BUFFER_USAGES: [(&str, BufferUsage); 5] = [
 
 const TEXTURE_USAGES: [(&str, TextureUsage); 2] = [("sampled", TextureUsage::SAMPLED), ("target", TextureUsage::TARGET)];
 
-const TEXTURE_KEYS: [&str; 8] = ["depth", "format", "height", "layers", "mips", "shape", "usage", "width"];
+const TEXTURE_KEYS: [&str; 9] = [
+    "depth", "format", "height", "layers", "mips", "samples", "shape", "usage", "width",
+];
 
 const SAMPLER_KEYS: [&str; 4] = ["address", "compare", "filter", "mipmapFilter"];
 
@@ -247,7 +249,7 @@ fn buffer(
     }))
 }
 
-/// `device:texture { width, height, format, usage, shape, layers, depth, mips }`.
+/// `device:texture { width, height, format, usage, shape, layers, depth, mips, samples }`.
 fn texture(this: &LuaGpuDevice, call: &Call<'_>, desc: ValueView<'_>) -> l3i::Result<Owned<LuaGpuTexture>> {
     const FUNCTION: &str = "GpuDevice:texture";
     if !desc.is_table() {
