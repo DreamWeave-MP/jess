@@ -122,6 +122,7 @@ capabilities = ["process.environment"]
 kind = "application"
 entry = "src/main.jsl"
 capabilities = ["filesystem.read", "worker.spawn"]
+fixed_rate = 30
 ```
 
 | Key | Required | Is |
@@ -130,6 +131,8 @@ capabilities = ["filesystem.read", "worker.spawn"]
 | `entry` | yes | A `.jsl` file in the payload. A **command**'s entry runs as a script, with the package's layers activated, and the run is over when it returns. An **application**'s entry runs in a host of its own, after every selected package's `[managed]` modules have loaded into one domain, and frames run until it calls `jess.application.exit`, `--frames` runs out, or Ctrl+C. Missing file: `<location>: target 'greet' entry is 'tools/run.jsl', which isn't in the payload`. |
 | `capabilities` | no | What the target needs, by name. Each must be dotted lowercase words (`jess.toml [targets.greet] capability 'environment' is not dotted lowercase words (vfs.read)`), and at run time each must be one this jess can grant: `unknown capability 'vfs.read'; a jess runtime can be granted ...`. The target holds exactly these and nothing else. The CLI admits certain declared terminal and device capabilities automatically; other names need `--capability` or `--trusted`. See [Capabilities](@/docs/reference/capabilities.md). |
 | `command` | no | Command targets only: the name a [workspace](@/docs/cli/workspace.md) runs it by. A lowercase word, unique across the manifest's targets: `jess.toml: command 'greet' is declared by both targets 'a' and 'b'`. On an application target: `jess.toml [targets.game] command is only valid when kind = "command"`. |
+| `fixed_rate` | no | Application targets only: how many `fixedUpdate` steps a second it runs, a whole number from 1 to 1000; 60 if unsaid. The step is part of what the application's simulation means, so it's the application's to say; how often its frames run is the run's (`--pace`, see [Frames and steps](@/docs/scripting/applications.md#frames-and-steps)). Wrong: `jess.toml [targets.game] fixed_rate must be a whole number from 1 to 1000`; on a command target: `jess.toml [targets.greet] fixed_rate is only valid when kind = "application"`. A jess from before this key refuses a manifest that has it. |
+| `max_catch_up` | no | Application targets only: the most fixed steps one frame runs after a stall, a whole number from 1 to 100; 5 if unsaid. Time past that is dropped, not owed. Refused as `fixed_rate` is: `jess.toml [targets.game] max_catch_up must be a whole number from 1 to 100`. |
 
 ## `[managed.<id>]`
 

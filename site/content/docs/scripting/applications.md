@@ -65,7 +65,7 @@ return {
 | --- | --- | --- |
 | `load` | once, after the application's entry has run | nothing |
 | `startup` | once, when the application starts | nothing |
-| `fixedUpdate` | zero or more times a frame, one fixed step each | the step in seconds |
+| `fixedUpdate` | zero or more times a frame, one fixed step each (see [frames and steps](#frames-and-steps)) | the step in seconds |
 | `update`, `lateUpdate` | once a frame | the frame's seconds |
 | `input`, `renderPrepare`, `onDemand` | when the host asks | whatever the host passes |
 | `shutdown` | once, when the application stops or restarts | nothing |
@@ -266,10 +266,11 @@ The target needs `process.stdio`. Stdin is one stream with one consumer at a tim
 ```sh
 jess package run game --package-path packages                       # until it stops itself
 jess package run game --package-path packages --frames 600          # or after 600 frames
+jess package run game --package-path packages --pace unpaced        # as fast as frames finish
 jess workspace run org.example.game:game -- some arguments
 ```
 
-Frames run at 60 a second. The fixed step is 1/60 s, catching up at most 5 steps a frame; `update` gets the real time since the last frame. An application stops when:
+An application stops when:
 
 - its code calls [`application.exit(status)`](@/docs/api/application.md): it stops after the current frame, and `status` is the process's exit status;
 - `--frames` runs out: status 0;
@@ -280,6 +281,34 @@ Every way out runs the `shutdown` handlers. Diagnostics go to stderr as they hap
 ```text
 jess: error in org.example.app/main during update (org.example.app@1.0.0/src/main.jsl:7): org.example.app@1.0.0/src/main.jsl:9: frame two broke
 ```
+
+### Frames and steps
+
+Two rates decide an application's time, and different people own them.
+
+**The fixed step is the application's.** `fixedUpdate` runs in steps of one size, whatever happens to the frames around it: physics, a replay, anything whose numbers must come out the same on every machine. The target says how many a second in its [manifest](@/docs/reference/manifest.md#targets), and how many one frame may catch up on after a stall; time past that is dropped rather than owed:
+
+```toml
+[targets.game]
+kind = "application"
+entry = "src/main.jsl"
+fixed_rate = 30        # fixedUpdate steps a second, 1 to 1000; 60 if unsaid
+max_catch_up = 4       # most steps one frame runs, 1 to 100; 5 if unsaid
+```
+
+`fixedUpdate` is handed the step in seconds, so nothing needs to hard-code it. `update` and `lateUpdate` get the real time since the last frame, however long that was.
+
+**The pace is the run's.** How often frames run (input, `update`, the event drain, the commit a window draws) is up to whoever runs the application, with `--pace`, and changes nothing about the fixed step:
+
+| `--pace` | Frames |
+| --- | --- |
+| `display` | As the application's windows' displays take them. The default for a target that declares `gpu.window`. |
+| a number, 1 to 1000 | That many a second, on a timer. The default for one that doesn't is its `fixed_rate`, so a headless application's frames and steps line up. |
+| `unpaced` | As fast as they finish. For benchmarks and tooling. |
+
+Paced by the display, the host waits after each frame for the windows to draw what it changed. A window that waits on its display (the default; `vsync = false` opts out) can't take a new image until the display has shown one, so when it draws, the display's refresh is the pace, and on a 144 Hz monitor that's 144 frames a second. When nothing waits on a display (the scene didn't change, every window has `vsync = false`, or the window can't draw because it's minimized or covered), the next frame begins one refresh after the last did: a refresh of the fastest display any of its windows is on, or one fixed step when no window is open or the window system doesn't say how fast its display is. A window that can't draw holds a frame back at most two refreshes, so a minimized application keeps running, at half its pace or so, instead of stopping or spinning. With several windows on displays of different speeds, frames follow the slowest window that is drawing.
+
+Pacing never makes a window draw. A frame that changed nothing commits nothing, and its windows present nothing new, at any pace.
 
 ## The example
 
@@ -436,7 +465,7 @@ return {
 ```text
 $ jess package run triangle --frames 120
 triangle: close the window to stop
-drew 119 frames
+drew 120 frames
 ```
 
 Without `--frames` it turns until you close the window. The run needs no `--trusted`: `gpu.device` and `gpu.window` are what a script you run holds anyway, so running a target grants the ones it declares; it still holds nothing it didn't declare.
@@ -448,7 +477,7 @@ What each piece is doing:
 - **The window's news arrives as an event.** `jess.window` is posted only when something happened to a window, and the handler reads what with `window:events()`. A resize has already resized the plan by the time the handler hears of it; the handler only fixes the aspect. The person's close button closes the window (`closes` is `true` unless the window is opened with `false`), and `closed` is the application's cue to stop.
 - **Its keys and pointer are input.** A target that declares `gpu.window` gets each window's keyboard and pointer as [input devices](@/docs/api/input.md#windows), so the bindings it installs see them and its `on.host.input` handlers get their actions, and the same keys are among `window:events()` for code that wants them raw.
 
-`window.frames` counts what reached the screen, and the last frame's draw can still be on its way when `shutdown` reads it: here, 120 frames drew 119.
+`window.frames` counts what reached the screen. Paced by its display, as a windowed target is by default, the host waits for each frame to be drawn before the next, so 120 frames drew 120; at another `--pace` the last frame's draw can still be on its way when `shutdown` reads it, and 120 frames may draw 119.
 
 ## On the network
 
