@@ -644,7 +644,17 @@ impl State {
 /// How long a refresh of the display `raw` is on is, where the window system says: nothing for a
 /// rate outside 1 to 1000 a second, which is no display's.
 fn refresh_of(raw: &RawWindow) -> Option<Duration> {
-    let millihertz = raw.current_monitor()?.refresh_rate_millihertz()?;
+    // A window not yet mapped (Wayland's, until its first frame) is on no display yet: the
+    // primary display, or the fastest, is the best guess until it is.
+    let millihertz = raw
+        .current_monitor()
+        .and_then(|monitor| monitor.refresh_rate_millihertz())
+        .or_else(|| raw.primary_monitor().and_then(|monitor| monitor.refresh_rate_millihertz()))
+        .or_else(|| {
+            raw.available_monitors()
+                .filter_map(|monitor| monitor.refresh_rate_millihertz())
+                .max()
+        })?;
     (1_000..=1_000_000)
         .contains(&millihertz)
         .then(|| Duration::from_secs(1000) / millihertz)
@@ -1354,7 +1364,8 @@ pub fn pacer() -> Option<Pacer> {
     let state = chosen.borrow();
     Some(Pacer {
         shared: Arc::clone(&state.shared),
-        refresh: state.refresh,
+        // Asked again while it is unknown: a window is on a display only once it is mapped.
+        refresh: state.refresh.or_else(|| state.raw.as_deref().and_then(refresh_of)),
     })
 }
 
