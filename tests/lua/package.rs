@@ -442,6 +442,68 @@ fn manifests_and_payloads_are_checked_before_anything_runs() {
         "{app_command}"
     );
 
+    // An application's fixed rate and catch-up are whole numbers in range, and only an
+    // application's.
+    for (field, most) in [("fixed_rate", 1000), ("max_catch_up", 100)] {
+        for bad in ["0", &(most + 1).to_string(), "1.5", "\"30\"", "-1", "true", "nan", "inf"] {
+            let refused = open(&[
+                (
+                    "jess.toml",
+                    &manifest(&format!(
+                        "[targets.app]\nkind = \"application\"\nentry = \"src/a.jsl\"\n{field} = {bad}\n"
+                    )),
+                ),
+                ("src/a.jsl", ""),
+            ]);
+            assert!(
+                refused.contains(&format!("[targets.app] {field} must be a whole number from 1 to {most}")),
+                "{field} = {bad}: {refused}"
+            );
+        }
+        let command = open(&[
+            (
+                "jess.toml",
+                &manifest(&format!(
+                    "[targets.tool]\nkind = \"command\"\nentry = \"src/a.jsl\"\n{field} = 30\n"
+                )),
+            ),
+            ("src/a.jsl", ""),
+        ]);
+        assert!(
+            command.contains(&format!("[targets.tool] {field} is only valid when kind = \"application\"")),
+            "{command}"
+        );
+    }
+    // Its pace is a pace's name or a rate in range, and only an application's.
+    for bad in ["0", "1001", "1.5", "\"fast\"", "\"60\"", "true"] {
+        let refused = open(&[
+            (
+                "jess.toml",
+                &manifest(&format!(
+                    "[targets.app]\nkind = \"application\"\nentry = \"src/a.jsl\"\npace = {bad}\n"
+                )),
+            ),
+            ("src/a.jsl", ""),
+        ]);
+        assert!(
+            refused.contains(
+                "[targets.app] pace must be \"display\", \"unpaced\", or a whole number of frames a second from 1 to 1000"
+            ),
+            "pace = {bad}: {refused}"
+        );
+    }
+    let command = open(&[
+        (
+            "jess.toml",
+            &manifest("[targets.tool]\nkind = \"command\"\nentry = \"src/a.jsl\"\npace = \"display\"\n"),
+        ),
+        ("src/a.jsl", ""),
+    ]);
+    assert!(
+        command.contains("[targets.tool] pace is only valid when kind = \"application\""),
+        "{command}"
+    );
+
     let duplicate_command = open(&[
         (
             "jess.toml",

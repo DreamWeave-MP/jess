@@ -13,6 +13,11 @@
 //! 2. **Advance.** [`ScriptDomain::advance`]: fixed steps, update, late update, and the event
 //!    drain.
 //!
+//! When frames run is not the host's to decide: [`pacing`] is that decision, apart from any
+//! loop, for whoever drives the frames. Every host's domain carries a
+//! [`FixedProgress`](crate::runtime::FixedProgress), how far its time is into the next fixed
+//! step, for handlers that interpolate.
+//!
 //! The host declares no contexts and reserves no action names: the application registers its
 //! contexts on [`Host::domain`] and its scripts bind them. What the host owns is what outlives a
 //! script generation: the devices and the clock. Every host's domain also carries an
@@ -38,6 +43,7 @@
 #![warn(missing_docs)]
 
 pub mod input;
+pub mod pacing;
 
 use std::fmt;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -200,6 +206,8 @@ impl Host {
         }
         let exit = Arc::new(ExitRequest::default());
         domain_spec = domain_spec.service(Arc::clone(&exit));
+        // Where its time is between fixed steps, for handlers that interpolate.
+        domain_spec = domain_spec.service(Arc::new(crate::runtime::FixedProgress::default()));
         let domain = ScriptDomain::create(factory, domain_spec)?;
         Ok(Host { domain, input, exit })
     }

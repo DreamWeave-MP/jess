@@ -88,7 +88,7 @@ capabilities = ["process.environment"]
 | `[[layer]]` | Each layer: its `id`, the layers it `requires`, and the module names it `exports`. |
 | `[[layer.entrypoint]]` | Each of the layer's entrypoints: its `module`, and the `capabilities` it needs. |
 | `[managed.<id>]` | A managed module an [application](@/docs/scripting/applications.md) loads into its domain: its private `module` file, and the `interface` id it provides, if any. |
-| `[targets.<id>]` | Something runnable: its `kind`, `command` (a script run to its end) or `application` (a host of its own, see [Applications](@/docs/scripting/applications.md)), its private `entry`, the `capabilities` it declares, and for a command an optional `command` name. |
+| `[targets.<id>]` | Something runnable: its `kind`, `command` (a script run to its end) or `application` (a host of its own, see [Applications](@/docs/scripting/applications.md)), its private `entry`, the `capabilities` it declares, for a command an optional `command` name, and for an application an optional `fixed_rate`, `max_catch_up`, and `pace`. |
 
 Every key, with its rules, is in the [manifest reference](@/docs/reference/manifest.md); every capability name a target or entrypoint can declare is in [Capabilities](@/docs/reference/capabilities.md).
 

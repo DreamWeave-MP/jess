@@ -1131,6 +1131,40 @@ export type GpuWindowDesc = {
 --- fastest rate (`exclusive`).
 export type GpuFullscreen = 'windowed' | 'borderless' | 'exclusive'
 
+--- How often an application's frames run: as its pacing window's display takes them (`display`),
+--- at most that many a second (a whole number from 1 to 1000), or as fast as they finish
+--- (`unpaced`).
+export type ApplicationPace = 'display' | 'unpaced' | number
+
+--- What `application.pace` reports: the pace the application asks for and where that came from
+--- (its manifest, its code, or the host's default), the pace whoever runs it imposes over that
+--- (`--pace`), and the pace in effect at the last frame's end: display pacing with no window that
+--- waits on its display is a timer at the display's rate, and says so.
+export type ApplicationPacing = {
+  requested: ApplicationPace,
+  origin: 'default' | 'manifest' | 'application',
+  override: ApplicationPace?,
+  effective: ApplicationPace,
+}
+
+--- What `application.frameStats` reports, in seconds: frames begun, the last one's `delta`, how
+--- long its `work` took and how long the host `waited` before it for the pace, frames a second
+--- over the last second (`rate`, 0 before there is one), the fixed step, and how far the domain's
+--- time is into the next fixed step, from 0 to 1 (`interpolation`), to draw between the last two.
+--- `refresh` is the pacing window's display's refresh where the window system says, and
+--- `refreshConfirmed` whether it is that display's or a guess from the displays there are.
+export type ApplicationFrameStats = {
+  frames: number,
+  delta: number,
+  work: number,
+  waited: number,
+  rate: number,
+  fixedStep: number,
+  interpolation: number,
+  refresh: number?,
+  refreshConfirmed: boolean?,
+}
+
 --- A display: what the window system calls it, its size in physical pixels and where it is among
 --- the displays, the `scale` of a logical pixel on it, how many images a second it shows, where
 --- the window system says, and whether it is the primary one, where there is one.
@@ -1221,6 +1255,9 @@ declare extern type GpuWindow with
   function textInput(self, enabled: boolean, area: GpuTextArea?): ()
   function cursor(self, mode: ('normal' | 'hidden' | 'captured')?): GpuCursor
   function fullscreen(self, mode: GpuFullscreen?): GpuFullscreen
+  vsyncState: { requested: boolean, resolved: boolean, applied: boolean }
+  function vsync(self, vsync: boolean?): boolean
+  function paces(self, paces: boolean?): boolean
   __tostring: (self: GpuWindow) -> string
 end
 
@@ -1658,6 +1695,14 @@ declare jess: {
     --- Asks the host to stop with `status` (0 without one, an integer up to 255) after the
     --- current frame. Shutdown handlers still run; a later call replaces the status.
     exit: (status: number?) -> (),
+    --- The pace asked for, where that came from, any override, and the pace in effect.
+    pace: () -> ApplicationPacing,
+    --- Asks for `pace` from the end of the current frame on. An override (`--pace`) still wins,
+    --- and this is what paces once it is lifted. A restart forgets it.
+    setPace: (pace: ApplicationPace) -> (),
+    --- How the frames are going, and where the domain's time is between fixed steps. Waits on
+    --- nothing.
+    frameStats: () -> ApplicationFrameStats,
   },
 
   --- The native half of `@jess/input`, which wraps it: compiling a binding document and the
@@ -1747,6 +1792,36 @@ end
 
 return { on = { host = { update = update } } }
 ```
+
+## jess.application.pace
+
+{{ api_symbol(value="jess.application.pace") }}
+
+What paces the application's frames ([Frames and steps](@/docs/scripting/applications.md#frames-and-steps)): the pace it asks for (`requested`) and where that came from (`origin`: its manifest's `pace`, its code's `setPace`, or the host's `default`), the pace whoever runs it imposes over that (`override`, from `--pace` or an embedder; `nil` without one), and the pace in effect at the end of the last frame (`effective`). A pace is `'display'`, `'unpaced'`, or a whole number of frames a second. Display pacing with no window that waits on its display runs on a timer at the display's refresh, and `effective` says that rate rather than `'display'`.
+
+{{ api_symbol(value="ApplicationPacing") }}
+
+- **Errors:** as `setPace`.
+
+## jess.application.setPace
+
+{{ api_symbol(value="jess.application.setPace") }}
+
+Asks for `pace` from the end of the current frame on: `'display'`, `'unpaced'`, or a whole number of frames a second from 1 to 1000, at most. The next frame's deadline counts from when the last one began, and no elapsed time is lost or invented, so `update`'s delta and the fixed step's accumulation carry on through the change. An override holds over it, and what it asks is what paces once the override is lifted. A restart forgets it, even when the old code's `shutdown` handler asked it, and the manifest's pace, or the default, is asked for again.
+
+- **Errors:** `application.setPace: the pace is 'display', 'unpaced', or a whole number of frames a second from 1 to 1000, not <value>`; `application.setPace: needs an application host; jess run, jess test, and command targets drive no frames`; in a worker, `application.setPace is for the domain's own code; a worker asks the domain in a message`.
+
+## jess.application.frameStats
+
+{{ api_symbol(value="jess.application.frameStats") }}
+
+How the frames are going, as the host recorded them, in seconds: one frame for each step the host ran (the command line's, or an embedder's `Application::step`; an embedder's `waited` is 0, its waiting being its own): `frames` begun, the last frame's `delta`, its `work` (from its beginning to its windows told to draw it), how long the host `waited` before it for the pace, `rate`, frames a second over the last second or so (0 until there is one), the `fixedStep`, and `interpolation`, how far the domain's time is into the next fixed step, from 0 to 1, for drawing between the last two steps. With a pacing window, `refresh` is its display's refresh in seconds and `refreshConfirmed` whether the window system said so of that display, rather than a guess from the displays there are. It reads what is recorded and waits on nothing, so asking every frame costs one table.
+
+{{ api_symbol(value="ApplicationFrameStats") }}
+
+- **Errors:** as `setPace`.
+
+[Graphics settings](@/docs/cookbook/graphics-settings.md) changes the pace and a window's vsync from the keyboard and prints these.
 
 Related: [Applications](@/docs/scripting/applications.md), [jess package run](@/docs/cli/package.md#jess-package-run).
 
@@ -2951,7 +3026,7 @@ Opens a native window with a surface on `device`. The window is what a person se
 | `title` | Its title; `jess` by default. |
 | `width`, `height` | Its inner size in physical pixels; 800 by 600 by default. The window system may give it another. |
 | `resizable` | Whether the person can resize it; `true` by default. |
-| `vsync` | Whether presenting waits for the display's refresh, one image a refresh; `true` by default. |
+| `vsync` | Whether presenting waits for the display's refresh, one image a refresh; `true` by default. `window:vsync` changes it while the window is open. |
 | `format` | The format its surface draws in; by default the first of `bgra8Unorm`, `rgba8Unorm`, `bgra8UnormSrgb`, and `rgba8UnormSrgb` it offers. |
 | `key` | What the application calls it, to keep it: a window opened with a key stays open when every handle to it is gone, still showing what it showed, and opening the key again hands it back instead of opening another. |
 | `closes` | Whether the person asking it to close (its close button, say) closes it; `true` by default. With `false`, the request is only an event, and the application decides: asks to save, say, then calls `close`. |
@@ -3004,6 +3079,9 @@ Handles what the window system reported since the last call (sizes, closes, keys
 | `resize(width, height)` | Asks the window system for that inner size in physical pixels. It may give another, or none (a tiling window manager, say); what it gives arrives as a `resized` event, and the shown plan goes with it. |
 | `events()` | What happened to it since the last call, oldest first, the last 256 at most (a run of pointer moves is the last of them): `{ kind = 'resized', width, height }`, `{ kind = 'scaled', scale }`, `{ kind = 'focused', focused }`, `{ kind = 'closeRequested' }`, and `{ kind = 'closed' }`, and what the person did in it, below. A shown plan is resized already when its `resized` is read; this is for what the application does about it (a camera's aspect, say). |
 | `textInput(enabled, area?)` | Asks for text, or stops. While it asks, an input method (the one that writes Japanese, say) may compose for it, showing its candidates beside `area`, `{ x, y, width, height }` in physical pixels from the top left: where the text goes. Keys type `text` whether it asks or not. |
+| `vsync(vsync?)` | Asks for presenting to wait for its display (`true`) or not (`false`), from its next image on, and says whether it does; with no argument it only says. The surface is configured again in place, never the window made again. A surface that offers no mode that doesn't wait (some compositors offer only that) keeps waiting, and `vsync(false)` returns `true`. Under [display pacing](@/docs/scripting/applications.md#frames-and-steps), the pacing window's vsync decides whether its display paces the application or a timer at its refresh does. |
+| `vsyncState` | `{ requested, resolved, applied }`: the vsync asked for, what the surface's modes make of it (what `vsync()` returns), and what the surface is configured in now, which catches up once its presenter has applied the change, before its next image. Display pacing goes by `applied`. |
+| `paces(paces?)` | Asks for it to be the window whose display paces the application's frames under [display pacing](@/docs/scripting/applications.md#frames-and-steps), taking that from any other, or stops asking; says whether it asks. With none asking, the first window opened that is still open paces. No other window is waited on. |
 | `cursor(mode?)` | Shows the pointer (`'normal'`), hides it while it is over the window (`'hidden'`), or captures it (`'captured'`), and says how the window holds it now; with no mode it only says. See [the pointer](#the-pointer). |
 
 Under an application's host, a window something happened to is announced: the host posts the [named event](@/docs/scripting/applications.md#named-events) [`jess.window`](@/docs/api/events.md#jess-window), `{ title, key }`, once until its events are read, and a handler of it (`on.event['jess.window']`) reads them with `events()`. Nothing runs while nothing happens to a window, and the handler runs in the frame the news came in. A script that drives its own frames reads `events()` when it likes.

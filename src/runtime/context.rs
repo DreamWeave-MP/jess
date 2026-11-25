@@ -148,6 +148,30 @@ pub struct FixedStep {
     pub max_catch_up: u32,
 }
 
+/// How far a domain's time is into its next fixed step.
+///
+/// What is left in its accumulator once an advance has run the steps it owes, published before the advance's update phase, so a handler
+/// can interpolate between the last two fixed steps. A domain with a fixed step updates the one
+/// it carries as a service ([`crate::runtime::DomainSpec::service`]); a host attaches one.
+#[derive(Debug, Default)]
+pub struct FixedProgress {
+    /// The remainder, in nanoseconds.
+    remainder: std::sync::atomic::AtomicU64,
+}
+
+impl FixedProgress {
+    /// The time into the next fixed step.
+    #[must_use]
+    pub fn remainder(&self) -> Duration {
+        Duration::from_nanos(self.remainder.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    pub(crate) fn set(&self, remainder: Duration) {
+        let nanoseconds = u64::try_from(remainder.as_nanos()).unwrap_or(u64::MAX);
+        self.remainder.store(nanoseconds, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// What the host declares about a context before any code binds to it.
 #[derive(Clone, Debug)]
 pub struct ContextSpec {

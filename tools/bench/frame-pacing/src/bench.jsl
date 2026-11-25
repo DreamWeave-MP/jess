@@ -1,0 +1,165 @@
+--!strict
+-- Run with a verified release, on a desktop:
+-- jess package run tools/bench/frame-pacing
+--
+-- Each phase lasts three seconds. One window draws a pass whose color changes every frame, so every frame gives it something to
+-- present, while every frame also makes garbage over a retained heap. The application changes its
+-- pace and the window's vsync from its own update, phase after phase, and reports each phase's
+-- complete frame intervals (the delta from one frame's beginning to the next, which is everything
+-- the host does, collection and waiting included), the frames that missed their deadline by half
+-- an interval or more, and how many frames the window presented a second.
+local application = require '@jess/application'
+local render = require '@jess/render'
+local shader = require '@jess/shader'
+
+type Phase = { name: string, pace: ApplicationPace, vsync: boolean }
+
+local Phases: { Phase } = {
+  { name = 'display, vsync', pace = 'display', vsync = true },
+  { name = 'display, no vsync', pace = 'display', vsync = false },
+  { name = '60, vsync', pace = 60, vsync = true },
+  { name = '144, no vsync', pace = 144, vsync = false },
+  { name = '30, no vsync', pace = 30, vsync = false },
+  { name = 'unpaced, no vsync', pace = 'unpaced', vsync = false },
+  { name = 'display, vsync again', pace = 'display', vsync = true },
+}
+
+local PhaseSeconds = 3
+local WarmUp = 60
+local Retained = 200000
+local Garbage = 2000
+
+local program = shader.program {
+  pass = { shade = shader.float },
+  vertex = function(input)
+    local index = input.builtin.vertexIndex
+    local horizontal = shader.float(shader.bitAnd(shader.shiftLeft(index, shader.uint(1)), shader.uint(2)))
+    local vertical = shader.float(shader.bitAnd(index, shader.uint(2)))
+    return { position = shader.vec4(shader.vec2(horizontal, vertical) * 2 - 1, 0, 1) }
+  end,
+  fragment = function(input) return shader.vec4(input.pass.shade, 0.2, 0.4, 1) end,
+}
+
+local device = jess.gpu.device()
+local window = jess.gpu.window(device, { title = 'frame pacing', width = 320, height = 200 })
+local format = assert(window.format)
+local pipeline = device:pipeline(program, { colors = { format } })
+local shading = render.block(program.layout, 'pass')
+local shadingBuffer = device:buffer(shading.size, 'uniform')
+
+window:show(
+  device:plan {
+    viewport = { width = window.width, height = window.height },
+    targets = { { name = 'screen', format = format, imported = true } },
+    passes = {
+      {
+        name = 'fill',
+        kind = 'fullscreen',
+        pipeline = pipeline,
+        pass = pipeline:bind('pass', { [0] = shadingBuffer }),
+        colors = { 'screen' },
+      },
+    },
+  },
+  'screen'
+)
+
+local retained = table.create(Retained)
+for index = 1, Retained do
+  retained[index] = { name = `object {index}`, tags = { index, index + 1 } }
+end
+
+local function percentile(sorted: { number }, fraction: number): number
+  return sorted[math.max(1, math.ceil(#sorted * fraction))]
+end
+
+local function report(phase: Phase, deltas: { number }, presented: number)
+  local sorted = table.clone(deltas)
+  table.sort(sorted)
+  local total = 0
+  for _, delta in sorted do
+    total += delta
+  end
+
+  local stats = application.frameStats()
+  local target = if type(phase.pace) == 'number'
+    then 1 / phase.pace
+    elseif phase.pace == 'display' then stats.refresh
+    else nil
+  local missed = 0
+  if target then
+    for _, delta in deltas do
+      if delta > target * 1.5 then missed += 1 end
+    end
+  end
+
+  print(string.format(
+    '%-22s effective %-7s %8.1f frames/s, presented %7.1f/s; interval ms p50 %.2f / p95 %.2f / p99 %.2f / p99.9 %.2f / max %.2f; missed %s; heap %d MB',
+    phase.name,
+    tostring(application.pace().effective),
+    #deltas / total,
+    presented / total,
+    percentile(sorted, 0.5) * 1000,
+    percentile(sorted, 0.95) * 1000,
+    percentile(sorted, 0.99) * 1000,
+    percentile(sorted, 0.999) * 1000,
+    sorted[#sorted] * 1000,
+    if target then tostring(missed) else '-',
+    gcinfo() // 1024
+  ))
+end
+
+local frame, phase, churn, elapsed = 0, 0, 0, 0
+local deltas: { number } = {}
+local presentedAtStart, phaseElapsed = 0, 0
+
+local function begin(index: number)
+  local next = Phases[index]
+  application.setPace(next.pace)
+  window:vsync(next.vsync)
+  phase, deltas, presentedAtStart, phaseElapsed = index, {}, window.frames, 0
+end
+
+return {
+  on = {
+    host = {
+      update = function(delta: number)
+        frame += 1
+        elapsed += delta
+        shading:set('shade', 0.5 + 0.5 * math.sin(elapsed))
+        shading:upload(shadingBuffer)
+
+        local scratch = table.create(Garbage)
+        for index = 1, Garbage do
+          scratch[index] = { frame, index, `{frame}:{index}` }
+        end
+
+        for index = 1, 20 do
+          churn = churn % Retained + 1
+          retained[churn] = { name = `object {churn} at {frame}`, tags = scratch[index] }
+        end
+
+        if frame == WarmUp then
+          begin(1)
+          return
+        end
+
+        if phase == 0 then return end
+
+        -- A pace asked for applies from the end of the frame that asks, so this frame's delta,
+        -- the interval before it, is the new pace's.
+        table.insert(deltas, delta)
+        phaseElapsed += delta
+        if phaseElapsed < PhaseSeconds then return end
+
+        report(Phases[phase], deltas, window.frames - presentedAtStart)
+        if phase == #Phases then
+          application.exit(0)
+          return
+        end
+
+        begin(phase + 1)
+      end,
+    },
+  },
+}

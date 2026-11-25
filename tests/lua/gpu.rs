@@ -2144,8 +2144,8 @@ window:show(plan, 'screen')
 ];
 
 /// An application showing a scene that doesn't change: frame after frame, its host runs no Luau,
-/// and its window presents nothing new. Part of `a_script_shows_a_plan_in_a_window`, on the thread
-/// its windows are on.
+/// and its window presents nothing new, nor when the display paces its frames. Part of
+/// `a_script_shows_a_plan_in_a_window`, on the thread its windows are on.
 #[cfg(feature = "window")]
 fn a_shown_scene_that_does_not_change_runs_no_luau() {
     use jess::lua::package::{self, Launched, TargetRequest};
@@ -2193,6 +2193,34 @@ fn a_shown_scene_that_does_not_change_runs_no_luau() {
     assert_eq!(window.frames(), presented, "nothing new was presented");
     drop(window);
     application.stop().unwrap();
+
+    // Run as the command line runs it, paced by its display by default: the window, which waits
+    // on its display, draws the scene and counts that frame as one its display paced, and the
+    // run's frames make it draw nothing more.
+    let Launched::Application(application) =
+        package::launch(&jess::lua::Options::default(), &request).unwrap_or_else(|error| panic!("{error}"))
+    else {
+        panic!("still is an application");
+    };
+    assert_eq!(application.pacing().chosen(), jess::lua::application::Pace::Display);
+    let window = jess::window::windows()
+        .into_iter()
+        .find(|window| window.title() == "still")
+        .expect("the application's window is open");
+    let status = application
+        .run(Some(60), &std::sync::atomic::AtomicBool::new(false), |line| panic!("{line}"))
+        .unwrap();
+    assert_eq!(status, 0, "the run ran out of frames");
+    assert!(window.frames() >= 1, "the scene was drawn");
+    assert!(
+        jess::window::pacer().is_some_and(|pacer| pacer.frames() == window.frames() && pacer.waits()),
+        "its one window, which waits on its display, is the one that paces"
+    );
+    assert!(
+        window.frames() < 10,
+        "60 frames of a still scene drew {} times",
+        window.frames()
+    );
 }
 
 /// A window kept by a key outlives the code that opened it, and the next code takes it back, on

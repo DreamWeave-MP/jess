@@ -1,0 +1,95 @@
+--!strict
+local application = require '@jess/application'
+local render = require '@jess/render'
+local shader = require '@jess/shader'
+
+local program = shader.program {
+  pass = { shade = shader.float },
+  vertex = function(input)
+    local index = input.builtin.vertexIndex
+    local horizontal = shader.float(shader.bitAnd(shader.shiftLeft(index, shader.uint(1)), shader.uint(2)))
+    local vertical = shader.float(shader.bitAnd(index, shader.uint(2)))
+    return { position = shader.vec4(shader.vec2(horizontal, vertical) * 2 - 1, 0, 1) }
+  end,
+  fragment = function(input) return shader.vec4(input.pass.shade, 0.2, 0.4, 1) end,
+}
+
+local device = jess.gpu.device()
+local window = jess.gpu.window(device, { title = 'graphics settings', width = 320, height = 200 })
+local format = assert(window.format)
+local pipeline = device:pipeline(program, { colors = { format } })
+local shading = render.block(program.layout, 'pass')
+local shadingBuffer = device:buffer(shading.size, 'uniform')
+
+window:show(
+  device:plan {
+    viewport = { width = window.width, height = window.height },
+    targets = { { name = 'screen', format = format, imported = true } },
+    passes = {
+      {
+        name = 'fill',
+        kind = 'fullscreen',
+        pipeline = pipeline,
+        pass = pipeline:bind('pass', { [0] = shadingBuffer }),
+        colors = { 'screen' },
+      },
+    },
+  },
+  'screen'
+)
+
+local Paces: { [string]: ApplicationPace } = {
+  Digit1 = 'display',
+  Digit2 = 30,
+  Digit3 = 120,
+  Digit4 = 'unpaced',
+}
+
+local function report()
+  local pacing, stats = application.pace(), application.frameStats()
+  local held = if pacing.override == nil then '' else `, held at {pacing.override}`
+  print(string.format(
+    'pace %s (asked %s%s), vsync %s, %.0f frames a second, work %.2f ms',
+    tostring(pacing.effective),
+    tostring(pacing.requested),
+    held,
+    tostring(window:vsync()),
+    stats.rate,
+    stats.work * 1000
+  ))
+end
+
+local elapsed = 0
+
+return {
+  on = {
+    host = {
+      update = function(deltaSeconds: number)
+        elapsed += deltaSeconds
+        shading:set('shade', 0.5 + 0.5 * math.sin(elapsed))
+        shading:upload(shadingBuffer)
+      end,
+
+      shutdown = report,
+    },
+
+    event = {
+      ['jess.window'] = function()
+        for _, event in window:events() do
+          if event.kind == 'closed' then
+            application.exit(0)
+          elseif event.kind == 'key' and event.pressed and not event.repeated then
+            local pace = Paces[event.key]
+            if pace then
+              application.setPace(pace)
+            elseif event.key == 'KeyV' then
+              window:vsync(not window:vsync())
+            elseif event.key == 'KeyS' then
+              report()
+            end
+          end
+        end
+      end,
+    },
+  },
+}

@@ -68,6 +68,10 @@ suite.it('keeps tutorial code and fixtures identical', function()
   documented(windowPage, 'tests/fixtures/docs/window/jess.toml', 'toml')
   documented(windowPage, 'tests/fixtures/docs/window/src/main.jsl', 'luau')
   documented(windowPage, 'tests/fixtures/docs/window/src/view.jsl', 'luau')
+  local settingsPage = 'site/content/docs/cookbook/graphics-settings.md'
+  documented(settingsPage, 'tests/fixtures/docs/graphics-settings/jess.toml', 'toml')
+  documented(settingsPage, 'tests/fixtures/docs/graphics-settings/src/main.jsl', 'luau')
+  documented(settingsPage, 'tests/fixtures/docs/graphics-settings/src/settings.jsl', 'luau')
 end)
 
 local function makeScratch(): string
@@ -162,6 +166,7 @@ end)
 
 suite.it('checks the window application without opening a device', function()
   run { 'package', 'check', 'tests/fixtures/docs/window' }
+  run { 'package', 'check', 'tests/fixtures/docs/graphics-settings' }
 end)
 
 suite.it('creates and tests the first package from source and JPK', function()

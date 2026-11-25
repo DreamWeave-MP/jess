@@ -152,6 +152,78 @@ fn frames_stop_an_application_and_its_shutdown_still_runs() {
     );
 }
 
+/// `--pace` is taken by both runners, refused when it names no pace or the target is no
+/// application, and changes how often frames run, not what they do.
+#[test]
+fn pace_chooses_how_often_frames_run() {
+    for pace in ["unpaced", "display", "500"] {
+        let output = jess()
+            .args(["package", "run"])
+            .arg(example().join("game"))
+            .arg("--package-path")
+            .arg(example())
+            .args(["--pace", pace, "print"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "--pace {pace}: {}", text(&output.stderr));
+        assert_eq!(text(&output.stdout), EXAMPLE, "--pace {pace}");
+    }
+    let output = jess()
+        .args(["workspace", "--workspace"])
+        .arg(example())
+        .args([
+            "run",
+            "org.example.game:game",
+            "--pace",
+            "unpaced",
+            "--frames",
+            "2",
+            "--",
+            "print",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert!(
+        text(&output.stdout).ends_with("scoreboard: death 1, Rowan on frame 2\ndirector shutdown\n"),
+        "{}",
+        text(&output.stdout)
+    );
+
+    for bad in ["0", "1001", "fast", "60.5", ""] {
+        let refused = jess()
+            .args(["package", "run"])
+            .arg(example().join("game"))
+            .arg("--package-path")
+            .arg(example())
+            .args(["--pace", bad])
+            .output()
+            .unwrap();
+        assert_eq!(refused.status.code(), Some(2), "--pace {bad:?}");
+        assert!(
+            text(&refused.stderr).contains("display, unpaced, or frames a second from 1 to 1000"),
+            "--pace {bad:?}: {}",
+            text(&refused.stderr)
+        );
+    }
+
+    let scratch = Scratch::new("application-pace-command");
+    let tool = app(&scratch.0, "return {}\n", "return nil\n");
+    let refused = jess()
+        .args(["package", "run"])
+        .arg(&tool)
+        .args(["--target", "tool", "--pace", "unpaced"])
+        .output()
+        .unwrap();
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(
+        text(&refused.stderr)
+            .contains("--pace is for application targets; target 'tool' of org.example.app is a command target"),
+        "{}",
+        text(&refused.stderr)
+    );
+}
+
 #[test]
 fn an_application_s_status_is_what_it_asks_to_stop_with_and_failures_go_to_stderr() {
     let scratch = Scratch::new("application-status");

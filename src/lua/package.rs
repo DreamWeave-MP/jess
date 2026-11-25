@@ -669,6 +669,18 @@ pub struct Target {
     pub capabilities: Vec<String>,
     /// Its requested CLI alias, for command targets.
     pub command: Option<String>,
+    /// For an application target, the fixed steps a second its manifest declares (`fixed_rate`);
+    /// without one, [`crate::lua::application::DEFAULT_FIXED_RATE`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixed_rate: Option<u32>,
+    /// For an application target, the most fixed steps one frame catches up on (`max_catch_up`);
+    /// without one, [`crate::lua::application::DEFAULT_MAX_CATCH_UP`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_catch_up: Option<u32>,
+    /// For an application target, the pace its manifest asks for (`pace`): `display`, `unpaced`, or
+    /// frames a second, as [`crate::host::pacing::Pace::parse`] reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pace: Option<String>,
 }
 
 /// What `jess package inspect` reports: a package's manifest and identity, read without running it.
@@ -997,7 +1009,9 @@ pub fn inspect_with(runtime: &Runtime, location: &str, image: Option<&crate::lua
         "modules": [{ "name": "", "path": "" }],
         "layers": [{ "id": "", "requires": [""], "exports": [""], "entrypoints": [{ "module": "", "capabilities": [""] }] }],
         "managed": [{ "id": "", "module": "", "interface": null }],
-        "targets": [{ "id": "", "kind": "", "entry": "", "capabilities": [""], "command": null }],
+        "targets": [{
+            "id": "", "kind": "", "entry": "", "capabilities": [""], "command": null, "fixedRate": null, "maxCatchUp": null, "pace": null,
+        }],
         "dependencies": [{ "id": "", "requirement": "" }],
         "devDependencies": [{ "id": "", "requirement": "" }],
         "capabilities": [{ "capability": "", "layer": "", "entrypoint": "" }],
@@ -1689,6 +1703,9 @@ fn check_grant(inspection: &Inspection, target: &Target, grant: Option<&[String]
 
 /// What [`launch`] started.
 #[derive(Debug)]
+// Made once a launch and moved straight to its driver; an application holds its last frame's
+// record in place so a step allocates nothing, and boxing it here would only move that cost.
+#[allow(clippy::large_enum_variant)]
 pub enum Launched {
     /// A command target, which ran to the end.
     Command(TargetRun),
@@ -1716,6 +1733,10 @@ pub struct LaunchOptions {
     /// The application's input. Without one the application runs headless, as the command line
     /// runs it: the host never polls a device, and no `on.host.input` handler runs.
     pub input: Option<crate::host::InputSource>,
+    /// How [`crate::lua::application::Application::run`] paces its frames. Without one, by the
+    /// display for a target that may open windows (`gpu.window`), and every fixed step for one
+    /// that may not.
+    pub pace: Option<crate::lua::application::Pace>,
 }
 
 /// [`launch`], with an application target's host set up as `launch` says. A command target
@@ -1733,7 +1754,7 @@ pub fn launch_with(options: &crate::lua::Options, request: &TargetRequest, launc
     let target = target(&inspection, request.target.as_deref())?;
     check_grant(&inspection, target, request.grant.as_deref())?;
     if target.kind == "application" {
-        return crate::lua::application::launch(options, request, &inspection, target, launch.input)
+        return crate::lua::application::launch(options, request, &inspection, target, launch.input, launch.pace)
             .map(Launched::Application);
     }
     run_command(options, request, &inspection, target).map(Launched::Command)
