@@ -18,7 +18,7 @@ The generated [symbol index](@/docs/api/symbols.md) and [machine-readable API ca
 
 Three kinds of module live here:
 
-- **The `jess` global and its members**: `jess.context`, `jess.timer`, `jess.worker`, `jess.events`, `jess.interfaces`, `jess.application`, `jess.shader`, `jess.gpu`, `jess.input`, `jess.audio`, `jess.bench`, and the values that belong to no module. Most are also available through `require('@jess/<name>')`. `@jess/input` and `@jess/audio` are built-in package modules wrapping the corresponding native tables, not those same tables.
+- **The `jess` global and its members**: `jess.context`, `jess.timer`, `jess.worker`, `jess.events`, `jess.interfaces`, `jess.application`, `jess.shader`, `jess.gpu`, `jess.input`, `jess.audio`, `jess.bench`, `jess.gc`, and the values that belong to no module. Most are also available through `require('@jess/<name>')`. `@jess/input` and `@jess/audio` are built-in package modules wrapping the corresponding native tables, not those same tables.
 - **The built-in modules**, Luau that ships inside the binary: `@jess/log`, `@jess/test`, `@jess/jpk`, `@jess/package`.
 - **The built-in package's exports**: `@jess/style`, `@jess/analysis`, `@jess/json`, `@jess/yaml`, `@jess/data/toml`, `@jess/data/value`, `@jess/l10n`, `@jess/input`, `@jess/audio`, `@jess/render`, `@jess/render/camera`, `@jess/render/cull`, `@jess/backup`, `@jess/http`, `@jess/sse`, `@jess/net`, `@jess/websocket`.
 
@@ -35,7 +35,7 @@ The native primitives under all of it, files, bytes, processes, the network, and
 | Structured data and localization | [JSON](@/docs/api/json.md), [YAML](@/docs/api/yaml.md), [TOML](@/docs/api/toml.md), [values](@/docs/api/value.md), [localization](@/docs/api/l10n.md) |
 | Files, network, and text | [files](@/docs/api/fs.md), [network loop](@/docs/api/net.md), [HTTP](@/docs/api/http.md), [WebSocket](@/docs/api/websocket.md), [event streams](@/docs/api/sse.md), [regular expressions](@/docs/api/regex.md), [backup](@/docs/api/backup.md), [L3i](@/docs/api/l3i.md) |
 | Input, rendering, and audio | [input](@/docs/api/input.md), [render](@/docs/api/render.md), [GPU](@/docs/api/gpu.md), [shader](@/docs/api/shader.md), [audio](@/docs/api/audio.md) |
-| Measurement | [bench](@/docs/api/bench.md) |
+| Measurement and memory | [bench](@/docs/api/bench.md), [gc](@/docs/api/gc.md) |
 
 Some pages describe several related APIs rather than one module. In particular, input and audio cover both the built-in package and native runtime surfaces; the page identifies each one.
 

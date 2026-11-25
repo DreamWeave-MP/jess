@@ -1840,6 +1840,67 @@ Related: [Applications](@/docs/scripting/applications.md), [jess package run](@/
 ]========]
 
 --[========[
+@api-document gc jess.gc
+
+
+Also `require('@jess/gc')`. Luau collects garbage incrementally, but on its own only when something allocates: once the heap passes the collector's threshold, whatever allocates next does a step of its work, and when allocation has outrun the collector the step grows to make up the difference. In a frame loop that is an occasional long frame, landing on whatever statement happened to allocate. An [application's](@/docs/scripting/applications.md#frames-and-steps) host does the work at a moment it chooses instead: after every frame, once the frame's changes are handed to its windows, it runs the collector for a small budget of time, and every step it runs there is one no allocation has to run inside the next frame.
+
+The host paces that by the heap. In the middle of a cycle it steps until the budget is spent or the cycle ends. Between cycles it starts the next only once the heap has grown by half since the last one ended, before Luau's own threshold (which lets it double), so the cycle starts in the host's time rather than in an allocation. An application that stops allocating stops paying anything; one that allocates heavily pays the budget every frame until the collector has caught up. What the budget doesn't cover, Luau's own allocation steps still collect, as they would without it, so a budget too small for an application costs it nothing but the long frames it would have had anyway.
+
+`step` is that same collection, for code that drives frames of its own (a benchmark simulating frames, a tool's loop), so it can do and measure what an application's host does.
+
+Each runtime has its own heap. The domain's own code shares its host's budget: `setBudget` there sets what the host spends after every frame. A [worker](@/docs/api/worker.md) has a runtime of its own, which no host steps; it collects as it allocates, or steps itself, between messages, with a budget of its own. A script with no host (`jess run`, a command target) has one budget of its own too.
+
+## jess.gc.step
+
+{{ api_symbol(value="jess.gc.step") }}
+
+
+Runs incremental collector steps for at most `milliseconds`, or the budget when omitted, paced as the host paces them: between cycles, nothing until the heap has grown by half since the last one ended. Returns the milliseconds the steps took and whether one ended a cycle. The last step may run past the budget by as long as one step takes, and the step that finishes marking takes as long as finishing it does.
+
+- **Errors:** `jess.gc.step: the budget is from 0 to 100 milliseconds, not <value>`.
+
+## jess.gc.budget
+
+{{ api_symbol(value="jess.gc.budget") }}
+
+
+The milliseconds a frame's collection spends at most: half a millisecond unless the code set another. Under an application's host it is the host's; a restart, with new code, goes back to the default.
+
+## jess.gc.setBudget
+
+{{ api_symbol(value="jess.gc.setBudget") }}
+
+
+Sets the budget, from 0 to 100 milliseconds. Zero turns the frame's collection off and leaves the heap to Luau's own steps.
+
+- **Errors:** `jess.gc.setBudget: the budget is from 0 to 100 milliseconds, not <value>`.
+
+A loop of its own that steps as an application's host would, and says how much of each frame went to it:
+
+```luau
+--!strict
+local gc = require '@jess/gc'
+
+local collecting = 0
+for frame = 1, 600 do
+  local scratch = table.create(1000)
+  for index = 1, 1000 do
+    scratch[index] = { frame, index }
+  end
+
+  local spent = gc.step()
+  collecting += spent
+end
+
+print(`collecting took {string.format('%.1f', collecting)} ms of 600 frames`)
+```
+
+Related: [Frames and steps](@/docs/scripting/applications.md#frames-and-steps), [jess.bench](@/docs/api/bench.md).
+
+]========]
+
+--[========[
 @api-document bench jess.bench
 
 
