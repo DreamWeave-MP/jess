@@ -1,0 +1,4 @@
+--!strict
+if not jess.bench.verified then
+  error('this jess was built without the verified toolchain; its numbers measure a slower Luau', 0)
+end

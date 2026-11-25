@@ -57,4 +57,12 @@ Whatever it measures, a bench in this repository follows the same protocol, and 
 
 `tools/bench/site.jsl` is the one whole-program measurement the repository keeps: it builds this site through the `tools/site` command target from a cold process, several rounds, timed from outside by GNU time (wall, CPU, peak memory). It's the model for timing a command target the way a person runs it: starting jess, resolving and activating the package, and loading its modules are part of the cost, and the harness says so rather than hiding them.
 
+## Frames
+
+`tools/bench/frame-pacing` is an application measured the way an application runs: from inside its own frames, by the host's own clock. One window draws something new every frame while every frame makes garbage over a retained heap, and the application changes its pace and the window's vsync from its own update, phase by phase. Each phase reports its complete frame intervals (from one frame's beginning to the next, so the host's waiting and collection are in them) at the 50th, 95th, 99th and 99.9th percentiles and the worst, the frames that missed their deadline by half an interval or more, how many frames the window presented a second, and the heap. It needs a desktop and refuses an unverified build:
+
+```sh
+jess package run tools/bench/frame-pacing
+```
+
 A package's own hot paths belong with the package, in its `bench/bench.jsl`, under the same protocol, and the decisions they drive (which modules earn `--!native`, say) are recorded beside the code they justify. Nothing on this site quotes them.
