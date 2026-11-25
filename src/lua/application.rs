@@ -1120,7 +1120,7 @@ impl Application {
                 report(&format!("window {title}: {problem}"));
             }
         }
-        // The windows draw on the presenter's thread: this is time the frame would otherwise wait.
+        // The windows draw on their presenters' threads: this is time the frame would otherwise wait.
         self.host.collect();
         self.end_frame(began);
         outcome

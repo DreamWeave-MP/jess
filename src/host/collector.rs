@@ -119,8 +119,7 @@ impl Collector {
     /// Sets the budget a frame's collection spends, at most [`MAX_BUDGET`]; zero turns the
     /// frame's collection off and leaves the heap to Luau's allocation steps.
     pub fn set_budget(&self, budget: Duration) {
-        self.budget
-            .store(nanoseconds(budget.min(MAX_BUDGET)), Ordering::Relaxed);
+        self.budget.store(nanoseconds(budget.min(MAX_BUDGET)), Ordering::Relaxed);
     }
 
     /// Forgets the heap and the budget, for a new runtime: a restart's generation.
@@ -176,5 +175,129 @@ impl Collector {
     /// [`Collector::collect`] with its own budget.
     pub fn collect_frame(&self, heap: &impl Heap) -> Collection {
         self.collect(heap, self.budget())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::time::{Duration, Instant};
+
+    use super::{Collector, DEFAULT_BUDGET, Heap, MAX_BUDGET};
+
+    /// A heap whose collector finishes a cycle on its `finish_after`th step, and whose every step
+    /// takes until the clock has moved, so a budget of a nanosecond is spent by one step on any
+    /// machine.
+    struct Fake {
+        kilobytes: Cell<u64>,
+        paused: Cell<bool>,
+        steps: Cell<u32>,
+        finish_after: u32,
+    }
+
+    impl Fake {
+        fn new(kilobytes: u64, finish_after: u32) -> Fake {
+            Fake {
+                kilobytes: Cell::new(kilobytes),
+                paused: Cell::new(true),
+                steps: Cell::new(0),
+                finish_after,
+            }
+        }
+    }
+
+    impl Heap for Fake {
+        fn kilobytes(&self) -> u64 {
+            self.kilobytes.get()
+        }
+
+        fn paused(&self) -> bool {
+            self.paused.get()
+        }
+
+        fn step(&self, _: i32) -> bool {
+            let started = Instant::now();
+            while Instant::now() == started {
+                std::hint::spin_loop();
+            }
+            self.steps.set(self.steps.get() + 1);
+            self.paused.set(false);
+            if self.steps.get().is_multiple_of(self.finish_after) {
+                self.paused.set(true);
+                return true;
+            }
+            false
+        }
+    }
+
+    const PLENTY: Duration = Duration::from_secs(60);
+
+    /// Before it has seen a cycle end, a collector leaves starting one to Luau; mid-cycle, it
+    /// steps until the cycle ends; then it starts the next only once the heap has grown by half.
+    #[test]
+    fn a_collector_starts_a_cycle_only_for_growth() {
+        let collector = Collector::default();
+        let heap = Fake::new(1000, 4);
+        assert_eq!(collector.collect(&heap, PLENTY).steps, 0, "Luau starts the first cycle");
+
+        heap.paused.set(false);
+        let first = collector.collect(&heap, PLENTY);
+        assert!(first.finished);
+        assert_eq!(first.steps, 4, "it stepped until the cycle ended, not until the budget did");
+
+        heap.kilobytes.set(1499);
+        assert_eq!(
+            collector.collect(&heap, PLENTY).steps,
+            0,
+            "a third more is not yet half again"
+        );
+        heap.kilobytes.set(1500);
+        let second = collector.collect(&heap, PLENTY);
+        assert!(second.finished && second.steps == 4, "half again starts one: {second:?}");
+    }
+
+    /// The budget bounds the work: a nanosecond of it is one step, and the cycle is carried on
+    /// from where it was the next time; a budget of nothing does nothing at all.
+    #[test]
+    fn the_budget_bounds_the_work_and_the_cycle_carries_on() {
+        let collector = Collector::default();
+        let heap = Fake::new(1000, 3);
+        heap.paused.set(false);
+        for step in 1..=2 {
+            let collection = collector.collect(&heap, Duration::from_nanos(1));
+            assert_eq!((collection.steps, collection.finished), (1, false), "step {step}");
+        }
+        let last = collector.collect(&heap, Duration::from_nanos(1));
+        assert!(last.finished && last.steps == 1);
+        heap.paused.set(false);
+        assert_eq!(collector.collect(&heap, Duration::ZERO).steps, 0);
+    }
+
+    /// A cycle Luau's own steps finished between two collections still counts: the heap it left
+    /// is the one the next cycle waits to grow from.
+    #[test]
+    fn a_cycle_luau_finished_is_where_growth_counts_from() {
+        let collector = Collector::default();
+        let heap = Fake::new(1000, 100);
+        heap.paused.set(false);
+        assert!(!collector.collect(&heap, Duration::from_nanos(1)).finished);
+        // Luau finishes it, leaving 2000 KB.
+        heap.paused.set(true);
+        heap.kilobytes.set(2000);
+        assert_eq!(collector.collect(&heap, PLENTY).steps, 0);
+        heap.kilobytes.set(2999);
+        assert_eq!(collector.collect(&heap, PLENTY).steps, 0, "growth counts from 2000 KB");
+        heap.kilobytes.set(3000);
+        assert!(collector.collect(&heap, PLENTY).steps > 0);
+    }
+
+    #[test]
+    fn a_budget_is_capped_and_a_reset_forgets_it() {
+        let collector = Collector::default();
+        assert_eq!(collector.budget(), DEFAULT_BUDGET);
+        collector.set_budget(Duration::from_secs(5));
+        assert_eq!(collector.budget(), MAX_BUDGET);
+        collector.reset();
+        assert_eq!(collector.budget(), DEFAULT_BUDGET);
     }
 }

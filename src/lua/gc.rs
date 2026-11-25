@@ -64,7 +64,7 @@ fn budget(function: &str, milliseconds: f64) -> l3i::Result<Duration> {
 }
 
 /// The module: `step`, `budget`, and `setBudget`.
-pub(crate) fn module(runtime: &Runtime) -> l3i::Result<Table> {
+pub fn module(runtime: &Runtime) -> l3i::Result<Table> {
     let own = Arc::new(Collector::default());
     let module = Functions::module(runtime, "gc")?;
     let stepping = Arc::clone(&own);

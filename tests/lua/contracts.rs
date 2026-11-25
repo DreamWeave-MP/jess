@@ -11,14 +11,14 @@ fn only_generic_members_are_installed() {
         &runtime,
         r"
         local expected = {
-            'application', 'audio', 'bench', 'context', 'events', 'gpu', 'granted', 'input',
+            'application', 'audio', 'bench', 'context', 'events', 'gc', 'gpu', 'granted', 'input',
             'interfaces', 'null', 'payload', 'shader', 'sharedBuffer', 'timer', 'version', 'worker',
         }
         local members = {}
         for name in jess do table.insert(members, name) end
         table.sort(members)
         assert(table.concat(members, ' ') == table.concat(expected, ' '), table.concat(members, ' '))
-        for _, name in { 'shader', 'sharedBuffer', 'gpu', 'context', 'worker', 'timer', 'events', 'interfaces', 'application', 'bench' } do
+        for _, name in { 'shader', 'sharedBuffer', 'gpu', 'context', 'worker', 'timer', 'events', 'interfaces', 'application', 'bench', 'gc' } do
             assert(require('@jess/' .. name) == jess[name], name)
         end
         -- @jess/input is the built-in package's Luau, over jess.input.
@@ -57,6 +57,58 @@ fn bench_names_the_build_and_collects() {
         jess.bench.collect()
         assert(held[1] == nil, 'a full collection drops what only a weak table holds')
         assert(select('#', jess.bench.collect()) == 0)
+    ",
+    );
+}
+
+/// `jess.gc` steps the calling runtime's collector: a frame's budget, read and set, refused
+/// outside 0 to 100 milliseconds; a step that says how long it took and whether a cycle ended;
+/// and, stepped every frame of a loop that makes garbage, cycles that end and a heap that stays
+/// near what is live. Nothing here measures time: the loop counts cycles.
+#[test]
+fn gc_steps_the_collector_a_budget_at_a_time() {
+    let runtime = common::runtime();
+    common::run(
+        &runtime,
+        r"
+        local gc = require('@jess/gc')
+        assert(table.isfrozen(gc))
+        assert(gc.budget() == 0.5, tostring(gc.budget()))
+        gc.setBudget(2)
+        assert(gc.budget() == 2)
+        gc.setBudget(0)
+        local spent, finished = gc.step()
+        assert(spent == 0 and finished == false, 'a budget of nothing collects nothing')
+        gc.setBudget(0.5)
+        for _, bad in { -1, 100.5, 0 / 0, math.huge } do
+            -- Both raise on a budget out of range.
+            local stepped, problem = pcall(gc.step, bad)
+            assert(not stepped and string.find(tostring(problem), 'the budget is from 0 to 100 milliseconds', 1, true), tostring(problem))
+            local set = pcall(gc.setBudget, bad)
+            assert(not set)
+        end
+
+        -- A live heap of a few megabytes, and a frame loop that makes a megabyte of garbage a
+        -- frame and steps the collector after each with a generous budget.
+        local live = table.create(20000)
+        for index = 1, 20000 do live[index] = { index, tostring(index) } end
+        local cycles, after = 0, {}
+        for frame = 1, 400 do
+            local garbage = table.create(4000)
+            for index = 1, 4000 do garbage[index] = { frame, index } end
+            local _, ended = gc.step(100)
+            if ended then
+                cycles += 1
+                table.insert(after, gcinfo())
+            end
+        end
+        assert(cycles >= 2, `{cycles} cycles ended`)
+        -- Right after a cycle ends, what is left is what is live and what the cycle's frame made,
+        -- not the four hundred megabytes the loop made in all.
+        for _, kilobytes in after do
+            assert(kilobytes < 64 * 1024, `{kilobytes} KB after a cycle`)
+        end
+        assert(#live == 20000)
     ",
     );
 }
@@ -108,6 +160,7 @@ fn the_types_cover_exactly_the_kernel_s_modules() {
             "@jess/data/toml",
             "@jess/data/value",
             "@jess/events",
+            "@jess/gc",
             "@jess/gpu",
             "@jess/http",
             "@jess/input",

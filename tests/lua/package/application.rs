@@ -2079,3 +2079,28 @@ fn an_embedder_s_steps_are_the_frames_of_its_statistics() {
     assert_eq!(pacing.stats().frames, 3, "a domain frame alone is no frame of the statistics");
     application.stop().unwrap();
 }
+
+/// The application's code sets the budget its host collects with after every frame: the budget is
+/// the host's collector's, and a restart, with new code, goes back to the default.
+#[test]
+fn an_application_sets_its_host_s_collection_budget() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("collecting");
+    pacing_app(
+        &root,
+        "",
+        r"if frame == 1 then require('@jess/gc').setBudget(3) end
+        journal.write(tostring(require('@jess/gc').budget()))",
+    );
+    let mut application = launch(&request(&root, "app", &[]));
+    application.start().unwrap();
+    assert_eq!(application.host().collector().budget(), jess::host::collector::DEFAULT_BUDGET);
+    application
+        .step(Duration::from_millis(16), &mut |line| panic!("{line}"))
+        .unwrap();
+    assert_eq!(application.host().collector().budget(), Duration::from_millis(3));
+    assert_eq!(journal(&application), vec!["3"]);
+    application.restart().unwrap();
+    assert_eq!(application.host().collector().budget(), jess::host::collector::DEFAULT_BUDGET);
+    application.stop().unwrap();
+}

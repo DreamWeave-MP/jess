@@ -270,11 +270,12 @@ fn the_stub_backend_is_a_real_poll_loop_over_nothing() {
 }
 
 #[test]
-fn a_host_without_services_carries_only_its_exit_request_and_fixed_progress() {
+fn a_host_without_services_carries_only_its_own() {
     let grant = RootAuthority::new().grant(CapabilitySet::empty());
     let mut host = Host::create(factory(), HostSpec::new(DomainSpec::new("bare", grant))).unwrap();
     assert!(host.input().is_none());
-    assert_eq!(host.domain().services().len(), 2);
+    assert_eq!(host.domain().services().len(), 3);
+    assert!(host.domain().service::<jess::host::Collector>().is_some());
     assert!(host.domain().service::<ExitRequest>().is_some());
     assert!(host.domain().service::<jess::runtime::FixedProgress>().is_some());
     assert_eq!(host.exit_requested(), None);
@@ -283,5 +284,50 @@ fn a_host_without_services_carries_only_its_exit_request_and_fixed_progress() {
     let report = host.frame(Duration::from_millis(16)).unwrap();
     assert!(report.input.is_none());
     assert_eq!(report.failures(), Vec::<&jess::runtime::RuntimeError>::new());
+    host.stop().unwrap();
+}
+
+/// A host collects after a frame when its driver asks: a domain whose every frame makes garbage
+/// has its cycles finished by the host's collections, the budget is the collector's the domain
+/// carries, and a restart, a new runtime, starts from the default budget again.
+#[test]
+fn a_host_collects_its_domain_s_garbage_between_frames() {
+    let grant = RootAuthority::new().grant(CapabilitySet::empty());
+    let mut host = Host::create(factory(), HostSpec::new(DomainSpec::new("garbage", grant))).unwrap();
+    host.domain()
+        .register_context(ContextSpec::new("garbage").schedule([Phase::Update]))
+        .unwrap();
+    host.domain()
+        .load_source(
+            "=main",
+            r"
+            local live = table.create(20000)
+            for index = 1, 20000 do live[index] = { index } end
+            local context = require('@jess/context')
+            context.bind('garbage', {
+                update = function()
+                    local garbage = table.create(4000)
+                    for index = 1, 4000 do garbage[index] = { index } end
+                    assert(#live == 20000)
+                end,
+            })
+            ",
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+    host.domain().start().unwrap();
+    host.collector().set_budget(jess::host::collector::MAX_BUDGET);
+    let mut finished = 0;
+    for _ in 0..400 {
+        let report = host.frame(Duration::from_millis(16)).unwrap();
+        assert!(report.failures().is_empty(), "{:?}", report.failures());
+        let collection = host.collect();
+        if collection.finished {
+            finished += 1;
+        }
+        assert!(collection.spent <= jess::host::collector::MAX_BUDGET * 10, "{collection:?}");
+    }
+    assert!(finished >= 2, "the host finished {finished} cycles");
+    host.restart(|_| Ok(())).unwrap();
+    assert_eq!(host.collector().budget(), jess::host::collector::DEFAULT_BUDGET);
     host.stop().unwrap();
 }
