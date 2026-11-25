@@ -1,0 +1,113 @@
+--!strict
+-- Run with a verified release, one budget at a time:
+-- jess package run tools/bench/frame-gc -- 0     (Luau's own collection only)
+-- jess package run tools/bench/frame-gc -- 0.5   (the host's default)
+--
+-- A headless application at 60 frames a second over a retained heap of small tables and
+-- strings, made at startup. Every frame makes a few thousand short-lived tables and strings and
+-- replaces some retained ones; every ten seconds a burst makes a hundred times that. After a
+-- warm-up it reports the complete frame intervals (from one frame's beginning to the next, so
+-- the host's collection and waiting are in them) at the 50th, 95th, 99th and 99.9th percentiles
+-- and the worst, the frames that missed their deadline by half an interval or more, the
+-- frames whose own work took longer than a frame, the host's collection time per frame, the
+-- cycles it finished and the times it overran its budget, and the largest heap.
+local application = require '@jess/application'
+local gc = require '@jess/gc'
+
+local Retained = 400000
+local Garbage = 3000
+local Churn = 50
+local BurstEvery = 600
+local WarmUp = 1200
+local Frames = 10000
+local Interval = 1 / 60
+
+local retained = table.create(Retained)
+for index = 1, Retained do
+  retained[index] = { name = `object {index}`, position = vector.create(index, 0, 0), tags = { index, index + 1 } }
+end
+
+local intervals = table.create(Frames, 0)
+local collections = table.create(Frames, 0)
+local works = table.create(Frames, 0)
+local frame, churn, heap = 0, 0, 0
+local cyclesBefore, overrunsBefore = 0, 0
+
+local function percentiles(times: { number }): string
+  local sorted = table.clone(times)
+  table.sort(sorted)
+
+  local function at(fraction: number): number
+    return sorted[math.max(1, math.ceil(#sorted * fraction))] * 1000
+  end
+
+  return string.format(
+    'p50 %.2f / p95 %.2f / p99 %.2f / p99.9 %.2f / max %.2f ms',
+    at(0.5),
+    at(0.95),
+    at(0.99),
+    at(0.999),
+    sorted[#sorted] * 1000
+  )
+end
+
+local function report()
+  local missed, slow = 0, 0
+  for index, interval in intervals do
+    if interval > Interval * 1.5 then missed += 1 end
+    if works[index] > Interval then slow += 1 end
+  end
+
+  local totals = application.frameStats().gc
+  print(string.format('budget %g ms, %d frames at 60 a second after %d', gc.budget(), Frames, WarmUp))
+  print(`  frame interval: {percentiles(intervals)}; {missed} missed their deadline`)
+  print(`  frame work:     {percentiles(works)}; {slow} took longer than a frame`)
+  print(`  collection:     {percentiles(collections)}`)
+  print(string.format(
+    '  %d cycles finished, %d overruns of the budget, heap at most %d MB',
+    totals.cycles - cyclesBefore,
+    totals.overruns - overrunsBefore,
+    heap // 1024
+  ))
+end
+
+return {
+  on = {
+    host = {
+      update = function(delta: number)
+        frame += 1
+        local began = os.clock()
+        local size = if frame % BurstEvery == 0 then Garbage * 100 else Garbage
+        local scratch = table.create(size)
+        for index = 1, size do
+          scratch[index] = { frame, index, `{frame}:{index}` }
+        end
+
+        for index = 1, Churn do
+          churn = churn % Retained + 1
+          retained[churn] = { name = `object {churn} at {frame}`, position = vector.create(frame, index, 0), tags = scratch[index] }
+        end
+
+        local worked = os.clock() - began
+        if frame == WarmUp then
+          local totals = application.frameStats().gc
+          cyclesBefore, overrunsBefore = totals.cycles, totals.overruns
+        end
+
+        if frame <= WarmUp then return end
+
+        -- This frame's delta is the interval before it, and the last collection the one after
+        -- the frame before.
+        local measured = frame - WarmUp
+        intervals[measured] = delta
+        works[measured] = worked
+        collections[measured] = application.frameStats().gc.time
+        heap = math.max(heap, gcinfo())
+        if measured < Frames then return end
+
+        report()
+        application.exit(0)
+      end,
+    },
+  },
+}
