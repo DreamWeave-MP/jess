@@ -294,6 +294,20 @@ fn describe_presenting(window: &mut UserdataBuilder<'_, LuaGpuWindow>) {
         )
         .untyped();
     window
+        .getter(
+            "vsyncState",
+            |this: &LuaGpuWindow, call: &Call<'_>| -> l3i::Result<StackResults> {
+                let (requested, resolved, applied) = this.window.vsync_state();
+                push_table(call, 0, 3, |frame, table| {
+                    table.raw_set_value(frame, "requested", &requested)?;
+                    table.raw_set_value(frame, "resolved", &resolved)?;
+                    table.raw_set_value(frame, "applied", &applied)
+                })?;
+                Ok(StackResults)
+            },
+        )
+        .untyped();
+    window
         .method(
             "paces",
             |this: &LuaGpuWindow, paces: Option<ValueView<'_>>| -> l3i::Result<bool> {

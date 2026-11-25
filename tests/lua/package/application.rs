@@ -1890,6 +1890,8 @@ return {{
         frame += 1
         {body}
       end,
+      -- A request as the generation ends, which a restart must forget all the same.
+      shutdown = function() application.setPace(30) end,
     }},
   }},
 }}
@@ -1941,7 +1943,11 @@ fn an_application_changes_its_pace_while_it_runs() {
         })
         .unwrap();
     assert_eq!(status, 0, "{:?}", lines.borrow());
-    assert_eq!(pacing.requested(), (Pace::Unpaced, jess::host::pacing::Origin::Application));
+    // The last request was the shutdown handler's.
+    assert_eq!(
+        pacing.requested(),
+        (Pace::Capped(30), jess::host::pacing::Origin::Application)
+    );
     // The journal went with the runtime; the diagnostics would say if a handler raised.
     assert!(lines.borrow().is_empty(), "{:?}", lines.borrow());
 }
@@ -1983,7 +1989,7 @@ fn every_change_of_pace_is_reported_frame_by_frame() {
             &jess::host::pacing::Presentation::default(),
             application.fixed_step().step,
         );
-        pacing.ended(Duration::ZERO, effective.pace());
+        pacing.ended(Duration::ZERO, effective.pace(), &jess::host::pacing::Presentation::default());
     }
     let refused =
         "application.setPace: the pace is 'display', 'unpaced', or a whole number of frames a second from 1 to 1000, not";
@@ -2021,7 +2027,8 @@ fn every_change_of_pace_is_reported_frame_by_frame() {
     pacing.set_override(None);
     assert_eq!(pacing.chosen(), Pace::Unpaced);
 
-    // A restart forgets what the old code asked for; the manifest's pace is asked for again.
+    // A restart forgets what the old code asked for, its shutdown handler's request too; the
+    // manifest's pace is asked for again.
     application.restart().unwrap();
     assert_eq!(pacing.requested(), (Pace::Unpaced, jess::host::pacing::Origin::Manifest));
     application.stop().unwrap();

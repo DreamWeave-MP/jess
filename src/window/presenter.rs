@@ -53,7 +53,17 @@ pub(super) struct Asked {
     pub(super) present: Option<PresentMode>,
 }
 
-/// How far the window's presenter has got, which waiters wait on.
+/// How far the window's presenter has got, which waiters wait on, and its signal: held by the
+/// presenter's thread apart from the window, so the thread holds nothing of the window while it
+/// waits, and a window dropped without being closed ends it.
+#[derive(Default)]
+struct Signal {
+    progress: Mutex<Progress>,
+    /// Signalled when it is asked to look, when it has looked, when it presented, and when it is
+    /// retired.
+    changed: Condvar,
+}
+
 #[derive(Default)]
 struct Progress {
     /// How many times it was asked to look for something to draw.
@@ -81,11 +91,16 @@ pub(super) struct Shared {
     pub(super) asked: Mutex<Asked>,
     /// How many frames it presented.
     frames: AtomicU64,
-    /// Whether presenting to it waits for its display, as its present mode in effect says.
+    /// The device's commit count the last frame it presented drew: what a frame's driver waits to
+    /// see reach the commit it submitted.
+    presented: AtomicU64,
+    /// Whether presenting to it will wait for its display: the mode asked for, as the surface's
+    /// modes resolve it.
     waits: AtomicBool,
-    progress: Mutex<Progress>,
-    /// Signalled when it is asked to look, when it has looked, and when it presented.
-    changed: Condvar,
+    /// Whether its surface is configured now in a mode that waits for its display: what the
+    /// presenter last applied, which a frame's driver paces by.
+    applied: AtomicBool,
+    signal: Arc<Signal>,
 }
 
 impl Shared {
@@ -104,9 +119,10 @@ impl Shared {
             incoming: Mutex::default(),
             asked: Mutex::default(),
             frames: AtomicU64::new(0),
+            presented: AtomicU64::new(0),
             waits: AtomicBool::new(waits),
-            progress: Mutex::default(),
-            changed: Condvar::new(),
+            applied: AtomicBool::new(waits),
+            signal: Arc::default(),
         }
     }
 
@@ -152,21 +168,37 @@ impl Shared {
         self.frames.load(Ordering::Acquire)
     }
 
-    /// Whether presenting to it waits for its display.
+    /// Whether presenting to it will wait for its display, once what was asked is applied.
     pub(super) fn waits(&self) -> bool {
         self.waits.load(Ordering::Acquire)
     }
 
+    /// Whether presenting to it waits for its display now, as its surface is configured.
+    pub(super) fn applied(&self) -> bool {
+        self.applied.load(Ordering::Acquire)
+    }
+
+    /// Records the mode its surface is configured in now: what a surface made again, or moved to
+    /// another device, was made in.
+    pub(super) fn set_applied(&self, waits: bool) {
+        self.applied.store(waits, Ordering::Release);
+    }
+
+    /// The device's commit count its last presented frame drew.
+    pub(super) fn presented(&self) -> u64 {
+        self.presented.load(Ordering::Acquire)
+    }
+
     /// Asks its presenter to look for something to draw.
     pub(super) fn wake(&self) {
-        lock(&self.progress).asked += 1;
-        self.changed.notify_all();
+        lock(&self.signal.progress).asked += 1;
+        self.signal.changed.notify_all();
     }
 
     /// Ends its presenter's thread: the window is closed.
     pub(super) fn retire(&self) {
-        lock(&self.progress).closed = true;
-        self.changed.notify_all();
+        lock(&self.signal.progress).closed = true;
+        self.signal.changed.notify_all();
     }
 
     /// Whether it has drawn everything there is: nothing waiting, nothing stale, every commit. A
@@ -192,18 +224,20 @@ impl Shared {
         !incoming && !asked && !screen.stale && screen.drawn == self.device().commits()
     }
 
-    /// Waits until it has presented more than `frames` frames, or `deadline` passes: whether it
-    /// did.
-    pub(super) fn wait_presented(&self, frames: u64, deadline: Instant) -> bool {
-        let mut progress = lock(&self.progress);
+    /// Waits until it has presented a frame that drew the device's commit `commit` or a later one,
+    /// or `deadline` passes: whether it did. Counted by commit, not by frames, so a present that
+    /// happened before the waiter looked still counts, and one of an older commit doesn't.
+    pub(super) fn wait_presented(&self, commit: u64, deadline: Instant) -> bool {
+        let mut progress = lock(&self.signal.progress);
         loop {
-            if self.frames() > frames {
+            if self.presented() >= commit {
                 return true;
             }
             let Some(left) = deadline.checked_duration_since(Instant::now()) else {
                 return false;
             };
             progress = self
+                .signal
                 .changed
                 .wait_timeout(progress, left)
                 .unwrap_or_else(PoisonError::into_inner)
@@ -215,14 +249,15 @@ impl Shared {
     /// (covered, minimized) is not waited on forever.
     fn wait_settled(&self, deadline: Instant) {
         while !self.settled() {
-            let progress = lock(&self.progress);
+            let progress = lock(&self.signal.progress);
             let seen = progress.rounds;
             let Some(left) = deadline.checked_duration_since(Instant::now()) else {
                 return;
             };
             // A round that finishes between the look and the wait is caught a moment later.
             drop(
-                self.changed
+                self.signal
+                    .changed
                     .wait_timeout_while(progress, left.min(RETRY), |progress| progress.rounds == seen)
                     .unwrap_or_else(PoisonError::into_inner),
             );
@@ -232,7 +267,7 @@ impl Shared {
     /// How many times its presenter has looked for something to draw.
     #[cfg(test)]
     fn rounds(&self) -> u64 {
-        lock(&self.progress).rounds
+        lock(&self.signal.progress).rounds
     }
 }
 
@@ -258,9 +293,10 @@ pub(super) fn serve(shared: &Arc<Shared>) {
         served.push(Arc::downgrade(shared));
     }
     let serving = Arc::downgrade(shared);
+    let signal = Arc::clone(&shared.signal);
     std::thread::Builder::new()
         .name("jess presenter".to_owned())
-        .spawn(move || run(&serving))
+        .spawn(move || run(&serving, &signal))
         .expect("the system starts a thread");
 }
 
@@ -299,7 +335,7 @@ enum Drawing {
 }
 
 /// A window's presenter: draws it whenever asked, and again while a try didn't present.
-fn run(serving: &Weak<Shared>) {
+fn run(serving: &Weak<Shared>, signal: &Signal) {
     let mut seen = 0;
     loop {
         let Some(shared) = serving.upgrade() else {
@@ -310,13 +346,15 @@ fn run(serving: &Weak<Shared>) {
             Drawing::Failed => Some(RECOVER),
             Drawing::Nothing | Drawing::Drew => None,
         };
-        let mut progress = lock(&shared.progress);
+        // Nothing of the window is held while it waits.
+        drop(shared);
+        let mut progress = lock(&signal.progress);
         progress.rounds += 1;
-        shared.changed.notify_all();
+        signal.changed.notify_all();
         while progress.asked == seen && !progress.closed {
             // Without a retry it still looks now and then, so a window dropped without being
             // closed ends its thread.
-            let (waited, timeout) = shared
+            let (waited, timeout) = signal
                 .changed
                 .wait_timeout(progress, retry.unwrap_or(Duration::from_secs(1)))
                 .unwrap_or_else(PoisonError::into_inner);
@@ -341,10 +379,11 @@ fn apply(shared: &Shared, screen: &mut Screen, gpu: &Gpu) {
     screen.stale = true;
     let mut problems = Vec::new();
     if let Some(surface) = &mut screen.surface {
-        if let Some(present) = asked.present
-            && let Err(problem) = surface.set_present(gpu, present)
-        {
-            problems.push(problem);
+        if let Some(present) = asked.present {
+            match surface.set_present(gpu, present) {
+                Ok(()) => shared.set_applied(surface.vsync()),
+                Err(problem) => problems.push(problem),
+            }
         }
         if let Some(size) = asked.size
             && let Err(problem) = surface.resize(gpu, size.width, size.height)
@@ -422,10 +461,11 @@ fn draw(shared: &Shared) -> Drawing {
     *failing = false;
     // Counted under the progress lock, so a waiter that looked and found none can't miss it.
     {
-        let _progress = lock(&shared.progress);
+        let _progress = lock(&shared.signal.progress);
         shared.frames.fetch_add(1, Ordering::AcqRel);
+        shared.presented.fetch_max(commits, Ordering::AcqRel);
     }
-    shared.changed.notify_all();
+    shared.signal.changed.notify_all();
     Drawing::Drew
 }
 
@@ -547,9 +587,32 @@ mod tests {
             return;
         };
         let shared = Shared::new(None, gpu, true);
-        assert!(!shared.wait_presented(0, Instant::now()));
-        shared.frames.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        assert!(shared.wait_presented(0, Instant::now() + LONG));
+        assert!(!shared.wait_presented(1, Instant::now()), "nothing of commit 1 was presented");
+        shared.presented.store(2, std::sync::atomic::Ordering::Release);
+        assert!(
+            shared.wait_presented(1, Instant::now()),
+            "a later commit's frame counts, however early"
+        );
+        assert!(!shared.wait_presented(3, Instant::now()), "an older commit's frame doesn't");
+    }
+
+    /// A presenter holds nothing of its window while it waits, so a window dropped without being
+    /// closed goes at once, and its thread with it.
+    #[test]
+    fn a_waiting_presenter_holds_nothing_of_its_window() {
+        let Some(gpu) = gpu("a_waiting_presenter_holds_nothing_of_its_window") else {
+            return;
+        };
+        let shared = Arc::new(Shared::new(None, gpu, true));
+        serve(&shared);
+        let deadline = Instant::now() + LONG;
+        while shared.rounds() == 0 {
+            assert!(Instant::now() < deadline, "the presenter never looked");
+            std::thread::yield_now();
+        }
+        let weak = Arc::downgrade(&shared);
+        drop(shared);
+        assert!(weak.upgrade().is_none(), "the waiting presenter kept the window alive");
     }
 
     #[test]

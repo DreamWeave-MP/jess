@@ -175,6 +175,10 @@ fn frame_stats(call: &Call<'_>) -> l3i::Result<StackResults> {
         table.raw_set_value(frame, "work", &stats.work.as_secs_f64())?;
         table.raw_set_value(frame, "waited", &stats.waited.as_secs_f64())?;
         table.raw_set_value(frame, "rate", &stats.rate)?;
+        if let Some((refresh, confirmed)) = stats.refresh {
+            table.raw_set_value(frame, "refresh", &refresh.as_secs_f64())?;
+            table.raw_set_value(frame, "refreshConfirmed", &confirmed)?;
+        }
         table.raw_set_value(frame, "fixedStep", &step.as_secs_f64())?;
         let interpolation = if step.is_zero() {
             0.0
@@ -950,13 +954,19 @@ impl Application {
     /// As [`Host::restart`]; a failed load leaves nothing running.
     pub fn restart(&mut self) -> Result<Generation, RuntimeError> {
         let loading = Rc::clone(&self.setup);
-        // What the old code asked for goes with it; an override, whoever runs it, stays.
-        self.pacing.reset();
+        let pacing = Arc::clone(&self.pacing);
+        // What the old code asked for goes with it, forgotten as the new code loads: after the old
+        // generation's shutdown handlers, which may still ask, and never by a restart the domain
+        // refuses. An override, whoever runs it, stays.
+        let load = move |runtime: &Runtime| {
+            pacing.reset();
+            loading.load(runtime)
+        };
         // Windows the new code opens again by key stay open through the load, showing the last.
         #[cfg(feature = "window")]
-        let generation = crate::window::reclaim(|| self.host.restart(|runtime| loading.load(runtime)));
+        let generation = crate::window::reclaim(|| self.host.restart(load));
         #[cfg(not(feature = "window"))]
-        let generation = self.host.restart(|runtime| loading.load(runtime));
+        let generation = self.host.restart(load);
         self.remember_contexts();
         generation
     }
@@ -1056,12 +1066,15 @@ impl Application {
             let began = Instant::now();
             let delta = scheduler.begin(began);
             self.pacing.began(began, delta, waited);
-            let pacer = Pacer::now();
             let outcome = self.step(delta, report);
+            // Which window paces is asked once the frame is submitted: the frame's own code may
+            // have opened, closed, or chosen it. What it waits for is that window drawing the
+            // commit this frame submitted, however soon its presenter got to it.
+            let pacer = Pacer::now();
             let presentation = pacer.as_ref().map(Pacer::presentation).unwrap_or_default();
             let effective = crate::host::pacing::resolve(self.pacing.chosen(), &presentation, self.step.step);
             let worked = Instant::now();
-            self.pacing.ended(worked - began, effective.pace());
+            self.pacing.ended(worked - began, effective.pace(), &presentation);
             wait = (scheduler.wait(worked, effective, &presentation), pacer);
             self.flush(report);
             outcome.map_err(|problem| error(problem.to_string()))?;
@@ -1136,13 +1149,13 @@ impl Application {
     }
 }
 
-/// The pacing window as a frame began: how many frames it had presented then, which display
-/// pacing waits for it to pass.
+/// The pacing window as a frame was submitted, and the commit of its device the frame submitted
+/// to it, which display pacing waits for it to draw.
 struct Pacer {
     #[cfg(feature = "window")]
     window: crate::window::Pacer,
     #[cfg(feature = "window")]
-    presented: u64,
+    submitted: u64,
 }
 
 impl Pacer {
@@ -1150,7 +1163,7 @@ impl Pacer {
     fn now() -> Option<Pacer> {
         #[cfg(feature = "window")]
         return crate::window::pacer().map(|window| Pacer {
-            presented: window.frames(),
+            submitted: window.submitted(),
             window,
         });
         #[cfg(not(feature = "window"))]
@@ -1161,7 +1174,8 @@ impl Pacer {
     fn presentation(&self) -> Presentation {
         #[cfg(feature = "window")]
         return Presentation {
-            refresh: self.window.refresh(),
+            refresh: self.window.refresh().map(|refresh| refresh.duration),
+            refresh_confirmed: self.window.refresh().is_some_and(|refresh| refresh.confirmed),
             waits: self.window.waits(),
             pending: self.window.pending(),
         };
@@ -1169,36 +1183,23 @@ impl Pacer {
         Presentation::default()
     }
 
-    /// Waits until it has presented the frame it was given, or `deadline`.
-    fn wait_presented(&self, deadline: Instant) {
+    /// Waits until it has drawn the commit it was given, or `deadline`: whether it did.
+    fn wait_presented(&self, deadline: Instant) -> bool {
         #[cfg(feature = "window")]
-        {
-            let _presented = self.window.wait_presented(self.presented, deadline);
-        }
+        return self.window.wait_presented(self.submitted, deadline);
         #[cfg(not(feature = "window"))]
-        let _ = deadline;
+        {
+            let _ = deadline;
+            false
+        }
     }
 }
 
 /// Waits as `wait` says, on the pacing window it was decided with: how long it waited.
-fn waited(wait: (Wait, Option<Pacer>)) -> Duration {
-    let started = Instant::now();
-    let sleep_until = |at: Instant| {
-        if let Some(left) = at.checked_duration_since(Instant::now()) {
-            std::thread::sleep(left);
-        }
-    };
-    match wait {
-        (Wait::Now, _) => {}
-        (Wait::Until(at), _) => sleep_until(at),
-        (Wait::Presented { not_before, give_up }, pacer) => {
-            if let Some(pacer) = pacer {
-                pacer.wait_presented(give_up);
-            }
-            sleep_until(not_before);
-        }
-    }
-    started.elapsed()
+fn waited((wait, pacer): (Wait, Option<Pacer>)) -> Duration {
+    crate::host::pacing::wait(wait, &mut crate::host::pacing::SystemClock, |give_up| {
+        pacer.is_some_and(|pacer| pacer.wait_presented(give_up))
+    })
 }
 
 /// The pacing an application target starts with: its manifest's pace, or by default the display

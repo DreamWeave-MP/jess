@@ -95,6 +95,9 @@ pub enum Origin {
 pub struct Presentation {
     /// How long a refresh of the pacing window's display is, where the window system says.
     pub refresh: Option<Duration>,
+    /// Whether that is the refresh of the display the pacing window is on, not a guess from the
+    /// displays there are (a window not yet mapped is on none).
+    pub refresh_confirmed: bool,
     /// Whether there is a pacing window and its presenting waits for its display.
     pub waits: bool,
     /// Whether the pacing window has something the frame just ended gave it to draw.
@@ -227,6 +230,48 @@ impl Scheduler {
     }
 }
 
+/// A clock a driver waits on: the real one, or a test's.
+pub trait Clock {
+    /// Now.
+    fn now(&mut self) -> Instant;
+    /// Sleeps until `at`, or a little after, as sleeps do.
+    fn sleep_until(&mut self, at: Instant);
+}
+
+/// The system's clock.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now(&mut self) -> Instant {
+        Instant::now()
+    }
+
+    fn sleep_until(&mut self, at: Instant) {
+        if let Some(left) = at.checked_duration_since(Instant::now()) {
+            std::thread::sleep(left);
+        }
+    }
+}
+
+/// Waits as `wait` says on `clock`, and says how long it waited.
+///
+/// `presented` waits for the pacing window to present what the frame submitted, until the instant
+/// it is given, and says whether it did. Whatever the window does, a display wait lasts at least
+/// until its `not_before`.
+pub fn wait(wait: Wait, clock: &mut impl Clock, presented: impl FnOnce(Instant) -> bool) -> Duration {
+    let started = clock.now();
+    match wait {
+        Wait::Now => {}
+        Wait::Until(at) => clock.sleep_until(at),
+        Wait::Presented { not_before, give_up } => {
+            let _presented = presented(give_up);
+            clock.sleep_until(not_before);
+        }
+    }
+    clock.now().saturating_duration_since(started)
+}
+
 /// What a frame took and how the frames are going: what [`Pacing::stats`] reports, without
 /// waiting on anything.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -241,6 +286,9 @@ pub struct FrameStats {
     pub waited: Duration,
     /// Frames a second over the last second or so; 0 before there is one to measure.
     pub rate: f64,
+    /// The pacing window's display's refresh at the last frame's end, where the window system
+    /// says, and whether it is that display's or a guess.
+    pub refresh: Option<(Duration, bool)>,
 }
 
 /// How long [`FrameStats::rate`] measures over.
@@ -363,10 +411,12 @@ impl Pacing {
         }
     }
 
-    /// The frame's work took `work`, and `effective` was the pace at its end.
-    pub fn ended(&self, work: Duration, effective: Pace) {
+    /// The frame's work took `work`, `effective` was the pace at its end, and `presentation` what
+    /// the pacing window said then.
+    pub fn ended(&self, work: Duration, effective: Pace, presentation: &Presentation) {
         let mut state = self.state();
         state.stats.work = work;
+        state.stats.refresh = presentation.refresh.map(|refresh| (refresh, presentation.refresh_confirmed));
         state.effective = effective;
     }
 }
@@ -375,7 +425,7 @@ impl Pacing {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::{Effective, Pace, Presentation, Scheduler, Wait, resolve};
+    use super::{Clock, Effective, Pace, Presentation, Scheduler, Wait, resolve, wait};
 
     const MS: Duration = Duration::from_millis(1);
 
@@ -463,6 +513,7 @@ mod tests {
         let refresh = MS * 16;
         let given = Presentation {
             refresh: Some(refresh),
+            refresh_confirmed: true,
             waits: true,
             pending: true,
         };
@@ -490,6 +541,7 @@ mod tests {
         assert_eq!(resolve(Pace::Display, &unknown, fallback).pace(), Pace::Capped(50));
         let immediate = Presentation {
             refresh: Some(Duration::from_secs(1) / 144),
+            refresh_confirmed: true,
             waits: false,
             pending: true,
         };
@@ -501,6 +553,135 @@ mod tests {
         assert_eq!(resolve(Pace::Display, &vsync, fallback).pace(), Pace::Display);
         assert_eq!(resolve(Pace::Capped(30), &vsync, fallback).pace(), Pace::Capped(30));
         assert_eq!(resolve(Pace::Unpaced, &vsync, fallback), Effective::Unpaced);
+    }
+
+    /// A clock that moves only when slept on, and oversleeps by `late` every time, as a busy
+    /// machine's sleeps do.
+    struct Late {
+        now: Instant,
+        late: Duration,
+    }
+
+    impl Clock for Late {
+        fn now(&mut self) -> Instant {
+            self.now
+        }
+
+        fn sleep_until(&mut self, at: Instant) {
+            if at > self.now {
+                self.now = at + self.late;
+            }
+        }
+    }
+
+    /// Sleeps that overshoot don't drift a cap: each deadline is the last one plus the interval,
+    /// not the late wake plus the interval, so a hundred frames take a hundred intervals and one
+    /// overshoot, and no frame begins before its slot.
+    #[test]
+    fn oversleeping_does_not_drift_a_cap() {
+        let origin = Instant::now();
+        let mut clock = Late {
+            now: origin,
+            late: MS * 3,
+        };
+        let mut scheduler = Scheduler::new(origin);
+        let timer = Effective::Timer(MS * 10);
+        for frame in 1..=100u32 {
+            let worked = clock.now + MS;
+            clock.now = worked;
+            let until = scheduler.wait(worked, timer, &Presentation::default());
+            wait(until, &mut clock, |_| unreachable!("a timer waits on no window"));
+            assert!(clock.now >= origin + MS * 10 * frame, "frame {frame} began before its slot");
+            scheduler.begin(clock.now);
+        }
+        assert_eq!(clock.now, origin + MS * 1000 + MS * 3, "a hundred slots and one overshoot");
+    }
+
+    /// An interval shorter than a frame's work is behind every frame: each begins as soon as the
+    /// last ends, with no wait and no burst, and the deltas are the work.
+    #[test]
+    fn an_interval_shorter_than_the_work_runs_back_to_back() {
+        let origin = Instant::now();
+        let mut scheduler = Scheduler::new(origin);
+        let timer = Effective::Timer(MS);
+        let mut now = origin;
+        for _ in 0..50 {
+            now += MS * 4;
+            assert_eq!(scheduler.wait(now, timer, &Presentation::default()), Wait::Until(now));
+            assert_eq!(scheduler.begin(now), MS * 4);
+        }
+    }
+
+    /// Display pacing waits for the window until it gives up, and then at least until half a
+    /// refresh has passed: a present that came at once, from a driver whose presenting doesn't
+    /// wait, still waits out the half refresh, and one that never comes waits only to the give-up.
+    #[test]
+    fn a_display_wait_is_floored_at_half_a_refresh_and_capped_at_two() {
+        let origin = Instant::now();
+        let refresh = MS * 16;
+        let pending = Presentation {
+            refresh: Some(refresh),
+            refresh_confirmed: true,
+            waits: true,
+            pending: true,
+        };
+        let mut scheduler = Scheduler::new(origin);
+        let at_once = scheduler.wait(origin + MS, Effective::Display(refresh), &pending);
+        let mut clock = Late {
+            now: origin + MS,
+            late: Duration::ZERO,
+        };
+        let mut asked = None;
+        let waited = wait(at_once, &mut clock, |give_up| {
+            asked = Some(give_up);
+            true
+        });
+        assert_eq!(asked, Some(origin + MS * 32), "it waits on the window at most two refreshes");
+        assert_eq!(clock.now, origin + MS * 8, "and at least half of one");
+        assert_eq!(waited, MS * 7);
+    }
+
+    /// Paces can change in any order, frame after frame, and every frame's wait is decided by the
+    /// pace in effect at its end: display to timer to display again, through no pace at all.
+    #[test]
+    fn transitions_between_every_pace_are_decided_at_the_frame_s_end() {
+        let origin = Instant::now();
+        let mut scheduler = Scheduler::new(origin);
+        let refresh = MS * 8;
+        let display = Presentation {
+            refresh: Some(refresh),
+            refresh_confirmed: true,
+            waits: true,
+            pending: true,
+        };
+        let mut now = origin;
+        for (effective, expected) in [
+            (Effective::Display(refresh), "presented"),
+            (Effective::Timer(MS * 10), "until"),
+            (Effective::Display(refresh), "presented"),
+            (Effective::Unpaced, "now"),
+            (Effective::Timer(MS * 10), "until"),
+            (Effective::Timer(MS * 10), "until"),
+            (Effective::Display(refresh), "presented"),
+        ] {
+            let began = scheduler.last();
+            let decided = scheduler.wait(now + MS, effective, &display);
+            // The driver honours each wait: the next frame begins when it says, or after the work.
+            let (kind, next) = match decided {
+                Wait::Presented { not_before, .. } => {
+                    assert_eq!(not_before, began + refresh / 2);
+                    ("presented", not_before.max(now + MS))
+                }
+                Wait::Until(at) => {
+                    assert!(at <= began + MS * 10, "a timer is never later than its interval");
+                    ("until", at.max(now + MS))
+                }
+                Wait::Now => ("now", now + MS),
+            };
+            assert_eq!(kind, expected, "{effective:?}");
+            now = next;
+            scheduler.begin(now);
+        }
     }
 
     #[test]

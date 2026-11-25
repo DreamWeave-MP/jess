@@ -571,7 +571,7 @@ struct State {
     /// When it opened among the process's windows: the first open one paces when none asks to.
     opened: u64,
     /// How long a refresh of the display it is on is, where the window system says.
-    refresh: Option<Duration>,
+    refresh: Option<Refresh>,
     /// How it holds the pointer.
     cursor: Cursor,
     /// Where the pointer last was in it, while it is over it.
@@ -641,23 +641,49 @@ impl State {
     }
 }
 
+/// How long a refresh of a window's display is, and whether the window system said so of the
+/// display the window is on or it is a guess from the displays there are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Refresh {
+    /// The refresh's length.
+    pub duration: Duration,
+    /// Whether it is the refresh of the display the window is on, not a guess.
+    pub confirmed: bool,
+}
+
 /// How long a refresh of the display `raw` is on is, where the window system says: nothing for a
 /// rate outside 1 to 1000 a second, which is no display's.
-fn refresh_of(raw: &RawWindow) -> Option<Duration> {
-    // A window not yet mapped (Wayland's, until its first frame) is on no display yet: the
-    // primary display, or the fastest, is the best guess until it is.
-    let millihertz = raw
+fn refresh_of(raw: &RawWindow) -> Option<Refresh> {
+    let duration = |millihertz: u32| {
+        (1_000..=1_000_000)
+            .contains(&millihertz)
+            .then(|| Duration::from_secs(1000) / millihertz)
+    };
+    if let Some(duration) = raw
         .current_monitor()
         .and_then(|monitor| monitor.refresh_rate_millihertz())
-        .or_else(|| raw.primary_monitor().and_then(|monitor| monitor.refresh_rate_millihertz()))
+        .and_then(duration)
+    {
+        return Some(Refresh {
+            duration,
+            confirmed: true,
+        });
+    }
+    // A window not yet mapped (Wayland's, until its first frame) is on no display yet: the
+    // primary display, or the fastest, is the guess until it is.
+    let guess = raw
+        .primary_monitor()
+        .and_then(|monitor| monitor.refresh_rate_millihertz())
         .or_else(|| {
             raw.available_monitors()
                 .filter_map(|monitor| monitor.refresh_rate_millihertz())
                 .max()
-        })?;
-    (1_000..=1_000_000)
-        .contains(&millihertz)
-        .then(|| Duration::from_secs(1000) / millihertz)
+        })
+        .and_then(duration)?;
+    Some(Refresh {
+        duration: guess,
+        confirmed: false,
+    })
 }
 
 /// Adds `event` to a window's `events`, the oldest going when there are [`EVENTS`].
@@ -1193,6 +1219,8 @@ impl System {
             *shared.device.lock().unwrap_or_else(PoisonError::into_inner) = Arc::clone(gpu);
             if let Some(surface) = &screen.surface {
                 state.offers_immediate = !surface.waits_for(PresentMode::Immediate);
+                // Made in the mode asked for, as far as the new device's surface offers it.
+                shared.set_applied(surface.vsync());
                 shared.ask_present(state.present, waits(state.present, state.offers_immediate));
             }
             screen.showing = None;
@@ -1307,7 +1335,7 @@ pub fn wait_presented(timeout: Duration) {
 #[derive(Clone)]
 pub struct Pacer {
     shared: Arc<Shared>,
-    refresh: Option<Duration>,
+    refresh: Option<Refresh>,
 }
 
 impl fmt::Debug for Pacer {
@@ -1320,16 +1348,25 @@ impl fmt::Debug for Pacer {
 }
 
 impl Pacer {
-    /// How long a refresh of its display is, where the window system says.
+    /// How long a refresh of its display is, where the window system says, and whether that is
+    /// its display's or a guess.
     #[must_use]
-    pub fn refresh(&self) -> Option<Duration> {
+    pub fn refresh(&self) -> Option<Refresh> {
         self.refresh
     }
 
-    /// Whether its presenting waits for its display: its present mode in effect.
+    /// Whether its presenting waits for its display now: the mode its surface is configured in,
+    /// not the one asked for and not yet applied.
     #[must_use]
     pub fn waits(&self) -> bool {
-        self.shared.waits()
+        self.shared.applied()
+    }
+
+    /// The commit of its device a frame ending now submitted to it: what
+    /// [`Pacer::wait_presented`] waits to see drawn.
+    #[must_use]
+    pub fn submitted(&self) -> u64 {
+        self.shared.device().commits()
     }
 
     /// How many frames it has presented.
@@ -1345,11 +1382,11 @@ impl Pacer {
         !self.shared.settled()
     }
 
-    /// Waits until it has presented more than `frames` frames, or `deadline` passes: whether it
-    /// did. Waits on nothing but it.
+    /// Waits until it has presented a frame that drew `commit` or a later commit, or `deadline`
+    /// passes: whether it did. Waits on nothing but it.
     #[must_use]
-    pub fn wait_presented(&self, frames: u64, deadline: Instant) -> bool {
-        self.shared.wait_presented(frames, deadline)
+    pub fn wait_presented(&self, commit: u64, deadline: Instant) -> bool {
+        self.shared.wait_presented(commit, deadline)
     }
 }
 
@@ -1364,8 +1401,11 @@ pub fn pacer() -> Option<Pacer> {
     let state = chosen.borrow();
     Some(Pacer {
         shared: Arc::clone(&state.shared),
-        // Asked again while it is unknown: a window is on a display only once it is mapped.
-        refresh: state.refresh.or_else(|| state.raw.as_deref().and_then(refresh_of)),
+        // Asked again until it is confirmed: a window is on a display only once it is mapped.
+        refresh: match state.refresh {
+            Some(refresh) if refresh.confirmed => Some(refresh),
+            unconfirmed => state.raw.as_deref().and_then(refresh_of).or(unconfirmed),
+        },
     })
 }
 
@@ -1621,6 +1661,19 @@ impl Window {
             state.shared.ask_present(present, waits);
         }
         waits
+    }
+
+    /// Its vsync three ways: what was asked for, what the surface's modes make of that, and what
+    /// its surface is configured for now, which lags the other two until its presenter has applied
+    /// a change before its next image.
+    #[must_use]
+    pub fn vsync_state(&self) -> (bool, bool, bool) {
+        let state = self.state.borrow();
+        (
+            state.present == PresentMode::Vsync,
+            state.shared.waits(),
+            state.shared.applied(),
+        )
     }
 
     /// Whether it asked to pace the application's frames under display pacing ([`pacer`]).
@@ -2172,6 +2225,7 @@ mod tests {
         assert_eq!(window.vsync(), effective);
         let shared = Arc::clone(&window.state.borrow().shared);
         presenter::wait(std::slice::from_ref(&shared), Duration::from_secs(30));
+        assert_eq!(window.vsync_state(), (false, effective, effective), "applied once settled");
         {
             let mut screen = shared.screen();
             let surface = screen.surface.as_mut().expect("the same surface");
@@ -2194,10 +2248,17 @@ mod tests {
         second.set_paces(true);
         assert!(paced_by(&second) && !window.paces());
         let effective = second.set_vsync(false);
+        let second_shared = Arc::clone(&second.state.borrow().shared);
+        presenter::wait(std::slice::from_ref(&second_shared), Duration::from_secs(30));
+        assert_eq!(
+            second.vsync_state(),
+            (false, effective, effective),
+            "asked, resolved, applied"
+        );
         assert_eq!(
             pacer().map(|pacer| pacer.waits()),
             Some(effective),
-            "display pacing goes by the pacing window's own vsync"
+            "display pacing goes by the pacing window's own vsync, as applied"
         );
         second.close();
         assert!(paced_by(&window), "with the one that asked closed, the first paces again");
