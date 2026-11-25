@@ -184,6 +184,18 @@ impl Shared {
         self.applied.store(waits, Ordering::Release);
     }
 
+    /// Moves it to `gpu`, with `screen`, its screen, held: commit counts are each device's own, so
+    /// what it presented and drew of the old device says nothing of the new one, and both start
+    /// again from nothing. Without that, a high count from the old device would pass for every
+    /// commit of the new one until the new one's caught up.
+    pub(super) fn migrate(&self, screen: &mut Screen, gpu: Arc<Gpu>) {
+        *lock(&self.device) = gpu;
+        screen.drawn = 0;
+        screen.stale = true;
+        let _progress = lock(&self.signal.progress);
+        self.presented.store(0, Ordering::Release);
+    }
+
     /// The device's commit count its last presented frame drew.
     pub(super) fn presented(&self) -> u64 {
         self.presented.load(Ordering::Acquire)
@@ -445,25 +457,31 @@ fn draw(shared: &Shared) -> Drawing {
         Imported::Texture(name, texture) => Import::Texture(name, texture),
         Imported::Buffer(name, buffer) => Import::Buffer(name, buffer),
     }));
+    // The commit it draws is the one there is under the frame lock, which no commit changes while
+    // it is held: the count read for the dirty check above may be older than what is rendered.
     let ran = {
         let _frame = gpu.frame();
-        gpu.run(&showing.plan.get(), &showing.sets, &imports)
+        let rendered = gpu.commits();
+        gpu.run(&showing.plan.get(), &showing.sets, &imports).map(|()| rendered)
     };
     drop(imports);
-    if let Err(failure) = ran {
-        // The image goes back to the surface unpresented: a frame that failed isn't one.
-        drop(frame);
-        return fail(&mut shared.problem(), failing, stale, failure);
-    }
+    let rendered = match ran {
+        Ok(rendered) => rendered,
+        Err(failure) => {
+            // The image goes back to the surface unpresented: a frame that failed isn't one.
+            drop(frame);
+            return fail(&mut shared.problem(), failing, stale, failure);
+        }
+    };
     gpu.present(frame);
-    *drawn = commits;
+    *drawn = rendered;
     *stale = false;
     *failing = false;
     // Counted under the progress lock, so a waiter that looked and found none can't miss it.
     {
         let _progress = lock(&shared.signal.progress);
         shared.frames.fetch_add(1, Ordering::AcqRel);
-        shared.presented.fetch_max(commits, Ordering::AcqRel);
+        shared.presented.fetch_max(rendered, Ordering::AcqRel);
     }
     shared.signal.changed.notify_all();
     Drawing::Drew
@@ -613,6 +631,35 @@ mod tests {
         let weak = Arc::downgrade(&shared);
         drop(shared);
         assert!(weak.upgrade().is_none(), "the waiting presenter kept the window alive");
+    }
+
+    /// A window moved from a device that had committed much to one that has committed little
+    /// forgets what it presented of the old one: the new device's first commit is waited for, not
+    /// taken as presented long ago.
+    #[test]
+    fn a_window_moved_to_another_device_forgets_the_old_one_s_commits() {
+        let (Some(old), Some(new)) = (
+            gpu("a_window_moved_to_another_device_forgets_the_old_one_s_commits"),
+            gpu("a_window_moved_to_another_device_forgets_the_old_one_s_commits"),
+        ) else {
+            return;
+        };
+        let shared = Shared::new(None, old, true);
+        shared.presented.store(1000, std::sync::atomic::Ordering::Release);
+        shared.screen().drawn = 1000;
+        assert!(shared.wait_presented(3, Instant::now()), "on the old device, 1000 covers 3");
+        {
+            let mut screen = shared.screen();
+            shared.migrate(&mut screen, Arc::clone(&new));
+            assert_eq!(screen.drawn, 0);
+            assert!(screen.stale, "it draws again on the new device");
+            drop(screen);
+        }
+        assert!(Arc::ptr_eq(&shared.device(), &new));
+        assert!(
+            !shared.wait_presented(1, Instant::now()),
+            "nothing of the new device is presented yet"
+        );
     }
 
     #[test]

@@ -1216,7 +1216,7 @@ impl System {
             // Either way the surface is new and has drawn nothing yet.
             screen.stale = true;
             replaced?;
-            *shared.device.lock().unwrap_or_else(PoisonError::into_inner) = Arc::clone(gpu);
+            shared.migrate(&mut screen, Arc::clone(gpu));
             if let Some(surface) = &screen.surface {
                 state.offers_immediate = !surface.waits_for(PresentMode::Immediate);
                 // Made in the mode asked for, as far as the new device's surface offers it.
