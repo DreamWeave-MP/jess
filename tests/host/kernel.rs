@@ -331,3 +331,64 @@ fn a_host_collects_its_domain_s_garbage_between_frames() {
     assert_eq!(host.collector().budget(), jess::host::collector::DEFAULT_BUDGET);
     host.stop().unwrap();
 }
+
+/// A heap allocated at startup, frames that churn what it retains, and every so often a burst of
+/// garbage many frames' worth: the host's collections keep finishing cycles, and right after each
+/// the heap is what is live and what one burst made, not what all of them made. Counted, not
+/// timed: each collection has the largest budget, so it ends at a cycle's end.
+#[test]
+fn a_host_collects_through_startup_churn_and_bursts() {
+    let grant = RootAuthority::new().grant(CapabilitySet::empty());
+    let mut host = Host::create(factory(), HostSpec::new(DomainSpec::new("bursts", grant))).unwrap();
+    host.domain()
+        .register_context(ContextSpec::new("bursts").schedule([Phase::Update]))
+        .unwrap();
+    host.domain()
+        .load_source(
+            "=main",
+            r"
+            -- About twenty megabytes, made before the first frame.
+            local live = table.create(200000)
+            for index = 1, 200000 do live[index] = { index, index + 1 } end
+            local context = require('@jess/context')
+            local frame = 0
+            context.bind('bursts', {
+                update = function()
+                    frame += 1
+                    for index = 1, 500 do
+                        live[(frame * 500 + index) % 200000 + 1] = { frame, index }
+                    end
+                    local size = if frame % 50 == 0 then 200000 else 2000
+                    local garbage = table.create(size)
+                    for index = 1, size do garbage[index] = { index } end
+                end,
+            })
+            ",
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+    host.domain().start().unwrap();
+    host.collector().set_budget(jess::host::collector::MAX_BUDGET);
+    let kilobytes = |host: &Host| {
+        host.domain()
+            .with_runtime(|runtime| runtime.gc(l3i::memory::GcControl::Count))
+            .unwrap()
+    };
+    let live = kilobytes(&host);
+    let (mut finished, mut worst) = (0, 0);
+    for _ in 0..600 {
+        let report = host.frame(Duration::from_millis(16)).unwrap();
+        assert!(report.failures().is_empty(), "{:?}", report.failures());
+        assert!(report.collection.is_none(), "Host::frame doesn't collect; its driver does");
+        if host.collect().finished {
+            finished += 1;
+            worst = worst.max(kilobytes(&host));
+        }
+    }
+    assert!(finished >= 4, "{finished} cycles finished");
+    // Live plus a burst of 200,000 small tables, with room for the allocator's slack.
+    assert!(
+        worst < live * 3 + 40 * 1024,
+        "{worst} KB after a cycle, {live} KB live at start"
+    );
+    host.stop().unwrap();
+}
