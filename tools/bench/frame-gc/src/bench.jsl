@@ -10,7 +10,8 @@
 -- the host's collection and waiting are in them) at the 50th, 95th, 99th and 99.9th percentiles
 -- and the worst, the frames that missed their deadline by half an interval or more, the
 -- frames whose own work took longer than a frame, the host's collection time per frame, the
--- cycles it finished and the times it overran its budget, and the largest heap.
+-- cycles it finished, the collections that ran past their budget (by a step, as a soft budget
+-- does) and past twice it, and the largest heap. Every sample of a frame is of that one frame.
 local application = require '@jess/application'
 local gc = require '@jess/gc'
 
@@ -30,8 +31,8 @@ end
 local intervals = table.create(Frames, 0)
 local collections = table.create(Frames, 0)
 local works = table.create(Frames, 0)
-local frame, churn, heap = 0, 0, 0
-local cyclesBefore, overrunsBefore = 0, 0
+local frame, churn, heap, lastWork = 0, 0, 0, 0
+local cyclesBefore, overrunsBefore, twiceBefore = 0, 0, 0
 
 local function percentiles(times: { number }): string
   local sorted = table.clone(times)
@@ -64,9 +65,10 @@ local function report()
   print(`  frame work:     {percentiles(works)}; {slow} took longer than a frame`)
   print(`  collection:     {percentiles(collections)}`)
   print(string.format(
-    '  %d cycles finished, %d overruns of the budget, heap at most %d MB',
+    '  %d cycles finished, %d collections past the budget, %d past twice it, heap at most %d MB',
     totals.cycles - cyclesBefore,
     totals.overruns - overrunsBefore,
+    totals.overrunsTwice - twiceBefore,
     heap // 1024
   ))
 end
@@ -91,19 +93,22 @@ return {
         local worked = os.clock() - began
         if frame == WarmUp then
           local totals = application.frameStats().gc
-          cyclesBefore, overrunsBefore = totals.cycles, totals.overruns
+          cyclesBefore, overrunsBefore, twiceBefore = totals.cycles, totals.overruns, totals.overrunsTwice
         end
 
-        if frame <= WarmUp then return end
+        -- Every sample is of the frame before this one: this frame's delta is the interval that
+        -- frame began, the last collection is the one after it, and its work was kept for now.
+        -- The frames measured are WarmUp to WarmUp + Frames - 1, and the totals are theirs.
+        if frame > WarmUp then
+          local measured = frame - WarmUp
+          intervals[measured] = delta
+          works[measured] = lastWork
+          collections[measured] = application.frameStats().gc.time
+        end
 
-        -- This frame's delta is the interval before it, and the last collection the one after
-        -- the frame before.
-        local measured = frame - WarmUp
-        intervals[measured] = delta
-        works[measured] = worked
-        collections[measured] = application.frameStats().gc.time
+        lastWork = worked
         heap = math.max(heap, gcinfo())
-        if measured < Frames then return end
+        if frame < WarmUp + Frames then return end
 
         report()
         application.exit(0)

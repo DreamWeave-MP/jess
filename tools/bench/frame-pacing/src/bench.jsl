@@ -155,6 +155,8 @@ return {
         -- A pace asked for applies from the end of the frame that asks, so this frame's delta,
         -- the interval before it, is the new pace's.
         table.insert(deltas, delta)
+        -- The collection after the frame before, the one this delta is the interval of: both
+        -- samples are of the same frame.
         table.insert(collections, application.frameStats().gc.time)
         phaseElapsed += delta
         if phaseElapsed < PhaseSeconds then return end
