@@ -593,3 +593,51 @@ fn a_script_asks_its_host_to_stop() {
         .to_string();
     assert!(problem.contains("application.exit: needs an application host"), "{problem}");
 }
+
+/// A worker's heap is its own: its `jess.gc` paces it with a budget of its own, and setting that
+/// budget leaves the host's, which the domain's own code set, as it was.
+#[test]
+fn a_worker_collects_its_own_heap_with_its_own_budget() {
+    const SOURCE: &str = r"
+local context = require('@jess/context')
+local worker = require('@jess/worker')
+local gc = require('@jess/gc')
+
+context.bind('main', {
+  startup = function()
+    gc.setBudget(4)
+    local lane = worker.spawn {
+      name = 'collector',
+      source = [[
+        local gc = require('@jess/gc')
+
+        return function(budget)
+          local before = gc.budget()
+          gc.setBudget(budget)
+          local garbage = table.create(10000)
+          for index = 1, 10000 do garbage[index] = { index } end
+          local spent, finished = gc.step()
+          assert(type(spent) == 'number' and type(finished) == 'boolean')
+          return `{before} {gc.budget()}`
+        end
+      ]],
+    }
+
+    lane:send(9)
+    assert(lane:receive(20) == '0.5 9')
+    assert(gc.budget() == 4, 'the worker set its own budget, not the host\'s')
+  end,
+})
+";
+    let factory: Arc<dyn RuntimeFactory> = Arc::new(|| jess::lua::runtime(Options::default()));
+    let grant = RootAuthority::new().grant(CapabilitySet::from_names([WORKER_SPAWN]).unwrap());
+    let host = Host::create(factory, HostSpec::new(DomainSpec::new("collecting", grant))).unwrap();
+    host.domain()
+        .register_context(ContextSpec::new("main").schedule([Phase::Startup]))
+        .unwrap();
+    host.domain().load_source("@test/kernel/collecting.jsl", SOURCE).unwrap();
+    let started = host.domain().start().unwrap();
+    assert!(started.failures.is_empty(), "{:?}", started.failures);
+    assert_eq!(host.collector().budget(), Duration::from_millis(4));
+    host.stop().unwrap();
+}

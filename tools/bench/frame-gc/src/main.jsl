@@ -1,0 +1,9 @@
+--!strict
+-- The frame's collection budget in milliseconds, the first argument: 0.5, the host's default,
+-- when it is missing, and 0 for no collection between frames at all.
+if not jess.bench.verified then
+  error('this jess was built without the verified toolchain; its numbers measure a slower Luau', 0)
+end
+
+local budget = tonumber((...)) or 0.5
+require('@jess/gc').setBudget(budget)

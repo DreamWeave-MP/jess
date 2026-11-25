@@ -65,4 +65,11 @@ Whatever it measures, a bench in this repository follows the same protocol, and 
 jess package run tools/bench/frame-pacing
 ```
 
+Each phase also reports the 99th percentile and worst of the host's collection after a frame. `tools/bench/frame-gc` is the collection on its own: a headless application at 60 frames a second over a large retained heap made at startup, making garbage every frame, replacing retained objects, and bursting every ten seconds, run once per budget. It reports the same percentiles of complete frame intervals and of each frame's own work, the frames that missed their deadline by half an interval or more, the collection's time per frame, the cycles it finished, its overruns, and the largest heap:
+
+```sh
+jess package run tools/bench/frame-gc -- 0      # Luau's own collection only
+jess package run tools/bench/frame-gc -- 0.5    # the host's default budget
+```
+
 A package's own hot paths belong with the package, in its `bench/bench.jsl`, under the same protocol, and the decisions they drive (which modules earn `--!native`, say) are recorded beside the code they justify. Nothing on this site quotes them.

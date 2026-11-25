@@ -185,7 +185,23 @@ fn frame_stats(call: &Call<'_>) -> l3i::Result<StackResults> {
         } else {
             (remainder.as_secs_f64() / step.as_secs_f64()).clamp(0.0, 1.0)
         };
-        table.raw_set_value(frame, "interpolation", &interpolation)
+        table.raw_set_value(frame, "interpolation", &interpolation)?;
+        let collection = stats.collection;
+        let totals = stats.collections;
+        let gc = frame.push_table(0, 9)?;
+        gc.raw_set_value(frame, "time", &collection.spent.as_secs_f64())?;
+        gc.raw_set_value(frame, "budget", &collection.budget.as_secs_f64())?;
+        gc.raw_set_value(frame, "steps", &f64::from(collection.steps))?;
+        gc.raw_set_value(frame, "finished", &collection.finished)?;
+        gc.raw_set_value(frame, "overran", &collection.overran())?;
+        gc.raw_set_value(frame, "overranTwice", &collection.overran_twice())?;
+        #[expect(clippy::cast_precision_loss, reason = "counts of frames are far below 2^53")]
+        {
+            gc.raw_set_value(frame, "cycles", &(totals.cycles as f64))?;
+            gc.raw_set_value(frame, "overruns", &(totals.overruns as f64))?;
+            gc.raw_set_value(frame, "overrunsTwice", &(totals.overruns_twice as f64))?;
+        }
+        table.raw_set(frame, "gc")
     })?;
     Ok(StackResults)
 }
@@ -1081,7 +1097,8 @@ impl Application {
 
     /// One frame of `delta` as [`Application::run`] runs it: the window system's news, the frame
     /// ([`Application::frame`]), the frame's changes to what the GPU draws committed together,
-    /// and the windows told to draw them. What windows and the GPU refused goes to `report`.
+    /// and the windows told to draw them; then, while they draw, the frame's collection
+    /// ([`Host::collect`]). What windows and the GPU refused goes to `report`.
     ///
     /// Every step is a frame of the application's statistics (`application.frameStats`), however
     /// it is driven: it begins when the step does, with `delta` as its delta, and its work is the
@@ -1119,8 +1136,14 @@ impl Application {
                 report(&format!("window {title}: {problem}"));
             }
         }
+        // The windows draw on their presenters' threads: this is time the frame would otherwise wait.
+        let collection = self.host.collect();
+        self.pacing.collected(collection);
         self.end_frame(began);
-        outcome
+        outcome.map(|report| FrameReport {
+            collection: Some(collection),
+            ..report
+        })
     }
 
     /// Records how the frame that began at `began` ended, for its statistics and for

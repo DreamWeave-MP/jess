@@ -13,6 +13,12 @@
 //! 2. **Advance.** [`ScriptDomain::advance`]: fixed steps, update, late update, and the event
 //!    drain.
 //!
+//! [`Host::frame`] is those two. The driver then hands the frame's results on (to the GPU and the
+//! windows, say) and calls [`Host::collect`] in the time the frame would otherwise wait: Luau's
+//! incremental collector, a time budget's worth, paced as [`collector`] says. The domain's code
+//! sets the budget on the [`Collector`] the domain carries (`jess.gc.setBudget`). Workers'
+//! runtimes are not the host's: they collect as their code allocates, or step themselves.
+//!
 //! When frames run is not the host's to decide: [`pacing`] is that decision, apart from any
 //! loop, for whoever drives the frames. Every host's domain carries a
 //! [`FixedProgress`](crate::runtime::FixedProgress), how far its time is into the next fixed
@@ -42,6 +48,7 @@
 
 #![warn(missing_docs)]
 
+pub mod collector;
 pub mod input;
 pub mod pacing;
 
@@ -56,6 +63,7 @@ use crate::runtime::{
     DomainSpec, Generation, PhaseReport, RuntimeError, RuntimeFactory, ScriptDomain, TeardownReport, TickReport,
 };
 
+pub use collector::{Collection, Collector};
 pub use input::InputSource;
 
 /// What a host fails with: the runtime's errors, or the input backend's.
@@ -159,6 +167,9 @@ pub struct FrameReport {
     pub input: Option<PhaseReport>,
     /// The domain's advance.
     pub tick: TickReport,
+    /// The frame's collection, once its driver has run it ([`Host::collect`]): `None` from
+    /// [`Host::frame`], which doesn't.
+    pub collection: Option<Collection>,
 }
 
 impl FrameReport {
@@ -178,6 +189,7 @@ pub struct Host {
     domain: ScriptDomain,
     input: Option<input::Driver>,
     exit: Arc<ExitRequest>,
+    collector: Arc<Collector>,
 }
 
 impl fmt::Debug for Host {
@@ -186,6 +198,7 @@ impl fmt::Debug for Host {
             .field("domain", &self.domain)
             .field("input", &self.input.as_ref().map(input::Driver::source_name))
             .field("exit", &self.exit.requested())
+            .field("collector", &self.collector)
             .finish()
     }
 }
@@ -208,8 +221,15 @@ impl Host {
         domain_spec = domain_spec.service(Arc::clone(&exit));
         // Where its time is between fixed steps, for handlers that interpolate.
         domain_spec = domain_spec.service(Arc::new(crate::runtime::FixedProgress::default()));
+        let collector = Arc::new(Collector::default());
+        domain_spec = domain_spec.service(Arc::clone(&collector));
         let domain = ScriptDomain::create(factory, domain_spec)?;
-        Ok(Host { domain, input, exit })
+        Ok(Host {
+            domain,
+            input,
+            exit,
+            collector,
+        })
     }
 
     /// The domain: register contexts, load, start, spawn workers, and inspect through it.
@@ -246,7 +266,11 @@ impl Host {
     pub fn frame(&mut self, delta: Duration) -> Result<FrameReport, Error> {
         let input = self.pump_input()?;
         let tick = self.domain.advance(delta)?;
-        Ok(FrameReport { input, tick })
+        Ok(FrameReport {
+            input,
+            tick,
+            collection: None,
+        })
     }
 
     /// The input step alone: polls the backend, ticks the service, and runs the input phase if
@@ -283,10 +307,31 @@ impl Host {
         // Forgotten as the new code loads: after the old generation's shutdown handlers, which may
         // still ask, and never by a restart the domain refuses.
         let exit = Arc::clone(&self.exit);
+        let collector = Arc::clone(&self.collector);
         self.domain.restart(move |runtime| {
             exit.clear();
+            // A new runtime, whose heap the old pacing knew nothing of, and code that sets its own
+            // budget if it wants one.
+            collector.reset();
             load(runtime)
         })
+    }
+
+    /// The collector the domain carries: the budget [`Host::collect`] spends, which the domain's
+    /// code sets with `jess.gc.setBudget`.
+    #[must_use]
+    pub fn collector(&self) -> &Arc<Collector> {
+        &self.collector
+    }
+
+    /// The frame's collection: incremental steps of the domain's primary runtime for at most
+    /// [`Collector::budget`], paced as [`collector`] says. Call it once a frame, after the frame's
+    /// results are handed on, in the time the frame would otherwise wait. Nothing once the domain
+    /// has stopped.
+    pub fn collect(&self) -> Collection {
+        self.domain
+            .with_runtime(|runtime| self.collector.collect_frame(runtime))
+            .unwrap_or_default()
     }
 
     /// Tears the domain down ([`ScriptDomain::stop`]) and drops the services with the host.

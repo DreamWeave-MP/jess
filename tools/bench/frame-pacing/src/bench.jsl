@@ -7,7 +7,8 @@
 -- pace and the window's vsync from its own update, phase after phase, and reports each phase's
 -- complete frame intervals (the delta from one frame's beginning to the next, which is everything
 -- the host does, collection and waiting included), the frames that missed their deadline by half
--- an interval or more, and how many frames the window presented a second.
+-- an interval or more, how many frames the window presented a second, and the host's collection
+-- after each frame.
 local application = require '@jess/application'
 local render = require '@jess/render'
 local shader = require '@jess/shader'
@@ -73,13 +74,16 @@ local function percentile(sorted: { number }, fraction: number): number
   return sorted[math.max(1, math.ceil(#sorted * fraction))]
 end
 
-local function report(phase: Phase, deltas: { number }, presented: number)
+local function report(phase: Phase, deltas: { number }, presented: number, collections: { number })
   local sorted = table.clone(deltas)
   table.sort(sorted)
   local total = 0
   for _, delta in sorted do
     total += delta
   end
+
+  local collected = table.clone(collections)
+  table.sort(collected)
 
   local stats = application.frameStats()
   local target = if type(phase.pace) == 'number'
@@ -94,7 +98,7 @@ local function report(phase: Phase, deltas: { number }, presented: number)
   end
 
   print(string.format(
-    '%-22s effective %-7s %8.1f frames/s, presented %7.1f/s; interval ms p50 %.2f / p95 %.2f / p99 %.2f / p99.9 %.2f / max %.2f; missed %s; heap %d MB',
+    '%-22s effective %-7s %8.1f frames/s, presented %7.1f/s; interval ms p50 %.2f / p95 %.2f / p99 %.2f / p99.9 %.2f / max %.2f; missed %s; gc p99 %.2f / max %.2f ms; heap %d MB',
     phase.name,
     tostring(application.pace().effective),
     #deltas / total,
@@ -105,19 +109,21 @@ local function report(phase: Phase, deltas: { number }, presented: number)
     percentile(sorted, 0.999) * 1000,
     sorted[#sorted] * 1000,
     if target then tostring(missed) else '-',
+    percentile(collected, 0.99) * 1000,
+    collected[#collected] * 1000,
     gcinfo() // 1024
   ))
 end
 
 local frame, phase, churn, elapsed = 0, 0, 0, 0
-local deltas: { number } = {}
+local deltas: { number }, collections: { number } = {}, {}
 local presentedAtStart, phaseElapsed = 0, 0
 
 local function begin(index: number)
   local next = Phases[index]
   application.setPace(next.pace)
   window:vsync(next.vsync)
-  phase, deltas, presentedAtStart, phaseElapsed = index, {}, window.frames, 0
+  phase, deltas, collections, presentedAtStart, phaseElapsed = index, {}, {}, window.frames, 0
 end
 
 return {
@@ -149,10 +155,13 @@ return {
         -- A pace asked for applies from the end of the frame that asks, so this frame's delta,
         -- the interval before it, is the new pace's.
         table.insert(deltas, delta)
+        -- The collection after the frame before, the one this delta is the interval of: both
+        -- samples are of the same frame.
+        table.insert(collections, application.frameStats().gc.time)
         phaseElapsed += delta
         if phaseElapsed < PhaseSeconds then return end
 
-        report(Phases[phase], deltas, window.frames - presentedAtStart)
+        report(Phases[phase], deltas, window.frames - presentedAtStart, collections)
         if phase == #Phases then
           application.exit(0)
           return
