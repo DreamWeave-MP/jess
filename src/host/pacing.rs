@@ -289,6 +289,21 @@ pub struct FrameStats {
     /// The pacing window's display's refresh at the last frame's end, where the window system
     /// says, and whether it is that display's or a guess.
     pub refresh: Option<(Duration, bool)>,
+    /// The last frame's collection ([`crate::host::Host::collect`]), a part of its `work`.
+    pub collection: crate::host::Collection,
+    /// Every frame's collections together.
+    pub collections: Collections,
+}
+
+/// Every frame's collections together, as [`FrameStats::collections`] counts them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Collections {
+    /// Cycles they finished.
+    pub cycles: u64,
+    /// Collections that took longer than their budget.
+    pub overruns: u64,
+    /// The time they took.
+    pub spent: Duration,
 }
 
 /// How long [`FrameStats::rate`] measures over.
@@ -409,6 +424,15 @@ impl Pacing {
             Some((since, counted)) => state.counting = Some((since, counted + 1)),
             None => state.counting = Some((began, 1)),
         }
+    }
+
+    /// The frame's collection was `collection`.
+    pub fn collected(&self, collection: crate::host::Collection) {
+        let mut state = self.state();
+        state.stats.collection = collection;
+        state.stats.collections.cycles += u64::from(collection.finished);
+        state.stats.collections.overruns += u64::from(collection.overran());
+        state.stats.collections.spent += collection.spent;
     }
 
     /// The frame's work took `work`, `effective` was the pace at its end, and `presentation` what

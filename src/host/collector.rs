@@ -80,6 +80,18 @@ pub struct Collection {
     pub finished: bool,
     /// The time the steps took.
     pub spent: Duration,
+    /// The budget it was given. A soft one: the step that runs it out finishes, so `spent` can
+    /// pass it by a step, or by all of the step that finishes marking.
+    pub budget: Duration,
+}
+
+impl Collection {
+    /// Whether it ran past its budget by more than the budget again: more than the last step's
+    /// usual overshoot, as the step that finishes marking does on a large heap.
+    #[must_use]
+    pub fn overran(&self) -> bool {
+        self.spent > self.budget * 2
+    }
 }
 
 /// One Luau heap's collection pacing and the budget a frame spends on it. A host's domain
@@ -133,8 +145,12 @@ impl Collector {
     /// past the budget by as long as one step takes, and a step that reaches the end of marking
     /// takes as long as finishing it does.
     pub fn collect(&self, heap: &impl Heap, budget: Duration) -> Collection {
+        let nothing = Collection {
+            budget,
+            ..Collection::default()
+        };
         if budget.is_zero() {
-            return Collection::default();
+            return nothing;
         }
         if heap.paused() {
             let size = heap.kilobytes();
@@ -151,11 +167,14 @@ impl Collector {
             )]
             let start = settled + (settled as f64 * START_GROWTH) as u64;
             if settled == 0 || size < start {
-                return Collection::default();
+                return nothing;
             }
         }
         let began = Instant::now();
-        let mut collection = Collection::default();
+        let mut collection = Collection {
+            budget,
+            ..Collection::default()
+        };
         loop {
             collection.steps += 1;
             if heap.step(STEP_KILOBYTES) {
@@ -183,7 +202,7 @@ mod tests {
     use std::cell::Cell;
     use std::time::{Duration, Instant};
 
-    use super::{Collector, DEFAULT_BUDGET, Heap, MAX_BUDGET};
+    use super::{Collection, Collector, DEFAULT_BUDGET, Heap, MAX_BUDGET};
 
     /// A heap whose collector finishes a cycle on its `finish_after`th step, and whose every step
     /// takes until the clock has moved, so a budget of a nanosecond is spent by one step on any
@@ -299,5 +318,38 @@ mod tests {
         assert_eq!(collector.budget(), MAX_BUDGET);
         collector.reset();
         assert_eq!(collector.budget(), DEFAULT_BUDGET);
+        // And the heap it knew: a new runtime's first cycle is Luau's to start again.
+        let heap = Fake::new(1000, 2);
+        heap.paused.set(false);
+        assert!(collector.collect(&heap, PLENTY).finished);
+        heap.kilobytes.set(5000);
+        assert!(collector.collect(&heap, PLENTY).steps > 0, "grown fivefold, it starts one");
+        collector.reset();
+        heap.paused.set(true);
+        assert_eq!(collector.collect(&heap, PLENTY).steps, 0, "after a reset it waits for Luau");
+    }
+
+    /// A soft budget: a collection that ran past it says so.
+    #[test]
+    fn a_collection_past_its_budget_overran() {
+        let collector = Collector::default();
+        let heap = Fake::new(1000, 1000);
+        heap.paused.set(false);
+        let collection = collector.collect(&heap, Duration::from_nanos(1));
+        assert_eq!(collection.budget, Duration::from_nanos(1));
+        assert!(collection.spent > collection.budget, "the step that ran it out finished");
+        let ms = Duration::from_millis(1);
+        let past = |spent| {
+            Collection {
+                steps: 1,
+                finished: false,
+                spent,
+                budget: ms,
+            }
+            .overran()
+        };
+        assert!(!past(ms * 3 / 2), "a step past its budget is the soft budget at work");
+        assert!(past(ms * 3), "three times it is an overrun");
+        assert!(!collector.collect(&heap, Duration::ZERO).overran());
     }
 }

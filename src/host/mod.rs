@@ -167,6 +167,9 @@ pub struct FrameReport {
     pub input: Option<PhaseReport>,
     /// The domain's advance.
     pub tick: TickReport,
+    /// The frame's collection, once its driver has run it ([`Host::collect`]): `None` from
+    /// [`Host::frame`], which doesn't.
+    pub collection: Option<Collection>,
 }
 
 impl FrameReport {
@@ -263,7 +266,11 @@ impl Host {
     pub fn frame(&mut self, delta: Duration) -> Result<FrameReport, Error> {
         let input = self.pump_input()?;
         let tick = self.domain.advance(delta)?;
-        Ok(FrameReport { input, tick })
+        Ok(FrameReport {
+            input,
+            tick,
+            collection: None,
+        })
     }
 
     /// The input step alone: polls the backend, ticks the service, and runs the input phase if
