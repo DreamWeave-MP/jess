@@ -1703,6 +1703,9 @@ fn check_grant(inspection: &Inspection, target: &Target, grant: Option<&[String]
 
 /// What [`launch`] started.
 #[derive(Debug)]
+// Made once a launch and moved straight to its driver; an application holds its last frame's
+// record in place so a step allocates nothing, and boxing it here would only move that cost.
+#[allow(clippy::large_enum_variant)]
 pub enum Launched {
     /// A command target, which ran to the end.
     Command(TargetRun),

@@ -1133,12 +1133,12 @@ impl Application {
         let effective = crate::host::pacing::resolve(self.pacing.chosen(), &presentation, self.step.step);
         let worked = Instant::now();
         self.pacing.ended(worked - began, effective.pace(), &presentation);
-        self.frames.ended = Some(Box::new(Ended {
+        self.frames.ended = Some(Ended {
             worked,
             effective,
             presentation,
             pacer,
-        }));
+        });
     }
 
     /// Posts [`crate::window::NEWS`] for each window something happened to, for the frame's
@@ -1179,8 +1179,9 @@ impl Application {
 struct Frames {
     /// How long `run` waited before the frame it steps next, for its statistics.
     waited: Duration,
-    /// How the last step ended, for `run` to decide its wait by.
-    ended: Option<Box<Ended>>,
+    /// How the last step ended, for `run` to decide its wait by: held in place, written every
+    /// step and taken by `run`, so the hottest path allocates nothing for it.
+    ended: Option<Ended>,
 }
 
 /// How a step ended: when its work did, the pace in effect, what the pacing window said, and the
