@@ -1154,8 +1154,11 @@ export type ApplicationPacing = {
 --- `refresh` is the pacing window's display's refresh where the window system says, and
 --- `refreshConfirmed` whether it is that display's or a guess from the displays there are.
 --- `gc` is the last frame's collection, a part of its `work`: its `time`, its `budget`, its `steps`,
---- whether it `finished` a cycle and whether it `overran` its budget; and every frame's together,
---- the `cycles` they finished and the `overruns`.
+--- whether it `finished` a cycle, whether it `overran` its budget at all (the soft budget lets the
+--- last step finish) and whether it overran it more than twice (`overranTwice`, the one worth
+--- looking at); and every frame's together, the `cycles` they finished, the `overruns`, and the
+--- `overrunsTwice`. Only the host's own collection after each frame is counted: Luau's steps on
+--- allocation and a script's own `jess.gc.step` are not.
 export type ApplicationFrameStats = {
   frames: number,
   delta: number,
@@ -1172,8 +1175,10 @@ export type ApplicationFrameStats = {
     steps: number,
     finished: boolean,
     overran: boolean,
+    overranTwice: boolean,
     cycles: number,
     overruns: number,
+    overrunsTwice: number,
   },
 }
 
@@ -1839,7 +1844,7 @@ Asks for `pace` from the end of the current frame on: `'display'`, `'unpaced'`, 
 
 {{ api_symbol(value="jess.application.frameStats") }}
 
-How the frames are going, as the host recorded them, in seconds: one frame for each step the host ran (the command line's, or an embedder's `Application::step`; an embedder's `waited` is 0, its waiting being its own): `frames` begun, the last frame's `delta`, its `work` (from its beginning to its windows told to draw it), how long the host `waited` before it for the pace, `rate`, frames a second over the last second or so (0 until there is one), the `fixedStep`, and `interpolation`, how far the domain's time is into the next fixed step, from 0 to 1, for drawing between the last two steps. With a pacing window, `refresh` is its display's refresh in seconds and `refreshConfirmed` whether the window system said so of that display, rather than a guess from the displays there are. `gc` is the last frame's collection, which ran after its windows were told to draw and is a part of its `work`: its `time` and `budget` in seconds, its `steps`, whether it `finished` a cycle and whether it `overran` its (soft) budget, by more than the budget again; and, for every frame so far, the `cycles` finished and the `overruns`. `work - gc.time` is the frame's own work. It reads what is recorded and waits on nothing, so asking every frame costs one table.
+How the frames are going, as the host recorded them, in seconds: one frame for each step the host ran (the command line's, or an embedder's `Application::step`; an embedder's `waited` is 0, its waiting being its own): `frames` begun, the last frame's `delta`, its `work` (from its beginning to its windows told to draw it), how long the host `waited` before it for the pace, `rate`, frames a second over the last second or so (0 until there is one), the `fixedStep`, and `interpolation`, how far the domain's time is into the next fixed step, from 0 to 1, for drawing between the last two steps. With a pacing window, `refresh` is its display's refresh in seconds and `refreshConfirmed` whether the window system said so of that display, rather than a guess from the displays there are. `gc` is the last frame's collection, which ran after its windows were told to draw and is a part of its `work`: its `time` and `budget` in seconds, its `steps`, whether it `finished` a cycle, whether it `overran` its budget at all (a soft budget, so any collection that ran it out did, by a step) and whether by more than twice it (`overranTwice`, as the step that finishes marking does on a large heap); and, for every frame so far, the `cycles` finished, the `overruns` and the `overrunsTwice`. `work - gc.time` is the frame's own work. These count the host's scheduled collection after each frame and nothing else: the steps Luau takes as code allocates, and a script's own `jess.gc.step`, are in no `gc` figure, though their time is in `work` and `delta` like any other. It reads what is recorded and waits on nothing, so asking every frame costs one table.
 
 {{ api_symbol(value="ApplicationFrameStats") }}
 
@@ -1861,7 +1866,7 @@ The host paces that by the heap. In the middle of a cycle it steps until the bud
 
 `step` is that same collection, for code that drives frames of its own (a benchmark simulating frames, a tool's loop), so it can do and measure what an application's host does.
 
-**The budget is soft.** Work is done in small steps and the clock read after each, so the step that runs the budget out finishes: a collection takes up to one step longer than its budget, and the step that finishes marking (Luau's atomic phase, which can't be divided) takes as long as it takes, a few milliseconds on a heap of hundreds of megabytes. Under an application's host, [`application.frameStats().gc`](@/docs/api/application.md#jess-application-framestats) says how long the last frame's took, against what budget, in how many steps, whether it finished a cycle or overran, and how many cycles and overruns there have been in all.
+**The budget is soft.** Work is done in small steps and the clock read after each, so the step that runs the budget out finishes: a collection takes up to one step longer than its budget, and the step that finishes marking (Luau's atomic phase, which can't be divided) takes as long as it takes, a few milliseconds on a heap of hundreds of megabytes. Under an application's host, [`application.frameStats().gc`](@/docs/api/application.md#jess-application-framestats) says how long the last frame's took, against what budget, in how many steps, whether it finished a cycle or overran (at all, or more than twice), and how many cycles and overruns there have been in all. Those are the host's scheduled collections only, not Luau's own steps on allocation and not the code's own `step`s.
 
 **Manual and automatic collection are one collector.** Luau keeps collecting as code allocates, whatever the host does; the host's steps only do that work earlier, at a better time. A `step` from the application's own code, on top of the host's, steps the same heap with the same pacing: it is extra work now and less for the host after the frame, never a second collector. `jess.bench.collect` still runs a whole cycle at once.
 

@@ -188,16 +188,18 @@ fn frame_stats(call: &Call<'_>) -> l3i::Result<StackResults> {
         table.raw_set_value(frame, "interpolation", &interpolation)?;
         let collection = stats.collection;
         let totals = stats.collections;
-        let gc = frame.push_table(0, 7)?;
+        let gc = frame.push_table(0, 9)?;
         gc.raw_set_value(frame, "time", &collection.spent.as_secs_f64())?;
         gc.raw_set_value(frame, "budget", &collection.budget.as_secs_f64())?;
         gc.raw_set_value(frame, "steps", &f64::from(collection.steps))?;
         gc.raw_set_value(frame, "finished", &collection.finished)?;
         gc.raw_set_value(frame, "overran", &collection.overran())?;
+        gc.raw_set_value(frame, "overranTwice", &collection.overran_twice())?;
         #[expect(clippy::cast_precision_loss, reason = "counts of frames are far below 2^53")]
         {
             gc.raw_set_value(frame, "cycles", &(totals.cycles as f64))?;
             gc.raw_set_value(frame, "overruns", &(totals.overruns as f64))?;
+            gc.raw_set_value(frame, "overrunsTwice", &(totals.overruns_twice as f64))?;
         }
         table.raw_set(frame, "gc")
     })?;

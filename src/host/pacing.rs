@@ -302,6 +302,8 @@ pub struct Collections {
     pub cycles: u64,
     /// Collections that took longer than their budget.
     pub overruns: u64,
+    /// Collections that took more than twice their budget.
+    pub overruns_twice: u64,
     /// The time they took.
     pub spent: Duration,
 }
@@ -432,6 +434,7 @@ impl Pacing {
         state.stats.collection = collection;
         state.stats.collections.cycles += u64::from(collection.finished);
         state.stats.collections.overruns += u64::from(collection.overran());
+        state.stats.collections.overruns_twice += u64::from(collection.overran_twice());
         state.stats.collections.spent += collection.spent;
     }
 

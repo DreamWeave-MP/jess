@@ -86,10 +86,17 @@ pub struct Collection {
 }
 
 impl Collection {
-    /// Whether it ran past its budget by more than the budget again: more than the last step's
-    /// usual overshoot, as the step that finishes marking does on a large heap.
+    /// Whether it took longer than its budget at all: with a soft budget, any collection that ran
+    /// the budget out, since the step that did finishes.
     #[must_use]
     pub fn overran(&self) -> bool {
+        self.spent > self.budget
+    }
+
+    /// Whether it took more than twice its budget: more than the last step's usual overshoot, as
+    /// the step that finishes marking does on a large heap. The overrun worth looking at.
+    #[must_use]
+    pub fn overran_twice(&self) -> bool {
         self.spent > self.budget * 2
     }
 }
@@ -329,7 +336,8 @@ mod tests {
         assert_eq!(collector.collect(&heap, PLENTY).steps, 0, "after a reset it waits for Luau");
     }
 
-    /// A soft budget: a collection that ran past it says so.
+    /// A soft budget: a collection that ran past it says so, and one that ran past twice it says
+    /// that too.
     #[test]
     fn a_collection_past_its_budget_overran() {
         let collector = Collector::default();
@@ -340,16 +348,17 @@ mod tests {
         assert!(collection.spent > collection.budget, "the step that ran it out finished");
         let ms = Duration::from_millis(1);
         let past = |spent| {
-            Collection {
+            let collection = Collection {
                 steps: 1,
                 finished: false,
                 spent,
                 budget: ms,
-            }
-            .overran()
+            };
+            (collection.overran(), collection.overran_twice())
         };
-        assert!(!past(ms * 3 / 2), "a step past its budget is the soft budget at work");
-        assert!(past(ms * 3), "three times it is an overrun");
+        assert_eq!(past(ms), (false, false), "its budget exactly");
+        assert_eq!(past(ms * 3 / 2), (true, false), "a step past it: the soft budget at work");
+        assert_eq!(past(ms * 3), (true, true), "three times it");
         assert!(!collector.collect(&heap, Duration::ZERO).overran());
     }
 }
