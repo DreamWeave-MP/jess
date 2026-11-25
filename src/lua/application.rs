@@ -667,6 +667,8 @@ pub struct Application {
     names: BTreeMap<ContextId, String>,
     step: FixedStep,
     pacing: Arc<Pacing>,
+    /// What its steps and [`Application::run`] tell each other about frames.
+    frames: Frames,
     /// The GPU device the application's generations share, committed at the end of each frame.
     #[cfg(feature = "gpu")]
     device: Arc<crate::lua::SharedDevice>,
@@ -882,6 +884,7 @@ pub(crate) fn launch(
         names: BTreeMap::new(),
         step,
         pacing,
+        frames: Frames::default(),
         #[cfg(feature = "gpu")]
         device,
     };
@@ -1062,20 +1065,14 @@ impl Application {
             if interrupt.load(Ordering::Acquire) {
                 return Ok(130);
             }
-            let waited = waited(wait);
-            let began = Instant::now();
-            let delta = scheduler.begin(began);
-            self.pacing.began(began, delta, waited);
+            self.frames.waited = waited(wait);
+            let delta = scheduler.begin(Instant::now());
             let outcome = self.step(delta, report);
-            // Which window paces is asked once the frame is submitted: the frame's own code may
-            // have opened, closed, or chosen it. What it waits for is that window drawing the
-            // commit this frame submitted, however soon its presenter got to it.
-            let pacer = Pacer::now();
-            let presentation = pacer.as_ref().map(Pacer::presentation).unwrap_or_default();
-            let effective = crate::host::pacing::resolve(self.pacing.chosen(), &presentation, self.step.step);
-            let worked = Instant::now();
-            self.pacing.ended(worked - began, effective.pace(), &presentation);
-            wait = (scheduler.wait(worked, effective, &presentation), pacer);
+            let ended = self.frames.ended.take().expect("a step records how it ended");
+            wait = (
+                scheduler.wait(ended.worked, ended.effective, &ended.presentation),
+                ended.pacer,
+            );
             self.flush(report);
             outcome.map_err(|problem| error(problem.to_string()))?;
             ran += 1;
@@ -1086,12 +1083,21 @@ impl Application {
     /// ([`Application::frame`]), the frame's changes to what the GPU draws committed together,
     /// and the windows told to draw them. What windows and the GPU refused goes to `report`.
     ///
+    /// Every step is a frame of the application's statistics (`application.frameStats`), however
+    /// it is driven: it begins when the step does, with `delta` as its delta, and its work is the
+    /// step's, to its windows told to draw; the pace in effect is resolved at its end. `waited` is
+    /// what [`Application::run`] waited before it, and nothing for a driver of its own, which does
+    /// its waiting outside. [`Application::frame`] is the domain's frame alone and counts in none
+    /// of it.
+    ///
     /// # Errors
     ///
     /// As [`Application::frame`].
     // Without a GPU there are no windows or commits to report on.
     #[cfg_attr(not(feature = "gpu"), allow(unused_variables))]
     pub fn step(&mut self, delta: Duration, report: &mut impl FnMut(&str)) -> Result<FrameReport, crate::host::Error> {
+        let began = Instant::now();
+        self.pacing.began(began, delta, std::mem::take(&mut self.frames.waited));
         // The window system's news reaches the frame's input; what the frame left the windows
         // showing is drawn after it.
         #[cfg(feature = "window")]
@@ -1113,7 +1119,26 @@ impl Application {
                 report(&format!("window {title}: {problem}"));
             }
         }
+        self.end_frame(began);
         outcome
+    }
+
+    /// Records how the frame that began at `began` ended, for its statistics and for
+    /// [`Application::run`]'s wait. Which window paces is asked once the frame is submitted: the
+    /// frame's own code may have opened, closed, or chosen it, and what display pacing waits for
+    /// is that window drawing the commit this frame submitted.
+    fn end_frame(&mut self, began: Instant) {
+        let pacer = Pacer::now();
+        let presentation = pacer.as_ref().map(Pacer::presentation).unwrap_or_default();
+        let effective = crate::host::pacing::resolve(self.pacing.chosen(), &presentation, self.step.step);
+        let worked = Instant::now();
+        self.pacing.ended(worked - began, effective.pace(), &presentation);
+        self.frames.ended = Some(Box::new(Ended {
+            worked,
+            effective,
+            presentation,
+            pacer,
+        }));
     }
 
     /// Posts [`crate::window::NEWS`] for each window something happened to, for the frame's
@@ -1147,6 +1172,24 @@ impl Application {
             report(&line);
         }
     }
+}
+
+/// What an application's steps and [`Application::run`] tell each other about frames.
+#[derive(Default)]
+struct Frames {
+    /// How long `run` waited before the frame it steps next, for its statistics.
+    waited: Duration,
+    /// How the last step ended, for `run` to decide its wait by.
+    ended: Option<Box<Ended>>,
+}
+
+/// How a step ended: when its work did, the pace in effect, what the pacing window said, and the
+/// pacing window itself.
+struct Ended {
+    worked: Instant,
+    effective: Effective,
+    presentation: Presentation,
+    pacer: Option<Pacer>,
 }
 
 /// The pacing window as a frame was submitted, and the commit of its device the frame submitted

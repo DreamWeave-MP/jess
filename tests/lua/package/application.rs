@@ -1975,21 +1975,14 @@ fn every_change_of_pace_is_reported_frame_by_frame() {
         if frame == 8 then application.exit(0) end",
     );
     let mut application = launch(&request(&root, "app", &[]));
-    // Driven as the command line drives it, one frame at a time, so the journal can be read
-    // before teardown takes the runtime.
+    // Driven one step at a time, as an embedder drives it, so the journal can be read before
+    // teardown takes the runtime: every step resolves the pace in effect and counts as a frame.
     application.start().unwrap();
     let pacing = std::sync::Arc::clone(application.pacing());
     for _ in 0..8 {
         application
             .step(Duration::from_millis(1), &mut |line| panic!("{line}"))
             .unwrap();
-        // What the host's loop does at a frame's end with no window: resolve what is chosen.
-        let effective = jess::host::pacing::resolve(
-            pacing.chosen(),
-            &jess::host::pacing::Presentation::default(),
-            application.fixed_step().step,
-        );
-        pacing.ended(Duration::ZERO, effective.pace(), &jess::host::pacing::Presentation::default());
     }
     let refused =
         "application.setPace: the pace is 'display', 'unpaced', or a whole number of frames a second from 1 to 1000, not";
@@ -2056,5 +2049,33 @@ fn an_update_reads_how_far_it_is_into_the_next_fixed_step() {
         .step(Duration::from_millis(30), &mut |line| panic!("{line}"))
         .unwrap();
     assert_eq!(journal(&application), vec!["0.100 0.500", "0.100 0.800"]);
+    application.stop().unwrap();
+}
+
+/// A driver of its own gets coherent statistics from `step`: each step is a frame, begun with the
+/// delta it was given and nothing waited, its work no more than the time it took, while
+/// `frame`, the domain's frame alone, counts in none of it.
+#[test]
+fn an_embedder_s_steps_are_the_frames_of_its_statistics() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("embedded");
+    pacing_app(&root, "pace = 30\n", "");
+    let mut application = launch(&request(&root, "app", &[]));
+    application.start().unwrap();
+    let pacing = std::sync::Arc::clone(application.pacing());
+    for _ in 0..3 {
+        let started = std::time::Instant::now();
+        application
+            .step(Duration::from_millis(7), &mut |line| panic!("{line}"))
+            .unwrap();
+        let stats = pacing.stats();
+        assert_eq!(stats.delta, Duration::from_millis(7));
+        assert_eq!(stats.waited, Duration::ZERO);
+        assert!(stats.work <= started.elapsed(), "{stats:?}");
+    }
+    assert_eq!(pacing.stats().frames, 3);
+    assert_eq!(pacing.effective(), Pace::Capped(30), "each step resolved the pace in effect");
+    application.frame(Duration::from_millis(7)).unwrap();
+    assert_eq!(pacing.stats().frames, 3, "a domain frame alone is no frame of the statistics");
     application.stop().unwrap();
 }
