@@ -1,5 +1,6 @@
-//! What a domain adds to l3i's stdin: under a dispatch the check is the running code's authority,
-//! as at every other native boundary, and nothing frame-driven may block on a terminal.
+//! What a domain adds to l3i's stdin and `process.sleep`: under a dispatch the check is the
+//! running code's authority, as at every other native boundary, and nothing frame-driven may
+//! block on a terminal or sleep.
 //!
 //! Reads are not checked. The handle is the authority to read, so handing one to a less privileged
 //! context delegates that. Runtime teardown releases the claim through the handle's destructor;
@@ -11,7 +12,7 @@ use l3i::process::input::{Operation, Policy};
 use crate::runtime::capability::current_authority;
 use crate::runtime::ids::CapabilityId;
 
-/// The stdin policy of every jess runtime. Outside any dispatch (`jess run`, a command target)
+/// The stdin and sleep policy of every jess runtime. Outside any dispatch (`jess run`, a command target)
 /// there is no scheduler to stall and the runtime's own grant has already decided.
 pub struct StdinPolicy;
 
@@ -31,5 +32,17 @@ impl Policy for StdinPolicy {
                 "dream.process.stdin.wait: would block this domain's scheduler; call read or readLine on a later frame and retry on wouldBlock",
             )),
         }
+    }
+
+    /// A sleep under a dispatch is a frozen frame; outside one it is a script choosing to wait.
+    /// A worker is refused too, as its stdin `wait` is: an unbudgeted one asleep would hold up
+    /// its domain's teardown.
+    fn check_sleep(&self) -> l3i::Result<()> {
+        if current_authority().is_none() {
+            return Ok(());
+        }
+        Err(l3i::Error::permission(
+            "dream.process.sleep: would block a domain's frames or a worker jess must be able to stop; schedule the rest with @jess/timer, or check again on a later frame or message",
+        ))
     }
 }

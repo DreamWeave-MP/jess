@@ -284,19 +284,39 @@ fn no_child_outlives_the_domain_that_started_it() {
     host.domain()
         .register_context(ContextSpec::new("main").schedule([Phase::Update]))
         .unwrap();
+    // A domain may not sleep while it waits for the child's pid, so it reads what has arrived once
+    // a frame, as a frame-driven script does, and logs the pid when its line is whole.
     host.domain()
         .load_source(
             "@test/process/leaving.jsl",
-            &format!(
-                r"local child, pid = (function() {KEEP_A_SLEEPER} end)()
-                  require('@jess/log').new('leaving').info(tostring(pid))
-                  require('@jess/context').bind('main', {{ update = function() return child end }})"
-            ),
+            r"local process = require('@dream/process')
+              local child = assert(process.start('sh', { '-c', 'echo $$; exec sleep 30' }, { stdout = 'pipe' }))
+              local text, told = '', false
+              require('@jess/context').bind('main', { update = function()
+                if told then return end
+                local chunk = child:readStdout(64)
+                if chunk then text ..= chunk end
+                if string.find(text, '\n', 1, true) then
+                  told = true
+                  require('@jess/log').new('leaving').info((string.gsub(text, '%s', '')))
+                end
+              end })",
         )
         .unwrap();
     host.domain().start().unwrap();
-    host.frame(Duration::from_millis(16)).unwrap();
-    let pid: u32 = logs.drain()[0].message.parse().unwrap();
+
+    // Only a failing run reaches the deadline: the child prints its pid as soon as it starts.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut told = Vec::new();
+
+    while told.is_empty() {
+        assert!(Instant::now() < deadline, "the child never printed its pid");
+        host.frame(Duration::from_millis(16)).unwrap();
+        told = logs.drain();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    let pid: u32 = told[0].message.parse().unwrap();
     assert!(alive(pid), "the child runs while its domain does");
     host.stop().unwrap();
     assert!(gone(pid), "stopping the domain kills and reaps what it started");

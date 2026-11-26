@@ -158,7 +158,7 @@ input:close()
 
 A line is bytes without its LF and any CR before it, and an invalid UTF-8 byte stays what it is, since nothing here assumes the input is text. `''` is an empty line and `nil` alone is end of input, so the two never get confused, and a final line with no newline still arrives. Lines are bounded, at 64 KiB unless you ask for up to 1 MiB: past the bound, `readLine` returns `nil, message, 'invalidInput'` and the next call carries on with what is left of the line, so call until a line comes back to skip it. For bytes rather than lines, `input:read(maxBytes)` returns them unchanged, and short reads are normal.
 
-Timers need frames, so a script has none: [`@jess/timer`](@/docs/api/timer.md) raises here and says so. To wait for time, or for time and sockets together, use [`net.run` and `net.sleep`](@/docs/api/net.md). An [application](@/docs/scripting/applications.md#standard-input) reads stdin without ever blocking its frames.
+Timers need frames, so a script has none: [`@jess/timer`](@/docs/api/timer.md) raises here and says so. To wait for time, `process.sleep(seconds)` blocks the script (fractions allowed, never past its time limit; no capability needed), and `os.clock()` measures deadlines and backoff against it, which is what a retry after `429 Too Many Requests` needs. Luau's `os.clock()` is a monotonic wall clock, not the CPU time conventional Lua's is, so the time a script spends asleep counts. For time and sockets together, use [`net.run` and `net.sleep`](@/docs/api/net.md). An [application](@/docs/scripting/applications.md#standard-input) reads stdin without ever blocking its frames.
 
 ## Capabilities
 

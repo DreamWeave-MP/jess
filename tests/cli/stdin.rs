@@ -259,6 +259,8 @@ return {
         input = assert(process.openStdin())
         local waited, refused = pcall(input.wait, input, 0)
         print(`wait {waited} {string.find(refused, 'would block', 1, true) ~= nil}`)
+        local slept, unslept = pcall(process.sleep, 0)
+        print(`sleep {slept} {string.find(unslept, 'dream.process.sleep: would block a domain', 1, true) ~= nil}`)
         timer.every(1, function()
           local line, message, kind = input:readLine()
           if kind == 'wouldBlock' then return end
@@ -313,6 +315,11 @@ fn an_application_keeps_its_frames_while_stdin_says_nothing_and_hears_it_when_it
     read_until(&lines, |line| {
         assert_ne!(line, "wait true true");
         line.starts_with("wait false true")
+    });
+    // A sleep would freeze the frames just as a wait would, so it is refused the same way.
+    read_until(&lines, |line| {
+        assert!(!line.starts_with("sleep true"), "{line}");
+        line.starts_with("sleep false true")
     });
     let mut frames = 0;
     read_until(&lines, |line| {

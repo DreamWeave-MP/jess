@@ -227,7 +227,7 @@ Due timers run after `lateUpdate` and before the event drain. A timer's time is 
 
 ## Standard input
 
-A frame that waits on a terminal is a frozen window. An application reads stdin by polling: `read` and `readLine` never block, and return `nil, message, 'wouldBlock'` until something has arrived. Under an application `input:wait` raises instead of blocking. A timer is a natural place to poll from:
+A frame that waits on a terminal is a frozen window. An application reads stdin by polling: `read` and `readLine` never block, and return `nil, message, 'wouldBlock'` until something has arrived. Under an application `input:wait` raises instead of blocking, and so does `process.sleep`, in its workers as well as its frames: jess has to be able to stop both. A timer is a natural place to poll from:
 
 ```luau
 --!strict
