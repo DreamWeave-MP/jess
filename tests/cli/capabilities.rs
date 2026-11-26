@@ -35,12 +35,15 @@ fn run_holds_the_terminal_and_input_and_reads_files_only_when_granted() {
     drop(fs::remove_dir_all(&root));
     fs::create_dir_all(root.join("l10n/common")).unwrap();
     fs::write(root.join("l10n/common/en.toml"), "hello = 'Hello, {name}!'\n").unwrap();
-    // The user's own terminal and devices: no flag needed.
+    // The user's own terminal and devices, and time to wait in: no flag needed.
     fs::write(
         root.join("host.jsl"),
         "local process = require('@dream/process')\n\
          local runtime = jess.input.runtime()\n\
          runtime:connect 'keyboard'\n\
+         local started = os.clock()\n\
+         process.sleep(0.01)\n\
+         assert(os.clock() - started >= 0.01, 'the sleep is counted')\n\
          process.write('stdout', 'held\\n')\n",
     )
     .unwrap();
