@@ -42,20 +42,65 @@ pub struct RunArgs {
     /// Write textual Luau bytecode disassembly without executing the script.
     #[arg(long, value_name = "FILE", conflicts_with = "emit_asm")]
     disassemble: Option<PathBuf>,
+    #[command(flatten)]
+    heap: HeapArgs,
     /// Arguments for the script, which gets them as ... and in the global arg table.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     args: Vec<String>,
 }
 
+/// `--max-heap`: the Luau heap ceiling of the runtimes a command makes for the code it runs.
+#[derive(Debug, Default, Args)]
+pub struct HeapArgs {
+    /// Cap every Luau VM the code runs in at SIZE of heap: bytes, or a number with K, M, G, or T
+    /// (multiples of 1024; KiB, MB and the like read the same). Each VM, a worker's included, has
+    /// a ceiling of its own, enforced at the allocation: one past it fails with Luau's "not
+    /// enough memory", which pcall catches like any error. Without it, no ceiling.
+    #[arg(long, value_name = "SIZE", value_parser = heap_size)]
+    max_heap: Option<usize>,
+}
+
+impl HeapArgs {
+    /// The runtime options the code runs with.
+    pub fn options(&self) -> jess::lua::Options {
+        jess::lua::Options {
+            max_heap: self.max_heap.unwrap_or(0),
+            ..jess::lua::Options::default()
+        }
+    }
+}
+
+/// A heap size: a whole number of bytes, or of K, M, G, or T, each 1024 of the one before.
+fn heap_size(text: &str) -> Result<usize, String> {
+    let invalid = || format!("'{text}' is no heap size: bytes, or a whole number with K, M, G, or T, as 512M or 2G");
+    let digits = text.find(|character: char| !character.is_ascii_digit()).unwrap_or(text.len());
+    let (number, unit) = text.split_at(digits);
+    let number = number.parse::<usize>().map_err(|_| invalid())?;
+    let shift = match unit.to_ascii_uppercase().as_str() {
+        "" | "B" => 0,
+        "K" | "KB" | "KIB" => 10,
+        "M" | "MB" | "MIB" => 20,
+        "G" | "GB" | "GIB" => 30,
+        "T" | "TB" | "TIB" => 40,
+        _ => return Err(invalid()),
+    };
+    if number == 0 {
+        return Err(format!("'{text}' is no heap at all; leave --max-heap out for no ceiling"));
+    }
+    1usize
+        .checked_shl(shift)
+        .and_then(|unit| number.checked_mul(unit))
+        .ok_or_else(|| format!("'{text}' is more memory than this machine can address"))
+}
+
 /// A Luau runtime with the whole jess API and only the host-approved capabilities. It loads no
 /// application configuration: a script that wants one loads it.
 pub fn lua(capabilities: &[String]) -> Result<Runtime, String> {
-    lua_with_profile(capabilities, false)
+    lua_with(jess::lua::Options::default(), capabilities, false)
 }
 
-fn lua_with_profile(capabilities: &[String], profiling: bool) -> Result<Runtime, String> {
-    jess::lua::runtime_with_profile(jess::lua::Options::default(), capabilities, profiling)
-        .map_err(|error| error.to_string())
+fn lua_with(options: jess::lua::Options, capabilities: &[String], profiling: bool) -> Result<Runtime, String> {
+    jess::lua::runtime_with_profile(options, capabilities, profiling).map_err(|error| error.to_string())
 }
 
 /// A default-deny runtime for CLI commands that have no capability flags.
@@ -162,6 +207,7 @@ pub fn run_as_program(script: PathBuf, args: Vec<String>) -> Result<u8, String> 
             profile: false,
             emit_asm: None,
             disassemble: None,
+            heap: HeapArgs::default(),
             args,
         },
         false,
@@ -190,7 +236,7 @@ fn run_with(args: &RunArgs, folder: bool) -> Result<u8, String> {
     } else {
         jess::lua::host_script_grant(&args.capabilities)
     };
-    let lua = lua_with_profile(&capabilities, args.profile)?;
+    let lua = lua_with(args.heap.options(), &capabilities, args.profile)?;
     let named = Named {
         packages: &args.packages,
         layers: &args.layers,

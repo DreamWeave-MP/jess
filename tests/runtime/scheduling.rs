@@ -344,6 +344,60 @@ fn a_context_runs_inside_its_budget() {
     support::journal();
 }
 
+/// A budget's heap ceiling only narrows the one its runtime was made with: a budget of none, or
+/// of more, leaves the runtime's, and one of less holds its handler to less.
+#[test]
+fn a_budget_never_lifts_the_runtime_s_heap_ceiling() {
+    use std::fmt::Write as _;
+
+    let capped = || {
+        let runtime = l3i::Runtime::from_plan(&support::plan()?)?;
+        runtime.set_limits(l3i::runtime::Limits {
+            memory_bytes: 8 << 20,
+            ..runtime.limits()
+        });
+        Ok(runtime)
+    };
+    let (spec, _, _) = support::spec("heap", &[]);
+    let spec = spec.budget(Budget::time(Duration::from_secs(30)));
+    let domain = ScriptDomain::create(std::sync::Arc::new(capped), spec).unwrap();
+    let budgets = [("unbudgeted", None), ("roomier", Some(64 << 20)), ("tighter", Some(2 << 20))];
+    let mut source = String::from("local context = require('@jess/context')\nlocal journal = require('@test/journal')\n");
+    for (name, memory_bytes) in budgets {
+        let context = ContextSpec::new(name).schedule([Phase::Update]);
+        let context = match memory_bytes {
+            Some(memory_bytes) => context.budget(Budget {
+                execution_time: Duration::from_secs(30),
+                memory_bytes,
+            }),
+            None => context,
+        };
+        domain.register_context(context).unwrap();
+        let _ = write!(
+            source,
+            "\ncontext.bind('{name}', {{\n  update = function(mebibytes)\n    local held = {{}}\n    local ok, problem = pcall(function()\n      for index = 1, mebibytes do\n        held[index] = buffer.create(1024 * 1024)\n      end\n    end)\n\n    journal.write(if ok then '{name} held' else `{name} {{problem}}`)\n  end,\n}})\n"
+        );
+    }
+    domain.load_source("=heap", &source).unwrap();
+    domain.start().unwrap();
+
+    // Three MiB a handler: what the first two hold, garbage included, stays inside eight.
+    domain.run_phase(Phase::Update, &Message::Number(3.0)).unwrap();
+    assert_eq!(
+        support::journal(),
+        ["unbudgeted held", "roomier held", "tighter not enough memory"]
+    );
+    domain.run_phase(Phase::Update, &Message::Number(16.0)).unwrap();
+    assert_eq!(
+        support::journal(),
+        [
+            "unbudgeted not enough memory",
+            "roomier not enough memory",
+            "tighter not enough memory"
+        ]
+    );
+}
+
 #[test]
 fn the_scheduler_refuses_entry_from_inside_its_own_dispatch() {
     let grant = RootAuthority::new().grant(jess::runtime::CapabilitySet::empty());

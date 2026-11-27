@@ -80,6 +80,10 @@ The profiler tells you where the time is. Most of the time, it is in one of thes
 
 **Doing it on one core.** [`jess.worker`](@/docs/api/worker.md) runs a second Luau state beside the first, with its own heap and its own garbage collector, talking in messages. It needs a script domain, so it's for [applications](@/docs/scripting/applications.md) and embedders, not `jess run`; a script that wants parallelism is a script that wants to be a target.
 
+## Memory
+
+`gcinfo()` says how many KiB the heap holds, which is an estimate a script can act on, never a limit it can keep: the collector frees on its own schedule, so code that watches its own heap still overshoots. The limit belongs to whoever runs it. `--max-heap SIZE`, on [`jess run`](@/docs/cli/run.md#a-heap-ceiling) and the commands that run tests and targets, caps each VM's heap at the allocator, and an allocation past it fails with `not enough memory`, an error the code can catch, instead of the machine running out. Under an application every VM, each worker's included, has a ceiling of its own the same size, so a domain and four workers under `--max-heap 1G` may hold 5 GiB between them.
+
 ## Related
 
 - [Luau Pitfalls](@/docs/scripting/luau-pitfalls.md): the type checker and runtime surprises that cost time of a different kind.

@@ -81,6 +81,8 @@ enum WorkspaceCommand {
         /// a scratch folder of its own, and the report is the same.
         #[arg(long, value_name = "N", value_parser = clap::value_parser!(u16).range(1..=256))]
         jobs: Option<u16>,
+        #[command(flatten)]
+        heap: crate::run::HeapArgs,
     },
     /// Freeze the workspace into a packed workspace, a .jsw: the targets its [pack] table names,
     /// or every member's, and every package they run, pinned. Runs offline from the one file:
@@ -111,6 +113,8 @@ struct RunArgs {
     grant: crate::package::GrantArgs,
     #[command(flatten)]
     run: crate::application::RunOptions,
+    #[command(flatten)]
+    heap: crate::run::HeapArgs,
     /// Arguments for the target, after --, which gets them as ... and in the global arg table.
     #[arg(last = true)]
     args: Vec<String>,
@@ -182,8 +186,8 @@ fn run_target(at: Locate, args: &RunArgs) -> Result<u8, String> {
         let target = jess::lua::package::target(&inspection, Some(&chosen.target)).map_err(|error| error.to_string())?;
         args.run.check(target, &inspection.id)?;
     }
-    let launched = workspace::launch_with(&jess::lua::Options::default(), &request, args.run.launch())
-        .map_err(|error| error.to_string())?;
+    let launched =
+        workspace::launch_with(&args.heap.options(), &request, args.run.launch()).map_err(|error| error.to_string())?;
     crate::application::finish(launched, args.run.frames)
 }
 
@@ -223,10 +227,16 @@ pub fn run_standalone(image: Image, args: Vec<String>) -> Result<u8, String> {
     run_packed(image, target, args)
 }
 
-fn test(at: &Locate, members: &[String], jobs: Option<u16>, format: Format) -> Result<(), String> {
+fn test(
+    at: &Locate,
+    members: &[String],
+    jobs: Option<u16>,
+    heap: &crate::run::HeapArgs,
+    format: Format,
+) -> Result<(), String> {
     let scratch = std::env::temp_dir().join(format!("jess-workspace-test-{}", std::process::id()));
     let jobs = jobs.map_or_else(jess::lua::package::default_test_jobs, usize::from);
-    let reports = workspace::test_with_jobs(&jess::lua::Options::default(), at, members, &scratch, jobs);
+    let reports = workspace::test_with_jobs(&heap.options(), at, members, &scratch, jobs);
     drop(std::fs::remove_dir_all(&scratch));
     let reports = reports.map_err(|error| error.to_string())?;
     output::print(&reports, format)?;
@@ -248,7 +258,7 @@ pub fn run(args: &WorkspaceArgs, format: Format) -> Result<u8, String> {
             output::print(&resolved, format)?;
         }
         WorkspaceCommand::Run(run) => return run_target(at, run),
-        WorkspaceCommand::Test { members, jobs } => test(&at, members, *jobs, format)?,
+        WorkspaceCommand::Test { members, jobs, heap } => test(&at, members, *jobs, heap, format)?,
         WorkspaceCommand::Pack {
             output,
             runtime,

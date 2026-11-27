@@ -7,6 +7,7 @@ mod check;
 mod common;
 mod docs;
 mod fast_path;
+mod heap;
 mod init;
 mod install;
 mod jsw;
