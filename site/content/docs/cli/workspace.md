@@ -6,7 +6,7 @@ extra:
   kind: reference
 ---
 
-{{ api_signature(value="jess workspace [--workspace FOLDER | FILE] info | targets | graph [TARGET] | run [TARGET] [--capability NAME]... [--trusted] [-- ARGS...] | test [--jobs N] [MEMBER]... | sync [ARTIFACT]... [--package-path FOLDER]... [--publisher URL]... [--index URL]... [--locked] [--offline] | pack --output FILE [--runtime JESS | --runtimes FOLDER]") }}
+{{ api_signature(value="jess workspace [--workspace FOLDER | FILE] info | targets | graph [TARGET] | run [TARGET] [--capability NAME]... [--trusted] [--max-heap SIZE] [-- ARGS...] | test [--jobs N] [--max-heap SIZE] [MEMBER]... | sync [ARTIFACT]... [--package-path FOLDER]... [--publisher URL]... [--index URL]... [--locked] [--offline] | pack --output FILE [--runtime JESS | --runtimes FOLDER]") }}
 
 A **workspace** is a set of [Package Sources](@/docs/scripting/packages.md) developed together: a tool and the library it uses, an application and its editor. It saves you assembling `--package` and `--package-path` by hand for every command, and it makes what the members depend on beyond each other the same on every machine. It is a development arrangement and nothing more. A package's identity, its digest, and what its modules may `require` are its own manifest's business, in a workspace or out of one.
 
@@ -153,6 +153,7 @@ $ jess workspace targets
 | `--trusted` | Grant everything the target declares. |
 | `--frames <N>` | For an application target: stop after N frames, unless it stops itself first. Refused for a command target. |
 | `--pace <PACE>` | For an application target: how often frames run, overriding its manifest's `pace` and whatever its code asks for with `application.setPace` for the whole run. `display` follows its pacing window's display, `unpaced` runs them as fast as they finish, and a number runs at most that many a second (1 to 1000). Without it, the manifest's `pace`, or `display` for a target that declares `gpu.window` and its `fixed_rate` for one that doesn't; the fixed step is the target's whatever the pace. See [Frames and steps](@/docs/scripting/applications.md#frames-and-steps). Refused for a command target. |
+| `--max-heap <SIZE>` | Cap the target's Luau heap at `SIZE`, as [`jess package run`](@/docs/cli/package.md#jess-package-run) does. |
 | `-- ARGS...` | Arguments for the target, which gets them as `...` and in the global `arg` table. |
 
 A target is named `<package id>:<target id>`; by a target id or a `command` name that only one target in the workspace has; or by a package id, for its `default_target`. The members' targets count, and so do the targets of the packages `jess.lock` pins: a tool a workspace depends on runs over that workspace by its command name, with nothing in the workspace wrapping it. That is how this site is built: the repository's workspace pins the generator, a package built on Jess, and runs it by its command name. A name two targets answer to is an error listing both; `targets` lists the members' alone.
@@ -240,7 +241,7 @@ plan:
 
 Runs the tests of the members named, by package id or path, or of every member that has tests: each as [`jess package test`](@/docs/cli/package.md#jess-package-test) runs one, from its source and then packed, with its `[dependencies]` and `[dev-dependencies]` resolved over the workspace. A member's dev-dependencies are its tests' alone: they never reach a target's plan. The report is a list, one entry per member, and any failure fails the command.
 
-Members are tested one after another; within a member, `--jobs <N>` (1 to 256) runs that many test modules at once, as `jess package test` does, with the same default and the same rule: every module in a runtime and a scratch folder of its own, whatever the number. A member whose manifest says `test_jobs` is held to that, and the others are not.
+Members are tested one after another; within a member, `--jobs <N>` (1 to 256) runs that many test modules at once, as `jess package test` does, with the same default and the same rule: every module in a runtime and a scratch folder of its own, whatever the number. A member whose manifest says `test_jobs` is held to that, and the others are not. `--max-heap <SIZE>` caps every test module's heap, as `jess package test` does.
 
 ## jess workspace sync
 

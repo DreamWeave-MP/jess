@@ -6,7 +6,7 @@ extra:
   kind: reference
 ---
 
-{{ api_signature(value="jess test [--shared] [--capability NAME]... [--package PACKAGE]... [--package-path FOLDER]... [--layer ID]... <MODULES>...") }}
+{{ api_signature(value="jess test [--shared] [--capability NAME]... [--package PACKAGE]... [--package-path FOLDER]... [--layer ID]... [--max-heap SIZE] <MODULES>...") }}
 
 Runs Luau test modules, named one by one or a folder at a time. Each is a file that returns a suite made with [`@jess/test`](@/docs/api/test.md); jess loads it with the whole API, runs the suite, and prints every case. The exit status is non-zero when any case failed or any module didn't run.
 
@@ -16,6 +16,7 @@ Runs Luau test modules, named one by one or a folder at a time. Each is a file t
 | `--shared` | One VM for every module, so they share the module cache and whatever state a module keeps. Faster for many small modules; isolation is the default because a test that depends on another module having run first is a bug. |
 | `--capability NAME` | Grant the modules a capability they don't hold by default (repeatable), as [`jess run`](@/docs/cli/run.md#capabilities) does: test modules hold the terminal and the input devices, and everything else, such as `filesystem.read` for a suite that reads files, is a flag away. |
 | `--package PACKAGE`, `--package-path FOLDER`, `--layer ID` | Activate packages before each module runs, exactly as [`jess run`](@/docs/cli/run.md) takes them, so a module can `require` what they export. They are activated in every module's VM, so a layer's entrypoint runs once a module, and what it prints lands before the report; with `--shared` they are activated once, in the one VM. A package's own tests belong to it instead: list them under `tests` in its manifest and [`jess package test`](@/docs/cli/package.md) runs them from source and packed, with its dependencies. |
+| `--max-heap SIZE` | Cap every module's Luau heap at `SIZE`, as [`jess run`](@/docs/cli/run.md#a-heap-ceiling) does: each VM has a ceiling of its own, the one VM with `--shared`. A case past it fails with `not enough memory`, as a case that raised anything else would. |
 
 With none of the three, the modules run with what the `[scripts]` table of the workspace file above them names, as [`jess run`](@/docs/cli/run.md#the-folder-s-packages) does; the table is found from the first module's folder.
 

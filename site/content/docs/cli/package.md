@@ -8,7 +8,7 @@ extra:
 
 {{ api_signature(value="jess pack <SOURCE> -o <FILE> [--as-version VERSION]") }}
 
-{{ api_signature(value="jess package inspect <PACKAGE> | graph <PACKAGES>... [--layer ID]... | test <PACKAGE> | run <PACKAGE> [--target ID] [-- ARGS...]") }}
+{{ api_signature(value="jess package inspect <PACKAGE> | graph <PACKAGES>... [--layer ID]... | test <PACKAGE> [--max-heap SIZE] | run <PACKAGE> [--target ID] [--max-heap SIZE] [-- ARGS...]") }}
 
 Packages are covered in [Packages](@/docs/scripting/packages.md); these are the commands. `PACKAGE` is a Package Source folder (the one holding `jess.toml`) or a `.jpk` file, and every command except `test` treats the two the same. None of them runs package code except `test`, which runs the package's own tests and nothing else, and `run`, which runs one of its targets. To run a package's modules from a script, activate it with [`jess run --package`](@/docs/cli/run.md#running-with-packages). Several packages developed together are a [workspace](@/docs/cli/workspace.md), which assembles all of this for you.
 
@@ -188,6 +188,8 @@ Every test module runs in a runtime of its own, with the package activated in it
 
 `--jobs <N>` (1 to 256) says how many modules run at once. Without it: one for every two processors, at least one and at most four. The report does not depend on the number: the source's modules, then the JPK's, each in the manifest's order, with the same cases and verdicts. Every module's entry carries `seconds`, what it cost by the wall clock, its runtime and the package's activation included; with several jobs that also counts time it spent waiting for a processor, so compare files at `--jobs 1`.
 
+`--max-heap <SIZE>` caps every test module's Luau heap at `SIZE`, each in its own VM, from source and packed alike, as [`jess run`](@/docs/cli/run.md#a-heap-ceiling) takes it. A case past it fails with `not enough memory`.
+
 A package can cap the number itself: `test_jobs = 1` under `[package]` in its [manifest](@/docs/reference/manifest.md) is a ceiling on `--jobs` and on the default, and whoever runs the tests need not know why. The report's `jobs` is the most modules that may run at once, after that ceiling: what `--jobs` or its default asked for, or the package's `test_jobs` when that is fewer.
 
 Two things do depend on the number. A window belongs to one thread of the process, so a package whose tests open one says `test_jobs = 1`. And a runtime for every module is not free: a package of hundreds of tiny test files can run slower with more jobs than with one, where a package of a few heavy files runs several times faster.
@@ -239,6 +241,7 @@ A package's gates are `jess package test` and `jess package check`, and `@jess/s
 | `--trusted` | Grant everything the target declares. |
 | `--frames <N>` | For an application target: stop after N frames, shutdown handlers and all, unless it stops itself first. Refused for a command target. |
 | `--pace <PACE>` | For an application target: how often frames run, overriding its manifest's `pace` and whatever its code asks for with `application.setPace` for the whole run. `display` follows its pacing window's display, `unpaced` runs them as fast as they finish, and a number runs at most that many a second (1 to 1000). Without it, the manifest's `pace`, or `display` for a target that declares `gpu.window` and its `fixed_rate` for one that doesn't; the fixed step is the target's whatever the pace. See [Frames and steps](@/docs/scripting/applications.md#frames-and-steps). Refused for a command target. |
+| `--max-heap <SIZE>` | Cap the target's Luau heap at `SIZE`, as [`jess run`](@/docs/cli/run.md#a-heap-ceiling) takes it. An application's every VM has a ceiling of its own the same size: its domain's, each worker's, and the one that serves its packages to the workers. |
 | `ARGS...` | Arguments for the target, which gets them as `...` and in the global `arg` table. |
 
 Runs one of a package's targets. A `command` target's package resolves with its dependencies, every layer it declares is activated, and the target's entry runs as a script in a fresh runtime holding exactly the capabilities the target declares. Not one more, and not one fewer: a capability it declares and you don't grant stops the run before anything is activated. The exceptions are what a [`jess run`](@/docs/cli/run.md#capabilities) script holds for free, the terminal, the input devices, the GPU, windows, and sound output, which you already have in front of you: running a target grants the ones of those it declares without being asked. It doesn't grant the ones it doesn't declare: a target that wants `process.stdio` declares it like anything else, and one that doesn't declare it doesn't have it.

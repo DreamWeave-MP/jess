@@ -6,7 +6,7 @@ extra:
   kind: reference
 ---
 
-{{ api_signature(value="jess run [--package PACKAGE]... [--package-path FOLDER]... [--layer ID]... [--capability NAME]... | --trusted] [--profile | --emit-asm FILE | --disassemble FILE] <SCRIPT> [ARGS]...") }}
+{{ api_signature(value="jess run [--package PACKAGE]... [--package-path FOLDER]... [--layer ID]... [--capability NAME]... | --trusted] [--profile | --emit-asm FILE | --disassemble FILE] [--max-heap SIZE] <SCRIPT> [ARGS]...") }}
 
 {{ api_signature(value="jess <SCRIPT>.jsl [ARGS]...") }}
 
@@ -24,6 +24,7 @@ Runs a Luau script with the whole jess API loaded. The second form, a `.jsl` pat
 | `--profile` | After the script, print its call, sampling, and native-block statistics. |
 | `--emit-asm FILE` | Write the native assembly generated for the script to `FILE`, without running it. |
 | `--disassemble FILE` | Write the script's Luau bytecode, as text, to `FILE`, without running it. |
+| `--max-heap SIZE` | Cap the script's Luau heap at `SIZE`: bytes, or a whole number with `K`, `M`, `G`, or `T` (`512M`, `2G`; each 1024 of the one before, and `MiB` or `MB` read the same). See [a heap ceiling](#a-heap-ceiling). |
 
 Plus the [global options](@/docs/cli/global-options.md).
 
@@ -181,6 +182,36 @@ Three flags for finding out what Luau is doing, none of which needs another tool
 - `--profile` runs the script and then prints how it spent its time: calls, samples, and which native blocks ran. It is the first thing to reach for before writing `--!native` on anything; [Performance](@/docs/scripting/performance.md) says how to read it.
 - `--emit-asm FILE` writes the native code the script would compile to, and doesn't run it.
 - `--disassemble FILE` writes the bytecode as text, and doesn't run it.
+
+## A heap ceiling
+
+A script that holds more than you meant it to normally finds out from the operating system, which ends it however it ends things. `--max-heap SIZE` finds out first: the VM's allocator refuses any growth past `SIZE`, and the allocation that asked fails with Luau's own `not enough memory`. It is an error like any other, so `pcall` catches it, and the script carries on with what it had:
+
+```luau
+--!strict
+-- hoard.jsl
+local held: { buffer } = {}
+
+-- buffer.create throws once the heap is at its ceiling; what was held before stays held.
+local ok, problem = pcall(function()
+  for index = 1, 256 do
+    held[index] = buffer.create(1024 * 1024)
+  end
+end)
+
+print(ok, problem, `{#held} MiB held`)
+```
+
+```text
+$ jess run hoard.jsl
+true	nil	256 MiB held
+$ jess run --max-heap 64M hoard.jsl
+false	not enough memory	62 MiB held
+```
+
+Uncaught, it stops the run like any error, and jess says which limit it was, `error: Lua memory limit exceeded`, exiting `1`. The script can't raise its own ceiling: catching the error frees nothing it still holds, and the next allocation past the line fails the same way.
+
+The ceiling counts everything in the Luau heap, the 700 KiB or so jess's own setup of the VM takes included, so a ceiling below that fails before the script's first line. It doesn't count what native services hold outside the heap: [shared buffers](@/docs/contributing/script-domains.md#workers-cheap-parallel-luau) have budgets of their own. Without the flag there is no ceiling. [`jess test`](@/docs/cli/test.md), [`jess package run` and `jess package test`](@/docs/cli/package.md), and [`jess workspace run` and `jess workspace test`](@/docs/cli/workspace.md) take the same flag, and under an application every VM, each worker's included, has a ceiling of its own the same size.
 
 ## Output
 
