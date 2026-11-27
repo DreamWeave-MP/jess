@@ -124,6 +124,9 @@ pub struct Locked {
     pub artifact_sha256: Option<String>,
     /// The package ids it depends on.
     pub dependencies: Vec<String>,
+    /// Whether it is the tools' own copy of a package the members pin another of, or are: what
+    /// the workspace file's `[dev-dependencies]` resolve over in its place.
+    pub tool: bool,
     /// Where the workspace keeps it: a JPK under `.jess/packages`.
     pub location: String,
 }
@@ -138,7 +141,7 @@ pub struct Lock {
     pub state: String,
     /// What is stale or missing, one line each.
     pub problems: Vec<String>,
-    /// The packages it pins, by id.
+    /// The packages it pins, by id, a tool's own copy after the members' pin of its id.
     pub packages: Vec<Locked>,
 }
 
@@ -330,7 +333,7 @@ fn workspace_shape() -> serde_json::Value {
             "file": false, "state": "", "problems": [""],
             "packages": [{
                 "id": "", "version": "", "digest": "", "source": "", "manifest": null, "artifactSha256": null,
-                "dependencies": [""], "location": "",
+                "dependencies": [""], "tool": false, "location": "",
             }],
         },
     })
@@ -621,6 +624,9 @@ pub struct SyncedPackage {
     pub source: String,
     /// For a `publisher` source, the project manifest it was taken from.
     pub manifest: Option<String>,
+    /// Whether it is the tools' own copy of a package the members pin another of, or are: what
+    /// the workspace file's `[dev-dependencies]` resolve over in its place.
+    pub tool: bool,
     /// Whether this sync put it in `.jess/packages`, rather than finding it there.
     pub installed: bool,
 }
@@ -637,7 +643,10 @@ pub struct Synced {
 /// Brings a workspace's `jess.lock` and `.jess/packages` into line with what its members need
 /// beyond each other.
 ///
-/// Each package id needed gets one version, which every requirement on it must accept. A package
+/// The members and the workspace file's tools are two graphs, settled in that order, and in each
+/// a package id needed gets one version, which every requirement on it there must accept. A member
+/// is always the member for the members; for the tools it is the one wherever it meets what they
+/// require, as is the members' choice, and otherwise they get a copy of their own. A package
 /// offered outright is the one for its id; otherwise what the lock already pins, while it still
 /// meets every requirement and is kept, offered, or, for a publisher source, still listed by its
 /// publisher's manifest with the pinned digests; otherwise the one package offered that does;
@@ -657,7 +666,7 @@ pub struct Synced {
 pub fn sync(runtime: &Runtime, request: &SyncRequest) -> l3i::Result<Synced> {
     let shape = serde_json::json!({
         "lock": "",
-        "packages": [{ "id": "", "version": "", "digest": "", "source": "", "manifest": null, "installed": false }],
+        "packages": [{ "id": "", "version": "", "digest": "", "source": "", "manifest": null, "tool": false, "installed": false }],
     });
     let (start, explicit) = request.at.args("syncing")?;
     let (artifacts, paths, indexes, publishers) = {
