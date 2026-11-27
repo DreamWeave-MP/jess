@@ -88,9 +88,9 @@ Set these on the repository (`secrets: inherit` passes them through):
 
 ## Cutting a release
 
-1. **Align the release versions** in `[workspace.package] version` in `Cargo.toml` and `[package] version` in `jpk/builtin/jess.toml`. They track the same Jess release (`0.4.0` for this release). Keep `jess_api = "1"` independent: it describes the package API generation, not the release number.
+1. **Align the release versions** in `[workspace.package] version` in `Cargo.toml` and `[package] version` in `jpk/builtin/jess.toml`. They track the same Jess release (`0.4.1` for this release). Keep `jess_api = "1"` independent: it describes the package API generation, not the release number.
 2. **Run the gates locally** and let the publish dry run pass on `main`.
-3. **Tag and push:** `git tag v0.4.0 && git push origin refs/tags/v0.4.0`. Jess release tags use the `v` prefix; the tag name becomes the release name.
+3. **Tag and push:** `git tag v0.4.1 && git push origin refs/tags/v0.4.1`. Jess release tags use the `v` prefix; the tag name becomes the release name.
 4. **Watch the run.** If publishing stops partway, rerun the job; it skips what's already up.
 
 `Cargo.lock` is committed, so a release builds from exactly the versions the gates just tested, and the MSRV job checks those same versions on 1.95. Update it on purpose with `cargo update`, in its own `DEPS:` commit, and rerun the gates. A dependency that shows up in the lock file by accident is a dependency nobody reviewed. (`cargo install jess` users resolve fresh unless they pass `--locked`, which is worth saying in bug reports.)
