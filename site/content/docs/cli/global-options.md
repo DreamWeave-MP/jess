@@ -16,7 +16,7 @@ These work on every command: `jess --format json package inspect greeter` and `j
 | --- | --- | --- | --- |
 | `--format <FORMAT>` | `yaml`, `json`, `toml` | `yaml` | The output document's format. JSON is compact, one line. |
 | `-h`, `--help` | | | Help for the command it follows. `jess <command> --help` is the long form, with every value explained; `-h` is the summary. |
-| `-V`, `--version` | | | Print `jess <version>`. A subcommand prints its own name, such as `jess-package 0.4.0`. A build without cross-language LTO says so after the version, and the benchmark harness refuses it. |
+| `-V`, `--version` | | | Print `jess <version>`. A subcommand prints its own name, such as `jess-package 0.4.1`. A build without cross-language LTO says so after the version, and the benchmark harness refuses it. |
 
 ## Output
 
