@@ -114,8 +114,9 @@ impl fmt::Display for Phase {
 pub struct Budget {
     /// Wall-clock time one handler call may take.
     pub execution_time: Duration,
-    /// Heap ceiling of the Luau state in bytes, polled, not a hard quota (see
-    /// `l3i::runtime::RuntimeBuilder::memory_limit`).
+    /// Heap ceiling of the Luau state in bytes, enforced by its allocator (see
+    /// `l3i::runtime::RuntimeBuilder::memory_limit`). It can only lower the ceiling the runtime
+    /// was made with, `--max-heap`'s, never lift it.
     pub memory_bytes: usize,
 }
 
@@ -129,10 +130,16 @@ impl Budget {
         }
     }
 
-    pub(crate) const fn limits(self) -> l3i::runtime::Limits {
+    /// The limits a runtime holding `inherited` runs this budget under: its time, and the lower
+    /// of the two heap ceilings, either one where the other is none.
+    pub(crate) fn limits(self, inherited: l3i::runtime::Limits) -> l3i::runtime::Limits {
+        let memory_bytes = match (self.memory_bytes, inherited.memory_bytes) {
+            (0, ceiling) | (ceiling, 0) => ceiling,
+            (own, ceiling) => own.min(ceiling),
+        };
         l3i::runtime::Limits {
             execution_time: self.execution_time,
-            memory_bytes: self.memory_bytes,
+            memory_bytes,
         }
     }
 }

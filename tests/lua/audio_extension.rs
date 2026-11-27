@@ -59,7 +59,10 @@ impl Processor for Crush {
 fn runtime() -> Runtime {
     let mut processors = Registry::builtin();
     processors.register("crush", |_, _| Ok(Box::new(Crush::new()))).unwrap();
-    common::runtime_with(Options { processors })
+    common::runtime_with(Options {
+        processors,
+        ..Options::default()
+    })
 }
 
 #[test]

@@ -1310,7 +1310,7 @@ fn build_runtime(core: &Rc<DomainCore>) -> Result<Runtime, RuntimeError> {
         setup(&runtime)?;
     }
     if let Some(budget) = core.budget {
-        runtime.set_limits(budget.limits());
+        runtime.set_limits(budget.limits(runtime.limits()));
     }
     crate::runtime::luau::attach_domain(&runtime, Rc::downgrade(core));
     Ok(runtime)
@@ -1749,7 +1749,7 @@ impl DomainCore {
         let _authority = AuthorityGuard::enter(core.authority(attribution, Arc::clone(&target.capabilities)));
         let inherited = runtime.limits();
         if let Some(budget) = target.budget {
-            runtime.set_limits(budget.limits());
+            runtime.set_limits(budget.limits(inherited));
         }
         let started = Instant::now();
         let outcome = {

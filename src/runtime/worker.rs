@@ -527,7 +527,7 @@ fn serve(launch: &Launch, commands: &Receiver<Command>, results: &SyncSender<Out
         Err(error) => return fail(launch, results, WorkerStage::Spawn, error.to_string()),
     };
     if let Some(budget) = launch.spec.budget {
-        runtime.set_limits(budget.limits());
+        runtime.set_limits(budget.limits(runtime.limits()));
     }
     crate::runtime::luau::attach_worker(&runtime, WorkerLink { outbox: results.clone() });
     if let Ok(jess) = crate::lua::state(&runtime) {

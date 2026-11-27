@@ -76,6 +76,12 @@ pub struct Options {
     /// The processor kinds scripts can make by name: the built-in ones, and any the host adds
     /// with [`Registry::register`](crate::audio::Registry::register).
     pub processors: crate::audio::Registry,
+    /// The Luau heap ceiling, in bytes, of every runtime made with these options, a worker's
+    /// included: each VM has a ceiling of its own, enforced by its allocator, and an allocation
+    /// past it fails with Luau's out-of-memory error. The heap jess's own setup of the VM used
+    /// counts toward it. Zero is none. It is the Luau heap only: what native services hold
+    /// outside it, shared buffers among them, they bound themselves.
+    pub max_heap: usize,
 }
 
 /// The generic runtime plan, cached per thread on first use.
@@ -205,6 +211,12 @@ pub fn runtime_with_profile(options: Options, capabilities: &[String], profiling
     runtime.sandbox_globals()?;
     if profiling {
         runtime.set_sampled_context(Some(1));
+    }
+    if options.max_heap > 0 {
+        runtime.set_limits(l3i::runtime::Limits {
+            memory_bytes: options.max_heap,
+            ..runtime.limits()
+        });
     }
     Ok(runtime)
 }
