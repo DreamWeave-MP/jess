@@ -41,9 +41,10 @@ enum WorkspaceCommand {
     /// its package resolved over the workspace and exactly the capabilities the target declares,
     /// once granted.
     Run(RunArgs),
-    /// Pin what the members depend on beyond each other in jess.lock, and keep those packages,
-    /// as JPKs, in .jess/packages: from the packages offered here, those already kept, and, for
-    /// what neither holds, the manifest of the DreamWeave project publishing the package, found
+    /// Pin what the members depend on beyond each other, and what the workspace file's tools
+    /// depend on apart from them, in jess.lock, and keep those packages, as JPKs, in
+    /// .jess/packages: from the packages offered here, those already kept, and, for what neither
+    /// holds, the manifest of the DreamWeave project publishing the package, found
     /// through an index or a publisher named with --publisher. Every download is checked against
     /// the manifest's SHA-256 and the content digest before it is kept.
     Sync {

@@ -510,6 +510,75 @@ fn a_site_like_workspace_reaches_a_publisher_s_dependencies_of_dependencies() {
     assert_eq!(restored["packages"].as_array().unwrap().len(), 2);
 }
 
+/// A package's own repository, a workspace whose member is the package, developed with a tool
+/// that requires an older release of it: the cycle a build tool pinned to the package it builds
+/// makes. The tool gets that release from the publisher, pinned as the tools' own copy, and runs
+/// with it, while the member stays the member; a clean checkout restores both from the lock.
+#[test]
+fn a_tool_gets_its_own_copy_of_a_member_it_requires_an_older_release_of() {
+    let showcase = Showcase::new("workspace-publisher-cycle");
+    let (repository, jpks) = (showcase.root.join("words"), showcase.root.join("jpks"));
+    fs::create_dir_all(repository.join("src")).unwrap();
+    fs::create_dir_all(&jpks).unwrap();
+    fs::write(
+        repository.join("jess-workspace.toml"),
+        "manifest_version = 1\n\n[workspace]\nmembers = [\".\"]\n\n[dev-dependencies]\n\"org.example.tool\" = \"1\"\n",
+    )
+    .unwrap();
+    fs::write(
+        repository.join("jess.toml"),
+        concat!(
+            "manifest_version = 1\n\n[package]\nid = \"org.example.words\"\nversion = \"2.0.0\"\n",
+            "jess_api = \"1\"\ninclude = [\"src\"]\n\n[modules]\n\"@words\" = \"src/init.jsl\"\n\n",
+            "[[layer]]\nid = \"example.words\"\nexports = [\"@words\"]\n",
+        ),
+    )
+    .unwrap();
+    fs::write(repository.join("src/init.jsl"), "return { hello = 'howdy' }\n").unwrap();
+    let words = publish("words", &jpks);
+    let tool = publish("tool", &jpks);
+    let server = super::common::http::Server::start();
+    let published = publisher(&server, "/publisher/", "Fixture publisher", &[&words, &tool]);
+
+    let synced = json(&sync(&repository, &["--publisher", &published.index]));
+    assert_eq!(synced["lock"], "written");
+    let pins: Vec<(&str, &str, bool)> = synced["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|package| {
+            (
+                package["id"].as_str().unwrap(),
+                package["version"].as_str().unwrap(),
+                package["tool"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        pins,
+        [("org.example.tool", "1.0.0", false), ("org.example.words", "1.2.0", true)]
+    );
+    let lock = fs::read_to_string(repository.join("jess.lock")).unwrap();
+    assert!(lock.contains("lock_version = 3"), "{lock}");
+    assert!(
+        lock.contains(&format!("artifact_sha256 = \"{}\"\ntool = true\n", words.sha256)),
+        "{lock}"
+    );
+
+    let ran = jess()
+        .current_dir(&repository)
+        .args(["workspace", "run", "--trusted", "hello", "--", "world"])
+        .output()
+        .unwrap();
+    assert_eq!(ran.status.code(), Some(0), "{}", stderr(&ran));
+    assert_eq!(String::from_utf8(ran.stdout).unwrap(), "hello world from the tool\n");
+
+    fs::remove_dir_all(repository.join(".jess")).unwrap();
+    let restored = json(&sync(&repository, &["--locked", "--publisher", &published.index]));
+    assert_eq!(restored["lock"], "unchanged");
+    assert_eq!(fs::read_to_string(repository.join("jess.lock")).unwrap(), lock);
+}
+
 /// What the showcase needs comes from a publisher's manifests found through an index: downloaded,
 /// checked, pinned with the publisher in jess.lock, and run offline from then on. A clean
 /// checkout restores the exact pins from that publisher with `--locked`, never rewriting the

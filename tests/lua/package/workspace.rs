@@ -952,8 +952,8 @@ fn a_lock_is_held_to_what_the_members_need() {
     for (from_text, to_text, expected) in [
         (
             "lock_version = 2",
-            "lock_version = 3",
-            "is lock_version 3, and this jess reads lock_version 2",
+            "lock_version = 4",
+            "is lock_version 4, and this jess reads lock_version 1 to 3",
         ),
         (
             "id = \"org.example.words\"",
@@ -1140,4 +1140,267 @@ fn a_workspace_of_tools_alone_pins_and_runs_them() {
         let problem = failure(&Locate::Root(root.clone()));
         assert!(problem.contains(expected), "{contents}: {problem}");
     }
+}
+
+/// `org.example.<name>` at `root`, as `member` writes it, whose `@<name>` returns its version.
+fn versioned(root: &Path, name: &str, version: &str, extra: &str) {
+    member(root, name, version, extra);
+    write(root, &[("src/init.jsl", &format!("return {{ version = '{version}' }}\n"))]);
+}
+
+/// A workspace whose root package is `org.example.lib` at `version`, depending on `words` `^1.1`,
+/// with a target that holds it to the words 1.2.0 the members get, and a test that does the same.
+/// The workspace file names one tool, `org.example.tool` 1, whose `build` command holds `@lib`
+/// and `@words` to `lib` and `words`. `vendor` gets the tool, `org.example.lib` 1.1.0, which
+/// wants exactly words 1.0.0, and words 1.0.0 and 1.2.0.
+fn developed(root: &Path, vendor: &Path, version: &str, lib: &str, words: &str) {
+    write(
+        root,
+        &[(
+            "jess-workspace.toml",
+            "manifest_version = 1\n\n[workspace]\nmembers = [\".\"]\n\n[dev-dependencies]\n\"org.example.tool\" = \"1\"\n",
+        )],
+    );
+    versioned(
+        root,
+        "lib",
+        version,
+        "tests = [\"tests/run.jsl\"]\n[dependencies]\n\"org.example.words\" = \"^1.1\"\n\
+         [targets.main]\nkind = \"command\"\nentry = \"src/main.jsl\"\n",
+    );
+    write(
+        root,
+        &[
+            ("src/main.jsl", "assert(require('@words').version == '1.2.0')\nreturn 0\n"),
+            (
+                "tests/run.jsl",
+                "local test = require '@jess/test'\nlocal suite = test.new()\n\
+                 suite.it('has the members\\' words', function() test.expect(require('@words').version).toBe '1.2.0' end)\n\
+                 return suite\n",
+            ),
+        ],
+    );
+    versioned(
+        &vendor.join("tool"),
+        "tool",
+        "1.0.0",
+        "[dependencies]\n\"org.example.lib\" = \"1\"\n\"org.example.words\" = \"1\"\n\
+         [targets.main]\nkind = \"command\"\nentry = \"src/main.jsl\"\ncommand = \"build\"\n",
+    );
+    write(
+        &vendor.join("tool"),
+        &[(
+            "src/main.jsl",
+            &format!(
+                "local lib, words = require('@lib').version, require('@words').version\n\
+                 assert(lib == '{lib}', `lib {{lib}}`)\nassert(words == '{words}', `words {{words}}`)\nreturn 0\n"
+            ),
+        )],
+    );
+    versioned(
+        &vendor.join("lib-1.1.0"),
+        "lib",
+        "1.1.0",
+        "[dependencies]\n\"org.example.words\" = \"=1.0.0\"\n",
+    );
+    for version in ["1.0.0", "1.2.0"] {
+        versioned(&vendor.join(format!("words-{version}")), "words", version, "");
+    }
+}
+
+/// The pins of `lock` as `(id, version, tool)`.
+fn pinned(lock: &workspace::Lock) -> Vec<(&str, &str, bool)> {
+    lock.packages
+        .iter()
+        .map(|package| (package.id.as_str(), package.version.as_str(), package.tool))
+        .collect()
+}
+
+/// A tool the workspace file names resolves apart from the members: a member it has outgrown,
+/// here the workspace's own package at 2.0 under a tool that wants 1, gets the tool a copy of its
+/// own, pinned beside the members' and kept beside it, and so does a package the members pin at a
+/// version the tool can't take. The member stays the member, its target and its tests resolve as
+/// they did, and the lock that says so round-trips.
+#[test]
+fn a_tool_resolves_apart_from_the_members() {
+    let (temp, root) = scratch();
+    let (vendor, jpks) = (temp.path().join("vendor"), temp.path().join("jpks"));
+    developed(&root, &vendor, "2.0.0", "1.1.0", "1.0.0");
+    pack_all(&vendor, &jpks);
+
+    let before = from(&root);
+    assert_eq!(before.lock.state, "stale");
+    assert!(
+        before.lock.problems.iter().any(|problem| problem
+            == "jess-workspace.toml [dev-dependencies] requires org.example.tool 1, which jess.lock doesn't pin"),
+        "{:#?}",
+        before.lock.problems
+    );
+
+    // Offered as Package Sources.
+    let synced = sync(&root, &[], &[&vendor], false).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(synced.lock, "written");
+    assert_eq!(
+        synced
+            .packages
+            .iter()
+            .map(|package| (package.id.as_str(), package.version.as_str(), package.tool))
+            .collect::<Vec<_>>(),
+        [
+            ("org.example.lib", "1.1.0", true),
+            ("org.example.tool", "1.0.0", false),
+            ("org.example.words", "1.2.0", false),
+            ("org.example.words", "1.0.0", true),
+        ]
+    );
+    let lock = std::fs::read_to_string(root.join("jess.lock")).unwrap();
+    assert!(lock.contains("\nlock_version = 3\n"), "{lock}");
+    assert!(lock.contains("id = \"org.example.lib\"\nversion = \"1.1.0\"\n"), "{lock}");
+    assert_eq!(lock.matches("tool = true\n").count(), 2, "{lock}");
+    // The members' words comes before the tools' copy of it.
+    assert!(
+        lock.find("\"org.example.words\"\nversion = \"1.2.0\"").unwrap()
+            < lock.find("\"org.example.words\"\nversion = \"1.0.0\"").unwrap(),
+        "{lock}"
+    );
+    std::fs::remove_dir_all(&vendor).unwrap();
+
+    let opened = from(&root);
+    assert_eq!(opened.lock.state, "fresh", "{:#?}", opened.lock);
+    assert_eq!(opened.members[0].version, "2.0.0");
+    assert_eq!(
+        pinned(&opened.lock),
+        [
+            ("org.example.lib", "1.1.0", true),
+            ("org.example.tool", "1.0.0", false),
+            ("org.example.words", "1.2.0", false),
+            ("org.example.words", "1.0.0", true),
+        ]
+    );
+    // The tool runs over its own graph, by name and by command; the member over the members'.
+    run(&root, "build").unwrap();
+    run(&root, "org.example.tool:main").unwrap();
+    run(&root, "org.example.lib:main").unwrap();
+    let tool = workspace::resolve_target(&common::runtime(), &Locate::Root(root.clone()), Some("build"), &root).unwrap();
+    assert!(
+        !tool.candidates.iter().any(|candidate| same(candidate, &root)),
+        "{:#?}",
+        tool.candidates
+    );
+    assert_eq!(
+        tool.plan
+            .packages
+            .iter()
+            .map(|package| (package.id.as_str(), package.version.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("org.example.lib", "1.1.0"),
+            ("org.example.tool", "1.0.0"),
+            ("org.example.words", "1.0.0")
+        ]
+    );
+    let reports = workspace::test(
+        &jess::lua::Options::default(),
+        &Locate::Root(root.clone()),
+        &[],
+        &temp.path().join("scratch"),
+    )
+    .unwrap();
+    assert_eq!((reports[0].passed, reports[0].failed), (2, 0), "{reports:#?}");
+
+    // Read back, it writes the same lock; and the same from JPKs, the copy of the member named
+    // outright.
+    assert_eq!(sync(&root, &[], &[], true).unwrap().lock, "unchanged");
+    std::fs::remove_file(root.join("jess.lock")).unwrap();
+    std::fs::remove_dir_all(root.join(".jess")).unwrap();
+    let named = sync(&root, &[&jpks.join("lib-1.1.0.jpk")], &[&jpks], false).unwrap_or_else(|error| panic!("{error}"));
+    assert!(named.packages.iter().all(|package| package.installed));
+    assert_eq!(std::fs::read_to_string(root.join("jess.lock")).unwrap(), lock);
+    run(&root, "build").unwrap();
+
+    // A tool pin is version 3's to say.
+    std::fs::write(
+        root.join("jess.lock"),
+        lock.replacen("lock_version = 3", "lock_version = 2", 1),
+    )
+    .unwrap();
+    let older = failure(&Locate::Root(root));
+    assert!(
+        older.contains("tool pins are lock_version 3's, and this lock is lock_version 2"),
+        "{older}"
+    );
+}
+
+/// A tool whose requirement the member meets uses the member, and the lock pins it no copy and
+/// stays version 2. Outgrown, the member needs a copy; met again, the copy goes, and the lock is
+/// the one it was.
+#[test]
+fn a_tool_uses_the_member_that_meets_it() {
+    let (temp, root) = scratch();
+    let vendor = temp.path().join("vendor");
+    developed(&root, &vendor, "1.5.0", "1.5.0", "1.2.0");
+
+    let synced = sync(&root, &[], &[&vendor], false).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        synced
+            .packages
+            .iter()
+            .map(|package| (package.id.as_str(), package.version.as_str(), package.tool))
+            .collect::<Vec<_>>(),
+        [("org.example.tool", "1.0.0", false), ("org.example.words", "1.2.0", false)]
+    );
+    let lock = std::fs::read_to_string(root.join("jess.lock")).unwrap();
+    assert!(lock.contains("\nlock_version = 2\n"), "{lock}");
+    assert!(!lock.contains("tool ="), "{lock}");
+    run(&root, "build").unwrap();
+    let tool = workspace::resolve_target(&common::runtime(), &Locate::Root(root.clone()), Some("build"), &root).unwrap();
+    assert!(
+        tool.candidates.iter().any(|candidate| same(candidate, &root)),
+        "{:#?}",
+        tool.candidates
+    );
+
+    // Outgrown, the member is no longer what the tool runs with, and the lock says so.
+    let manifest = root.join("jess.toml");
+    let original = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(&manifest, original.replace("version = \"1.5.0\"", "version = \"2.0.0\"")).unwrap();
+    let outgrown = from(&root);
+    assert_eq!(outgrown.lock.state, "stale");
+    assert_eq!(
+        outgrown.lock.problems,
+        [
+            "org.example.tool 1.0.0 requires org.example.lib 1, and the workspace's member '.' is org.example.lib 2.0.0; jess.lock pins the tools no other"
+        ]
+    );
+    let unmet = run(&root, "build").unwrap_err();
+    assert!(unmet.contains("jess.lock is out of date"), "{unmet}");
+    let nothing = sync(&root, &[], &[], false).unwrap_err();
+    assert!(
+        nothing.contains("the workspace's member '.' is org.example.lib 2.0.0, which doesn't meet that"),
+        "{nothing}"
+    );
+    sync(&root, &[], &[&vendor], false).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        pinned(&from(&root).lock),
+        [
+            ("org.example.lib", "1.1.0", true),
+            ("org.example.tool", "1.0.0", false),
+            ("org.example.words", "1.2.0", false),
+            ("org.example.words", "1.0.0", true),
+        ]
+    );
+
+    // Met again, the copy is one the lock no longer needs.
+    std::fs::write(&manifest, &original).unwrap();
+    let met = from(&root);
+    assert_eq!(met.lock.state, "stale");
+    assert!(
+        met.lock.problems.iter().any(|problem| problem
+            == "jess.lock pins org.example.lib 1.1.0 for the tools, and the workspace's member '.' meets what they require of it"),
+        "{:#?}",
+        met.lock.problems
+    );
+    sync(&root, &[], &[&vendor], false).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(std::fs::read_to_string(root.join("jess.lock")).unwrap(), lock);
+    run(&root, "build").unwrap();
 }
