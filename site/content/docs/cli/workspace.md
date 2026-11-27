@@ -55,7 +55,9 @@ members = []
 "org.dreamweave.mod-template" = "0.3"
 ```
 
-A workspace's `[dev-dependencies]` are package ids and [version requirements](@/docs/api/package.md#package-satisfies), as a manifest states them. `sync` pins them in `jess.lock` and keeps them in `.jess/packages` like anything a member needs, and `run` runs their targets over the workspace. No member depends on them: they are the workspace's, so no package's manifest or digest says what built it. A workspace may have them and no members at all, as this one does: a folder of content that a tool it doesn't write turns into something.
+A workspace's `[dev-dependencies]` are package ids and [version requirements](@/docs/api/package.md#package-satisfies), as a manifest states them. `sync` pins them in `jess.lock` and keeps them in `.jess/packages` like anything a member needs, and `run` runs their targets. No member depends on them: they are the workspace's, so no package's manifest or digest says what built it. A workspace may have them and no members at all, as this one does: a folder of content that a tool it doesn't write turns into something.
+
+The tools resolve as a graph of their own, apart from the members'. A tool that requires a member gets the member when the member meets the requirement, and otherwise a pinned copy of the release it asks for, kept beside the member and never in its place. So a package's own repository can be developed with a tool that was built against an older release of that package: the member moves on, and the tool keeps the release it knows. [`sync`](#jess-workspace-sync) has the rules.
 
 And it may say what the loose scripts under it run with:
 
@@ -158,7 +160,7 @@ $ jess workspace targets
 
 A target is named `<package id>:<target id>`; by a target id or a `command` name that only one target in the workspace has; or by a package id, for its `default_target`. The members' targets count, and so do the targets of the packages `jess.lock` pins: a tool a workspace depends on runs over that workspace by its command name, with nothing in the workspace wrapping it. That is how this site is built: the repository's workspace pins the generator, a package built on Jess, and runs it by its command name. A name two targets answer to is an error listing both; `targets` lists the members' alone.
 
-The target runs as [`jess package run`](@/docs/cli/package.md#jess-package-run) runs one, command or [application](@/docs/scripting/applications.md): its package resolves over the other members and the packages `jess.lock` pins, each opened only when something needs it, and it runs with exactly the capabilities it declares, once you grant them. Being in a workspace grants nothing, and a member's modules still reach only the packages its own manifest declares. A command target's first returned number is the exit status; an application's is the status it asked to stop with.
+The target runs as [`jess package run`](@/docs/cli/package.md#jess-package-run) runs one, command or [application](@/docs/scripting/applications.md): its package resolves over the other members and the packages `jess.lock` pins, each opened only when something needs it. A member's target, and a pinned package the members need, resolve over the members' graph; a tool, and a package only the tools need, over the tools', where the tools' own copies stand in for the members and pins they replace. It runs with exactly the capabilities it declares, once you grant them. Being in a workspace grants nothing, and a member's modules still reach only the packages its own manifest declares. A command target's first returned number is the exit status; an application's is the status it asked to stop with.
 
 ```text
 $ cd tools/greeter/src
@@ -254,7 +256,7 @@ Members are tested one after another; within a member, `--jobs <N>` (1 to 256) r
 | `--locked` | Fail rather than change `jess.lock`. Packages it already pins may still be put in `.jess/packages`, from their publishers or from what is offered. |
 | `--offline` | Ask no publisher: only what is offered and kept. `JESS_OFFLINE=1` says the same. |
 
-Pins what the members depend on beyond each other, transitively, dev-dependencies included, and the workspace file's own `[dev-dependencies]`, and keeps each of those packages as a JPK in `.jess/packages`. A Package Source offered is packed there and a JPK copied there, each checked against the digest it was chosen by; an archive a publisher serves is downloaded there, checked against the SHA-256 its manifest declares and then, opened, against the content digest, and kept only when both hold. `jess.lock` is written last, so an interrupted sync never leaves a lock pointing at half a file.
+Pins what the members depend on beyond each other, transitively, dev-dependencies included, and what the workspace file's own `[dev-dependencies]` depend on, and keeps each of those packages as a JPK in `.jess/packages`. A Package Source offered is packed there and a JPK copied there, each checked against the digest it was chosen by; an archive a publisher serves is downloaded there, checked against the SHA-256 its manifest declares and then, opened, against the content digest, and kept only when both hold. `jess.lock` is written last, so an interrupted sync never leaves a lock pointing at half a file.
 
 ```text
 $ jess workspace sync ../words.jpk ../style.jpk
@@ -263,10 +265,16 @@ packages:
 - id: org.example.style
   version: 1.0.0
   digest: 62007be02fd652547216376101f43846676d99ccc8e4ee30abc989d6bafbe391
+  source: local
+  manifest: null
+  tool: false
   installed: true
 - id: org.example.words
   version: 1.2.0
   digest: d8ca63ad4cbe712ed9142e5550a53df3f37b1460a8ed73f04857a0b65be4363f
+  source: local
+  manifest: null
+  tool: false
   installed: true
 ```
 
@@ -274,12 +282,13 @@ Run it again with nothing offered and it changes nothing, and says so: `lock: un
 
 How a package is chosen for each id:
 
-1. One version per id, across the whole workspace, which every requirement on it must accept: the members', and those of the packages chosen for them. That is the resolver's own rule, one package per id in a plan.
-2. A member is always the member. A requirement a member doesn't meet is an error naming both, never a reason to reach for a JPK.
-3. A package named outright is the one for its id.
-4. Otherwise, what `jess.lock` already pins, as long as it still meets every requirement and is kept or offered. A newer version turning up on a package path moves nothing.
-5. Otherwise, the one package offered that meets every requirement. Two that would each do are an error naming both; name the one you mean.
-6. Otherwise, unless `--offline`, the newest available version from the one publisher that lists the id: a site or manifest named with `--publisher`, or the manifest an index says publishes it. An index that knows two publishers is an error naming both manifests; `--publisher` picks one. Nothing chooses a publisher for you.
+1. Two graphs, settled in this order: the members', which is what the members require beyond each other, dev-dependencies included, and what the packages chosen for them require; and the tools', which is what the workspace file's `[dev-dependencies]` require, and what the packages and members chosen for them require. Within a graph, one version per id, which every requirement on it there must accept. That is the resolver's own rule, one package per id in a plan.
+2. In the members' graph, a member is always the member. A requirement of the members' a member doesn't meet is an error naming both, never a reason to reach for a JPK.
+3. In the tools' graph, a member is the one for its id when it meets every requirement the tools make of that id, and so is the package the members' graph chose. Otherwise the tools get a copy of their own, chosen by the rules below, pinned as the tools' own, and kept beside what the members use. A member newer or older than a tool wants is never an error for that alone: it is a reason for the copy.
+4. A package named outright is the one for its id, in each graph that needs that id.
+5. Otherwise, what `jess.lock` already pins for the graph, as long as it still meets every requirement and is kept or offered. A newer version turning up on a package path moves nothing.
+6. Otherwise, the one package offered that meets every requirement. Two that would each do are an error naming both; name the one you mean.
+7. Otherwise, unless `--offline`, the newest available version from the one publisher that lists the id: a site or manifest named with `--publisher`, or the manifest an index says publishes it. An index that knows two publishers is an error naming both manifests; `--publisher` picks one. Nothing chooses a publisher for you.
 
 Ids are settled in order, so nothing depends on how a folder happens to list, and settled again whenever a package chosen later requires something an earlier choice doesn't meet: a pinned `words` 1.2.0 gives way to an offered 1.3.0 as soon as a new `style` asks for `^1.3`. A choice that still meets everything stays put. That is the whole search: no trying every combination, and no "pick the highest". When no one version can satisfy everyone, the error says who wanted what.
 
@@ -291,6 +300,48 @@ error: workspace: nothing offered for org.example.words is one the workspace can
   org.example.showcase 0.1.0 requires org.example.words =1.2.0
   org.example.style 1.0.0 requires org.example.words ^1.3
 offer one with --package-path or by file
+```
+
+A tool's own copy, in a repository whose one member is `words` 2.0.0, developed with a tool that requires `words` 1:
+
+```text
+$ cat jess-workspace.toml
+manifest_version = 1
+
+[workspace]
+members = ["."]
+
+[dev-dependencies]
+"org.example.tool" = "1"
+$ jess workspace sync ../tool.jpk ../words.jpk
+lock: written
+packages:
+- id: org.example.tool
+  version: 1.0.0
+  digest: 82ab0647095ddf1c52e8df7315dddfebd11b2a932a340db7ea0a031edccbe27a
+  source: local
+  manifest: null
+  tool: false
+  installed: true
+- id: org.example.words
+  version: 1.2.0
+  digest: d8ca63ad4cbe712ed9142e5550a53df3f37b1460a8ed73f04857a0b65be4363f
+  source: local
+  manifest: null
+  tool: true
+  installed: true
+$ jess workspace run --trusted hello -- world
+hello world from the tool
+```
+
+The member is still `words` 2.0.0, and everything the members run, test, and pack uses it; the tool runs with the 1.2.0 it was built against. Bump the member to a 1.x the tool accepts and the copy goes away at the next sync, since a member that meets the tool is the tool's. Offered nothing that meets the tool, sync says which member didn't:
+
+```text
+$ jess workspace sync ../tool.jpk
+error: workspace: nothing offered for org.example.words is one the workspace can use; no publisher or index named here lists it
+  org.example.tool 1.0.0 requires org.example.words 1
+  the workspace's member '.' is org.example.words 2.0.0, which doesn't meet that
+offer one with --package-path or by file, or name its publisher with --publisher URL
 ```
 
 Nothing is fetched while something offered or kept will do: a workspace whose packages are all handed to it by file never touches the network, and neither does one whose lock pins what `.jess/packages` holds. The network is reached only for an id nothing local satisfies, and `--offline` forbids even that.
@@ -338,16 +389,41 @@ source = "local"
 dependencies = []
 ```
 
-One canonical form: sorted, no timestamps, no paths. The same pins write the same bytes on every machine, and a workspace moved or copied somewhere else is the same workspace. A `lock_version = 1` file, which pinned local packages only, still reads; the next sync that changes it writes version 2. Members aren't in it: they are loose source you edit, and pinning every edit would be a lock that changes every time you save. The requirements aren't in it either, since those are the manifests'; the lock records what was chosen for them.
+One canonical form: sorted, no timestamps, no paths. The same pins write the same bytes on every machine, and a workspace moved or copied somewhere else is the same workspace. Members aren't in it: they are loose source you edit, and pinning every edit would be a lock that changes every time you save. The requirements aren't in it either, since those are the manifests'; the lock records what was chosen for them.
+
+A pin the tools share with the members, or that only the tools need, is a pin like any other. One that is the tools' own copy, of a member or of a package the members pin at another version, says so with `tool = true`, after the members' pin of the same id when there is one:
+
+```toml
+# Written by `jess workspace sync`: what the members depend on beyond each other, pinned.
+# Change a member's dependencies and sync again rather than editing this.
+lock_version = 3
+
+[[package]]
+id = "org.example.tool"
+version = "1.0.0"
+digest = "82ab0647095ddf1c52e8df7315dddfebd11b2a932a340db7ea0a031edccbe27a"
+source = "local"
+dependencies = ["org.example.words"]
+
+[[package]]
+id = "org.example.words"
+version = "1.2.0"
+digest = "d8ca63ad4cbe712ed9142e5550a53df3f37b1460a8ed73f04857a0b65be4363f"
+source = "local"
+tool = true
+dependencies = []
+```
+
+`tool` is `lock_version = 3`'s. Sync writes the oldest version that can say what the lock pins: version 3 only when it pins a tool's own copy, and version 2 otherwise, byte for byte what a jess from before tool copies wrote, so a lock that doesn't need them never changes because jess did, and an older jess still reads it. A version 2 file that says `tool` is an error. A `lock_version = 1` file, which pinned local packages only, still reads; the next sync that changes it writes version 2, or 3.
 
 Each pinned package is kept as `.jess/packages/<id>-<version>-<digest>.jpk`, so two builds of one version are two files, and the lock says which one runs. `sync` writes only inside the workspace: a `.jess` or `.jess/packages` that links somewhere outside it is refused before anything is written.
 
-Every command checks the lock against the members' manifests:
+Every command checks the lock against the members' manifests and the workspace file's tools:
 
 | State | Means | What runs |
 | --- | --- | --- |
 | `fresh` | It pins exactly what the members need. A workspace that needs nothing beyond its members is fresh without a lock. | Everything. |
-| `stale` | A member requires something it doesn't pin, or a version it doesn't accept; it pins a package that is now a member, or that nothing requires. | Nothing, until `sync`. |
+| `stale` | A member or a tool requires something it doesn't pin, or a version it doesn't accept; a tool requires a member it doesn't pin the tools a copy of; it pins a package that is now a member, a copy the tools no longer need, or something nothing requires. | Nothing, until `sync`. |
 | `missing` | It is right, but `.jess/packages` lacks a package it pins, or holds something else under its name. | Nothing, until `sync` is offered that package. |
 
 A kept JPK that isn't the package pinned, even one with the right id and version, is refused by digest before any of its code runs, and `info`, which opens every kept package and checks its digest, reports it as `missing`. Runs leave that check to resolution, which makes it for each package it opens, so a run doesn't hash packages it never touches. A lock this jess can't read, a `lock_version` it doesn't know, or a pin whose id could name a file outside `.jess/packages` is an error, and the workspace doesn't open.

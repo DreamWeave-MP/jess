@@ -195,7 +195,7 @@ members = ["jpk/builtin", "tools/site"]
 | --- | --- |
 | `manifest_version` | `1`. |
 | `[workspace] members` | Folder paths relative to the file, each a Package Source. `"."` names the folder the file is in. Missing: `'<path>' has no [workspace] table`, or `[workspace] needs members, a list of folders`. |
-| `[dev-dependencies]` | Package ids to version requirements, as in a manifest: the tools the workspace is developed with. `sync` pins them, `run` runs their command targets by name, and no member depends on them. A workspace of no members may have them alone, as a site built by a tool it doesn't write does. |
+| `[dev-dependencies]` | Package ids to version requirements, as in a manifest: the tools the workspace is developed with. `sync` pins them, `run` runs their command targets by name, and no member depends on them. They resolve apart from the members: a member that meets a tool's requirement is what the tool gets, and one that doesn't gets the tool a pinned copy of the release it asks for. A workspace of no members may have them alone, as a site built by a tool it doesn't write does. |
 
 `jess workspace sync` writes `jess.lock` beside it, and nothing else should:
 
@@ -210,6 +210,6 @@ source = "local"
 dependencies = []
 ```
 
-Each `[[package]]` pins one package the members need beyond each other: `id`, an exact `version` (a pre-release spelled out), the content `digest` as `jess package inspect` shows it, where it came from (`source = "local"`, offered from a folder, or `"publisher"`, in which case `manifest` is the URL of the project manifest that publishes it and `artifact_sha256` the SHA-256 of the archive), and the ids of its `dependencies`. The pinned JPKs live under `.jess/packages`. A lock from a newer jess is refused by version (`is lock_version 3, and this jess reads lock_version 2`), and one that no longer matches the members is reported as stale, entry by entry, rather than silently resolved around.
+Each `[[package]]` pins one package the members or the tools need beyond the members: `id`, an exact `version` (a pre-release spelled out), the content `digest` as `jess package inspect` shows it, where it came from (`source = "local"`, offered from a folder, or `"publisher"`, in which case `manifest` is the URL of the project manifest that publishes it and `artifact_sha256` the SHA-256 of the archive), and the ids of its `dependencies`. `tool = true` marks the tools' own copy of a member, or of a package the members pin at another version; only `lock_version = 3` says it, and sync writes version 3 only for a lock that has one. The pinned JPKs live under `.jess/packages`. A lock from a newer jess is refused by version (`is lock_version 4, and this jess reads lock_version 1 to 3`), and one that no longer matches the members is reported as stale, entry by entry, rather than silently resolved around.
 
 Change a member's dependencies and sync again. Don't edit the lock by hand; the file says so at the top.
