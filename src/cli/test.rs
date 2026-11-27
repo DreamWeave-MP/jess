@@ -34,6 +34,8 @@ pub struct TestArgs {
     /// it.
     #[arg(long = "package-path", value_name = "FOLDER")]
     package_paths: Vec<PathBuf>,
+    #[command(flatten)]
+    heap: crate::run::HeapArgs,
 }
 
 /// What marks a file in a folder as a test module. A file named outright needs no mark.
@@ -102,11 +104,10 @@ pub fn run(args: &TestArgs, format: Format) -> Result<(), String> {
         paths: &args.package_paths,
     }
     .resolve(None, &modules[0])?;
-    let report =
-        jess::lua::testing::run_prepared(&jess::lua::Options::default(), &grant, &modules, !args.shared, &|runtime| {
-            crate::run::activate(runtime, &named, &grant).map_err(l3i::Error::runtime)
-        })
-        .map_err(|error| error.to_string())?;
+    let report = jess::lua::testing::run_prepared(&args.heap.options(), &grant, &modules, !args.shared, &|runtime| {
+        crate::run::activate(runtime, &named, &grant).map_err(l3i::Error::runtime)
+    })
+    .map_err(|error| error.to_string())?;
     output::print(&report, format)?;
     if report.failed > 0 {
         return Err(format!("{} failed", report.failed));

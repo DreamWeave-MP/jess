@@ -71,6 +71,8 @@ enum PackageCommand {
         /// a scratch folder of its own, and the report is the same.
         #[arg(long, value_name = "N", value_parser = clap::value_parser!(u16).range(1..=256))]
         jobs: Option<u16>,
+        #[command(flatten)]
+        heap: crate::run::HeapArgs,
     },
     /// Type-check a Package Source's Luau in strict mode, every .jsl file under it, with each
     /// require resolved as the runtime resolves it under the package's plan, its [dependencies]
@@ -111,6 +113,8 @@ pub struct RunTargetArgs {
     grant: GrantArgs,
     #[command(flatten)]
     run: crate::application::RunOptions,
+    #[command(flatten)]
+    heap: crate::run::HeapArgs,
     /// Arguments for the target, which gets them as ... and in the global arg table.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     args: Vec<String>,
@@ -219,7 +223,7 @@ fn run_target(args: &RunTargetArgs) -> Result<u8, String> {
             jess::lua::package::target(&inspection, request.target.as_deref()).map_err(|error| error.to_string())?;
         args.run.check(target, &inspection.id)?;
     }
-    let launched = jess::lua::package::launch_with(&jess::lua::Options::default(), &request, args.run.launch())
+    let launched = jess::lua::package::launch_with(&args.heap.options(), &request, args.run.launch())
         .map_err(|error| error.to_string())?;
     crate::application::finish(launched, args.run.frames)
 }
@@ -265,10 +269,11 @@ pub fn run(args: &PackageArgs, format: Format) -> Result<u8, String> {
             packages,
             package_paths,
             jobs,
+            heap,
         } => {
             let scratch = std::env::temp_dir().join(format!("jess-package-test-{}", std::process::id()));
             let report = jess::lua::package::test_with_jobs(
-                &jess::lua::Options::default(),
+                &heap.options(),
                 package,
                 &scratch,
                 &texts(packages),
